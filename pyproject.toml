@@ -1,0 +1,19 @@
+[project]
+name = "vnccs-utils"
+description = "VNCCS - Collection of utility nodes"
+version = "0.1.0"
+license = {file = "LICENSE"} 
+
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/AHEKOT/ComfyUI_VNCCS_Utils"
+#  Used by Comfy Registry https://registry.comfy.org
+Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS/wiki"
+"Bug Tracker" = "https://github.com/AHEKOT/ComfyUI_VNCCS/issues"
+
+[tool.comfy]
+PublisherId = "vnccs"
+DisplayName = "VNCCS - Collection of utility nodes"
+Icon = "https://raw.githubusercontent.com/AHEKOT/ComfyUI_VNCCS/refs/heads/main/images/VNCCS_LOGO.png"
+
