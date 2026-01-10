@@ -5,6 +5,8 @@ A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI
 ## Main Nodes
 
 ### 1. VNCCS Visual Camera Control
+**[Example Workflow](workflows/VNCCS_Utils%20Visual%20camera%20control%20node%20for%20Qwen-Image-Edit-2511-Multiple-Angles%20LoRa.json)**
+
 An interactive node with a visual widget for controlling camera position. This is the primary node for intuitive angle control.
 These node is specifically designed for advanced camera control and prompt generation, optimized for multi-angle LoRAs like **Qwen-Image-Edit-2511-Multiple-Angles**.
 
@@ -13,6 +15,8 @@ These node is specifically designed for advanced camera control and prompt gener
 *   **Trigger Word**: A square indicator in the bottom-right corner toggles the presence of the <sks> trigger in the prompt (green for ON, red for OFF).
 
 ### 2. VNCCS QWEN Detailer
+**[Example Workflow](workflows/VNCCS_Utils%20QwenDetailer_ChangeEmotion.json)**
+
 A powerful detailing node that leverages QWEN-Image-Edit2511 model to enhance detected regions (faces, hands, objects). It goes beyond standard detailers by using visual understanding to guide the enhancement process.
 
 *   **Smart Cropping**: Automatically squares crops and handles padding for optimal model input.
@@ -24,9 +28,11 @@ A powerful detailing node that leverages QWEN-Image-Edit2511 model to enhance de
 *   **Options**: Supports QWEN-Image-Edit2511 specific optimizations (`distortion_fix`, `qwen_2511` mode).
 
 ### 3. VNCCS Model Manager & Selector
+**[Example Workflow](workflows/VNCCS_Utils%20Model%20Loader%20ShowCase.json)**
+
 A robust system for managing and selecting models (LoRAs, Checkpoints) directly within ComfyUI, with support for Civitai and HuggingFace.
 
-#### VNCCS Model Manager (HF)
+#### VNCCS Model Manager
 This node acts as the backend for the system. It connects to a HuggingFace repository containing a `model_updater.json` configuration file, which defines the available models and their download sources.
 *   **Repo ID**: Specify the HuggingFace repository ID.
 *   **Downloads**: Handles downloading models in the background with queue support.
@@ -41,6 +47,8 @@ The companion node for selecting models. It provides a rich Graphical User Inter
 *   **Status Indicators**: Shows clear indicators for "Installed", "Update Available", "Missing", or "Downloading".
 *   **One-Click Install/Update**: Allows downloading or updating models directly from the list.
 *   **Universal Connection**: Outputs a standard relative path string that is **fully compatible with standard ComfyUI nodes**. You can connect it directly!
+
+👉 **[Usage Guide: How to use Selector with Standard Loaders](docs/MODEL_SELECTOR_USAGE.md)**
 
 ### 4. VNCCS BBox Extractor
 A helper node to simply extract and visualize the crops. Useful when you need extract bbox detected regions but don't want to run whole facedetailer.
