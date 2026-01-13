@@ -1,7 +1,7 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS - Collection of utility nodes. VNCCS Visual Camera Control for Qwen-Image-Edit-2511-Multiple-Angles LoRa. VNCCS QWEN Detailer - For spot corrections in images of any size. "
-version = "0.3.0"
+version = "0.3.1"
 license = {file = "LICENSE"} 
 
 dependencies = ["opencv-python", "color-matcher", "huggingface_hub", "aiohttp"]
