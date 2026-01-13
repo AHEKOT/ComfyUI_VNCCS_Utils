@@ -211,7 +211,8 @@ def _make_square_crop(image_tensor, crop_region, full_image_shape, target_qwen_s
                 square_crop.permute(0, 3, 1, 2),
                 (0, pad_w_final, 0, pad_h_final),
                 mode='constant',
-                value=0
+                # value=0 means black, user requested white (1) for testing
+                value=1 
             ).permute(0, 2, 3, 1)
             square_crop = padded
     
@@ -478,7 +479,7 @@ class VNCCS_QWEN_Detailer:
                 "instruction": ("STRING", {"multiline": True, "default": "Describe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate."}),
                 "inpaint_mode": ("BOOLEAN", {"default": False}),
                 "inpaint_prompt": ("STRING", {"multiline": True, "default": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside black box."}),
-                "color_match_method": (["disabled", "mkl", "hm", "reinhard", "mvgd", "hm-mvgd-hm", "hm-mkl-hm"], {"default": "mvgd"}),
+                "color_match_method": (["disabled", "kornia_reinhard"], {"default": "kornia_reinhard"}),
                 "seam_fix": ("BOOLEAN", {"default": True, "label_on": "Poisson Blending", "label_off": "Standard Paste"}),
                 "qwen_2511": ("BOOLEAN", {"default": True}),
                 "distortion_fix": ("BOOLEAN", {"default": True, "label_on": "Drift Fix", "label_off": "Standard VL"}),
@@ -506,8 +507,16 @@ class VNCCS_QWEN_Detailer:
         # Fixed parameters
         crop_factor = 1.0
         target_vl_size = 384
-        color_match_strength = 1.0
-        color_match_multithread = True
+        color_match_strength = 0.8
+        
+        # Auto-fix legacy or invalid values (Backend Compatibility)
+        valid_methods = ["disabled", "kornia_reinhard"]
+        if color_match_method not in valid_methods:
+             print(f"[VNCCS] Auto-fixing deprecated color match method '{color_match_method}' to 'kornia_reinhard'")
+             color_match_method = "kornia_reinhard"
+        
+        # NOTE: Multithreading param removed as Kornia is GPU/Tensor based and doesn't benefit from Python threading here
+        # color_match_multithread = True 
 
         if len(image) > 1:
             raise Exception('[VNCCS] ERROR: VNCCS_QWEN_Detailer does not allow image batches.')
@@ -657,16 +666,23 @@ class VNCCS_QWEN_Detailer:
             crop_w_actual = cropped_image.shape[2]
             
             # **NEW: Convert crop to square for better QWEN processing**
-            square_image, square_info = _make_square_crop(enhanced_image, seg.crop_region, (enhanced_image.shape[1], enhanced_image.shape[2]), target_qwen_size=target_size)
-            if cropped_controlnet is not None:
-                # Also square the controlnet if it exists
-                square_controlnet, _ = _make_square_crop(controlnet_image, seg.crop_region, (controlnet_image.shape[1], controlnet_image.shape[2]), target_qwen_size=target_size)
+            square_info = None
+            if distortion_fix:
+                square_image, square_info = _make_square_crop(enhanced_image, seg.crop_region, (enhanced_image.shape[1], enhanced_image.shape[2]), target_qwen_size=target_size)
+                if cropped_controlnet is not None:
+                    # Also square the controlnet if it exists
+                    square_controlnet, _ = _make_square_crop(controlnet_image, seg.crop_region, (controlnet_image.shape[1], controlnet_image.shape[2]), target_qwen_size=target_size)
+                else:
+                    square_controlnet = None
+                
+                cropped_image = square_image
+                if cropped_controlnet is not None:
+                    cropped_controlnet = square_controlnet
             else:
-                square_controlnet = None
-            
-            cropped_image = square_image
-            if cropped_controlnet is not None:
-                cropped_controlnet = square_controlnet
+                 # Standard flow without squaring
+                 if cropped_controlnet is not None:
+                    # Resize controlnet crop to match image crop size if needed (usually handled by encode_qwen implicitly via resize, but consistent size helps)
+                    pass
             
             # Save original crop for drift correction reference (it's already at target_size now)
             original_crop = cropped_image.clone()
@@ -679,8 +695,7 @@ class VNCCS_QWEN_Detailer:
                 image1=cropped_image, image2=cropped_controlnet, image3=image2,
                 target_size=target_size, target_vl_size=target_vl_size,
                 upscale_method=upscale_method, crop_method=crop_method,
-                instruction=instruction, inpaint_mode=inpaint_mode, inpaint_prompt=inpaint_prompt,
-                distortion_fix=distortion_fix
+                instruction=instruction, inpaint_mode=inpaint_mode, inpaint_prompt=inpaint_prompt
             )
 
             # Generate enhanced version using the model
@@ -719,15 +734,21 @@ class VNCCS_QWEN_Detailer:
             if enhanced_cropped.shape[0] == 1:
                 enhanced_cropped = enhanced_cropped.squeeze(0)
             
-            # **NEW: Reverse the square transformation (unsquare and remove padding)**
-            if len(enhanced_cropped.shape) == 3:  # [H, W, C]
-                enhanced_cropped = enhanced_cropped.unsqueeze(0)  # Add batch: [1, H, W, C]
-            enhanced_cropped = _unsquare_crop(enhanced_cropped, square_info)
-            if enhanced_cropped.shape[0] == 1:
-                enhanced_cropped = enhanced_cropped.squeeze(0)  # Remove batch
+            # **NEW: Reverse the square transformation (unsquare and remove padding) ONLY if applied**
+            if square_info is not None:
+                if len(enhanced_cropped.shape) == 3:  # [H, W, C]
+                    enhanced_cropped = enhanced_cropped.unsqueeze(0)  # Add batch: [1, H, W, C]
+                enhanced_cropped = _unsquare_crop(enhanced_cropped, square_info)
+                if enhanced_cropped.shape[0] == 1:
+                    enhanced_cropped = enhanced_cropped.squeeze(0)  # Remove batch
             
             # Debug: Check if enhanced_cropped matches original crop size
-            orig_h, orig_w = square_info['orig_size']
+            if square_info is not None:
+                orig_h, orig_w = square_info['orig_size']
+            else:
+                # Fallback if no square info, original crop size from seg
+                x1, y1, x2, y2 = seg.crop_region
+                orig_h, orig_w = y2 - y1, x2 - x1
             actual_h, actual_w = enhanced_cropped.shape[0], enhanced_cropped.shape[1]
             
             # If there's a mismatch, resize to exact original crop size to avoid _tensor_paste doing extra resize
@@ -741,7 +762,7 @@ class VNCCS_QWEN_Detailer:
                 # Crop the region from ORIGINAL image for color matching reference
                 cropped_original = _tensor_crop(image, seg.crop_region)
                 # Apply color match to the clean generated enhanced_cropped
-                enhanced_cropped = self._apply_color_match(cropped_original, enhanced_cropped, color_match_method, color_match_strength, color_match_multithread)
+                enhanced_cropped = self._apply_color_match(cropped_original, enhanced_cropped, color_match_method, color_match_strength)
 
             # Paste back to the original image (now with color-corrected enhanced_cropped)
             seg_mask = seg.cropped_mask if hasattr(seg, 'cropped_mask') else None
@@ -749,64 +770,72 @@ class VNCCS_QWEN_Detailer:
             
         return (enhanced_image,)
 
-    def _apply_color_match(self, image_ref, image_target, method, strength=1.0, multithread=True):
+    def _apply_color_match(self, image_ref, image_target, method, strength=1.0):
         """
-        Apply color matching from reference image to target image.
-        Uses external library `color_matcher` if available.
+        Apply color matching from reference image to target image using Kornia (GPU).
         """
-        if strength == 0:
+        if strength == 0 or method == "disabled":
             return image_target
-
+        
+        # Check Kornia
         try:
-            from color_matcher import ColorMatcher
+             import kornia
+             from kornia.color import rgb_to_lab, lab_to_rgb
         except ImportError:
-            return image_target
+             print("[VNCCS] Warning: Kornia not found. Skipping color match. Install with 'pip install kornia'")
+             return image_target
         
-        image_ref = image_ref.cpu()
-        image_target = image_target.cpu()
-        batch_size = image_target.size(0) if len(image_target.shape) == 4 else 1
+        # Ensure proper dimensions [B, H, W, C]
+        if image_target.dim() == 3:
+            image_target = image_target.unsqueeze(0)
+        if image_ref.dim() == 3:
+            image_ref = image_ref.unsqueeze(0)
+
+        # Prepare tensors: [B, H, W, C] -> [B, C, H, W]
+        target = image_target.permute(0, 3, 1, 2)
+        ref = image_ref.permute(0, 3, 1, 2)
         
-        images_target = image_target.squeeze()
-        images_ref = image_ref.squeeze()
+        # Ensure ref matches batch size of target if needed
+        if ref.shape[0] != target.shape[0] and ref.shape[0] == 1:
+            ref = ref.expand(target.shape[0], -1, -1, -1)
 
-        image_ref_np = images_ref.numpy()
-        images_target_np = images_target.numpy()
-
-        def process(i):
+        res = target
+        
+        if "reinhard" in method:
+            # RGB -> LAB
+            target_lab = rgb_to_lab(target)
+            ref_lab = rgb_to_lab(ref)
+            
+            # Compute stats (Mean & Std) per channel
+            mu_t = target_lab.mean(dim=(2, 3), keepdim=True)
+            std_t = target_lab.std(dim=(2, 3), keepdim=True)
+            mu_r = ref_lab.mean(dim=(2, 3), keepdim=True)
+            std_r = ref_lab.std(dim=(2, 3), keepdim=True)
+            
+            # Transfer
+            res_lab = (target_lab - mu_t) * (std_r / (std_t + 1e-6)) + mu_r
+            res = lab_to_rgb(res_lab)
+        
+        elif "histogram" in method:
             try:
-                cm = ColorMatcher()
-                image_target_np_i = images_target_np if batch_size == 1 else (images_target_np[i] if images_target_np.ndim == 4 else images_target_np)
-                image_ref_np_i = image_ref_np if image_ref.size(0) == 1 else (image_ref_np[i] if image_ref_np.ndim == 4 else image_ref_np)
-                
-                # Main color transfer process
-                image_result = cm.transfer(src=image_target_np_i, ref=image_ref_np_i, method=method)
-                
-                if strength != 1:
-                    # Apply strength blending
-                    image_result = image_target_np_i + strength * (image_result - image_target_np_i)
-                
-                return torch.from_numpy(image_result).float()
-                
-            except Exception as e:
-                image_target_np_i = images_target_np if batch_size == 1 else (images_target_np[i] if images_target_np.ndim == 4 else images_target_np)
-                return torch.from_numpy(image_target_np_i).float()
+                from kornia.enhance import histogram_matching
+                res = histogram_matching(target, ref)
+            except ImportError:
+                print("[VNCCS] Warning: 'histogram_matching' not found in kornia. Please upgrade kornia to >=0.6.2 (pip install kornia --upgrade). Skipping.")
+                res = target
 
-        if multithread and batch_size > 1:
-            max_threads = min(os.cpu_count() or 1, batch_size)
-            with ThreadPoolExecutor(max_workers=max_threads) as executor:
-                out = list(executor.map(process, range(batch_size)))
-        else:
-            out = [process(i) for i in range(batch_size)]
-
-        out = torch.stack(out, dim=0).to(torch.float32)
-        out = out.clamp(0, 1)
-        return out
+        # Apply strength mixing
+        if strength != 1:
+            res = target + strength * (res - target)
+        
+        # Clamp and return to [B, H, W, C]
+        res = torch.clamp(res, 0, 1)
+        return res.permute(0, 2, 3, 1)
 
     def encode_qwen(self, clip, prompt, vae=None, image1=None, image2=None, image3=None,
                     target_size=1024, target_vl_size=384,
                     upscale_method="lanczos", crop_method="center",
-                    instruction="", inpaint_mode=False, inpaint_prompt="",
-                    distortion_fix=True):
+                    instruction="", inpaint_mode=False, inpaint_prompt=""):
 
         pad_info = {"x": 0, "y": 0, "width": 0, "height": 0, "scale_by": 0}
         ref_latents = []
@@ -830,25 +859,23 @@ class VNCCS_QWEN_Detailer:
         else:
             base_prompt = prompt
 
-        # If distortion_fix is enabled, we skip standard VL image logic for the clip
-        # but ALWAYS process images to get ref_latents
+        # Process images for VL and ref_latents
         for i, image_obj in enumerate(images):
             image = image_obj["image"]
             vl_resize = image_obj["vl_resize"]
             if image is not None:
                 samples = image.movedim(-1, 1)
                 current_total = (samples.shape[3] * samples.shape[2])
-                
-                # Standard VL processing logic (Used if NOT distortion_fix)
-                if not distortion_fix:
-                    total = int(target_vl_size * target_vl_size)
-                    scale_by = math.sqrt(total / current_total)
-                    width = round(samples.shape[3] * scale_by)
-                    height = round(samples.shape[2] * scale_by)
-                    s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop_method)
-                    image_vl = s.movedim(1, -1)
-                    vl_images.append(image_vl)
-                    image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
+
+                # Standard VL processing logic
+                total = int(target_vl_size * target_vl_size)
+                scale_by = math.sqrt(total / current_total)
+                width = round(samples.shape[3] * scale_by)
+                height = round(samples.shape[2] * scale_by)
+                s = comfy.utils.common_upscale(samples, width, height, upscale_method, crop_method)
+                image_vl = s.movedim(1, -1)
+                vl_images.append(image_vl)
+                image_prompt += f"Picture {i+1}: <|vision_start|><|image_pad|><|vision_end|>"
                 
                 # VAE encode for ref_latents (Always done)
                 if vae is not None:
@@ -860,22 +887,14 @@ class VNCCS_QWEN_Detailer:
                     image_vae = s.movedim(1, -1)
                     ref_latents.append(vae.encode(image_vae[:, :, :, :3]))
 
-        # Condition logic based on distortion_fix
-        if distortion_fix:
-            # Fix mode: Only text prompt, rely on ref_latents for guidance
-            tokens = clip.tokenize(base_prompt, llama_template=llama_template)
-            conditioning = clip.encode_from_tokens_scheduled(tokens)
-        else:
-            # Standard mode: Include image_prompt chunks and VL images
-            tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
-            condition_inputs = {
-                 "vl_images": vl_images if vl_images else None
-            }
-            # Note: clip.encode_from_tokens_scheduled doesn't take images kwarg directly usually,
-            # but QWEN patched clips might. Assuming standard usage pattern for QWEN encoders:
-            # Standard Encoder uses: `tokens = clip.tokenize(image_prompt + prompt, images=vl_images, ...)`
-            # and then `conditioning = clip.encode_from_tokens_scheduled(tokens)`
-            conditioning = clip.encode_from_tokens_scheduled(tokens)
+        # Condition logic
+        # Standard mode: Include image_prompt chunks and VL images
+        tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
+        # Note: clip.encode_from_tokens_scheduled doesn't take images kwarg directly usually,
+        # but QWEN patched clips might. Assuming standard usage pattern for QWEN encoders:
+        # Standard Encoder uses: `tokens = clip.tokenize(image_prompt + prompt, images=vl_images, ...)`
+        # and then `conditioning = clip.encode_from_tokens_scheduled(tokens)`
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
 
         # ReferenceLatent technique
         conditioning_with_ref = conditioning
