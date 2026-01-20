@@ -173,11 +173,9 @@ class HumanSolver:
     def __init__(self):
         pass
 
-    def calculate_factors(self, age, gender, weight, muscle, height, breast_size, genital_size):
+    def calculate_factors(self, age, gender, weight, muscle, height, breast_size, firmness, penis_len, penis_circ, penis_test):
         """
         Returns a dictionary of factor values based on MakeHuman logic.
-        breast_size: 0.0-1.0 (Controls cup size)
-        genital_size: 0.0-1.0 (Controls penis length/testicles size)
         """
         factors = {}
         
@@ -185,7 +183,7 @@ class HumanSolver:
         factors['male'] = gender
         factors['female'] = 1.0 - gender
         
-        # Age
+        # Age (unchanged logic)
         if age < 0.5:
             factors['old'] = 0.0
             factors['baby'] = max(0.0, 1 - age * 5.333)
@@ -212,44 +210,35 @@ class HumanSolver:
         factors['minheight'] = max(0.0, 1 - height * 2)
         factors['averageheight'] = 1 - (factors['maxheight'] + factors['minheight'])
 
-        # Race (Internal Defaults)
-        # Even though user input is removed, we must handle the race modifiers in the target files.
-        # Defaulting to an even split to produce a generic human base.
-        # If we don't set these, targets with 'african'/'asian'/'caucasian' tags will have weight 0.0 (if get returns 0)
-        # OR if we removed them from categories, they would have been ignored and thus weight 1.0 (collision).
-        # Since we added them back to categories, we must provide non-zero weights if we want them to show.
+        # Race (defaults)
         factors['african'] = 0.333
         factors['asian'] = 0.333
         factors['caucasian'] = 0.334
 
         # Breast Size (Cup)
-        # Using same logic as Weight/Muscle for consistency
         factors['maxcup'] = max(0.0, breast_size * 2 - 1)
         factors['mincup'] = max(0.0, 1 - breast_size * 2)
         factors['averagecup'] = 1 - (factors['maxcup'] + factors['mincup'])
         
-        # Firmness (Hardcoded to average for now, as user didn't request a slider)
-        factors['maxfirmness'] = 0.0
-        factors['minfirmness'] = 0.0
-        factors['averagefirmness'] = 1.0
+        # Firmness
+        factors['maxfirmness'] = max(0.0, firmness * 2 - 1)
+        factors['minfirmness'] = max(0.0, 1 - firmness * 2)
+        factors['averagefirmness'] = 1 - (factors['maxfirmness'] + factors['minfirmness'])
 
-        # Genitals (Penis Length & Testicles)
-        # 0.0 -> max decrease
-        # 0.5 -> neutral
-        # 1.0 -> max increase
-        factors['penis-length-incr'] = max(0.0, genital_size * 2 - 1)
-        factors['penis-length-decr'] = max(0.0, 1 - genital_size * 2)
+        # Genitals (Penis Length)
+        factors['penis-length-incr'] = max(0.0, penis_len * 2 - 1)
+        factors['penis-length-decr'] = max(0.0, 1 - penis_len * 2)
         
-        # Mapping penis testicles to same slider
-        factors['penis-testicles-incr'] = factors['penis-length-incr']
-        factors['penis-testicles-decr'] = factors['penis-length-decr']
+        # Circumference (Girth)
+        factors['penis-circ-incr'] = max(0.0, penis_circ * 2 - 1)
+        factors['penis-circ-decr'] = max(0.0, 1 - penis_circ * 2)
         
-        # Circumference not explicitly requested, keeping neutral
-        factors['penis-circ-incr'] = 0.0
-        factors['penis-circ-decr'] = 0.0
+        # Testicles
+        factors['penis-testicles-incr'] = max(0.0, penis_test * 2 - 1)
+        factors['penis-testicles-decr'] = max(0.0, 1 - penis_test * 2)
 
         # Universal
-        factors['universal'] = 1.0 # Always true if present
+        factors['universal'] = 1.0
 
         return factors
 

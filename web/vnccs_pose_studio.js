@@ -35,150 +35,416 @@ const ThreeModuleLoader = {
 
 // === Styles ===
 const STYLES = `
+/* ===== VNCCS Pose Studio Theme ===== */
+:root {
+    --ps-bg: #1e1e1e;
+    --ps-panel: #252525;
+    --ps-border: #333;
+    --ps-accent: #3558c7;
+    --ps-accent-hover: #4264d9;
+    --ps-success: #2e7d32;
+    --ps-danger: #d32f2f;
+    --ps-text: #e0e0e0;
+    --ps-text-muted: #888;
+    --ps-input-bg: #151515;
+}
+
+/* Main Container */
 .vnccs-pose-studio {
     display: flex;
     flex-direction: row;
     width: 100%;
     height: 100%;
-    background: #1a1a2e;
-    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
-    color: #ccc;
+    background: var(--ps-bg);
+    font-family: 'Consolas', 'Monaco', monospace;
+    font-size: 12px;
+    color: var(--ps-text);
     overflow: hidden;
+    box-sizing: border-box;
+    zoom: 0.67;
+    pointer-events: none;
 }
 
-/* Left Panel - Sliders */
+/* === Left Panel (25%) === */
 .vnccs-ps-left {
-    width: 200px;
+    width: 25%;
     min-width: 200px;
-    padding: 10px;
-    border-right: 1px solid #333;
-    overflow-y: auto;
+    max-width: 280px;
     display: flex;
     flex-direction: column;
     gap: 8px;
+    padding: 10px;
+    overflow-y: auto;
+    border-right: 1px solid var(--ps-border);
+    pointer-events: auto;
 }
 
-.vnccs-ps-slider-group {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
+/* Scrollbar */
+.vnccs-ps-left::-webkit-scrollbar { width: 6px; }
+.vnccs-ps-left::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
 
-.vnccs-ps-slider-label {
-    font-size: 11px;
-    color: #888;
-}
-
-.vnccs-ps-slider {
-    width: 100%;
-    height: 20px;
-    -webkit-appearance: none;
-    background: #333;
-    border-radius: 4px;
-    cursor: pointer;
-}
-
-.vnccs-ps-slider::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: 14px;
-    height: 14px;
-    background: #4a9;
-    border-radius: 50%;
-    cursor: pointer;
-}
-
-/* Right Panel - 3D Editor */
+/* === Right Panel (75%) === */
 .vnccs-ps-right {
     flex: 1;
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    pointer-events: auto;
 }
 
-/* Tab Bar */
+/* === Section Component === */
+.vnccs-ps-section {
+    background: var(--ps-panel);
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.vnccs-ps-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    border-bottom: 1px solid var(--ps-border);
+    cursor: pointer;
+    user-select: none;
+}
+
+.vnccs-ps-section-title {
+    font-size: 11px;
+    font-weight: bold;
+    color: #fff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.vnccs-ps-section-toggle {
+    font-size: 10px;
+    color: var(--ps-text-muted);
+    transition: transform 0.2s;
+}
+
+.vnccs-ps-section.collapsed .vnccs-ps-section-toggle {
+    transform: rotate(-90deg);
+}
+
+.vnccs-ps-section-content {
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: auto;
+}
+
+.vnccs-ps-section.collapsed .vnccs-ps-section-content {
+    display: none;
+}
+
+/* === Form Fields === */
+.vnccs-ps-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    pointer-events: auto;
+}
+
+.vnccs-ps-label {
+    font-size: 10px;
+    color: var(--ps-text-muted);
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.vnccs-ps-value {
+    font-size: 10px;
+    color: var(--ps-accent);
+    margin-left: auto;
+}
+
+.vnccs-ps-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Slider */
+.vnccs-ps-slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    pointer-events: auto;
+}
+
+.vnccs-ps-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: #333;
+    border-radius: 2px;
+    cursor: pointer;
+    pointer-events: auto;
+}
+
+.vnccs-ps-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    background: var(--ps-accent);
+    border-radius: 50%;
+    cursor: pointer;
+}
+
+.vnccs-ps-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    background: var(--ps-accent);
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+}
+
+.vnccs-ps-slider-val {
+    width: 40px;
+    text-align: right;
+    font-size: 11px;
+    color: #fff;
+    background: transparent;
+    border: none;
+    font-family: inherit;
+}
+
+/* Input */
+.vnccs-ps-input {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: #fff;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.vnccs-ps-input:focus {
+    outline: none;
+    border-color: var(--ps-accent);
+}
+
+/* Select */
+.vnccs-ps-select {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: #fff;
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: inherit;
+    font-size: 11px;
+    width: 100%;
+    cursor: pointer;
+}
+
+/* Gender Toggle */
+.vnccs-ps-toggle {
+    display: flex;
+    gap: 2px;
+    background: var(--ps-input-bg);
+    border-radius: 4px;
+    padding: 2px;
+    border: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-toggle-btn {
+    flex: 1;
+    border: none;
+    padding: 6px 12px;
+    cursor: pointer;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    transition: all 0.15s;
+    background: transparent;
+    color: var(--ps-text-muted);
+}
+
+.vnccs-ps-toggle-btn.active {
+    color: white;
+}
+
+.vnccs-ps-toggle-btn.male.active {
+    background: #4a90e2;
+}
+
+.vnccs-ps-toggle-btn.female.active {
+    background: #e24a90;
+}
+
+/* Input Row */
+.vnccs-ps-row {
+    display: flex;
+    gap: 8px;
+}
+
+.vnccs-ps-row > * {
+    flex: 1;
+}
+
+/* Color Picker */
+.vnccs-ps-color {
+    width: 100%;
+    height: 28px;
+    border: 1px solid var(--ps-border);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    background: none;
+}
+
+/* === Tab Bar === */
 .vnccs-ps-tabs {
     display: flex;
     align-items: center;
-    padding: 5px 10px;
-    background: #222;
-    gap: 5px;
-    border-bottom: 1px solid #333;
+    padding: 6px 10px;
+    background: #1a1a1a;
+    gap: 4px;
+    border-bottom: 1px solid var(--ps-border);
     overflow-x: auto;
+    flex-shrink: 0;
 }
 
 .vnccs-ps-tab {
-    padding: 6px 16px;
-    background: #333;
-    border: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: #2a2a2a;
+    border: 1px solid var(--ps-border);
+    border-bottom: none;
     border-radius: 4px 4px 0 0;
-    color: #888;
+    color: var(--ps-text-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11px;
+    font-family: inherit;
     white-space: nowrap;
+    transition: all 0.15s;
+}
+
+.vnccs-ps-tab:hover {
+    background: #333;
+    color: #ccc;
 }
 
 .vnccs-ps-tab.active {
-    background: #1a1a2e;
-    color: #4a9;
+    background: var(--ps-panel);
+    color: var(--ps-accent);
+    border-color: var(--ps-accent);
+    border-bottom: 1px solid var(--ps-panel);
+    margin-bottom: -1px;
+}
+
+.vnccs-ps-tab-close {
+    font-size: 14px;
+    line-height: 1;
+    color: var(--ps-text-muted);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: all 0.15s;
+}
+
+.vnccs-ps-tab-close:hover {
+    color: var(--ps-danger);
+    opacity: 1;
 }
 
 .vnccs-ps-tab-add {
     padding: 6px 10px;
-    background: #2a2a3e;
+    background: transparent;
     border: 1px dashed #444;
     border-radius: 4px;
-    color: #666;
+    color: var(--ps-text-muted);
     cursor: pointer;
     font-size: 14px;
+    font-family: inherit;
+    transition: all 0.15s;
 }
 
 .vnccs-ps-tab-add:hover {
-    background: #3a3a4e;
-    color: #888;
+    background: #2a2a2a;
+    border-color: var(--ps-accent);
+    color: var(--ps-accent);
 }
 
-/* 3D Canvas Container */
-.vnccs-ps-canvas-container {
+/* === 3D Canvas === */
+.vnccs-ps-canvas-wrap {
     flex: 1;
     position: relative;
     overflow: hidden;
+    background: #1a1a2e;
 }
 
-.vnccs-ps-canvas-container canvas {
+.vnccs-ps-canvas-wrap canvas {
     width: 100% !important;
     height: 100% !important;
+    display: block;
 }
 
-/* Action Bar */
+/* === Action Bar === */
 .vnccs-ps-actions {
     display: flex;
     gap: 8px;
     padding: 8px 10px;
-    background: #222;
-    border-top: 1px solid #333;
+    background: #1a1a1a;
+    border-top: 1px solid var(--ps-border);
+    flex-shrink: 0;
 }
 
 .vnccs-ps-btn {
-    padding: 6px 12px;
-    background: #3a3a4e;
-    border: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 8px 14px;
+    background: #333;
+    border: 1px solid #444;
     border-radius: 4px;
-    color: #aaa;
+    color: var(--ps-text);
     cursor: pointer;
     font-size: 11px;
+    font-weight: 600;
+    font-family: inherit;
+    transition: all 0.15s;
 }
 
 .vnccs-ps-btn:hover {
-    background: #4a4a5e;
-    color: #fff;
+    background: #444;
+    border-color: #555;
+}
+
+.vnccs-ps-btn.primary {
+    background: var(--ps-accent);
+    border-color: var(--ps-accent);
+    color: white;
+}
+
+.vnccs-ps-btn.primary:hover {
+    background: var(--ps-accent-hover);
 }
 
 .vnccs-ps-btn.danger {
-    background: #4a2a2a;
+    background: var(--ps-danger);
+    border-color: var(--ps-danger);
+    color: white;
 }
 
-.vnccs-ps-btn.danger:hover {
-    background: #5a3a3a;
+.vnccs-ps-btn-icon {
+    font-size: 14px;
 }
 `;
 
@@ -720,7 +986,10 @@ class PoseStudioWidget {
         this.meshParams = {
             age: 25, gender: 0.5, weight: 0.5,
             muscle: 0.5, height: 0.5,
-            breast_size: 0.5, genital_size: 0.5
+            // Female-specific
+            breast_size: 0.5, firmness: 0.5,
+            // Male-specific
+            penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5
         };
 
         // Export settings
@@ -746,130 +1015,124 @@ class PoseStudioWidget {
         this.container = document.createElement("div");
         this.container.className = "vnccs-pose-studio";
 
-        // Left Panel (Sliders)
+        // === LEFT PANEL ===
         const leftPanel = document.createElement("div");
         leftPanel.className = "vnccs-ps-left";
 
-        // Gender Switch
-        const genderGroup = document.createElement("div");
-        genderGroup.className = "vnccs-ps-slider-group";
-        genderGroup.style.marginBottom = "8px";
+        // --- MESH PARAMS SECTION ---
+        const meshSection = this.createSection("Mesh Parameters", true);
+
+        // Gender Toggle
+        const genderField = document.createElement("div");
+        genderField.className = "vnccs-ps-field";
 
         const genderLabel = document.createElement("div");
-        genderLabel.className = "vnccs-ps-slider-label";
+        genderLabel.className = "vnccs-ps-label";
         genderLabel.innerText = "Gender";
-        genderGroup.appendChild(genderLabel);
+        genderField.appendChild(genderLabel);
 
-        const genderSwitch = document.createElement("div");
-        genderSwitch.style.display = "flex";
-        genderSwitch.style.gap = "2px";
-        genderSwitch.style.background = "#222";
-        genderSwitch.style.borderRadius = "4px";
-        genderSwitch.style.padding = "2px";
+        const genderToggle = document.createElement("div");
+        genderToggle.className = "vnccs-ps-toggle";
 
         const btnMale = document.createElement("button");
+        btnMale.className = "vnccs-ps-toggle-btn male";
         btnMale.innerText = "Male";
-        btnMale.style.flex = "1";
-        btnMale.style.border = "none";
-        btnMale.style.padding = "4px";
-        btnMale.style.cursor = "pointer";
-        btnMale.style.borderRadius = "3px";
 
         const btnFemale = document.createElement("button");
+        btnFemale.className = "vnccs-ps-toggle-btn female";
         btnFemale.innerText = "Female";
-        btnFemale.style.flex = "1";
-        btnFemale.style.border = "none";
-        btnFemale.style.padding = "4px";
-        btnFemale.style.cursor = "pointer";
-        btnFemale.style.borderRadius = "3px";
 
         this.updateGenderUI = () => {
-            // User requested swap: Male=1.0, Female=0.0
             const isFemale = this.meshParams.gender < 0.5;
-            btnMale.style.background = isFemale ? "transparent" : "#4a90e2";
-            btnMale.style.color = isFemale ? "#888" : "white";
-            btnFemale.style.background = isFemale ? "#e24a90" : "transparent";
-            btnFemale.style.color = isFemale ? "white" : "#888";
+            btnMale.classList.toggle("active", !isFemale);
+            btnFemale.classList.toggle("active", isFemale);
         };
 
         btnMale.addEventListener("click", () => {
-            this.meshParams.gender = 1.0; // Male
+            this.meshParams.gender = 1.0;
             this.updateGenderUI();
+            this.updateGenderVisibility();
             this.onMeshParamsChanged();
         });
 
         btnFemale.addEventListener("click", () => {
-            this.meshParams.gender = 0.0; // Female
+            this.meshParams.gender = 0.0;
             this.updateGenderUI();
+            this.updateGenderVisibility();
             this.onMeshParamsChanged();
         });
 
-        // Initial state
         this.updateGenderUI();
 
-        genderSwitch.appendChild(btnMale);
-        genderSwitch.appendChild(btnFemale);
-        genderGroup.appendChild(genderSwitch);
-        leftPanel.appendChild(genderGroup);
+        genderToggle.appendChild(btnMale);
+        genderToggle.appendChild(btnFemale);
+        genderField.appendChild(genderToggle);
+        meshSection.content.appendChild(genderField);
 
-        const sliderDefs = [
+        // Base Mesh Sliders (gender-neutral)
+        const baseSliderDefs = [
             { key: "age", label: "Age", min: 1, max: 90, step: 1 },
-            // Gender handled separately as switch
             { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01 },
             { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01 },
-            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 },
-            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01 },
-            { key: "genital_size", label: "Genital Size", min: 0, max: 1, step: 0.01 }
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 }
         ];
 
-        for (const s of sliderDefs) {
-            const group = document.createElement("div");
-            group.className = "vnccs-ps-slider-group";
-
-            const label = document.createElement("div");
-            label.className = "vnccs-ps-slider-label";
-            label.innerText = `${s.label}: ${this.meshParams[s.key]}`;
-
-            const slider = document.createElement("input");
-            slider.type = "range";
-            slider.className = "vnccs-ps-slider";
-            slider.min = s.min;
-            slider.max = s.max;
-            slider.step = s.step;
-            slider.value = this.meshParams[s.key];
-
-            slider.addEventListener("input", () => {
-                this.meshParams[s.key] = parseFloat(slider.value);
-                label.innerText = `${s.label}: ${s.key === 'age' ? Math.round(slider.value) : parseFloat(slider.value).toFixed(2)}`;
-                this.onMeshParamsChanged();
-            });
-
-            group.appendChild(label);
-            group.appendChild(slider);
-            leftPanel.appendChild(group);
-
-            this.sliders[s.key] = { slider, label, def: s };
+        for (const s of baseSliderDefs) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            meshSection.content.appendChild(field);
         }
 
-        // Model Rotation Controls
-        const rotGroup = document.createElement("div");
-        rotGroup.style.marginTop = "10px";
-        rotGroup.style.borderTop = "1px solid #333";
-        rotGroup.style.paddingTop = "5px";
+        leftPanel.appendChild(meshSection.el);
 
-        const rotTitle = document.createElement("div");
-        rotTitle.innerText = "Model Rotation";
-        rotTitle.style.fontSize = "12px";
-        rotTitle.style.color = "#aaa";
-        rotGroup.appendChild(rotTitle);
+        // --- GENDER SETTINGS SECTION ---
+        const genderSection = this.createSection("Gender Settings", true);
+
+        this.genderFields = {}; // Store gender-specific fields for visibility toggle
+
+        // Female-specific sliders
+        const femaleSliders = [
+            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01 },
+            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01 }
+        ];
+
+        for (const s of femaleSliders) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            genderSection.content.appendChild(field);
+            this.genderFields[s.key] = { field, gender: "female" };
+        }
+
+        // Male-specific sliders
+        const maleSliders = [
+            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01 },
+            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01 },
+            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01 }
+        ];
+
+        for (const s of maleSliders) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            genderSection.content.appendChild(field);
+            this.genderFields[s.key] = { field, gender: "male" };
+        }
+
+        // Update visibility based on initial gender
+        this.updateGenderVisibility();
+
+        leftPanel.appendChild(genderSection.el);
+
+        // --- MODEL ROTATION SECTION ---
+        const rotSection = this.createSection("Model Rotation", false);
 
         ['x', 'y', 'z'].forEach(axis => {
-            const row = document.createElement("div");
-            row.className = "vnccs-ps-slider-group";
+            const field = document.createElement("div");
+            field.className = "vnccs-ps-field";
 
-            const label = document.createElement("div");
-            label.className = "vnccs-ps-slider-label";
-            label.innerText = `${axis.toUpperCase()}: 0`;
+            const labelRow = document.createElement("div");
+            labelRow.className = "vnccs-ps-label-row";
+            labelRow.innerHTML = `<span class="vnccs-ps-label">${axis.toUpperCase()}</span><span class="vnccs-ps-value">0°</span>`;
+            const valueSpan = labelRow.querySelector(".vnccs-ps-value");
+
+            const wrap = document.createElement("div");
+            wrap.className = "vnccs-ps-slider-wrap";
 
             const slider = document.createElement("input");
             slider.type = "range";
@@ -881,10 +1144,9 @@ class PoseStudioWidget {
 
             slider.addEventListener("input", () => {
                 const val = parseFloat(slider.value);
-                label.innerText = `${axis.toUpperCase()}: ${val}`;
+                valueSpan.innerText = `${val}°`;
                 if (this.viewer) {
                     this.viewer.modelRotation[axis] = val;
-                    // Apply immediately
                     if (this.viewer.skinnedMesh) {
                         const r = this.viewer.modelRotation;
                         this.viewer.skinnedMesh.rotation.set(
@@ -897,55 +1159,48 @@ class PoseStudioWidget {
                 }
             });
 
-            // Store ref to update later
-            this.sliders[`rot_${axis}`] = { slider, label };
+            this.sliders[`rot_${axis}`] = { slider, label: valueSpan };
 
-            row.appendChild(label);
-            row.appendChild(slider);
-            rotGroup.appendChild(row);
+            wrap.appendChild(slider);
+            field.appendChild(labelRow);
+            field.appendChild(wrap);
+            rotSection.content.appendChild(field);
         });
-        leftPanel.appendChild(rotGroup);
 
+        leftPanel.appendChild(rotSection.el);
 
+        // --- EXPORT SETTINGS SECTION ---
+        const exportSection = this.createSection("Export Settings", true);
 
-        // Export Settings
-        const exportTitle = document.createElement("div");
-        exportTitle.innerText = "Export Settings";
-        exportTitle.style.fontSize = "12px";
-        exportTitle.style.color = "#aaa";
-        exportTitle.style.marginBottom = "5px";
-        leftPanel.appendChild(exportTitle);
+        // Dimensions Row
+        const dimRow = document.createElement("div");
+        dimRow.className = "vnccs-ps-row";
 
-        // Dimensions
-        const dimGroup = document.createElement("div");
-        dimGroup.style.display = "flex";
-        dimGroup.style.gap = "5px";
-
-        const wDiv = document.createElement("div"); wDiv.style.flex = "1";
-        this.createExportInput(wDiv, "Width", "view_width", "number", { min: 64, max: 4096, step: 8 });
-
-        const hDiv = document.createElement("div"); hDiv.style.flex = "1";
-        this.createExportInput(hDiv, "Height", "view_height", "number", { min: 64, max: 4096, step: 8 });
-
-        dimGroup.appendChild(wDiv);
-        dimGroup.appendChild(hDiv);
-        leftPanel.appendChild(dimGroup);
+        dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
+        dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
+        exportSection.content.appendChild(dimRow);
 
         // Zoom
-        this.createExportInput(leftPanel, "Camera Zoom", "cam_zoom", "range", { min: 0.1, max: 5.0, step: 0.1 });
+        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.1, this.exportParams, true);
+        exportSection.content.appendChild(zoomField);
 
         // Output Mode
-        this.createExportSelect(leftPanel, "Output Mode", "output_mode", ["LIST", "GRID"]);
+        const modeField = this.createSelectField("Output Mode", "output_mode", ["LIST", "GRID"]);
+        exportSection.content.appendChild(modeField);
 
         // Grid Columns
-        this.createExportInput(leftPanel, "Grid Columns", "grid_columns", "number", { min: 1, max: 6, step: 1 });
+        const colsField = this.createInputField("Grid Columns", "grid_columns", "number", 1, 6, 1);
+        exportSection.content.appendChild(colsField);
 
         // BG Color
-        this.createColorInput(leftPanel, "BG Color", "bg_color");
+        const colorField = this.createColorField("Background", "bg_color");
+        exportSection.content.appendChild(colorField);
+
+        leftPanel.appendChild(exportSection.el);
 
         this.container.appendChild(leftPanel);
 
-        // Right Panel
+        // === RIGHT PANEL ===
         const rightPanel = document.createElement("div");
         rightPanel.className = "vnccs-ps-right";
 
@@ -957,7 +1212,7 @@ class PoseStudioWidget {
 
         // Canvas Container
         this.canvasContainer = document.createElement("div");
-        this.canvasContainer.className = "vnccs-ps-canvas-container";
+        this.canvasContainer.className = "vnccs-ps-canvas-wrap";
 
         const canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(canvas);
@@ -969,12 +1224,12 @@ class PoseStudioWidget {
 
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-btn";
-        resetBtn.innerText = "Reset Pose";
+        resetBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
         resetBtn.addEventListener("click", () => this.resetCurrentPose());
 
         const snapBtn = document.createElement("button");
-        snapBtn.className = "vnccs-ps-btn";
-        snapBtn.innerText = "Preview Output";
+        snapBtn.className = "vnccs-ps-btn primary";
+        snapBtn.innerHTML = '<span class="vnccs-ps-btn-icon">👁</span> Preview';
         snapBtn.title = "Snap viewport camera to output camera";
         snapBtn.addEventListener("click", () => {
             if (this.viewer) this.viewer.snapToCaptureCamera(
@@ -986,12 +1241,12 @@ class PoseStudioWidget {
 
         const copyBtn = document.createElement("button");
         copyBtn.className = "vnccs-ps-btn";
-        copyBtn.innerText = "Copy";
+        copyBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Copy';
         copyBtn.addEventListener("click", () => this.copyPose());
 
         const pasteBtn = document.createElement("button");
         pasteBtn.className = "vnccs-ps-btn";
-        pasteBtn.innerText = "Paste";
+        pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📥</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
 
         actions.appendChild(resetBtn);
@@ -1005,8 +1260,195 @@ class PoseStudioWidget {
 
         // Initialize viewer
         this.viewer = new PoseViewer(canvas);
-        this.viewer.syncCallback = () => this.syncToNode(); // Bind sync callback
+        this.viewer.syncCallback = () => this.syncToNode();
         this.viewer.init();
+    }
+
+    // === UI Helper Methods ===
+
+    createSection(title, expanded = true) {
+        const section = document.createElement("div");
+        section.className = "vnccs-ps-section" + (expanded ? "" : " collapsed");
+
+        const header = document.createElement("div");
+        header.className = "vnccs-ps-section-header";
+        header.innerHTML = `
+            <span class="vnccs-ps-section-title">${title}</span>
+            <span class="vnccs-ps-section-toggle">▼</span>
+        `;
+        header.addEventListener("click", () => {
+            section.classList.toggle("collapsed");
+        });
+
+        const content = document.createElement("div");
+        content.className = "vnccs-ps-section-content";
+
+        section.appendChild(header);
+        section.appendChild(content);
+
+        return { el: section, content };
+    }
+
+    createSliderField(label, key, min, max, step, target, isExport = false) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelRow = document.createElement("div");
+        labelRow.className = "vnccs-ps-label-row";
+
+        const value = target[key];
+        const displayVal = key === 'age' ? Math.round(value) : value.toFixed(2);
+        labelRow.innerHTML = `<span class="vnccs-ps-label">${label}</span><span class="vnccs-ps-value">${displayVal}</span>`;
+        const valueSpan = labelRow.querySelector(".vnccs-ps-value");
+
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-slider-wrap";
+
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.className = "vnccs-ps-slider";
+        slider.min = min;
+        slider.max = max;
+        slider.step = step;
+        slider.value = value;
+
+        slider.addEventListener("input", () => {
+            const val = parseFloat(slider.value);
+            valueSpan.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
+
+            if (isExport) {
+                this.exportParams[key] = val;
+                // Live preview for zoom
+                if (key === 'cam_zoom' && this.viewer) {
+                    this.viewer.updateCaptureCamera(
+                        this.exportParams.view_width,
+                        this.exportParams.view_height,
+                        val
+                    );
+                }
+            } else {
+                // Directly update meshParams and trigger mesh rebuild
+                this.meshParams[key] = val;
+                this.onMeshParamsChanged();
+            }
+        });
+
+        slider.addEventListener("change", () => {
+            if (isExport) {
+                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color'].includes(key);
+                this.syncToNode(needsFull);
+            }
+        });
+
+        if (!isExport) {
+            this.sliders[key] = { slider, label: valueSpan, def: { key, label, min, max, step } };
+        } else {
+            this.exportWidgets[key] = slider;
+        }
+
+        wrap.appendChild(slider);
+        field.appendChild(labelRow);
+        field.appendChild(wrap);
+        return field;
+    }
+
+    createInputField(label, key, type, min, max, step) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const input = document.createElement("input");
+        input.type = type;
+        input.className = "vnccs-ps-input";
+        input.min = min;
+        input.max = max;
+        input.step = step;
+        input.value = this.exportParams[key];
+
+        input.addEventListener("change", () => {
+            let val = parseFloat(input.value);
+            if (isNaN(val)) val = this.exportParams[key];
+            val = Math.max(min, Math.min(max, val));
+            input.value = val;
+            this.exportParams[key] = val;
+            this.syncToNode(true);
+        });
+
+        this.exportWidgets[key] = input;
+
+        field.appendChild(labelEl);
+        field.appendChild(input);
+        return field;
+    }
+
+    createSelectField(label, key, options) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const select = document.createElement("select");
+        select.className = "vnccs-ps-select";
+
+        options.forEach(opt => {
+            const el = document.createElement("option");
+            el.value = opt;
+            el.innerText = opt;
+            el.selected = this.exportParams[key] === opt;
+            select.appendChild(el);
+        });
+
+        select.addEventListener("change", () => {
+            this.exportParams[key] = select.value;
+            this.syncToNode();
+        });
+
+        this.exportWidgets[key] = select;
+
+        field.appendChild(labelEl);
+        field.appendChild(select);
+        return field;
+    }
+
+    createColorField(label, key) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const input = document.createElement("input");
+        input.type = "color";
+        input.className = "vnccs-ps-color";
+
+        // Convert RGB to Hex
+        const rgb = this.exportParams[key];
+        const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
+        input.value = hex;
+
+        input.addEventListener("input", () => {
+            const hex = input.value;
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            this.exportParams[key] = [r, g, b];
+        });
+
+        input.addEventListener("change", () => {
+            this.syncToNode(true);
+        });
+
+        this.exportWidgets[key] = input;
+
+        field.appendChild(labelEl);
+        field.appendChild(input);
+        return field;
     }
 
     updateTabs() {
@@ -1015,10 +1457,6 @@ class PoseStudioWidget {
         for (let i = 0; i < this.poses.length; i++) {
             const tab = document.createElement("button");
             tab.className = "vnccs-ps-tab" + (i === this.activeTab ? " active" : "");
-            tab.style.display = "flex";
-            tab.style.alignItems = "center";
-            tab.style.gap = "6px";
-            tab.style.paddingRight = "6px"; // Extra padding for close btn
 
             const text = document.createElement("span");
             text.innerText = `Pose ${i + 1}`;
@@ -1026,13 +1464,8 @@ class PoseStudioWidget {
 
             if (this.poses.length > 1) {
                 const close = document.createElement("span");
+                close.className = "vnccs-ps-tab-close";
                 close.innerText = "×";
-                close.style.fontSize = "16px";
-                close.style.lineHeight = "12px";
-                close.style.color = "#888";
-                close.style.cursor = "pointer";
-                close.onmouseenter = () => close.style.color = "#ff4444";
-                close.onmouseleave = () => close.style.color = "#888";
 
                 close.onclick = (e) => {
                     e.stopPropagation();
@@ -1192,9 +1625,22 @@ class PoseStudioWidget {
             const info = this.sliders[`rot_${axis}`];
             if (info) {
                 info.slider.value = r[axis];
-                info.label.innerText = `${axis.toUpperCase()}: ${r[axis]}`;
+                info.label.innerText = `${r[axis]}°`;
             }
         });
+    }
+
+    updateGenderVisibility() {
+        if (!this.genderFields) return;
+        const isFemale = this.meshParams.gender < 0.5;
+
+        for (const [key, info] of Object.entries(this.genderFields)) {
+            if (info.gender === "female") {
+                info.field.style.display = isFemale ? "" : "none";
+            } else if (info.gender === "male") {
+                info.field.style.display = isFemale ? "none" : "";
+            }
+        }
     }
 
     onMeshParamsChanged() {
@@ -1213,8 +1659,12 @@ class PoseStudioWidget {
 
     resize(w, h) {
         if (this.viewer && this.canvasContainer) {
+            // Account for zoom: 0.67 scaling
             const rect = this.canvasContainer.getBoundingClientRect();
-            this.viewer.resize(rect.width || 500, rect.height || 500);
+            const zoomFactor = 0.67;
+            const actualW = rect.width / zoomFactor || 500;
+            const actualH = rect.height / zoomFactor || 500;
+            this.viewer.resize(actualW, actualH);
         }
     }
 
@@ -1286,9 +1736,11 @@ class PoseStudioWidget {
                 this.meshParams = { ...this.meshParams, ...data.mesh };
                 // Update sliders
                 for (const [key, info] of Object.entries(this.sliders)) {
-                    if (this.meshParams[key] !== undefined) {
+                    if (key.startsWith('rot_')) continue; // Skip rotation sliders here
+                    if (info.def && this.meshParams[key] !== undefined) {
                         info.slider.value = this.meshParams[key];
-                        info.label.innerText = `${info.def.label}: ${key === 'age' ? Math.round(this.meshParams[key]) : parseFloat(this.meshParams[key]).toFixed(2)}`;
+                        const val = this.meshParams[key];
+                        info.label.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
                     }
                 }
                 // Update gender switch
@@ -1331,147 +1783,7 @@ class PoseStudioWidget {
         }
     }
 
-    createExportInput(parent, labelText, key, type, attrs = {}) {
-        const group = document.createElement("div");
-        group.className = "vnccs-ps-slider-group";
 
-        const label = document.createElement("div");
-        label.className = "vnccs-ps-slider-label";
-        label.innerText = labelText;
-
-        const input = document.createElement("input");
-        input.type = type;
-        input.className = "vnccs-ps-slider"; // Reuse style
-        input.value = this.exportParams[key];
-
-        // Style adjustments based on type
-        if (type === "number") {
-            input.style.cursor = "text";
-            input.style.height = "24px";
-            input.style.padding = "2px 5px";
-            input.style.background = "#222";
-            input.style.border = "1px solid #444";
-            input.style.color = "#ccc";
-        }
-
-        Object.entries(attrs).forEach(([k, v]) => input[k] = v);
-
-        // Initial label
-        if (type === "range") {
-            label.innerText = `${labelText}: ${parseFloat(input.value).toFixed(1)}`;
-        }
-
-        input.addEventListener("input", () => {
-            if (type === "range") {
-                const val = parseFloat(input.value);
-                label.innerText = `${labelText}: ${val.toFixed(1)}`;
-
-                // Live update for Zoom
-                if (key === 'cam_zoom' && this.viewer) {
-                    this.exportParams[key] = val;
-                    this.viewer.updateCaptureCamera(
-                        this.exportParams.view_width,
-                        this.exportParams.view_height,
-                        val
-                    );
-                }
-            }
-        });
-
-        input.addEventListener("change", () => {
-            let val = (type === "number" || type === "range") ? parseFloat(input.value) : input.value;
-            if (type === "number" && isNaN(val)) val = this.exportParams[key];
-            this.exportParams[key] = val;
-            // If dimensions, zoom or bg_color change, we need full recapture
-            const needsFull = (key === 'view_width' || key === 'view_height' || key === 'cam_zoom' || key === 'bg_color');
-            this.syncToNode(needsFull);
-        });
-
-        group.appendChild(label);
-        group.appendChild(input);
-        parent.appendChild(group);
-        this.exportWidgets[key] = input;
-    }
-
-    createExportSelect(parent, labelText, key, options) {
-        const group = document.createElement("div");
-        group.className = "vnccs-ps-slider-group";
-
-        const label = document.createElement("div");
-        label.className = "vnccs-ps-slider-label";
-        label.innerText = labelText;
-
-        const select = document.createElement("select");
-        select.style.width = "100%";
-        select.style.background = "#222";
-        select.style.color = "#ccc";
-        select.style.border = "1px solid #444";
-        select.style.padding = "4px";
-
-        options.forEach(opt => {
-            const el = document.createElement("option");
-            el.value = opt;
-            el.innerText = opt;
-            el.selected = this.exportParams[key] === opt;
-            select.appendChild(el);
-        });
-
-        select.addEventListener("change", () => {
-            this.exportParams[key] = select.value;
-            this.syncToNode();
-        });
-
-        group.appendChild(label);
-        group.appendChild(select);
-        parent.appendChild(group);
-        this.exportWidgets[key] = select;
-    }
-
-    createColorInput(parent, labelText, key) {
-        const group = document.createElement("div");
-        group.className = "vnccs-ps-slider-group";
-
-        const label = document.createElement("div");
-        label.className = "vnccs-ps-slider-label";
-        label.innerText = labelText;
-
-        const container = document.createElement("div");
-        container.style.display = "flex";
-        container.style.gap = "5px";
-
-        const input = document.createElement("input");
-        input.type = "color";
-        input.style.width = "40px";
-        input.style.height = "24px";
-        input.style.border = "none";
-        input.style.padding = "0";
-        input.style.background = "none";
-
-        // Convert initial RGB to Hex
-        const rgb = this.exportParams[key]; // [r,g,b]
-        const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
-        input.value = hex;
-
-        input.addEventListener("input", () => {
-            const hex = input.value;
-            const r = parseInt(hex.slice(1, 3), 16);
-            const g = parseInt(hex.slice(3, 5), 16);
-            const b = parseInt(hex.slice(5, 7), 16);
-            this.exportParams[key] = [r, g, b];
-            // No live preview of BG color to avoid eye strain
-        });
-
-        input.addEventListener("change", () => {
-            // Full render on commit
-            this.syncToNode(true);
-        });
-
-        container.appendChild(input);
-        group.appendChild(label);
-        group.appendChild(container);
-        parent.appendChild(group);
-        this.exportWidgets[key] = input;
-    }
 }
 
 
@@ -1506,14 +1818,25 @@ app.registerExtension({
             // Load model after initialization
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
-                this.studioWidget.loadModel();
+                this.studioWidget.loadModel().then(() => {
+                    // Auto-center camera on initialization
+                    if (this.studioWidget.viewer) {
+                        this.studioWidget.viewer.snapToCaptureCamera(
+                            this.studioWidget.exportParams.view_width,
+                            this.studioWidget.exportParams.view_height,
+                            this.studioWidget.exportParams.cam_zoom || 1.0
+                        );
+                    }
+                });
             }, 500);
         };
 
         nodeType.prototype.onResize = function (size) {
             if (this.studioWidget) {
-                const w = Math.max(600, size[0] - 20);
-                const h = Math.max(400, size[1] - 100);
+                // Container has zoom: 0.67, so we need larger CSS dimensions
+                const zoomFactor = 0.67;
+                const w = Math.max(600, (size[0] - 20) / zoomFactor);
+                const h = Math.max(400, (size[1] - 40) / zoomFactor); // Reduced offset for less empty space
                 this.studioWidget.container.style.width = w + "px";
                 this.studioWidget.container.style.height = h + "px";
 

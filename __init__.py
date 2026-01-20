@@ -52,7 +52,11 @@ def _vnccs_register_endpoint():
             muscle = float(data.get('muscle', 0.5))
             height = float(data.get('height', 0.5))
             breast_size = float(data.get('breast_size', 0.5))
-            genital_size = float(data.get('genital_size', 0.5))
+            breast_size = float(data.get('breast_size', 0.5))
+            firmness = float(data.get('firmness', 0.5))
+            penis_len = float(data.get('penis_len', 0.5))
+            penis_circ = float(data.get('penis_circ', 0.5))
+            penis_test = float(data.get('penis_test', 0.5))
             
             # Import from CharacterData
             from .CharacterData.mh_parser import HumanSolver
@@ -68,7 +72,7 @@ def _vnccs_register_endpoint():
             
             # Solve mesh
             solver = HumanSolver()
-            factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, genital_size)
+            factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, firmness, penis_len, penis_circ, penis_test)
             new_verts = solver.solve_mesh(POSE_STUDIO_CACHE['base_mesh'], POSE_STUDIO_CACHE['targets'], factors)
             
             # Get skeleton

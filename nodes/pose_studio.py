@@ -131,7 +131,17 @@ class VNCCS_PoseStudio:
         muscle = mesh.get("muscle", 0.5)
         height = mesh.get("height", 0.5)
         breast_size = mesh.get("breast_size", 0.5)
-        genital_size = mesh.get("genital_size", 0.5)
+        breast_size = mesh.get("breast_size", 0.5)
+        firmness = mesh.get("firmness", 0.5)
+        
+        # Male specifics
+        penis_len = mesh.get("penis_len", 0.5)
+        penis_circ = mesh.get("penis_circ", 0.5)
+        penis_test = mesh.get("penis_test", 0.5)
+        # Fallback for old configs
+        if "genital_size" in mesh:
+            genital_size = mesh["genital_size"]
+            penis_len = genital_size # Map old single slider to length
         
         export = data.get("export", {})
         view_width = export.get("view_width", export.get("view_size", 512))
@@ -191,7 +201,7 @@ class VNCCS_PoseStudio:
         
         # Solve base mesh
         solver = HumanSolver()
-        factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, genital_size)
+        factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, firmness, penis_len, penis_circ, penis_test)
         base_verts = solver.solve_mesh(
             POSE_STUDIO_CACHE['base_mesh'],
             POSE_STUDIO_CACHE['targets'],
