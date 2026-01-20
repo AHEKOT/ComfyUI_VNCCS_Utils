@@ -63,6 +63,7 @@ const STYLES = `
     box-sizing: border-box;
     zoom: 0.67;
     pointer-events: none;
+    position: relative;
 }
 
 /* === Left Panel (25%) === */
@@ -445,6 +446,80 @@ const STYLES = `
 
 .vnccs-ps-btn-icon {
     font-size: 14px;
+}
+
+/* === Modal Dialog === */
+.vnccs-ps-modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+    pointer-events: auto;
+}
+
+.vnccs-ps-modal {
+    background: var(--ps-panel);
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    padding: 20px;
+    width: 300px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.vnccs-ps-modal-title {
+    font-size: 16px;
+    font-weight: bold;
+    color: var(--ps-text);
+    text-align: center;
+    margin-bottom: 5px;
+}
+
+.vnccs-ps-modal-content {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.vnccs-ps-modal-btn {
+    padding: 10px;
+    border: 1px solid var(--ps-border);
+    background: #333;
+    color: var(--ps-text);
+    border-radius: 4px;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.vnccs-ps-modal-btn:hover {
+    background: #444;
+    border-color: var(--ps-accent);
+}
+
+.vnccs-ps-modal-btn.cancel {
+    justify-content: center;
+    text-align: center;
+    margin-top: 5px;
+    background: transparent;
+    border-color: transparent;
+    color: var(--ps-text-muted);
+}
+
+.vnccs-ps-modal-btn.cancel:hover {
+    color: var(--ps-text);
+    background: #333;
 }
 `;
 
@@ -1246,13 +1321,34 @@ class PoseStudioWidget {
 
         const pasteBtn = document.createElement("button");
         pasteBtn.className = "vnccs-ps-btn";
-        pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📥</span> Paste';
+        pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
+
+        const exportBtn = document.createElement("button");
+        exportBtn.className = "vnccs-ps-btn";
+        exportBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📥</span> Export';
+        exportBtn.addEventListener("click", () => this.showExportModal());
+
+        const importBtn = document.createElement("button");
+        importBtn.className = "vnccs-ps-btn";
+        importBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📤</span> Import';
+        importBtn.addEventListener("click", () => this.importPose());
+
+        // Hidden file input for import
+        const fileInput = document.createElement("input");
+        fileInput.type = "file";
+        fileInput.accept = ".json";
+        fileInput.style.display = "none";
+        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
+        this.fileImportInput = fileInput;
+        this.container.appendChild(fileInput);
 
         actions.appendChild(resetBtn);
         actions.appendChild(snapBtn);
         actions.appendChild(copyBtn);
         actions.appendChild(pasteBtn);
+        actions.appendChild(exportBtn);
+        actions.appendChild(importBtn);
 
         rightPanel.appendChild(actions);
 
@@ -1583,6 +1679,144 @@ class PoseStudioWidget {
             this.viewer.setPose(this.poses[this.activeTab]);
         }
         this.syncToNode();
+    }
+
+    showExportModal() {
+        // Create modal structure
+        const overlay = document.createElement("div");
+        overlay.className = "vnccs-ps-modal-overlay";
+
+        const modal = document.createElement("div");
+        modal.className = "vnccs-ps-modal";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-ps-modal-title";
+        title.innerText = "Export Pose Data";
+
+        const content = document.createElement("div");
+        content.className = "vnccs-ps-modal-content";
+
+        const btnSingle = document.createElement("button");
+        btnSingle.className = "vnccs-ps-modal-btn";
+        btnSingle.innerText = "Current Pose Only";
+        btnSingle.onclick = () => {
+            this.exportPose('single');
+            this.container.removeChild(overlay);
+        };
+
+        const btnSet = document.createElement("button");
+        btnSet.className = "vnccs-ps-modal-btn";
+        btnSet.innerText = "All Poses (Set)";
+        btnSet.onclick = () => {
+            this.exportPose('set');
+            this.container.removeChild(overlay);
+        };
+
+        const btnCancel = document.createElement("button");
+        btnCancel.className = "vnccs-ps-modal-btn cancel";
+        btnCancel.innerText = "Cancel";
+        btnCancel.onclick = () => {
+            this.container.removeChild(overlay);
+        };
+
+        content.appendChild(btnSingle);
+        content.appendChild(btnSet);
+        content.appendChild(btnCancel);
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        overlay.appendChild(modal);
+
+        this.container.appendChild(overlay);
+    }
+
+    exportPose(type) {
+        let data, filename;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+        if (type === 'set') {
+            // Ensure current active pose is saved to array
+            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+
+            data = {
+                type: "pose_set",
+                version: "1.0",
+                poses: this.poses
+            };
+            filename = `pose_set_${timestamp}.json`;
+        } else {
+            // Single pose
+            const pose = this.viewer ? this.viewer.getPose() : this.poses[this.activeTab];
+            data = {
+                type: "single_pose",
+                version: "1.0",
+                ...pose
+            };
+            filename = `pose_${timestamp}.json`;
+        }
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    importPose() {
+        if (this.fileImportInput) {
+            this.fileImportInput.click();
+        }
+    }
+
+    handleFileImport(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const data = JSON.parse(event.target.result);
+
+                if (data.type === "pose_set" || Array.isArray(data.poses)) {
+                    // Import Set
+                    const newPoses = data.poses || (Array.isArray(data) ? data : null);
+                    if (newPoses && Array.isArray(newPoses)) {
+                        this.poses = newPoses;
+                        this.activeTab = 0;
+                        this.updateTabs();
+                        // Load first pose
+                        if (this.viewer && this.viewer.initialized) {
+                            this.viewer.setPose(this.poses[0]);
+                            this.updateRotationSliders();
+                        }
+                    }
+                } else if (data.type === "single_pose" || data.bones) {
+                    // Import Single to current tab
+                    // Strip metadata if present
+                    const poseData = data.bones ? data : data;
+
+                    this.poses[this.activeTab] = poseData;
+                    if (this.viewer && this.viewer.initialized) {
+                        this.viewer.setPose(poseData);
+                        this.updateRotationSliders();
+                    }
+                }
+
+                this.syncToNode();
+
+            } catch (err) {
+                console.error("Error importing pose:", err);
+                alert("Failed to load pose file. invalid JSON.");
+            }
+
+            // Reset input so same file can be selected again
+            e.target.value = '';
+        };
+        reader.readAsText(file);
     }
 
     loadModel() {
