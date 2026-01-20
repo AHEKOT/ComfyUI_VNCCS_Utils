@@ -563,6 +563,11 @@ class PoseViewer {
         this.syncCallback = null;
 
         this.initialized = false;
+
+        // Undo/Redo History
+        this.history = [];
+        this.future = [];
+        this.maxHistory = 10;
     }
 
     async init() {
@@ -612,9 +617,15 @@ class PoseViewer {
 
         this.transform.addEventListener("dragging-changed", (e) => {
             this.orbit.enabled = !e.value;
-            // Sync when drag ends
-            if (!e.value && this.syncCallback) {
-                this.syncCallback();
+
+            if (e.value) {
+                // Drag Started: Record state for Undo
+                this.recordState();
+            } else {
+                // Drag Ended: Sync to node
+                if (this.syncCallback) {
+                    this.syncCallback();
+                }
             }
         });
 
@@ -894,6 +905,42 @@ class PoseViewer {
         };
     }
 
+    recordState() {
+        const state = this.getPose();
+        // Avoid duplicate states if possible, but for drag start it's fine
+        this.history.push(JSON.stringify(state));
+        if (this.history.length > this.maxHistory) {
+            this.history.shift();
+        }
+        this.future = []; // Clear redo stack on new action
+    }
+
+    undo() {
+        if (this.history.length === 0) return;
+
+        const current = JSON.stringify(this.getPose());
+        this.future.push(current);
+
+        const prev = JSON.parse(this.history.pop());
+        this.setPose(prev);
+
+        // Sync after undo
+        if (this.syncCallback) this.syncCallback();
+    }
+
+    redo() {
+        if (this.future.length === 0) return;
+
+        const current = JSON.stringify(this.getPose());
+        this.history.push(current);
+
+        const next = JSON.parse(this.future.pop());
+        this.setPose(next);
+
+        // Sync after redo
+        if (this.syncCallback) this.syncCallback();
+    }
+
     setPose(pose) {
         if (!pose) return;
 
@@ -942,12 +989,54 @@ class PoseViewer {
         }
     }
 
+    loadReferenceImage(url) {
+        if (!this.initialized || !this.captureCamera) return;
+        const THREE = this.THREE;
+
+        // Create plane if needed
+        if (!this.refPlane) {
+            const geo = new THREE.PlaneGeometry(1, 1);
+            const mat = new THREE.MeshBasicMaterial({
+                color: 0xffffff,
+                transparent: true,
+                opacity: 0.5,
+                side: THREE.DoubleSide,
+                depthWrite: false
+            });
+            this.refPlane = new THREE.Mesh(geo, mat);
+            // Render first (background)
+            this.refPlane.renderOrder = -1;
+            // Attach to camera so it moves with it
+            this.captureCamera.add(this.refPlane);
+
+            // Initial positioning (will be fixed in updateCaptureCamera)
+            this.refPlane.position.set(0, 0, -50);
+            this.refPlane.rotation.set(0, 0, 0);
+        }
+
+        // Load texture
+        new THREE.TextureLoader().load(url, (tex) => {
+            this.refPlane.material.map = tex;
+            this.refPlane.material.needsUpdate = true;
+            this.refPlane.visible = true;
+
+            // Force update dimensions
+            // We need to trigger an update from the widget usually, 
+            // but here we can just ensure it's visible. 
+            // The next resize/update will fix the aspect if needed, 
+            // but actually we want it to fill the frame, so aspect of texture 
+            // doesn't matter (it will stretch). Or do we want fit?
+            // "Stand in the camera square" usually means fill.
+        });
+    }
+
     updateCaptureCamera(width, height, zoom = 1.0) {
         const target = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         const dist = 45;
 
         if (!this.captureCamera) {
             this.captureCamera = new this.THREE.PerspectiveCamera(30, width / height, 0.1, 100);
+            this.scene.add(this.captureCamera);
 
             // Visual Helper
             this.captureHelper = new this.THREE.CameraHelper(this.captureCamera);
@@ -960,6 +1049,26 @@ class PoseViewer {
         this.captureCamera.updateProjectionMatrix();
         this.captureCamera.position.set(target.x, target.y, target.z + dist);
         this.captureCamera.lookAt(target);
+
+        // Update Reference Plane
+        if (this.refPlane) {
+            // Distance from camera to plane (near far clip)
+            const planeDist = 95;
+
+            // Calculate height at that distance
+            // h = 2 * dist * tan(fov/2). 
+            // Effective FOV is scaled by zoom? 
+            // THREE.js zoom divides the frustum size. 
+            // So visible height = height / zoom.
+
+            const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+            const h = 2 * planeDist * Math.tan(vFOV / 2) / Math.max(0.1, zoom);
+            const w = h * this.captureCamera.aspect;
+
+            this.refPlane.position.set(0, 0, -planeDist);
+            this.refPlane.scale.set(w, h, 1);
+            this.refPlane.rotation.set(0, 0, 0); // Ensure it faces camera (camera looks down -Z, plane is XY)
+        }
 
         if (this.captureHelper) {
             this.captureHelper.update();
@@ -1297,6 +1406,19 @@ class PoseStudioWidget {
         const actions = document.createElement("div");
         actions.className = "vnccs-ps-actions";
 
+        const undoBtn = document.createElement("button");
+        undoBtn.className = "vnccs-ps-btn";
+        undoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↩</span> Undo';
+        undoBtn.onclick = () => this.viewer && this.viewer.undo();
+
+        const redoBtn = document.createElement("button");
+        redoBtn.className = "vnccs-ps-btn";
+        redoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↪</span> Redo';
+        redoBtn.onclick = () => this.viewer && this.viewer.redo();
+
+        actions.appendChild(undoBtn);
+        actions.appendChild(redoBtn);
+
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-btn";
         resetBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
@@ -1334,6 +1456,12 @@ class PoseStudioWidget {
         importBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📤</span> Import';
         importBtn.addEventListener("click", () => this.importPose());
 
+        const refBtn = document.createElement("button");
+        refBtn.className = "vnccs-ps-btn";
+        refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Ref';
+        refBtn.title = "Load Reference Image into Camera Frame";
+        refBtn.addEventListener("click", () => this.loadReference());
+
         // Hidden file input for import
         const fileInput = document.createElement("input");
         fileInput.type = "file";
@@ -1343,12 +1471,22 @@ class PoseStudioWidget {
         this.fileImportInput = fileInput;
         this.container.appendChild(fileInput);
 
+        // Hidden file input for reference image
+        const refInput = document.createElement("input");
+        refInput.type = "file";
+        refInput.accept = "image/*";
+        refInput.style.display = "none";
+        refInput.addEventListener("change", (e) => this.handleRefImport(e));
+        this.fileRefInput = refInput;
+        this.container.appendChild(refInput);
+
         actions.appendChild(resetBtn);
         actions.appendChild(snapBtn);
         actions.appendChild(copyBtn);
         actions.appendChild(pasteBtn);
         actions.appendChild(exportBtn);
         actions.appendChild(importBtn);
+        actions.appendChild(refBtn);
 
         rightPanel.appendChild(actions);
 
@@ -1819,6 +1957,32 @@ class PoseStudioWidget {
         reader.readAsText(file);
     }
 
+    loadReference() {
+        if (this.fileRefInput) {
+            this.fileRefInput.click();
+        }
+    }
+
+    handleRefImport(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            if (this.viewer) {
+                this.viewer.loadReferenceImage(event.target.result);
+                // Also force camera update to set plane size
+                this.viewer.updateCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom || 1.0
+                );
+            }
+            e.target.value = '';
+        };
+        reader.readAsDataURL(file);
+    }
+
     loadModel() {
         return api.fetchApi("/vnccs/character_studio/update_preview", {
             method: "POST",
@@ -1979,6 +2143,7 @@ class PoseStudioWidget {
                 }
                 // Update gender switch
                 if (this.updateGenderUI) this.updateGenderUI();
+                this.updateGenderVisibility();
             }
 
             if (data.export) {
