@@ -529,6 +529,141 @@ const STYLES = `
     color: var(--ps-text);
     background: #333;
 }
+
+/* === Pose Library Panel === */
+.vnccs-ps-library-btn {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    background: var(--ps-accent);
+    color: white;
+    border: none;
+    border-radius: 4px 0 0 4px;
+    padding: 12px 6px;
+    cursor: pointer;
+    font-size: 16px;
+    z-index: 100;
+    transition: all 0.2s;
+    pointer-events: auto;
+}
+
+.vnccs-ps-library-btn:hover {
+    background: #7c5cff;
+    padding-right: 10px;
+}
+
+.vnccs-ps-library-panel {
+    position: absolute;
+    top: 0;
+    right: -250px;
+    width: 250px;
+    height: 100%;
+    background: var(--ps-panel);
+    border-left: 1px solid var(--ps-border);
+    display: flex;
+    flex-direction: column;
+    transition: right 0.25s ease;
+    z-index: 99;
+    pointer-events: auto;
+}
+
+.vnccs-ps-library-panel.open {
+    right: 0;
+}
+
+.vnccs-ps-library-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--ps-border);
+    background: #1a1a1a;
+}
+
+.vnccs-ps-library-title {
+    font-weight: bold;
+    color: var(--ps-text);
+    font-size: 13px;
+}
+
+.vnccs-ps-library-close {
+    background: transparent;
+    border: none;
+    color: var(--ps-text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.vnccs-ps-library-close:hover {
+    color: var(--ps-text);
+}
+
+.vnccs-ps-library-grid {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    align-content: start;
+}
+
+.vnccs-ps-library-item {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    border-radius: 4px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.vnccs-ps-library-item:hover {
+    border-color: var(--ps-accent);
+    transform: scale(1.02);
+}
+
+.vnccs-ps-library-item-preview {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #1a1a1a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ps-text-muted);
+    font-size: 28px;
+}
+
+.vnccs-ps-library-item-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.vnccs-ps-library-item-name {
+    padding: 6px;
+    font-size: 10px;
+    text-align: center;
+    color: var(--ps-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-library-footer {
+    padding: 8px;
+    border-top: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-library-empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--ps-text-muted);
+    padding: 20px;
+    font-size: 12px;
+}
 `;
 
 // Inject styles
@@ -1647,6 +1782,34 @@ class PoseStudioWidget {
 
         this.container.appendChild(rightPanel);
 
+        // === POSE LIBRARY PANEL (sliding right) ===
+        this.libraryPanel = document.createElement("div");
+        this.libraryPanel.className = "vnccs-ps-library-panel";
+        this.libraryPanel.innerHTML = `
+            <div class="vnccs-ps-library-header">
+                <span class="vnccs-ps-library-title">📚 Pose Library</span>
+                <button class="vnccs-ps-library-close">✕</button>
+            </div>
+            <div class="vnccs-ps-library-grid"></div>
+            <div class="vnccs-ps-library-footer">
+                <button class="vnccs-ps-btn primary" style="width:100%">
+                    <span class="vnccs-ps-btn-icon">💾</span> Save Current
+                </button>
+            </div>
+        `;
+        this.libraryGrid = this.libraryPanel.querySelector(".vnccs-ps-library-grid");
+        this.libraryPanel.querySelector(".vnccs-ps-library-close").onclick = () => this.closeLibrary();
+        this.libraryPanel.querySelector(".vnccs-ps-library-footer button").onclick = () => this.showSaveToLibraryModal();
+        this.container.appendChild(this.libraryPanel);
+
+        // Library toggle button (edge of canvas)
+        this.libraryBtn = document.createElement("button");
+        this.libraryBtn.className = "vnccs-ps-library-btn";
+        this.libraryBtn.innerHTML = "📚";
+        this.libraryBtn.title = "Pose Library";
+        this.libraryBtn.onclick = () => this.toggleLibrary();
+        this.container.appendChild(this.libraryBtn);
+
         // Initialize viewer
         this.viewer = new PoseViewer(canvas);
         this.viewer.syncCallback = () => this.syncToNode();
@@ -2169,6 +2332,205 @@ class PoseStudioWidget {
             e.target.value = '';
         };
         reader.readAsDataURL(file);
+    }
+
+    // === Pose Library Methods ===
+
+    toggleLibrary() {
+        if (this.libraryPanel.classList.contains('open')) {
+            this.closeLibrary();
+        } else {
+            this.openLibrary();
+        }
+    }
+
+    openLibrary() {
+        this.libraryPanel.classList.add('open');
+        this.refreshLibrary();
+    }
+
+    closeLibrary() {
+        this.libraryPanel.classList.remove('open');
+    }
+
+    async refreshLibrary() {
+        try {
+            const res = await fetch('/vnccs/pose_library/list');
+            const data = await res.json();
+
+            this.libraryGrid.innerHTML = '';
+
+            if (!data.poses || data.poses.length === 0) {
+                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses.<br>Click "Save Current" to add one.</div>';
+                return;
+            }
+
+            for (const pose of data.poses) {
+                const item = document.createElement('div');
+                item.className = 'vnccs-ps-library-item';
+
+                const preview = document.createElement('div');
+                preview.className = 'vnccs-ps-library-item-preview';
+                if (pose.has_preview) {
+                    preview.innerHTML = `<img src="/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}" alt="${pose.name}">`;
+                } else {
+                    preview.innerHTML = '🦴';
+                }
+
+                const name = document.createElement('div');
+                name.className = 'vnccs-ps-library-item-name';
+                name.innerText = pose.name;
+
+                item.appendChild(preview);
+                item.appendChild(name);
+
+                item.onclick = () => this.loadFromLibrary(pose.name);
+                item.oncontextmenu = (e) => {
+                    e.preventDefault();
+                    this.showDeleteConfirmModal(pose.name);
+                };
+
+                this.libraryGrid.appendChild(item);
+            }
+        } catch (err) {
+            console.error("Failed to load library:", err);
+            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+        }
+    }
+
+    showSaveToLibraryModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">Save to Library</div>
+            <div class="vnccs-ps-modal-content">
+                <input type="text" placeholder="Pose name..." class="vnccs-ps-input" style="width:100%;padding:8px;">
+                <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:11px;">
+                    <input type="checkbox" checked> Include preview image
+                </label>
+            </div>
+            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">💾 Save</button>
+            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+        `;
+
+        const nameInput = modal.querySelector('input[type="text"]');
+        const previewCheck = modal.querySelector('input[type="checkbox"]');
+
+        modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = () => {
+            const name = nameInput.value.trim();
+            if (name) {
+                this.saveToLibrary(name, previewCheck.checked);
+                overlay.remove();
+            }
+        };
+
+        modal.querySelector('.vnccs-ps-modal-btn.cancel').onclick = () => overlay.remove();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        nameInput.focus();
+    }
+
+    async saveToLibrary(name, includePreview = true) {
+        if (!this.viewer) return;
+
+        const pose = this.viewer.getPose();
+        let preview = null;
+
+        if (includePreview) {
+            preview = this.viewer.capture(
+                this.exportParams.view_width,
+                this.exportParams.view_height,
+                this.exportParams.cam_zoom || 1.0,
+                this.exportParams.bg_color || [40, 40, 40],
+                this.exportParams.cam_offset_x || 0,
+                this.exportParams.cam_offset_y || 0
+            );
+        }
+
+        try {
+            await fetch('/vnccs/pose_library/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, pose, preview })
+            });
+            this.refreshLibrary();
+        } catch (err) {
+            console.error("Failed to save pose:", err);
+        }
+    }
+
+    async loadFromLibrary(name) {
+        try {
+            const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}`);
+            const data = await res.json();
+
+            if (data.pose && this.viewer) {
+                this.viewer.setPose(data.pose);
+                this.updateRotationSliders();
+                this.syncToNode();
+            }
+        } catch (err) {
+            console.error("Failed to load pose:", err);
+        }
+    }
+
+    showDeleteConfirmModal(poseName) {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+
+        const title = document.createElement('div');
+        title.className = 'vnccs-ps-modal-title';
+        title.textContent = '⚠️ Delete Pose';
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-modal-content';
+        content.style.textAlign = 'center';
+
+        const message = document.createElement('div');
+        message.innerHTML = `Delete pose "<strong>${poseName}</strong>"?<br>This cannot be undone.`;
+        content.appendChild(message);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'vnccs-ps-modal-btn danger';
+        deleteBtn.style.justifyContent = 'center';
+        deleteBtn.textContent = '🗑️ Delete';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'vnccs-ps-modal-btn cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        modal.appendChild(deleteBtn);
+        modal.appendChild(cancelBtn);
+
+        deleteBtn.onclick = () => {
+            this.deleteFromLibrary(poseName);
+            overlay.remove();
+        };
+
+        cancelBtn.onclick = () => overlay.remove();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+    }
+
+    async deleteFromLibrary(name) {
+        try {
+            await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            this.refreshLibrary();
+        } catch (err) {
+            console.error("Failed to delete pose:", err);
+        }
     }
 
     loadModel() {

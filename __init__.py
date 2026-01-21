@@ -160,3 +160,14 @@ def _vnccs_register_endpoint():
             return web.json_response({"error": str(e)}, status=500)
 
 _vnccs_register_endpoint()
+
+# Register Pose Library API
+def _vnccs_register_pose_library():
+    try:
+        from server import PromptServer
+        from .api.pose_library import register_routes
+        register_routes(PromptServer.instance.app)
+    except Exception as e:
+        print(f"[VNCCS] Failed to register Pose Library API: {e}")
+
+_vnccs_register_pose_library()
