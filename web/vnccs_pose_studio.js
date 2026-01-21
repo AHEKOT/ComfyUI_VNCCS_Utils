@@ -432,6 +432,7 @@ const STYLES = `
 }
 .vnccs-ps-light-row input[type="range"] {
     flex: 1;
+    min-width: 0;
     height: 4px;
     background: #444;
     border-radius: 2px;
@@ -447,6 +448,7 @@ const STYLES = `
 }
 .vnccs-ps-light-value {
     width: 35px;
+    flex-shrink: 0;
     text-align: right;
     font-size: 10px;
     color: #aaa;
