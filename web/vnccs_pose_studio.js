@@ -582,6 +582,7 @@ class PoseViewer {
             console.log('Pose Studio: 3D Viewer initialized');
 
             this.animate();
+            this.requestRender(); // Initial render
         } catch (e) {
             console.error('Pose Studio: Init failed', e);
         }
@@ -608,6 +609,9 @@ class PoseViewer {
         this.orbit.rotateSpeed = 0.95;
         this.orbit.update();
 
+        // Render on demand: orbit change triggers render
+        this.orbit.addEventListener('change', () => this.requestRender());
+
         // Transform Controls (Gizmo)
         this.transform = new this.TransformControls(this.camera, this.canvas);
         this.transform.setMode("rotate");
@@ -629,6 +633,9 @@ class PoseViewer {
             }
         });
 
+        // Render on demand: transform change triggers render
+        this.transform.addEventListener('change', () => this.requestRender());
+
         // Lights
         const light = new THREE.DirectionalLight(0xffffff, 2);
         light.position.set(10, 20, 30);
@@ -644,9 +651,22 @@ class PoseViewer {
 
     animate() {
         if (!this.initialized) return;
+
+        // Damping requires continuous updates while active
+        if (this.orbit.enableDamping) {
+            this.orbit.update();
+        }
+
+        if (this._needsRender) {
+            this._needsRender = false;
+            if (this.renderer) this.renderer.render(this.scene, this.camera);
+        }
+
         requestAnimationFrame(() => this.animate());
-        this.orbit.update();
-        if (this.renderer) this.renderer.render(this.scene, this.camera);
+    }
+
+    requestRender() {
+        this._needsRender = true;
     }
 
     handlePointerDown(e) {
@@ -721,6 +741,7 @@ class PoseViewer {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
         }
+        this.requestRender();
     }
 
     loadData(data, keepCamera = false) {
@@ -883,6 +904,8 @@ class PoseViewer {
             sphere.position.set(0, 0, 0);
             this.jointMarkers.push(sphere);
         }
+
+        this.requestRender();
     }
 
     // === Pose State Management ===
@@ -977,6 +1000,7 @@ class PoseViewer {
                 this.modelRotation.z * Math.PI / 180
             );
         }
+        this.requestRender();
     }
 
     resetPose() {
@@ -987,6 +1011,7 @@ class PoseViewer {
         if (this.skinnedMesh) {
             this.skinnedMesh.rotation.set(0, 0, 0);
         }
+        this.requestRender();
     }
 
     loadReferenceImage(url) {
@@ -1365,7 +1390,7 @@ class PoseStudioWidget {
         exportSection.content.appendChild(dimRow);
 
         // Zoom
-        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.1, this.exportParams, true);
+        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.01, this.exportParams, true);
         exportSection.content.appendChild(zoomField);
 
         // Output Mode
@@ -1602,13 +1627,20 @@ class PoseStudioWidget {
         input.step = step;
         input.value = this.exportParams[key];
 
-        input.addEventListener("change", () => {
+        const isDimension = (key === 'view_width' || key === 'view_height');
+        const eventType = isDimension ? 'change' : 'input';
+
+        input.addEventListener(eventType, () => {
             let val = parseFloat(input.value);
             if (isNaN(val)) val = this.exportParams[key];
             val = Math.max(min, Math.min(max, val));
+
+            // For grid columns, integer only
+            if (key === 'grid_columns') val = Math.round(val);
+
             input.value = val;
             this.exportParams[key] = val;
-            this.syncToNode(true);
+            this.syncToNode(isDimension);
         });
 
         this.exportWidgets[key] = input;
@@ -1834,11 +1866,23 @@ class PoseStudioWidget {
         const content = document.createElement("div");
         content.className = "vnccs-ps-modal-content";
 
+        const inputRow = document.createElement("div");
+        inputRow.style.marginBottom = "10px";
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "Filename (optional)";
+        nameInput.className = "vnccs-ps-input";
+        nameInput.style.width = "100%";
+        nameInput.style.marginBottom = "5px";
+
+        inputRow.appendChild(nameInput);
+
         const btnSingle = document.createElement("button");
         btnSingle.className = "vnccs-ps-modal-btn";
         btnSingle.innerText = "Current Pose Only";
         btnSingle.onclick = () => {
-            this.exportPose('single');
+            this.exportPose('single', nameInput.value);
             this.container.removeChild(overlay);
         };
 
@@ -1846,7 +1890,7 @@ class PoseStudioWidget {
         btnSet.className = "vnccs-ps-modal-btn";
         btnSet.innerText = "All Poses (Set)";
         btnSet.onclick = () => {
-            this.exportPose('set');
+            this.exportPose('set', nameInput.value);
             this.container.removeChild(overlay);
         };
 
@@ -1857,6 +1901,7 @@ class PoseStudioWidget {
             this.container.removeChild(overlay);
         };
 
+        content.appendChild(inputRow);
         content.appendChild(btnSingle);
         content.appendChild(btnSet);
         content.appendChild(btnCancel);
@@ -1868,9 +1913,10 @@ class PoseStudioWidget {
         this.container.appendChild(overlay);
     }
 
-    exportPose(type) {
+    exportPose(type, customName) {
         let data, filename;
         const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const name = (customName && customName.trim()) ? customName.trim().replace(/[^a-z0-9_\-\.]/gi, '_') : timestamp;
 
         if (type === 'set') {
             // Ensure current active pose is saved to array
@@ -1881,16 +1927,18 @@ class PoseStudioWidget {
                 version: "1.0",
                 poses: this.poses
             };
-            filename = `pose_set_${timestamp}.json`;
+            filename = `pose_set_${name}.json`;
         } else {
             // Single pose
-            const pose = this.viewer ? this.viewer.getPose() : this.poses[this.activeTab];
+            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+
             data = {
                 type: "single_pose",
                 version: "1.0",
-                ...pose
+                bones: this.poses[this.activeTab].bones,
+                modelRotation: this.poses[this.activeTab].modelRotation
             };
-            filename = `pose_${timestamp}.json`;
+            filename = `pose_${name}.json`;
         }
 
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
@@ -1932,6 +1980,7 @@ class PoseStudioWidget {
                             this.updateRotationSliders();
                         }
                     }
+                    this.syncToNode(true);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
                     // Strip metadata if present
@@ -1942,9 +1991,8 @@ class PoseStudioWidget {
                         this.viewer.setPose(poseData);
                         this.updateRotationSliders();
                     }
+                    this.syncToNode(false);
                 }
-
-                this.syncToNode();
 
             } catch (err) {
                 console.error("Error importing pose:", err);
