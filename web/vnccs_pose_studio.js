@@ -379,7 +379,7 @@ const STYLES = `
 }
 
 /* Lighting UI Styles */
-.vnccs-ps-light-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.vnccs-ps-light-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; max-height: 280px; overflow-y: auto; overflow-x: hidden; }
 .vnccs-ps-light-item { 
     background: rgba(0,0,0,0.3); 
     border-radius: 6px; 
@@ -1876,8 +1876,9 @@ class PoseStudioWidget {
         lightBtnRow.appendChild(resetLightBtn);
         lightBtnRow.appendChild(addLightBtn);
 
-        lightSection.content.appendChild(lightListContainer);
+        // Add buttons BEFORE the list so they're always visible
         lightSection.content.appendChild(lightBtnRow);
+        lightSection.content.appendChild(lightListContainer);
         leftPanel.appendChild(lightSection.el);
 
         // Initialize default lights if empty
@@ -2942,7 +2943,7 @@ class PoseStudioWidget {
             const typeLabel = document.createElement('label');
             typeLabel.textContent = 'Type';
             const typeSelect = document.createElement('select');
-            typeSelect.style.cssText = 'flex:1; background:#222; border:1px solid #444; border-radius:3px; color:white; font-size:10px; padding:2px;';
+            typeSelect.style.cssText = 'flex:1; background:#222; border:1px solid #444; border-radius:3px; color:white; font-size:11px; padding:3px;';
             ['ambient', 'directional', 'point'].forEach(t => {
                 const opt = document.createElement('option');
                 opt.value = t;
@@ -2967,15 +2968,19 @@ class PoseStudioWidget {
             const colorInput = document.createElement('input');
             colorInput.type = 'color';
             colorInput.value = light.color || '#ffffff';
-            colorInput.onchange = () => {
+            // Debounce color changes to prevent lag
+            let colorTimeout = null;
+            colorInput.oninput = () => {
                 light.color = colorInput.value;
-                this.applyLighting();
+                clearTimeout(colorTimeout);
+                colorTimeout = setTimeout(() => this.applyLighting(), 50);
             };
             colorRow.appendChild(colorLabel);
             colorRow.appendChild(colorInput);
             item.appendChild(colorRow);
 
-            // Intensity slider
+            // Intensity slider - different limits for ambient vs directional/point
+            const isAmbient = light.type === 'ambient';
             const intensityRow = document.createElement('div');
             intensityRow.className = 'vnccs-ps-light-row';
             const intensityLabel = document.createElement('label');
@@ -2983,15 +2988,15 @@ class PoseStudioWidget {
             const intensitySlider = document.createElement('input');
             intensitySlider.type = 'range';
             intensitySlider.min = 0;
-            intensitySlider.max = 5;
-            intensitySlider.step = 0.1;
-            intensitySlider.value = light.intensity ?? 1;
+            intensitySlider.max = isAmbient ? 2 : 5;
+            intensitySlider.step = isAmbient ? 0.01 : 0.1;
+            intensitySlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
             const intensityValue = document.createElement('span');
             intensityValue.className = 'vnccs-ps-light-value';
-            intensityValue.textContent = parseFloat(intensitySlider.value).toFixed(1);
+            intensityValue.textContent = parseFloat(intensitySlider.value).toFixed(2);
             intensitySlider.oninput = () => {
                 light.intensity = parseFloat(intensitySlider.value);
-                intensityValue.textContent = light.intensity.toFixed(1);
+                intensityValue.textContent = light.intensity.toFixed(2);
                 this.applyLighting();
             };
             intensityRow.appendChild(intensityLabel);
