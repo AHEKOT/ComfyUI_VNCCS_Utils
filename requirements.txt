@@ -1,4 +1,5 @@
 opencv-python
 huggingface_hub
 aiohttp
+color-matcher
 kornia

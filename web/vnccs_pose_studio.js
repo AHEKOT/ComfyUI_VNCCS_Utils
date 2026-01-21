@@ -350,6 +350,28 @@ const STYLES = `
     color: #ccc;
 }
 
+.vnccs-ps-reset-btn {
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: 1px solid var(--ps-border);
+    color: var(--ps-text-muted);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all 0.15s;
+}
+
+.vnccs-ps-reset-btn:hover {
+    color: var(--ps-accent);
+    border-color: var(--ps-accent);
+    background: rgba(255, 255, 255, 0.05);
+}
+
 .vnccs-ps-tab.active {
     background: var(--ps-panel);
     color: var(--ps-accent);
@@ -1484,15 +1506,15 @@ class PoseStudioWidget {
 
         // Base Mesh Sliders (gender-neutral)
         const baseSliderDefs = [
-            { key: "age", label: "Age", min: 1, max: 90, step: 1 },
-            { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01 },
-            { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01 },
-            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 },
-            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01 }
+            { key: "age", label: "Age", min: 1, max: 90, step: 1, def: 25 },
+            { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01, def: 0.5 },
+            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 }
         ];
 
         for (const s of baseSliderDefs) {
-            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
             meshSection.content.appendChild(field);
         }
 
@@ -1505,25 +1527,25 @@ class PoseStudioWidget {
 
         // Female-specific sliders
         const femaleSliders = [
-            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01 },
-            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01 }
+            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, def: 0.5 },
+            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, def: 0.5 }
         ];
 
         for (const s of femaleSliders) {
-            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
             genderSection.content.appendChild(field);
             this.genderFields[s.key] = { field, gender: "female" };
         }
 
         // Male-specific sliders
         const maleSliders = [
-            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01 },
-            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01 },
-            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01 }
+            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, def: 0.5 }
         ];
 
         for (const s of maleSliders) {
-            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, this.meshParams);
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
             genderSection.content.appendChild(field);
             this.genderFields[s.key] = { field, gender: "male" };
         }
@@ -1594,15 +1616,18 @@ class PoseStudioWidget {
         camSection.content.appendChild(dimRow);
 
         // Zoom (with live preview)
-        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.01, this.exportParams, true);
+        // Zoom (with live preview)
+        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.01, 1.0, this.exportParams, true);
         camSection.content.appendChild(zoomField);
 
         // Position X
-        const posXField = this.createSliderField("Position X", "cam_offset_x", -20, 20, 0.1, this.exportParams, true);
+        // Position X
+        const posXField = this.createSliderField("Position X", "cam_offset_x", -20, 20, 0.1, 0, this.exportParams, true);
         camSection.content.appendChild(posXField);
 
         // Position Y
-        const posYField = this.createSliderField("Position Y", "cam_offset_y", -20, 20, 0.1, this.exportParams, true);
+        // Position Y
+        const posYField = this.createSliderField("Position Y", "cam_offset_y", -20, 20, 0.1, 0, this.exportParams, true);
         camSection.content.appendChild(posYField);
 
         // Re-center Button
@@ -1871,17 +1896,43 @@ class PoseStudioWidget {
         return { el: section, content };
     }
 
-    createSliderField(label, key, min, max, step, target, isExport = false) {
+    createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
 
         const labelRow = document.createElement("div");
         labelRow.className = "vnccs-ps-label-row";
+        labelRow.style.display = "flex";
+        labelRow.style.justifyContent = "space-between";
+        labelRow.style.alignItems = "center";
 
         const value = target[key];
         const displayVal = key === 'age' ? Math.round(value) : value.toFixed(2);
-        labelRow.innerHTML = `<span class="vnccs-ps-label">${label}</span><span class="vnccs-ps-value">${displayVal}</span>`;
-        const valueSpan = labelRow.querySelector(".vnccs-ps-value");
+        const valueRow = document.createElement("div");
+        valueRow.style.display = "flex";
+        valueRow.style.alignItems = "center";
+        valueRow.style.gap = "6px";
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = "vnccs-ps-value";
+        valueSpan.innerText = displayVal;
+
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "vnccs-ps-reset-btn";
+        resetBtn.innerHTML = "↺";
+        resetBtn.title = `Reset to ${defaultValue}`;
+
+        valueRow.appendChild(valueSpan);
+        valueRow.appendChild(resetBtn);
+
+        // Label Side
+        const labelEl = document.createElement("span");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        labelRow.innerHTML = '';
+        labelRow.appendChild(labelEl);
+        labelRow.appendChild(valueRow);
 
         const wrap = document.createElement("div");
         wrap.className = "vnccs-ps-slider-wrap";
@@ -1893,6 +1944,14 @@ class PoseStudioWidget {
         slider.max = max;
         slider.step = step;
         slider.value = value;
+
+        // Reset logic
+        resetBtn.onclick = (e) => {
+            e.stopPropagation();
+            slider.value = defaultValue;
+            slider.dispatchEvent(new Event('input'));
+            slider.dispatchEvent(new Event('change'));
+        };
 
         slider.addEventListener("input", () => {
             const val = parseFloat(slider.value);

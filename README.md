@@ -57,6 +57,18 @@ The companion node for selecting models. It provides a rich Graphical User Inter
 ### 4. VNCCS BBox Extractor
 A helper node to simply extract and visualize the crops. Useful when you need extract bbox detected regions but don't want to run whole facedetailer.
 
+### 5. VNCCS Pose Studio
+
+A comprehensive 3D posing environment running entirely within a ComfyUI node. It allows you to create, edit, and manage 3D character poses to generate control signals (images/depth/openpose) for your workflows.
+
+*   **Interactive 3D Viewport**: Manipulate bones with gizmo controls smoothly.
+*   **Customizable Mannequin**: Adjust Age, Gender, Weight, Muscle, Height, and more parameters.
+*   **Pose Library**: Save your best poses and reuse them later with a visual library interface.
+*   **Multi-Pose Batching**: Create multiple pose tabs in one node to generate batch outputs.
+*   **Camera Control**: precise Zoom and Pan (X/Y) controls to frame your subject perfectly.
+*   **Reference Image**: Load a background image to trace poses.
+
+👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
 
 ## Installation
 
