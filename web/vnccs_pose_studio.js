@@ -287,6 +287,14 @@ const STYLES = `
     background: #e24a90;
 }
 
+.vnccs-ps-toggle-btn.list.active {
+    background: #20a0a0;
+}
+
+.vnccs-ps-toggle-btn.grid.active {
+    background: #e0a020;
+}
+
 /* Input Row */
 .vnccs-ps-row {
     display: flex;
@@ -1070,8 +1078,14 @@ class PoseViewer {
         });
     }
 
-    updateCaptureCamera(width, height, zoom = 1.0) {
-        const target = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+    updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        // Apply offset (in world units, scaled by zoom for intuitive control)
+        const target = new this.THREE.Vector3(
+            baseTarget.x + offsetX,
+            baseTarget.y + offsetY,
+            baseTarget.z
+        );
         const dist = 45;
 
         if (!this.captureCamera) {
@@ -1083,7 +1097,7 @@ class PoseViewer {
             this.scene.add(this.captureHelper);
         }
 
-        // Positioning relative to mesh center
+        // Positioning relative to offset target
         this.captureCamera.aspect = width / height;
         this.captureCamera.zoom = zoom;
         this.captureCamera.updateProjectionMatrix();
@@ -1117,8 +1131,8 @@ class PoseViewer {
         this.requestRender();
     }
 
-    snapToCaptureCamera(width, height, zoom = 1.0) {
-        this.updateCaptureCamera(width, height, zoom);
+    snapToCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY);
 
         // Disable damping for hard reset
         const prevDamping = this.orbit.enableDamping;
@@ -1129,18 +1143,23 @@ class PoseViewer {
         this.camera.zoom = zoom;
         this.camera.updateProjectionMatrix();
 
-        const target = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        const target = new this.THREE.Vector3(
+            baseTarget.x + offsetX,
+            baseTarget.y + offsetY,
+            baseTarget.z
+        );
         this.orbit.target.copy(target);
         this.orbit.update();
 
         this.orbit.enableDamping = prevDamping;
     }
 
-    capture(width, height, zoom, bgColor) {
+    capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0) {
         if (!this.initialized) return null;
 
         // Ensure camera is setup
-        this.updateCaptureCamera(width, height, zoom);
+        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY);
 
         // Hide UI elements
         const markersVisible = this.jointMarkers[0]?.visible ?? true;
@@ -1224,6 +1243,8 @@ class PoseStudioWidget {
             view_width: 512,
             view_height: 512,
             cam_zoom: 1.0,
+            cam_offset_x: 0,
+            cam_offset_y: 0,
             output_mode: "LIST",
             grid_columns: 2,
             bg_color: [40, 40, 40]
@@ -1397,23 +1418,111 @@ class PoseStudioWidget {
 
         leftPanel.appendChild(rotSection.el);
 
-        // --- EXPORT SETTINGS SECTION ---
-        const exportSection = this.createSection("Export Settings", true);
+        // --- CAMERA SETTINGS SECTION ---
+        const camSection = this.createSection("Camera", true);
 
         // Dimensions Row
         const dimRow = document.createElement("div");
         dimRow.className = "vnccs-ps-row";
-
         dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
         dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
-        exportSection.content.appendChild(dimRow);
+        camSection.content.appendChild(dimRow);
 
-        // Zoom
+        // Zoom (with live preview)
         const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.01, this.exportParams, true);
-        exportSection.content.appendChild(zoomField);
+        camSection.content.appendChild(zoomField);
+
+        // Position X
+        const posXField = this.createSliderField("Position X", "cam_offset_x", -20, 20, 0.1, this.exportParams, true);
+        camSection.content.appendChild(posXField);
+
+        // Position Y
+        const posYField = this.createSliderField("Position Y", "cam_offset_y", -20, 20, 0.1, this.exportParams, true);
+        camSection.content.appendChild(posYField);
+
+        // Re-center Button
+        const recenterBtn = document.createElement("button");
+        recenterBtn.className = "vnccs-ps-btn";
+        recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
+        recenterBtn.onclick = () => {
+            this.exportParams.cam_offset_x = 0;
+            this.exportParams.cam_offset_y = 0;
+            // Update sliders
+            if (this.exportWidgets['cam_offset_x']) this.exportWidgets['cam_offset_x'].value = 0;
+            if (this.exportWidgets['cam_offset_y']) this.exportWidgets['cam_offset_y'].value = 0;
+            // Update labels
+            const posXSlider = this.sliders['cam_offset_x'];
+            const posYSlider = this.sliders['cam_offset_y'];
+            if (posXSlider) posXSlider.label.innerText = '0.00';
+            if (posYSlider) posYSlider.label.innerText = '0.00';
+            // Trigger camera update and sync viewport
+            if (this.viewer) {
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom,
+                    0, 0
+                );
+            }
+            this.syncToNode(false);
+        };
+        camSection.content.appendChild(recenterBtn);
+
+        leftPanel.appendChild(camSection.el);
+
+        // --- EXPORT SETTINGS SECTION ---
+        const exportSection = this.createSection("Export Settings", true);
 
         // Output Mode
-        const modeField = this.createSelectField("Output Mode", "output_mode", ["LIST", "GRID"]);
+        // Output Mode (Toggle)
+        const modeField = document.createElement("div");
+        modeField.className = "vnccs-ps-field";
+        const modeLabel = document.createElement("div");
+        modeLabel.className = "vnccs-ps-label";
+        modeLabel.innerText = "Output Mode";
+
+        const modeToggle = document.createElement("div");
+        modeToggle.className = "vnccs-ps-toggle";
+
+        const btnList = document.createElement("button");
+        btnList.className = "vnccs-ps-toggle-btn list";
+        btnList.innerText = "List";
+        const btnGrid = document.createElement("button");
+        btnGrid.className = "vnccs-ps-toggle-btn grid";
+        btnGrid.innerText = "Grid";
+
+        const updateModeUI = () => {
+            const isGrid = this.exportParams.output_mode === 'GRID';
+            btnList.classList.toggle("active", !isGrid);
+            btnGrid.classList.toggle("active", isGrid);
+        };
+
+        btnList.onclick = () => {
+            this.exportParams.output_mode = 'LIST';
+            updateModeUI();
+            this.syncToNode(true);
+        }
+        btnGrid.onclick = () => {
+            this.exportParams.output_mode = 'GRID';
+            updateModeUI();
+            this.syncToNode(true);
+        }
+
+        updateModeUI();
+        modeToggle.appendChild(btnList);
+        modeToggle.appendChild(btnGrid);
+        modeField.appendChild(modeLabel);
+        modeField.appendChild(modeToggle);
+
+        // Cache for programmatic updates
+        this.exportWidgets['output_mode'] = {
+            value: this.exportParams.output_mode, // dummy
+            update: (val) => {
+                this.exportParams.output_mode = val;
+                updateModeUI();
+            }
+        };
+
         exportSection.content.appendChild(modeField);
 
         // Grid Columns
@@ -1476,7 +1585,9 @@ class PoseStudioWidget {
             if (this.viewer) this.viewer.snapToCaptureCamera(
                 this.exportParams.view_width,
                 this.exportParams.view_height,
-                this.exportParams.cam_zoom || 1.0
+                this.exportParams.cam_zoom || 1.0,
+                this.exportParams.cam_offset_x || 0,
+                this.exportParams.cam_offset_y || 0
             );
         });
 
@@ -1596,12 +1707,15 @@ class PoseStudioWidget {
 
             if (isExport) {
                 this.exportParams[key] = val;
-                // Live preview for zoom
-                if (key === 'cam_zoom' && this.viewer) {
-                    this.viewer.updateCaptureCamera(
+                // Live preview for camera params - sync viewport too
+                const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y'].includes(key);
+                if (isCamParam && this.viewer) {
+                    this.viewer.snapToCaptureCamera(
                         this.exportParams.view_width,
                         this.exportParams.view_height,
-                        val
+                        this.exportParams.cam_zoom,
+                        this.exportParams.cam_offset_x,
+                        this.exportParams.cam_offset_y
                     );
                 }
             } else {
@@ -2158,6 +2272,8 @@ class PoseStudioWidget {
             const h = this.exportParams.view_height || 512;
             const z = this.exportParams.cam_zoom || 1.0;
             const bg = this.exportParams.bg_color || [40, 40, 40];
+            const oX = this.exportParams.cam_offset_x || 0;
+            const oY = this.exportParams.cam_offset_y || 0;
 
             if (fullCapture) {
                 // Determine original pose index to restore
@@ -2166,7 +2282,7 @@ class PoseStudioWidget {
                 // Capture ALL
                 for (let i = 0; i < this.poses.length; i++) {
                     this.viewer.setPose(this.poses[i]);
-                    this.poseCaptures[i] = this.viewer.capture(w, h, z, bg);
+                    this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY);
                 }
 
                 // Restore active pose
@@ -2177,7 +2293,7 @@ class PoseStudioWidget {
 
             } else {
                 // Capture only ACTIVE
-                this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg);
+                this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY);
             }
         }
 
@@ -2234,7 +2350,11 @@ class PoseStudioWidget {
                         const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
                         widget.value = hex;
                     } else if (this.exportParams[key] !== undefined) {
-                        widget.value = this.exportParams[key];
+                        if (widget.update) {
+                            widget.update(this.exportParams[key]);
+                        } else {
+                            widget.value = this.exportParams[key];
+                        }
                     }
                 }
             }
@@ -2302,7 +2422,9 @@ app.registerExtension({
                         this.studioWidget.viewer.snapToCaptureCamera(
                             this.studioWidget.exportParams.view_width,
                             this.studioWidget.exportParams.view_height,
-                            this.studioWidget.exportParams.cam_zoom || 1.0
+                            this.studioWidget.exportParams.cam_zoom || 1.0,
+                            this.studioWidget.exportParams.cam_offset_x || 0,
+                            this.studioWidget.exportParams.cam_offset_y || 0
                         );
                     }
                 });
