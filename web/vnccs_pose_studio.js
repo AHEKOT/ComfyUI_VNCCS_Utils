@@ -1269,8 +1269,8 @@ class PoseViewer {
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
-            baseTarget.x + offsetX,
-            baseTarget.y + offsetY,
+            baseTarget.x - offsetX,
+            baseTarget.y - offsetY,
             baseTarget.z
         );
         const dist = 45;
@@ -1332,8 +1332,8 @@ class PoseViewer {
 
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         const target = new this.THREE.Vector3(
-            baseTarget.x + offsetX,
-            baseTarget.y + offsetY,
+            baseTarget.x - offsetX,
+            baseTarget.y - offsetY,
             baseTarget.z
         );
         this.orbit.target.copy(target);
