@@ -251,6 +251,12 @@ const STYLES = `
     cursor: pointer;
 }
 
+/* Counter-zoom for select dropdown options */
+.vnccs-ps-select:focus {
+    transform: scale(1.49);
+    transform-origin: top left;
+}
+
 /* Gender Toggle */
 .vnccs-ps-toggle {
     display: flex;
@@ -371,6 +377,82 @@ const STYLES = `
     border-color: var(--ps-accent);
     background: rgba(255, 255, 255, 0.05);
 }
+
+/* Lighting UI Styles */
+.vnccs-ps-light-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.vnccs-ps-light-item { 
+    background: rgba(0,0,0,0.3); 
+    border-radius: 6px; 
+    padding: 8px; 
+    border: 1px solid rgba(255,255,255,0.1);
+}
+.vnccs-ps-light-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.vnccs-ps-light-title { font-weight: bold; font-size: 11px; color: #ccc; }
+.vnccs-ps-light-remove {
+    background: #c44;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    font-size: 14px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.vnccs-ps-light-remove:hover { background: #f55; }
+.vnccs-ps-light-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+}
+.vnccs-ps-light-row label {
+    width: 50px;
+    font-size: 10px;
+    color: #999;
+    flex-shrink: 0;
+}
+.vnccs-ps-light-row input[type="color"] {
+    width: 28px;
+    height: 20px;
+    border: none;
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 0;
+}
+.vnccs-ps-light-row input[type="range"] {
+    flex: 1;
+    height: 4px;
+    background: #444;
+    border-radius: 2px;
+}
+.vnccs-ps-light-row input[type="number"] {
+    width: 50px;
+    background: #222;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: white;
+    font-size: 10px;
+    padding: 2px 4px;
+}
+.vnccs-ps-light-value {
+    width: 35px;
+    text-align: right;
+    font-size: 10px;
+    color: #aaa;
+}
+.vnccs-ps-btn-add-light { background: #3a6; }
+.vnccs-ps-btn-add-light:hover { background: #4b7; }
 
 .vnccs-ps-tab.active {
     background: var(--ps-panel);
@@ -764,6 +846,9 @@ class PoseViewer {
         this.future = [];
         this.maxHistory = 10;
         this.headScale = 1.0;
+
+        // Managed lights array
+        this.lights = [];
     }
 
     async init() {
@@ -832,16 +917,59 @@ class PoseViewer {
         // Render on demand: transform change triggers render
         this.transform.addEventListener('change', () => this.requestRender());
 
-        // Lights
-        const light = new THREE.DirectionalLight(0xffffff, 2);
-        light.position.set(10, 20, 30);
-        this.scene.add(light);
-        this.scene.add(new THREE.AmbientLight(0x505050));
-
-
+        // Lights - will be setup by updateLights() call from widget
+        // (removed hardcoded lights)
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+    }
+
+    // === Light Management ===
+    updateLights(lightParams) {
+        const THREE = this.THREE;
+        if (!lightParams || !THREE) return;
+
+        // Remove existing managed lights
+        for (const light of this.lights) {
+            this.scene.remove(light);
+            if (light.dispose) light.dispose();
+        }
+        this.lights = [];
+
+        // Create new lights from params
+        for (const params of lightParams) {
+            // Handle both hex string (#ffffff) and legacy RGB array formats
+            let color;
+            if (typeof params.color === 'string') {
+                color = new THREE.Color(params.color);
+            } else if (Array.isArray(params.color)) {
+                color = new THREE.Color(
+                    params.color[0] / 255,
+                    params.color[1] / 255,
+                    params.color[2] / 255
+                );
+            } else {
+                color = new THREE.Color(0xffffff);
+            }
+
+            let light;
+            if (params.type === 'ambient') {
+                light = new THREE.AmbientLight(color, params.intensity ?? 0.5);
+            } else if (params.type === 'directional') {
+                light = new THREE.DirectionalLight(color, params.intensity ?? 1.0);
+                light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
+            } else if (params.type === 'point') {
+                light = new THREE.PointLight(color, params.intensity ?? 1.0, 100);
+                light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
+            }
+
+            if (light) {
+                this.scene.add(light);
+                this.lights.push(light);
+            }
+        }
+
+        this.requestRender();
     }
 
     animate() {
@@ -1437,6 +1565,12 @@ class PoseStudioWidget {
             bg_color: [40, 40, 40]
         };
 
+        // Lighting settings (array of light configs)
+        this.lightParams = [
+            { type: 'directional', color: [255, 255, 255], intensity: 2.0, x: 10, y: 20, z: 30 },
+            { type: 'ambient', color: [80, 80, 80], intensity: 1.0, x: 0, y: 0, z: 0 }
+        ];
+
         this.sliders = {};
         this.exportWidgets = {};
         this.tabsContainer = null;
@@ -1564,8 +1698,41 @@ class PoseStudioWidget {
 
             const labelRow = document.createElement("div");
             labelRow.className = "vnccs-ps-label-row";
-            labelRow.innerHTML = `<span class="vnccs-ps-label">${axis.toUpperCase()}</span><span class="vnccs-ps-value">0°</span>`;
-            const valueSpan = labelRow.querySelector(".vnccs-ps-value");
+
+            const labelSpan = document.createElement("span");
+            labelSpan.className = "vnccs-ps-label";
+            labelSpan.textContent = axis.toUpperCase();
+
+            const valueSpan = document.createElement("span");
+            valueSpan.className = "vnccs-ps-value";
+            valueSpan.textContent = "0°";
+
+            // Reset button
+            const resetBtn = document.createElement("button");
+            resetBtn.className = "vnccs-ps-reset-btn";
+            resetBtn.innerHTML = "↺";
+            resetBtn.title = "Reset to 0°";
+            resetBtn.onclick = (e) => {
+                e.stopPropagation();
+                slider.value = 0;
+                valueSpan.innerText = "0°";
+                if (this.viewer) {
+                    this.viewer.modelRotation[axis] = 0;
+                    if (this.viewer.skinnedMesh) {
+                        const r = this.viewer.modelRotation;
+                        this.viewer.skinnedMesh.rotation.set(
+                            r.x * Math.PI / 180,
+                            r.y * Math.PI / 180,
+                            r.z * Math.PI / 180
+                        );
+                    }
+                    this.syncToNode();
+                }
+            };
+
+            labelRow.appendChild(labelSpan);
+            labelRow.appendChild(resetBtn);
+            labelRow.appendChild(valueSpan);
 
             const wrap = document.createElement("div");
             wrap.className = "vnccs-ps-slider-wrap";
@@ -1659,6 +1826,70 @@ class PoseStudioWidget {
         camSection.content.appendChild(recenterBtn);
 
         leftPanel.appendChild(camSection.el);
+
+        // --- LIGHTING SECTION ---
+        const lightSection = this.createSection("Lighting", true);
+
+        // Container for all light controls
+        const lightListContainer = document.createElement("div");
+        lightListContainer.className = "vnccs-ps-light-list";
+
+        // Store reference for re-rendering
+        this.lightListContainer = lightListContainer;
+
+        // Button row for lighting controls
+        const lightBtnRow = document.createElement("div");
+        lightBtnRow.style.cssText = "display: flex; gap: 6px;";
+
+        // Reset Lighting button
+        const resetLightBtn = document.createElement("button");
+        resetLightBtn.className = "vnccs-ps-btn";
+        resetLightBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
+        resetLightBtn.title = "Reset to default lighting";
+        resetLightBtn.onclick = () => {
+            this.lightParams = [
+                { type: 'ambient', color: '#404040', intensity: 0.5 },
+                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
+            ];
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+
+        // Add Light button
+        const addLightBtn = document.createElement("button");
+        addLightBtn.className = "vnccs-ps-btn vnccs-ps-btn-add-light";
+        addLightBtn.innerHTML = '<span class="vnccs-ps-btn-icon">+</span> Add';
+        addLightBtn.onclick = () => {
+            // Default new light: white point light at origin
+            this.lightParams.push({
+                type: 'point',
+                color: '#ffffff',
+                intensity: 1.0,
+                x: 0,
+                y: 0,
+                z: 5
+            });
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+
+        lightBtnRow.appendChild(resetLightBtn);
+        lightBtnRow.appendChild(addLightBtn);
+
+        lightSection.content.appendChild(lightListContainer);
+        lightSection.content.appendChild(lightBtnRow);
+        leftPanel.appendChild(lightSection.el);
+
+        // Initialize default lights if empty
+        if (this.lightParams.length === 0) {
+            this.lightParams.push(
+                { type: 'ambient', color: '#404040', intensity: 0.5 },
+                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
+            );
+        }
+
+        // Initial render of lights
+        this.refreshLightUI();
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
@@ -2640,6 +2871,9 @@ class PoseStudioWidget {
                 // Keep camera during updates
                 this.viewer.loadData(d, true);
 
+                // Apply lighting configuration
+                this.viewer.updateLights(this.lightParams);
+
                 // FORCE camera sync on every model change (as requested)
                 this.viewer.snapToCaptureCamera(
                     this.exportParams.view_width,
@@ -2671,6 +2905,145 @@ class PoseStudioWidget {
                 this.processMeshUpdate();
             }
         });
+    }
+
+    refreshLightUI() {
+        if (!this.lightListContainer) return;
+        this.lightListContainer.innerHTML = '';
+
+        this.lightParams.forEach((light, index) => {
+            const item = document.createElement('div');
+            item.className = 'vnccs-ps-light-item';
+
+            // Header with title and remove button
+            const header = document.createElement('div');
+            header.className = 'vnccs-ps-light-header';
+
+            const title = document.createElement('span');
+            title.className = 'vnccs-ps-light-title';
+            title.textContent = `${light.type.charAt(0).toUpperCase() + light.type.slice(1)} Light ${index + 1}`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'vnccs-ps-light-remove';
+            removeBtn.innerHTML = '×';
+            removeBtn.onclick = () => {
+                this.lightParams.splice(index, 1);
+                this.refreshLightUI();
+                this.applyLighting();
+            };
+
+            header.appendChild(title);
+            header.appendChild(removeBtn);
+            item.appendChild(header);
+
+            // Light Type selector
+            const typeRow = document.createElement('div');
+            typeRow.className = 'vnccs-ps-light-row';
+            const typeLabel = document.createElement('label');
+            typeLabel.textContent = 'Type';
+            const typeSelect = document.createElement('select');
+            typeSelect.style.cssText = 'flex:1; background:#222; border:1px solid #444; border-radius:3px; color:white; font-size:10px; padding:2px;';
+            ['ambient', 'directional', 'point'].forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t;
+                opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+                if (t === light.type) opt.selected = true;
+                typeSelect.appendChild(opt);
+            });
+            typeSelect.onchange = () => {
+                light.type = typeSelect.value;
+                this.refreshLightUI();
+                this.applyLighting();
+            };
+            typeRow.appendChild(typeLabel);
+            typeRow.appendChild(typeSelect);
+            item.appendChild(typeRow);
+
+            // Color picker
+            const colorRow = document.createElement('div');
+            colorRow.className = 'vnccs-ps-light-row';
+            const colorLabel = document.createElement('label');
+            colorLabel.textContent = 'Color';
+            const colorInput = document.createElement('input');
+            colorInput.type = 'color';
+            colorInput.value = light.color || '#ffffff';
+            colorInput.onchange = () => {
+                light.color = colorInput.value;
+                this.applyLighting();
+            };
+            colorRow.appendChild(colorLabel);
+            colorRow.appendChild(colorInput);
+            item.appendChild(colorRow);
+
+            // Intensity slider
+            const intensityRow = document.createElement('div');
+            intensityRow.className = 'vnccs-ps-light-row';
+            const intensityLabel = document.createElement('label');
+            intensityLabel.textContent = 'Intensity';
+            const intensitySlider = document.createElement('input');
+            intensitySlider.type = 'range';
+            intensitySlider.min = 0;
+            intensitySlider.max = 5;
+            intensitySlider.step = 0.1;
+            intensitySlider.value = light.intensity ?? 1;
+            const intensityValue = document.createElement('span');
+            intensityValue.className = 'vnccs-ps-light-value';
+            intensityValue.textContent = parseFloat(intensitySlider.value).toFixed(1);
+            intensitySlider.oninput = () => {
+                light.intensity = parseFloat(intensitySlider.value);
+                intensityValue.textContent = light.intensity.toFixed(1);
+                this.applyLighting();
+            };
+            intensityRow.appendChild(intensityLabel);
+            intensityRow.appendChild(intensitySlider);
+            intensityRow.appendChild(intensityValue);
+            item.appendChild(intensityRow);
+
+            // Position controls (only for directional/point lights)
+            if (light.type !== 'ambient') {
+                const posLabels = ['X', 'Y', 'Z'];
+                const posKeys = ['x', 'y', 'z'];
+                posLabels.forEach((pl, pi) => {
+                    const posRow = document.createElement('div');
+                    posRow.className = 'vnccs-ps-light-row';
+                    const posLabel = document.createElement('label');
+                    posLabel.textContent = `Pos ${pl}`;
+
+                    // Use slider instead of number input
+                    const posSlider = document.createElement('input');
+                    posSlider.type = 'range';
+                    posSlider.min = -20;
+                    posSlider.max = 20;
+                    posSlider.step = 0.5;
+                    posSlider.value = light[posKeys[pi]] ?? 0;
+
+                    const posValue = document.createElement('span');
+                    posValue.className = 'vnccs-ps-light-value';
+                    posValue.textContent = parseFloat(posSlider.value).toFixed(1);
+
+                    posSlider.oninput = () => {
+                        light[posKeys[pi]] = parseFloat(posSlider.value);
+                        posValue.textContent = parseFloat(posSlider.value).toFixed(1);
+                        this.applyLighting();
+                    };
+
+                    posRow.appendChild(posLabel);
+                    posRow.appendChild(posSlider);
+                    posRow.appendChild(posValue);
+                    item.appendChild(posRow);
+                });
+            }
+
+            this.lightListContainer.appendChild(item);
+        });
+    }
+
+    applyLighting() {
+        if (this.viewer && this.viewer.initialized) {
+            this.viewer.updateLights(this.lightParams);
+        }
+        // Lighting changes affect all previews
+        this.syncToNode(true);
     }
 
     updateRotationSliders() {

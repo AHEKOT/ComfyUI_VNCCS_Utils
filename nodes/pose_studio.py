@@ -91,6 +91,7 @@ class VNCCS_PoseStudio:
     
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
+    OUTPUT_IS_LIST = (True,)
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
@@ -182,8 +183,9 @@ class VNCCS_PoseStudio:
                     tensors.append(torch.from_numpy(np_img))
                 
                 if output_mode == "LIST":
-                    batch = torch.stack(tensors)
-                    return (batch,)
+                    # Return list of individual images
+                    tensor_list = [t.unsqueeze(0) for t in tensors]
+                    return (tensor_list,)
                 else:
                     grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
                     np_grid = np.array(grid_img).astype(np.float32) / 255.0
@@ -230,9 +232,9 @@ class VNCCS_PoseStudio:
             tensors.append(torch.from_numpy(np_img))
         
         if output_mode == "LIST":
-            # Return batch of images
-            batch = torch.stack(tensors)
-            return (batch,)
+            # Return list of individual images
+            tensor_list = [t.unsqueeze(0) for t in tensors]
+            return (tensor_list,)
         else:
             # GRID mode - concatenate into single image
             grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
