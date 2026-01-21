@@ -568,6 +568,7 @@ class PoseViewer {
         this.history = [];
         this.future = [];
         this.maxHistory = 10;
+        this.headScale = 1.0;
     }
 
     async init() {
@@ -642,8 +643,7 @@ class PoseViewer {
         this.scene.add(light);
         this.scene.add(new THREE.AmbientLight(0x505050));
 
-        this.gridHelper = new THREE.GridHelper(20, 20, 0x0f3460, 0x0f3460);
-        this.scene.add(this.gridHelper);
+
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
@@ -905,7 +905,22 @@ class PoseViewer {
             this.jointMarkers.push(sphere);
         }
 
+        // Apply cached head scale
+        if (this.headScale !== 1.0) {
+            this.updateHeadScale(this.headScale);
+        }
+
         this.requestRender();
+    }
+
+    updateHeadScale(scale) {
+        this.headScale = scale;
+        // Find head bone if not cached or verify
+        const headBone = this.boneList.find(b => b.name.toLowerCase().includes('head'));
+        if (headBone) {
+            headBone.scale.set(scale, scale, scale);
+            this.requestRender();
+        }
     }
 
     // === Pose State Management ===
@@ -1099,6 +1114,7 @@ class PoseViewer {
             this.captureHelper.update();
             this.captureHelper.visible = true;
         }
+        this.requestRender();
     }
 
     snapToCaptureCamera(width, height, zoom = 1.0) {
@@ -1198,7 +1214,9 @@ class PoseStudioWidget {
             // Female-specific
             breast_size: 0.5, firmness: 0.5,
             // Male-specific
-            penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5
+            penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5,
+            // Visual modifiers
+            head_size: 1.0
         };
 
         // Export settings
@@ -1283,7 +1301,8 @@ class PoseStudioWidget {
             { key: "age", label: "Age", min: 1, max: 90, step: 1 },
             { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01 },
             { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01 },
-            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 }
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 },
+            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01 }
         ];
 
         for (const s of baseSliderDefs) {
@@ -1586,9 +1605,16 @@ class PoseStudioWidget {
                     );
                 }
             } else {
-                // Directly update meshParams and trigger mesh rebuild
-                this.meshParams[key] = val;
-                this.onMeshParamsChanged();
+                if (key === 'head_size') {
+                    // Update head scale immediately without backend rebuild
+                    if (this.viewer) this.viewer.updateHeadScale(val);
+                    this.meshParams[key] = val; // Just save
+                    this.syncToNode(false);
+                } else {
+                    // Directly update meshParams and trigger mesh rebuild
+                    this.meshParams[key] = val;
+                    this.onMeshParamsChanged();
+                }
             }
         });
 
@@ -2192,6 +2218,11 @@ class PoseStudioWidget {
                 // Update gender switch
                 if (this.updateGenderUI) this.updateGenderUI();
                 this.updateGenderVisibility();
+
+                // Sync Head Scale
+                if (this.viewer && this.meshParams.head_size !== undefined) {
+                    this.viewer.updateHeadScale(this.meshParams.head_size);
+                }
             }
 
             if (data.export) {
