@@ -618,6 +618,36 @@ const STYLES = `
     overflow: hidden;
     cursor: pointer;
     transition: all 0.15s;
+    position: relative; /* For absolute delete button */
+}
+
+.vnccs-ps-library-item-delete {
+    position: absolute;
+    top: 4px;
+    right: 4px;
+    width: 20px;
+    height: 20px;
+    background: rgba(200, 50, 50, 0.8);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: all 0.2s;
+    z-index: 10;
+}
+
+.vnccs-ps-library-item:hover .vnccs-ps-library-item-delete {
+    opacity: 1;
+}
+
+.vnccs-ps-library-item-delete:hover {
+    background: rgb(220, 50, 50);
+    transform: scale(1.1);
 }
 
 .vnccs-ps-library-item:hover {
@@ -2385,10 +2415,19 @@ class PoseStudioWidget {
                 item.appendChild(name);
 
                 item.onclick = () => this.loadFromLibrary(pose.name);
-                item.oncontextmenu = (e) => {
-                    e.preventDefault();
+
+                // Delete button
+                const delBtn = document.createElement('div');
+                delBtn.className = 'vnccs-ps-library-item-delete';
+                delBtn.innerHTML = '✕';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation(); // Prevent loading pose
                     this.showDeleteConfirmModal(pose.name);
                 };
+
+                item.appendChild(preview);
+                item.appendChild(name);
+                item.appendChild(delBtn);
 
                 this.libraryGrid.appendChild(item);
             }
