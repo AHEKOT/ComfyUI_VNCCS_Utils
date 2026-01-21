@@ -1927,7 +1927,7 @@ class PoseStudioWidget {
 
         slider.addEventListener("change", () => {
             if (isExport) {
-                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color'].includes(key);
+                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color', 'cam_offset_x', 'cam_offset_y'].includes(key);
                 this.syncToNode(needsFull);
             }
         });
@@ -2580,6 +2580,15 @@ class PoseStudioWidget {
             if (this.viewer) {
                 // Keep camera during updates
                 this.viewer.loadData(d, true);
+
+                // FORCE camera sync on every model change (as requested)
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom || 1.0,
+                    this.exportParams.cam_offset_x || 0,
+                    this.exportParams.cam_offset_y || 0
+                );
 
                 // Apply pose immediately (no timeout/flicker)
                 if (this.viewer.initialized) {
