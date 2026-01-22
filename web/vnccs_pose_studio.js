@@ -87,6 +87,7 @@ const STYLES = `
 /* === Right Panel (75%) === */
 .vnccs-ps-right {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -99,6 +100,7 @@ const STYLES = `
     border: 1px solid var(--ps-border);
     border-radius: 6px;
     overflow: hidden;
+    flex-shrink: 0;
 }
 
 .vnccs-ps-section-header {
@@ -379,7 +381,17 @@ const STYLES = `
 }
 
 /* Lighting UI Styles */
-.vnccs-ps-light-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; max-height: 280px; overflow-y: auto; overflow-x: hidden; }
+.vnccs-ps-light-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 8px;
+    max-height: 280px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding-right: 4px;
+    padding-bottom: 20px;
+}
 .vnccs-ps-light-item { 
     background: rgba(0,0,0,0.3); 
     border-radius: 6px; 
@@ -513,6 +525,7 @@ const STYLES = `
 /* === Action Bar === */
 .vnccs-ps-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 8px;
     padding: 8px 10px;
     background: #1a1a1a;
@@ -1189,11 +1202,31 @@ class PoseViewer {
         geometry.setAttribute('skinIndex', new THREE.BufferAttribute(skinInds, 4));
         geometry.setAttribute('skinWeight', new THREE.BufferAttribute(skinWgts, 4));
 
-        // Skin material
+        if (data.uvs && data.uvs.length > 0) {
+            geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(data.uvs), 2));
+        }
+
+        let skinTex;
+        if (this.cachedSkinTexture) {
+            skinTex = this.cachedSkinTexture;
+        } else {
+            const texLoader = new THREE.TextureLoader();
+            skinTex = texLoader.load(`/extensions/ComfyUI_VNCCS_Utils/textures/skin.png?v=${Date.now()}`,
+                (tex) => {
+                    console.log("Texture loaded successfully");
+                    this.requestRender();
+                },
+                undefined,
+                (err) => console.error("Texture failed to load", err)
+            );
+            this.cachedSkinTexture = skinTex;
+        }
+
         const material = new THREE.MeshPhongMaterial({
-            color: 0xd4a574,
-            specular: 0x332211,
-            shininess: 15,
+            map: skinTex,
+            color: 0xffffff,
+            specular: 0x111111,
+            shininess: 5,
             side: THREE.DoubleSide
         });
 
@@ -1264,7 +1297,15 @@ class PoseViewer {
         }
         return {
             bones,
-            modelRotation: [this.modelRotation.x, this.modelRotation.y, this.modelRotation.z]
+            modelRotation: [this.modelRotation.x, this.modelRotation.y, this.modelRotation.z],
+            camera: {
+                posX: this.camera.position.x,
+                posY: this.camera.position.y,
+                posZ: this.camera.position.z,
+                targetX: this.orbit.target.x,
+                targetY: this.orbit.target.y,
+                targetZ: this.orbit.target.z
+            }
         };
     }
 
@@ -1332,7 +1373,6 @@ class PoseViewer {
         this.modelRotation.y = modelRot[1] || 0;
         this.modelRotation.z = modelRot[2] || 0;
 
-        // Apply global rotation to root node (skinnedMesh)
         if (this.skinnedMesh) {
             this.skinnedMesh.rotation.set(
                 this.modelRotation.x * Math.PI / 180,
@@ -1340,6 +1380,28 @@ class PoseViewer {
                 this.modelRotation.z * Math.PI / 180
             );
         }
+
+        // Restore Camera functionality
+        if (pose.camera) {
+            this.camera.position.set(
+                pose.camera.posX,
+                pose.camera.posY,
+                pose.camera.posZ
+            );
+            this.orbit.target.set(
+                pose.camera.targetX,
+                pose.camera.targetY,
+                pose.camera.targetZ
+            );
+        } else {
+            // Default view if no camera data (prevents inheriting from previous tab)
+            // But only if we are "resetting" or loading a distinct pose.
+            // For now, let's reset to a sensible default to fix the "moves all models" feeling
+            this.camera.position.set(0, 0.5, 4);
+            this.orbit.target.set(0, 1, 0);
+        }
+
+        this.orbit.update();
         this.requestRender();
     }
 
@@ -1395,7 +1457,20 @@ class PoseViewer {
         });
     }
 
+    removeReferenceImage() {
+        if (!this.refPlane) return;
+        this.captureCamera.remove(this.refPlane);
+        if (this.refPlane.geometry) this.refPlane.geometry.dispose();
+        if (this.refPlane.material) {
+            if (this.refPlane.material.map) this.refPlane.material.map.dispose();
+            this.refPlane.material.dispose();
+        }
+        this.refPlane = null;
+        this.requestRender();
+    }
+
     updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+        if (!this.THREE) return; // Not initialized yet
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
@@ -1732,9 +1807,16 @@ class PoseStudioWidget {
                 }
             };
 
+            // Group value and reset button together on the right
+            const valueRow = document.createElement("div");
+            valueRow.style.display = "flex";
+            valueRow.style.alignItems = "center";
+            valueRow.style.gap = "6px";
+            valueRow.appendChild(valueSpan);
+            valueRow.appendChild(resetBtn);
+
             labelRow.appendChild(labelSpan);
-            labelRow.appendChild(resetBtn);
-            labelRow.appendChild(valueSpan);
+            labelRow.appendChild(valueRow);
 
             const wrap = document.createElement("div");
             wrap.className = "vnccs-ps-slider-wrap";
@@ -2037,9 +2119,18 @@ class PoseStudioWidget {
 
         const refBtn = document.createElement("button");
         refBtn.className = "vnccs-ps-btn";
-        refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Ref';
-        refBtn.title = "Load Reference Image into Camera Frame";
-        refBtn.addEventListener("click", () => this.loadReference());
+        refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+        refBtn.title = "Load or Remove Background Image";
+        refBtn.onclick = () => {
+            if (this.viewer && this.viewer.refPlane) {
+                this.viewer.removeReferenceImage();
+                refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+                refBtn.classList.remove('danger');
+            } else {
+                this.loadReference();
+            }
+        };
+        this.refBtn = refBtn;
 
         // Hidden file input for import
         const fileInput = document.createElement("input");
@@ -2651,6 +2742,11 @@ class PoseStudioWidget {
                     this.exportParams.view_height,
                     this.exportParams.cam_zoom || 1.0
                 );
+
+                if (this.refBtn) {
+                    this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
+                    this.refBtn.classList.add('danger');
+                }
             }
             e.target.value = '';
         };
@@ -3151,6 +3247,7 @@ class PoseStudioWidget {
             mesh: this.meshParams,
             export: this.exportParams,
             poses: this.poses,
+            lights: this.lightParams,
             activeTab: this.activeTab,
             captured_images: this.poseCaptures
         };
@@ -3210,6 +3307,14 @@ class PoseStudioWidget {
 
             if (data.poses && Array.isArray(data.poses)) {
                 this.poses = data.poses;
+            }
+
+            if (data.lights && Array.isArray(data.lights)) {
+                this.lightParams = data.lights;
+                this.refreshLightUI();
+                if (this.viewer) {
+                    this.viewer.updateLights(this.lightParams);
+                }
             }
 
             if (typeof data.activeTab === 'number') {

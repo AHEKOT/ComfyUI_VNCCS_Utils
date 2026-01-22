@@ -21,12 +21,20 @@ def load_obj(file_path):
     face_groups = []
     current_group = "default"
     
+    vertex_to_uv = {} # Map vertex index to UV [u, v]
+    texcoords = []
+
     with open(file_path, 'r', encoding='utf-8') as f:
         for line in f:
             if line.startswith('v '):
                 parts = line.strip().split()
                 vertices.append([float(parts[1]), float(parts[2]), float(parts[3])])
             
+            elif line.startswith('vt '):
+                parts = line.strip().split()
+                # vt u v (sometimes w)
+                texcoords.append([float(parts[1]), float(parts[2])])
+
             elif line.startswith('g '):
                 # New group
                 parts = line.strip().split()
@@ -40,9 +48,30 @@ def load_obj(file_path):
                 # Handle face formats like 1/1/1 or 1//1 or 1
                 face_indices = []
                 for p in parts[1:]:
-                    idx = int(p.split('/')[0]) - 1 # OBJ is 1-based
-                    face_indices.append(idx)
+                    components = p.split('/')
+                    # v_idx handling
+                    if not components[0]: continue
+                    
+                    v_idx = int(components[0]) - 1 # OBJ is 1-based index
+                    face_indices.append(v_idx)
+                    
+                    # Texture coordinate index (if present)
+                    # face format: v/vt/vn
+                    if len(components) > 1 and components[1]:
+                        vt_idx = int(components[1]) - 1
+                        if 0 <= vt_idx < len(texcoords):
+                            # Assign UV to vertex (last wins strategy for seams)
+                            vertex_to_uv[v_idx] = texcoords[vt_idx]
+                            
                 faces.append(face_indices)
                 face_groups.append(current_group)
     
-    return Mesh(np.array(vertices, dtype=np.float32), faces, face_groups)
+    # Create UV array matching vertices
+    vertex_uvs = np.zeros((len(vertices), 2), dtype=np.float32)
+    for v_idx, uv in vertex_to_uv.items():
+        if v_idx < len(vertex_uvs):
+            vertex_uvs[v_idx] = uv
+
+    mesh = Mesh(np.array(vertices, dtype=np.float32), faces, face_groups)
+    mesh.vertex_uvs = vertex_uvs
+    return mesh

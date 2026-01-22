@@ -149,6 +149,7 @@ def _vnccs_register_endpoint():
             return web.json_response({
                 "status": "success",
                 "vertices": new_verts.flatten().tolist(),
+                "uvs": base_mesh.vertex_uvs.flatten().tolist() if hasattr(base_mesh, 'vertex_uvs') else [],
                 "indices": tri_indices,
                 "normals": [],
                 "bones": bones_data,
