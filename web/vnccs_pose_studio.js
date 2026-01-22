@@ -1345,7 +1345,7 @@ class PoseViewer {
         if (this.syncCallback) this.syncCallback();
     }
 
-    setPose(pose) {
+    setPose(pose, preserveCamera = false) {
         if (!pose) return;
 
         const bones = pose.bones || {};
@@ -1381,27 +1381,27 @@ class PoseViewer {
             );
         }
 
-        // Restore Camera functionality
-        if (pose.camera) {
-            this.camera.position.set(
-                pose.camera.posX,
-                pose.camera.posY,
-                pose.camera.posZ
-            );
-            this.orbit.target.set(
-                pose.camera.targetX,
-                pose.camera.targetY,
-                pose.camera.targetZ
-            );
-        } else {
-            // Default view if no camera data (prevents inheriting from previous tab)
-            // But only if we are "resetting" or loading a distinct pose.
-            // For now, let's reset to a sensible default to fix the "moves all models" feeling
-            this.camera.position.set(0, 0.5, 4);
-            this.orbit.target.set(0, 1, 0);
+        // Camera handling - skip if preserveCamera is true (e.g. library loading)
+        if (!preserveCamera) {
+            if (pose.camera) {
+                this.camera.position.set(
+                    pose.camera.posX,
+                    pose.camera.posY,
+                    pose.camera.posZ
+                );
+                this.orbit.target.set(
+                    pose.camera.targetX,
+                    pose.camera.targetY,
+                    pose.camera.targetZ
+                );
+            } else {
+                // Default view if no camera data (prevents inheriting from previous tab)
+                this.camera.position.set(0, 0.5, 4);
+                this.orbit.target.set(0, 1, 0);
+            }
+            this.orbit.update();
         }
 
-        this.orbit.update();
         this.requestRender();
     }
 
@@ -2898,7 +2898,14 @@ class PoseStudioWidget {
             const data = await res.json();
 
             if (data.pose && this.viewer) {
-                this.viewer.setPose(data.pose);
+                // Only apply bones and modelRotation from library - NOT camera settings
+                // Library poses should not override user's export camera framing
+                const poseWithoutCamera = {
+                    bones: data.pose.bones,
+                    modelRotation: data.pose.modelRotation
+                    // Intentionally omit: camera
+                };
+                this.viewer.setPose(poseWithoutCamera, true); // preserveCamera = true
                 this.updateRotationSliders();
                 this.syncToNode();
             }
