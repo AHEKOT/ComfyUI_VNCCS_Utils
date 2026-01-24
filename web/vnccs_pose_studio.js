@@ -381,82 +381,154 @@ const STYLES = `
 }
 
 /* Lighting UI Styles */
+/* Lighting UI Styles (Reworked) */
 .vnccs-ps-light-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    margin-bottom: 8px;
-    max-height: 280px;
-    overflow-y: auto;
-    overflow-x: hidden;
+    gap: 12px;
+    margin-bottom: 20px;
     padding-right: 4px;
-    padding-bottom: 20px;
+    padding-bottom: 10px;
 }
-.vnccs-ps-light-item { 
-    background: rgba(0,0,0,0.3); 
-    border-radius: 6px; 
-    padding: 8px; 
-    border: 1px solid rgba(255,255,255,0.1);
+
+/* Light Card */
+.vnccs-ps-light-card {
+    background: linear-gradient(135deg, #252525 0%, #1e1e1e 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+    transition: all 0.2s;
 }
+.vnccs-ps-light-card:hover {
+    border-color: rgba(255,255,255,0.15);
+    box-shadow: 0 6px 16px rgba(0,0,0,0.3);
+    transform: translateY(-1px);
+}
+
+/* Header */
 .vnccs-ps-light-header {
+    background: rgba(255,255,255,0.03);
+    padding: 10px 12px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 6px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid rgba(255,255,255,0.1);
+    border-bottom: 1px solid rgba(255,255,255,0.05);
 }
-.vnccs-ps-light-title { font-weight: bold; font-size: 11px; color: #ccc; }
-.vnccs-ps-light-remove {
-    background: #c44;
-    border: none;
-    border-radius: 4px;
-    color: white;
-    width: 20px;
-    height: 20px;
-    cursor: pointer;
+.vnccs-ps-light-title {
+    font-weight: 600;
+    font-size: 11px;
+    color: #eee;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.vnccs-ps-light-icon {
     font-size: 14px;
-    line-height: 1;
+    opacity: 0.8;
+}
+
+/* Remove Button */
+.vnccs-ps-light-remove {
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    background: transparent;
+    color: #666;
+    border: 1px solid transparent;
+    cursor: pointer;
     display: flex;
     align-items: center;
     justify-content: center;
-}
-.vnccs-ps-light-remove:hover { background: #f55; }
-.vnccs-ps-light-row {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-}
-.vnccs-ps-light-row label {
-    width: 50px;
-    font-size: 10px;
-    color: #999;
-    flex-shrink: 0;
-}
-.vnccs-ps-light-row input[type="color"] {
-    width: 28px;
-    height: 20px;
-    border: none;
-    border-radius: 3px;
-    cursor: pointer;
+    font-size: 16px;
+    transition: all 0.2s;
     padding: 0;
 }
-.vnccs-ps-light-row input[type="range"] {
-    flex: 1;
-    min-width: 0;
-    height: 4px;
-    background: #444;
-    border-radius: 2px;
+.vnccs-ps-light-remove:hover {
+    background: rgba(210, 50, 50, 0.1);
+    color: #ff5555;
+    border-color: rgba(210, 50, 50, 0.3);
 }
-.vnccs-ps-light-row input[type="number"] {
-    width: 50px;
-    background: #222;
-    border: 1px solid #444;
-    border-radius: 3px;
-    color: white;
+
+/* Body */
+.vnccs-ps-light-body {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+/* Controls Grid */
+.vnccs-ps-light-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    align-items: center;
+}
+
+/* Input Styles */
+.vnccs-ps-light-select {
+    width: 100%;
+    background: #151515;
+    border: 1px solid #333;
+    border-radius: 4px;
+    color: #ccc;
+    font-size: 11px;
+    padding: 4px 6px;
+    font-family: inherit;
+    cursor: pointer;
+}
+.vnccs-ps-light-select:focus { border-color: var(--ps-accent); outline: none; }
+
+.vnccs-ps-light-color {
+    width: 100%;
+    height: 24px;
+    border: 1px solid #333;
+    border-radius: 4px;
+    padding: 0;
+    cursor: pointer;
+    background: none;
+}
+
+/* Sliders */
+.vnccs-ps-light-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.vnccs-ps-light-slider {
+    flex: 1;
+    height: 4px;
+    background: #333;
+    border-radius: 2px;
+    -webkit-appearance: none;
+}
+.vnccs-ps-light-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--ps-accent);
+    cursor: pointer;
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.2);
+}
+
+/* Position Grid */
+.vnccs-ps-light-pos-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 10px;
+    align-items: center;
+    background: rgba(0,0,0,0.2);
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.03);
+}
+.vnccs-ps-light-pos-label {
     font-size: 10px;
-    padding: 2px 4px;
+    color: #888;
+    font-weight: bold;
+    width: 12px;
 }
 .vnccs-ps-light-value {
     width: 35px;
@@ -465,8 +537,25 @@ const STYLES = `
     font-size: 10px;
     color: #aaa;
 }
-.vnccs-ps-btn-add-light { background: #3a6; }
-.vnccs-ps-btn-add-light:hover { background: #4b7; }
+
+/* Large Add Btn */
+.vnccs-ps-btn-add-large {
+    width: 100%;
+    padding: 10px;
+    background: linear-gradient(to bottom, #2a2a2a, #222);
+    border: 1px dashed #444;
+    border-radius: 6px;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.2s;
+    margin-top: 5px;
+}
+.vnccs-ps-btn-add-large:hover {
+    border-color: var(--ps-accent);
+    color: var(--ps-accent);
+    background: rgba(53, 88, 199, 0.05);
+}
 
 .vnccs-ps-tab.active {
     background: var(--ps-panel);
@@ -1999,15 +2088,21 @@ class PoseStudioWidget {
         // Store reference for re-rendering
         this.lightListContainer = lightListContainer;
 
-        // Button row for lighting controls
-        const lightBtnRow = document.createElement("div");
-        lightBtnRow.style.cssText = "display: flex; gap: 6px;";
+        // Toolbar (Reset only)
+        const toolbar = document.createElement("div");
+        toolbar.className = "vnccs-ps-light-header";
+        toolbar.style.borderBottom = "none";
+        toolbar.style.padding = "0 0 8px 0";
+        toolbar.style.background = "transparent";
 
-        // Reset Lighting button
+        const label = document.createElement("span");
+        label.className = "vnccs-ps-label";
+        label.innerText = "Scene Lights";
+
         const resetLightBtn = document.createElement("button");
-        resetLightBtn.className = "vnccs-ps-btn";
-        resetLightBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
-        resetLightBtn.title = "Reset to default lighting";
+        resetLightBtn.className = "vnccs-ps-reset-btn";
+        resetLightBtn.innerHTML = "↺";
+        resetLightBtn.title = "Reset Lighting";
         resetLightBtn.onclick = () => {
             this.lightParams = [
                 { type: 'ambient', color: '#404040', intensity: 0.5 },
@@ -2017,29 +2112,10 @@ class PoseStudioWidget {
             this.applyLighting();
         };
 
-        // Add Light button
-        const addLightBtn = document.createElement("button");
-        addLightBtn.className = "vnccs-ps-btn vnccs-ps-btn-add-light";
-        addLightBtn.innerHTML = '<span class="vnccs-ps-btn-icon">+</span> Add';
-        addLightBtn.onclick = () => {
-            // Default new light: white point light at origin
-            this.lightParams.push({
-                type: 'point',
-                color: '#ffffff',
-                intensity: 1.0,
-                x: 0,
-                y: 0,
-                z: 5
-            });
-            this.refreshLightUI();
-            this.applyLighting();
-        };
+        toolbar.appendChild(label);
+        toolbar.appendChild(resetLightBtn);
 
-        lightBtnRow.appendChild(resetLightBtn);
-        lightBtnRow.appendChild(addLightBtn);
-
-        // Add buttons BEFORE the list so they're always visible
-        lightSection.content.appendChild(lightBtnRow);
+        lightSection.content.appendChild(toolbar);
         lightSection.content.appendChild(lightListContainer);
         leftPanel.appendChild(lightSection.el);
 
@@ -3470,20 +3546,28 @@ class PoseStudioWidget {
 
         this.lightParams.forEach((light, index) => {
             const item = document.createElement('div');
-            item.className = 'vnccs-ps-light-item';
+            item.className = 'vnccs-ps-light-card';
 
-            // Header with title and remove button
+            // --- Header ---
             const header = document.createElement('div');
             header.className = 'vnccs-ps-light-header';
 
             const title = document.createElement('span');
             title.className = 'vnccs-ps-light-title';
-            title.textContent = `${light.type.charAt(0).toUpperCase() + light.type.slice(1)} Light ${index + 1}`;
+
+            // Icon
+            let iconChar = '💡';
+            if (light.type === 'directional') iconChar = '☀️';
+            else if (light.type === 'ambient') iconChar = '☁️';
+
+            title.innerHTML = `<span class="vnccs-ps-light-icon">${iconChar}</span> Light ${index + 1}`;
 
             const removeBtn = document.createElement('button');
             removeBtn.className = 'vnccs-ps-light-remove';
             removeBtn.innerHTML = '×';
-            removeBtn.onclick = () => {
+            removeBtn.title = "Remove Light";
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
                 this.lightParams.splice(index, 1);
                 this.refreshLightUI();
                 this.applyLighting();
@@ -3493,13 +3577,17 @@ class PoseStudioWidget {
             header.appendChild(removeBtn);
             item.appendChild(header);
 
-            // Light Type selector
-            const typeRow = document.createElement('div');
-            typeRow.className = 'vnccs-ps-light-row';
-            const typeLabel = document.createElement('label');
-            typeLabel.textContent = 'Type';
+            // --- Body ---
+            const body = document.createElement('div');
+            body.className = 'vnccs-ps-light-body';
+
+            // Grid 1: Type & Color
+            const grid1 = document.createElement('div');
+            grid1.className = 'vnccs-ps-light-grid';
+
+            // Type
             const typeSelect = document.createElement('select');
-            typeSelect.style.cssText = 'flex:1; background:#222; border:1px solid #444; border-radius:3px; color:white; font-size:11px; padding:3px;';
+            typeSelect.className = 'vnccs-ps-light-select';
             ['ambient', 'directional', 'point'].forEach(t => {
                 const opt = document.createElement('option');
                 opt.value = t;
@@ -3507,107 +3595,119 @@ class PoseStudioWidget {
                 if (t === light.type) opt.selected = true;
                 typeSelect.appendChild(opt);
             });
-            typeSelect.onclick = (e) => e.stopPropagation();
-            typeSelect.onmousedown = (e) => e.stopPropagation();
             typeSelect.onchange = () => {
                 light.type = typeSelect.value;
                 this.refreshLightUI();
                 this.applyLighting();
             };
-            typeRow.appendChild(typeLabel);
-            typeRow.appendChild(typeSelect);
-            item.appendChild(typeRow);
+            grid1.appendChild(typeSelect);
 
-            // Color picker
-            const colorRow = document.createElement('div');
-            colorRow.className = 'vnccs-ps-light-row';
-            const colorLabel = document.createElement('label');
-            colorLabel.textContent = 'Color';
+            // Color
             const colorInput = document.createElement('input');
             colorInput.type = 'color';
+            colorInput.className = 'vnccs-ps-light-color';
             colorInput.value = light.color || '#ffffff';
-            colorInput.onclick = (e) => e.stopPropagation(); // Stop click
             colorInput.oninput = (e) => {
-                e.stopPropagation(); // Stop input
                 light.color = colorInput.value;
                 clearTimeout(this.colorTimeout);
                 this.colorTimeout = setTimeout(() => this.applyLighting(), 50);
             };
-            colorRow.appendChild(colorLabel);
-            colorRow.appendChild(colorInput);
-            item.appendChild(colorRow);
+            grid1.appendChild(colorInput);
+            body.appendChild(grid1);
 
-            // Intensity slider
-            const isAmbient = light.type === 'ambient';
+            // Intensity
             const intensityRow = document.createElement('div');
-            intensityRow.className = 'vnccs-ps-light-row';
-            const intensityLabel = document.createElement('label');
-            intensityLabel.textContent = 'Intensity';
-            const intensitySlider = document.createElement('input');
-            intensitySlider.type = 'range';
-            intensitySlider.min = 0;
-            intensitySlider.max = isAmbient ? 2 : 5;
-            intensitySlider.step = isAmbient ? 0.01 : 0.1;
-            intensitySlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
+            intensityRow.className = 'vnccs-ps-light-slider-row';
 
-            // Stop propagation for slider
-            intensitySlider.onmousedown = (e) => e.stopPropagation();
-            intensitySlider.onpointerdown = (e) => e.stopPropagation();
-            intensitySlider.onclick = (e) => e.stopPropagation();
+            const intLabel = document.createElement('span');
+            intLabel.className = 'vnccs-ps-light-pos-label';
+            intLabel.innerText = "Int";
 
-            const intensityValue = document.createElement('span');
-            intensityValue.className = 'vnccs-ps-light-value';
-            intensityValue.textContent = parseFloat(intensitySlider.value).toFixed(2);
-            intensitySlider.oninput = () => {
-                light.intensity = parseFloat(intensitySlider.value);
-                intensityValue.textContent = light.intensity.toFixed(2);
+            const isAmbient = light.type === 'ambient';
+            const intSlider = document.createElement('input');
+            intSlider.type = 'range';
+            intSlider.className = 'vnccs-ps-light-slider';
+            intSlider.min = 0;
+            intSlider.max = isAmbient ? 2 : 5;
+            intSlider.step = isAmbient ? 0.01 : 0.1;
+            intSlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
+
+            const intValue = document.createElement('span');
+            intValue.className = 'vnccs-ps-light-value';
+            intValue.innerText = parseFloat(intSlider.value).toFixed(2);
+
+            intSlider.oninput = () => {
+                light.intensity = parseFloat(intSlider.value);
+                intValue.innerText = light.intensity.toFixed(2);
                 this.applyLighting();
             };
-            intensityRow.appendChild(intensityLabel);
-            intensityRow.appendChild(intensitySlider);
-            intensityRow.appendChild(intensityValue);
-            item.appendChild(intensityRow);
 
-            // Position controls
+            intensityRow.appendChild(intLabel);
+            intensityRow.appendChild(intSlider);
+            intensityRow.appendChild(intValue);
+            body.appendChild(intensityRow);
+
+            // Position Grid (if not Ambient)
             if (light.type !== 'ambient') {
-                const posLabels = ['X', 'Y', 'Z'];
-                const posKeys = ['x', 'y', 'z'];
-                posLabels.forEach((pl, pi) => {
-                    const posRow = document.createElement('div');
-                    posRow.className = 'vnccs-ps-light-row';
-                    const posLabel = document.createElement('label');
-                    posLabel.textContent = pl;
-                    const posSlider = document.createElement('input');
-                    posSlider.type = 'range';
-                    posSlider.min = -100;
-                    posSlider.max = 100;
-                    posSlider.step = 1;
-                    posSlider.value = light[posKeys[pi]] || 0;
+                const posGrid = document.createElement('div');
+                posGrid.className = 'vnccs-ps-light-pos-grid';
 
-                    // Stop propagation
-                    posSlider.onmousedown = (e) => e.stopPropagation();
-                    posSlider.onpointerdown = (e) => e.stopPropagation();
+                ['X', 'Y', 'Z'].forEach(axis => {
+                    const key = axis.toLowerCase();
 
-                    const posValue = document.createElement('span');
-                    posValue.className = 'vnccs-ps-light-value';
-                    posValue.textContent = posSlider.value;
+                    const label = document.createElement('span');
+                    label.className = 'vnccs-ps-light-pos-label';
+                    label.innerText = axis;
+                    posGrid.appendChild(label);
 
-                    posSlider.oninput = () => {
-                        light[posKeys[pi]] = parseFloat(posSlider.value);
-                        posValue.textContent = light[posKeys[pi]];
+                    const row = document.createElement('div');
+                    row.className = 'vnccs-ps-light-slider-row';
+                    row.style.width = "100%";
+
+                    const slider = document.createElement('input');
+                    slider.type = 'range';
+                    slider.className = 'vnccs-ps-light-slider';
+                    slider.min = -100;
+                    slider.max = 100;
+                    slider.step = 1;
+                    slider.value = light[key] || 0;
+
+                    const val = document.createElement('span');
+                    val.className = 'vnccs-ps-light-value';
+                    val.innerText = slider.value;
+
+                    slider.oninput = () => {
+                        light[key] = parseFloat(slider.value);
+                        val.innerText = slider.value;
                         this.applyLighting();
                     };
 
-                    posRow.appendChild(posLabel);
-                    posRow.appendChild(posSlider);
-                    posRow.appendChild(posValue);
-                    item.appendChild(posRow);
+                    row.appendChild(slider);
+                    row.appendChild(val);
+                    posGrid.appendChild(row);
                 });
+                body.appendChild(posGrid);
             }
 
-
+            item.appendChild(body);
             this.lightListContainer.appendChild(item);
         });
+
+        // Add Light Button (Big)
+        const addBtn = document.createElement('button');
+        addBtn.className = 'vnccs-ps-btn-add-large';
+        addBtn.innerHTML = '+ Add Light Source';
+        addBtn.onclick = () => {
+            this.lightParams.push({
+                type: 'point',
+                color: '#ffffff',
+                intensity: 1.0,
+                x: 0, y: 0, z: 5
+            });
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+        this.lightListContainer.appendChild(addBtn);
     }
 
     applyLighting() {
