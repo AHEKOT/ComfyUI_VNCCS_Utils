@@ -68,9 +68,8 @@ const STYLES = `
 
 /* === Left Panel (25%) === */
 .vnccs-ps-left {
-    width: 25%;
-    min-width: 200px;
-    max-width: 280px;
+    width: 250px;
+    flex-shrink: 0;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -84,15 +83,32 @@ const STYLES = `
 .vnccs-ps-left::-webkit-scrollbar { width: 6px; }
 .vnccs-ps-left::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
 
-/* === Right Panel (75%) === */
-.vnccs-ps-right {
+/* === Center Panel (Canvas) === */
+.vnccs-ps-center {
     flex: 1;
-    min-width: 0;
+    min-width: 400px;
     display: flex;
     flex-direction: column;
     overflow: hidden;
     pointer-events: auto;
 }
+
+/* === Right Sidebar (Lighting) === */
+.vnccs-ps-right-sidebar {
+    width: 320px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 10px;
+    overflow-y: auto;
+    border-left: 1px solid var(--ps-border);
+    pointer-events: auto;
+    background: var(--ps-bg);
+}
+
+.vnccs-ps-right-sidebar::-webkit-scrollbar { width: 6px; }
+.vnccs-ps-right-sidebar::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
 
 /* === Section Component === */
 .vnccs-ps-section {
@@ -907,23 +923,95 @@ const STYLES = `
     padding-right: 10px;
 }
 
-.vnccs-ps-library-panel {
+/* Library Modal Overlay */
+.vnccs-ps-modal-overlay {
     position: absolute;
     top: 0;
-    right: -250px;
-    width: 250px;
+    left: 0;
+    width: 100%;
     height: 100%;
-    background: var(--ps-panel);
-    border-left: 1px solid var(--ps-border);
+    background: rgba(0, 0, 0, 0.85);
     display: flex;
-    flex-direction: column;
-    transition: right 0.25s ease;
-    z-index: 99;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
     pointer-events: auto;
+    backdrop-filter: blur(4px);
 }
 
-.vnccs-ps-library-panel.open {
-    right: 0;
+.vnccs-ps-library-modal {
+    width: 95%;
+    max-width: 1200px;
+    height: 90%;
+    max-height: 900px;
+    background: var(--ps-panel);
+    border: 1px solid var(--ps-border);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.vnccs-ps-library-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    background: #1a1a1a;
+    border-bottom: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-library-modal-title {
+    font-size: 18px;
+    font-weight: bold;
+    color: var(--ps-accent);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.vnccs-ps-modal-close {
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 24px;
+    cursor: pointer;
+    transition: color 0.2s;
+}
+
+.vnccs-ps-modal-close:hover { color: #fff; }
+
+.vnccs-ps-library-modal-grid {
+    flex: 1;
+    overflow-y: scroll; /* Force scrollbar space to be reserved */
+    padding: 24px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 20px;
+    align-content: start;
+}
+.vnccs-ps-library-modal-grid::-webkit-scrollbar {
+    width: 10px;
+}
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-track {
+    background: #111;
+}
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb {
+    background: #444;
+    border-radius: 5px;
+}
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb:hover {
+    background: var(--ps-accent);
+}
+
+.vnccs-ps-library-modal-footer {
+    padding: 15px 20px;
+    border-top: 1px solid var(--ps-border);
+    background: #1a1a1a;
+    display: flex;
+    justify-content: flex-end;
 }
 
 .vnccs-ps-library-header {
@@ -972,7 +1060,11 @@ const STYLES = `
     overflow: hidden;
     cursor: pointer;
     transition: all 0.15s;
-    position: relative; /* For absolute delete button */
+    position: relative;
+    /* Force a minimum height so items don't squash */
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
 }
 
 .vnccs-ps-library-item-delete {
@@ -1011,13 +1103,14 @@ const STYLES = `
 
 .vnccs-ps-library-item-preview {
     width: 100%;
-    aspect-ratio: 1;
+    flex: 1; /* Take remaining space above labels */
     background: #1a1a1a;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--ps-text-muted);
     font-size: 28px;
+    overflow: hidden;
 }
 
 .vnccs-ps-library-item-preview img {
@@ -1752,9 +1845,18 @@ class PoseViewer {
             this.captureCamera = new this.THREE.PerspectiveCamera(30, width / height, 0.1, 100);
             this.scene.add(this.captureCamera);
 
-            // Visual Helper
+            // Visual Helper - Only a projected rectangle (no cone)
+            const frameGeo = new this.THREE.BufferGeometry().setFromPoints([
+                new this.THREE.Vector3(-1, 1, 0), new this.THREE.Vector3(1, 1, 0),
+                new this.THREE.Vector3(1, -1, 0), new this.THREE.Vector3(-1, -1, 0),
+                new this.THREE.Vector3(-1, 1, 0)
+            ]);
+            this.captureFrame = new this.THREE.Line(frameGeo, new this.THREE.LineBasicMaterial({ color: 0xffa500, linewidth: 2 }));
+            this.scene.add(this.captureFrame);
+
+            // Legacy helper (keep for internal matrix updates but DON'T ADD TO SCENE)
             this.captureHelper = new this.THREE.CameraHelper(this.captureCamera);
-            this.scene.add(this.captureHelper);
+            this.captureHelper.visible = false;
         }
 
         // Positioning relative to offset target
@@ -1784,9 +1886,21 @@ class PoseViewer {
             this.refPlane.rotation.set(0, 0, 0); // Ensure it faces camera (camera looks down -Z, plane is XY)
         }
 
+        if (this.captureFrame) {
+            const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+            // Frame at target distance (dist = 45)
+            const h = 2 * dist * Math.tan(vFOV / 2) / Math.max(0.1, zoom);
+            const w = h * this.captureCamera.aspect;
+
+            this.captureFrame.position.copy(target);
+            this.captureFrame.scale.set(w / 2, h / 2, 1);
+            this.captureFrame.lookAt(this.captureCamera.position);
+            this.captureFrame.visible = true;
+        }
+
         if (this.captureHelper) {
             this.captureHelper.update();
-            this.captureHelper.visible = true;
+            this.captureHelper.visible = false;
         }
         this.requestRender();
     }
@@ -1829,7 +1943,7 @@ class PoseViewer {
         if (this.transform) this.transform.visible = false;
         if (this.skeletonHelper) this.skeletonHelper.visible = false;
         if (this.gridHelper) this.gridHelper.visible = false;
-        if (this.captureHelper) this.captureHelper.visible = false; // Hide frame from capture
+        if (this.captureFrame) this.captureFrame.visible = false;
         this.jointMarkers.forEach(m => m.visible = false);
 
         // Background Override
@@ -1865,7 +1979,7 @@ class PoseViewer {
             if (this.transform) this.transform.visible = transformVisible;
             if (this.skeletonHelper) this.skeletonHelper.visible = true;
             if (this.gridHelper) this.gridHelper.visible = true;
-            if (this.captureHelper) this.captureHelper.visible = true; // Show frame in editor
+            if (this.captureFrame) this.captureFrame.visible = true;
 
             // Re-render viewport
             this.renderer.render(this.scene, this.camera);
@@ -2146,57 +2260,13 @@ class PoseStudioWidget {
 
         leftPanel.appendChild(camSection.el);
 
-        // --- LIGHTING SECTION ---
-        const lightSection = this.createSection("Lighting", true);
-
-        // Container for all light controls
-        const lightListContainer = document.createElement("div");
-        lightListContainer.className = "vnccs-ps-light-list";
-
-        // Store reference for re-rendering
-        this.lightListContainer = lightListContainer;
-
-        // Toolbar (Reset only)
-        const toolbar = document.createElement("div");
-        toolbar.className = "vnccs-ps-light-header";
-        toolbar.style.borderBottom = "none";
-        toolbar.style.padding = "0 0 8px 0";
-        toolbar.style.background = "transparent";
-
-        const label = document.createElement("span");
-        label.className = "vnccs-ps-label";
-        label.innerText = "Scene Lights";
-
-        const resetLightBtn = document.createElement("button");
-        resetLightBtn.className = "vnccs-ps-reset-btn";
-        resetLightBtn.innerHTML = "↺";
-        resetLightBtn.title = "Reset Lighting";
-        resetLightBtn.onclick = () => {
-            this.lightParams = [
-                { type: 'ambient', color: '#404040', intensity: 0.5 },
-                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
-            ];
-            this.refreshLightUI();
-            this.applyLighting();
-        };
-
-        toolbar.appendChild(label);
-        toolbar.appendChild(resetLightBtn);
-
-        lightSection.content.appendChild(toolbar);
-        lightSection.content.appendChild(lightListContainer);
-        leftPanel.appendChild(lightSection.el);
-
-        // Initialize default lights if empty
+        // Initialize default lights if empty (Lighting logic remains same, just container changes)
         if (this.lightParams.length === 0) {
             this.lightParams.push(
                 { type: 'ambient', color: '#404040', intensity: 0.5 },
                 { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
             );
         }
-
-        // Initial render of lights
-        this.refreshLightUI();
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
@@ -2265,15 +2335,15 @@ class PoseStudioWidget {
 
         this.container.appendChild(leftPanel);
 
-        // === RIGHT PANEL ===
-        const rightPanel = document.createElement("div");
-        rightPanel.className = "vnccs-ps-right";
+        // === CENTER PANEL ===
+        const centerPanel = document.createElement("div");
+        centerPanel.className = "vnccs-ps-center";
 
         // Tab Bar
         this.tabsContainer = document.createElement("div");
         this.tabsContainer.className = "vnccs-ps-tabs";
         this.updateTabs();
-        rightPanel.appendChild(this.tabsContainer);
+        centerPanel.appendChild(this.tabsContainer);
 
         // Canvas Container
         this.canvasContainer = document.createElement("div");
@@ -2281,7 +2351,7 @@ class PoseStudioWidget {
 
         const canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(canvas);
-        rightPanel.appendChild(this.canvasContainer);
+        centerPanel.appendChild(this.canvasContainer);
 
         // Action Bar
         const actions = document.createElement("div");
@@ -2391,38 +2461,66 @@ class PoseStudioWidget {
         footer.appendChild(refBtn);
         footer.appendChild(settingsBtn);
 
-        rightPanel.appendChild(actions);
-        rightPanel.appendChild(footer);
+        centerPanel.appendChild(actions);
+        centerPanel.appendChild(footer);
 
-        this.container.appendChild(rightPanel);
+        this.container.appendChild(centerPanel);
 
-        // === POSE LIBRARY PANEL (sliding right) ===
-        this.libraryPanel = document.createElement("div");
-        this.libraryPanel.className = "vnccs-ps-library-panel";
-        this.libraryPanel.innerHTML = `
-            <div class="vnccs-ps-library-header">
-                <span class="vnccs-ps-library-title">📚 Pose Library</span>
-                <button class="vnccs-ps-library-close">✕</button>
-            </div>
-            <div class="vnccs-ps-library-grid"></div>
-            <div class="vnccs-ps-library-footer">
-                <button class="vnccs-ps-btn primary" style="width:100%">
-                    <span class="vnccs-ps-btn-icon">💾</span> Save Current
-                </button>
-            </div>
-        `;
-        this.libraryGrid = this.libraryPanel.querySelector(".vnccs-ps-library-grid");
-        this.libraryPanel.querySelector(".vnccs-ps-library-close").onclick = () => this.closeLibrary();
-        this.libraryPanel.querySelector(".vnccs-ps-library-footer button").onclick = () => this.showSaveToLibraryModal();
-        this.container.appendChild(this.libraryPanel);
+        // === RIGHT SIDEBAR (LIGHTING) ===
+        const rightSidebar = document.createElement("div");
+        rightSidebar.className = "vnccs-ps-right-sidebar";
 
-        // Library toggle button (edge of canvas)
-        this.libraryBtn = document.createElement("button");
-        this.libraryBtn.className = "vnccs-ps-library-btn";
-        this.libraryBtn.innerHTML = "📚";
-        this.libraryBtn.title = "Pose Library";
-        this.libraryBtn.onclick = () => this.toggleLibrary();
-        this.container.appendChild(this.libraryBtn);
+        const lightSection = this.createSection("Lighting", true);
+        this.lightListContainer = document.createElement("div");
+        this.lightListContainer.className = "vnccs-ps-light-list";
+
+        const lightToolbar = document.createElement("div");
+        lightToolbar.className = "vnccs-ps-light-header";
+        lightToolbar.style.padding = "0 0 8px 0";
+        lightToolbar.style.background = "transparent";
+        lightToolbar.style.border = "none";
+
+        const lightLabel = document.createElement("span");
+        lightLabel.className = "vnccs-ps-label";
+        lightLabel.innerText = "Scene Lights";
+
+        const resetLightBtn = document.createElement("button");
+        resetLightBtn.className = "vnccs-ps-reset-btn";
+        resetLightBtn.innerHTML = "↺";
+        resetLightBtn.title = "Reset Lighting";
+        resetLightBtn.onclick = () => {
+            this.lightParams = [
+                { type: 'ambient', color: '#404040', intensity: 0.5 },
+                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
+            ];
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+
+        lightToolbar.appendChild(lightLabel);
+        lightToolbar.appendChild(resetLightBtn);
+        lightSection.content.appendChild(lightToolbar);
+        lightSection.content.appendChild(this.lightListContainer);
+        rightSidebar.appendChild(lightSection.el);
+
+        // Pose Library Button (Top of Sidebar)
+        const libBtnWrap = document.createElement("div");
+        libBtnWrap.style.paddingBottom = "5px";
+
+        const libBtn = document.createElement("button");
+        libBtn.className = "vnccs-ps-btn primary";
+        libBtn.style.width = "100%";
+        libBtn.style.padding = "10px";
+        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
+        libBtn.onclick = () => this.showLibraryModal();
+
+        libBtnWrap.appendChild(libBtn);
+        rightSidebar.prepend(libBtnWrap);
+
+        this.container.appendChild(rightSidebar);
+
+        // Initial render of lights
+        this.refreshLightUI();
 
         // Initialize viewer
         this.viewer = new PoseViewer(canvas);
@@ -3391,21 +3489,35 @@ class PoseStudioWidget {
 
     // === Pose Library Methods ===
 
-    toggleLibrary() {
-        if (this.libraryPanel.classList.contains('open')) {
-            this.closeLibrary();
-        } else {
-            this.openLibrary();
-        }
-    }
+    showLibraryModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
 
-    openLibrary() {
-        this.libraryPanel.classList.add('open');
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-library-modal';
+        modal.innerHTML = `
+            <div class="vnccs-ps-library-modal-header">
+                <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
+                <button class="vnccs-ps-modal-close">✕</button>
+            </div>
+            <div class="vnccs-ps-library-modal-grid"></div>
+            <div class="vnccs-ps-library-modal-footer">
+                 <button class="vnccs-ps-btn primary" style="width: auto; padding: 10px 20px;">
+                    <span class="vnccs-ps-btn-icon">💾</span> Save Current Pose
+                </button>
+            </div>
+        `;
+
+        this.libraryGrid = modal.querySelector('.vnccs-ps-library-modal-grid');
+
+        modal.querySelector('.vnccs-ps-modal-close').onclick = () => overlay.remove();
+        modal.querySelector('.vnccs-ps-library-modal-footer button').onclick = () => this.showSaveToLibraryModal();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+
         this.refreshLibrary();
-    }
-
-    closeLibrary() {
-        this.libraryPanel.classList.remove('open');
     }
 
     async refreshLibrary() {
@@ -3437,7 +3549,11 @@ class PoseStudioWidget {
                 name.className = 'vnccs-ps-library-item-name';
                 name.innerText = pose.name;
 
-                item.onclick = () => this.loadFromLibrary(pose.name);
+                item.onclick = () => {
+                    this.loadFromLibrary(pose.name);
+                    const overlay = item.closest('.vnccs-ps-modal-overlay');
+                    if (overlay) overlay.remove();
+                };
 
                 // Delete button
                 const delBtn = document.createElement('div');
@@ -3486,6 +3602,9 @@ class PoseStudioWidget {
             if (name) {
                 this.saveToLibrary(name, previewCheck.checked);
                 overlay.remove();
+                // Refresh modal if open
+                const libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
+                if (libraryGrid) this.refreshLibrary();
             }
         };
 
