@@ -58,15 +58,17 @@ The companion node for selecting models. It provides a rich Graphical User Inter
 A helper node to simply extract and visualize the crops. Useful when you need extract bbox detected regions but don't want to run whole facedetailer.
 
 ### 5. VNCCS Pose Studio
+A professional 3D posing and lighting environment running entirely within a ComfyUI node.
 
-A comprehensive 3D posing environment running entirely within a ComfyUI node. It allows you to create, edit, and manage 3D character poses to generate control signals (images/depth/openpose) for your workflows.
+*   **3-Column Interface**: Structured workflow with Parameters (Left), Viewport (Center), and Lighting/Library (Right).
+*   **Interactive Viewport**: Sophisticated bone manipulation with gizmos and **Undo/Redo** functionality.
+*   **Advanced Environment Lighting**: Ambient, Directional, and **Point Lights** with interactive 2D radars and radius control.
+*   **Modal Pose Gallery**: A clean, full-screen gallery to manage and load saved poses without cluttering the UI.
+*   **Multi-Pose Tabs**: System for creating batch outputs or sequences within a single node.
+*   **Precision Framing**: Integrated camera radar and Zoom controls with a clean viewport frame visualization.
+*   **Tracing Support**: Load background reference images for precise character alignment.
 
-*   **Interactive 3D Viewport**: Manipulate bones with gizmo controls smoothly.
-*   **Customizable Mannequin**: Adjust Age, Gender, Weight, Muscle, Height, and more parameters.
-*   **Pose Library**: Save your best poses and reuse them later with a visual library interface.
-*   **Multi-Pose Batching**: Create multiple pose tabs in one node to generate batch outputs.
-*   **Camera Control**: precise Zoom and Pan (X/Y) controls to frame your subject perfectly.
-*   **Reference Image**: Load a background image to trace poses.
+
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
 

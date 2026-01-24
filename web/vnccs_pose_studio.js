@@ -2023,7 +2023,8 @@ class PoseStudioWidget {
             grid_columns: 2,
             bg_color: [255, 255, 255],
             debugMode: false,  // Random pose rotation, camera, and lighting
-            debugNoLight: false // If true, disable random lighting in debug mode
+            prompt_prefix: "Draw character from image2\nCopy how the lighting falls on the character from image 1:",
+            prompt_suffix: "change background to match new character pose, zoom and lighting colors.\nFix shadows"
         };
 
         // Lighting settings (array of light configs)
@@ -3719,34 +3720,51 @@ class PoseStudioWidget {
         debugRow.appendChild(debugLabel);
         content.appendChild(debugRow);
 
-        // No Light Random Toggle
-        const noLightRow = document.createElement("div");
-        noLightRow.className = "vnccs-ps-field";
-        noLightRow.style.marginTop = "10px";
+        // Prompt Templates Section
+        const templateHeader = document.createElement("div");
+        templateHeader.className = "vnccs-ps-settings-title";
+        templateHeader.style.marginTop = "20px";
+        templateHeader.style.padding = "10px 0";
+        templateHeader.style.borderTop = "1px solid var(--ps-border)";
+        templateHeader.innerText = "Prompt Templates";
+        content.appendChild(templateHeader);
 
-        const noLightLabel = document.createElement("label");
-        noLightLabel.style.display = "flex";
-        noLightLabel.style.alignItems = "center";
-        noLightLabel.style.gap = "10px";
-        noLightLabel.style.cursor = "pointer";
-        noLightLabel.style.userSelect = "none";
+        const createTemplateField = (label, key) => {
+            const field = document.createElement("div");
+            field.className = "vnccs-ps-field";
+            field.style.flexDirection = "column";
+            field.style.alignItems = "stretch";
 
-        const noLightCheckbox = document.createElement("input");
-        noLightCheckbox.type = "checkbox";
-        noLightCheckbox.checked = this.exportParams.debugNoLight || false;
-        noLightCheckbox.style.width = "16px";
-        noLightCheckbox.style.height = "16px";
-        noLightCheckbox.onchange = () => {
-            this.exportParams.debugNoLight = noLightCheckbox.checked;
+            const l = document.createElement("div");
+            l.className = "vnccs-ps-label";
+            l.innerText = label;
+            l.style.marginBottom = "5px";
+
+            const area = document.createElement("textarea");
+            area.style.width = "100%";
+            area.style.height = "60px";
+            area.style.background = "var(--ps-input-bg)";
+            area.style.color = "var(--ps-text)";
+            area.style.border = "1px solid var(--ps-border)";
+            area.style.borderRadius = "4px";
+            area.style.padding = "8px";
+            area.style.fontSize = "12px";
+            area.style.resize = "vertical";
+            area.style.fontFamily = "monospace";
+            area.value = this.exportParams[key] || "";
+
+            area.onchange = () => {
+                this.exportParams[key] = area.value;
+                this.syncToNode(false);
+            };
+
+            field.appendChild(l);
+            field.appendChild(area);
+            return field;
         };
 
-        const noLightText = document.createElement("div");
-        noLightText.innerHTML = "<strong>Keep Current Lighting</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will randomize poses/camera but KEEP your manually set lighting configuration.</div>";
-
-        noLightLabel.appendChild(noLightCheckbox);
-        noLightLabel.appendChild(noLightText);
-        noLightRow.appendChild(noLightLabel);
-        content.appendChild(noLightRow);
+        content.appendChild(createTemplateField("Prompt Prefix", "prompt_prefix"));
+        content.appendChild(createTemplateField("Prompt Suffix", "prompt_suffix"));
 
         panel.appendChild(header);
         panel.appendChild(content);
@@ -4064,8 +4082,14 @@ class PoseStudioWidget {
         if (this.viewer && this.viewer.initialized) {
             this.viewer.updateLights(this.lightParams);
         }
-        // Lighting changes affect all previews
-        this.syncToNode(true);
+        // Lightweight sync for prompt/data (no capture)
+        this.syncToNode(false);
+
+        // Debounce full capture (previews) to avoid lag/shaking during drag
+        clearTimeout(this.lightingSyncTimeout);
+        this.lightingSyncTimeout = setTimeout(() => {
+            this.syncToNode(true);
+        }, 500);
     }
 
     updateRotationSliders() {
@@ -4238,10 +4262,19 @@ class PoseStudioWidget {
             if (finalPrompt.length > 0) finalPrompt += ". ";
             finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
         } else if (finalPrompt.length === 0) {
-            return "Soft global ambient lighting.";
+            finalPrompt = "Soft global ambient lighting.";
         }
 
-        return finalPrompt + ".";
+        // Wrap with templates
+        const prefix = this.exportParams.prompt_prefix || "";
+        const suffix = this.exportParams.prompt_suffix || "";
+
+        let result = "";
+        if (prefix) result += prefix.trim() + "\n";
+        result += finalPrompt.trim();
+        if (suffix) result += "\n" + suffix.trim();
+
+        return result.trim();
     }
 
     /**
@@ -4270,129 +4303,125 @@ class PoseStudioWidget {
         const offsetX = (Math.random() * 2 - 1) * maxOffset;
         const offsetY = (Math.random() * 2 - 1) * maxOffset;
 
-        // Random directional lighting (skipped if Keep Lighting is checked)
-        let lights = null;
+        // Random directional lighting
+        const lights = [];
         let lightingPrompt = "";
 
-        if (!this.exportParams.debugNoLight) {
-            lights = [];
+        // Light count probabilities:
+        // 20% - 3 lights
+        // 50% - 2 lights
+        // 30% - 1 light
+        const r = Math.random();
+        const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
 
-            // Light count probabilities:
-            // 20% - 3 lights
-            // 50% - 2 lights
-            // 30% - 1 light
-            const r = Math.random();
-            const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
+        // Basic Vivid Colors
+        const colorPalette = [
+            { name: "Red", hex: "#ff0000" },
+            { name: "Green", hex: "#00ff00" },
+            { name: "Blue", hex: "#0000ff" },
+            { name: "Yellow", hex: "#ffff00" },
+            { name: "Cyan", hex: "#00ffff" },
+            { name: "Magenta", hex: "#ff00ff" },
+            { name: "Orange", hex: "#ff8000" },
+            { name: "White", hex: "#ffffff" }
+        ];
 
-            // Basic Vivid Colors
-            const colorPalette = [
-                { name: "Red", hex: "#ff0000" },
-                { name: "Green", hex: "#00ff00" },
-                { name: "Blue", hex: "#0000ff" },
-                { name: "Yellow", hex: "#ffff00" },
-                { name: "Cyan", hex: "#00ffff" },
-                { name: "Magenta", hex: "#ff00ff" },
-                { name: "Orange", hex: "#ff8000" },
-                { name: "White", hex: "#ffffff" }
-            ];
+        const prompts = [];
 
-            const prompts = [];
+        for (let i = 0; i < numLights; i++) {
+            // Pick random color
+            const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
 
-            for (let i = 0; i < numLights; i++) {
-                // Pick random color
-                const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+            // Random intensity (2.0 to 3.5)
+            const intensity = 2.0 + Math.random() * 1.5;
 
-                // Random intensity (2.0 to 3.5)
-                const intensity = 2.0 + Math.random() * 1.5;
-
-                // Generate Position
-                // Widen range to creates better shadows (side lighting)
-                // -60 to 60 for X, 0 to 60 for Z, 10 to 60 for Y
-                let x, y, z;
-                // Distribute lights to avoid bunching if multiple
-                if (numLights > 1) {
-                    // Spread X based on index
-                    const slice = 120 / numLights;
-                    const center = -60 + slice * i + slice / 2;
-                    x = center + (Math.random() * 20 - 10); // Jitter
-                } else {
-                    x = (Math.random() * 2 - 1) * 60;
-                }
-
-                y = 10 + Math.random() * 50;
-                z = Math.random() * 60;
-
-                // Determine position description
-                let posDesc = "";
-                if (y > 40) posDesc += "top ";
-                else if (y < 20) posDesc += "low ";
-
-                if (x > 20) posDesc += "right";
-                else if (x < -20) posDesc += "left";
-                else if (z > 30) posDesc += "front";
-                else posDesc += "side"; // Fallback
-
-                posDesc = posDesc.trim();
-
-                // Determine intensity description
-                let intDesc = "strong";
-                if (intensity > 3.0) intDesc = "blinding";
-                else if (intensity < 2.5) intDesc = "bright";
-
-                prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc}`);
-
-                lights.push({
-                    type: 'directional',
-                    color: colorObj.hex,
-                    intensity: parseFloat(intensity.toFixed(2)),
-                    x: parseFloat(x.toFixed(1)),
-                    y: parseFloat(y.toFixed(1)),
-                    z: parseFloat(z.toFixed(1))
-                });
+            // Generate Position
+            // Widen range to creates better shadows (side lighting)
+            // -60 to 60 for X, 0 to 60 for Z, 10 to 60 for Y
+            let x, y, z;
+            // Distribute lights to avoid bunching if multiple
+            if (numLights > 1) {
+                // Spread X based on index
+                const slice = 120 / numLights;
+                const center = -60 + slice * i + slice / 2;
+                x = center + (Math.random() * 20 - 10); // Jitter
+            } else {
+                x = (Math.random() * 2 - 1) * 60;
             }
 
-            lightingPrompt = prompts.join(". ") + ".";
+            y = 10 + Math.random() * 50;
+            z = Math.random() * 60;
 
-            // Random Ambient Light
-            let ambColor = '#505050';
-            let ambIntensity = 0.1;
+            // Determine position description
+            let posDesc = "";
+            if (y > 40) posDesc += "top ";
+            else if (y < 20) posDesc += "low ";
 
-            // 70% chance of varied ambient color
-            if (Math.random() < 0.7) {
-                const h = Math.random();
-                const s = 0.3 + Math.random() * 0.7; // Colorful (30-100% sat)
-                const l = 0.3 + Math.random() * 0.5; // Visible lightness (30-80%)
+            if (x > 20) posDesc += "right";
+            else if (x < -20) posDesc += "left";
+            else if (z > 30) posDesc += "front";
+            else posDesc += "side"; // Fallback
 
-                // HSL to RGB
-                const hue2rgb = (p, q, t) => {
-                    if (t < 0) t += 1;
-                    if (t > 1) t -= 1;
-                    if (t < 1 / 6) return p + (q - p) * 6 * t;
-                    if (t < 1 / 2) return q;
-                    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-                    return p;
-                };
-                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-                const p = 2 * l - q;
-                const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
-                const g = Math.round(hue2rgb(p, q, h) * 255);
-                const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+            posDesc = posDesc.trim();
 
-                const toHex = c => {
-                    const hex = c.toString(16);
-                    return hex.length === 1 ? '0' + hex : hex;
-                };
-                ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
-                ambIntensity = 0.2 + Math.random() * 1.0; // 0.2 - 1.2
-            }
+            // Determine intensity description
+            let intDesc = "strong";
+            if (intensity > 3.0) intDesc = "blinding";
+            else if (intensity < 2.5) intDesc = "bright";
+
+            prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc}`);
 
             lights.push({
-                type: 'ambient',
-                color: ambColor,
-                intensity: parseFloat(ambIntensity.toFixed(2)),
-                x: 0, y: 0, z: 0
+                type: 'directional',
+                color: colorObj.hex,
+                intensity: parseFloat(intensity.toFixed(2)),
+                x: parseFloat(x.toFixed(1)),
+                y: parseFloat(y.toFixed(1)),
+                z: parseFloat(z.toFixed(1))
             });
         }
+
+        lightingPrompt = prompts.join(". ") + ".";
+
+        // Random Ambient Light
+        let ambColor = '#505050';
+        let ambIntensity = 0.1;
+
+        // 70% chance of varied ambient color
+        if (Math.random() < 0.7) {
+            const h = Math.random();
+            const s = 0.3 + Math.random() * 0.7; // Colorful (30-100% sat)
+            const l = 0.3 + Math.random() * 0.5; // Visible lightness (30-80%)
+
+            // HSL to RGB
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1 / 6) return p + (q - p) * 6 * t;
+                if (t < 1 / 2) return q;
+                if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                return p;
+            };
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
+            const g = Math.round(hue2rgb(p, q, h) * 255);
+            const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+
+            const toHex = c => {
+                const hex = c.toString(16);
+                return hex.length === 1 ? '0' + hex : hex;
+            };
+            ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
+            ambIntensity = 0.2 + Math.random() * 1.0; // 0.2 - 1.2
+        }
+
+        lights.push({
+            type: 'ambient',
+            color: ambColor,
+            intensity: parseFloat(ambIntensity.toFixed(2)),
+            x: 0, y: 0, z: 0
+        });
 
         // Debug background color (White)
         const bgColor = [255, 255, 255];
@@ -4494,11 +4523,17 @@ class PoseStudioWidget {
                 }
 
                 // Restore original state
-                if (isDebug && !this.exportParams.debugNoLight) {
+                if (isDebug) {
                     this.viewer.updateLights(originalLights);
                 }
                 this.activeTab = originalTab;
                 this.viewer.setPose(this.poses[this.activeTab]);
+
+                // Restore Manual Camera Visualization after debug/batch render
+                const z = this.exportParams.cam_zoom || 1.0;
+                const oX = this.exportParams.cam_offset_x || 0;
+                const oY = this.exportParams.cam_offset_y || 0;
+                this.viewer.updateCaptureCamera(w, h, z, oX, oY);
 
             } else {
                 // Capture only ACTIVE
@@ -4529,6 +4564,12 @@ class PoseStudioWidget {
 
                     // Restore original pose
                     this.viewer.setPose(this.poses[this.activeTab]);
+
+                    // Restore Manual Camera Visualization
+                    const z = this.exportParams.cam_zoom || 1.0;
+                    const oX = this.exportParams.cam_offset_x || 0;
+                    const oY = this.exportParams.cam_offset_y || 0;
+                    this.viewer.updateCaptureCamera(w, h, z, oX, oY);
                 } else {
                     const z = this.exportParams.cam_zoom || 1.0;
                     const oX = this.exportParams.cam_offset_x || 0;
