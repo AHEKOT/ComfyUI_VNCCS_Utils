@@ -2830,15 +2830,32 @@ class PoseStudioWidget {
         }
 
         // Restore Camera Sliders if saved
+        // Restore Camera Sliders if saved
         if (newPose.cameraParams) {
             this.exportParams.cam_offset_x = newPose.cameraParams.offset_x || 0;
             this.exportParams.cam_offset_y = newPose.cameraParams.offset_y || 0;
             this.exportParams.cam_zoom = newPose.cameraParams.zoom || 1.0;
+        } else {
+            // Default params if new pose has none
+            this.exportParams.cam_offset_x = 0;
+            this.exportParams.cam_offset_y = 0;
+            this.exportParams.cam_zoom = 1.0;
+        }
 
-            // Update DOM widgets
-            if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
-            if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
-            if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+        // Update DOM widgets
+        if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+        if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+        if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+
+        // Force Camera Snap
+        if (this.viewer) {
+            this.viewer.snapToCaptureCamera(
+                this.exportParams.view_width,
+                this.exportParams.view_height,
+                this.exportParams.cam_zoom,
+                this.exportParams.cam_offset_x,
+                this.exportParams.cam_offset_y
+            );
         }
 
         this.syncToNode(false);
