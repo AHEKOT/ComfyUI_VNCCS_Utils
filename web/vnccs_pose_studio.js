@@ -538,6 +538,74 @@ const STYLES = `
     color: #aaa;
 }
 
+/* Light Radar */
+.vnccs-ps-light-radar-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    background: rgba(0,0,0,0.3);
+    padding: 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.03);
+}
+.vnccs-ps-light-radar-main {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    justify-content: center;
+    width: 100%;
+}
+.vnccs-ps-light-radar-canvas {
+    border-radius: 50%;
+    border: 1px solid #333;
+    cursor: crosshair;
+    background: #111;
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 120px;
+    width: 40px;
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: bt-rl;
+    width: 6px;
+    height: 80px; 
+    cursor: pointer;
+    background: #333;
+    margin: 0;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-runnable-track {
+    background: transparent;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-thumb {
+    width: 12px;
+    height: 12px;
+}
+.vnccs-ps-light-h-val {
+    font-size: 10px;
+    color: #888;
+    height: 12px;
+    line-height: 12px;
+    font-family: monospace;
+}
+.vnccs-ps-light-h-label {
+    font-size: 9px;
+    color: #555;
+    font-weight: bold;
+    height: 12px;
+    line-height: 12px;
+}
+
+
+
 /* Large Add Btn */
 .vnccs-ps-btn-add-large {
     width: 100%;
@@ -1846,8 +1914,8 @@ class PoseStudioWidget {
 
         // Lighting settings (array of light configs)
         this.lightParams = [
-            { type: 'directional', color: [255, 255, 255], intensity: 2.0, x: 10, y: 20, z: 30 },
-            { type: 'ambient', color: [80, 80, 80], intensity: 1.0, x: 0, y: 0, z: 0 }
+            { type: 'directional', color: '#ffffff', intensity: 2.0, x: 10, y: 20, z: 30 },
+            { type: 'ambient', color: '#505050', intensity: 1.0, x: 0, y: 0, z: 0 }
         ];
 
         this.sliders = {};
@@ -2809,6 +2877,132 @@ class PoseStudioWidget {
         requestAnimationFrame(() => draw());
     }
 
+    createLightRadar(light) {
+        const size = 120;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        canvas.className = "vnccs-ps-light-radar-canvas";
+        const ctx = canvas.getContext("2d");
+
+        let isDragging = false;
+        const range = 100;
+
+        const draw = () => {
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, size, size);
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Grid
+            ctx.beginPath();
+            ctx.strokeStyle = "#222";
+            ctx.lineWidth = 1;
+            ctx.moveTo(cx, 0); ctx.lineTo(cx, size);
+            ctx.moveTo(0, cy); ctx.lineTo(size, cy);
+            ctx.stroke();
+
+            // Circles
+            ctx.beginPath();
+            ctx.strokeStyle = "#1a1a1a";
+            ctx.arc(cx, cy, size / 4, 0, Math.PI * 2);
+            ctx.arc(cx, cy, size / 2 - 2, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Dot (X and Z)
+            const dotX = cx + (light.x / range) * (size / 2);
+            const dotY = cy + (light.z / range) * (size / 2);
+            const hex = this.parseColorToHex(light.color);
+
+            // Shadow/Glow
+            const grad = ctx.createRadialGradient(dotX, dotY, 2, dotX, dotY, 12);
+            grad.addColorStop(0, hex + "66");
+            grad.addColorStop(1, "transparent");
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 12, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Core
+            ctx.beginPath();
+            ctx.fillStyle = hex;
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Labels
+            ctx.fillStyle = "#444";
+            ctx.font = "8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("BACK", cx, 10);
+            ctx.fillText("FRONT", cx, size - 4);
+        };
+
+        const updateFromMouse = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // Scaling support (accounts for CSS zoom)
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const mouseX = (e.clientX - rect.left) * scaleX;
+            const mouseY = (e.clientY - rect.top) * scaleY;
+            const cx = size / 2;
+            const cy = size / 2;
+
+            let dx = (mouseX - cx);
+            let dy = (mouseY - cy);
+
+            const maxDrag = (size / 2) - 2;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxDrag) {
+                dx *= maxDrag / dist;
+                dy *= maxDrag / dist;
+            }
+
+            light.x = (dx / (size / 2)) * range;
+            light.z = (dy / (size / 2)) * range;
+
+            draw();
+            this.applyLighting();
+        };
+
+        canvas.addEventListener("pointerdown", (e) => {
+            canvas.setPointerCapture(e.pointerId);
+            isDragging = true;
+            updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointermove", (e) => {
+            if (isDragging) updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointerup", (e) => {
+            if (isDragging) {
+                canvas.releasePointerCapture(e.pointerId);
+                isDragging = false;
+                this.syncToNode(false);
+            }
+        });
+
+        draw();
+        return canvas;
+    }
+
+
+    parseColorToHex(c) {
+        if (!c) return "#ffffff";
+        if (typeof c === 'string') return c.startsWith('#') ? c : "#ffffff";
+        if (Array.isArray(c)) {
+            const r = Math.round(c[0]).toString(16).padStart(2, '0');
+            const g = Math.round(c[1]).toString(16).padStart(2, '0');
+            const b = Math.round(c[2]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+        return "#ffffff";
+    }
+
     createColorField(label, key) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
@@ -3647,46 +3841,49 @@ class PoseStudioWidget {
             intensityRow.appendChild(intValue);
             body.appendChild(intensityRow);
 
-            // Position Grid (if not Ambient)
+            // Position Controls (if not Ambient)
             if (light.type !== 'ambient') {
-                const posGrid = document.createElement('div');
-                posGrid.className = 'vnccs-ps-light-pos-grid';
+                const radarWrap = document.createElement('div');
+                radarWrap.className = 'vnccs-ps-light-radar-wrap';
 
-                ['X', 'Y', 'Z'].forEach(axis => {
-                    const key = axis.toLowerCase();
+                const radarMain = document.createElement('div');
+                radarMain.className = 'vnccs-ps-light-radar-main';
 
-                    const label = document.createElement('span');
-                    label.className = 'vnccs-ps-light-pos-label';
-                    label.innerText = axis;
-                    posGrid.appendChild(label);
+                // Radar (X and Z - Top Down)
+                const radar = this.createLightRadar(light);
+                radarMain.appendChild(radar);
 
-                    const row = document.createElement('div');
-                    row.className = 'vnccs-ps-light-slider-row';
-                    row.style.width = "100%";
+                // Height Slider (Y) - Vertical
+                const hVertWrap = document.createElement('div');
+                hVertWrap.className = 'vnccs-ps-light-slider-vert-wrap';
 
-                    const slider = document.createElement('input');
-                    slider.type = 'range';
-                    slider.className = 'vnccs-ps-light-slider';
-                    slider.min = -100;
-                    slider.max = 100;
-                    slider.step = 1;
-                    slider.value = light[key] || 0;
+                const hLabel = document.createElement('span');
+                hLabel.className = 'vnccs-ps-light-h-label';
+                hLabel.innerText = "Y-HGT";
 
-                    const val = document.createElement('span');
-                    val.className = 'vnccs-ps-light-value';
-                    val.innerText = slider.value;
+                const hVal = document.createElement('span');
+                hVal.className = 'vnccs-ps-light-h-val';
+                hVal.innerText = light.y || 0;
 
-                    slider.oninput = () => {
-                        light[key] = parseFloat(slider.value);
-                        val.innerText = slider.value;
-                        this.applyLighting();
-                    };
+                const hSlider = document.createElement('input');
+                hSlider.type = 'range';
+                hSlider.className = 'vnccs-ps-light-slider-vert';
+                hSlider.min = -100; hSlider.max = 100; hSlider.step = 1;
+                hSlider.value = light.y || 0;
 
-                    row.appendChild(slider);
-                    row.appendChild(val);
-                    posGrid.appendChild(row);
-                });
-                body.appendChild(posGrid);
+                hSlider.oninput = () => {
+                    light.y = parseFloat(hSlider.value);
+                    hVal.innerText = hSlider.value;
+                    this.applyLighting();
+                };
+
+                hVertWrap.appendChild(hVal);
+                hVertWrap.appendChild(hSlider);
+                hVertWrap.appendChild(hLabel);
+
+                radarMain.appendChild(hVertWrap);
+                radarWrap.appendChild(radarMain);
+                body.appendChild(radarWrap);
             }
 
             item.appendChild(body);
