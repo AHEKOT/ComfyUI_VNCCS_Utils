@@ -22,10 +22,20 @@ async def list_poses(request):
             preview_path = os.path.join(lib_path, f"{name}.png")
             has_preview = os.path.exists(preview_path)
             
-            poses.append({
-                "name": name,
-                "has_preview": has_preview
-            })
+            # Load pose data for frontend cache (enables random pose generation)
+            pose_data = None
+            try:
+                with open(os.path.join(lib_path, filename), "r") as f:
+                    pose_data = json.load(f)
+            except:
+                pass
+
+            if pose_data:
+                poses.append({
+                    "name": name,
+                    "has_preview": has_preview,
+                    "data": pose_data
+                })
     
     return web.json_response({"poses": sorted(poses, key=lambda x: x["name"])})
 
@@ -130,6 +140,25 @@ async def get_preview(request):
     with open(preview_path, "rb") as f:
         return web.Response(body=f.read(), content_type="image/png")
 
+async def upload_debug_capture(request):
+    """POST /vnccs/debug/upload_capture - Saves debug capture for batch processing."""
+    try:
+        data = await request.json()
+        node_id = data.get("node_id")
+        if not node_id:
+             return web.json_response({"error": "No node_id"}, status=400)
+             
+        import folder_paths
+        temp_dir = folder_paths.get_temp_directory()
+        filepath = os.path.join(temp_dir, f"vnccs_debug_{node_id}.json")
+        
+        with open(filepath, "w") as f:
+            json.dump(data, f)
+            
+        return web.json_response({"status": "ok"})
+    except Exception as e:
+        return web.json_response({"error": str(e)}, status=500)
+
 def register_routes(app):
     """Register Pose Library API routes."""
     app.router.add_get("/vnccs/pose_library/list", list_poses)
@@ -137,3 +166,4 @@ def register_routes(app):
     app.router.add_post("/vnccs/pose_library/save", save_pose)
     app.router.add_delete("/vnccs/pose_library/delete/{name}", delete_pose)
     app.router.add_get("/vnccs/pose_library/preview/{name}", get_preview)
+    app.router.add_post("/vnccs/debug/upload_capture", upload_debug_capture)

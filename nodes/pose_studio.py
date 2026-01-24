@@ -89,9 +89,9 @@ def _ensure_data_loaded():
 class VNCCS_PoseStudio:
     """Pose Studio with mesh editing and multiple pose generation."""
     
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    OUTPUT_IS_LIST = (True,)
+    RETURN_TYPES = ("IMAGE", "STRING")
+    RETURN_NAMES = ("images", "lighting_prompt")
+    OUTPUT_IS_LIST = (True, True)
     FUNCTION = "generate"
     CATEGORY = "VNCCS/pose"
     
@@ -106,6 +106,18 @@ class VNCCS_PoseStudio:
                 "unique_id": "UNIQUE_ID"
             }
         }
+
+    @classmethod
+    def IS_CHANGED(cls, pose_data: str = "{}", unique_id: str = None):
+        # Force re-execution if Debug Mode is enabled
+        try:
+            data = json.loads(pose_data)
+            export = data.get("export", {})
+            if export.get("debugMode", False):
+                return float("NaN")
+        except:
+            pass
+        return pose_data
     
     def generate(
         self,
@@ -117,6 +129,51 @@ class VNCCS_PoseStudio:
         # Parse pose data
         try:
             data = json.loads(pose_data) if pose_data else {}
+            
+            # --- DEBUG MODE SYNC for Batch Processing ---
+            # If debug mode is on, we request a fresh capture from frontend
+            # because the queue uses cached/snapshot widget values.
+            export = data.get("export", {})
+            if export.get("debugMode", False) and unique_id:
+                try:
+                    from server import PromptServer
+                    import time
+                    import folder_paths
+                    
+                    # 1. Request capture
+                    PromptServer.instance.send_sync("vnccs_req_debug_capture", {"node_id": unique_id})
+                    
+                    # 2. Wait for file response
+                    temp_dir = folder_paths.get_temp_directory()
+                    filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}.json")
+                    
+                    # Remove old if exists (from previous run)
+                    if os.path.exists(filepath):
+                        try: os.remove(filepath)
+                        except: pass
+                    
+                    # Wait loop (up to 3s)
+                    start_time = time.time()
+                    while time.time() - start_time < 3.0:
+                        if os.path.exists(filepath):
+                            # Small delay to ensure write complete
+                            time.sleep(0.05)
+                            try:
+                                with open(filepath, "r") as f:
+                                    debug_data = json.load(f)
+                                # Override data
+                                data = debug_data
+                                # Cleanup
+                                try: os.remove(filepath)
+                                except: pass
+                                break
+                            except:
+                                pass
+                        time.sleep(0.1)
+                except Exception as e:
+                    print(f"VNCCS Debug Sync Error: {e}")
+            # ---------------------------------------------
+            
         except (json.JSONDecodeError, TypeError):
             data = {}
             
@@ -162,6 +219,14 @@ class VNCCS_PoseStudio:
         
         if captured_images:
             rendered_images = []
+            
+            # Extract prompts (frontend generated)
+            lighting_prompts = data.get("lighting_prompts", [])
+            
+            # Pad prompts to match images count if needed
+            while len(lighting_prompts) < len(captured_images):
+                lighting_prompts.append("")
+                
             for b64 in captured_images:
                 if not b64: continue
                 # Remove header if present (data:image/png;base64,...)
@@ -183,14 +248,17 @@ class VNCCS_PoseStudio:
                     tensors.append(torch.from_numpy(np_img))
                 
                 if output_mode == "LIST":
-                    # Return list of individual images
+                    # Return list of individual images and prompts
                     tensor_list = [t.unsqueeze(0) for t in tensors]
-                    return (tensor_list,)
+                    return (tensor_list, lighting_prompts)
                 else:
                     grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
                     np_grid = np.array(grid_img).astype(np.float32) / 255.0
                     grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
-                    return (grid_tensor,)
+                    
+                    # For grid, combine prompts
+                    combined_prompt = "\n".join([p for p in lighting_prompts if p])
+                    return (grid_tensor, [combined_prompt])
         
         # === 2. Fallback to Python Rendering ===
         
