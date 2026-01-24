@@ -1801,11 +1801,7 @@ class PoseStudioWidget {
         btnFemale.className = "vnccs-ps-toggle-btn female";
         btnFemale.innerText = "Female";
 
-        this.updateGenderUI = () => {
-            const isFemale = this.meshParams.gender < 0.5;
-            btnMale.classList.toggle("active", !isFemale);
-            btnFemale.classList.toggle("active", isFemale);
-        };
+        this.genderBtns = { male: btnMale, female: btnFemale };
 
         btnMale.addEventListener("click", () => {
             this.meshParams.gender = 1.0;
@@ -3645,6 +3641,13 @@ class PoseStudioWidget {
                 info.field.style.display = isFemale ? "none" : "";
             }
         }
+    }
+
+    updateGenderUI() {
+        if (!this.genderBtns) return;
+        const isFemale = this.meshParams.gender < 0.5;
+        this.genderBtns.male.classList.toggle("active", !isFemale);
+        this.genderBtns.female.classList.toggle("active", isFemale);
     }
 
     onMeshParamsChanged() {
