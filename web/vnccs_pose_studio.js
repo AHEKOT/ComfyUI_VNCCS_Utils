@@ -1986,41 +1986,10 @@ class PoseStudioWidget {
 
         // Position X
         // Position X
-        const posXField = this.createSliderField("Position X", "cam_offset_x", -20, 20, 0.1, 0, this.exportParams, true);
-        camSection.content.appendChild(posXField);
+        // Camera Radar Control
+        this.createCameraRadar(camSection);
 
-        // Position Y
-        // Position Y
-        const posYField = this.createSliderField("Position Y", "cam_offset_y", -20, 20, 0.1, 0, this.exportParams, true);
-        camSection.content.appendChild(posYField);
 
-        // Re-center Button
-        const recenterBtn = document.createElement("button");
-        recenterBtn.className = "vnccs-ps-btn";
-        recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
-        recenterBtn.onclick = () => {
-            this.exportParams.cam_offset_x = 0;
-            this.exportParams.cam_offset_y = 0;
-            // Update sliders
-            if (this.exportWidgets['cam_offset_x']) this.exportWidgets['cam_offset_x'].value = 0;
-            if (this.exportWidgets['cam_offset_y']) this.exportWidgets['cam_offset_y'].value = 0;
-            // Update labels
-            const posXSlider = this.sliders['cam_offset_x'];
-            const posYSlider = this.sliders['cam_offset_y'];
-            if (posXSlider) posXSlider.label.innerText = '0.00';
-            if (posYSlider) posYSlider.label.innerText = '0.00';
-            // Trigger camera update and sync viewport
-            if (this.viewer) {
-                this.viewer.snapToCaptureCamera(
-                    this.exportParams.view_width,
-                    this.exportParams.view_height,
-                    this.exportParams.cam_zoom,
-                    0, 0
-                );
-            }
-            this.syncToNode(false);
-        };
-        camSection.content.appendChild(recenterBtn);
 
         leftPanel.appendChild(camSection.el);
 
@@ -2534,6 +2503,238 @@ class PoseStudioWidget {
         field.appendChild(labelEl);
         field.appendChild(select);
         return field;
+    }
+
+    createCameraRadar(section) {
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-radar-wrap";
+        wrap.style.display = "flex";
+        wrap.style.flexDirection = "column";
+        wrap.style.alignItems = "center";
+        wrap.style.marginTop = "10px";
+        wrap.style.background = "#181818";
+        wrap.style.border = "1px solid #333";
+        wrap.style.borderRadius = "4px";
+        wrap.style.padding = "10px";
+
+        // Canvas
+        const canvas = document.createElement("canvas");
+        const size = 200;
+        canvas.width = size;
+        canvas.height = size;
+        canvas.style.width = "200px";
+        canvas.style.height = "200px";
+        canvas.style.cursor = "crosshair";
+
+        const ctx = canvas.getContext("2d");
+
+        // Interaction State
+        let isDragging = false;
+
+        const range = 20.0; // Max offset range (+/- 20)
+
+        const updateFromMouse = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // Scaling support
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+
+            const mouseX = (e.clientX - rect.left) * scaleX;
+            const mouseY = (e.clientY - rect.top) * scaleY;
+
+            // Aspect Ratio Logic to find active area
+            const viewW = this.exportParams.view_width || 1024;
+            const viewH = this.exportParams.view_height || 1024;
+            const ar = viewW / viewH;
+
+            // Dynamic Range calculation based on Zoom
+            const zoom = this.exportParams.cam_zoom || 1.0;
+            const baseRange = 12.05;
+            const rangeY = baseRange / zoom;
+            const rangeX = rangeY * ar;
+
+            // Fit box in canvas (margin 10px) (Visual Scale 0.5 for 2x Range)
+            const margin = 10;
+            const visualScale = 0.5;
+            const maxW = (size - margin * 2) * visualScale;
+            const maxH = (size - margin * 2) * visualScale;
+            let drawW, drawH;
+
+            if (ar >= 1) { // Landscape
+                drawW = maxW;
+                drawH = maxW / ar;
+            } else { // Portrait
+                drawH = maxH;
+                drawW = maxH * ar;
+            }
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Clamping to box
+            const halfW = drawW / 2;
+            const halfH = drawH / 2;
+
+            let dx = (mouseX - cx);
+            let dy = (mouseY - cy);
+
+            // Clamp to Canvas size (not frame size), so we can drag outside frame
+            // Frame is drawW/drawH. Canvas is size (200).
+            // Let's allow dragging to the very edge of canvas minus margin
+            const maxDragX = (size / 2) - 5;
+            const maxDragY = (size / 2) - 5;
+
+            dx = Math.max(-maxDragX, Math.min(maxDragX, dx));
+            dy = Math.max(-maxDragY, Math.min(maxDragY, dy));
+
+            const normX = dx / halfW;
+            const normY = dy / halfH;
+
+            // X: Dot Right -> Model Right
+            this.exportParams.cam_offset_x = normX * rangeX;
+
+            // Y: Dot Top (neg) -> Model Top
+            this.exportParams.cam_offset_y = -normY * rangeY;
+
+            draw();
+
+            // Sync Viewport
+            if (this.viewer) {
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom,
+                    this.exportParams.cam_offset_x,
+                    this.exportParams.cam_offset_y
+                );
+            }
+        };
+
+        canvas.addEventListener("mousedown", (e) => {
+            isDragging = true;
+            updateFromMouse(e);
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (isDragging) updateFromMouse(e);
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (isDragging) {
+                isDragging = false;
+                this.syncToNode(false);
+            }
+        });
+
+        const draw = () => {
+            // Clear
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, size, size);
+
+            const viewW = this.exportParams.view_width || 1024;
+            const viewH = this.exportParams.view_height || 1024;
+            const ar = viewW / viewH;
+
+            // Recalculate ranges for drawing
+            const zoom = this.exportParams.cam_zoom || 1.0;
+            const baseRange = 12.05;
+            const rangeY = baseRange / zoom;
+            const rangeX = rangeY * ar;
+
+            // Fit box (Visual Scale 0.5)
+            const margin = 10;
+            const visualScale = 0.5;
+            const maxW = (size - margin * 2) * visualScale;
+            const maxH = (size - margin * 2) * visualScale;
+            let drawW, drawH;
+
+            if (ar >= 1) { // Landscape
+                drawW = maxW;
+                drawH = maxW / ar;
+            } else { // Portrait
+                drawH = maxH;
+                drawW = maxH * ar;
+            }
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Draw Viewer Frame
+            ctx.fillStyle = "#222";
+            ctx.fillRect(cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+            ctx.strokeStyle = "#444";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+
+            // Grid
+            ctx.beginPath();
+            ctx.strokeStyle = "#333";
+            ctx.moveTo(cx, cy - drawH / 2);
+            ctx.lineTo(cx, cy + drawH / 2);
+            ctx.moveTo(cx - drawW / 2, cy);
+            ctx.lineTo(cx + drawW / 2, cy);
+            ctx.stroke();
+
+            // Draw Dot (Target)
+            const normX = (this.exportParams.cam_offset_x || 0) / rangeX;
+            const normY = -(this.exportParams.cam_offset_y || 0) / rangeY;
+
+            const dotX = cx + normX * (drawW / 2);
+            const dotY = cy + normY * (drawH / 2);
+
+            // Dot
+            ctx.beginPath();
+            ctx.fillStyle = "#3584e4";
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Crosshair
+            ctx.beginPath();
+            ctx.strokeStyle = "#3584e4";
+            ctx.lineWidth = 1;
+            ctx.moveTo(dotX - 6, dotY);
+            ctx.lineTo(dotX + 6, dotY);
+            ctx.moveTo(dotX, dotY - 6);
+            ctx.lineTo(dotX, dotY + 6);
+            ctx.stroke();
+
+            // Info Text
+            ctx.fillStyle = "#666";
+            ctx.font = "10px monospace";
+            ctx.textAlign = "right";
+            // ctx.fillText(`X:${(this.exportParams.cam_offset_x||0).toFixed(1)}`, size-5, 12);
+        };
+
+        // Expose redraw
+        this.radarRedraw = draw;
+
+        // Recenter Button
+        const recenterBtn = document.createElement("button");
+        recenterBtn.className = "vnccs-ps-btn";
+        recenterBtn.style.marginTop = "8px";
+        recenterBtn.style.width = "100%";
+        recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
+        recenterBtn.onclick = () => {
+            this.exportParams.cam_offset_x = 0;
+            this.exportParams.cam_offset_y = 0;
+            draw();
+            if (this.viewer) {
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom,
+                    0, 0
+                );
+            }
+            this.syncToNode(false);
+        };
+
+        wrap.appendChild(canvas);
+        wrap.appendChild(recenterBtn);
+        section.content.appendChild(wrap);
+
+        // Initial Draw
+        requestAnimationFrame(() => draw());
     }
 
     createColorField(label, key) {
@@ -3738,6 +3939,8 @@ class PoseStudioWidget {
     }
 
     syncToNode(fullCapture = false) {
+        if (this.radarRedraw) this.radarRedraw();
+
         // Save current pose before syncing
         if (this.viewer && this.viewer.initialized) {
             this.poses[this.activeTab] = this.viewer.getPose();
