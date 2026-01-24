@@ -1226,7 +1226,7 @@ class PoseViewer {
                 light = new THREE.DirectionalLight(color, params.intensity ?? 1.0);
                 light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
             } else if (params.type === 'point') {
-                light = new THREE.PointLight(color, params.intensity ?? 1.0, 100);
+                light = new THREE.PointLight(color, params.intensity ?? 1.0, params.radius ?? 100);
                 light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
             }
 
@@ -2886,7 +2886,7 @@ class PoseStudioWidget {
         const ctx = canvas.getContext("2d");
 
         let isDragging = false;
-        const range = 100;
+        const range = (light.type === 'point') ? 10.0 : 100;
 
         const draw = () => {
             ctx.fillStyle = "#111";
@@ -3841,6 +3841,37 @@ class PoseStudioWidget {
             intensityRow.appendChild(intValue);
             body.appendChild(intensityRow);
 
+            // Radius Slider (Point Light Only)
+            if (light.type === 'point') {
+                const radiusRow = document.createElement('div');
+                radiusRow.className = 'vnccs-ps-light-slider-row';
+
+                const radLabel = document.createElement('span');
+                radLabel.className = 'vnccs-ps-light-pos-label';
+                radLabel.innerText = "Rad";
+
+                const radSlider = document.createElement('input');
+                radSlider.type = 'range';
+                radSlider.className = 'vnccs-ps-light-slider';
+                radSlider.min = 5; radSlider.max = 300; radSlider.step = 1;
+                radSlider.value = light.radius ?? 100;
+
+                const radValue = document.createElement('span');
+                radValue.className = 'vnccs-ps-light-value';
+                radValue.innerText = radSlider.value;
+
+                radSlider.oninput = () => {
+                    light.radius = parseFloat(radSlider.value);
+                    radValue.innerText = radSlider.value;
+                    this.applyLighting();
+                };
+
+                radiusRow.appendChild(radLabel);
+                radiusRow.appendChild(radSlider);
+                radiusRow.appendChild(radValue);
+                body.appendChild(radiusRow);
+            }
+
             // Position Controls (if not Ambient)
             if (light.type !== 'ambient') {
                 const radarWrap = document.createElement('div');
@@ -3868,7 +3899,10 @@ class PoseStudioWidget {
                 const hSlider = document.createElement('input');
                 hSlider.type = 'range';
                 hSlider.className = 'vnccs-ps-light-slider-vert';
-                hSlider.min = -100; hSlider.max = 100; hSlider.step = 1;
+                const isPoint = light.type === 'point';
+                hSlider.min = isPoint ? -10 : -100;
+                hSlider.max = isPoint ? 10 : 100;
+                hSlider.step = isPoint ? 0.1 : 1;
                 hSlider.value = light.y || 0;
 
                 hSlider.oninput = () => {
