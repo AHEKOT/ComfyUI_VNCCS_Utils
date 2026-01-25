@@ -1199,6 +1199,8 @@ class PoseViewer {
 
         // Managed lights array
         this.lights = [];
+        this.pendingData = null;
+        this.pendingLights = null;
     }
 
     async init() {
@@ -1211,6 +1213,11 @@ class PoseViewer {
             this.setupScene();
             this.initialized = true;
             console.log('Pose Studio: 3D Viewer initialized');
+
+            if (this.pendingData) {
+                this.loadData(this.pendingData.data, this.pendingData.keepCamera);
+                this.pendingData = null;
+            }
 
             if (this.pendingLights) {
                 this.updateLights(this.pendingLights);
@@ -1428,7 +1435,11 @@ class PoseViewer {
     }
 
     loadData(data, keepCamera = false) {
-        if (!this.initialized || !data || !data.vertices || !data.bones) return;
+        if (!this.initialized || !this.THREE || !this.scene) {
+            this.pendingData = { data, keepCamera };
+            return;
+        }
+        if (!data || !data.vertices || !data.bones) return;
         const THREE = this.THREE;
 
         // Clean previous
@@ -2022,7 +2033,8 @@ class PoseStudioWidget {
             output_mode: "LIST",
             grid_columns: 2,
             bg_color: [255, 255, 255],
-            debugMode: false,  // Random pose rotation, camera, and lighting
+            debugMode: false,
+            debugPortraitMode: false, // Focus on upper body in debug mode
             prompt_prefix: "Draw character from image2\nCopy how the lighting falls on the character from image 1:",
             prompt_suffix: "change background to match new character pose, zoom and lighting colors.\nFix shadows"
         };
@@ -2249,7 +2261,7 @@ class PoseStudioWidget {
 
         // Zoom (with live preview)
         // Zoom (with live preview)
-        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 5.0, 0.01, 1.0, this.exportParams, true);
+        const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 7.0, 0.01, 1.0, this.exportParams, true);
         camSection.content.appendChild(zoomField);
 
         // Position X
@@ -3720,6 +3732,33 @@ class PoseStudioWidget {
         debugRow.appendChild(debugLabel);
         content.appendChild(debugRow);
 
+        // Portrait Mode Toggle
+        const portraitRow = document.createElement("div");
+        portraitRow.className = "vnccs-ps-field";
+        portraitRow.style.marginTop = "10px";
+
+        const portraitLabel = document.createElement("label");
+        portraitLabel.style.display = "flex";
+        portraitLabel.style.alignItems = "center";
+        portraitLabel.style.gap = "10px";
+        portraitLabel.style.cursor = "pointer";
+
+        const portraitCheckbox = document.createElement("input");
+        portraitCheckbox.type = "checkbox";
+        portraitCheckbox.checked = this.exportParams.debugPortraitMode || false;
+        portraitCheckbox.onchange = () => {
+            this.exportParams.debugPortraitMode = portraitCheckbox.checked;
+            this.syncToNode(false);
+        };
+
+        const portraitText = document.createElement("div");
+        portraitText.innerHTML = "<strong>Portrait Mode</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will focus framing on the head and upper torso.</div>";
+
+        portraitLabel.appendChild(portraitCheckbox);
+        portraitLabel.appendChild(portraitText);
+        portraitRow.appendChild(portraitLabel);
+        content.appendChild(portraitRow);
+
         // Prompt Templates Section
         const templateHeader = document.createElement("div");
         templateHeader.className = "vnccs-ps-settings-title";
@@ -4225,33 +4264,63 @@ class PoseStudioWidget {
             const { name: colorName, sat, l } = getColorName(light.color);
 
             if (light.type === 'directional') {
-                let posDesc = "";
+                // --- 2. Determine Position ---
                 const y = light.y || 0;
                 const x = light.x || 0;
                 const z = light.z || 0;
-                if (y > 40) posDesc += "top ";
-                else if (y < 20 && y > -100) posDesc += "low ";
-                if (x > 20) posDesc += "right";
-                else if (x < -20) posDesc += "left";
-                else if (z > 30) posDesc += "front";
-                else posDesc += "side";
-                posDesc = posDesc.trim();
+                const isPoint = light.type === 'point';
+                const yRange = isPoint ? 10 : 100; // Point lights use -10..10, Directional -100..100
+                const yNorm = (y / yRange) * 100;
+
+                let vertDesc = "eye-level";
+                if (yNorm > 70) vertDesc = "overhead";
+                else if (yNorm > 25) vertDesc = "high";
+                else if (yNorm < -25) vertDesc = "low";
+                else if (yNorm < -70) vertDesc = "bottom-up";
+
+                const distXZ = Math.sqrt(x * x + z * z);
+                let horizDesc = "centered";
+
+                if (distXZ > (isPoint ? 0.5 : 5)) {
+                    const angle = Math.atan2(z, x) * 180 / Math.PI;
+                    let deg = angle;
+                    if (deg < 0) deg += 360;
+
+                    if (deg >= 337.5 || deg < 22.5) horizDesc = "right";
+                    else if (deg >= 22.5 && deg < 67.5) horizDesc = "front-right";
+                    else if (deg >= 67.5 && deg < 112.5) horizDesc = "front";
+                    else if (deg >= 112.5 && deg < 157.5) horizDesc = "front-left";
+                    else if (deg >= 157.5 && deg < 202.5) horizDesc = "left";
+                    else if (deg >= 202.5 && deg < 247.5) horizDesc = "back-left";
+                    else if (deg >= 247.5 && deg < 292.5) horizDesc = "back";
+                    else if (deg >= 292.5 && deg < 337.5) horizDesc = "back-right";
+                }
+
+                const posName = (horizDesc === "centered") ? vertDesc : `${vertDesc} ${horizDesc}`;
 
                 // 3. Determine Intensity
-                const intensity = light.intensity || 1.0;
-                let intDesc = "strong";
-                if (intensity > 3.0) intDesc = "intense";
-                else if (intensity < 1.5) intDesc = "soft";
-                else if (intensity < 2.5) intDesc = "bright";
+                const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
+                if (intensity < 0.1) continue; // Skip near-zero lights
 
-                dirPrompts.push(`${intDesc} ${colorName} lighting coming from the ${posDesc}`);
+                let intDesc = "moderate";
+                if (intensity < 0.4) intDesc = "subtle";
+                else if (intensity < 0.8) intDesc = "faint";
+                else if (intensity < 1.2) intDesc = "soft";
+                else if (intensity < 1.7) intDesc = "gentle";
+                else if (intensity < 2.4) intDesc = "strong";
+                else if (intensity < 3.0) intDesc = "bright";
+                else if (intensity < 3.8) intDesc = "intense";
+                else if (intensity < 4.5) intDesc = "dazzling";
+                else intDesc = "blinding";
+
+                dirPrompts.push(`${intDesc} ${colorName} lighting coming from the ${posName}`);
             } else if (light.type === 'ambient') {
-                const intensity = light.intensity || 1.0;
+                const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
                 // Suppress "default" ambient (Dark Grey #505050 or similar)
                 // Thresholds: Low saturation (Grey), Low Lightness (< 40%), Normal Intensity (< 1.5)
                 const isNeutralDark = (sat < 10 && l < 0.4 && intensity < 1.5);
 
-                if (intensity > 0.05 && !isNeutralDark) {
+                if (intensity >= 0.1 && !isNeutralDark) {
                     ambPrompts.push(`global ${colorName} ambient lighting`);
                 }
             }
@@ -4262,7 +4331,7 @@ class PoseStudioWidget {
             if (finalPrompt.length > 0) finalPrompt += ". ";
             finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
         } else if (finalPrompt.length === 0) {
-            finalPrompt = "Soft global ambient lighting.";
+            finalPrompt = "Pitch black scene, no light sources, complete darkness.";
         }
 
         // Wrap with templates
@@ -4285,23 +4354,26 @@ class PoseStudioWidget {
         // Random Y rotation for model (-90 to 90)
         const modelYRotation = Math.random() * 180 - 90;
 
-        // Random zoom (1.3 to 2.0)
-        const zoom = 1.3 + Math.random() * 0.7;
+        // Camera Settings
+        const viewW = this.exportParams.view_width || 1024;
+        const viewH = this.exportParams.view_height || 1024;
+        const ar = viewW / viewH;
 
-        // Random offset - constrained to keep model 100% visible
-        // At 1.3 zoom, we have little room to move. At 2.0, even less if we want FULL body.
-        // Actually, higher zoom means VIEWPORT covers LESS of world. 
-        // If zoom=1 (full fit), offset must be 0 to keep full fit.
-        // If zoom=2 (zoomed in), we crop the body?
-        // Wait, user said "100% body must be in frame".
-        // IF zoom > 1, we are zooming IN, so we inherently crop the body unless the body was small to begin with.
-        // But usually zoom=1 fits the body tightly.
-        // So zoom=1.3 will crop the body?
-        // Let's assume user means "don't pan so far that model leaves frame".
-        // Use small offsets.
-        const maxOffset = 2.0 / zoom;
-        const offsetX = (Math.random() * 2 - 1) * maxOffset;
-        const offsetY = (Math.random() * 2 - 1) * maxOffset;
+        let zoom = 1.3 + Math.random() * 0.7;
+        let offsetX = (Math.random() * 2 - 1) * (2.0 / zoom);
+        let offsetY = (Math.random() * 2 - 1) * (2.0 / zoom);
+
+        if (this.exportParams.debugPortraitMode) {
+            // Portrait framing: High zoom, focused on head/torso
+            // If AR is narrow (< 0.7), cap zoom to avoid shoulder clipping
+            const maxZoom = ar < 0.7 ? (2.0 + ar * 2) : 3.5;
+            zoom = 2.2 + Math.random() * (maxZoom - 2.2);
+
+            offsetX = (Math.random() * 2 - 1) * 0.3; // Slight side jitter (world units)
+            // Shift target UP to head area (Y approx 15-16). 
+            // Pelvis is at Y=10. so offsetY = -5 to -6.
+            offsetY = -5.5 + (Math.random() * 2 - 1) * 1.0;
+        }
 
         // Random directional lighting
         const lights = [];
