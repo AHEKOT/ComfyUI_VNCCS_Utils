@@ -60,15 +60,14 @@ A helper node to simply extract and visualize the crops. Useful when you need ex
 ### 5. VNCCS Pose Studio
 A professional 3D posing and lighting environment running entirely within a ComfyUI node.
 
-*   **3-Column Interface**: Structured workflow with Parameters (Left), Viewport (Center), and Lighting/Library (Right).
 *   **Interactive Viewport**: Sophisticated bone manipulation with gizmos and **Undo/Redo** functionality.
 *   **Advanced Environment Lighting**: Ambient, Directional, and **Point Lights** with interactive 2D radars and radius control.
+*   **Keep Original Lighting**: One-click mode to bypass synthetic lights for clean, flat-white renders (ideal for ControlNet).
 *   **Modal Pose Gallery**: A clean, full-screen gallery to manage and load saved poses without cluttering the UI.
 *   **Multi-Pose Tabs**: System for creating batch outputs or sequences within a single node.
 *   **Precision Framing**: Integrated camera radar and Zoom controls with a clean viewport frame visualization.
+*   **Natural Language Prompts**: Automatically generates descriptive lighting prompts (e.g., "gentle blue lighting from the high-right") for seamless scene integration.
 *   **Tracing Support**: Load background reference images for precise character alignment.
-
-
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
 

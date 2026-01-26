@@ -130,48 +130,43 @@ class VNCCS_PoseStudio:
         try:
             data = json.loads(pose_data) if pose_data else {}
             
-            # --- DEBUG MODE SYNC for Batch Processing ---
-            # If debug mode is on, we request a fresh capture from frontend
-            # because the queue uses cached/snapshot widget values.
-            export = data.get("export", {})
-            if export.get("debugMode", False) and unique_id:
+            # --- LIVE SYNC with Frontend ---
+            # We request a fresh capture/sync from the frontend on every run
+            # to ensure the backend uses EXACTLY what the user sees in the widget.
+            if unique_id:
                 try:
                     from server import PromptServer
                     import time
                     import folder_paths
                     
                     # 1. Request capture
-                    PromptServer.instance.send_sync("vnccs_req_debug_capture", {"node_id": unique_id})
+                    PromptServer.instance.send_sync("vnccs_req_pose_sync", {"node_id": unique_id})
                     
                     # 2. Wait for file response
                     temp_dir = folder_paths.get_temp_directory()
                     filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}.json")
                     
-                    # Remove old if exists (from previous run)
-                    if os.path.exists(filepath):
-                        try: os.remove(filepath)
-                        except: pass
+                    # Remove old if exists (only if it's very old, but here we just want fresh)
+                    # We don't remove it BEFORE sending the request because the frontend 
+                    # write is async and we might hit a race condition.
                     
                     # Wait loop (up to 3s)
                     start_time = time.time()
                     while time.time() - start_time < 3.0:
                         if os.path.exists(filepath):
-                            # Small delay to ensure write complete
-                            time.sleep(0.05)
-                            try:
-                                with open(filepath, "r") as f:
-                                    debug_data = json.load(f)
-                                # Override data
-                                data = debug_data
-                                # Cleanup
-                                try: os.remove(filepath)
-                                except: pass
-                                break
-                            except:
-                                pass
+                            # Ensure the file is fresh (modified recently)
+                            if os.path.getmtime(filepath) > start_time - 1.0:
+                                try:
+                                    with open(filepath, "r") as f:
+                                        sync_data = json.load(f)
+                                    # Override data with fresh sync from client
+                                    data = sync_data
+                                    break
+                                except:
+                                    pass
                         time.sleep(0.1)
                 except Exception as e:
-                    print(f"VNCCS Debug Sync Error: {e}")
+                    print(f"VNCCS Pose Studio Sync Error: {e}")
             # ---------------------------------------------
             
         except (json.JSONDecodeError, TypeError):
@@ -289,8 +284,8 @@ class VNCCS_PoseStudio:
             # Apply pose to skeleton and get posed vertices
             posed_verts = self._apply_pose(base_verts, bones, model_rotation)
             
-            # Render with background color
-            img = self._render_mesh(posed_verts, view_size, tuple(bg_color))
+            # Render with background color and current lights
+            img = self._render_mesh(posed_verts, view_size, tuple(bg_color), data.get("lights", []))
             rendered_images.append(img)
         
         # Convert to tensors
@@ -422,7 +417,7 @@ class VNCCS_PoseStudio:
         
         return posed
     
-    def _render_mesh(self, verts, size, bg_color=(40, 40, 40)):
+    def _render_mesh(self, verts, size, bg_color=(40, 40, 40), lights=[]):
         """Render mesh with skin-colored Phong shading."""
         from PIL import Image, ImageDraw
         
@@ -451,14 +446,31 @@ class VNCCS_PoseStudio:
                     faces.append(base_mesh.faces[i])
         
         # Render with flat shading
-        self._render_flat_shaded(draw, verts_screen, verts, faces, W, H)
+        self._render_flat_shaded(draw, verts_screen, verts, faces, W, H, lights)
         
         return img
     
-    def _render_flat_shaded(self, draw, verts_screen, verts_3d, faces, W, H):
+    def _render_flat_shaded(self, draw, verts_screen, verts_3d, faces, W, H, lights=[]):
         """Render faces with flat shading and skin color."""
-        light_dir = np.array([0.5, 0.8, 1.0])
-        light_dir = light_dir / np.linalg.norm(light_dir)
+        # 1. Setup Lighting from params
+        main_light_dir = np.array([0.5, 0.8, 1.0])
+        main_light_int = 0.7
+        ambient_int = 0.3
+        
+        if lights:
+            # Simple aggregation of lights for Python renderer
+            for l in lights:
+                lt = l.get("type", "ambient")
+                if lt == "ambient":
+                    ambient_int = max(0.2, min(0.6, l.get("intensity", 1.0) * 0.4))
+                elif lt == "directional" or lt == "point":
+                    # For point lights we just use direction to center
+                    x, y, z = l.get("x", 0), l.get("y", 10), l.get("z", 10)
+                    main_light_dir = np.array([x, y, z])
+                    mag = np.linalg.norm(main_light_dir)
+                    if mag > 0.001: main_light_dir = main_light_dir / mag
+                    main_light_int = min(1.2, l.get("intensity", 1.0) * 0.8)
+                    break # Use first found as main for flat shading
         
         # Skin base color (warm tone)
         base_color = np.array([212, 165, 116])  # 0xd4a574
@@ -496,9 +508,8 @@ class VNCCS_PoseStudio:
             normal = normal / norm_len
             
             # Lighting
-            diffuse = max(0, np.dot(normal, light_dir))
-            ambient = 0.3
-            intensity = min(1.0, ambient + diffuse * 0.7)
+            diffuse = max(0, np.dot(normal, main_light_dir))
+            intensity = min(1.0, ambient_int + diffuse * main_light_int)
             
             color = (base_color * intensity).astype(int)
             color = tuple(np.clip(color, 0, 255))

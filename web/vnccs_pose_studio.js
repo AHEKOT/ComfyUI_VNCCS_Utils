@@ -1148,6 +1148,48 @@ const STYLES = `
     padding: 20px;
     font-size: 12px;
 }
+
+/* === Loading Overlay === */
+.vnccs-ps-loading-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(4px);
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    z-index: 2000;
+    color: white;
+    cursor: wait;
+}
+
+.vnccs-ps-loading-spinner {
+    width: 50px;
+    height: 50px;
+    border: 3px solid rgba(255, 255, 255, 0.1);
+    border-top: 3px solid var(--ps-accent);
+    border-radius: 50%;
+    animation: ps-spin 1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+    box-shadow: 0 0 15px rgba(53, 88, 199, 0.2);
+}
+
+@keyframes ps-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.vnccs-ps-loading-text {
+    font-size: 16px;
+    font-weight: 500;
+    letter-spacing: 1px;
+    color: var(--ps-accent);
+    text-transform: uppercase;
+}
 `;
 
 // Inject styles
@@ -1211,9 +1253,13 @@ class PoseViewer {
             this.TransformControls = modules.TransformControls;
 
             this.setupScene();
+
             this.initialized = true;
             console.log('Pose Studio: 3D Viewer initialized');
 
+            this.animate();
+
+            // Apply buffered data after initialized=true
             if (this.pendingData) {
                 this.loadData(this.pendingData.data, this.pendingData.keepCamera);
                 this.pendingData = null;
@@ -1224,7 +1270,6 @@ class PoseViewer {
                 this.pendingLights = null;
             }
 
-            this.animate();
             this.requestRender(); // Initial render
         } catch (e) {
             console.error('Pose Studio: Init failed', e);
@@ -1240,7 +1285,11 @@ class PoseViewer {
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
 
-        this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: true });
+        this.renderer = new THREE.WebGLRenderer({
+            canvas: this.canvas,
+            antialias: true,
+            preserveDrawingBuffer: true
+        });
         this.renderer.setSize(this.width, this.height);
         this.renderer.setPixelRatio(window.devicePixelRatio);
 
@@ -1280,7 +1329,10 @@ class PoseViewer {
         this.transform.addEventListener('change', () => this.requestRender());
 
         // Lights - will be setup by updateLights() call from widget
-        // (removed hardcoded lights)
+        // Added default ambient light as a failsafe until widget lights load
+        const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
+        this.scene.add(defaultLight);
+        this.lights = [defaultLight];
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
@@ -1297,11 +1349,22 @@ class PoseViewer {
         if (!lightParams) return;
 
         // Remove existing managed lights
-        for (const light of this.lights) {
-            this.scene.remove(light);
-            if (light.dispose) light.dispose();
+        if (this.lights && this.lights.length > 0) {
+            for (const light of this.lights) {
+                this.scene.remove(light);
+                if (light.dispose) light.dispose();
+            }
         }
         this.lights = [];
+
+        // Failsafe: if no lights are provided, or all were removed, add a default ambient light
+        // to prevent black silhouettes. 
+        if (!lightParams || lightParams.length === 0) {
+            const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
+            this.scene.add(defaultLight);
+            this.lights.push(defaultLight);
+            return;
+        }
 
         // Create new lights from params
         for (const params of lightParams) {
@@ -2035,8 +2098,10 @@ class PoseStudioWidget {
             bg_color: [255, 255, 255],
             debugMode: false,
             debugPortraitMode: false, // Focus on upper body in debug mode
+            debugKeepLighting: false, // Use manual lighting in debug mode
+            keepOriginalLighting: false, // Override to clean white lighting, no prompts
             prompt_prefix: "Draw character from image2\nCopy how the lighting falls on the character from image 1:",
-            prompt_suffix: "change background to match new character pose, zoom and lighting colors.\nFix shadows"
+            prompt_suffix: "change background to match new character pose, zoom and lighting colors."
         };
 
         // Lighting settings (array of light configs)
@@ -2493,6 +2558,46 @@ class PoseStudioWidget {
         lightToolbar.style.background = "transparent";
         lightToolbar.style.border = "none";
 
+        // Keep Original Lighting Toggle Button
+        const overrideBtn = document.createElement("button");
+        overrideBtn.className = "vnccs-ps-btn full";
+        overrideBtn.style.marginBottom = "12px";
+        overrideBtn.style.height = "36px";
+        overrideBtn.style.fontSize = "11px";
+        overrideBtn.style.textTransform = "uppercase";
+        overrideBtn.style.letterSpacing = "0.5px";
+        overrideBtn.style.fontWeight = "bold";
+        overrideBtn.style.transition = "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
+
+        const updateOverrideBtn = () => {
+            const active = this.exportParams.keepOriginalLighting;
+            overrideBtn.innerHTML = active ?
+                '<span style="margin-right:8px;">🧼</span> KEEPING ORIGINAL LIGHTING' :
+                '<span style="margin-right:8px;">💡</span> KEEP ORIGINAL LIGHTING';
+
+            if (active) {
+                overrideBtn.style.background = "#2ea043"; // Success green
+                overrideBtn.style.borderColor = "#3fb950";
+                overrideBtn.style.color = "#fff";
+                overrideBtn.style.boxShadow = "0 0 15px rgba(46, 160, 67, 0.4)";
+            } else {
+                overrideBtn.style.background = "var(--ps-panel)";
+                overrideBtn.style.borderColor = "var(--ps-border)";
+                overrideBtn.style.color = "var(--ps-text-muted)";
+                overrideBtn.style.boxShadow = "none";
+            }
+        };
+
+        overrideBtn.onclick = () => {
+            this.exportParams.keepOriginalLighting = !this.exportParams.keepOriginalLighting;
+            updateOverrideBtn();
+            this.applyLighting();
+            this.refreshLightUI(); // To dim/disable UI if needed
+            this.syncToNode(false);
+        };
+        updateOverrideBtn();
+        lightSection.content.appendChild(overrideBtn);
+
         const lightLabel = document.createElement("span");
         lightLabel.className = "vnccs-ps-label";
         lightLabel.innerText = "Scene Lights";
@@ -2531,6 +2636,15 @@ class PoseStudioWidget {
         rightSidebar.prepend(libBtnWrap);
 
         this.container.appendChild(rightSidebar);
+
+        // Loading Overlay
+        this.loadingOverlay = document.createElement("div");
+        this.loadingOverlay.className = "vnccs-ps-loading-overlay";
+        this.loadingOverlay.innerHTML = `
+            <div class="vnccs-ps-loading-spinner"></div>
+            <div class="vnccs-ps-loading-text">Loading Model...</div>
+        `;
+        this.container.appendChild(this.loadingOverlay);
 
         // Initial render of lights
         this.refreshLightUI();
@@ -3539,6 +3653,11 @@ class PoseStudioWidget {
             const data = await res.json();
             this.libraryPoses = data.poses || []; // Cache for random selection
 
+            if (!this.libraryGrid) {
+                this.libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
+            }
+            if (!this.libraryGrid) return; // Still not found (modal closed)
+
             this.libraryGrid.innerHTML = '';
 
             if (!data.poses || data.poses.length === 0) {
@@ -3585,7 +3704,9 @@ class PoseStudioWidget {
             }
         } catch (err) {
             console.error("Failed to load library:", err);
-            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+            if (this.libraryGrid) {
+                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+            }
         }
     }
 
@@ -3759,6 +3880,33 @@ class PoseStudioWidget {
         portraitRow.appendChild(portraitLabel);
         content.appendChild(portraitRow);
 
+        // Keep Lighting Toggle
+        const keepLightRow = document.createElement("div");
+        keepLightRow.className = "vnccs-ps-field";
+        keepLightRow.style.marginTop = "10px";
+
+        const keepLightLabel = document.createElement("label");
+        keepLightLabel.style.display = "flex";
+        keepLightLabel.style.alignItems = "center";
+        keepLightLabel.style.gap = "10px";
+        keepLightLabel.style.cursor = "pointer";
+
+        const keepLightCheckbox = document.createElement("input");
+        keepLightCheckbox.type = "checkbox";
+        keepLightCheckbox.checked = this.exportParams.debugKeepLighting || false;
+        keepLightCheckbox.onchange = () => {
+            this.exportParams.debugKeepLighting = keepLightCheckbox.checked;
+            this.syncToNode(false);
+        };
+
+        const keepLightText = document.createElement("div");
+        keepLightText.innerHTML = "<strong>Keep Manual Lighting</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will use your current lighting settings instead of randomizing them.</div>";
+
+        keepLightLabel.appendChild(keepLightCheckbox);
+        keepLightLabel.appendChild(keepLightText);
+        keepLightRow.appendChild(keepLightLabel);
+        content.appendChild(keepLightRow);
+
         // Prompt Templates Section
         const templateHeader = document.createElement("div");
         templateHeader.className = "vnccs-ps-settings-title";
@@ -3866,6 +4014,8 @@ class PoseStudioWidget {
     }
 
     loadModel() {
+        if (this.loadingOverlay) this.loadingOverlay.style.display = "flex";
+
         return api.fetchApi("/vnccs/character_studio/update_preview", {
             method: "POST",
             body: JSON.stringify(this.meshParams)
@@ -3894,6 +4044,8 @@ class PoseStudioWidget {
                     this.syncToNode(true);
                 }
             }
+        }).finally(() => {
+            if (this.loadingOverlay) this.loadingOverlay.style.display = "none";
         });
     }
 
@@ -3913,6 +4065,11 @@ class PoseStudioWidget {
     refreshLightUI() {
         if (!this.lightListContainer) return;
         this.lightListContainer.innerHTML = '';
+
+        const isOverridden = this.exportParams.keepOriginalLighting;
+        this.lightListContainer.style.opacity = isOverridden ? "0.3" : "1.0";
+        this.lightListContainer.style.pointerEvents = isOverridden ? "none" : "auto";
+        this.lightListContainer.title = isOverridden ? "Lighting is overridden by 'Keep Original Lighting' mode" : "";
 
         this.lightParams.forEach((light, index) => {
             const item = document.createElement('div');
@@ -4104,6 +4261,11 @@ class PoseStudioWidget {
         const addBtn = document.createElement('button');
         addBtn.className = 'vnccs-ps-btn-add-large';
         addBtn.innerHTML = '+ Add Light Source';
+        addBtn.disabled = isOverridden;
+        if (isOverridden) {
+            addBtn.style.opacity = "0.5";
+            addBtn.style.cursor = "not-allowed";
+        }
         addBtn.onclick = () => {
             this.lightParams.push({
                 type: 'point',
@@ -4119,7 +4281,13 @@ class PoseStudioWidget {
 
     applyLighting() {
         if (this.viewer && this.viewer.initialized) {
-            this.viewer.updateLights(this.lightParams);
+            if (this.exportParams.keepOriginalLighting) {
+                // Override: Clean white render with 1.0 ambient only
+                this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+            } else {
+                // Manual/User lights
+                this.viewer.updateLights(this.lightParams);
+            }
         }
         // Lightweight sync for prompt/data (no capture)
         this.syncToNode(false);
@@ -4177,14 +4345,18 @@ class PoseStudioWidget {
         this.processMeshUpdate();
     }
 
-    resize(w, h) {
+    resize() {
         if (this.viewer && this.canvasContainer) {
-            // Account for zoom: 0.67 scaling
+            // Always measure the actual canvas container to ensure perfect aspect ratio.
+            // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
             const rect = this.canvasContainer.getBoundingClientRect();
             const zoomFactor = 0.67;
-            const actualW = rect.width / zoomFactor || 500;
-            const actualH = rect.height / zoomFactor || 500;
-            this.viewer.resize(actualW, actualH);
+            const targetW = rect.width / zoomFactor;
+            const targetH = rect.height / zoomFactor;
+
+            if (targetW > 1 && targetH > 1) {
+                this.viewer.resize(targetW, targetH);
+            }
         }
     }
 
@@ -4193,157 +4365,190 @@ class PoseStudioWidget {
      * Maps RGB colors to basic names and describes position/intensity.
      */
     generatePromptFromLights(lights) {
-        if (!lights || !Array.isArray(lights)) return "";
+        let finalPrompt = "";
 
-        const getColorName = (lightColor) => {
-            let color = { r: 255, g: 255, b: 255 };
-            if (typeof lightColor === 'string') {
-                const hex = lightColor.replace('#', '');
-                color.r = parseInt(hex.substring(0, 2), 16);
-                color.g = parseInt(hex.substring(2, 4), 16);
-                color.b = parseInt(hex.substring(4, 6), 16);
-            } else if (Array.isArray(lightColor)) {
-                color = { r: lightColor[0], g: lightColor[1], b: lightColor[2] };
+        if (!this.exportParams.keepOriginalLighting && lights && Array.isArray(lights)) {
+            const getColorName = (lightColor) => {
+                // Determine RGB components
+                let r, g, b;
+                if (typeof lightColor === 'string') {
+                    const hex = lightColor.replace('#', '');
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
+                } else if (Array.isArray(lightColor)) {
+                    [r, g, b] = lightColor;
+                } else if (lightColor && typeof lightColor.r === 'number') { // Handle THREE.Color
+                    r = Math.round(lightColor.r * 255);
+                    g = Math.round(lightColor.g * 255);
+                    b = Math.round(lightColor.b * 255);
+                } else {
+                    r = g = b = 255;
+                }
+
+                // Reference color map for nearest-neighbor matching
+                const colorMap = {
+                    "White": [255, 255, 255], "Silver": [192, 192, 192], "Grey": [128, 128, 128], "Dark Grey": [64, 64, 64], "Black": [0, 0, 0],
+                    "Red": [255, 0, 0], "Crimson": [220, 20, 60], "Maroon": [128, 0, 0], "Ruby": [224, 17, 95], "Rose": [255, 0, 127],
+                    "Orange": [255, 165, 0], "Amber": [255, 191, 0], "Gold": [255, 215, 0], "Peach": [255, 218, 185], "Coral": [255, 127, 80],
+                    "Yellow": [255, 255, 0], "Lemon": [255, 250, 205], "Cream": [255, 253, 208], "Sand": [194, 178, 128], "Sepia": [112, 66, 20],
+                    "Green": [0, 255, 0], "Lime": [50, 205, 50], "Forest Green": [34, 139, 34], "Olive": [128, 128, 0], "Emerald": [80, 200, 120],
+                    "Mint": [189, 252, 201], "Turquoise": [64, 224, 208], "Teal": [0, 128, 128], "Cyan": [0, 255, 255], "Aqua": [0, 255, 255],
+                    "Blue": [0, 0, 255], "Navy": [0, 0, 128], "Azure": [0, 127, 255], "Sky Blue": [135, 206, 235], "Electric Blue": [125, 249, 255],
+                    "Indigo": [75, 0, 130], "Purple": [128, 0, 128], "Violet": [238, 130, 238], "Lavender": [230, 230, 250], "Plum": [142, 69, 133],
+                    "Magenta": [255, 0, 255], "Pink": [255, 192, 203], "Hot Pink": [255, 105, 180], "Deep Pink": [255, 20, 147], "Salmon": [250, 128, 114],
+                    "Tan": [210, 180, 140], "Brown": [165, 42, 42], "Chocolate": [210, 105, 30], "Coffee": [111, 78, 55], "Copper": [184, 115, 51]
+                };
+
+                let bestName = "White";
+                let minDistance = Infinity;
+
+                for (const [name, [cr, cg, cb]] of Object.entries(colorMap)) {
+                    // Simple Euclidean distance in RGB space
+                    const distance = Math.sqrt(
+                        Math.pow(r - cr, 2) +
+                        Math.pow(g - cg, 2) +
+                        Math.pow(b - cb, 2)
+                    );
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        bestName = name;
+                    }
+                }
+
+                // Add saturation/lightness adjectives for more nuance
+                const max = Math.max(r / 255, g / 255, b / 255);
+                const min = Math.min(r / 255, g / 255, b / 255);
+                const l = (max + min) / 2;
+                const sat = (max === min) ? 0 : (l > 0.5 ? (max - min) / (2 - max - min) : (max - min) / (max + min)) * 100;
+
+                let name = bestName;
+                if (sat < 15 && !["White", "Silver", "Grey", "Dark Grey", "Black"].includes(bestName)) {
+                    if (l < 0.1) name = "Black";
+                    else if (l < 0.35) name = "Dark Grey";
+                    else if (l < 0.65) name = "Grey";
+                    else name = "Whiteish";
+                } else if (l < 0.25 && !bestName.includes("Dark") && !bestName.includes("Deep")) {
+                    name = "Deep " + bestName;
+                } else if (l > 0.85 && !bestName.includes("Pale") && !bestName.includes("Light")) {
+                    name = "Pale " + bestName;
+                }
+
+                return { name, sat, l };
+            };
+
+            const dirPrompts = [];
+            const ambPrompts = [];
+
+            for (const light of lights) {
+                const { name: colorName, sat, l } = getColorName(light.color);
+
+                if (light.type === 'directional') {
+                    // --- 2. Determine Position ---
+                    const y = light.y || 0;
+                    const x = light.x || 0;
+                    const z = light.z || 0;
+                    const isPoint = light.type === 'point';
+                    const yRange = isPoint ? 10 : 100; // Point lights use -10..10, Directional -100..100
+                    const yNorm = (y / yRange) * 100;
+
+                    let vertDesc = "eye-level";
+                    if (yNorm > 70) vertDesc = "overhead";
+                    else if (yNorm > 25) vertDesc = "high";
+                    else if (yNorm < -25) vertDesc = "low";
+                    else if (yNorm < -70) vertDesc = "bottom-up";
+
+                    const distXZ = Math.sqrt(x * x + z * z);
+                    let horizDesc = "centered";
+
+                    if (distXZ > (isPoint ? 0.5 : 5)) {
+                        const angle = Math.atan2(z, x) * 180 / Math.PI;
+                        let deg = angle;
+                        if (deg < 0) deg += 360;
+
+                        if (deg >= 337.5 || deg < 22.5) horizDesc = "right";
+                        else if (deg >= 22.5 && deg < 67.5) horizDesc = "front-right";
+                        else if (deg >= 67.5 && deg < 112.5) horizDesc = "front";
+                        else if (deg >= 112.5 && deg < 157.5) horizDesc = "front-left";
+                        else if (deg >= 157.5 && deg < 202.5) horizDesc = "left";
+                        else if (deg >= 202.5 && deg < 247.5) horizDesc = "back-left";
+                        else if (deg >= 247.5 && deg < 292.5) horizDesc = "back";
+                        else if (deg >= 292.5 && deg < 337.5) horizDesc = "back-right";
+                    }
+
+                    const posName = (horizDesc === "centered") ? vertDesc : `${vertDesc} ${horizDesc}`;
+
+                    // 3. Determine Intensity
+                    const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
+                    if (intensity < 0.1) continue; // Skip near-zero lights
+
+                    let intDesc = "moderate";
+                    if (intensity < 0.4) intDesc = "subtle";
+                    else if (intensity < 0.8) intDesc = "faint";
+                    else if (intensity < 1.2) intDesc = "soft";
+                    else if (intensity < 1.7) intDesc = "gentle";
+                    else if (intensity < 2.4) intDesc = "strong";
+                    else if (intensity < 3.0) intDesc = "bright";
+                    else if (intensity < 3.8) intDesc = "intense";
+                    else if (intensity < 4.5) intDesc = "dazzling";
+                    else intDesc = "blinding";
+
+                    dirPrompts.push(`${intDesc} ${colorName} lighting coming from the ${posName}`);
+                } else if (light.type === 'ambient') {
+                    const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
+
+                    // Slightly more specific suppression of the "default" mid-grey ambient
+                    const isDefaultGrey = (colorName === "Dark Grey" && sat < 10 && intensity < 1.1 && l < 0.4);
+
+                    if (intensity >= 0.05 && !isDefaultGrey) {
+                        let ambPart = "";
+                        if (colorName === "Black" || (l < 0.1 && sat < 10)) {
+                            ambPart = "a pitch black, unlit environment";
+                        } else {
+                            let ambIntDesc = "moderate";
+                            if (intensity < 0.4) ambIntDesc = "subtle";
+                            else if (intensity < 0.8) ambIntDesc = "faint";
+                            else if (intensity < 1.2) ambIntDesc = "soft";
+                            else if (intensity < 1.7) ambIntDesc = "gentle";
+                            else if (intensity < 2.4) ambIntDesc = "strong";
+                            else if (intensity < 3.0) ambIntDesc = "bright";
+                            else if (intensity < 3.8) ambIntDesc = "intense";
+                            else if (intensity < 4.5) ambIntDesc = "dazzling";
+                            else ambIntDesc = "blinding";
+                            ambPart = `a ${ambIntDesc} ${colorName} ambient glow`;
+                        }
+                        ambPrompts.push(ambPart);
+                    }
+                }
             }
 
-            const r = color.r / 255, g = color.g / 255, b = color.b / 255;
-            const max = Math.max(r, g, b), min = Math.min(r, g, b);
-            let h, s, l = (max + min) / 2;
-
-            if (max === min) {
-                h = s = 0;
+            finalPrompt = dirPrompts.join(". ");
+            if (ambPrompts.length > 0) {
+                if (finalPrompt.length > 0) finalPrompt += ". ";
+                finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
+            } else if (finalPrompt.length === 0) {
+                finalPrompt = "The scene is in total darkness, pitch black, no visible light.";
             } else {
-                const d = max - min;
-                s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-                switch (max) {
-                    case r: h = (g - b) / d + (g < b ? 6 : 0); break;
-                    case g: h = (b - r) / d + 2; break;
-                    case b: h = (r - g) / d + 4; break;
-                }
-                h /= 6;
+                // If there are directional lights but no reported ambient light, emphasize the darkness of shadows
+                finalPrompt += ". The background is dark and shadows are deep with no secondary illumination.";
             }
-
-            const hue = h * 360;
-            const sat = s * 100;
-
-            let baseColor = "White";
-
-            // Hue Mapping
-            if (hue >= 345 || hue < 15) baseColor = "Red";
-            else if (hue >= 15 && hue < 45) baseColor = "Orange";
-            else if (hue >= 45 && hue < 75) baseColor = "Yellow";
-            else if (hue >= 75 && hue < 150) baseColor = "Green";
-            else if (hue >= 150 && hue < 190) baseColor = "Cyan";
-            else if (hue >= 190 && hue < 260) baseColor = "Blue";
-            else if (hue >= 260 && hue < 290) baseColor = "Purple";
-            else if (hue >= 290 && hue < 345) baseColor = "Pink";
-
-            // Saturation Check
-            if (sat < 15) {
-                if (l < 0.1) return { name: "Black", sat, l };
-                if (l < 0.35) return { name: "Dark Grey", sat, l };
-                if (l < 0.65) return { name: "Grey", sat, l };
-                return { name: "White", sat, l };
-            }
-
-            // Lightness Adjectives
-            let adj = "";
-            if (l < 0.25) adj = "Dark";
-            else if (l < 0.40) adj = "Deep";
-            else if (l > 0.75) adj = "Pale";
-            else if (l > 0.60) adj = "Light";
-
-            const name = adj ? `${adj} ${baseColor}` : baseColor;
-            return { name, sat, l };
-        };
-
-        const dirPrompts = [];
-        const ambPrompts = [];
-
-        for (const light of lights) {
-            const { name: colorName, sat, l } = getColorName(light.color);
-
-            if (light.type === 'directional') {
-                // --- 2. Determine Position ---
-                const y = light.y || 0;
-                const x = light.x || 0;
-                const z = light.z || 0;
-                const isPoint = light.type === 'point';
-                const yRange = isPoint ? 10 : 100; // Point lights use -10..10, Directional -100..100
-                const yNorm = (y / yRange) * 100;
-
-                let vertDesc = "eye-level";
-                if (yNorm > 70) vertDesc = "overhead";
-                else if (yNorm > 25) vertDesc = "high";
-                else if (yNorm < -25) vertDesc = "low";
-                else if (yNorm < -70) vertDesc = "bottom-up";
-
-                const distXZ = Math.sqrt(x * x + z * z);
-                let horizDesc = "centered";
-
-                if (distXZ > (isPoint ? 0.5 : 5)) {
-                    const angle = Math.atan2(z, x) * 180 / Math.PI;
-                    let deg = angle;
-                    if (deg < 0) deg += 360;
-
-                    if (deg >= 337.5 || deg < 22.5) horizDesc = "right";
-                    else if (deg >= 22.5 && deg < 67.5) horizDesc = "front-right";
-                    else if (deg >= 67.5 && deg < 112.5) horizDesc = "front";
-                    else if (deg >= 112.5 && deg < 157.5) horizDesc = "front-left";
-                    else if (deg >= 157.5 && deg < 202.5) horizDesc = "left";
-                    else if (deg >= 202.5 && deg < 247.5) horizDesc = "back-left";
-                    else if (deg >= 247.5 && deg < 292.5) horizDesc = "back";
-                    else if (deg >= 292.5 && deg < 337.5) horizDesc = "back-right";
-                }
-
-                const posName = (horizDesc === "centered") ? vertDesc : `${vertDesc} ${horizDesc}`;
-
-                // 3. Determine Intensity
-                const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
-                if (intensity < 0.1) continue; // Skip near-zero lights
-
-                let intDesc = "moderate";
-                if (intensity < 0.4) intDesc = "subtle";
-                else if (intensity < 0.8) intDesc = "faint";
-                else if (intensity < 1.2) intDesc = "soft";
-                else if (intensity < 1.7) intDesc = "gentle";
-                else if (intensity < 2.4) intDesc = "strong";
-                else if (intensity < 3.0) intDesc = "bright";
-                else if (intensity < 3.8) intDesc = "intense";
-                else if (intensity < 4.5) intDesc = "dazzling";
-                else intDesc = "blinding";
-
-                dirPrompts.push(`${intDesc} ${colorName} lighting coming from the ${posName}`);
-            } else if (light.type === 'ambient') {
-                const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
-                // Suppress "default" ambient (Dark Grey #505050 or similar)
-                // Thresholds: Low saturation (Grey), Low Lightness (< 40%), Normal Intensity (< 1.5)
-                const isNeutralDark = (sat < 10 && l < 0.4 && intensity < 1.5);
-
-                if (intensity >= 0.1 && !isNeutralDark) {
-                    ambPrompts.push(`global ${colorName} ambient lighting`);
-                }
-            }
-        }
-
-        let finalPrompt = dirPrompts.join(". ");
-        if (ambPrompts.length > 0) {
-            if (finalPrompt.length > 0) finalPrompt += ". ";
-            finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
-        } else if (finalPrompt.length === 0) {
-            finalPrompt = "Pitch black scene, no light sources, complete darkness.";
         }
 
         // Wrap with templates
-        const prefix = this.exportParams.prompt_prefix || "";
-        const suffix = this.exportParams.prompt_suffix || "";
+        let p = (this.exportParams.prompt_prefix || "").trim();
+        const f = finalPrompt.trim();
+        const s = (this.exportParams.prompt_suffix || "").trim();
+
+        if (this.exportParams.keepOriginalLighting) {
+            p = p.replace("Copy how the lighting falls on the character from image 1:", "Keep original lighting and colors.");
+        }
 
         let result = "";
-        if (prefix) result += prefix.trim() + "\n";
-        result += finalPrompt.trim();
-        if (suffix) result += "\n" + suffix.trim();
+        if (p) result += p;
+        if (f) result += (result ? "\n" : "") + f;
+        if (s) result += (result ? "\n" : "") + s;
 
-        return result.trim();
+        return result;
     }
 
     /**
@@ -4376,124 +4581,105 @@ class PoseStudioWidget {
         }
 
         // Random directional lighting
-        const lights = [];
+        let lights = [];
         let lightingPrompt = "";
 
-        // Light count probabilities:
-        // 20% - 3 lights
-        // 50% - 2 lights
-        // 30% - 1 light
-        const r = Math.random();
-        const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
+        if (this.exportParams.debugKeepLighting) {
+            // Use current manual lights
+            lights = JSON.parse(JSON.stringify(this.lightParams));
+            lightingPrompt = this.generatePromptFromLights(lights);
+        } else {
+            // Original randomization logic
+            const prompts = [];
+            const r = Math.random();
+            const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
 
-        // Basic Vivid Colors
-        const colorPalette = [
-            { name: "Red", hex: "#ff0000" },
-            { name: "Green", hex: "#00ff00" },
-            { name: "Blue", hex: "#0000ff" },
-            { name: "Yellow", hex: "#ffff00" },
-            { name: "Cyan", hex: "#00ffff" },
-            { name: "Magenta", hex: "#ff00ff" },
-            { name: "Orange", hex: "#ff8000" },
-            { name: "White", hex: "#ffffff" }
-        ];
+            // Basic Vivid Colors
+            const colorPalette = [
+                { name: "Red", hex: "#ff0000" },
+                { name: "Green", hex: "#00ff00" },
+                { name: "Blue", hex: "#0000ff" },
+                { name: "Yellow", hex: "#ffff00" },
+                { name: "Cyan", hex: "#00ffff" },
+                { name: "Magenta", hex: "#ff00ff" },
+                { name: "Orange", hex: "#ff8000" },
+                { name: "White", hex: "#ffffff" }
+            ];
 
-        const prompts = [];
+            for (let i = 0; i < numLights; i++) {
+                const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                const intensity = 2.0 + Math.random() * 1.5;
+                let x, y, z;
+                if (numLights > 1) {
+                    const slice = 120 / numLights;
+                    const center = -60 + slice * i + slice / 2;
+                    x = center + (Math.random() * 20 - 10);
+                } else {
+                    x = (Math.random() * 2 - 1) * 60;
+                }
+                y = 10 + Math.random() * 50;
+                z = Math.random() * 60;
 
-        for (let i = 0; i < numLights; i++) {
-            // Pick random color
-            const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                let posDesc = "";
+                if (y > 40) posDesc += "top ";
+                else if (y < 20) posDesc += "low ";
+                if (x > 20) posDesc += "right";
+                else if (x < -20) posDesc += "left";
+                else if (z > 30) posDesc += "front";
+                else posDesc += "side";
 
-            // Random intensity (2.0 to 3.5)
-            const intensity = 2.0 + Math.random() * 1.5;
+                let intDesc = "strong";
+                if (intensity > 3.0) intDesc = "blinding";
+                else if (intensity < 2.5) intDesc = "bright";
 
-            // Generate Position
-            // Widen range to creates better shadows (side lighting)
-            // -60 to 60 for X, 0 to 60 for Z, 10 to 60 for Y
-            let x, y, z;
-            // Distribute lights to avoid bunching if multiple
-            if (numLights > 1) {
-                // Spread X based on index
-                const slice = 120 / numLights;
-                const center = -60 + slice * i + slice / 2;
-                x = center + (Math.random() * 20 - 10); // Jitter
-            } else {
-                x = (Math.random() * 2 - 1) * 60;
+                prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc.trim()}`);
+                lights.push({
+                    type: 'directional',
+                    color: colorObj.hex,
+                    intensity: parseFloat(intensity.toFixed(2)),
+                    x: parseFloat(x.toFixed(1)),
+                    y: parseFloat(y.toFixed(1)),
+                    z: parseFloat(z.toFixed(1))
+                });
+            }
+            lightingPrompt = prompts.join(". ") + ".";
+
+            // Random Ambient Light
+            let ambColor = '#505050';
+            let ambIntensity = 0.1;
+
+            if (Math.random() < 0.7) {
+                const h = Math.random();
+                const s = 0.3 + Math.random() * 0.7;
+                const l = 0.3 + Math.random() * 0.5;
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1 / 6) return p + (q - p) * 6 * t;
+                    if (t < 1 / 2) return q;
+                    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
+                const g = Math.round(hue2rgb(p, q, h) * 255);
+                const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+                const toHex = c => {
+                    const hex = c.toString(16);
+                    return hex.length === 1 ? '0' + hex : hex;
+                };
+                ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
+                ambIntensity = 0.2 + Math.random() * 1.0;
             }
 
-            y = 10 + Math.random() * 50;
-            z = Math.random() * 60;
-
-            // Determine position description
-            let posDesc = "";
-            if (y > 40) posDesc += "top ";
-            else if (y < 20) posDesc += "low ";
-
-            if (x > 20) posDesc += "right";
-            else if (x < -20) posDesc += "left";
-            else if (z > 30) posDesc += "front";
-            else posDesc += "side"; // Fallback
-
-            posDesc = posDesc.trim();
-
-            // Determine intensity description
-            let intDesc = "strong";
-            if (intensity > 3.0) intDesc = "blinding";
-            else if (intensity < 2.5) intDesc = "bright";
-
-            prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc}`);
-
             lights.push({
-                type: 'directional',
-                color: colorObj.hex,
-                intensity: parseFloat(intensity.toFixed(2)),
-                x: parseFloat(x.toFixed(1)),
-                y: parseFloat(y.toFixed(1)),
-                z: parseFloat(z.toFixed(1))
+                type: 'ambient',
+                color: ambColor,
+                intensity: parseFloat(ambIntensity.toFixed(2)),
+                x: 0, y: 0, z: 0
             });
         }
-
-        lightingPrompt = prompts.join(". ") + ".";
-
-        // Random Ambient Light
-        let ambColor = '#505050';
-        let ambIntensity = 0.1;
-
-        // 70% chance of varied ambient color
-        if (Math.random() < 0.7) {
-            const h = Math.random();
-            const s = 0.3 + Math.random() * 0.7; // Colorful (30-100% sat)
-            const l = 0.3 + Math.random() * 0.5; // Visible lightness (30-80%)
-
-            // HSL to RGB
-            const hue2rgb = (p, q, t) => {
-                if (t < 0) t += 1;
-                if (t > 1) t -= 1;
-                if (t < 1 / 6) return p + (q - p) * 6 * t;
-                if (t < 1 / 2) return q;
-                if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-                return p;
-            };
-            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-            const p = 2 * l - q;
-            const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
-            const g = Math.round(hue2rgb(p, q, h) * 255);
-            const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
-
-            const toHex = c => {
-                const hex = c.toString(16);
-                return hex.length === 1 ? '0' + hex : hex;
-            };
-            ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
-            ambIntensity = 0.2 + Math.random() * 1.0; // 0.2 - 1.2
-        }
-
-        lights.push({
-            type: 'ambient',
-            color: ambColor,
-            intensity: parseFloat(ambIntensity.toFixed(2)),
-            x: 0, y: 0, z: 0
-        });
 
         // Debug background color (White)
         const bgColor = [255, 255, 255];
@@ -4757,12 +4943,13 @@ app.registerExtension({
     name: "VNCCS.PoseStudio",
 
     setup() {
-        api.addEventListener("vnccs_req_debug_capture", async (event) => {
+        api.addEventListener("vnccs_req_pose_sync", async (event) => {
             const nodeId = event.detail.node_id;
             const node = app.graph.getNodeById(nodeId);
-            if (node && node.studioWidget && node.studioWidget.exportParams.debugMode) {
+            if (node && node.studioWidget) {
                 try {
-                    // 1. Force Randomize & Render
+                    // Update lights and state before capture
+                    node.studioWidget.viewer.updateLights(node.studioWidget.lightParams);
                     node.studioWidget.syncToNode(true);
 
                     // 2. Retrieve data
@@ -4771,8 +4958,8 @@ app.registerExtension({
                         const data = JSON.parse(poseWidget.value);
                         data.node_id = nodeId;
 
-                        // 3. Upload
-                        await fetch('/vnccs/debug/upload_capture', {
+                        // 3. Upload to sync endpoint
+                        await fetch('/vnccs/pose_sync/upload_capture', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(data)
@@ -4829,7 +5016,9 @@ app.registerExtension({
                         );
                     }
                 });
-            }, 500);
+                // Force a resize after initialization to fix stretching
+                this.onResize(this.size);
+            }, 800);
         };
 
         nodeType.prototype.onResize = function (size) {
@@ -4841,7 +5030,7 @@ app.registerExtension({
                 this.studioWidget.container.style.width = w + "px";
                 this.studioWidget.container.style.height = h + "px";
 
-                setTimeout(() => this.studioWidget.resize(w, h), 50);
+                setTimeout(() => this.studioWidget.resize(), 50);
             }
         };
 
@@ -4855,7 +5044,8 @@ app.registerExtension({
                     this.studioWidget.loadFromNode();
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(); // Pre-load library for debug
-                }, 200);
+                    this.onResize(this.size); // Force correct aspect ratio on config
+                }, 500);
             }
         };
 

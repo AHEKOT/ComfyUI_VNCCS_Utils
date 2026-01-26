@@ -140,8 +140,8 @@ async def get_preview(request):
     with open(preview_path, "rb") as f:
         return web.Response(body=f.read(), content_type="image/png")
 
-async def upload_debug_capture(request):
-    """POST /vnccs/debug/upload_capture - Saves debug capture for batch processing."""
+async def upload_pose_sync(request):
+    """POST /vnccs/pose_sync/upload_capture - Saves synchronized capture for execution."""
     try:
         data = await request.json()
         node_id = data.get("node_id")
@@ -150,6 +150,7 @@ async def upload_debug_capture(request):
              
         import folder_paths
         temp_dir = folder_paths.get_temp_directory()
+        # Note: we use 'debug' in the filename for backwards compatibility with the backend check
         filepath = os.path.join(temp_dir, f"vnccs_debug_{node_id}.json")
         
         with open(filepath, "w") as f:
@@ -166,4 +167,5 @@ def register_routes(app):
     app.router.add_post("/vnccs/pose_library/save", save_pose)
     app.router.add_delete("/vnccs/pose_library/delete/{name}", delete_pose)
     app.router.add_get("/vnccs/pose_library/preview/{name}", get_preview)
-    app.router.add_post("/vnccs/debug/upload_capture", upload_debug_capture)
+    app.router.add_post("/vnccs/pose_sync/upload_capture", upload_pose_sync)
+    app.router.add_post("/vnccs/debug/upload_capture", upload_pose_sync)  # Aliased for backward compatibility
