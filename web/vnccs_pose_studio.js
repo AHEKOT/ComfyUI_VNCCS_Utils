@@ -256,6 +256,28 @@ const STYLES = `
     border-color: var(--ps-accent);
 }
 
+.vnccs-ps-textarea {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: #fff;
+    border-radius: 4px;
+    padding: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    resize: none;
+    overflow-y: hidden;
+    line-height: 1.4;
+    min-height: 60px;
+    pointer-events: auto;
+}
+
+.vnccs-ps-textarea:focus {
+    outline: none;
+    border-color: var(--ps-accent);
+}
+
 /* Select */
 .vnccs-ps-select {
     background: var(--ps-input-bg);
@@ -2100,8 +2122,8 @@ class PoseStudioWidget {
             debugPortraitMode: false, // Focus on upper body in debug mode
             debugKeepLighting: false, // Use manual lighting in debug mode
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
-            prompt_prefix: "Draw character from image2\nCopy how the lighting falls on the character from image 1:",
-            prompt_suffix: "change background to match new character pose, zoom and lighting colors."
+            user_prompt: "",
+            prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>"
         };
 
         // Lighting settings (array of light configs)
@@ -2634,6 +2656,31 @@ class PoseStudioWidget {
 
         libBtnWrap.appendChild(libBtn);
         rightSidebar.prepend(libBtnWrap);
+
+        // Prompt Section
+        const promptSection = this.createSection("Prompt", true);
+        const promptArea = document.createElement("textarea");
+        promptArea.className = "vnccs-ps-textarea";
+        promptArea.placeholder = "Describe your scene/character details...";
+        promptArea.value = this.exportParams.user_prompt || "";
+
+        const autoExpand = () => {
+            promptArea.style.height = 'auto';
+            promptArea.style.height = (promptArea.scrollHeight) + 'px';
+        };
+
+        promptArea.addEventListener('input', () => {
+            this.exportParams.user_prompt = promptArea.value;
+            autoExpand();
+            this.syncToNode(false);
+        });
+
+        // Initial expand and resize observer to handle layout changes
+        setTimeout(autoExpand, 0);
+        this.userPromptArea = promptArea; // Save for updates
+
+        promptSection.content.appendChild(promptArea);
+        rightSidebar.appendChild(promptSection.el);
 
         this.container.appendChild(rightSidebar);
 
@@ -3950,8 +3997,7 @@ class PoseStudioWidget {
             return field;
         };
 
-        content.appendChild(createTemplateField("Prompt Prefix", "prompt_prefix"));
-        content.appendChild(createTemplateField("Prompt Suffix", "prompt_suffix"));
+        content.appendChild(createTemplateField("Prompt Template", "prompt_template"));
 
         // Donation Section
         const donationSection = document.createElement("div");
@@ -4394,7 +4440,9 @@ class PoseStudioWidget {
     generatePromptFromLights(lights) {
         let finalPrompt = "";
 
-        if (!this.exportParams.keepOriginalLighting && lights && Array.isArray(lights)) {
+        if (this.exportParams.keepOriginalLighting) {
+            finalPrompt = "";
+        } else if (lights && Array.isArray(lights)) {
             const getColorName = (lightColor) => {
                 // Determine RGB components
                 let r, g, b;
@@ -4561,19 +4609,25 @@ class PoseStudioWidget {
             }
         }
 
-        // Wrap with templates
-        let p = (this.exportParams.prompt_prefix || "").trim();
-        const f = finalPrompt.trim();
-        const s = (this.exportParams.prompt_suffix || "").trim();
+        // Final Construction using Template
+        let template = this.exportParams.prompt_template || "Draw character from image2\n<lighting>\n<user_prompt>";
 
-        if (this.exportParams.keepOriginalLighting) {
-            p = p.replace("Copy how the lighting falls on the character from image 1:", "Keep original lighting and colors.");
-        }
+        // Final Lighting string
+        const lightingString = finalPrompt.trim();
 
-        let result = "";
-        if (p) result += p;
-        if (f) result += (result ? "\n" : "") + f;
-        if (s) result += (result ? "\n" : "") + s;
+        // User Prompt string
+        const userPromptString = (this.exportParams.user_prompt || "").trim();
+
+        // Perform Replacements (Robust Global Replace)
+        let result = template
+            .replace(/<lighting>/g, lightingString)
+            .replace(/<user_prompt>/g, userPromptString);
+
+        // Clean up accidental double-newlines, extra spaces, and empty lines
+        result = result.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .join('\n');
 
         return result;
     }
@@ -4916,6 +4970,14 @@ class PoseStudioWidget {
 
             if (data.export) {
                 this.exportParams = { ...this.exportParams, ...data.export };
+
+                // Sync user_prompt to sidebar if it exists
+                if (data.export.user_prompt !== undefined && this.userPromptArea) {
+                    this.userPromptArea.value = data.export.user_prompt;
+                    // Trigger auto-expand
+                    this.userPromptArea.style.height = 'auto';
+                    this.userPromptArea.style.height = (this.userPromptArea.scrollHeight) + 'px';
+                }
                 // Update export widgets
                 for (const [key, widget] of Object.entries(this.exportWidgets)) {
                     if (key === 'bg_color') {
