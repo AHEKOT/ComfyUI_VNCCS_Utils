@@ -30,6 +30,7 @@ The studio is organized into three distinct areas to maximize efficiency:
 
 ### Right Sidebar: Library & Environment
 *   **📚 Pose Library Gallery**: A large button that launches the full-screen modal browser.
+*   **Prompt Section**: A multiline, auto-expanding text box to describe scene details. Use it to add character descriptions or background info that will be combined with the lighting prompt.
 *   **Scene Lighting**: Static, always-accessible controls for your lighting rig.
     *   **Ambient**: Global shadow-fill light.
     *   **Directional**: Parallel sun-like light.

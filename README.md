@@ -1,6 +1,7 @@
 # ComfyUI VNCCS Utils
 
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project that are useful not only for the project's primary goals but also for everyday ComfyUI workflows.
+<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="https://img.shields.io/badge/Join%20our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white" style="height: 60px !important;"></a>
 
 ## **If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!**
 
@@ -58,15 +59,19 @@ The companion node for selecting models. It provides a rich Graphical User Inter
 A helper node to simply extract and visualize the crops. Useful when you need extract bbox detected regions but don't want to run whole facedetailer.
 
 ### 5. VNCCS Pose Studio
+**[Example Workflow](workflows/VNCCS_Utils%20Pose%20Studio.json)**
 A professional 3D posing and lighting environment running entirely within a ComfyUI node.
 
 *   **Interactive Viewport**: Sophisticated bone manipulation with gizmos and **Undo/Redo** functionality.
+*   **Dynamic Body Generator**: Fine-tune character physical attributes including Age, Gender blending, Weight, Muscle, and Height with intuitive sliders.
 *   **Advanced Environment Lighting**: Ambient, Directional, and **Point Lights** with interactive 2D radars and radius control.
 *   **Keep Original Lighting**: One-click mode to bypass synthetic lights for clean, flat-white renders (ideal for ControlNet).
+*   **Customizable Prompt Templates**: Use tag-based templates (e.g., `<lighting>`, `<user_prompt>`) to define exactly how your final prompt is structured in settings.
+*   **Direct Sidebar Prompting**: A "Prompt" section in the right sidebar with an auto-expanding text box for adding scene details on the fly.
 *   **Modal Pose Gallery**: A clean, full-screen gallery to manage and load saved poses without cluttering the UI.
 *   **Multi-Pose Tabs**: System for creating batch outputs or sequences within a single node.
 *   **Precision Framing**: Integrated camera radar and Zoom controls with a clean viewport frame visualization.
-*   **Natural Language Prompts**: Automatically generates descriptive lighting prompts (e.g., "gentle blue lighting from the high-right") for seamless scene integration.
+*   **Natural Language Prompts**: Automatically generates descriptive lighting prompts for seamless scene integration.
 *   **Tracing Support**: Load background reference images for precise character alignment.
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
