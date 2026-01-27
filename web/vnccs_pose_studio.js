@@ -3953,6 +3953,23 @@ class PoseStudioWidget {
         content.appendChild(createTemplateField("Prompt Prefix", "prompt_prefix"));
         content.appendChild(createTemplateField("Prompt Suffix", "prompt_suffix"));
 
+        // Donation Section
+        const donationSection = document.createElement("div");
+        donationSection.style.marginTop = "30px";
+        donationSection.style.paddingTop = "20px";
+        donationSection.style.borderTop = "1px solid var(--ps-border)";
+        donationSection.style.textAlign = "center";
+        donationSection.innerHTML = `
+            <div style="font-size: 11px; color: var(--ps-text); margin-bottom: 20px; line-height: 1.6; font-weight: bold; padding: 0 10px;">
+                If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!
+            </div>
+            <a href="https://www.buymeacoffee.com/MIUProject" target="_blank" style="display: inline-block; transition: transform 0.2s;" 
+               onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important; width: 217px !important; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);" >
+            </a>
+        `;
+        content.appendChild(donationSection);
+
         panel.appendChild(header);
         panel.appendChild(content);
 
@@ -4013,8 +4030,8 @@ class PoseStudioWidget {
         }
     }
 
-    loadModel() {
-        if (this.loadingOverlay) this.loadingOverlay.style.display = "flex";
+    loadModel(showOverlay = true) {
+        if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
 
         return api.fetchApi("/vnccs/character_studio/update_preview", {
             method: "POST",
@@ -4342,7 +4359,17 @@ class PoseStudioWidget {
 
         // Async Queue update
         this.pendingMeshUpdate = true;
-        this.processMeshUpdate();
+
+        if (this.isMeshUpdating) return;
+        this.isMeshUpdating = true;
+        this.pendingMeshUpdate = false;
+
+        this.loadModel(false).finally(() => {
+            this.isMeshUpdating = false;
+            if (this.pendingMeshUpdate) {
+                this.onMeshParamsChanged();
+            }
+        });
     }
 
     resize() {
@@ -4704,7 +4731,6 @@ class PoseStudioWidget {
         }
 
         // Cache Handling
-        // Cache Handling
         if (!this.poseCaptures) this.poseCaptures = [];
         if (!this.lightingPrompts) this.lightingPrompts = [];
 
@@ -4721,73 +4747,76 @@ class PoseStudioWidget {
             const h = this.exportParams.view_height || 1024;
             const bg = this.exportParams.bg_color || [40, 40, 40];
 
-            // Debug Mode: apply randomized params
+            // Debug/Export Mode: apply randomized params if needed
             const isDebug = this.exportParams.debugMode;
+            const isOriginalLighting = this.exportParams.keepOriginalLighting;
+            const userLights = JSON.parse(JSON.stringify(this.lightParams));
 
             if (fullCapture) {
                 const originalTab = this.activeTab;
                 const originalLights = [...this.lightParams]; // Save original lighting
 
                 for (let i = 0; i < this.poses.length; i++) {
+                    this.activeTab = i; // Switch tab for capture
 
                     if (isDebug) {
                         // Generate fresh random params for each pose
                         const debugParams = this.generateDebugParams();
 
-                        // Random Pose from Library (if available)
+                        // Random Pose logic...
                         let randomPoseUsed = false;
                         if (this.libraryPoses && this.libraryPoses.length > 0) {
                             const randIdx = Math.floor(Math.random() * this.libraryPoses.length);
                             const poseItem = this.libraryPoses[randIdx];
-
                             if (poseItem.data) {
                                 this.viewer.setPose(poseItem.data);
                                 randomPoseUsed = true;
                             }
-                        } else {
-                            // No library poses available for random selection.
                         }
+                        if (!randomPoseUsed) this.viewer.setPose(this.poses[i]);
 
-                        if (!randomPoseUsed) {
-                            this.viewer.resetPose();
-                        }
-
-                        // Apply Random Model Rotation (Y) - preserve X/Z from pose
+                        // Model Rotation
                         const currentRot = this.viewer.modelRotation;
                         this.viewer.setModelRotation(currentRot.x, debugParams.modelYRotation, currentRot.z);
 
-                        // Apply debug lighting
-                        if (debugParams.lights) {
+                        // Lighting
+                        if (isOriginalLighting) {
+                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                        } else if (debugParams.lights) {
                             this.viewer.updateLights(debugParams.lights);
                         }
 
-                        // Capture with random camera and background
+                        // Capture
                         this.poseCaptures[i] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY);
 
-                        // Generate prompt from the lights actually used (debug or original)
-                        const lightsUsed = debugParams.lights || originalLights;
-                        this.lightingPrompts[i] = this.generatePromptFromLights(lightsUsed);
+                        // Prompt
+                        const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || originalLights);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(promptLights);
                     } else {
                         // Normal mode
                         this.viewer.setPose(this.poses[i]);
                         const z = this.exportParams.cam_zoom || 1.0;
                         const oX = this.exportParams.cam_offset_x || 0;
                         const oY = this.exportParams.cam_offset_y || 0;
-                        this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY);
 
-                        // Generate prompt from current global lights
-                        this.lightingPrompts[i] = this.generatePromptFromLights(this.lightParams);
+                        // Lighting Toggle
+                        if (isOriginalLighting) {
+                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                        } else {
+                            this.viewer.updateLights(this.lightParams);
+                        }
+
+                        this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
                     }
                 }
 
                 // Restore original state
-                if (isDebug) {
-                    this.viewer.updateLights(originalLights);
-                }
+                this.viewer.updateLights(userLights);
                 this.activeTab = originalTab;
                 this.viewer.setPose(this.poses[this.activeTab]);
 
-                // Restore Manual Camera Visualization after debug/batch render
+                // Restore Camera Visualization
                 const z = this.exportParams.cam_zoom || 1.0;
                 const oX = this.exportParams.cam_offset_x || 0;
                 const oY = this.exportParams.cam_offset_y || 0;
@@ -4797,33 +4826,23 @@ class PoseStudioWidget {
                 // Capture only ACTIVE
                 if (isDebug) {
                     const debugParams = this.generateDebugParams();
-
-                    // Reset to default pose, apply random Y rotation
                     this.viewer.resetPose();
                     this.viewer.setModelRotation(0, debugParams.modelYRotation, 0);
 
-                    // Apply debug lighting
-                    const originalLights = [...this.lightParams];
-                    if (debugParams.lights) {
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                    } else if (debugParams.lights) {
                         this.viewer.updateLights(debugParams.lights);
                     }
 
-                    // Capture with random camera and background
                     this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY);
 
-                    // Generate prompt
-                    const lightsUsed = debugParams.lights || originalLights;
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(lightsUsed);
+                    const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || userLights);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights);
 
-                    // Restore lighting
-                    if (debugParams.lights) {
-                        this.viewer.updateLights(originalLights);
-                    }
-
-                    // Restore original pose
+                    this.viewer.updateLights(userLights);
                     this.viewer.setPose(this.poses[this.activeTab]);
 
-                    // Restore Manual Camera Visualization
                     const z = this.exportParams.cam_zoom || 1.0;
                     const oX = this.exportParams.cam_offset_x || 0;
                     const oY = this.exportParams.cam_offset_y || 0;
@@ -4832,10 +4851,19 @@ class PoseStudioWidget {
                     const z = this.exportParams.cam_zoom || 1.0;
                     const oX = this.exportParams.cam_offset_x || 0;
                     const oY = this.exportParams.cam_offset_y || 0;
-                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY);
 
-                    // Generate prompt from current global lights
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(this.lightParams);
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                    } else {
+                        this.viewer.updateLights(this.lightParams);
+                    }
+
+                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
+
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights(userLights);
+                    }
                 }
             }
         }
@@ -5014,10 +5042,14 @@ app.registerExtension({
                             this.studioWidget.exportParams.cam_offset_x || 0,
                             this.studioWidget.exportParams.cam_offset_y || 0
                         );
+                        // Force resize again after model load to ensure Three.js matches container
+                        this.studioWidget.resize();
                     }
                 });
                 // Force a resize after initialization to fix stretching
                 this.onResize(this.size);
+                // Second pass just in case layout changed
+                setTimeout(() => this.onResize(this.size), 200);
             }, 800);
         };
 
@@ -5045,6 +5077,7 @@ app.registerExtension({
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(); // Pre-load library for debug
                     this.onResize(this.size); // Force correct aspect ratio on config
+                    setTimeout(() => this.onResize(this.size), 300);
                 }, 500);
             }
         };
