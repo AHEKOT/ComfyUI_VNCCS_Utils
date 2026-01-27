@@ -13,29 +13,35 @@ def get_library_path():
 
 async def list_poses(request):
     """GET /vnccs/pose_library/list - Returns list of saved poses."""
+    full_details = request.query.get("full") == "true"
     lib_path = get_library_path()
     poses = []
     
-    for filename in os.listdir(lib_path):
+    # Optimistic listing: only read file stats if possible
+    try:
+        filenames = os.listdir(lib_path)
+    except FileNotFoundError:
+        return web.json_response({"poses": []})
+
+    for filename in filenames:
         if filename.endswith(".json"):
             name = filename[:-5]  # Remove .json
             preview_path = os.path.join(lib_path, f"{name}.png")
             has_preview = os.path.exists(preview_path)
             
-            # Load pose data for frontend cache (enables random pose generation)
             pose_data = None
-            try:
-                with open(os.path.join(lib_path, filename), "r") as f:
-                    pose_data = json.load(f)
-            except:
-                pass
+            if full_details:
+                try:
+                    with open(os.path.join(lib_path, filename), "r") as f:
+                        pose_data = json.load(f)
+                except:
+                    pass
 
-            if pose_data:
-                poses.append({
-                    "name": name,
-                    "has_preview": has_preview,
-                    "data": pose_data
-                })
+            poses.append({
+                "name": name,
+                "has_preview": has_preview,
+                "data": pose_data
+            })
     
     return web.json_response({"poses": sorted(poses, key=lambda x: x["name"])})
 

@@ -184,7 +184,6 @@ class VNCCS_PoseStudio:
         muscle = mesh.get("muscle", 0.5)
         height = mesh.get("height", 0.5)
         breast_size = mesh.get("breast_size", 0.5)
-        breast_size = mesh.get("breast_size", 0.5)
         firmness = mesh.get("firmness", 0.5)
         
         # Male specifics
@@ -297,13 +296,15 @@ class VNCCS_PoseStudio:
         if output_mode == "LIST":
             # Return list of individual images
             tensor_list = [t.unsqueeze(0) for t in tensors]
-            return (tensor_list,)
+            # Fallback prompts (empty strings since python renderer doesn't generate them yet)
+            prompts = [""] * len(tensor_list)
+            return (tensor_list, prompts)
         else:
             # GRID mode - concatenate into single image
             grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
             np_grid = np.array(grid_img).astype(np.float32) / 255.0
             grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
-            return (grid_tensor,)
+            return (grid_tensor, [""])
     
     def _apply_pose(self, verts, bones_data, model_rotation):
         """Apply bone rotations (FK) and global rotation to vertices."""

@@ -1495,15 +1495,23 @@ class PoseViewer {
     }
 
     updateMarkers() {
+        if (!this.markerMatNormal || !this.markerMatSelected) return;
+
         const boneIdx = this.selectedBone ? this.boneList.indexOf(this.selectedBone) : -1;
+
         for (let i = 0; i < this.jointMarkers.length; i++) {
             const marker = this.jointMarkers[i];
-            if (i === boneIdx) {
-                marker.material.color.setHex(0x00ffff);
-                marker.scale.setScalar(1.8);
+            const isSelected = (i === boneIdx);
+
+            // Swap shared materials instead of creating new ones or changing color props
+            marker.material = isSelected ? this.markerMatSelected : this.markerMatNormal;
+
+            if (isSelected) {
+                marker.scale.setScalar(1.5);
+                marker.renderOrder = 999;
             } else {
-                marker.material.color.setHex(0xffaa00);
                 marker.scale.setScalar(1.0);
+                marker.renderOrder = 1;
             }
         }
     }
@@ -1534,7 +1542,13 @@ class PoseViewer {
             this.skinnedMesh.material.dispose();
             if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
         }
-        this.jointMarkers.forEach(m => m.parent?.remove(m));
+        if (this.jointMarkers) {
+            this.jointMarkers.forEach(m => {
+                if (m.parent) m.parent.remove(m);
+                // Geometries are shared, but material might need disposal if unique
+                if (m.material && m.material.dispose && !m.userData.sharedMaterial) m.material.dispose();
+            });
+        }
         this.jointMarkers = [];
 
         // Geometry
@@ -1680,24 +1694,41 @@ class PoseViewer {
         this.scene.add(this.skeletonHelper);
 
         // Joint Markers
-        const sphereGeoNormal = new THREE.SphereGeometry(0.12, 8, 6);
-        const sphereGeoFinger = new THREE.SphereGeometry(0.06, 6, 4);
+        // Create shared resources to prevent leaks
+        if (!this.markerGeoNormal) this.markerGeoNormal = new THREE.SphereGeometry(0.12, 8, 8);
+        if (!this.markerGeoFinger) this.markerGeoFinger = new THREE.SphereGeometry(0.06, 6, 6);
+
+        if (!this.markerMatNormal) {
+            this.markerMatNormal = new THREE.MeshBasicMaterial({
+                color: 0xffaa00,
+                transparent: true,
+                opacity: 0.8,
+                depthTest: false,
+                depthWrite: false
+            });
+        }
+        if (!this.markerMatSelected) {
+            this.markerMatSelected = new THREE.MeshBasicMaterial({
+                color: 0x00ffff,
+                transparent: true,
+                opacity: 0.9,
+                depthTest: false,
+                depthWrite: false
+            });
+        }
+
         const fingerPatterns = ['finger', 'thumb', 'index', 'middle', 'ring', 'pinky', 'f_'];
 
         for (let i = 0; i < this.boneList.length; i++) {
             const bone = this.boneList[i];
             const boneName = bone.name.toLowerCase();
             const isFinger = fingerPatterns.some(p => boneName.includes(p));
-            const geo = isFinger ? sphereGeoFinger : sphereGeoNormal;
+            const geo = isFinger ? this.markerGeoFinger : this.markerGeoNormal;
 
-            const mat = new THREE.MeshBasicMaterial({
-                color: 0xffaa00,
-                transparent: true,
-                opacity: 0.9,
-                depthTest: false
-            });
-            const sphere = new THREE.Mesh(geo, mat);
+            // Use the shared normal material by default
+            const sphere = new THREE.Mesh(geo, this.markerMatNormal);
             sphere.userData.boneIndex = i;
+            sphere.userData.sharedMaterial = true; // Flag to skip disposal
             sphere.renderOrder = 999;
             bone.add(sphere);
             sphere.position.set(0, 0, 0);
@@ -3694,9 +3725,9 @@ class PoseStudioWidget {
         this.refreshLibrary();
     }
 
-    async refreshLibrary() {
+    async refreshLibrary(forceFull = false) {
         try {
-            const res = await fetch('/vnccs/pose_library/list');
+            const res = await fetch('/vnccs/pose_library/list' + (forceFull ? '?full=true' : ''));
             const data = await res.json();
             this.libraryPoses = data.poses || []; // Cache for random selection
 
@@ -3785,7 +3816,7 @@ class PoseStudioWidget {
                 overlay.remove();
                 // Refresh modal if open
                 const libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
-                if (libraryGrid) this.refreshLibrary();
+                if (libraryGrid) this.refreshLibrary(false);
             }
         };
 
@@ -3820,7 +3851,7 @@ class PoseStudioWidget {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, pose, preview })
             });
-            this.refreshLibrary();
+            this.refreshLibrary(false);
         } catch (err) {
             console.error("Failed to save pose:", err);
         }
@@ -3889,6 +3920,10 @@ class PoseStudioWidget {
         debugCheckbox.style.height = "16px";
         debugCheckbox.onchange = () => {
             this.exportParams.debugMode = debugCheckbox.checked;
+            // If debug mode (randomization) is enabled, we need to load full library data
+            if (this.exportParams.debugMode) {
+                this.refreshLibrary(true);
+            }
             this.syncToNode(false);
         };
 
@@ -4070,7 +4105,7 @@ class PoseStudioWidget {
     async deleteFromLibrary(name) {
         try {
             await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}`, { method: 'DELETE' });
-            this.refreshLibrary();
+            this.refreshLibrary(false);
         } catch (err) {
             console.error("Failed to delete pose:", err);
         }
@@ -5081,7 +5116,7 @@ app.registerExtension({
 
             // Pre-load library for random functionality
             setTimeout(() => {
-                if (this.studioWidget) this.studioWidget.refreshLibrary();
+                if (this.studioWidget) this.studioWidget.refreshLibrary(false);
             }, 1000);
 
             // Hide pose_data widget
@@ -5137,7 +5172,7 @@ app.registerExtension({
                 setTimeout(() => {
                     this.studioWidget.loadFromNode();
                     this.studioWidget.loadModel();
-                    this.studioWidget.refreshLibrary(); // Pre-load library for debug
+                    this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.onResize(this.size); // Force correct aspect ratio on config
                     setTimeout(() => this.onResize(this.size), 300);
                 }, 500);
