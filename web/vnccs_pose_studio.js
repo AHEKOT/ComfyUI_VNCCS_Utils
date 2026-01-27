@@ -2082,24 +2082,29 @@ class PoseViewer {
         }
 
         let dataURL = null;
+        const oldPixelRatio = this.renderer.getPixelRatio();
+
         try {
             // Resize renderer to output size
             const originalSize = new this.THREE.Vector2();
             this.renderer.getSize(originalSize);
 
-            this.renderer.setSize(width, height);
+            this.renderer.setPixelRatio(1); // Force 1:1 pixel ratio for capture
+            this.renderer.setSize(width, height, false); // false = don't update style to avoid layout thrashing
 
             // Render with Fixed Camera
             this.renderer.render(this.scene, this.captureCamera);
             dataURL = this.canvas.toDataURL("image/png");
 
             // Restore renderer
-            this.renderer.setSize(originalSize.x, originalSize.y);
+            this.renderer.setPixelRatio(oldPixelRatio);
+            this.renderer.setSize(originalSize.x, originalSize.y, true); // Update style back
 
         } catch (e) {
             console.error("Capture failed:", e);
         } finally {
             // Restore state
+            if (this.renderer.getPixelRatio() !== oldPixelRatio) this.renderer.setPixelRatio(oldPixelRatio);
             this.scene.background = oldBg;
 
             this.jointMarkers.forEach(m => m.visible = true);
@@ -5073,8 +5078,16 @@ app.registerExtension({
             const node = app.graph.getNodeById(nodeId);
             if (node && node.studioWidget) {
                 try {
+                    // Safe mode: ensure viewer is initialized
+                    if (!node.studioWidget.viewer || !node.studioWidget.viewer.initialized) {
+                        console.log("[VNCCS] Viewer not initialized on sync. Auto-loading model...");
+                        await node.studioWidget.loadModel();
+                    }
+
                     // Update lights and state before capture
-                    node.studioWidget.viewer.updateLights(node.studioWidget.lightParams);
+                    if (node.studioWidget.viewer) {
+                        node.studioWidget.viewer.updateLights(node.studioWidget.lightParams);
+                    }
                     node.studioWidget.syncToNode(true);
 
                     // 2. Retrieve data

@@ -152,19 +152,24 @@ class VNCCS_PoseStudio:
                     
                     # Wait loop (up to 3s)
                     start_time = time.time()
-                    while time.time() - start_time < 3.0:
-                        if os.path.exists(filepath):
-                            # Ensure the file is fresh (modified recently)
-                            if os.path.getmtime(filepath) > start_time - 1.0:
-                                try:
-                                    with open(filepath, "r") as f:
-                                        sync_data = json.load(f)
-                                    # Override data with fresh sync from client
-                                    data = sync_data
-                                    break
-                                except:
-                                    pass
-                        time.sleep(0.1)
+                    while time.time() - start_time < 15.0:
+                            if os.path.exists(filepath):
+                                # Ensure the file is fresh (modified recently)
+                                if os.path.getmtime(filepath) > start_time - 1.0:
+                                    try:
+                                        with open(filepath, "r") as f:
+                                            sync_data = json.load(f)
+                                        # Override data with fresh sync from client
+                                        data = sync_data
+                                        # Cleanup
+                                        try:
+                                            os.remove(filepath)
+                                        except:
+                                            pass
+                                        break
+                                    except:
+                                        pass
+                            time.sleep(0.1)
                 except Exception as e:
                     print(f"VNCCS Pose Studio Sync Error: {e}")
             # ---------------------------------------------
@@ -250,9 +255,10 @@ class VNCCS_PoseStudio:
                     np_grid = np.array(grid_img).astype(np.float32) / 255.0
                     grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
                     
-                    # For grid, combine prompts
-                    combined_prompt = "\n".join([p for p in lighting_prompts if p])
-                    return (grid_tensor, [combined_prompt])
+                    
+                    # For grid, return only the first prompt (conceptually the "main" prompt)
+                    combined_prompt = lighting_prompts[0] if lighting_prompts else ""
+                    return ([grid_tensor], [combined_prompt])
         
         # === 2. Fallback to Python Rendering ===
         
@@ -304,7 +310,7 @@ class VNCCS_PoseStudio:
             grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
             np_grid = np.array(grid_img).astype(np.float32) / 255.0
             grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
-            return (grid_tensor, [""])
+            return ([grid_tensor], [""])
     
     def _apply_pose(self, verts, bones_data, model_rotation):
         """Apply bone rotations (FK) and global rotation to vertices."""
