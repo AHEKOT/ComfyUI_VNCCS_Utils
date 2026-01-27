@@ -2,3 +2,4 @@ opencv-python
 huggingface_hub
 aiohttp
 kornia
+requests

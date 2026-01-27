@@ -1,10 +1,10 @@
 [project]
 name = "vnccs-utils"
-description = "VNCCS - Collection of utility nodes. VNCCS Visual Camera Control for Qwen-Image-Edit-2511-Multiple-Angles LoRa. VNCCS QWEN Detailer - For spot corrections in images of any size. "
-version = "0.3.1"
+description = "VNCCS - Collection of utility nodes. VNCCS Visual Camera Control for Qwen-Image-Edit-2511-Multiple-Angles LoRa. VNCCS QWEN Detailer - For spot corrections in images of any size. VNCCS Pose Studio - Combined mesh editor and multi-pose generator. "
+version = "0.4.0"
 license = {file = "LICENSE"} 
 
-dependencies = ["opencv-python", "color-matcher", "huggingface_hub", "aiohttp"]
+dependencies = ["opencv-python", "huggingface_hub", "aiohttp", "kornia", "requests"]
 
 [project.urls]
 Repository = "https://github.com/AHEKOT/ComfyUI_VNCCS_Utils"
