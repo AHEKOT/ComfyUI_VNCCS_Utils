@@ -64,6 +64,7 @@ A helper node to simply extract and visualize the crops. Useful when you need ex
 
 ### 5. VNCCS Pose Studio
 **[Example Workflow](workflows/VNCCS_Utils%20Pose%20Studio.json)**
+
 A professional 3D posing and lighting environment running entirely within a ComfyUI node.
 
 *   **Interactive Viewport**: Sophisticated bone manipulation with gizmos and **Undo/Redo** functionality.
@@ -85,5 +86,3 @@ A professional 3D posing and lighting environment running entirely within a Comf
 1. Copy the ComfyUI_VNCCS_Utils folder into your ComfyUI custom_nodes directory.
 2. Restart ComfyUI.
 
-## Usage
-The node outputs a string (Prompt) that should be connected to your CLIP Text Encode or used for concatenation with other prompt parts. It's ideally suited for LoRAs trained on multi-angle datasets.
