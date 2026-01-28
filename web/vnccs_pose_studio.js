@@ -61,7 +61,8 @@ const STYLES = `
     color: var(--ps-text);
     overflow: hidden;
     box-sizing: border-box;
-    zoom: 0.67;
+    transform: scale(0.67);
+    transform-origin: 0 0;
     pointer-events: none;
     position: relative;
 }
@@ -91,13 +92,6 @@ const STYLES = `
     flex-direction: column;
     overflow: hidden;
     pointer-events: auto;
-}
-
-.vnccs-ps-center canvas {
-    width: 100% !important;
-    height: 100% !important;
-    outline: none;
-    object-fit: contain;
 }
 
 /* === Right Sidebar (Lighting) === */
@@ -1526,8 +1520,7 @@ class PoseViewer {
     resize(w, h) {
         this.width = w;
         this.height = h;
-        // Don't update style from here, let CSS handle layout
-        if (this.renderer) this.renderer.setSize(w, h, false);
+        if (this.renderer) this.renderer.setSize(w, h);
         if (this.camera) {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
@@ -4400,8 +4393,12 @@ class PoseStudioWidget {
                 this.viewer.updateLights(this.lightParams);
             }
         }
-        // Lightweight sync for prompt/data (no capture)
-        this.syncToNode(false);
+
+        // Lightweight sync for prompt/data (no capture) - Debounced to prevent UI lag during drag
+        clearTimeout(this.lightingQuickSyncTimeout);
+        this.lightingQuickSyncTimeout = setTimeout(() => {
+            this.syncToNode(false);
+        }, 100);
 
         // Debounce full capture (previews) to avoid lag/shaking during drag
         clearTimeout(this.lightingSyncTimeout);
