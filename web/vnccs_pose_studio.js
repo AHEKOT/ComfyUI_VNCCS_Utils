@@ -4466,23 +4466,16 @@ class PoseStudioWidget {
         });
     }
 
-    resize(forceW, forceH) {
-        if (this.viewer) {
-            let targetW, targetH;
+    resize() {
+        if (this.viewer && this.canvasContainer) {
+            // Always measure the actual canvas container to ensure perfect aspect ratio.
+            // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
+            const rect = this.canvasContainer.getBoundingClientRect();
+            const zoomFactor = 0.67;
+            const targetW = rect.width / zoomFactor;
+            const targetH = rect.height / zoomFactor;
 
-            if (forceW && forceH) {
-                // Explicit size (Unidirectional flow from Node resize)
-                targetW = forceW;
-                targetH = forceH;
-            } else if (this.canvasContainer) {
-                // Fallback: Measure DOM (Only if not driven by parent resize)
-                const rect = this.canvasContainer.getBoundingClientRect();
-                const zoomFactor = 0.67;
-                targetW = rect.width / zoomFactor;
-                targetH = rect.height / zoomFactor;
-            }
-
-            if (targetW && targetH && targetW > 1 && targetH > 1) {
+            if (targetW > 1 && targetH > 1) {
                 this.viewer.resize(targetW, targetH);
             }
         }
@@ -5184,13 +5177,10 @@ app.registerExtension({
                 const zoomFactor = 0.67;
                 const w = Math.max(600, (size[0] - 20) / zoomFactor);
                 const h = Math.max(400, (size[1] - 70) / zoomFactor); // Adjusted for new output slot
-
                 this.studioWidget.container.style.width = w + "px";
                 this.studioWidget.container.style.height = h + "px";
 
-                // Direct resize call to prevent layout thrashing loops
-                // Passing explicit dimensions breaks the DOM read-write cycle
-                this.studioWidget.resize(w, h);
+                setTimeout(() => this.studioWidget.resize(), 50);
             }
         };
 
