@@ -7,6 +7,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
+const EXTENSION_URL = new URL(".", import.meta.url).toString();
+
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
 const THREE_SOURCES = {
@@ -1667,7 +1670,7 @@ class PoseViewer {
             skinTex = this.cachedSkinTexture;
         } else {
             const texLoader = new THREE.TextureLoader();
-            skinTex = texLoader.load(`/extensions/ComfyUI_VNCCS_Utils/textures/skin.png?v=${Date.now()}`,
+            skinTex = texLoader.load(`${EXTENSION_URL}textures/skin.png?v=${Date.now()}`,
                 (tex) => {
                     console.log("Texture loaded successfully");
                     this.requestRender();
