@@ -7,6 +7,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
+const EXTENSION_URL = new URL(".", import.meta.url).toString();
+
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
 const THREE_SOURCES = {
@@ -61,8 +64,7 @@ const STYLES = `
     color: var(--ps-text);
     overflow: hidden;
     box-sizing: border-box;
-    transform: scale(0.67);
-    transform-origin: 0 0;
+    zoom: 0.67;
     pointer-events: none;
     position: relative;
 }
@@ -614,9 +616,10 @@ const STYLES = `
 .vnccs-ps-light-slider-vert {
     -webkit-appearance: slider-vertical;
     appearance: slider-vertical;
-    writing-mode: bt-rl;
+    writing-mode: vertical-lr;
+    direction: rtl;
     width: 6px;
-    height: 80px; 
+    height: 80px;
     cursor: pointer;
     background: #333;
     margin: 0;
@@ -1667,7 +1670,7 @@ class PoseViewer {
             skinTex = this.cachedSkinTexture;
         } else {
             const texLoader = new THREE.TextureLoader();
-            skinTex = texLoader.load(`/extensions/ComfyUI_VNCCS_Utils/textures/skin.png?v=${Date.now()}`,
+            skinTex = texLoader.load(`${EXTENSION_URL}textures/skin.png?v=${Date.now()}`,
                 (tex) => {
                     console.log("Texture loaded successfully");
                     this.requestRender();
@@ -4336,6 +4339,7 @@ class PoseStudioWidget {
                 const hSlider = document.createElement('input');
                 hSlider.type = 'range';
                 hSlider.className = 'vnccs-ps-light-slider-vert';
+                hSlider.setAttribute('orient', 'vertical'); // Firefox support
                 const isPoint = light.type === 'point';
                 hSlider.min = isPoint ? -10 : -100;
                 hSlider.max = isPoint ? 10 : 100;
@@ -5163,21 +5167,17 @@ app.registerExtension({
                 });
                 // Force a resize after initialization to fix stretching
                 this.onResize(this.size);
-                // Second pass just in case layout changed
-                setTimeout(() => this.onResize(this.size), 200);
             }, 800);
         };
 
         nodeType.prototype.onResize = function (size) {
             if (this.studioWidget) {
-                // Container has zoom: 0.67, so we need larger CSS dimensions
-                const zoomFactor = 0.67;
-                const w = Math.max(600, (size[0] - 20) / zoomFactor);
-                const h = Math.max(400, (size[1] - 70) / zoomFactor); // Adjusted for new output slot
-                this.studioWidget.container.style.width = w + "px";
-                this.studioWidget.container.style.height = h + "px";
-
-                setTimeout(() => this.studioWidget.resize(), 50);
+                // DON'T set container dimensions - let it fill naturally
+                // Just trigger the viewer resize
+                clearTimeout(this.resizeTimer);
+                this.resizeTimer = setTimeout(() => {
+                    this.studioWidget.resize();
+                }, 50);
             }
         };
 
@@ -5192,7 +5192,6 @@ app.registerExtension({
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.onResize(this.size); // Force correct aspect ratio on config
-                    setTimeout(() => this.onResize(this.size), 300);
                 }, 500);
             }
         };
