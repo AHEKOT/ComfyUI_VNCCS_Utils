@@ -93,6 +93,13 @@ const STYLES = `
     pointer-events: auto;
 }
 
+.vnccs-ps-center canvas {
+    width: 100% !important;
+    height: 100% !important;
+    outline: none;
+    object-fit: contain;
+}
+
 /* === Right Sidebar (Lighting) === */
 .vnccs-ps-right-sidebar {
     width: 320px;
@@ -1451,10 +1458,9 @@ class PoseViewer {
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
 
-        // Use offsetX/Y which are relative to the target element padding edge
-        // This is robust against CSS zoom and transforms, unlike getBoundingClientRect + clientX
-        const x = (e.offsetX / this.canvas.clientWidth) * 2 - 1;
-        const y = -(e.offsetY / this.canvas.clientHeight) * 2 + 1;
+        const rect = this.canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
         const raycaster = new this.THREE.Raycaster();
         raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
@@ -1520,7 +1526,8 @@ class PoseViewer {
     resize(w, h) {
         this.width = w;
         this.height = h;
-        if (this.renderer) this.renderer.setSize(w, h);
+        // Don't update style from here, let CSS handle layout
+        if (this.renderer) this.renderer.setSize(w, h, false);
         if (this.camera) {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
