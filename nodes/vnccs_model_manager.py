@@ -11,6 +11,11 @@ import asyncio
 import requests
 import queue
 import urllib.parse
+import time
+
+# Cache for model_updater.json to prevent excessive HEAD requests
+# Structure: { repo_id: { "timestamp": float, "path": str } }
+_CONFIG_CACHE = {}
 
 # Universal Type to force connections
 class AnyType(str):
@@ -25,6 +30,39 @@ def resolve_path(relative_path):
     # Ensure folder_paths.base_path is valid
     base = getattr(folder_paths, "base_path", os.getcwd())
     return os.path.abspath(os.path.join(base, relative_path))
+
+def get_cached_config_path(repo_id, force_refresh=False):
+    now = time.time()
+    CACHE_TTL = 300  # 5 minutes
+    
+    cached = _CONFIG_CACHE.get(repo_id)
+    
+    # Use cached path if fresh
+    if not force_refresh and cached and (now - cached["timestamp"] < CACHE_TTL):
+        path = cached["path"]
+        # Check if file physically exists
+        if os.path.exists(path):
+             return path
+             
+    # Otherwise fetch from hub (allows HEAD request)
+    try:
+        path = hf_hub_download(repo_id=repo_id, filename="model_updater.json", local_files_only=False)
+        _CONFIG_CACHE[repo_id] = {"timestamp": now, "path": path}
+        return path
+    except Exception as e:
+        # Fallback to local/stale if network fails
+        if cached and os.path.exists(cached["path"]):
+            print(f"[VNCCS] Config check failed, using stale config: {e}")
+            return cached["path"]
+        
+        # Try finding it locally even if not in our memory cache
+        try:
+             path = hf_hub_download(repo_id=repo_id, filename="model_updater.json", local_files_only=True)
+             _CONFIG_CACHE[repo_id] = {"timestamp": now, "path": path}
+             return path
+        except:
+             raise e
+
 
 # --- Global Download Worker ---
 # To prevent thread starvation and bandwidth contention, we serialize all large downloads
@@ -432,7 +470,7 @@ class VNCCS_ModelSelector:
         try:
             # 1. Fetch config and normalize inputs
             # Ensure we get fresh config if possible, but allow local for performance in workflow
-            path = hf_hub_download(repo_id=repo_id, filename="model_updater.json")
+            path = get_cached_config_path(repo_id)
             with open(path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
 

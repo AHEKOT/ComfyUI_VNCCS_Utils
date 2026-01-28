@@ -1,4 +1,17 @@
 # Version 0.4.1
+## Fixes & Optimizations: VNCCS Pose Studio
+*   **Performance (Lazy Loading)**: The Pose Library now loads significantly faster. Full pose data is fetched only when needed (e.g., for randomization), while the gallery displays lightweight metadata.
+*   **Memory Leak Fix (Three.js)**: Fixed a memory leak involving joint markers. Geometries and materials are now properly shared and disposed of, preventing gradual performance degradation.
+*   **Input Offset (High-DPI Screens)**: Resolved an issue where mouse clicks were offset on 4K monitors with system scaling enabled. Replaced non-standard `zoom` CSS with `transform: scale()`.
+*   **UI Lag Fix**: Debounced the data sync mechanism during slider and radar interactions. Dragging controls is now buttery smooth (60fps) while maintaining data integrity.
+*   **Auto-Healing Backend**: The node now automatically detects if the 3D engine is uninitialized (e.g., after a server restart) and reloads the model before processing requests, preventing "stale cache" errors.
+*   **Grid Mode Output**: Fixed `OUTPUT_IS_LIST` behavior for Grid Mode. It now correctly returns a list containing a single grid image tensor, resolving compatibility with preview nodes.
+*   **Clean Prompts (Grid Mode)**: Grid Mode now generates a single, clean prompt (based on the first pose) instead of concatenating prompts from all grid cells.
+
+## Improvements: Model Manager
+*   **Smart Throttling**: Implemented a 5-minute local cache for `model_updater.json` checks. This eliminates excessive HEAD requests to Hugging Face during frequent workflow executions.
+*   **Dependencies**: Added `requests` (was missing) and removed `color-matcher` (unused).
+
 ## New Features: Pose Studio Refinements
 *   **Keep Original Lighting Mode**: New toggle to skip synthetic lighting in the 3D viewer, providing a clean white render while suppressing AI lighting prompts.
 *   **Dynamic Prompt Overrides**: When "Keep Original Lighting" is ON, instructions like "Copy how the lighting falls..." are automatically replaced with "**Keep original lighting and colors.**"
