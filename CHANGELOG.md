@@ -1,3 +1,9 @@
+# Version 0.4.2
+## Fixes: Pose Studio Layout Stability
+*   **Eliminated Resize Loop**: Switched from `getBoundingClientRect()` to `clientWidth/clientHeight` for 3D viewport measurement. This ensures rock-solid stability during graph zooming and prevents "TOTHEMOON!" infinite growth or wild fluctuations.
+*   **Performance (Resize Debouncing)**: Implemented debouncing for layout updates. The interface no longer flickers when resizing the node or moving the ComfyUI board.
+*   **Cleaned Event Handling**: Removed redundant `setTimeout` chains that were repeatedly re-triggering size calculations.
+
 # Version 0.4.1
 ## Fixes & Optimizations: VNCCS Pose Studio
 *   **Performance (Lazy Loading)**: The Pose Library now loads significantly faster. Full pose data is fetched only when needed (e.g., for randomization), while the gallery displays lightweight metadata.

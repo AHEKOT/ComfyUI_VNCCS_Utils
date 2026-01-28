@@ -4468,12 +4468,9 @@ class PoseStudioWidget {
 
     resize() {
         if (this.viewer && this.canvasContainer) {
-            // Always measure the actual canvas container to ensure perfect aspect ratio.
-            // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
-            const rect = this.canvasContainer.getBoundingClientRect();
-            const zoomFactor = 0.67;
-            const targetW = rect.width / zoomFactor;
-            const targetH = rect.height / zoomFactor;
+            // Use clientWidth/Height for stable logical CSS pixels, ignoring zoom/transforms
+            const targetW = this.canvasContainer.clientWidth;
+            const targetH = this.canvasContainer.clientHeight;
 
             if (targetW > 1 && targetH > 1) {
                 this.viewer.resize(targetW, targetH);
@@ -5166,8 +5163,6 @@ app.registerExtension({
                 });
                 // Force a resize after initialization to fix stretching
                 this.onResize(this.size);
-                // Second pass just in case layout changed
-                setTimeout(() => this.onResize(this.size), 200);
             }, 800);
         };
 
@@ -5180,7 +5175,11 @@ app.registerExtension({
                 this.studioWidget.container.style.width = w + "px";
                 this.studioWidget.container.style.height = h + "px";
 
-                setTimeout(() => this.studioWidget.resize(), 50);
+                // Debounce resize to prevent layout thrashing
+                clearTimeout(this.resizeTimer);
+                this.resizeTimer = setTimeout(() => {
+                    this.studioWidget.resize();
+                }, 50);
             }
         };
 
@@ -5195,7 +5194,6 @@ app.registerExtension({
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.onResize(this.size); // Force correct aspect ratio on config
-                    setTimeout(() => this.onResize(this.size), 300);
                 }, 500);
             }
         };
