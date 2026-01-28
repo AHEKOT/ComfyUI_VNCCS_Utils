@@ -1451,9 +1451,10 @@ class PoseViewer {
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
 
-        const rect = this.canvas.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+        // Use offsetX/Y which are relative to the target element padding edge
+        // This is robust against CSS zoom and transforms, unlike getBoundingClientRect + clientX
+        const x = (e.offsetX / this.canvas.clientWidth) * 2 - 1;
+        const y = -(e.offsetY / this.canvas.clientHeight) * 2 + 1;
 
         const raycaster = new this.THREE.Raycaster();
         raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
