@@ -614,9 +614,10 @@ const STYLES = `
 .vnccs-ps-light-slider-vert {
     -webkit-appearance: slider-vertical;
     appearance: slider-vertical;
-    writing-mode: bt-rl;
+    writing-mode: vertical-lr;
+    direction: rtl;
     width: 6px;
-    height: 80px; 
+    height: 80px;
     cursor: pointer;
     background: #333;
     margin: 0;
@@ -4339,6 +4340,7 @@ class PoseStudioWidget {
                 const hSlider = document.createElement('input');
                 hSlider.type = 'range';
                 hSlider.className = 'vnccs-ps-light-slider-vert';
+                hSlider.setAttribute('orient', 'vertical'); // Firefox support
                 const isPoint = light.type === 'point';
                 hSlider.min = isPoint ? -10 : -100;
                 hSlider.max = isPoint ? 10 : 100;

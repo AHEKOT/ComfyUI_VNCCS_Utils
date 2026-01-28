@@ -3,6 +3,7 @@
 *   **Eliminated Resize Loop**: Switched from `getBoundingClientRect()` to `clientWidth/clientHeight` for 3D viewport measurement. This ensures rock-solid stability during graph zooming and prevents "TOTHEMOON!" infinite growth or wild fluctuations.
 *   **Performance (Resize Debouncing)**: Implemented debouncing for layout updates. The interface no longer flickers when resizing the node or moving the ComfyUI board.
 *   **Cleaned Event Handling**: Removed redundant `setTimeout` chains that were repeatedly re-triggering size calculations.
+*   **Vertical Slider Fix**: Resolved an issue where the light height (Y-HGT) slider was broken/non-vertical in Firefox. Added non-standard `orient="vertical"` attribute and updated CSS for better cross-browser support.
 
 # Version 0.4.1
 ## Fixes & Optimizations: VNCCS Pose Studio
