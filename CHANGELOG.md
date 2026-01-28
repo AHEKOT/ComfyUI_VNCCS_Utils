@@ -1,9 +1,12 @@
 # Version 0.4.2
 ## Fixes: Pose Studio Layout Stability
-*   **Eliminated Resize Loop**: Switched from `getBoundingClientRect()` to `clientWidth/clientHeight` for 3D viewport measurement. This ensures rock-solid stability during graph zooming and prevents "TOTHEMOON!" infinite growth or wild fluctuations.
+*   **Eliminated Resize Loop**: Refactored the `onResize` handler to stop modifying container dimensions manually. The layout now fills the node naturally, preventing infinite growth and fluctuations while remaining perfectly synced with the Three.js viewport.
 *   **Performance (Resize Debouncing)**: Implemented debouncing for layout updates. The interface no longer flickers when resizing the node or moving the ComfyUI board.
 *   **Cleaned Event Handling**: Removed redundant `setTimeout` chains that were repeatedly re-triggering size calculations.
-*   **Vertical Slider Fix**: Resolved an issue where the light height (Y-HGT) slider was broken/non-vertical in Firefox. Added non-standard `orient="vertical"` attribute and updated CSS for better cross-browser support.
+*   **Firefox Compatibility**: Resolved multiple issues with the vertical light height (Y-HGT) slider in Firefox:
+    *   Added required `orient="vertical"` attribute.
+    *   Updated CSS with `writing-mode: vertical-lr` for correct vertical orientation.
+    *   Applied `direction: rtl` to fix the inverted value direction (ensuring Min is at the bottom).
 
 # Version 0.4.1
 ## Fixes & Optimizations: VNCCS Pose Studio

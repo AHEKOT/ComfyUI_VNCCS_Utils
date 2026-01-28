@@ -61,8 +61,7 @@ const STYLES = `
     color: var(--ps-text);
     overflow: hidden;
     box-sizing: border-box;
-    transform: scale(0.67);
-    transform-origin: 0 0;
+    zoom: 0.67;
     pointer-events: none;
     position: relative;
 }
@@ -714,9 +713,6 @@ const STYLES = `
 }
 
 .vnccs-ps-canvas-wrap canvas {
-    position: absolute !important;
-    top: 0;
-    left: 0;
     width: 100% !important;
     height: 100% !important;
     display: block;
@@ -4470,9 +4466,12 @@ class PoseStudioWidget {
 
     resize() {
         if (this.viewer && this.canvasContainer) {
-            // Use clientWidth/Height for stable logical CSS pixels, ignoring zoom/transforms
-            const targetW = this.canvasContainer.clientWidth;
-            const targetH = this.canvasContainer.clientHeight;
+            // Always measure the actual canvas container to ensure perfect aspect ratio.
+            // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
+            const rect = this.canvasContainer.getBoundingClientRect();
+            const zoomFactor = 0.67;
+            const targetW = rect.width / zoomFactor;
+            const targetH = rect.height / zoomFactor;
 
             if (targetW > 1 && targetH > 1) {
                 this.viewer.resize(targetW, targetH);
@@ -5170,14 +5169,8 @@ app.registerExtension({
 
         nodeType.prototype.onResize = function (size) {
             if (this.studioWidget) {
-                // Container has zoom: 0.67, so we need larger CSS dimensions
-                const zoomFactor = 0.67;
-                const w = Math.max(600, (size[0] - 20) / zoomFactor);
-                const h = Math.max(400, (size[1] - 70) / zoomFactor); // Adjusted for new output slot
-                this.studioWidget.container.style.width = w + "px";
-                this.studioWidget.container.style.height = h + "px";
-
-                // Debounce resize to prevent layout thrashing
+                // DON'T set container dimensions - let it fill naturally
+                // Just trigger the viewer resize
                 clearTimeout(this.resizeTimer);
                 this.resizeTimer = setTimeout(() => {
                     this.studioWidget.resize();
