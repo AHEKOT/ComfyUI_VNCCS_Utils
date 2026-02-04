@@ -1462,10 +1462,28 @@ class PoseViewer {
         const raycaster = new this.THREE.Raycaster();
         raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
 
-        const intersects = raycaster.intersectObject(this.skinnedMesh, true);
+        // --- PASS 1: Raycast against Joint Markers directly ---
+        // Markers are spheres, very reliable targets.
+        // recursive=false because markers are direct children of the scene (or in a flat array)
+        const markerIntersects = raycaster.intersectObjects(this.jointMarkers, false);
 
-        if (intersects.length > 0) {
-            const point = intersects[0].point;
+        if (markerIntersects.length > 0) {
+            // Sort by distance and pick the closest one
+            markerIntersects.sort((a, b) => a.distance - b.distance);
+            const hitMarker = markerIntersects[0].object;
+            const boneIdx = this.jointMarkers.indexOf(hitMarker);
+            if (boneIdx !== -1 && this.boneList[boneIdx]) {
+                this.selectBone(this.boneList[boneIdx]);
+                return;
+            }
+        }
+
+        // --- PASS 2: Fallback to Mesh Intersect ---
+        // Useful if user clicks on the body near a joint but misses the sphere.
+        const meshIntersects = raycaster.intersectObject(this.skinnedMesh, true);
+
+        if (meshIntersects.length > 0) {
+            const point = meshIntersects[0].point;
             let nearest = null;
             let minD = Infinity;
 
@@ -1476,12 +1494,16 @@ class PoseViewer {
                 if (d < minD) { minD = d; nearest = b; }
             }
 
-            if (nearest && minD < 2.0) {
+            // Tighter threshold for mesh-based selection to avoid accidental jumps
+            // when clicking overlapping parts.
+            if (nearest && minD < 1.5) {
                 this.selectBone(nearest);
+                return;
             }
-        } else {
-            this.deselectBone();
         }
+
+        // If nothing hit
+        this.deselectBone();
     }
 
     selectBone(bone) {
@@ -3292,7 +3314,9 @@ class PoseStudioWidget {
 
         canvas.addEventListener("pointerup", (e) => {
             if (isDragging) {
-                canvas.releasePointerCapture(e.pointerId);
+                if (canvas.hasPointerCapture(e.pointerId)) {
+                    canvas.releasePointerCapture(e.pointerId);
+                }
                 isDragging = false;
                 this.syncToNode(false);
             }

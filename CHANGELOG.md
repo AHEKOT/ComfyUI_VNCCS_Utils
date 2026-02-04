@@ -1,3 +1,15 @@
+# Version 0.4.4
+## Fixes & Improvements: Smart Updates and Control Stability
+*   **Model Manager: Smart HF Updates**:
+    *   Implemented a throttled update strategy (60-minute cycle) to prevent Hugging Face rate limiting (429 errors).
+    *   Added **Hugging Face Token** support in the new Settings menu (⚙️) to significantly increase API rate limits.
+    *   Added automatic 10-minute back-off logic when rate limiting is detected.
+*   **Pose Studio: Improved Bone Selection**:
+    *   Rewrote the selection logic to use marker-based raycasting. Joint markers (yellow dots) are now prioritized over the character mesh, making them much easier to select from any angle, especially from the front.
+*   **Interface: Control Stabilizers**:
+    *   Migrated Visual Camera and Light Radar controls to **Pointer Capture**. This prevents controls from getting "stuck" or "jumping" when the mouse moves outside the node area during a drag.
+    *   Fixed a bug where the camera would jump to "Wide" distance ring when the cursor left the node boundaries; it now locks distance correctly based on proximity.
+
 # Version 0.4.2
 ## Fixes: Pose Studio Layout Stability
 *   **Eliminated Resize Loop**: Refactored the `onResize` handler to stop modifying container dimensions manually. The layout now fills the node naturally, preventing infinite growth and fluctuations while remaining perfectly synced with the Three.js viewport.
