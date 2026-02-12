@@ -34,7 +34,7 @@ class VNCCS_ModelListWidget {
         this.header.style.cssText = `
             padding: 8px 10px;
             background: #1a1a1a;
-            border-bottom: 1px solid #333;
+            border-bottom: 2px solid #333;
             color: #ccc;
             font-size: 12px;
             font-weight: bold;
@@ -42,12 +42,15 @@ class VNCCS_ModelListWidget {
             justify-content: space-between;
             align-items: center;
         `;
-        this.header.innerHTML = "<span>Status: Unknown</span>";
+
+        this.statusText = document.createElement("span");
+        this.statusText.innerText = "Status: Unknown";
+        this.header.appendChild(this.statusText);
 
         // Add Settings Cog
         const settingsBtn = document.createElement("div");
         settingsBtn.innerHTML = "⚙️";
-        settingsBtn.style.cssText = "cursor: pointer; font-size: 16px; margin-left: 10px; opacity: 0.7;";
+        settingsBtn.style.cssText = "cursor: pointer; font-size: 16px; transition: opacity 0.2s; opacity: 0.7;";
         settingsBtn.title = "Manage API Tokens";
         settingsBtn.onmouseover = () => settingsBtn.style.opacity = "1";
         settingsBtn.onmouseout = () => settingsBtn.style.opacity = "0.7";
@@ -121,25 +124,25 @@ class VNCCS_ModelListWidget {
         });
 
         if (tasks.length === 0) {
-            alert("All models are up-to-date with current selections.");
+            this.showMessage("All models are up-to-date with current selections.");
             return;
         }
 
-        if (!confirm(`Start downloading ${tasks.length} models?`)) return;
-
-        // 1. Mark all as queued visually
-        this.downloadQueue = tasks;
-        for (const task of tasks) {
-            // Only mark manually if not already downloading
-            const s = this.downloadStatuses[task.name];
-            if (!s || s.status !== "downloading") {
-                this.downloadStatuses[task.name] = { status: "queued", message: "Waiting in queue..." };
+        this.showConfirm(`Start downloading ${tasks.length} models?`, () => {
+            // 1. Mark all as queued visually
+            this.downloadQueue = tasks;
+            for (const task of tasks) {
+                // Only mark manually if not already downloading
+                const s = this.downloadStatuses[task.name];
+                if (!s || s.status !== "downloading") {
+                    this.downloadStatuses[task.name] = { status: "queued", message: "Waiting in queue..." };
+                }
             }
-        }
-        this.renderList();
+            this.renderList();
 
-        // 2. Start Processing
-        this.processQueue();
+            // 2. Start Processing
+            this.processQueue();
+        });
     }
 
     async processQueue() {
@@ -329,7 +332,7 @@ class VNCCS_ModelListWidget {
             if (hfToken) payload.hf_token = hfToken;
 
             if (Object.keys(payload).length === 0) {
-                alert("Please enter at least one token.");
+                this.showMessage("Please enter at least one token.", true);
                 return;
             }
 
@@ -349,10 +352,10 @@ class VNCCS_ModelListWidget {
                         this.downloadModel(repoId, modelName, version);
                     }
                 } else {
-                    alert("Failed to save tokens on server.");
+                    this.showMessage("Failed to save tokens on server.", true);
                 }
             } catch (e) {
-                alert("Failed to save tokens: " + e.message);
+                this.showMessage("Failed to save tokens: " + e.message, true);
             }
         };
     }
@@ -746,20 +749,80 @@ class VNCCS_ModelListWidget {
         }
 
         // Update Header
-        if (this.header) {
+        if (this.header && this.statusText) {
             if (installedCount === totalModels) {
                 if (hasUpdates) {
-                    this.header.innerHTML = `<span style="color: #fc4;">Updates Available (${installedCount}/${totalModels})</span>`;
+                    this.statusText.innerHTML = `<span style="color: #fc4;">Updates Available (${installedCount}/${totalModels})</span>`;
                     this.header.style.borderBottomColor = "#aa4";
                 } else {
-                    this.header.innerHTML = `<span style="color: #8c8;">All Updated (${installedCount}/${totalModels})</span>`;
+                    this.statusText.innerHTML = `<span style="color: #8c8;">All Updated (${installedCount}/${totalModels})</span>`;
                     this.header.style.borderBottomColor = "#484";
                 }
             } else {
-                this.header.innerHTML = `<span style="color: #ccc;">Installed ${installedCount} models from ${totalModels}</span>`;
+                this.statusText.innerHTML = `<span style="color: #ccc;">Installed ${installedCount} models from ${totalModels}</span>`;
                 this.header.style.borderBottomColor = "#333";
             }
         }
+    }
+
+    showMessage(text, isError = false) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = `
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
+            z-index: 1000; padding: 20px; box-sizing: border-box;
+        `;
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #222; border: 1px solid ${isError ? '#a44' : '#444'}; 
+            padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
+            text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        `;
+        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        const btn = document.createElement("button");
+        btn.innerText = "OK";
+        btn.style.cssText = "background: #44a; color: white; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;";
+        btn.onclick = () => overlay.remove();
+        box.appendChild(btn);
+        overlay.appendChild(box);
+        this.container.appendChild(overlay);
+    }
+
+    showConfirm(text, onConfirm) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = `
+            position: absolute; top:0; left:0; width:100%; height:100%;
+            background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
+            z-index: 1000; padding: 20px; box-sizing: border-box;
+        `;
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #222; border: 1px solid #444; 
+            padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
+            text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        `;
+        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "10px";
+        row.style.justifyContent = "center";
+
+        const cancel = document.createElement("button");
+        cancel.innerText = "Cancel";
+        cancel.style.cssText = "background: #444; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer;";
+        cancel.onclick = () => overlay.remove();
+
+        const ok = document.createElement("button");
+        ok.innerText = "Confirm";
+        ok.style.cssText = "background: #4a4; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold;";
+        ok.onclick = () => { overlay.remove(); onConfirm(); };
+
+        row.appendChild(cancel);
+        row.appendChild(ok);
+        box.appendChild(row);
+        overlay.appendChild(box);
+        this.container.appendChild(overlay);
     }
 }
 
@@ -777,7 +840,7 @@ app.registerExtension({
                     if (repoId && this.listWidget) {
                         this.listWidget.fetchModels(repoId);
                     } else {
-                        alert("Please enter a Repo ID first.");
+                        if (this.listWidget) this.listWidget.showMessage("Please enter a Repo ID first.", true);
                     }
                 });
 
@@ -1142,10 +1205,10 @@ class VNCCS_SelectorWidget {
 
     showModal() {
         if (!this.models.length) {
-            // If empty, try refresh first? or alert
-            if (confirm("Model list empty. Refresh now?")) {
+            // If empty, try refresh first? or custom confirm
+            this.showConfirm("Model list empty. Refresh now?", () => {
                 this.refresh();
-            }
+            });
             return;
         }
 
@@ -1234,5 +1297,65 @@ class VNCCS_SelectorWidget {
         };
 
         search.focus();
+    }
+
+    showMessage(text, isError = false) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = `
+            position: fixed; top:0; left:0; width:100vw; height:100vh;
+            background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
+            z-index: 20000; padding: 20px; box-sizing: border-box;
+        `;
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #222; border: 1px solid ${isError ? '#a44' : '#444'}; 
+            padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
+            text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        `;
+        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        const btn = document.createElement("button");
+        btn.innerText = "OK";
+        btn.style.cssText = "background: #44a; color: white; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;";
+        btn.onclick = () => overlay.remove();
+        box.appendChild(btn);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+    }
+
+    showConfirm(text, onConfirm) {
+        const overlay = document.createElement("div");
+        overlay.style.cssText = `
+            position: fixed; top:0; left:0; width:100vw; height:100vh;
+            background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
+            z-index: 20000; padding: 20px; box-sizing: border-box;
+        `;
+        const box = document.createElement("div");
+        box.style.cssText = `
+            background: #222; border: 1px solid #444; 
+            padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
+            text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        `;
+        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+
+        const row = document.createElement("div");
+        row.style.display = "flex";
+        row.style.gap = "10px";
+        row.style.justifyContent = "center";
+
+        const cancel = document.createElement("button");
+        cancel.innerText = "Cancel";
+        cancel.style.cssText = "background: #444; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer;";
+        cancel.onclick = () => overlay.remove();
+
+        const ok = document.createElement("button");
+        ok.innerText = "Confirm";
+        ok.style.cssText = "background: #4a4; color: white; border: none; padding: 6px 15px; border-radius: 4px; cursor: pointer; font-weight: bold;";
+        ok.onclick = () => { overlay.remove(); onConfirm(); };
+
+        row.appendChild(cancel);
+        row.appendChild(ok);
+        box.appendChild(row);
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
     }
 }

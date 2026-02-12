@@ -9,6 +9,10 @@
 *   **Interface: Control Stabilizers**:
     *   Migrated Visual Camera and Light Radar controls to **Pointer Capture**. This prevents controls from getting "stuck" or "jumping" when the mouse moves outside the node area during a drag.
     *   Fixed a bug where the camera would jump to "Wide" distance ring when the cursor left the node boundaries; it now locks distance correctly based on proximity.
+*   **Settings: Skin Texture Selector**:
+    *   Added a new "Skin" selector in the Settings menu (⚙️). Toggle between **Dummy White**, **Naked**, and **Marked** textures instantly without rebuilding the mesh. Selection is persisted between sessions.
+*   **Lights: Default Type**:
+    *   Changed the default light type from "Point" to "**Directional**" when adding new light sources.
 
 # Version 0.4.2
 ## Fixes: Pose Studio Layout Stability

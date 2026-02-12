@@ -1687,20 +1687,29 @@ class PoseViewer {
             geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(data.uvs), 2));
         }
 
+        // Determine which texture file to load based on skin_type
+        const skinType = this.currentSkinType || "dummy_white";
+        const skinFile = {
+            "naked": "skin.png",
+            "naked_marks": "skin_marks.png",
+            "dummy_white": "skin_dummy.png"
+        }[skinType] || "skin_dummy.png";
+
         let skinTex;
-        if (this.cachedSkinTexture) {
+        if (this.cachedSkinTexture && this.cachedSkinType === skinType) {
             skinTex = this.cachedSkinTexture;
         } else {
             const texLoader = new THREE.TextureLoader();
-            skinTex = texLoader.load(`${EXTENSION_URL}textures/skin.png?v=${Date.now()}`,
+            skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
                 (tex) => {
-                    console.log("Texture loaded successfully");
+                    console.log(`Texture loaded successfully: ${skinFile}`);
                     this.requestRender();
                 },
                 undefined,
                 (err) => console.error("Texture failed to load", err)
             );
             this.cachedSkinTexture = skinTex;
+            this.cachedSkinType = skinType;
         }
 
         const material = new THREE.MeshPhongMaterial({
@@ -1777,6 +1786,36 @@ class PoseViewer {
             headBone.scale.set(scale, scale, scale);
             this.requestRender();
         }
+    }
+
+    setSkinTexture(skinType) {
+        this.currentSkinType = skinType;
+        if (!this.skinnedMesh) return;
+
+        const skinFile = {
+            "naked": "skin.png",
+            "naked_marks": "skin_marks.png",
+            "dummy_white": "skin_dummy.png"
+        }[skinType] || "skin_dummy.png";
+
+        const THREE = this.THREE;
+        const texLoader = new THREE.TextureLoader();
+        texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
+            (tex) => {
+                // Dispose old texture to prevent memory leaks
+                if (this.skinnedMesh.material.map) {
+                    this.skinnedMesh.material.map.dispose();
+                }
+                this.skinnedMesh.material.map = tex;
+                this.skinnedMesh.material.needsUpdate = true;
+                this.cachedSkinTexture = tex;
+                this.cachedSkinType = skinType;
+                console.log(`Skin texture swapped to: ${skinFile}`);
+                this.requestRender();
+            },
+            undefined,
+            (err) => console.error(`Failed to load skin texture: ${skinFile}`, err)
+        );
     }
 
     // === Pose State Management ===
@@ -2185,7 +2224,8 @@ class PoseStudioWidget {
             debugKeepLighting: false, // Use manual lighting in debug mode
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
-            prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>"
+            prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
+            skin_type: "dummy_white" // naked | naked_marks | dummy_white
         };
 
         // Lighting settings (array of light configs)
@@ -2429,6 +2469,7 @@ class PoseStudioWidget {
                 { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
             );
         }
+
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
@@ -3685,7 +3726,7 @@ class PoseStudioWidget {
 
             } catch (err) {
                 console.error("Error importing pose:", err);
-                alert("Failed to load pose file. invalid JSON.");
+                this.showMessage("Failed to load pose file. invalid JSON.", true);
             }
 
             // Reset input so same file can be selected again
@@ -4022,6 +4063,58 @@ class PoseStudioWidget {
         keepLightRow.appendChild(keepLightLabel);
         content.appendChild(keepLightRow);
 
+        // Skin Texture Section
+        const skinHeader = document.createElement("div");
+        skinHeader.className = "vnccs-ps-settings-title";
+        skinHeader.style.marginTop = "20px";
+        skinHeader.style.padding = "10px 0";
+        skinHeader.style.borderTop = "1px solid var(--ps-border)";
+        skinHeader.innerText = "Skin";
+        content.appendChild(skinHeader);
+
+        const skinRow = document.createElement("div");
+        skinRow.className = "vnccs-ps-field";
+        skinRow.style.marginTop = "5px";
+
+        const skinToggle = document.createElement("div");
+        skinToggle.className = "vnccs-ps-toggle";
+        skinToggle.style.width = "100%";
+
+        const skinOptions = [
+            { key: "dummy_white", label: "Dummy White" },
+            { key: "naked", label: "Naked" },
+            { key: "naked_marks", label: "Marked" }
+        ];
+
+        const skinButtons = {};
+        const updateSkinUI = () => {
+            const current = this.exportParams.skin_type || "dummy_white";
+            for (const opt of skinOptions) {
+                skinButtons[opt.key].classList.toggle("active", current === opt.key);
+            }
+        };
+
+        for (const opt of skinOptions) {
+            const btn = document.createElement("button");
+            btn.className = "vnccs-ps-toggle-btn";
+            btn.innerText = opt.label;
+            btn.style.flex = "1";
+            btn.onclick = () => {
+                this.exportParams.skin_type = opt.key;
+                updateSkinUI();
+                if (this.viewer && this.viewer.setSkinTexture) {
+                    this.viewer.setSkinTexture(opt.key);
+                }
+                this.syncToNode(false);
+            };
+            skinButtons[opt.key] = btn;
+            skinToggle.appendChild(btn);
+        }
+
+        updateSkinUI();
+        skinRow.appendChild(skinToggle);
+        content.appendChild(skinRow);
+
         // Prompt Templates Section
         const templateHeader = document.createElement("div");
         templateHeader.className = "vnccs-ps-settings-title";
@@ -4090,6 +4183,37 @@ class PoseStudioWidget {
         this.canvasContainer.appendChild(panel);
     }
 
+    showMessage(text, isError = false) {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.style.maxWidth = "300px";
+
+        const title = document.createElement('div');
+        title.className = 'vnccs-ps-modal-title';
+        title.textContent = isError ? '⚠️ Error' : 'ℹ️ Information';
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-modal-content';
+        content.style.textAlign = 'center';
+        content.textContent = text;
+
+        const okBtn = document.createElement('button');
+        okBtn.className = 'vnccs-ps-modal-btn';
+        okBtn.style.justifyContent = 'center';
+        okBtn.textContent = 'OK';
+        okBtn.onclick = () => overlay.remove();
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        modal.appendChild(okBtn);
+        overlay.appendChild(modal);
+
+        this.canvasContainer.appendChild(overlay);
+    }
+
     showDeleteConfirmModal(poseName) {
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
@@ -4146,6 +4270,11 @@ class PoseStudioWidget {
 
     loadModel(showOverlay = true) {
         if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
+
+        // Sync skin type to viewer before loading
+        if (this.viewer) {
+            this.viewer.currentSkinType = this.exportParams.skin_type || "dummy_white";
+        }
 
         return api.fetchApi("/vnccs/character_studio/update_preview", {
             method: "POST",
@@ -4400,7 +4529,7 @@ class PoseStudioWidget {
         }
         addBtn.onclick = () => {
             this.lightParams.push({
-                type: 'point',
+                type: 'directional',
                 color: '#ffffff',
                 intensity: 1.0,
                 x: 0, y: 0, z: 5
@@ -4678,7 +4807,7 @@ class PoseStudioWidget {
                 finalPrompt = "The scene is in total darkness, pitch black, no visible light.";
             } else {
                 // If there are directional lights but no reported ambient light, emphasize the darkness of shadows
-                finalPrompt += ". The background is dark and shadows are deep with no secondary illumination.";
+                finalPrompt += "";
             }
         }
 
@@ -5090,6 +5219,11 @@ class PoseStudioWidget {
             this.updateTabs();
 
             // Auto-load model
+            // Restore skin type on the viewer before loading model
+            if (this.exportParams.skin_type && this.viewer) {
+                this.viewer.currentSkinType = this.exportParams.skin_type;
+            }
+
             this.loadModel();
 
         } catch (e) {
