@@ -1269,6 +1269,7 @@ class PoseViewer {
         this.lights = [];
         this.pendingData = null;
         this.pendingLights = null;
+        this.pendingBackgroundUrl = null;
     }
 
     async init() {
@@ -1294,6 +1295,11 @@ class PoseViewer {
             if (this.pendingLights) {
                 this.updateLights(this.pendingLights);
                 this.pendingLights = null;
+            }
+
+            if (this.pendingBackgroundUrl) {
+                this.loadReferenceImage(this.pendingBackgroundUrl);
+                this.pendingBackgroundUrl = null;
             }
 
             this.requestRender(); // Initial render
@@ -1359,6 +1365,20 @@ class PoseViewer {
         const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
         this.scene.add(defaultLight);
         this.lights = [defaultLight];
+
+        // Capture Camera (Independent of Orbit camera)
+        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 100);
+        this.scene.add(this.captureCamera);
+
+        // Visual Helper - Orange Frame
+        const frameGeo = new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(-1, 1, 0), new THREE.Vector3(1, 1, 0),
+            new THREE.Vector3(1, -1, 0), new THREE.Vector3(-1, -1, 0),
+            new THREE.Vector3(-1, 1, 0)
+        ]);
+        this.captureFrame = new THREE.Line(frameGeo, new THREE.LineBasicMaterial({ color: 0xffa500, linewidth: 2 }));
+        this.scene.add(this.captureFrame);
+        this.captureFrame.visible = false;
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
@@ -1545,7 +1565,9 @@ class PoseViewer {
     resize(w, h) {
         this.width = w;
         this.height = h;
-        if (this.renderer) this.renderer.setSize(w, h);
+        // Pass false to NOT update canvas CSS style (CSS 100% rule handles that).
+        // This prevents layout thrashing in ComfyUI node2.0 mode.
+        if (this.renderer) this.renderer.setSize(w, h, false);
         if (this.camera) {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
@@ -1970,7 +1992,10 @@ class PoseViewer {
     }
 
     loadReferenceImage(url) {
-        if (!this.initialized || !this.captureCamera) return;
+        if (!this.initialized || !this.captureCamera) {
+            this.pendingBackgroundUrl = url;
+            return;
+        }
         const THREE = this.THREE;
 
         // Create plane if needed
@@ -1979,7 +2004,7 @@ class PoseViewer {
             const mat = new THREE.MeshBasicMaterial({
                 color: 0xffffff,
                 transparent: true,
-                opacity: 0.5,
+                opacity: 1.0,
                 side: THREE.DoubleSide,
                 depthWrite: false
             });
@@ -1996,17 +2021,16 @@ class PoseViewer {
 
         // Load texture
         new THREE.TextureLoader().load(url, (tex) => {
-            this.refPlane.material.map = tex;
-            this.refPlane.material.needsUpdate = true;
-            this.refPlane.visible = true;
+            // Ensure sRGB for real colors
+            if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+            else if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
 
-            // Force update dimensions
-            // We need to trigger an update from the widget usually, 
-            // but here we can just ensure it's visible. 
-            // The next resize/update will fix the aspect if needed, 
-            // but actually we want it to fill the frame, so aspect of texture 
-            // doesn't matter (it will stretch). Or do we want fit?
-            // "Stand in the camera square" usually means fill.
+            if (this.refPlane) {
+                this.refPlane.material.map = tex;
+                this.refPlane.material.needsUpdate = true;
+                this.refPlane.visible = true;
+                this.requestRender();
+            }
         });
     }
 
@@ -2023,7 +2047,7 @@ class PoseViewer {
     }
 
     updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
-        if (!this.THREE) return; // Not initialized yet
+        if (!this.THREE || !this.captureCamera) return; // Not initialized yet
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
@@ -2032,24 +2056,6 @@ class PoseViewer {
             baseTarget.z
         );
         const dist = 45;
-
-        if (!this.captureCamera) {
-            this.captureCamera = new this.THREE.PerspectiveCamera(30, width / height, 0.1, 100);
-            this.scene.add(this.captureCamera);
-
-            // Visual Helper - Only a projected rectangle (no cone)
-            const frameGeo = new this.THREE.BufferGeometry().setFromPoints([
-                new this.THREE.Vector3(-1, 1, 0), new this.THREE.Vector3(1, 1, 0),
-                new this.THREE.Vector3(1, -1, 0), new this.THREE.Vector3(-1, -1, 0),
-                new this.THREE.Vector3(-1, 1, 0)
-            ]);
-            this.captureFrame = new this.THREE.Line(frameGeo, new this.THREE.LineBasicMaterial({ color: 0xffa500, linewidth: 2 }));
-            this.scene.add(this.captureFrame);
-
-            // Legacy helper (keep for internal matrix updates but DON'T ADD TO SCENE)
-            this.captureHelper = new this.THREE.CameraHelper(this.captureCamera);
-            this.captureHelper.visible = false;
-        }
 
         // Positioning relative to offset target
         this.captureCamera.aspect = width / height;
@@ -2225,7 +2231,8 @@ class PoseStudioWidget {
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
-            skin_type: "dummy_white" // naked | naked_marks | dummy_white
+            skin_type: "dummy_white", // naked | naked_marks | dummy_white
+            background_url: null
         };
 
         // Lighting settings (array of light configs)
@@ -2619,6 +2626,8 @@ class PoseStudioWidget {
         refBtn.onclick = () => {
             if (this.viewer && this.viewer.refPlane) {
                 this.viewer.removeReferenceImage();
+                this.exportParams.background_url = null;
+                this.syncToNode(false);
                 refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
                 refBtn.classList.remove('danger');
             } else {
@@ -3747,14 +3756,14 @@ class PoseStudioWidget {
 
         const reader = new FileReader();
         reader.onload = (event) => {
+            const dataUrl = event.target.result;
             if (this.viewer) {
-                this.viewer.loadReferenceImage(event.target.result);
-                // Also force camera update to set plane size
-                this.viewer.updateCaptureCamera(
-                    this.exportParams.view_width,
-                    this.exportParams.view_height,
-                    this.exportParams.cam_zoom || 1.0
-                );
+                this.viewer.loadReferenceImage(dataUrl);
+                this.exportParams.background_url = dataUrl;
+                this.syncToNode(false);
+
+                // Force model update (preview button effect) to fix camera shift
+                this.loadModel(false);
 
                 if (this.refBtn) {
                     this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
@@ -4626,10 +4635,19 @@ class PoseStudioWidget {
             // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
             const rect = this.canvasContainer.getBoundingClientRect();
             const zoomFactor = 0.67;
-            const targetW = rect.width / zoomFactor;
-            const targetH = rect.height / zoomFactor;
+            const targetW = Math.round(rect.width / zoomFactor);
+            const targetH = Math.round(rect.height / zoomFactor);
 
+            // Guard against feedback loops: skip if size hasn't materially changed.
+            // Without this, getBoundingClientRect → setSize → style change → rect grows → infinite loop
+            // on some systems with non-integer DPI or zoom scaling.
             if (targetW > 1 && targetH > 1) {
+                const dw = Math.abs(targetW - (this._lastResizeW || 0));
+                const dh = Math.abs(targetH - (this._lastResizeH || 0));
+                if (dw < 2 && dh < 2) return; // No meaningful change
+
+                this._lastResizeW = targetW;
+                this._lastResizeH = targetH;
                 this.viewer.resize(targetW, targetH);
             }
         }
@@ -5125,14 +5143,19 @@ class PoseStudioWidget {
         }
 
         // Update hidden pose_data widget
+        // Exclude background_url from export to avoid inflating pose_data widget
+        const exportToSave = { ...this.exportParams };
+        delete exportToSave.background_url;
+
         const data = {
             mesh: this.meshParams,
-            export: this.exportParams,
+            export: exportToSave,
             poses: this.poses,
             lights: this.lightParams,
             activeTab: this.activeTab,
             captured_images: this.poseCaptures,
-            lighting_prompts: this.lightingPrompts
+            lighting_prompts: this.lightingPrompts,
+            background_url: this.exportParams.background_url || null
         };
 
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
@@ -5198,6 +5221,17 @@ class PoseStudioWidget {
 
             if (data.poses && Array.isArray(data.poses)) {
                 this.poses = data.poses;
+            }
+
+            // Restore background image if present
+            const bgUrl = data.background_url || this.exportParams.background_url;
+            if (bgUrl && this.viewer) {
+                this.exportParams.background_url = bgUrl;
+                this.viewer.loadReferenceImage(bgUrl);
+                if (this.refBtn) {
+                    this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
+                    this.refBtn.classList.add('danger');
+                }
             }
 
             if (data.lights && Array.isArray(data.lights)) {
@@ -5299,11 +5333,24 @@ app.registerExtension({
                 if (this.studioWidget) this.studioWidget.refreshLibrary(false);
             }, 1000);
 
-            // Hide pose_data widget
+            // Hide pose_data widget (must work in both legacy LiteGraph and node2.0 Vue modes)
             const poseWidget = this.widgets?.find(w => w.name === "pose_data");
             if (poseWidget) {
+                // Legacy LiteGraph mode
                 poseWidget.type = "hidden";
                 poseWidget.computeSize = () => [0, -4];
+                // Node 2.0 Vue mode
+                poseWidget.hidden = true;
+                // Hide DOM element if it exists (node2.0 creates input elements)
+                if (poseWidget.element) {
+                    poseWidget.element.style.display = "none";
+                }
+                // Prevent widget from affecting node serialization size
+                Object.defineProperty(poseWidget, 'serializeValue', {
+                    value: async function () { return poseWidget.value; },
+                    writable: true,
+                    configurable: true
+                });
             }
 
             // Load model after initialization
