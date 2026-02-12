@@ -14,7 +14,7 @@ import urllib.parse
 import time
 
 # Cache for model_updater.json to prevent excessive HEAD requests
-# Structure: { repo_id: { "timestamp": float, "path": str } }
+# Structure: { repo_id: { "timestamp": float, "remote_timestamp": float, "path": str } }
 _CONFIG_CACHE = {}
 
 # Universal Type to force connections
@@ -33,35 +33,70 @@ def resolve_path(relative_path):
 
 def get_cached_config_path(repo_id, force_refresh=False):
     now = time.time()
-    CACHE_TTL = 300  # 5 minutes
-    
+    UI_CACHE_TTL = 300      # 5 minutes (return what we have quickly)
+    UPDATE_CHECK_TTL = 3600 # 60 minutes (actually check for remote updates)
+
     cached = _CONFIG_CACHE.get(repo_id)
-    
-    # Use cached path if fresh
-    if not force_refresh and cached and (now - cached["timestamp"] < CACHE_TTL):
-        path = cached["path"]
-        # Check if file physically exists
-        if os.path.exists(path):
-             return path
-             
-    # Otherwise fetch from hub (allows HEAD request)
-    try:
-        path = hf_hub_download(repo_id=repo_id, filename="model_updater.json", local_files_only=False)
-        _CONFIG_CACHE[repo_id] = {"timestamp": now, "path": path}
-        return path
-    except Exception as e:
-        # Fallback to local/stale if network fails
-        if cached and os.path.exists(cached["path"]):
-            print(f"[VNCCS] Config check failed, using stale config: {e}")
+
+    # Tier 1: Return memory cache if very fresh
+    if not force_refresh and cached and (now - cached.get("timestamp", 0) < UI_CACHE_TTL):
+        if os.path.exists(cached["path"]):
             return cached["path"]
-        
-        # Try finding it locally even if not in our memory cache
+
+    # Tier 2: Check remote if enough time passed or forced
+    needs_remote = force_refresh or not cached or (now - cached.get("remote_timestamp", 0) > UPDATE_CHECK_TTL)
+    
+    # Load user config for tokens
+    user_config = get_vnccs_config()
+    hf_token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
+
+    if needs_remote:
         try:
-             path = hf_hub_download(repo_id=repo_id, filename="model_updater.json", local_files_only=True)
-             _CONFIG_CACHE[repo_id] = {"timestamp": now, "path": path}
-             return path
-        except:
-             raise e
+            print(f"[VNCCS] Checking for updates on HF: {repo_id}...")
+            path = hf_hub_download(
+                repo_id=repo_id, 
+                filename="model_updater.json", 
+                local_files_only=False,
+                token=hf_token
+            )
+            _CONFIG_CACHE[repo_id] = {
+                "timestamp": now, 
+                "remote_timestamp": now, 
+                "path": path
+            }
+            return path
+        except Exception as e:
+            err_str = str(e)
+            print(f"[VNCCS] Remote config check failed: {err_str}")
+            
+            # Back-off on 429
+            if "429" in err_str:
+                print("[VNCCS] Rate limited (429). Will retry in 10 minutes.")
+                if cached:
+                    cached["remote_timestamp"] = now - (UPDATE_CHECK_TTL - 600)
+            
+            # Fallback to local
+            if cached and os.path.exists(cached["path"]):
+                return cached["path"]
+
+    # Tier 3: Try local-only fallback
+    try:
+        path = hf_hub_download(
+            repo_id=repo_id, 
+            filename="model_updater.json", 
+            local_files_only=True,
+            token=hf_token
+        )
+        _CONFIG_CACHE[repo_id] = {
+            "timestamp": now, 
+            "remote_timestamp": cached.get("remote_timestamp", 0) if cached else 0, 
+            "path": path
+        }
+        return path
+    except Exception:
+        if cached and os.path.exists(cached["path"]):
+            return cached["path"]
+        raise Exception(f"Config for {repo_id} not found locally or on hub.")
 
 
 # --- Global Download Worker ---
@@ -116,11 +151,10 @@ def worker_loop():
                 if filename.startswith(f"{download_repo_id}/"):
                     filename = filename[len(download_repo_id) + 1:]
 
-                print(f"[VNCCS] Starting download of {filename} from {download_repo_id}...")
-                
                 # Resolve URL and Token
                 url = hf_hub_url(download_repo_id, filename)
-                token = os.environ.get("HF_TOKEN")
+                user_config = get_vnccs_config()
+                token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
                 headers = {"Authorization": f"Bearer {token}"} if token else {}
             
             # Use requests for streaming download
@@ -268,8 +302,15 @@ def save_vnccs_config(new_data):
 async def save_api_token(request):
     try:
         data = await request.json()
-        token = data.get("token", "")
-        save_vnccs_config({"civitai_token": token})
+        tokens = {}
+        if "token" in data: # Legacy single token (Civitai)
+            tokens["civitai_token"] = data["token"]
+        if "civitai_token" in data:
+            tokens["civitai_token"] = data["civitai_token"]
+        if "hf_token" in data:
+            tokens["hf_token"] = data["hf_token"]
+            
+        save_vnccs_config(tokens)
         return web.json_response({"status": "saved"})
     except Exception as e:
         return web.json_response({"error": str(e)}, status=500)
@@ -301,9 +342,12 @@ async def check_models(request):
          return web.json_response({"error": f"Invalid Repo ID format: '{repo_id}'"}, status=400)
 
     try:
+        # Force refresh parameter from query string (default: use cache)
+        force_refresh = request.rel_url.query.get("force_refresh", "").lower() == "true"
+
         def fetch_config():
-            # Force refresh from hub to avoid stale local cache
-            path = hf_hub_download(repo_id=repo_id, filename="model_updater.json", local_files_only=False)
+            # Use cached config to prevent excessive HEAD requests
+            path = get_cached_config_path(repo_id, force_refresh=force_refresh)
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
 
@@ -408,7 +452,8 @@ async def download_model(request):
     
     try:
         def fetch_config_sync():
-            path = hf_hub_download(repo_id=repo_id, filename="model_updater.json")
+            # Use cached config to avoid excessive HEAD requests
+            path = get_cached_config_path(repo_id)
             with open(path, 'r', encoding='utf-8') as f:
                 return json.load(f)
         
