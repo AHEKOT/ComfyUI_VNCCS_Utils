@@ -5360,12 +5360,6 @@ app.registerExtension({
                 if (poseWidget.element) {
                     poseWidget.element.style.display = "none";
                 }
-                // Prevent widget from affecting node serialization size
-                Object.defineProperty(poseWidget, 'serializeValue', {
-                    value: async function () { return poseWidget.value; },
-                    writable: true,
-                    configurable: true
-                });
             }
             // Load model after initialization
             setTimeout(() => {
