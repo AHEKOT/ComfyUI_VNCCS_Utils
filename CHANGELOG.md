@@ -1,3 +1,16 @@
+# Version 0.4.5
+## Fixes & Improvements: Node 2.0 Stability and Rendering Quality
+*   **Rendering: Body Contours**:
+    *   Implemented a **Rim Darkening (Fresnel) Shader** for the character mannequin. This darkens the edges of the mesh based on view-space normals, ensuring body details like muscle definition and limb separation are visible even in flat white/ambient lighting modes.
+*   **Defaults: Character Type**:
+    *   Changed default skin type from "Dummy White" to "**Naked**".
+*   **Fixes: Node 2.0 Compatibility**:
+    *   Resolved an infinite node resize loop caused by layout feedback in ComfyUI's new node2.0 (Vue) frontend.
+    *   Implemented robust hiding for the `pose_data` widget compatible with both legacy LiteGraph and node2.0 modes.
+    *   Fixed a `TypeError` related to `serializeValue` redefinition when initializing the node.
+*   **Fixes: Lighting UI Persistence**:
+    *   The "**Keep Original Lighting**" button now correctly restores its visual state (toggle status and color) after a page reload.
+
 # Version 0.4.4
 ## Fixes & Improvements: Smart Updates and Control Stability
 *   **Model Manager: Smart HF Updates**:

@@ -1742,6 +1742,20 @@ class PoseViewer {
             side: THREE.DoubleSide
         });
 
+        // Add Rim Darkening (Fresnel) effect to provide depth and contours in flat lighting
+        material.onBeforeCompile = (shader) => {
+            shader.fragmentShader = shader.fragmentShader.replace(
+                '#include <dithering_fragment>',
+                `
+                #include <dithering_fragment>
+                // Rim darkening using the view-space normal's Z component
+                // vNormal.z is ~1.0 when facing the camera, ~0.0 at the grazing edges
+                float rim = 1.0 - abs(vNormal.z);
+                gl_FragColor.rgb *= (1.0 - pow(rim, 3.0) * 0.4);
+                `
+            );
+        };
+
         this.skinnedMesh = new THREE.SkinnedMesh(geometry, material);
         rootBones.forEach(b => this.skinnedMesh.add(b));
         this.skinnedMesh.bind(this.skeleton);
@@ -2231,7 +2245,7 @@ class PoseStudioWidget {
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
-            skin_type: "dummy_white", // naked | naked_marks | dummy_white
+            skin_type: "naked", // naked | naked_marks | dummy_white
             background_url: null
         };
 
@@ -2703,7 +2717,7 @@ class PoseStudioWidget {
         overrideBtn.style.fontWeight = "bold";
         overrideBtn.style.transition = "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
 
-        const updateOverrideBtn = () => {
+        this.updateOverrideBtn = () => {
             const active = this.exportParams.keepOriginalLighting;
             overrideBtn.innerHTML = active ?
                 '<span style="margin-right:8px;">🧼</span> KEEPING ORIGINAL LIGHTING' :
@@ -2724,12 +2738,12 @@ class PoseStudioWidget {
 
         overrideBtn.onclick = () => {
             this.exportParams.keepOriginalLighting = !this.exportParams.keepOriginalLighting;
-            updateOverrideBtn();
+            this.updateOverrideBtn();
             this.applyLighting();
             this.refreshLightUI(); // To dim/disable UI if needed
             this.syncToNode(false);
         };
-        updateOverrideBtn();
+        this.updateOverrideBtn();
         lightSection.content.appendChild(overrideBtn);
 
         const lightLabel = document.createElement("span");
@@ -4097,7 +4111,7 @@ class PoseStudioWidget {
 
         const skinButtons = {};
         const updateSkinUI = () => {
-            const current = this.exportParams.skin_type || "dummy_white";
+            const current = this.exportParams.skin_type || "naked";
             for (const opt of skinOptions) {
                 skinButtons[opt.key].classList.toggle("active", current === opt.key);
             }
@@ -4282,7 +4296,7 @@ class PoseStudioWidget {
 
         // Sync skin type to viewer before loading
         if (this.viewer) {
-            this.viewer.currentSkinType = this.exportParams.skin_type || "dummy_white";
+            this.viewer.currentSkinType = this.exportParams.skin_type || "naked";
         }
 
         return api.fetchApi("/vnccs/character_studio/update_preview", {
@@ -5218,6 +5232,7 @@ class PoseStudioWidget {
                     }
                 }
             }
+            if (this.updateOverrideBtn) this.updateOverrideBtn();
 
             if (data.poses && Array.isArray(data.poses)) {
                 this.poses = data.poses;
