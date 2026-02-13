@@ -1,6 +1,10 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
+// Global Registry Cache to prevent API storms (multiple nodes requesting same data)
+window.VNCCS_REGISTRY = window.VNCCS_REGISTRY || {};
+window.VNCCS_FETCH_PROMISES = window.VNCCS_FETCH_PROMISES || {};
+
 class VNCCS_ModelListWidget {
     constructor(node, container) {
         this.node = node;
@@ -208,48 +212,67 @@ class VNCCS_ModelListWidget {
     async fetchModels(repoId, force = false) {
         this.loading = true;
 
-        // 1. Try to load from cache first for instant feedback (skip if forcing fresh)
-        const cacheKey = `vnccs_cache_${repoId}`;
-        const cached = localStorage.getItem(cacheKey);
+        if (force) {
+            // Clear cache for this repo to ensure no stale data survives
+            delete window.VNCCS_REGISTRY[repoId];
+            const cacheKey = `vnccs_cache_${repoId}`;
+            localStorage.removeItem(cacheKey);
+        }
 
-        if (!force && cached && this.models.length === 0) {
-            try {
-                const parsed = JSON.parse(cached);
-                if (Array.isArray(parsed) && parsed.length > 0) {
-                    this.models = parsed;
-                    this.renderList();
-                    // Don't return, continue to fetch fresh data
-                } else {
-                    this.renderLoading();
-                }
-            } catch (e) {
-                this.renderLoading();
-            }
+        if (!force && window.VNCCS_REGISTRY[repoId]) {
+            this.models = window.VNCCS_REGISTRY[repoId];
+            this.renderList();
         } else if (force || this.models.length === 0) {
             this.renderLoading();
         }
 
-        // 2. Network Fetch in background
-        try {
-            const url = `/vnccs/manager/check?repo_id=${encodeURIComponent(repoId)}${force ? '&force_refresh=true' : ''}`;
-            const response = await api.fetchApi(url);
-            const data = await response.json();
-
-            if (data.error) {
-                // If we have cache, maybe just show a quiet error or toast?
-                // For now, if no models, show error. If models exist, keep them (stale is better than error)
-                if (this.models.length === 0) this.renderError(data.error);
-            } else {
+        // Debounce: if a fetch for this repo is already in flight, reuse it
+        // UNLESS force is true, then we want a fresh network call
+        if (!force && window.VNCCS_FETCH_PROMISES[repoId]) {
+            try {
+                const data = await window.VNCCS_FETCH_PROMISES[repoId];
                 this.models = Array.isArray(data) ? data : (data.models || []);
-                // Update Cache
-                localStorage.setItem(cacheKey, JSON.stringify(this.models));
-
-                await this.updateStatuses();
                 this.renderList();
-
-                // Notify others (Selectors) that fresh data with active versions is here
-                window.dispatchEvent(new CustomEvent("vnccs-registry-updated"));
+                return;
+            } catch (e) {
+                // fall through to retry if previous failed
             }
+        }
+
+        // 2. Network Fetch in background
+        const fetchPromise = (async () => {
+            try {
+                const url = `/vnccs/manager/check?repo_id=${encodeURIComponent(repoId)}${force ? '&force_refresh=true' : ''}`;
+                const response = await api.fetchApi(url);
+                const data = await response.json();
+
+                if (!data.error) {
+                    const models = Array.isArray(data) ? data : (data.models || []);
+                    window.VNCCS_REGISTRY[repoId] = models;
+                    return models;
+                }
+                throw new Error(data.error);
+            } finally {
+                delete window.VNCCS_FETCH_PROMISES[repoId];
+            }
+        })();
+
+        window.VNCCS_FETCH_PROMISES[repoId] = fetchPromise;
+
+        try {
+            const models = await fetchPromise;
+            this.models = models;
+            const cacheKey = `vnccs_cache_${repoId}`;
+            localStorage.setItem(cacheKey, JSON.stringify(this.models));
+
+            await this.updateStatuses();
+            this.renderList();
+
+            // Notify others (Selectors) that fresh data with active versions is here
+            // Pass data in detail to avoid extra fetches
+            window.dispatchEvent(new CustomEvent("vnccs-registry-updated", {
+                detail: { repo_id: repoId, models: this.models }
+            }));
         } catch (e) {
             if (this.models.length === 0) this.renderError(e.message);
         } finally {
@@ -365,15 +388,31 @@ class VNCCS_ModelListWidget {
         try {
             const response = await api.fetchApi("/vnccs/manager/status");
             if (response.ok) {
-                this.downloadStatuses = await response.json();
-                // Re-render only if we have models loaded to reflect changes
-                if (this.models.length > 0) {
+                const newStatuses = await response.json();
+
+                // Track transitions to "success" to trigger registry refresh (updates disk status in all nodes)
+                let needsRefresh = false;
+                for (const name in newStatuses) {
+                    const s = newStatuses[name];
+                    const oldS = this.downloadStatuses[name];
+                    if (s && s.status === "success" && (!oldS || oldS.status !== "success")) {
+                        needsRefresh = true;
+                        break;
+                    }
+                }
+
+                this.downloadStatuses = newStatuses;
+
+                if (needsRefresh) {
+                    const repoWidget = this.node.widgets?.find(w => w.name === "repo_id");
+                    if (repoWidget && repoWidget.value) {
+                        this.fetchModels(repoWidget.value);
+                    }
+                } else if (this.models.length > 0) {
                     this.renderList();
                 }
             }
-        } catch (e) {
-            // console.error("Status poll failed", e);
-        }
+        } catch (e) { }
     }
 
     async downloadModel(repoId, modelName, version) {
@@ -431,7 +470,12 @@ class VNCCS_ModelListWidget {
         // Identify existing items to preserve them
         const existingItems = {};
         Array.from(this.listArea.children).forEach(child => {
-            if (child.dataset.modelName) existingItems[child.dataset.modelName] = child;
+            if (child.dataset.modelName) {
+                existingItems[child.dataset.modelName] = child;
+            } else {
+                // Clear Loading models info... or Error messages if we are about to render real models
+                child.remove();
+            }
         });
 
         this.models.forEach((model, index) => {
@@ -574,46 +618,34 @@ class VNCCS_ModelListWidget {
                 const isError = dynStatus && dynStatus.status === "error";
                 const isAuthRequired = dynStatus && dynStatus.status === "auth_required";
                 const isSuccess = dynStatus && dynStatus.status === "success";
+                const isQueued = dynStatus && dynStatus.status === "queued";
 
-                // Progress logic
+                // 1. Transient High Priority States (Downloading, Queued, Auth)
                 if (isDownloading) {
-                    // Use real progress from backend if available
                     let progress = 0;
                     let msg = dynStatus.message || "Downloading";
-
                     if (dynStatus.progress !== undefined) {
                         progress = dynStatus.progress;
                     } else {
-                        // Fallback to fake
                         const startTime = this.downloadStartTimes[model.name] || Date.now();
                         const elapsed = Date.now() - startTime;
                         progress = Math.min((elapsed / 30000) * 100, 95);
                     }
-
                     bgLayer.style.width = `${progress}%`;
-                    bgLayer.style.transition = "width 0.2s linear";  // Faster transition directly
-                    bgLayer.style.background = "rgba(40, 100, 40, 0.5)"; // Greenish fill
-
-                    statusLabel.innerHTML = `<span style="color: #ccf; font-family: monospace;">⬇ ${msg}</span>`;
-                } else if (isSuccess) {
-                    bgLayer.style.width = "100%";
+                    bgLayer.style.transition = "width 0.2s linear";
                     bgLayer.style.background = "rgba(40, 100, 40, 0.5)";
-                } else {
-                    bgLayer.style.width = "0%";
-                    bgLayer.style.background = "rgba(100, 40, 40, 0.5)"; // Reset or Red for error?
-                }
-
-                if (isDownloading) {
+                    statusLabel.innerHTML = `<span style="color: #ccf; font-family: monospace;">⬇ ${msg}</span>`;
                     item.style.borderColor = "#44a";
-                    // statusLabel updated above in progress block
                     btn.textContent = "Downloading";
                     btn.disabled = true;
                     btn.style.background = "#448";
                     btn.style.color = "#aaa";
                     versionSelect.disabled = true;
-                } else if (dynStatus && dynStatus.status === "queued") {
+                    return;
+                }
+
+                if (isQueued) {
                     item.style.borderColor = "#884";
-                    // Striped background for queued
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "repeating-linear-gradient(45deg, #443, #443 10px, #332 10px, #332 20px)";
                     statusLabel.innerHTML = `<span style="color: #dd8;">⏳ Queued</span>`;
@@ -622,8 +654,11 @@ class VNCCS_ModelListWidget {
                     btn.style.background = "#554";
                     btn.style.color = "#aaa";
                     versionSelect.disabled = true;
-                } else if (isAuthRequired) {
-                    item.style.borderColor = "#fa0"; // Orange
+                    return;
+                }
+
+                if (isAuthRequired) {
+                    item.style.borderColor = "#fa0";
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "rgba(100, 80, 0, 0.2)";
                     statusLabel.innerHTML = `<span style="color: #fa0;">⚠ API Key Required</span>`;
@@ -632,104 +667,96 @@ class VNCCS_ModelListWidget {
                     btn.style.background = "#ca0";
                     btn.style.color = "black";
                     versionSelect.disabled = true;
-
-                    // Override click for auth logic
                     btn.onclick = (e) => {
                         e.stopPropagation();
                         this.showApiKeyDialog(model.name, repoId, selVer);
                     };
-                    return; // Return early to skip default onclick binding
+                    return;
+                }
 
-                } else if (isError) {
-                    item.style.borderColor = "#a44";
-                    bgLayer.style.width = "100%";
-                    bgLayer.style.background = "rgba(100, 40, 40, 0.2)"; // Slight red fill
-                    statusLabel.innerHTML = `<span style="color: #f88;">⚠ ${dynStatus.message}</span>`;
-                    btn.textContent = "Retry";
-                    btn.disabled = false;
-                    btn.style.background = "#a44";
-                    versionSelect.disabled = false;
-                    btn.onclick = () => this.downloadModel(repoId, model.name, selVer);
-                } else if (isSuccess) {
-                    item.style.borderColor = "#4a4";
-                    statusLabel.innerHTML = `<span style="color: #cfc;">✓ Installed v${selVer}</span>`;
-                    btn.textContent = "Switch/Active"; // Show different text if success was setting active?
-                    btn.style.background = "#363";
-                    versionSelect.disabled = false;
-                    // We need to re-bind correct action, which requires re-evaluating state on next render cycle
-                    // or forcing a set active here. Assume next poll fixes it.
-                    // But for instant feedback, we can just reload list
-                    if (this.models) this.fetchModels(repoId);
-                } else {
-                    // Normal state
-                    versionSelect.disabled = false;
+                // --- DISK TRUTH PRIORITY ---
+                const isSelectedInstalled = installedList.includes(selVer);
+                const isSelectedActive = (selVer === activeVer);
+
+                // If version not on disk, it's NOT installed, period.
+                if (!isSelectedInstalled && !isSelectedActive) {
+                    // Reset cosmetic flags
                     bgLayer.style.width = "0%";
-                    item.style.borderColor = "#444";
                     item.style.background = "#333";
+                    versionSelect.disabled = false;
 
-                    // LOGIC: Check if selected version is installed or active
-                    const isSelectedActive = (selVer === activeVer);
-                    const isSelectedInstalled = installedList.includes(selVer);
-
-                    // Check for updates relative to SELECTED version
-                    let updateMsg = "";
-                    if (model.versions && model.versions.length > 0) {
-                        const latestVer = model.versions[0].version;
-                        const cleanSel = String(selVer).replace(/^v/, '');
-                        const cleanLat = String(latestVer).replace(/^v/, '');
-                        if (cleanSel !== cleanLat) {
-                            updateMsg = ` <span style="color: #fca; font-size: 0.9em;">(Latest: v${cleanLat})</span>`;
-                        }
-                    }
-
-                    if (isSelectedActive) {
-                        // Current Selection is the Active one
-                        item.style.borderColor = "#484";
-                        item.style.background = "rgba(40, 100, 40, 0.1)";
-                        statusLabel.innerHTML = `<span style="color: #afa;">✓ Active</span>${updateMsg}`;
-                        btn.textContent = "Active";
-                        btn.disabled = true;
-                        btn.style.background = "transparent";
-                        btn.style.color = "#8c8";
-                        btn.style.border = "1px solid #484";
-                    } else if (isSelectedInstalled) {
-                        // Current Selection is Installed but NOT Active -> Allow Switch
-                        item.style.borderColor = "#aa4";
-                        statusLabel.innerHTML = `<span style="color: #ffc;">Installed</span>${updateMsg}`;
-                        btn.textContent = "Set Active";
+                    if (isError) {
+                        item.style.borderColor = "#a44";
+                        bgLayer.style.width = "100%";
+                        bgLayer.style.background = "rgba(100, 40, 40, 0.2)";
+                        statusLabel.innerHTML = `<span style="color: #f88;">⚠ ${dynStatus.message || "Error"}</span>`;
+                        btn.textContent = "Retry";
                         btn.disabled = false;
-                        btn.style.background = "#aa4";
-                        btn.style.color = "black";
-                        btn.style.border = "none";
-
-                        btn.onclick = async () => {
-                            btn.textContent = "Activating...";
-                            btn.disabled = true;
-                            try {
-                                await api.fetchApi("/vnccs/manager/set_active", {
-                                    method: "POST",
-                                    body: JSON.stringify({ model_name: model.name, version: selVer })
-                                });
-                                // Force refresh
-                                await this.fetchModels(repoId);
-                                // Notify other widgets (like Selector) that state changed
-                                window.dispatchEvent(new CustomEvent("vnccs-registry-updated"));
-                            } catch (e) {
-                                console.error(e);
-                                btn.textContent = "Error";
-                            }
-                        };
+                        btn.style.background = "#a44";
+                        btn.style.color = "white";
+                        btn.onclick = () => this.downloadModel(repoId, model.name, selVer);
                     } else {
-                        // Not installed -> Download
                         item.style.borderColor = "#666";
-                        item.style.background = "#333";
-                        statusLabel.innerHTML = `<span style="color: #ccc;">○ Not Installed</span>${updateMsg}`;
+                        statusLabel.innerHTML = `<span style="color: #ccc;">○ Not Installed</span>`;
                         btn.textContent = "Download";
                         btn.disabled = false;
                         btn.style.background = "#44a";
                         btn.style.color = "white";
                         btn.onclick = () => this.downloadModel(repoId, model.name, selVer);
                     }
+                    return;
+                }
+
+                // --- INSTALLED/ACTIVE STATES ---
+                versionSelect.disabled = false;
+                bgLayer.style.width = "0%";
+                item.style.background = "#333";
+
+                let updateMsg = "";
+                if (model.versions && model.versions.length > 0) {
+                    const latestVer = model.versions[0].version;
+                    if (String(selVer).replace(/^v/, '') !== String(latestVer).replace(/^v/, '')) {
+                        updateMsg = ` <span style="color: #fca; font-size: 0.9em;">(Latest: v${latestVer})</span>`;
+                    }
+                }
+
+                if (isSelectedActive) {
+                    item.style.borderColor = "#484";
+                    item.style.background = "rgba(40, 100, 40, 0.1)";
+                    statusLabel.innerHTML = `<span style="color: #afa;">✓ Active</span>${updateMsg}`;
+                    btn.textContent = "Active";
+                    btn.disabled = true;
+                    btn.style.background = "transparent";
+                    btn.style.color = "#8c8";
+                    btn.style.border = "1px solid #484";
+                } else {
+                    // Installed but not active
+                    item.style.borderColor = isSuccess ? "#4a4" : "#aa4";
+                    statusLabel.innerHTML = isSuccess ?
+                        `<span style="color: #cfc;">✓ Installed v${selVer}</span>` :
+                        `<span style="color: #ffc;">Installed</span>${updateMsg}`;
+
+                    btn.textContent = "Set Active";
+                    btn.disabled = false;
+                    btn.style.background = "#aa4";
+                    btn.style.color = "black";
+                    btn.style.border = "none";
+                    btn.onclick = async () => {
+                        btn.textContent = "Activating...";
+                        btn.disabled = true;
+                        try {
+                            await api.fetchApi("/vnccs/manager/set_active", {
+                                method: "POST",
+                                body: JSON.stringify({ model_name: model.name, version: selVer })
+                            });
+                            await this.fetchModels(repoId);
+                            window.dispatchEvent(new CustomEvent("vnccs-registry-updated"));
+                        } catch (e) {
+                            console.error(e);
+                            btn.textContent = "Error";
+                            btn.disabled = false;
+                        }
+                    };
                 }
             };
 
@@ -954,13 +981,23 @@ class VNCCS_SelectorWidget {
         if (w) this.currentValue = w.value;
 
         // Listen for global registry updates (sync with Manager)
-        this._onRegistryUpdate = () => {
+        this._onRegistryUpdate = (e) => {
             // Avoid refreshing if node is gone or collapsed
             if (!this.container || !this.container.isConnected) {
                 window.removeEventListener("vnccs-registry-updated", this._onRegistryUpdate);
                 return;
             }
-            this.refresh();
+
+            // Check if event carries data for our repo
+            const repoWidget = this.node.widgets.find(w => w.name === "repo_id");
+            const repoId = repoWidget ? repoWidget.value : "MIUProject/VNCCS";
+
+            if (e.detail && e.detail.repo_id === repoId && e.detail.models) {
+                this.models = e.detail.models;
+                this.render();
+            } else {
+                this.refresh();
+            }
         };
         window.addEventListener("vnccs-registry-updated", this._onRegistryUpdate);
 
@@ -974,59 +1011,89 @@ class VNCCS_SelectorWidget {
             this.updateScale();
         };
 
+        // Initial Data Check: pick up from cache immediately if already there
+        const repoWidget = this.node.widgets.find(w => w.name === "repo_id");
+        const initRepoId = repoWidget ? repoWidget.value : "MIUProject/VNCCS";
+        if (window.VNCCS_REGISTRY[initRepoId]) {
+            this.models = window.VNCCS_REGISTRY[initRepoId];
+        }
+
         this.render();
     }
 
     styleContainer() {
-        // Main wrapper styling - mimicking VNCCS_ModelListWidget robustness
+        // Main wrapper styling
         this.container.style.width = "100%";
-        this.container.style.height = "100%"; // Adhere strictly to parent/node size
+        this.container.style.height = "100%";
         this.container.style.padding = "0";
         this.container.style.backgroundColor = "transparent";
-        this.container.style.marginTop = "0px"; // Remove top margin to avoid pushing down
-        this.container.style.overflow = "hidden"; // Clip content explicitly
+        this.container.style.marginTop = "0px";
+        this.container.style.overflow = "hidden";
         this.container.style.position = "relative";
     }
 
     updateScale() {
         if (!this.node || !this.innerContent) return;
-
-        // Calculate Scale
-        const availableWidth = Math.max(this.node.size[0] - 20, 100); // -20 for padding safety
+        const availableWidth = Math.max(this.node.size[0] - 20, 100);
         const scale = availableWidth / this.designWidth;
-
-        // Apply Transform
         this.innerContent.style.transform = `scale(${scale})`;
         this.innerContent.style.transformOrigin = "top left";
         this.innerContent.style.width = `${this.designWidth}px`;
-
-        // We DO NOT set this.container.style.height manually anymore.
-        // We let CSS height: 100% handle the constraints, preventing overflow.
     }
 
-    async refresh() {
-        // 1. Re-sync inputs (Crucial for reload)
+    async refresh(force = false) {
+        // 1. Re-sync inputs
         const repoWidget = this.node.widgets.find(w => w.name === "repo_id");
         const nameWidget = this.node.widgets.find(w => w.name === "model_name");
 
         const repo_id = repoWidget ? repoWidget.value : "MIUProject/VNCCS";
         if (nameWidget) this.currentValue = nameWidget.value;
 
-        // Show loading state
         if (this.refreshBtn) this.refreshBtn.textContent = "⌛";
-        if (this.models.length === 0) this.render(); // Render "Loading..." state if needed
+
+        if (force) {
+            delete window.VNCCS_REGISTRY[repo_id];
+        }
+
+        if (!force && window.VNCCS_REGISTRY[repo_id]) {
+            this.models = window.VNCCS_REGISTRY[repo_id];
+            this.render();
+            if (this.refreshBtn) this.refreshBtn.textContent = "↻";
+            return;
+        }
+
+        if (this.models.length === 0) this.render();
+
+        if (!force && window.VNCCS_FETCH_PROMISES[repo_id]) {
+            try {
+                this.models = await window.VNCCS_FETCH_PROMISES[repo_id];
+                this.render();
+                return;
+            } catch (e) { } finally {
+                if (this.refreshBtn) this.refreshBtn.textContent = "↻";
+            }
+        }
 
         try {
-            const response = await api.fetchApi(`/vnccs/manager/check?repo_id=${encodeURIComponent(repo_id)}`);
-            const data = await response.json();
-            if (data.models) {
-                this.models = data.models;
-                this.render(); // Re-render with new data
-            }
+            const url = `/vnccs/manager/check?repo_id=${encodeURIComponent(repo_id)}${force ? '&force_refresh=true' : ''}`;
+            const fetchPromise = (async () => {
+                const response = await api.fetchApi(url);
+                const data = await response.json();
+                if (data.models) {
+                    window.VNCCS_REGISTRY[repo_id] = data.models;
+                    return data.models;
+                }
+                throw new Error(data.error || "Unknown error");
+            })();
+
+            window.VNCCS_FETCH_PROMISES[repo_id] = fetchPromise;
+            this.models = await fetchPromise;
+            this.render();
         } catch (e) {
             console.error("VNCCS Selector Fetch Error", e);
         } finally {
             if (this.refreshBtn) this.refreshBtn.textContent = "↻";
+            delete window.VNCCS_FETCH_PROMISES[repo_id];
         }
     }
 
@@ -1192,7 +1259,7 @@ class VNCCS_SelectorWidget {
 
         rBtn.onmouseover = () => { rBtn.style.backgroundColor = "#444"; rBtn.style.color = "#fff"; };
         rBtn.onmouseout = () => { rBtn.style.backgroundColor = "rgba(0,0,0,0.2)"; rBtn.style.color = "#888"; };
-        rBtn.onclick = (e) => { e.stopPropagation(); this.refresh(); };
+        rBtn.onclick = (e) => { e.stopPropagation(); this.refresh(true); };
 
         this.refreshBtn = rBtn;
         row.appendChild(rBtn);

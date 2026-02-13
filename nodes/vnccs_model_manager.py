@@ -27,6 +27,13 @@ any_type = AnyType("*")
 
 # Helper to resolve paths relative to ComfyUI root
 def resolve_path(relative_path):
+    if not relative_path:
+        return ""
+    # Expand user (~)
+    expanded = os.path.expanduser(relative_path)
+    if os.path.isabs(expanded):
+        return os.path.abspath(expanded)
+    
     # Ensure folder_paths.base_path is valid
     base = getattr(folder_paths, "base_path", os.getcwd())
     return os.path.abspath(os.path.join(base, relative_path))
@@ -387,7 +394,10 @@ async def check_models(request):
             installed_versions = []
             for v in variants:
                 full_path = resolve_path(v["local_path"])
-                if os.path.exists(full_path):
+                exists = os.path.exists(full_path)
+                if force_refresh:
+                    print(f"[VNCCS] Check: {name} v{v['version']} -> {full_path} [{'EXISTS' if exists else 'MISSING'}]")
+                if exists:
                     installed_versions.append(v["version"])
             
             # Validate Active Version still exists
