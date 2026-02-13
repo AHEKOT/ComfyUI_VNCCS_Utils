@@ -4835,8 +4835,6 @@ class PoseStudioWidget {
             if (ambPrompts.length > 0) {
                 if (finalPrompt.length > 0) finalPrompt += ". ";
                 finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
-            } else if (finalPrompt.length === 0) {
-                finalPrompt = "The scene is in total darkness, pitch black, no visible light.";
             } else {
                 // If there are directional lights but no reported ambient light, emphasize the darkness of shadows
                 finalPrompt += "";
