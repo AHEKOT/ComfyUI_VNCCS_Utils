@@ -5352,7 +5352,6 @@ app.registerExtension({
                     configurable: true
                 });
             }
-
             // Load model after initialization
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
