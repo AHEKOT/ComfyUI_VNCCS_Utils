@@ -1,3 +1,10 @@
+# Version 0.4.7
+## Fixes: Workflow Loading and Model Updates
+*   **Critical Fix: Workflow Crash**: Resolved a `TypeError: Attempting to change configurable attribute of unconfigurable property` that occurred when loading workflows. This was caused by a conflict with ComfyUI's internal widget serialization.
+*   **Model Manager: Manual Refresh**:
+    *   The "**Check/Refresh Models**" button now correctly bypasses the server-side 60-minute cache, allowing for instant discovery of new model updates on Hugging Face.
+    *   Added immediate visual feedback (Loading state) when a manual refresh is triggered.
+
 # Version 0.4.5
 ## Fixes & Improvements: Node 2.0 Stability and Rendering Quality
 *   **Rendering: Body Contours**:

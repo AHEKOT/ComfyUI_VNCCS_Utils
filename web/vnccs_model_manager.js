@@ -205,14 +205,14 @@ class VNCCS_ModelListWidget {
         });
     }
 
-    async fetchModels(repoId) {
+    async fetchModels(repoId, force = false) {
         this.loading = true;
 
-        // 1. Try to load from cache first for instant feedback
+        // 1. Try to load from cache first for instant feedback (skip if forcing fresh)
         const cacheKey = `vnccs_cache_${repoId}`;
         const cached = localStorage.getItem(cacheKey);
 
-        if (cached && this.models.length === 0) {
+        if (!force && cached && this.models.length === 0) {
             try {
                 const parsed = JSON.parse(cached);
                 if (Array.isArray(parsed) && parsed.length > 0) {
@@ -225,13 +225,14 @@ class VNCCS_ModelListWidget {
             } catch (e) {
                 this.renderLoading();
             }
-        } else if (this.models.length === 0) {
+        } else if (force || this.models.length === 0) {
             this.renderLoading();
         }
 
         // 2. Network Fetch in background
         try {
-            const response = await api.fetchApi(`/vnccs/manager/check?repo_id=${encodeURIComponent(repoId)}`);
+            const url = `/vnccs/manager/check?repo_id=${encodeURIComponent(repoId)}${force ? '&force_refresh=true' : ''}`;
+            const response = await api.fetchApi(url);
             const data = await response.json();
 
             if (data.error) {
@@ -838,7 +839,7 @@ app.registerExtension({
                 this.addWidget("button", "Check/Refresh Models", null, () => {
                     const repoId = this.widgets.find(w => w.name === "repo_id")?.value;
                     if (repoId && this.listWidget) {
-                        this.listWidget.fetchModels(repoId);
+                        this.listWidget.fetchModels(repoId, true);
                     } else {
                         if (this.listWidget) this.listWidget.showMessage("Please enter a Repo ID first.", true);
                     }
