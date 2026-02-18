@@ -1,3 +1,12 @@
+# Version 0.4.10
+## Fixes: MIME Types and Layout Reliability
+*   **Fix: MIME Type Errors**: 
+    *   Moved Three.js modules to the `web` root directory.
+    *   This ensures the ComfyUI server correctly identifies them as `application/javascript`, resolving "disallowed MIME type" blocking in Firefox.
+*   **UI: Final Radar Scaling**:
+    *   Further reduced the **Positioning Menu** (Camera Radar) size to `140px`.
+    *   This prevents overflow in the 220px sidebar even when vertical scrollbars are visible.
+
 # Version 0.4.9
 ## Fixes: CSP Security and Desktop Compatibility
 *   **Security: Three.js Vendoring**:
