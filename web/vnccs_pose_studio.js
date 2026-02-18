@@ -13,9 +13,9 @@ const EXTENSION_URL = new URL(".", import.meta.url).toString();
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
 const THREE_SOURCES = {
-    core: `https://esm.sh/three@${THREE_VERSION}?dev`,
-    orbit: `https://esm.sh/three@${THREE_VERSION}/examples/jsm/controls/OrbitControls?dev`,
-    transform: `https://esm.sh/three@${THREE_VERSION}/examples/jsm/controls/TransformControls?dev`
+    core: `${EXTENSION_URL}lib/three/three.module.js`,
+    orbit: `${EXTENSION_URL}lib/three/OrbitControls.js`,
+    transform: `${EXTENSION_URL}lib/three/TransformControls.js`
 };
 
 const ThreeModuleLoader = {
@@ -60,23 +60,22 @@ const STYLES = `
     height: 100%;
     background: var(--ps-bg);
     font-family: 'Consolas', 'Monaco', monospace;
-    font-size: 12px;
+    font-size: 11px;
     color: var(--ps-text);
     overflow: hidden;
     box-sizing: border-box;
-    zoom: 0.67;
     pointer-events: none;
     position: relative;
 }
 
-/* === Left Panel (25%) === */
+/* === Left Panel (Compact) === */
 .vnccs-ps-left {
-    width: 250px;
+    width: 220px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px;
+    gap: 6px;
+    padding: 8px;
     overflow-y: auto;
     border-right: 1px solid var(--ps-border);
     pointer-events: auto;
@@ -96,14 +95,14 @@ const STYLES = `
     pointer-events: auto;
 }
 
-/* === Right Sidebar (Lighting) === */
+/* === Right Sidebar (Lighting - Compact) === */
 .vnccs-ps-right-sidebar {
-    width: 320px;
+    width: 220px;
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 10px;
+    gap: 6px;
+    padding: 8px;
     overflow-y: auto;
     border-left: 1px solid var(--ps-border);
     pointer-events: auto;
@@ -126,7 +125,7 @@ const STYLES = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 8px 10px;
+    padding: 5px 8px;
     background: #1a1a1a;
     border-bottom: 1px solid var(--ps-border);
     cursor: pointer;
@@ -134,7 +133,7 @@ const STYLES = `
 }
 
 .vnccs-ps-section-title {
-    font-size: 11px;
+    font-size: 10px;
     font-weight: bold;
     color: #fff;
     text-transform: uppercase;
@@ -152,10 +151,10 @@ const STYLES = `
 }
 
 .vnccs-ps-section-content {
-    padding: 10px;
+    padding: 8px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     pointer-events: auto;
 }
 
@@ -167,19 +166,19 @@ const STYLES = `
 .vnccs-ps-field {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 2px;
     pointer-events: auto;
 }
 
 .vnccs-ps-label {
-    font-size: 10px;
+    font-size: 9px;
     color: var(--ps-text-muted);
     text-transform: uppercase;
     font-weight: 600;
 }
 
 .vnccs-ps-value {
-    font-size: 10px;
+    font-size: 9px;
     color: var(--ps-accent);
     margin-left: auto;
 }
@@ -194,11 +193,11 @@ const STYLES = `
 .vnccs-ps-slider-wrap {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     background: var(--ps-input-bg);
     border: 1px solid var(--ps-border);
     border-radius: 4px;
-    padding: 4px 8px;
+    padding: 3px 6px;
     pointer-events: auto;
 }
 
@@ -232,9 +231,9 @@ const STYLES = `
 }
 
 .vnccs-ps-slider-val {
-    width: 40px;
+    width: 35px;
     text-align: right;
-    font-size: 11px;
+    font-size: 10px;
     color: #fff;
     background: transparent;
     border: none;
@@ -247,9 +246,9 @@ const STYLES = `
     border: 1px solid var(--ps-border);
     color: #fff;
     border-radius: 4px;
-    padding: 6px 8px;
+    padding: 4px 6px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
     width: 100%;
     box-sizing: border-box;
 }
@@ -287,16 +286,16 @@ const STYLES = `
     border: 1px solid var(--ps-border);
     color: #fff;
     border-radius: 4px;
-    padding: 6px 8px;
+    padding: 4px 6px;
     font-family: inherit;
-    font-size: 11px;
+    font-size: 10px;
     width: 100%;
     cursor: pointer;
 }
 
-/* Counter-zoom for select dropdown options */
+/* Counter-zoom removed as zoom is now 1.0 */
 .vnccs-ps-select:focus {
-    transform: scale(1.49);
+    transform: none;
     transform-origin: top left;
 }
 
@@ -313,10 +312,10 @@ const STYLES = `
 .vnccs-ps-toggle-btn {
     flex: 1;
     border: none;
-    padding: 6px 12px;
+    padding: 4px 8px;
     cursor: pointer;
     border-radius: 3px;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     font-family: inherit;
     transition: all 0.15s;
@@ -357,7 +356,7 @@ const STYLES = `
 /* Color Picker */
 .vnccs-ps-color {
     width: 100%;
-    height: 28px;
+    height: 24px;
     border: 1px solid var(--ps-border);
     border-radius: 4px;
     cursor: pointer;
@@ -380,15 +379,15 @@ const STYLES = `
 .vnccs-ps-tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 6px 12px;
+    gap: 4px;
+    padding: 4px 10px;
     background: #2a2a2a;
     border: 1px solid var(--ps-border);
     border-bottom: none;
     border-radius: 4px 4px 0 0;
     color: var(--ps-text-muted);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     font-family: inherit;
     white-space: nowrap;
     transition: all 0.15s;
@@ -426,10 +425,10 @@ const STYLES = `
 .vnccs-ps-light-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    margin-bottom: 20px;
+    gap: 8px;
+    margin-bottom: 15px;
     padding-right: 4px;
-    padding-bottom: 10px;
+    padding-bottom: 8px;
 }
 
 /* Light Card */
@@ -450,7 +449,7 @@ const STYLES = `
 /* Header */
 .vnccs-ps-light-header {
     background: rgba(255,255,255,0.03);
-    padding: 10px 12px;
+    padding: 6px 10px;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -458,11 +457,11 @@ const STYLES = `
 }
 .vnccs-ps-light-title {
     font-weight: 600;
-    font-size: 11px;
+    font-size: 10px;
     color: #eee;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 .vnccs-ps-light-icon {
     font-size: 14px;
@@ -471,8 +470,8 @@ const STYLES = `
 
 /* Remove Button */
 .vnccs-ps-light-remove {
-    width: 24px;
-    height: 24px;
+    width: 20px;
+    height: 20px;
     border-radius: 4px;
     background: transparent;
     color: #666;
@@ -481,7 +480,7 @@ const STYLES = `
     display: flex;
     align-items: center;
     justify-content: center;
-    font-size: 16px;
+    font-size: 14px;
     transition: all 0.2s;
     padding: 0;
 }
@@ -493,17 +492,17 @@ const STYLES = `
 
 /* Body */
 .vnccs-ps-light-body {
-    padding: 12px;
+    padding: 6px;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 6px;
 }
 
 /* Controls Grid */
 .vnccs-ps-light-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 8px;
+    gap: 6px;
     align-items: center;
 }
 
@@ -514,8 +513,8 @@ const STYLES = `
     border: 1px solid #333;
     border-radius: 4px;
     color: #ccc;
-    font-size: 11px;
-    padding: 4px 6px;
+    font-size: 10px;
+    padding: 3px 6px;
     font-family: inherit;
     cursor: pointer;
 }
@@ -523,7 +522,7 @@ const STYLES = `
 
 .vnccs-ps-light-color {
     width: 100%;
-    height: 24px;
+    height: 20px;
     border: 1px solid #333;
     border-radius: 4px;
     padding: 0;
@@ -535,7 +534,7 @@ const STYLES = `
 .vnccs-ps-light-slider-row {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
 }
 .vnccs-ps-light-slider {
     flex: 1;
@@ -566,16 +565,16 @@ const STYLES = `
     border: 1px solid rgba(255,255,255,0.03);
 }
 .vnccs-ps-light-pos-label {
-    font-size: 10px;
+    font-size: 9px;
     color: #888;
     font-weight: bold;
-    width: 12px;
+    width: 10px;
 }
 .vnccs-ps-light-value {
-    width: 35px;
+    width: 30px;
     flex-shrink: 0;
     text-align: right;
-    font-size: 10px;
+    font-size: 9px;
     color: #aaa;
 }
 
@@ -583,7 +582,7 @@ const STYLES = `
 .vnccs-ps-light-radar-wrap {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 8px;
     background: rgba(0,0,0,0.3);
     padding: 10px;
     border-radius: 6px;
@@ -592,7 +591,7 @@ const STYLES = `
 .vnccs-ps-light-radar-main {
     display: flex;
     align-items: center;
-    gap: 15px;
+    gap: 12px;
     justify-content: center;
     width: 100%;
 }
@@ -609,8 +608,8 @@ const STYLES = `
     flex-direction: column;
     align-items: center;
     justify-content: space-between;
-    height: 120px;
-    width: 40px;
+    height: 100px;
+    width: 35px;
     flex-shrink: 0;
 }
 .vnccs-ps-light-slider-vert {
@@ -619,7 +618,7 @@ const STYLES = `
     writing-mode: vertical-lr;
     direction: rtl;
     width: 6px;
-    height: 80px;
+    height: 70px;
     cursor: pointer;
     background: #333;
     margin: 0;
@@ -651,13 +650,13 @@ const STYLES = `
 /* Large Add Btn */
 .vnccs-ps-btn-add-large {
     width: 100%;
-    padding: 10px;
+    padding: 8px;
     background: linear-gradient(to bottom, #2a2a2a, #222);
     border: 1px dashed #444;
     border-radius: 6px;
     color: #888;
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11px;
     transition: all 0.2s;
     margin-top: 5px;
 }
@@ -725,8 +724,8 @@ const STYLES = `
 .vnccs-ps-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 8px; /* Reverted from 6px */
-    padding: 8px 10px; /* Reverted from 6px 8px */
+    gap: 6px;
+    padding: 6px 8px;
     background: #1a1a1a;
     border-top: 1px solid var(--ps-border);
     flex-shrink: 0;
@@ -737,13 +736,13 @@ const STYLES = `
     align-items: center;
     justify-content: center;
     gap: 4px;
-    padding: 8px 14px; /* Reverted from 6px 12px */
+    padding: 6px 12px;
     background: #333;
     border: 1px solid #444;
     border-radius: 4px;
     color: var(--ps-text);
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     font-weight: 600;
     font-family: inherit;
     transition: all 0.15s;
@@ -3053,15 +3052,15 @@ class PoseStudioWidget {
         wrap.style.background = "#181818";
         wrap.style.border = "1px solid #333";
         wrap.style.borderRadius = "4px";
-        wrap.style.padding = "10px";
+        wrap.style.padding = "6px";
 
         // Canvas
         const canvas = document.createElement("canvas");
-        const size = 200;
+        const size = 160;
         canvas.width = size;
         canvas.height = size;
-        canvas.style.width = "200px";
-        canvas.style.height = "200px";
+        canvas.style.width = "160px";
+        canvas.style.height = "160px";
         canvas.style.cursor = "crosshair";
 
         const ctx = canvas.getContext("2d");
@@ -3276,7 +3275,7 @@ class PoseStudioWidget {
     }
 
     createLightRadar(light) {
-        const size = 120;
+        const size = 100;
         const canvas = document.createElement("canvas");
         canvas.width = size;
         canvas.height = size;
@@ -4648,7 +4647,7 @@ class PoseStudioWidget {
             // Always measure the actual canvas container to ensure perfect aspect ratio.
             // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
             const rect = this.canvasContainer.getBoundingClientRect();
-            const zoomFactor = 0.67;
+            const zoomFactor = 1.0;
             const targetW = Math.round(rect.width / zoomFactor);
             const targetH = Math.round(rect.height / zoomFactor);
 

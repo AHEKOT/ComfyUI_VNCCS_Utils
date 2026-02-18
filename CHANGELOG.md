@@ -1,3 +1,16 @@
+# Version 0.4.9
+## Fixes: CSP Security and Desktop Compatibility
+*   **Security: Three.js Vendoring**:
+    *   Resolved ComfyUI Content Security Policy (CSP) errors by vendoring Three.js and its extensions (`OrbitControls`, `TransformControls`) locally.
+    *   Removed external CDN dependencies (`esm.sh`), ensuring the extension works in offline and restricted environments.
+*   **Fix: Desktop Coordinate Offset**:
+    *   Fixed a critical issue in ComfyUI Desktop where control points were shifted relative to the mouse.
+    *   Removed non-standard CSS `zoom` and replaced it with a 1:1 coordinate mapping system.
+*   **UI: Compactness Refinement**:
+    *   Manually optimized the entire UI layout for space efficiency.
+    *   Reduced font sizes, sidebars (now symmetrical at 220px), and internal component paddings.
+    *   Refined the **Lighting Radar** and mannequin **Positioning Menu** to fit perfectly within the new narrow layout.
+
 # Version 0.4.7
 ## Fixes: Workflow Loading and Model Updates
 *   **Critical Fix: Workflow Crash**: Resolved a `TypeError: Attempting to change configurable attribute of unconfigurable property` that occurred when loading workflows. This was caused by a conflict with ComfyUI's internal widget serialization.
