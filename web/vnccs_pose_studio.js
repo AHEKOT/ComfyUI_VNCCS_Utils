@@ -13,9 +13,9 @@ const EXTENSION_URL = new URL(".", import.meta.url).toString();
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
 const THREE_SOURCES = {
-    core: `${EXTENSION_URL}lib/three/three.module.js`,
-    orbit: `${EXTENSION_URL}lib/three/OrbitControls.js`,
-    transform: `${EXTENSION_URL}lib/three/TransformControls.js`
+    core: `${EXTENSION_URL}three.module.js`,
+    orbit: `${EXTENSION_URL}OrbitControls.js`,
+    transform: `${EXTENSION_URL}TransformControls.js`
 };
 
 const ThreeModuleLoader = {
@@ -3052,15 +3052,15 @@ class PoseStudioWidget {
         wrap.style.background = "#181818";
         wrap.style.border = "1px solid #333";
         wrap.style.borderRadius = "4px";
-        wrap.style.padding = "6px";
+        wrap.style.padding = "4px";
 
         // Canvas
         const canvas = document.createElement("canvas");
-        const size = 160;
+        const size = 140;
         canvas.width = size;
         canvas.height = size;
-        canvas.style.width = "160px";
-        canvas.style.height = "160px";
+        canvas.style.width = "140px";
+        canvas.style.height = "140px";
         canvas.style.cursor = "crosshair";
 
         const ctx = canvas.getContext("2d");
