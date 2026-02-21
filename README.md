@@ -1,4 +1,4 @@
-# ComfyUI VNCCS Utils
+# ComfyUI VNCCS Utils Fork
 
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project that are useful not only for the project's primary goals but also for everyday ComfyUI workflows.
 
