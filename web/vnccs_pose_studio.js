@@ -126,7 +126,12 @@ class AnalyticIKSolver {
         const dirToTarget = new THREE.Vector3().subVectors(targetPos, rootPos).normalize();
 
         // Calculate bend direction (perpendicular to dirToTarget, towards pole)
-        let bendDir = new THREE.Vector3(0, 0, 1); // Default bend direction
+        // Use the parent's world orientation (usually Hips) to derive a stable "local-forward" fallback.
+        // This prevents the knee from snapping to world-front when the character is rotated.
+        const refBone = rootBone.parent || rootBone;
+        const refQuat = new THREE.Quaternion();
+        refBone.getWorldQuaternion(refQuat);
+        let bendDir = new THREE.Vector3(0, 0, 1).applyQuaternion(refQuat);
 
         if (poleTarget) {
             // Project pole position onto plane perpendicular to dirToTarget
@@ -192,6 +197,8 @@ class AnalyticIKSolver {
         midBone.getWorldPosition(midPos);
 
         // === Rotate mid bone ===
+        // IMPORTANT: Must refresh effector world position because it moved with its parent!
+        effectorBone.getWorldPosition(effPos);
         this.rotateBoneToPoint(midBone, effPos, targetPos, THREE);
 
         // Update matrices
@@ -216,10 +223,20 @@ class AnalyticIKSolver {
         if (dot > 0.9999) return; // Already aligned
 
         const axis = new THREE.Vector3().crossVectors(currentDir, targetDir);
-        if (axis.lengthSq() < 0.0001) return;
+        let angle = Math.acos(Math.max(-1, Math.min(1, dot)));
 
-        axis.normalize();
-        const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+        if (axis.lengthSq() < 0.0001) {
+            // Singularity: 180 degree rotation. Pick any perpendicular axis.
+            if (dot < 0) {
+                const perp = new THREE.Vector3(1, 0, 0);
+                if (Math.abs(currentDir.x) > 0.9) perp.set(0, 1, 0);
+                axis.crossVectors(currentDir, perp).normalize();
+            } else {
+                return; // Already aligned (0 degrees)
+            }
+        } else {
+            axis.normalize();
+        }
 
         // Create rotation quaternion in world space
         const worldRotQuat = new THREE.Quaternion().setFromAxisAngle(axis, angle);
@@ -1828,7 +1845,7 @@ class PoseViewer {
             this.setupScene();
 
             this.initialized = true;
-            console.log('Pose Studio: 3D Viewer initialized');
+
 
             this.animate();
 
@@ -2051,6 +2068,11 @@ class PoseViewer {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return;
 
+        // CRITICAL: Force world matrices to update before capturing positions for IK
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        if (this.ikController) this.updateIKEffectorPositions();
+
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
 
@@ -2094,6 +2116,9 @@ class PoseViewer {
                         const chainDef = IK_CHAINS[chainKey];
                         const effectorObj = this.ikController.effectors[chainDef.effector];
                         if (effectorObj) {
+                            // Record state for undo before starting the drag
+                            this.recordState();
+
                             // Setup screen-space direct dragging for IK
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
@@ -2174,6 +2199,9 @@ class PoseViewer {
                         const chainDef = IK_CHAINS[chainKey];
                         const effectorObj = this.ikController.effectors[chainDef.effector];
                         if (effectorObj) {
+                            // Record state for undo before starting the drag
+                            this.recordState();
+
                             // Setup screen-space direct dragging for IK
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
@@ -2258,13 +2286,18 @@ class PoseViewer {
                     const midBone = this.directDrag.midBone;
 
                     if (rootBone && midBone) {
+
+
                         const midWorld = new this.THREE.Vector3();
                         midBone.getWorldPosition(midWorld);
+
+
 
                         // Pivot parent to place midBone perfectly on mouse cursor
                         const analytic = this.ikController.ccdSolver.analyticSolver;
                         analytic.rotateBoneToPoint(rootBone, midWorld, targetPos, this.THREE);
                         rootBone.updateMatrixWorld(true);
+                        if (this.skeleton) this.skeleton.update();
 
                         // Snap true IK foot/hand effector target to its new dragged-along position
                         const chainDef = IK_CHAINS[this.directDrag.chainKey];
@@ -2279,8 +2312,10 @@ class PoseViewer {
                     }
                 } else {
                     // Standard Hand/Foot Effector Drag
-                    this.directDrag.effector.position.copy(intersectPoint.add(this.directDrag.offset));
-                    this.selectedIKEffector = this.directDrag.effector; // For the solver temporarily
+                    const effectorTargetPos = intersectPoint.add(this.directDrag.offset);
+                    this.directDrag.effector.position.copy(effectorTargetPos);
+
+                    this.selectedIKEffector = this.directDrag.effector;
                     this.solveIKForEffector();
                 }
             }
@@ -2393,7 +2428,7 @@ class PoseViewer {
     initIK() {
         if (!this.THREE) return;
         this.ikController = new IKController(this.THREE);
-        console.log('Pose Studio: IK Controller initialized');
+
     }
 
     selectIKEffector(effectorMesh) {
@@ -2409,7 +2444,7 @@ class PoseViewer {
         // Update markers to show chain selection
         this.updateMarkers();
 
-        console.log('Pose Studio: Selected IK effector', effectorMesh.userData.effectorName, 'for chain', effectorMesh.userData.chainKey);
+
     }
 
     deselectIKEffector() {
@@ -2459,7 +2494,7 @@ class PoseViewer {
             this.updateMarkers();
         }
 
-        console.log('Pose Studio: Selected pole target for chain', poleMesh.userData.chainKey);
+
     }
 
     deselectPoleTarget() {
@@ -2482,7 +2517,7 @@ class PoseViewer {
 
         // Check if this chain is active for IK
         if (this.ikController.getMode(chainKey) !== 'ik') {
-            console.log('IK chain not active:', chainKey);
+
             return;
         }
 
@@ -2517,11 +2552,12 @@ class PoseViewer {
                 const bonePos = new this.THREE.Vector3();
                 effectorBone.getWorldPosition(bonePos);
 
-                // Calculate offset in world space
-                const offset = targetPos.clone().sub(bonePos);
-
-                // Apply offset to bone position (for root bones)
-                effectorBone.position.add(offset);
+                // Apply target world position to bone by converting to parent-local space
+                const localTarget = targetPos.clone();
+                if (effectorBone.parent) {
+                    effectorBone.parent.worldToLocal(localTarget);
+                }
+                effectorBone.position.copy(localTarget);
                 effectorBone.updateMatrixWorld(true);
 
                 // Solve IK for affected legs to keep feet in place
@@ -2802,7 +2838,7 @@ class PoseViewer {
         poleHelper.visible = this.ikMode && chainActive && poleEnabled;
 
         this.scene.add(poleHelper);
-        console.log('Pose Studio: Created pole target for', chainKey, 'at', polePos.x.toFixed(2), polePos.y.toFixed(2), polePos.z.toFixed(2));
+
     }
 
     createIKEffectorHelpers() {
@@ -2826,10 +2862,7 @@ class PoseViewer {
         let rootBone = null;
 
         // Debug: log all bones and their parents
-        console.log('Pose Studio: All bones:', this.boneList.map(b => ({
-            name: b.name,
-            parent: b.userData.parentName
-        })));
+
 
         // Find the root bone (no parent)
         for (const bone of this.boneList) {
@@ -2837,7 +2870,7 @@ class PoseViewer {
             if (!pName || !this.bones[pName]) {
                 rootBone = bone;
                 rootBoneName = bone.name;
-                console.log('Pose Studio: Found root bone:', rootBoneName);
+
                 break;
             }
         }
@@ -2851,7 +2884,7 @@ class PoseViewer {
                 if (bone.userData.parentName === rootBoneName) {
                     hipsBone = bone;
                     hipsBoneName = bone.name;
-                    console.log('Pose Studio: Found hips bone (first child of root):', hipsBoneName);
+
                     break;
                 }
             }
@@ -2861,7 +2894,7 @@ class PoseViewer {
         if (!hipsBone && rootBone) {
             hipsBone = rootBone;
             hipsBoneName = rootBoneName;
-            console.log('Pose Studio: No child found, using root as hips');
+
         }
 
         let createdCount = 0;
@@ -2907,7 +2940,7 @@ class PoseViewer {
                 this.createPoleTargetForChain(chainKey, chainDef);
             }
         }
-        console.log('Pose Studio: Created', createdCount, 'IK effectors');
+
     }
 
     updateIKEffectorPositions() {
@@ -3194,7 +3227,7 @@ class PoseViewer {
             const texLoader = new THREE.TextureLoader();
             skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
                 (tex) => {
-                    console.log(`Texture loaded successfully: ${skinFile}`);
+
                     this.requestRender();
                 },
                 undefined,
@@ -3324,7 +3357,7 @@ class PoseViewer {
                 this.skinnedMesh.material.needsUpdate = true;
                 this.cachedSkinTexture = tex;
                 this.cachedSkinType = skinType;
-                console.log(`Skin texture swapped to: ${skinFile}`);
+
                 this.requestRender();
             },
             undefined,
@@ -6933,7 +6966,7 @@ app.registerExtension({
                 try {
                     // Safe mode: ensure viewer is initialized
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.initialized) {
-                        console.log("[VNCCS] Viewer not initialized on sync. Auto-loading model...");
+
                         await node.studioWidget.loadModel();
                     }
 
