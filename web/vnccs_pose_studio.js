@@ -159,17 +159,22 @@ class AnalyticIKSolver {
         }
 
         // Calculate upper bone direction
-        // Rotate dirToTarget towards bendDir by the root angle
-        const axis = new THREE.Vector3().crossVectors(dirToTarget, bendDir).normalize();
+        // The rotation axis should be perpendicular to both dirToTarget and the bend plane (bendDir)
+        let axis = new THREE.Vector3().crossVectors(dirToTarget, bendDir);
 
         let upperDir;
-        if (axis.lengthSq() < 0.001) {
-            upperDir = dirToTarget.clone();
+        if (axis.lengthSq() < 0.0001) {
+            // Singularity fallback: if target is perfectly aligned with bendDir, pick any arbitrary perpendicular axis
+            axis = new THREE.Vector3(1, 0, 0);
+            if (Math.abs(dirToTarget.x) > 0.9) axis.set(0, 1, 0);
+            axis.cross(dirToTarget).normalize();
         } else {
-            // Rotate target direction towards the bend direction
-            const rotQuat = new THREE.Quaternion().setFromAxisAngle(axis, rootAngle);
-            upperDir = dirToTarget.clone().applyQuaternion(rotQuat);
+            axis.normalize();
         }
+
+        // Rotate target direction towards the bend direction
+        const rotQuat = new THREE.Quaternion().setFromAxisAngle(axis, rootAngle);
+        upperDir = dirToTarget.clone().applyQuaternion(rotQuat);
 
         // Calculate target mid position
         const targetMidPos = rootPos.clone().add(upperDir.clone().multiplyScalar(upperLen));
@@ -441,7 +446,7 @@ class IKController {
         Object.keys(IK_CHAINS).forEach(key => {
             this.modes[key] = 'ik';
             this.activeChains.add(key);
-            this.poleModes[key] = 'on';
+            this.poleModes[key] = 'off'; // Disabled by default, solves the target passing twist issue
         });
     }
 
@@ -2096,15 +2101,30 @@ class PoseViewer {
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
 
+                            const isMidJoint = (bone.name === chainDef.poleBone);
+                            this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
+
+                            if (isMidJoint) {
+                                this.directDrag.midBone = bone;
+                                this.directDrag.rootBone = this.boneList.find(b => b.name === chainDef.bones[chainDef.bones.indexOf(bone.name) - 1]);
+                            }
+
                             // Create interaction plane facing camera
                             const cameraDir = new this.THREE.Vector3();
                             this.camera.getWorldDirection(cameraDir);
-                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, effectorObj.position);
+                            // Base the plane on the clicked bone depth (e.g. knee) to prevent wild parallax errors
+                            const clickedBoneWorld = new this.THREE.Vector3();
+                            bone.getWorldPosition(clickedBoneWorld);
+                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, clickedBoneWorld);
 
                             const intersectPoint = new this.THREE.Vector3();
                             raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
                             if (intersectPoint) {
-                                this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                if (isMidJoint) {
+                                    this.directDrag.offset.copy(clickedBoneWorld).sub(intersectPoint);
+                                } else {
+                                    this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                }
                             }
 
                             this.orbit.enabled = false; // Disable orbit while direct dragging
@@ -2161,14 +2181,30 @@ class PoseViewer {
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
 
+                            const isMidJoint = (nearest.name === chainDef.poleBone);
+                            this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
+
+                            if (isMidJoint) {
+                                this.directDrag.midBone = nearest;
+                                this.directDrag.rootBone = this.boneList.find(b => b.name === chainDef.bones[chainDef.bones.indexOf(nearest.name) - 1]);
+                            }
+
                             const cameraDir = new this.THREE.Vector3();
                             this.camera.getWorldDirection(cameraDir);
-                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, effectorObj.position);
+
+                            // Base the plane on the clicked bone depth (e.g. knee) to prevent wild parallax errors
+                            const clickedBoneWorld = new this.THREE.Vector3();
+                            nearest.getWorldPosition(clickedBoneWorld);
+                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, clickedBoneWorld);
 
                             const intersectPoint = new this.THREE.Vector3();
                             raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
                             if (intersectPoint) {
-                                this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                if (isMidJoint) {
+                                    this.directDrag.offset.copy(clickedBoneWorld).sub(intersectPoint);
+                                } else {
+                                    this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                }
                             }
 
                             this.orbit.enabled = false;
@@ -2215,9 +2251,38 @@ class PoseViewer {
             raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
 
             if (intersectPoint) {
-                this.directDrag.effector.position.copy(intersectPoint.add(this.directDrag.offset));
-                this.selectedIKEffector = this.directDrag.effector; // For the solver temporarily
-                this.solveIKForEffector();
+                if (this.directDrag.targetType === 'midJoint') {
+                    // Dragging knee/elbow swivels the parent hip/shoulder directly
+                    const targetPos = intersectPoint.add(this.directDrag.offset);
+                    const rootBone = this.directDrag.rootBone;
+                    const midBone = this.directDrag.midBone;
+
+                    if (rootBone && midBone) {
+                        const midWorld = new this.THREE.Vector3();
+                        midBone.getWorldPosition(midWorld);
+
+                        // Pivot parent to place midBone perfectly on mouse cursor
+                        const analytic = this.ikController.ccdSolver.analyticSolver;
+                        analytic.rotateBoneToPoint(rootBone, midWorld, targetPos, this.THREE);
+                        rootBone.updateMatrixWorld(true);
+
+                        // Snap true IK foot/hand effector target to its new dragged-along position
+                        const chainDef = IK_CHAINS[this.directDrag.chainKey];
+                        const trueEffectorBone = this.boneList.find(b => b.name === chainDef.effector);
+                        if (trueEffectorBone && this.directDrag.effector) {
+                            trueEffectorBone.getWorldPosition(this.directDrag.effector.position);
+                        }
+
+                        // Vital to manually request redraw in ThreeJS when modifying transform directly outside solver
+                        this.updateMarkers();
+                        this.requestRender();
+                    }
+                } else {
+                    // Standard Hand/Foot Effector Drag
+                    this.directDrag.effector.position.copy(intersectPoint.add(this.directDrag.offset));
+                    this.selectedIKEffector = this.directDrag.effector; // For the solver temporarily
+                    this.solveIKForEffector();
+                }
             }
             return;
         }
