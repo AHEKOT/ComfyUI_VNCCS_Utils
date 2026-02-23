@@ -2319,6 +2319,10 @@ class PoseViewer {
             return;
         }
 
+        // --- HOVER LOGIC ---
+        // Stop expensive raycasting if the user is holding ANY button (like right-click panning)
+        if (e.buttons !== 0) return;
+
         // Skip hover if we are dragging via TransformControls
         if (this.transform.dragging) {
             if (this.hoveredBoneName) {
