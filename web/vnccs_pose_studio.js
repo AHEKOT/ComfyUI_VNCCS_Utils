@@ -2384,8 +2384,8 @@ class PoseViewer {
                 this.selectedIKEffector = null;
             }
 
-            // Dispatch event to notify widget of pose change instead of calling syncToNode directly
-            this.canvas.dispatchEvent(new Event('poseChange'));
+            // Trigger sync to update node output after IK drag
+            if (this.syncCallback) this.syncCallback();
 
             // Allow TransformControls back for the selected bone (FK) mode now that drag is done
             if (this.selectedBone) {
@@ -5470,6 +5470,7 @@ class PoseStudioWidget {
     }
 
     async loadFromLibrary(name) {
+        console.log("[VNCCS PoseStudio] loadFromLibrary triggered for:", name);
         try {
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}`);
             const data = await res.json();
@@ -6524,10 +6525,13 @@ class PoseStudioWidget {
     }
 
     syncToNode(fullCapture = false) {
+        if (this._isSyncing) return;
+        this._isSyncing = true;
+
         if (this.radarRedraw) this.radarRedraw();
 
-        // Save current pose before syncing
-        if (this.viewer && this.viewer.initialized) {
+        // Save current pose before syncing (only if we are NOT in a sub-sync loop)
+        if (!fullCapture && this.viewer && this.viewer.initialized) {
             this.poses[this.activeTab] = this.viewer.getPose();
         }
 
@@ -6561,6 +6565,7 @@ class PoseStudioWidget {
                     this.activeTab = i; // Switch tab for capture
 
                     if (isDebug) {
+                        console.log("PoseStudio: Randomizing due to debugMode=true");
                         // Generate fresh random params for each pose
                         const debugParams = this.generateDebugParams();
 
@@ -6612,10 +6617,12 @@ class PoseStudioWidget {
                     }
                 }
 
-                // Restore original state
+                // Restore original state and UI
                 this.viewer.updateLights(userLights);
                 this.activeTab = originalTab;
                 this.viewer.setPose(this.poses[this.activeTab]);
+                this.updateTabs(); // Ensure UI reflects correct tab
+                this.updateRotationSliders();
 
                 // Restore Camera Visualization
                 const z = this.exportParams.cam_zoom || 1.0;
@@ -6688,16 +6695,32 @@ class PoseStudioWidget {
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (widget) {
             widget.value = JSON.stringify(data);
+            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. captured_images count:", this.poseCaptures.length);
+
+            // Force ComfyUI to recognize the state change so it saves to the workflow
+            if (widget.callback) {
+                widget.callback(widget.value);
+            }
+            if (app.graph && app.graph.setDirtyCanvas) {
+                app.graph.setDirtyCanvas(true, true);
+            }
         }
+
+        this._isSyncing = false;
     }
 
     loadFromNode() {
+        console.log("[VNCCS PoseStudio] loadFromNode started");
         // Load from pose_data widget
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
-        if (!widget || !widget.value) return;
+        if (!widget || !widget.value) {
+            console.log("[VNCCS PoseStudio] loadFromNode: No widget or widget value found.");
+            return;
+        }
 
         try {
             const data = JSON.parse(widget.value);
+            console.log("[VNCCS PoseStudio] loadFromNode data parsed successfully. Includes poses:", !!data.poses);
 
             if (data.mesh) {
                 this.meshParams = { ...this.meshParams, ...data.mesh };
@@ -6927,10 +6950,7 @@ app.registerExtension({
         nodeType.prototype.onExecutionStart = function () {
             if (onExecutionStart) onExecutionStart.apply(this, arguments);
 
-            if (this.studioWidget && this.studioWidget.exportParams.debugMode) {
-                // Force a fresh full capture with new random params
-                this.studioWidget.syncToNode(true);
-            }
+            // Removed redundant syncToNode(true) to avoid race conditions with vnccs_req_pose_sync
         };
     }
 });
