@@ -36,6 +36,563 @@ const ThreeModuleLoader = {
     }
 };
 
+// === IK Chain Definitions ===
+const IK_CHAINS = {
+    hips: {
+        name: "Hips",
+        isRoot: true, // Special flag - this is a root effector (translate mode)
+        isRootBone: true, // Find the root bone dynamically (bone without parent)
+        affectedLegs: ['leftLeg', 'rightLeg'], // Legs affected by hip movement
+        iterations: 1,
+        threshold: 0.01
+    },
+    leftArm: {
+        name: "Left Arm",
+        bones: ['clavicle_l', 'upperarm_l', 'lowerarm_l'],
+        effector: 'hand_l',
+        poleBone: 'lowerarm_l', // Bone that should point towards pole target (elbow)
+        iterations: 10,
+        threshold: 0.001
+    },
+    rightArm: {
+        name: "Right Arm",
+        bones: ['clavicle_r', 'upperarm_r', 'lowerarm_r'],
+        effector: 'hand_r',
+        poleBone: 'lowerarm_r', // Elbow
+        iterations: 10,
+        threshold: 0.001
+    },
+    leftLeg: {
+        name: "Left Leg",
+        bones: ['thigh_l', 'calf_l'],
+        effector: 'foot_l',
+        poleBone: 'calf_l', // Knee
+        iterations: 30, // Increased for better accuracy
+        threshold: 0.0001 // Smaller threshold
+    },
+    rightLeg: {
+        name: "Right Leg",
+        bones: ['thigh_r', 'calf_r'],
+        effector: 'foot_r',
+        poleBone: 'calf_r', // Knee
+        iterations: 30, // Increased for better accuracy
+        threshold: 0.0001 // Smaller threshold
+    },
+    spine: {
+        name: "Spine",
+        bones: ['spine_01', 'spine_02', 'spine_03', 'neck_01'],
+        effector: 'head',
+        iterations: 5,
+        threshold: 0.01
+    }
+};
+
+// === Analytic 2-Bone IK Solver ===
+class AnalyticIKSolver {
+    constructor(THREE) {
+        this.THREE = THREE;
+    }
+
+    // Solve 2-bone chain analytically (100% accurate)
+    solve2Bone(rootBone, midBone, effectorBone, targetPos, poleTarget, THREE) {
+        // Get bone lengths from actual bone positions
+        const rootPos = new THREE.Vector3();
+        const midPos = new THREE.Vector3();
+        const effPos = new THREE.Vector3();
+
+        rootBone.getWorldPosition(rootPos);
+        midBone.getWorldPosition(midPos);
+        effectorBone.getWorldPosition(effPos);
+
+        const upperLen = rootPos.distanceTo(midPos);
+        const lowerLen = midPos.distanceTo(effPos);
+
+        // Distance from root to target
+        const targetDist = rootPos.distanceTo(targetPos);
+
+        // Clamp to reachable range
+        const totalLen = upperLen + lowerLen;
+        const reachDist = Math.min(targetDist, totalLen * 0.999);
+
+        // Law of cosines to find the bend angle at the middle joint
+        // cos(A) = (a² + b² - c²) / (2ab)
+        let bendAngle = 0;
+        if (reachDist > 0.001 && upperLen > 0.001 && lowerLen > 0.001) {
+            const cosAngle = (upperLen * upperLen + lowerLen * lowerLen - reachDist * reachDist) / (2 * upperLen * lowerLen);
+            bendAngle = Math.acos(Math.max(-1, Math.min(1, cosAngle)));
+        }
+
+        // Direction from root to target
+        const dirToTarget = new THREE.Vector3().subVectors(targetPos, rootPos).normalize();
+
+        // Calculate bend direction (perpendicular to dirToTarget, towards pole)
+        // Use the parent's world orientation (usually Hips) to derive a stable "local-forward" fallback.
+        // This prevents the knee from snapping to world-front when the character is rotated.
+        const refBone = rootBone.parent || rootBone;
+        const refQuat = new THREE.Quaternion();
+        refBone.getWorldQuaternion(refQuat);
+        let bendDir = new THREE.Vector3(0, 0, 1).applyQuaternion(refQuat);
+
+        if (poleTarget) {
+            // Project pole position onto plane perpendicular to dirToTarget
+            const toPole = new THREE.Vector3().subVectors(poleTarget, rootPos);
+            const poleProj = toPole.clone().sub(dirToTarget.clone().multiplyScalar(toPole.dot(dirToTarget)));
+            if (poleProj.lengthSq() > 0.001) {
+                bendDir = poleProj.normalize();
+            }
+        } else {
+            // Default: bend forward (for knees) or backward (for elbows)
+            // Use a hint based on the current mid bone position
+            const toMid = new THREE.Vector3().subVectors(midPos, rootPos);
+            const midProj = toMid.clone().sub(dirToTarget.clone().multiplyScalar(toMid.dot(dirToTarget)));
+            if (midProj.lengthSq() > 0.001) {
+                bendDir = midProj.normalize();
+            }
+        }
+
+        // Calculate the angle at root joint
+        // Distance from root to the middle point
+        const reachRatio = reachDist / totalLen;
+        const midDist = upperLen;
+
+        // Angle at root: angle between dirToTarget and the upper bone direction
+        // Using law of cosines again
+        let rootAngle = 0;
+        if (reachDist > 0.001) {
+            const cosRoot = (upperLen * upperLen + reachDist * reachDist - lowerLen * lowerLen) / (2 * upperLen * reachDist);
+            rootAngle = Math.acos(Math.max(-1, Math.min(1, cosRoot)));
+        }
+
+        // Calculate upper bone direction
+        // The rotation axis should be perpendicular to both dirToTarget and the bend plane (bendDir)
+        let axis = new THREE.Vector3().crossVectors(dirToTarget, bendDir);
+
+        let upperDir;
+        if (axis.lengthSq() < 0.0001) {
+            // Singularity fallback: if target is perfectly aligned with bendDir, pick any arbitrary perpendicular axis
+            axis = new THREE.Vector3(1, 0, 0);
+            if (Math.abs(dirToTarget.x) > 0.9) axis.set(0, 1, 0);
+            axis.cross(dirToTarget).normalize();
+        } else {
+            axis.normalize();
+        }
+
+        // Rotate target direction towards the bend direction
+        const rotQuat = new THREE.Quaternion().setFromAxisAngle(axis, rootAngle);
+        upperDir = dirToTarget.clone().applyQuaternion(rotQuat);
+
+        // Calculate target mid position
+        const targetMidPos = rootPos.clone().add(upperDir.clone().multiplyScalar(upperLen));
+
+        // Now we need to rotate rootBone so its child (midBone) is at targetMidPos
+        // And rotate midBone so its child (effectorBone) is at targetPos
+
+        // === Rotate root bone ===
+        this.rotateBoneToPoint(rootBone, midPos, targetMidPos, THREE);
+
+        // Update matrices after root rotation
+        rootBone.updateMatrixWorld(true);
+
+        // Get new mid position after root rotation
+        midBone.getWorldPosition(midPos);
+
+        // === Rotate mid bone ===
+        // IMPORTANT: Must refresh effector world position because it moved with its parent!
+        effectorBone.getWorldPosition(effPos);
+        this.rotateBoneToPoint(midBone, effPos, targetPos, THREE);
+
+        // Update matrices
+        midBone.updateMatrixWorld(true);
+
+        return true;
+    }
+
+    rotateBoneToPoint(bone, currentChildPos, targetChildPos, THREE) {
+        // Get bone world position
+        const bonePos = new THREE.Vector3();
+        bone.getWorldPosition(bonePos);
+
+        // Direction from bone to current child position
+        const currentDir = new THREE.Vector3().subVectors(currentChildPos, bonePos).normalize();
+
+        // Direction from bone to target child position
+        const targetDir = new THREE.Vector3().subVectors(targetChildPos, bonePos).normalize();
+
+        // Calculate rotation
+        const dot = currentDir.dot(targetDir);
+        if (dot > 0.9999) return; // Already aligned
+
+        const axis = new THREE.Vector3().crossVectors(currentDir, targetDir);
+        let angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+
+        if (axis.lengthSq() < 0.0001) {
+            // Singularity: 180 degree rotation. Pick any perpendicular axis.
+            if (dot < 0) {
+                const perp = new THREE.Vector3(1, 0, 0);
+                if (Math.abs(currentDir.x) > 0.9) perp.set(0, 1, 0);
+                axis.crossVectors(currentDir, perp).normalize();
+            } else {
+                return; // Already aligned (0 degrees)
+            }
+        } else {
+            axis.normalize();
+        }
+
+        // Create rotation quaternion in world space
+        const worldRotQuat = new THREE.Quaternion().setFromAxisAngle(axis, angle);
+
+        // Get current world quaternion
+        const currentWorldQuat = new THREE.Quaternion();
+        bone.getWorldQuaternion(currentWorldQuat);
+
+        // Apply rotation in world space
+        const newWorldQuat = worldRotQuat.multiply(currentWorldQuat);
+
+        // Convert to local quaternion
+        if (bone.parent) {
+            const parentWorldQuat = new THREE.Quaternion();
+            bone.parent.getWorldQuaternion(parentWorldQuat);
+            const invParentQuat = parentWorldQuat.clone().invert();
+            newWorldQuat.premultiply(invParentQuat);
+        }
+
+        bone.quaternion.copy(newWorldQuat);
+    }
+}
+
+// === CCD IK Solver ===
+class CCDIKSolver {
+    constructor(THREE) {
+        this.THREE = THREE;
+        this.analyticSolver = new AnalyticIKSolver(THREE);
+    }
+
+    solve(chainDef, bones, target, poleTarget = null) {
+        const THREE = this.THREE;
+
+        const chainBones = chainDef.bones.map(name => bones[name]).filter(b => b);
+        const effectorBone = bones[chainDef.effector];
+        const poleBone = chainDef.poleBone ? bones[chainDef.poleBone] : null;
+
+        if (!effectorBone || chainBones.length === 0) {
+            return false;
+        }
+
+        // Use analytic solver for 2-bone chains (much more accurate)
+        if (chainBones.length === 2) {
+            return this.analyticSolver.solve2Bone(
+                chainBones[0],
+                chainBones[1],
+                effectorBone,
+                target,
+                poleTarget,
+                THREE
+            );
+        }
+
+        // For 3-bone chains (arms with clavicle), use analytic solver for last 2 bones
+        // This gives accurate pole target behavior like legs
+        if (chainBones.length === 3) {
+            // chainBones[0] = clavicle (skip for IK)
+            // chainBones[1] = upperarm
+            // chainBones[2] = lowerarm
+            return this.analyticSolver.solve2Bone(
+                chainBones[1], // upperarm
+                chainBones[2], // lowerarm
+                effectorBone,  // hand
+                target,
+                poleTarget,
+                THREE
+            );
+        }
+
+        // Fall back to CCD for longer chains
+        const effectorWorldPos = new THREE.Vector3();
+        effectorBone.getWorldPosition(effectorWorldPos);
+
+        const initialDist = effectorWorldPos.distanceTo(target);
+        if (initialDist < chainDef.threshold) {
+            return true;
+        }
+
+        for (let iter = 0; iter < chainDef.iterations; iter++) {
+            for (let i = chainBones.length - 1; i >= 0; i--) {
+                const bone = chainBones[i];
+
+                effectorBone.getWorldPosition(effectorWorldPos);
+
+                const dist = effectorWorldPos.distanceTo(target);
+                if (dist < chainDef.threshold) {
+                    return true;
+                }
+
+                const boneWorldPos = new THREE.Vector3();
+                bone.getWorldPosition(boneWorldPos);
+
+                const toEffector = effectorWorldPos.clone().sub(boneWorldPos).normalize();
+                const toTarget = target.clone().sub(boneWorldPos).normalize();
+
+                const dot = toEffector.dot(toTarget);
+
+                if (dot > 0.9999) continue;
+
+                const clampedDot = Math.max(-1, Math.min(1, dot));
+                const angle = Math.acos(clampedDot);
+
+                if (angle < 0.0001) continue;
+
+                const axis = new THREE.Vector3().crossVectors(toEffector, toTarget).normalize();
+
+                if (axis.lengthSq() < 0.0001) continue;
+
+                const maxAngle = Math.PI / 4;
+                const limitedAngle = Math.min(angle, maxAngle);
+
+                const boneWorldQuat = new THREE.Quaternion();
+                bone.getWorldQuaternion(boneWorldQuat);
+
+                const worldRotQuat = new THREE.Quaternion().setFromAxisAngle(axis, limitedAngle);
+                const newWorldQuat = worldRotQuat.multiply(boneWorldQuat);
+
+                if (bone.parent) {
+                    const parentWorldQuat = new THREE.Quaternion();
+                    bone.parent.getWorldQuaternion(parentWorldQuat);
+                    const invParentQuat = parentWorldQuat.clone().invert();
+                    newWorldQuat.premultiply(invParentQuat);
+                }
+
+                bone.quaternion.copy(newWorldQuat);
+                bone.updateMatrixWorld(true);
+            }
+        }
+
+        // Apply pole target constraint ONCE at the end (not every iteration to avoid accumulation)
+        if (poleTarget && poleBone && chainBones.length >= 2) {
+            this.applyPoleConstraint(chainBones, poleBone, target, poleTarget, THREE);
+        }
+
+        effectorBone.getWorldPosition(effectorWorldPos);
+        return effectorWorldPos.distanceTo(target) < chainDef.threshold;
+    }
+
+    applyPoleConstraint(chainBones, poleBone, effectorTarget, poleTarget, THREE) {
+        // For 2-bone chains (legs): chainBones[0]=thigh, chainBones[1]=calf
+        // For 3-bone chains (arms): chainBones[0]=clavicle, chainBones[1]=upperarm, chainBones[2]=lowerarm
+
+        // Use poleBone for elbow/knee position (passed as parameter)
+        if (!poleBone) return;
+
+        // For 3-bone chains, we need to rotate upperarm (index 1), not clavicle (index 0)
+        // For 2-bone chains, we rotate the first bone (thigh)
+        const boneToRotate = chainBones.length >= 3 ? chainBones[1] : chainBones[0];
+        if (!boneToRotate) return;
+
+        // Get positions - use boneToRotate position as root for calculations
+        const rootPos = new THREE.Vector3();
+        const polePos = new THREE.Vector3();
+
+        boneToRotate.getWorldPosition(rootPos); // Position of upperarm/thigh
+        poleBone.getWorldPosition(polePos); // Position of elbow/knee
+
+        // Calculate the bend plane
+        const rootToTarget = effectorTarget.clone().sub(rootPos).normalize();
+        const rootToPole = poleTarget.clone().sub(rootPos).normalize();
+
+        // Calculate the desired bend direction (perpendicular to root->target, towards pole)
+        const bendAxis = new THREE.Vector3().crossVectors(rootToTarget, rootToPole).normalize();
+
+        if (bendAxis.lengthSq() < 0.0001) return;
+
+        // Get current bend direction from boneToRotate to poleBone (elbow/knee)
+        const currentBend = polePos.clone().sub(rootPos).normalize();
+
+        // Project current bend onto plane perpendicular to root->target
+        const projectedCurrent = currentBend.clone().sub(
+            rootToTarget.clone().multiplyScalar(currentBend.dot(rootToTarget))
+        ).normalize();
+
+        // Project desired bend (towards pole) onto same plane
+        const projectedDesired = rootToPole.clone().sub(
+            rootToTarget.clone().multiplyScalar(rootToPole.dot(rootToTarget))
+        ).normalize();
+
+        // Calculate rotation angle to align with pole
+        const dot = projectedCurrent.dot(projectedDesired);
+        if (Math.abs(dot) > 0.9999) return;
+
+        const clampedDot = Math.max(-1, Math.min(1, dot));
+        let rotationAngle = Math.acos(clampedDot);
+
+        // Check rotation direction
+        const cross = new THREE.Vector3().crossVectors(projectedCurrent, projectedDesired);
+        if (cross.dot(rootToTarget) < 0) {
+            rotationAngle = -rotationAngle;
+        }
+
+        // Apply rotation to the correct bone (upperarm for arms, thigh for legs)
+        const boneWorldQuat = new THREE.Quaternion();
+        boneToRotate.getWorldQuaternion(boneWorldQuat);
+
+        // Create rotation around the target direction axis
+        const poleRotationQuat = new THREE.Quaternion().setFromAxisAngle(rootToTarget, rotationAngle * 0.5);
+        const newWorldQuat = poleRotationQuat.multiply(boneWorldQuat);
+
+        if (boneToRotate.parent) {
+            const parentWorldQuat = new THREE.Quaternion();
+            boneToRotate.parent.getWorldQuaternion(parentWorldQuat);
+            const invParentQuat = parentWorldQuat.clone().invert();
+            newWorldQuat.premultiply(invParentQuat);
+        }
+
+        boneToRotate.quaternion.copy(newWorldQuat);
+        boneToRotate.updateMatrixWorld(true);
+    }
+}
+
+// === IK Controller ===
+class IKController {
+    constructor(THREE) {
+        this.THREE = THREE;
+        this.ccdSolver = new CCDIKSolver(THREE);
+        this.activeChains = new Set();
+        this.effectors = {};
+        this.poleTargets = {}; // Pole target meshes
+        this.poleModes = {}; // 'on' or 'off' for each chain
+        this.modes = {};
+
+        Object.keys(IK_CHAINS).forEach(key => {
+            this.modes[key] = 'ik';
+            this.activeChains.add(key);
+            this.poleModes[key] = 'off'; // Disabled by default, solves the target passing twist issue
+        });
+    }
+
+    setMode(chainKey, mode) {
+        this.modes[chainKey] = mode;
+        if (mode === 'ik') {
+            this.activeChains.add(chainKey);
+        } else {
+            this.activeChains.delete(chainKey);
+        }
+    }
+
+    getMode(chainKey) {
+        return this.modes[chainKey] || 'fk';
+    }
+
+    setPoleMode(chainKey, mode) {
+        this.poleModes[chainKey] = mode;
+    }
+
+    getPoleMode(chainKey) {
+        return this.poleModes[chainKey] || 'off';
+    }
+
+    isPoleTargetEnabled(chainKey) {
+        return this.poleModes[chainKey] === 'on' && this.modes[chainKey] === 'ik';
+    }
+
+    isEffector(boneName) {
+        for (const key in IK_CHAINS) {
+            if (IK_CHAINS[key].effector === boneName && this.modes[key] === 'ik') {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    getChainForEffector(boneName) {
+        for (const key in IK_CHAINS) {
+            if (IK_CHAINS[key].effector === boneName) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    getChainForBone(boneName) {
+        for (const key in IK_CHAINS) {
+            const chain = IK_CHAINS[key];
+            if (chain.effector === boneName || (chain.bones && chain.bones.includes(boneName))) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    getChainForPoleTarget(meshName) {
+        for (const key in IK_CHAINS) {
+            if (`pole_${key}` === meshName) {
+                return key;
+            }
+        }
+        return null;
+    }
+
+    solve(bones, effectorTargets) {
+        for (const chainKey of this.activeChains) {
+            const chainDef = IK_CHAINS[chainKey];
+            const target = effectorTargets.get(chainDef.effector);
+
+            if (target) {
+                this.ccdSolver.solve(chainDef, bones, target);
+            }
+        }
+    }
+
+    solveWithPole(chainDef, bones, effectorTarget, chainKey) {
+        let poleTarget = null;
+
+        // Check if pole target is enabled for this chain
+        if (this.isPoleTargetEnabled(chainKey) && this.poleTargets[chainKey]) {
+            poleTarget = this.poleTargets[chainKey].position.clone();
+        }
+
+        return this.ccdSolver.solve(chainDef, bones, effectorTarget, poleTarget);
+    }
+
+    createEffectorHelper(effectorName, bone, THREE, isRoot = false) {
+        // Use an empty Object3D instead of a mesh so it remains invisible
+        // but still holds position and rotation for the IK solver.
+        const helper = new THREE.Object3D();
+
+
+        helper.name = `ik_effector_${effectorName}`;
+        helper.userData.effectorName = effectorName;
+        helper.userData.type = 'effector';
+        helper.userData.isRoot = isRoot;
+
+
+        // Don't set position here - it will be set by createIKEffectorHelpers
+
+        this.effectors[effectorName] = helper;
+
+        return helper;
+    }
+
+    createPoleTargetHelper(chainKey, poleBone, THREE) {
+        // Use an empty Object3D instead of a mesh
+        const helper = new THREE.Object3D();
+
+        helper.name = `pole_${chainKey}`;
+        helper.userData.chainKey = chainKey;
+        helper.userData.type = 'poleTarget';
+
+        this.poleTargets[chainKey] = helper;
+
+        return helper;
+    }
+
+    updateEffectorPosition(effectorName, bone) {
+        const helper = this.effectors[effectorName];
+        if (helper && bone) {
+            const bonePos = new this.THREE.Vector3();
+            bone.getWorldPosition(bonePos);
+            helper.position.copy(bonePos);
+        }
+    }
+}
+
 // === Styles ===
 const STYLES = `
 /* ===== VNCCS Pose Studio Theme ===== */
@@ -1251,9 +1808,6 @@ class PoseViewer {
         // Pose state
         this.modelRotation = { x: 0, y: 0, z: 0 };
 
-        // Pose state
-        this.modelRotation = { x: 0, y: 0, z: 0 };
-
         this.syncCallback = null;
 
         this.initialized = false;
@@ -1269,6 +1823,13 @@ class PoseViewer {
         this.pendingData = null;
         this.pendingLights = null;
         this.pendingBackgroundUrl = null;
+
+        // IK State
+        this.ikController = null;
+        this.ikMode = true;
+        this.ikEffectorTargets = new Map();
+        this.selectedIKEffector = null; // Currently selected IK effector mesh
+        this.selectedPoleTarget = null; // Currently selected pole target mesh
     }
 
     async init() {
@@ -1281,7 +1842,7 @@ class PoseViewer {
             this.setupScene();
 
             this.initialized = true;
-            console.log('Pose Studio: 3D Viewer initialized');
+
 
             this.animate();
 
@@ -1349,11 +1910,39 @@ class PoseViewer {
                 // Drag Started: Record state for Undo
                 this.recordState();
             } else {
-                // Drag Ended: Sync to node
+                // Drag Ended
+                // If dragging an IK effector, do final IK solve
+                if (this.selectedIKEffector && this.transform.mode === 'translate') {
+                    this.solveIKForEffector();
+                }
+
+                // If FK manipulation ended, update effector positions to follow bones
+                if (this.transform.mode === 'rotate' && !this.selectedIKEffector) {
+                    this.updateIKEffectorPositions();
+                }
+
+                // Sync to node
                 if (this.syncCallback) {
                     this.syncCallback();
                 }
             }
+        });
+
+        // Real-time IK solving during drag - use 'objectChange' event
+        this.transform.addEventListener('objectChange', () => {
+            // Real-time IK solving during effector drag
+            if (this.selectedIKEffector) {
+                this.solveIKForEffector();
+                // Update other (non-selected) effectors to follow their bones during IK
+                this.updateIKEffectorPositions('nonSelected');
+            } else if (this.selectedPoleTarget) {
+                // Pole target moved - solve IK for this chain
+                this.solveIKForPoleTarget();
+            } else if (this.selectedBone) {
+                // FK rotation - update all effector positions to follow bones
+                this.updateIKEffectorPositions();
+            }
+            this.requestRender();
         });
 
         // Render on demand: transform change triggers render
@@ -1381,6 +1970,11 @@ class PoseViewer {
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
+        this.canvas.addEventListener("pointermove", (e) => this.handlePointerMove(e));
+        this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
+
+        this.hoveredBoneName = null;
+        this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null };
     }
 
     // === Light Management ===
@@ -1471,6 +2065,11 @@ class PoseViewer {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return;
 
+        // CRITICAL: Force world matrices to update before capturing positions for IK
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        if (this.ikController) this.updateIKEffectorPositions();
+
         if (this.transform.dragging) return;
         if (this.transform.axis) return;
 
@@ -1480,6 +2079,19 @@ class PoseViewer {
 
         const raycaster = new this.THREE.Raycaster();
         raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+
+        // --- IK MODE: Check for pole target hit ---
+        if (this.ikMode && this.ikController) {
+            const poleMeshes = Object.values(this.ikController.poleTargets).filter(p => p.visible);
+            if (poleMeshes.length > 0) {
+                const poleIntersects = raycaster.intersectObjects(poleMeshes, false);
+                if (poleIntersects.length > 0) {
+                    const hitPole = poleIntersects[0].object;
+                    this.selectPoleTarget(hitPole);
+                    return;
+                }
+            }
+        }
 
         // --- PASS 1: Raycast against Joint Markers directly ---
         // Markers are spheres, very reliable targets.
@@ -1492,7 +2104,70 @@ class PoseViewer {
             const hitMarker = markerIntersects[0].object;
             const boneIdx = this.jointMarkers.indexOf(hitMarker);
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
-                this.selectBone(this.boneList[boneIdx]);
+                const bone = this.boneList[boneIdx];
+
+                // Check if this bone is part of an active IK chain
+                if (this.ikMode && this.ikController) {
+                    const chainKey = this.ikController.getChainForBone(bone.name);
+                    if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
+                        const chainDef = IK_CHAINS[chainKey];
+                        const effectorObj = this.ikController.effectors[chainDef.effector];
+                        if (effectorObj) {
+                            // Record state for undo before starting the drag
+                            this.recordState();
+
+                            // Setup screen-space direct dragging for IK
+                            this.directDrag.active = true;
+                            this.directDrag.chainKey = chainKey;
+                            this.directDrag.effector = effectorObj;
+                            this.directDrag.plane = new this.THREE.Plane();
+                            this.directDrag.offset = new this.THREE.Vector3();
+
+                            const isMidJoint = (bone.name === chainDef.poleBone);
+                            this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
+
+                            if (isMidJoint) {
+                                this.directDrag.midBone = bone;
+                                this.directDrag.rootBone = this.boneList.find(b => b.name === chainDef.bones[chainDef.bones.indexOf(bone.name) - 1]);
+                            }
+
+                            // Create interaction plane facing camera
+                            const cameraDir = new this.THREE.Vector3();
+                            this.camera.getWorldDirection(cameraDir);
+                            // Base the plane on the clicked bone depth (e.g. knee) to prevent wild parallax errors
+                            const clickedBoneWorld = new this.THREE.Vector3();
+                            bone.getWorldPosition(clickedBoneWorld);
+                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, clickedBoneWorld);
+
+                            const intersectPoint = new this.THREE.Vector3();
+                            raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
+                            if (intersectPoint) {
+                                if (isMidJoint) {
+                                    this.directDrag.offset.copy(clickedBoneWorld).sub(intersectPoint);
+                                } else {
+                                    this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                }
+                            }
+
+                            this.orbit.enabled = false; // Disable orbit while direct dragging
+                            this.selectBone(bone); // Show selection visually (and fallback to Rotate FK after release)
+
+                            // Detach transform immediately so the gizmo doesn't glitch during IK solve
+                            this.transform.detach();
+
+                            this.canvas.setPointerCapture(e.pointerId);
+
+                            // Important: don't attach TransformControls here, we handle movement in pointermove
+                            if (this.selectedIKEffector) this.deselectIKEffector();
+                            if (this.selectedPoleTarget) this.deselectPoleTarget();
+
+                            return;
+                        }
+                    }
+                }
+
+                // Default: select bone for normal FK rotation
+                this.selectBone(bone);
                 return;
             }
         }
@@ -1514,22 +2189,229 @@ class PoseViewer {
             }
 
             // Tighter threshold for mesh-based selection to avoid accidental jumps
-            // when clicking overlapping parts.
             if (nearest && minD < 1.5) {
+                if (this.ikMode && this.ikController) {
+                    const chainKey = this.ikController.getChainForBone(nearest.name);
+                    if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
+                        const chainDef = IK_CHAINS[chainKey];
+                        const effectorObj = this.ikController.effectors[chainDef.effector];
+                        if (effectorObj) {
+                            // Record state for undo before starting the drag
+                            this.recordState();
+
+                            // Setup screen-space direct dragging for IK
+                            this.directDrag.active = true;
+                            this.directDrag.chainKey = chainKey;
+                            this.directDrag.effector = effectorObj;
+                            this.directDrag.plane = new this.THREE.Plane();
+                            this.directDrag.offset = new this.THREE.Vector3();
+
+                            const isMidJoint = (nearest.name === chainDef.poleBone);
+                            this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
+
+                            if (isMidJoint) {
+                                this.directDrag.midBone = nearest;
+                                this.directDrag.rootBone = this.boneList.find(b => b.name === chainDef.bones[chainDef.bones.indexOf(nearest.name) - 1]);
+                            }
+
+                            const cameraDir = new this.THREE.Vector3();
+                            this.camera.getWorldDirection(cameraDir);
+
+                            // Base the plane on the clicked bone depth (e.g. knee) to prevent wild parallax errors
+                            const clickedBoneWorld = new this.THREE.Vector3();
+                            nearest.getWorldPosition(clickedBoneWorld);
+                            this.directDrag.plane.setFromNormalAndCoplanarPoint(cameraDir, clickedBoneWorld);
+
+                            const intersectPoint = new this.THREE.Vector3();
+                            raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
+                            if (intersectPoint) {
+                                if (isMidJoint) {
+                                    this.directDrag.offset.copy(clickedBoneWorld).sub(intersectPoint);
+                                } else {
+                                    this.directDrag.offset.copy(effectorObj.position).sub(intersectPoint);
+                                }
+                            }
+
+                            this.orbit.enabled = false;
+                            this.selectBone(nearest);
+
+                            // Detach transform immediately so the gizmo doesn't glitch during IK solve
+                            this.transform.detach();
+
+                            this.canvas.setPointerCapture(e.pointerId);
+
+                            if (this.selectedIKEffector) this.deselectIKEffector();
+                            if (this.selectedPoleTarget) this.deselectPoleTarget();
+                            return;
+                        }
+                    }
+                }
+
+                // Default: select bone for normal FK rotation
                 this.selectBone(nearest);
                 return;
             }
         }
 
-        // If nothing hit
+        // If nothing hit - deselect both bone and IK effector
         this.deselectBone();
+        if (this.selectedIKEffector) {
+            this.deselectIKEffector();
+        }
+    }
+
+    handlePointerMove(e) {
+        if (!this.initialized || !this.skinnedMesh) return;
+
+        const rect = this.canvas.getBoundingClientRect();
+        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+        const raycaster = new this.THREE.Raycaster();
+        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+
+        // Process Direct Limb Dragging updates IK effector seamlessly in screen space
+        if (this.directDrag && this.directDrag.active) {
+            const intersectPoint = new this.THREE.Vector3();
+            raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
+
+            if (intersectPoint) {
+                if (this.directDrag.targetType === 'midJoint') {
+                    // Dragging knee/elbow swivels the parent hip/shoulder directly
+                    const targetPos = intersectPoint.add(this.directDrag.offset);
+                    const rootBone = this.directDrag.rootBone;
+                    const midBone = this.directDrag.midBone;
+
+                    if (rootBone && midBone) {
+
+
+                        const midWorld = new this.THREE.Vector3();
+                        midBone.getWorldPosition(midWorld);
+
+
+
+                        // Pivot parent to place midBone perfectly on mouse cursor
+                        const analytic = this.ikController.ccdSolver.analyticSolver;
+                        analytic.rotateBoneToPoint(rootBone, midWorld, targetPos, this.THREE);
+                        rootBone.updateMatrixWorld(true);
+                        if (this.skeleton) this.skeleton.update();
+
+                        // Snap true IK foot/hand effector target to its new dragged-along position
+                        const chainDef = IK_CHAINS[this.directDrag.chainKey];
+                        const trueEffectorBone = this.boneList.find(b => b.name === chainDef.effector);
+                        if (trueEffectorBone && this.directDrag.effector) {
+                            trueEffectorBone.getWorldPosition(this.directDrag.effector.position);
+                        }
+
+                        // Vital to manually request redraw in ThreeJS when modifying transform directly outside solver
+                        this.updateMarkers();
+                        this.requestRender();
+                    }
+                } else {
+                    // Standard Hand/Foot Effector Drag
+                    const effectorTargetPos = intersectPoint.add(this.directDrag.offset);
+                    this.directDrag.effector.position.copy(effectorTargetPos);
+
+                    this.selectedIKEffector = this.directDrag.effector;
+                    this.solveIKForEffector();
+                }
+            }
+            return;
+        }
+
+        // Skip hover if we are dragging via TransformControls
+        if (this.transform.dragging) {
+            if (this.hoveredBoneName) {
+                this.hoveredBoneName = null;
+                this.updateMarkers();
+            }
+            return;
+        }
+
+        let hitBone = null;
+
+        const markerIntersects = raycaster.intersectObjects(this.jointMarkers, false);
+        if (markerIntersects.length > 0) {
+            markerIntersects.sort((a, b) => a.distance - b.distance);
+            const hitMarker = markerIntersects[0].object;
+            const boneIdx = this.jointMarkers.indexOf(hitMarker);
+            if (boneIdx !== -1 && this.boneList[boneIdx]) {
+                hitBone = this.boneList[boneIdx];
+            }
+        } else {
+            const meshIntersects = raycaster.intersectObject(this.skinnedMesh, true);
+            if (meshIntersects.length > 0) {
+                const point = meshIntersects[0].point;
+                let nearest = null;
+                let minD = Infinity;
+
+                const wPos = new this.THREE.Vector3();
+                for (const b of this.boneList) {
+                    b.getWorldPosition(wPos);
+                    const d = point.distanceTo(wPos);
+                    if (d < minD) { minD = d; nearest = b; }
+                }
+
+                if (nearest && minD < 1.5) {
+                    hitBone = nearest;
+                }
+            }
+        }
+
+        const newHoveredName = hitBone ? hitBone.name : null;
+        if (this.hoveredBoneName !== newHoveredName) {
+            this.hoveredBoneName = newHoveredName;
+            this.updateMarkers();
+            this.requestRender();
+        }
+    }
+
+    handlePointerUp(e) {
+        if (!this.initialized || !this.skinnedMesh) return;
+
+        if (this.directDrag && this.directDrag.active) {
+            this.directDrag.active = false;
+            this.directDrag.effector = null;
+            this.directDrag.chainKey = null;
+            this.orbit.enabled = true; // Restore orbit
+
+            if (this.canvas.hasPointerCapture(e.pointerId)) {
+                this.canvas.releasePointerCapture(e.pointerId);
+            }
+
+            // The solver temporarily set selectedIKEffector, clear it now that drag is done
+            if (this.selectedIKEffector) {
+                this.selectedIKEffector = null;
+            }
+
+            // Dispatch event to notify widget of pose change instead of calling syncToNode directly
+            this.canvas.dispatchEvent(new Event('poseChange'));
+
+            // Allow TransformControls back for the selected bone (FK) mode now that drag is done
+            if (this.selectedBone) {
+                // Completely detach and reattach to flush out any bad matrix internal states
+                this.transform.detach();
+                this.transform.setMode("rotate");
+                this.transform.attach(this.selectedBone);
+            }
+
+            return;
+        }
     }
 
     selectBone(bone) {
         if (this.selectedBone === bone) return;
         this.selectedBone = bone;
+
+        // Attach transform for rotation (FK)
+        this.transform.setMode("rotate");
         this.transform.attach(bone);
         this.updateMarkers();
+
+        // Ensure IK effector is deselected if we just want FK bone rotation
+        if (this.selectedIKEffector) {
+            this.selectedIKEffector = null;
+        }
     }
 
     deselectBone() {
@@ -1539,21 +2421,534 @@ class PoseViewer {
         this.updateMarkers();
     }
 
+    // === IK Methods ===
+    initIK() {
+        if (!this.THREE) return;
+        this.ikController = new IKController(this.THREE);
+
+    }
+
+    selectIKEffector(effectorMesh) {
+        // Select the object and attach translation gizmo (IK)
+        this.selectedIKEffector = effectorMesh;
+
+        this.selectedPoleTarget = null;
+
+        // Attach transform to the effector mesh (translate mode)
+        this.transform.setMode("translate");
+        this.transform.attach(effectorMesh);
+
+        // Update markers to show chain selection
+        this.updateMarkers();
+
+
+    }
+
+    deselectIKEffector() {
+        if (this.selectedIKEffector) {
+            this.selectedIKEffector = null;
+        }
+        this.transform.detach();
+        this.transform.setMode("rotate");
+        this.updateMarkers();
+    }
+
+    selectPoleTarget(poleMesh) {
+        this.selectedPoleTarget = poleMesh;
+
+        // Deselect effector if selected
+        if (this.selectedIKEffector) {
+            this.selectedIKEffector = null;
+        }
+
+        this.selectedPoleTarget = poleMesh;
+        poleMesh.material.color.setHex(0xffff00); // Yellow when selected
+
+        // Attach transform to the pole mesh (translate mode)
+        this.transform.setMode("translate");
+        this.transform.attach(poleMesh);
+        const chainKey = poleMesh.userData.chainKey;
+        if (chainKey) {
+            const chainDef = IK_CHAINS[chainKey];
+            if (chainDef && chainDef.effector) {
+                const effectorBone = this.bones[chainDef.effector];
+                const effector = this.ikController.effectors[chainDef.effector];
+                if (effectorBone && effector) {
+                    const bonePos = new this.THREE.Vector3();
+                    effectorBone.getWorldPosition(bonePos);
+                    effector.position.copy(bonePos);
+                }
+            }
+        }
+
+        // Attach transform to the pole target mesh (translate mode)
+        this.transform.setMode("translate");
+        this.transform.attach(poleMesh);
+
+        // Deselect any bone and update markers
+        if (this.selectedBone) {
+            this.selectedBone = null;
+            this.updateMarkers();
+        }
+
+
+    }
+
+    deselectPoleTarget() {
+        if (this.selectedPoleTarget) {
+            this.selectedPoleTarget.material.color.setHex(0xff8800);
+            this.selectedPoleTarget = null;
+        }
+        this.transform.detach();
+        this.transform.setMode("rotate");
+        this.updateMarkers();
+    }
+
+    solveIKForEffector() {
+        if (!this.ikController || !this.selectedIKEffector || !this.THREE) return;
+
+        const effectorName = this.selectedIKEffector.userData.effectorName;
+        const chainKey = this.selectedIKEffector.userData.chainKey;
+
+        if (!effectorName || !chainKey) return;
+
+        // Check if this chain is active for IK
+        if (this.ikController.getMode(chainKey) !== 'ik') {
+
+            return;
+        }
+
+        // Get target position from effector mesh
+        const targetPos = this.selectedIKEffector.position.clone();
+
+        // Solve IK with pole target support
+        const chainDef = IK_CHAINS[chainKey];
+        if (!chainDef) return;
+
+        // Special handling for root effectors (hips) - translate and solve leg IK
+        if (chainDef.isRoot) {
+            const effectorBone = this.bones[chainDef.effector];
+            if (effectorBone) {
+                // Store foot positions BEFORE moving hip (for leg IK solving)
+                const footPositions = {};
+                if (chainDef.affectedLegs) {
+                    for (const legKey of chainDef.affectedLegs) {
+                        const legDef = IK_CHAINS[legKey];
+                        if (legDef && this.ikController.getMode(legKey) === 'ik') {
+                            const footBone = this.bones[legDef.effector];
+                            if (footBone) {
+                                const footPos = new this.THREE.Vector3();
+                                footBone.getWorldPosition(footPos);
+                                footPositions[legKey] = footPos;
+                            }
+                        }
+                    }
+                }
+
+                // Get the difference
+                const bonePos = new this.THREE.Vector3();
+                effectorBone.getWorldPosition(bonePos);
+
+                // Apply target world position to bone by converting to parent-local space
+                const localTarget = targetPos.clone();
+                if (effectorBone.parent) {
+                    effectorBone.parent.worldToLocal(localTarget);
+                }
+                effectorBone.position.copy(localTarget);
+                effectorBone.updateMatrixWorld(true);
+
+                // Solve IK for affected legs to keep feet in place
+                // Multiple passes for better accuracy
+                if (chainDef.affectedLegs && this.ikController.ccdSolver) {
+                    for (let pass = 0; pass < 3; pass++) { // Multiple passes
+                        for (const legKey of chainDef.affectedLegs) {
+                            const legDef = IK_CHAINS[legKey];
+                            const footTarget = footPositions[legKey];
+
+                            if (legDef && footTarget && this.ikController.getMode(legKey) === 'ik') {
+                                // Solve leg IK to keep foot at original position
+                                this.ikController.solveWithPole(legDef, this.bones, footTarget, legKey);
+                            }
+                        }
+                        // Update matrix world between passes
+                        for (const bone of this.boneList) {
+                            bone.updateMatrixWorld(true);
+                        }
+                    }
+                }
+
+                // Update skeleton and mesh
+                if (this.skeleton) {
+                    this.skeleton.update();
+                }
+                if (this.skinnedMesh) {
+                    this.skinnedMesh.updateMatrixWorld(true);
+                }
+
+                // Update all other IK effector positions since root moved
+                this.updateIKEffectorPositions();
+
+                // Update hip effector position to match new hip position
+                const newHipPos = new this.THREE.Vector3();
+                effectorBone.getWorldPosition(newHipPos);
+                this.selectedIKEffector.position.copy(newHipPos);
+            }
+
+            // Don't update pole target positions - they should stay where user placed them
+        } else if (this.ikController.ccdSolver) {
+            // Standard IK solve for limbs
+            this.ikController.solveWithPole(chainDef, this.bones, targetPos, chainKey);
+
+            // Update skeleton after IK solve
+            if (this.skeleton) {
+                this.skeleton.update();
+            }
+
+            // Update skinnedMesh matrix
+            if (this.skinnedMesh) {
+                this.skinnedMesh.updateMatrixWorld(true);
+            }
+
+            // Don't update pole target positions - they should stay where user placed them
+        }
+
+        this.requestRender();
+    }
+
+    solveIKForPoleTarget() {
+        // Called when pole target is moved - re-solve IK for the chain
+        if (!this.ikController || !this.selectedPoleTarget || !this.THREE) return;
+
+        const chainKey = this.selectedPoleTarget.userData.chainKey;
+        if (!chainKey) return;
+
+        const chainDef = IK_CHAINS[chainKey];
+        if (!chainDef) return;
+
+        // Get effector position from the effector mesh
+        const effector = this.ikController.effectors[chainDef.effector];
+        if (!effector) return;
+
+        const targetPos = effector.position.clone();
+
+        // Solve IK with the moved pole target
+        if (this.ikController.ccdSolver) {
+            this.ikController.solveWithPole(chainDef, this.bones, targetPos, chainKey);
+
+            // Update skeleton after IK solve
+            if (this.skeleton) {
+                this.skeleton.update();
+            }
+
+            // Update skinnedMesh matrix
+            if (this.skinnedMesh) {
+                this.skinnedMesh.updateMatrixWorld(true);
+            }
+
+            this.requestRender();
+        }
+    }
+
+    setIKMode(enabled) {
+        this.ikMode = enabled;
+
+        // Deselect any IK effector when switching modes
+        if (!enabled && this.selectedIKEffector) {
+            this.deselectIKEffector();
+        }
+
+        // Deselect any pole target when switching modes
+        if (!enabled && this.selectedPoleTarget) {
+            this.deselectPoleTarget();
+        }
+
+        // Ensure transform is in rotate mode for FK
+        if (!enabled && this.transform) {
+            this.transform.setMode("rotate");
+        }
+
+        // Update effector visibility
+        this.updateIKEffectorVisibility();
+        // Update pole target visibility
+        this.updatePoleTargetVisibility();
+
+        // Force immediate render
+        if (this.renderer && this.scene && this.camera) {
+            this.renderer.render(this.scene, this.camera);
+        }
+    }
+
+    updateIKEffectorVisibility() {
+        if (!this.ikController) return;
+
+        for (const [name, effector] of Object.entries(this.ikController.effectors)) {
+            // Only show effector if IK mode is on AND the chain is active
+            const chainKey = this.ikController.getChainForEffector(name);
+            const chainActive = chainKey && this.ikController.getMode(chainKey) === 'ik';
+            effector.visible = this.ikMode && chainActive;
+        }
+    }
+
+    updatePoleTargetVisibility() {
+        if (!this.ikController) return;
+
+        for (const [chainKey, poleTarget] of Object.entries(this.ikController.poleTargets)) {
+            // Only show pole target if IK mode is on, chain is active, and pole is enabled
+            const chainActive = this.ikController.getMode(chainKey) === 'ik';
+            const poleEnabled = this.ikController.getPoleMode(chainKey) === 'on';
+            poleTarget.visible = this.ikMode && chainActive && poleEnabled;
+        }
+    }
+
+    ensurePoleTargetsCreated() {
+        if (!this.ikController || !this.THREE || !this.scene || !this.bones) return;
+
+        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
+            if (chainDef.poleBone && !this.ikController.poleTargets[chainKey]) {
+                this.createPoleTargetForChain(chainKey, chainDef);
+            }
+        }
+        this.requestRender();
+    }
+
+    _calculatePolePosition(chainKey, chainDef) {
+        const poleBone = this.bones[chainDef.poleBone];
+        if (!poleBone) return null;
+
+        const polePos = new this.THREE.Vector3();
+        poleBone.getWorldPosition(polePos);
+
+        const isArm = chainKey.includes('Arm');
+        const isLeft = chainKey.includes('left');
+
+        const rootBoneName = chainDef.bones[0];
+        const rootBone = this.bones[rootBoneName];
+
+        if (rootBone) {
+            const rootPos = new this.THREE.Vector3();
+            rootBone.getWorldPosition(rootPos);
+            const limbDir = polePos.clone().sub(rootPos).normalize();
+            const worldUp = new this.THREE.Vector3(0, 1, 0);
+
+            let outDir = new this.THREE.Vector3().crossVectors(limbDir, worldUp);
+            if (outDir.lengthSq() < 0.001) {
+                outDir = new this.THREE.Vector3(isLeft ? 1 : -1, 0, 0);
+            }
+            outDir.normalize();
+
+            const sideOffset = isLeft ? 1 : -1;
+            if (isArm) {
+                const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 1.0);
+                const forwardOffset = new this.THREE.Vector3(0, 0, -0.8);
+                polePos.add(outwardOffset).add(forwardOffset);
+            } else {
+                const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 0.3);
+                const forwardOffset = new this.THREE.Vector3(0, 0, 0.5);
+                polePos.add(outwardOffset).add(forwardOffset);
+            }
+        }
+        return polePos;
+    }
+
+    updatePoleTargetPositions() {
+        if (!this.ikController || !this.THREE || !this.bones) return;
+
+        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
+            if (!chainDef.poleBone) continue;
+            const poleTarget = this.ikController.poleTargets[chainKey];
+            if (!poleTarget || poleTarget === this.selectedPoleTarget) continue;
+            if (this.ikController.isPoleTargetEnabled(chainKey)) continue;
+
+            const polePos = this._calculatePolePosition(chainKey, chainDef);
+            if (polePos) poleTarget.position.copy(polePos);
+        }
+    }
+
+    createPoleTargetForChain(chainKey, chainDef) {
+        const polePos = this._calculatePolePosition(chainKey, chainDef);
+        if (!polePos) return;
+
+        const poleBone = this.bones[chainDef.poleBone];
+        const poleHelper = this.ikController.createPoleTargetHelper(chainKey, poleBone, this.THREE);
+        poleHelper.position.copy(polePos);
+
+        const chainActive = this.ikController.getMode(chainKey) === 'ik';
+        const poleEnabled = this.ikController.getPoleMode(chainKey) === 'on';
+        poleHelper.visible = this.ikMode && chainActive && poleEnabled;
+
+        this.scene.add(poleHelper);
+
+    }
+
+    createIKEffectorHelpers() {
+        if (!this.ikController || !this.THREE || !this.scene) return;
+
+        // Clean up old effectors
+        for (const [name, effector] of Object.entries(this.ikController.effectors)) {
+            this.scene.remove(effector);
+        }
+        this.ikController.effectors = {};
+
+        // Clean up old pole targets
+        for (const [key, poleTarget] of Object.entries(this.ikController.poleTargets)) {
+            this.scene.remove(poleTarget);
+        }
+        this.ikController.poleTargets = {};
+
+        // Find the root bone (bone without parent) for hips IK
+        // Then use its FIRST CHILD as the hips effector (pelvis/hip bone)
+        let rootBoneName = null;
+        let rootBone = null;
+
+        // Debug: log all bones and their parents
+
+
+        // Find the root bone (no parent)
+        for (const bone of this.boneList) {
+            const pName = bone.userData.parentName;
+            if (!pName || !this.bones[pName]) {
+                rootBone = bone;
+                rootBoneName = bone.name;
+
+                break;
+            }
+        }
+
+        // Now find the FIRST CHILD of root bone - this is the hips/pelvis
+        let hipsBone = null;
+        let hipsBoneName = null;
+
+        if (rootBone) {
+            for (const bone of this.boneList) {
+                if (bone.userData.parentName === rootBoneName) {
+                    hipsBone = bone;
+                    hipsBoneName = bone.name;
+
+                    break;
+                }
+            }
+        }
+
+        // Fallback to root if no child found
+        if (!hipsBone && rootBone) {
+            hipsBone = rootBone;
+            hipsBoneName = rootBoneName;
+
+        }
+
+        let createdCount = 0;
+        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
+            // Special handling for hips - use dynamically found hips bone (child of root)
+            let effectorBone;
+            let effectorName;
+
+            if (chainDef.isRootBone) {
+                effectorBone = hipsBone;
+                effectorName = hipsBoneName;
+                // Store the found effector name in chainDef for later use
+                chainDef.effector = effectorName;
+                chainDef.bones = [effectorName];
+            } else {
+                effectorName = chainDef.effector;
+                effectorBone = this.bones[effectorName];
+            }
+
+            if (effectorBone) {
+                // Create effector at bone position
+                const bonePos = new this.THREE.Vector3();
+                effectorBone.getWorldPosition(bonePos);
+
+                const isRoot = chainDef.isRoot || false;
+                const helper = this.ikController.createEffectorHelper(effectorName, effectorBone, this.THREE, isRoot);
+                helper.userData.effectorName = effectorName;
+                helper.userData.chainKey = chainKey;
+
+                // Check if this chain is active for IK
+                const chainActive = this.ikController.getMode(chainKey) === 'ik';
+                helper.visible = this.ikMode && chainActive;
+
+                // Position in world space (not attached to bone)
+                helper.position.copy(bonePos);
+
+                this.scene.add(helper);
+                createdCount++;
+            }
+
+            // Create pole target for chains that have poleBone defined
+            if (chainDef.poleBone && !this.ikController.poleTargets[chainKey]) {
+                this.createPoleTargetForChain(chainKey, chainDef);
+            }
+        }
+
+    }
+
+    updateIKEffectorPositions(mode = 'nonSelected') {
+        if (!this.ikController || !this.THREE) return;
+
+        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
+            const effector = this.ikController.effectors[chainDef.effector];
+            if (!effector) continue;
+
+            const isSelected = (effector === this.selectedIKEffector);
+            if (mode === 'nonSelected' && isSelected) continue;
+            if (mode === 'selectedOnly' && !isSelected) continue;
+
+            const effectorBone = this.bones[chainDef.effector];
+            if (effectorBone) {
+                const bonePos = new this.THREE.Vector3();
+                effectorBone.getWorldPosition(bonePos);
+                effector.position.copy(bonePos);
+            }
+        }
+    }
+
     updateMarkers() {
         if (!this.markerMatNormal || !this.markerMatSelected) return;
 
-        const boneIdx = this.selectedBone ? this.boneList.indexOf(this.selectedBone) : -1;
+        let highlightedBones = new Set();
+
+        // Add selected bone and its chain
+        if (this.selectedBone) {
+            highlightedBones.add(this.selectedBone.name);
+            if (this.ikMode && this.ikController) {
+                const chainKey = this.ikController.getChainForBone(this.selectedBone.name);
+                if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
+                    const chainDef = IK_CHAINS[chainKey];
+                    if (chainDef.bones) chainDef.bones.forEach(b => highlightedBones.add(b));
+                    highlightedBones.add(chainDef.effector);
+                }
+            }
+        }
+
+        // Add hovered bone and its chain (if it doesn't overlap with selection)
+        let hoveredBones = new Set();
+        if (this.hoveredBoneName) {
+            hoveredBones.add(this.hoveredBoneName);
+            if (this.ikMode && this.ikController) {
+                const chainKey = this.ikController.getChainForBone(this.hoveredBoneName);
+                if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
+                    const chainDef = IK_CHAINS[chainKey];
+                    if (chainDef.bones) chainDef.bones.forEach(b => hoveredBones.add(b));
+                    hoveredBones.add(chainDef.effector);
+                }
+            }
+        }
 
         for (let i = 0; i < this.jointMarkers.length; i++) {
             const marker = this.jointMarkers[i];
-            const isSelected = (i === boneIdx);
+            const bone = this.boneList[i];
+            const isSelected = bone && highlightedBones.has(bone.name);
+            const isHovered = bone && hoveredBones.has(bone.name);
 
-            // Swap shared materials instead of creating new ones or changing color props
-            marker.material = isSelected ? this.markerMatSelected : this.markerMatNormal;
+            // Give precedence to selected over hovered
+            marker.material = (isSelected || isHovered) ? this.markerMatSelected : this.markerMatNormal;
 
             if (isSelected) {
                 marker.scale.setScalar(1.5);
                 marker.renderOrder = 999;
+            } else if (isHovered) {
+                marker.scale.setScalar(1.25);
+                marker.renderOrder = 500;
             } else {
                 marker.scale.setScalar(1.0);
                 marker.renderOrder = 1;
@@ -1580,31 +2975,11 @@ class PoseViewer {
             return;
         }
         if (!data || !data.vertices || !data.bones) return;
+
+        this._cleanupPrevious();
+
+        const { geometry, vertices, indices } = this._initMeshGeometry(data);
         const THREE = this.THREE;
-
-        // Clean previous
-        if (this.skinnedMesh) {
-            this.scene.remove(this.skinnedMesh);
-            this.skinnedMesh.geometry.dispose();
-            this.skinnedMesh.material.dispose();
-            if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
-        }
-        if (this.jointMarkers) {
-            this.jointMarkers.forEach(m => {
-                if (m.parent) m.parent.remove(m);
-                // Geometries are shared, but material might need disposal if unique
-                if (m.material && m.material.dispose && !m.userData.sharedMaterial) m.material.dispose();
-            });
-        }
-        this.jointMarkers = [];
-
-        // Geometry
-        const vertices = new Float32Array(data.vertices);
-        const indices = new Uint32Array(data.indices);
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-        geometry.computeVertexNormals();
 
         // Center camera
         geometry.computeBoundingBox();
@@ -1620,7 +2995,47 @@ class PoseViewer {
             this.orbit.update();
         }
 
-        // Bones
+        this._initSkeleton(data, geometry, vertices);
+        this._createJointMarkers();
+
+        // Apply cached head scale
+        if (this.headScale !== 1.0) {
+            this.updateHeadScale(this.headScale);
+        }
+
+        this._initIKHelpers();
+        this.requestRender();
+    }
+
+    _cleanupPrevious() {
+        if (this.skinnedMesh) {
+            this.scene.remove(this.skinnedMesh);
+            this.skinnedMesh.geometry.dispose();
+            this.skinnedMesh.material.dispose();
+            if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
+        }
+        if (this.jointMarkers) {
+            this.jointMarkers.forEach(m => {
+                if (m.parent) m.parent.remove(m);
+                // Geometries are shared, but material might need disposal if unique
+                if (m.material && m.material.dispose && !m.userData.sharedMaterial) m.material.dispose();
+            });
+        }
+        this.jointMarkers = [];
+    }
+
+    _initMeshGeometry(data) {
+        const vertices = new Float32Array(data.vertices);
+        const indices = new Uint32Array(data.indices);
+        const geometry = new this.THREE.BufferGeometry();
+        geometry.setAttribute('position', new this.THREE.BufferAttribute(vertices, 3));
+        geometry.setIndex(new this.THREE.BufferAttribute(indices, 1));
+        geometry.computeVertexNormals();
+        return { geometry, vertices, indices };
+    }
+
+    _initSkeleton(data, geometry, vertices) {
+        const THREE = this.THREE;
         this.bones = {};
         this.boneList = [];
         const rootBones = [];
@@ -1647,9 +3062,16 @@ class PoseViewer {
             }
         }
 
+        this.initialBoneStates = {};
+        for (const bone of this.boneList) {
+            this.initialBoneStates[bone.name] = {
+                position: bone.position.clone(),
+                rotation: bone.rotation.clone()
+            };
+        }
+
         this.skeleton = new THREE.Skeleton(this.boneList);
 
-        // Weights
         const vCount = vertices.length / 3;
         const skinInds = new Float32Array(vCount * 4);
         const skinWgts = new Float32Array(vCount * 4);
@@ -1683,7 +3105,6 @@ class PoseViewer {
                 if (tot > 0) {
                     for (let i = 0; i < 4; i++) skinWgts[v * 4 + i] /= tot;
                 } else {
-                    // Orphan vertex: find nearest bone
                     const vx = vertices[v * 3];
                     const vy = vertices[v * 3 + 1];
                     const vz = vertices[v * 3 + 2];
@@ -1708,7 +3129,6 @@ class PoseViewer {
             geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(data.uvs), 2));
         }
 
-        // Determine which texture file to load based on skin_type
         const skinType = this.currentSkinType || "dummy_white";
         const skinFile = {
             "naked": "skin.png",
@@ -1722,10 +3142,7 @@ class PoseViewer {
         } else {
             const texLoader = new THREE.TextureLoader();
             skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-                (tex) => {
-                    console.log(`Texture loaded successfully: ${skinFile}`);
-                    this.requestRender();
-                },
+                (tex) => this.requestRender(),
                 undefined,
                 (err) => console.error("Texture failed to load", err)
             );
@@ -1734,21 +3151,14 @@ class PoseViewer {
         }
 
         const material = new THREE.MeshPhongMaterial({
-            map: skinTex,
-            color: 0xffffff,
-            specular: 0x111111,
-            shininess: 5,
-            side: THREE.DoubleSide
+            map: skinTex, color: 0xffffff, specular: 0x111111, shininess: 5, side: THREE.DoubleSide
         });
 
-        // Add Rim Darkening (Fresnel) effect to provide depth and contours in flat lighting
         material.onBeforeCompile = (shader) => {
             shader.fragmentShader = shader.fragmentShader.replace(
                 '#include <dithering_fragment>',
                 `
                 #include <dithering_fragment>
-                // Rim darkening using the view-space normal's Z component
-                // vNormal.z is ~1.0 when facing the camera, ~0.0 at the grazing edges
                 float rim = 1.0 - abs(vNormal.z);
                 gl_FragColor.rgb *= (1.0 - pow(rim, 3.0) * 0.4);
                 `
@@ -1762,55 +3172,43 @@ class PoseViewer {
 
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
+    }
 
-        // Joint Markers
-        // Create shared resources to prevent leaks
+    _createJointMarkers() {
+        if (!this.boneList) return;
+        const THREE = this.THREE;
         if (!this.markerGeoNormal) this.markerGeoNormal = new THREE.SphereGeometry(0.12, 8, 8);
         if (!this.markerGeoFinger) this.markerGeoFinger = new THREE.SphereGeometry(0.06, 6, 6);
 
         if (!this.markerMatNormal) {
             this.markerMatNormal = new THREE.MeshBasicMaterial({
-                color: 0xffaa00,
-                transparent: true,
-                opacity: 0.8,
-                depthTest: false,
-                depthWrite: false
+                color: 0xffaa00, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false
             });
         }
         if (!this.markerMatSelected) {
             this.markerMatSelected = new THREE.MeshBasicMaterial({
-                color: 0x00ffff,
-                transparent: true,
-                opacity: 0.9,
-                depthTest: false,
-                depthWrite: false
+                color: 0x00ffff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false
             });
         }
 
         const fingerPatterns = ['finger', 'thumb', 'index', 'middle', 'ring', 'pinky', 'f_'];
-
         for (let i = 0; i < this.boneList.length; i++) {
             const bone = this.boneList[i];
-            const boneName = bone.name.toLowerCase();
-            const isFinger = fingerPatterns.some(p => boneName.includes(p));
-            const geo = isFinger ? this.markerGeoFinger : this.markerGeoNormal;
-
-            // Use the shared normal material by default
-            const sphere = new THREE.Mesh(geo, this.markerMatNormal);
+            const isFinger = fingerPatterns.some(p => bone.name.toLowerCase().includes(p));
+            const sphere = new THREE.Mesh(isFinger ? this.markerGeoFinger : this.markerGeoNormal, this.markerMatNormal);
             sphere.userData.boneIndex = i;
-            sphere.userData.sharedMaterial = true; // Flag to skip disposal
+            sphere.userData.sharedMaterial = true;
             sphere.renderOrder = 999;
             bone.add(sphere);
             sphere.position.set(0, 0, 0);
             this.jointMarkers.push(sphere);
         }
+    }
 
-        // Apply cached head scale
-        if (this.headScale !== 1.0) {
-            this.updateHeadScale(this.headScale);
-        }
+    _initIKHelpers() {
+        if (!this.ikController) this.initIK();
+        if (this.ikController) this.createIKEffectorHelpers();
 
-        this.requestRender();
     }
 
     updateHeadScale(scale) {
@@ -1845,7 +3243,7 @@ class PoseViewer {
                 this.skinnedMesh.material.needsUpdate = true;
                 this.cachedSkinTexture = tex;
                 this.cachedSkinType = skinType;
-                console.log(`Skin texture swapped to: ${skinFile}`);
+
                 this.requestRender();
             },
             undefined,
@@ -1867,6 +3265,37 @@ class PoseViewer {
                 ];
             }
         }
+
+        // Save IK effector positions
+        const ikEffectorPositions = {};
+        if (this.ikController) {
+            for (const [name, effector] of Object.entries(this.ikController.effectors)) {
+                ikEffectorPositions[name] = [effector.position.x, effector.position.y, effector.position.z];
+            }
+        }
+
+        // Save pole target positions
+        const poleTargetPositions = {};
+        if (this.ikController) {
+            for (const [chainKey, pole] of Object.entries(this.ikController.poleTargets)) {
+                poleTargetPositions[chainKey] = [pole.position.x, pole.position.y, pole.position.z];
+            }
+        }
+
+        // Save hip bone position (for hips IK)
+        const hipBonePosition = {};
+        if (this.initialBoneStates) {
+            for (const chainKey of Object.keys(IK_CHAINS)) {
+                const chainDef = IK_CHAINS[chainKey];
+                if (chainDef.isRoot && chainDef.effector) {
+                    const hipBone = this.bones[chainDef.effector];
+                    if (hipBone) {
+                        hipBonePosition[chainKey] = [hipBone.position.x, hipBone.position.y, hipBone.position.z];
+                    }
+                }
+            }
+        }
+
         return {
             bones,
             modelRotation: [this.modelRotation.x, this.modelRotation.y, this.modelRotation.z],
@@ -1879,7 +3308,13 @@ class PoseViewer {
                 targetZ: this.orbit.target.z
             },
             // Store widget-side camera params too!
-            cameraParams: this.syncCallback ? this.syncCallback(true) : null // Request params return
+            cameraParams: this.syncCallback ? this.syncCallback(true) : null, // Request params return
+            // IK effector positions
+            ikEffectorPositions,
+            // Pole target positions
+            poleTargetPositions,
+            // Hip bone positions (for undo)
+            hipBonePosition
         };
     }
 
@@ -1924,6 +3359,7 @@ class PoseViewer {
 
         const bones = pose.bones || {};
         const modelRot = pose.modelRotation || [0, 0, 0];
+        const ikPositions = pose.ikEffectorPositions || {};
 
         // Reset all bones
         for (const b of this.boneList) {
@@ -1976,17 +3412,102 @@ class PoseViewer {
             this.orbit.update();
         }
 
+        // Restore IK effector positions
+        if (this.ikController && ikPositions) {
+            for (const [name, pos] of Object.entries(ikPositions)) {
+                const effector = this.ikController.effectors[name];
+                if (effector && Array.isArray(pos) && pos.length >= 3) {
+                    effector.position.set(pos[0], pos[1], pos[2]);
+                }
+            }
+        }
+
+        // Restore pole target positions
+        const polePositions = pose.poleTargetPositions || {};
+        if (this.ikController && polePositions) {
+            for (const [chainKey, pos] of Object.entries(polePositions)) {
+                const pole = this.ikController.poleTargets[chainKey];
+                if (pole && Array.isArray(pos) && pos.length >= 3) {
+                    pole.position.set(pos[0], pos[1], pos[2]);
+                }
+            }
+        }
+
+        // Restore hip bone positions
+        const hipPositions = pose.hipBonePosition || {};
+        for (const [chainKey, pos] of Object.entries(hipPositions)) {
+            const chainDef = IK_CHAINS[chainKey];
+            if (chainDef && chainDef.effector && Array.isArray(pos) && pos.length >= 3) {
+                const hipBone = this.bones[chainDef.effector];
+                if (hipBone) {
+                    hipBone.position.set(pos[0], pos[1], pos[2]);
+                    hipBone.updateMatrixWorld(true);
+                }
+            }
+        }
+
+        // Update skeleton after all changes
+        if (this.skeleton) {
+            this.skeleton.update();
+        }
+
         this.requestRender();
     }
 
     resetPose() {
         for (const b of this.boneList) {
             b.rotation.set(0, 0, 0);
+
+            // Reset bone position to initial state (important for hips IK)
+            if (this.initialBoneStates && this.initialBoneStates[b.name]) {
+                const initialState = this.initialBoneStates[b.name];
+                b.position.copy(initialState.position);
+            }
         }
+
+        // Update matrix world after position/rotation changes
+        for (const b of this.boneList) {
+            b.updateMatrixWorld(true);
+        }
+
         this.modelRotation = { x: 0, y: 0, z: 0 };
         if (this.skinnedMesh) {
             this.skinnedMesh.rotation.set(0, 0, 0);
         }
+
+        // Update skeleton
+        if (this.skeleton) {
+            this.skeleton.update();
+        }
+
+        // Reset IK effector positions to match bones
+        this.updateIKEffectorPositions();
+
+        this.requestRender();
+    }
+
+    resetSelectedBone() {
+        if (!this.selectedBone) return;
+
+        // Reset the selected bone's rotation
+        this.selectedBone.rotation.set(0, 0, 0);
+
+        // Reset position to initial state (important for hips IK)
+        if (this.initialBoneStates && this.initialBoneStates[this.selectedBone.name]) {
+            const initialState = this.initialBoneStates[this.selectedBone.name];
+            this.selectedBone.position.copy(initialState.position);
+        }
+
+        this.selectedBone.updateMatrixWorld(true);
+
+        // Update skeleton
+        if (this.skeleton) {
+            this.skeleton.update();
+        }
+
+        // Update IK effector positions since bone changed
+        this.updateIKEffectorPositions();
+
         this.requestRender();
     }
 
@@ -2157,6 +3678,20 @@ class PoseViewer {
         if (this.captureFrame) this.captureFrame.visible = false;
         this.jointMarkers.forEach(m => m.visible = false);
 
+        // Hide IK effectors and pole targets
+        const effectorVisibility = {};
+        const poleVisibility = {};
+        if (this.ikController) {
+            for (const [name, effector] of Object.entries(this.ikController.effectors)) {
+                effectorVisibility[name] = effector.visible;
+                effector.visible = false;
+            }
+            for (const [key, pole] of Object.entries(this.ikController.poleTargets)) {
+                poleVisibility[key] = pole.visible;
+                pole.visible = false;
+            }
+        }
+
         // Background Override
         const oldBg = this.scene.background;
         if (bgColor && Array.isArray(bgColor) && bgColor.length === 3) {
@@ -2197,6 +3732,16 @@ class PoseViewer {
             if (this.gridHelper) this.gridHelper.visible = true;
             if (this.captureFrame) this.captureFrame.visible = true;
 
+            // Restore IK effectors and pole targets visibility
+            if (this.ikController) {
+                for (const [name, effector] of Object.entries(this.ikController.effectors)) {
+                    effector.visible = effectorVisibility[name] ?? false;
+                }
+                for (const [key, pole] of Object.entries(this.ikController.poleTargets)) {
+                    pole.visible = poleVisibility[key] ?? false;
+                }
+            }
+
             // Re-render viewport
             this.renderer.render(this.scene, this.camera);
         }
@@ -2210,11 +3755,13 @@ class PoseStudioWidget {
     constructor(node) {
         this.node = node;
         this.container = null;
+        this.canvas = null;
         this.viewer = null;
 
         this.poses = [{}];  // Array of pose data
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
+        this.ikMode = true; // IK mode toggle (false = FK, true = IK)
 
         // Slider values
         this.meshParams = {
@@ -2263,13 +3810,32 @@ class PoseStudioWidget {
     }
 
     createUI() {
-        // Main container
+        this._createLayout();
+        this._createLeftPanel();
+        this._createCenterPanel();
+        this._createRightSidebar();
+        this._setupFinalUI();
+    }
+
+    _createLayout() {
         this.container = document.createElement("div");
         this.container.className = "vnccs-pose-studio";
 
-        // === LEFT PANEL ===
-        const leftPanel = document.createElement("div");
-        leftPanel.className = "vnccs-ps-left";
+        this.leftPanel = document.createElement("div");
+        this.leftPanel.className = "vnccs-ps-left";
+        this.container.appendChild(this.leftPanel);
+
+        this.centerPanel = document.createElement("div");
+        this.centerPanel.className = "vnccs-ps-center";
+        this.container.appendChild(this.centerPanel);
+
+        this.rightSidebar = document.createElement("div");
+        this.rightSidebar.className = "vnccs-ps-right-sidebar";
+        this.container.appendChild(this.rightSidebar);
+    }
+
+    _createLeftPanel() {
+        const leftPanel = this.leftPanel;
 
         // --- MESH PARAMS SECTION ---
         const meshSection = this.createSection("Mesh Parameters", true);
@@ -2335,10 +3901,8 @@ class PoseStudioWidget {
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
+        this.genderFields = {};
 
-        this.genderFields = {}; // Store gender-specific fields for visibility toggle
-
-        // Female-specific sliders
         const femaleSliders = [
             { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, def: 0.5 },
             { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, def: 0.5 }
@@ -2350,7 +3914,6 @@ class PoseStudioWidget {
             this.genderFields[s.key] = { field, gender: "female" };
         }
 
-        // Male-specific sliders
         const maleSliders = [
             { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, def: 0.5 },
@@ -2363,9 +3926,7 @@ class PoseStudioWidget {
             this.genderFields[s.key] = { field, gender: "male" };
         }
 
-        // Update visibility based on initial gender
         this.updateGenderVisibility();
-
         leftPanel.appendChild(genderSection.el);
 
         // --- MODEL ROTATION SECTION ---
@@ -2386,7 +3947,6 @@ class PoseStudioWidget {
             valueSpan.className = "vnccs-ps-value";
             valueSpan.textContent = "0°";
 
-            // Reset button
             const resetBtn = document.createElement("button");
             resetBtn.className = "vnccs-ps-reset-btn";
             resetBtn.innerHTML = "↺";
@@ -2400,16 +3960,13 @@ class PoseStudioWidget {
                     if (this.viewer.skinnedMesh) {
                         const r = this.viewer.modelRotation;
                         this.viewer.skinnedMesh.rotation.set(
-                            r.x * Math.PI / 180,
-                            r.y * Math.PI / 180,
-                            r.z * Math.PI / 180
+                            r.x * Math.PI / 180, r.y * Math.PI / 180, r.z * Math.PI / 180
                         );
                     }
                     this.syncToNode();
                 }
             };
 
-            // Group value and reset button together on the right
             const valueRow = document.createElement("div");
             valueRow.style.display = "flex";
             valueRow.style.alignItems = "center";
@@ -2439,9 +3996,7 @@ class PoseStudioWidget {
                     if (this.viewer.skinnedMesh) {
                         const r = this.viewer.modelRotation;
                         this.viewer.skinnedMesh.rotation.set(
-                            r.x * Math.PI / 180,
-                            r.y * Math.PI / 180,
-                            r.z * Math.PI / 180
+                            r.x * Math.PI / 180, r.y * Math.PI / 180, r.z * Math.PI / 180
                         );
                     }
                     this.syncToNode();
@@ -2460,42 +4015,21 @@ class PoseStudioWidget {
 
         // --- CAMERA SETTINGS SECTION ---
         const camSection = this.createSection("Camera", true);
-
-        // Dimensions Row
         const dimRow = document.createElement("div");
         dimRow.className = "vnccs-ps-row";
         dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
         dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
         camSection.content.appendChild(dimRow);
 
-        // Zoom (with live preview)
-        // Zoom (with live preview)
         const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 7.0, 0.01, 1.0, this.exportParams, true);
         camSection.content.appendChild(zoomField);
 
-        // Position X
-        // Position X
-        // Camera Radar Control
         this.createCameraRadar(camSection);
-
-
-
         leftPanel.appendChild(camSection.el);
-
-        // Initialize default lights if empty (Lighting logic remains same, just container changes)
-        if (this.lightParams.length === 0) {
-            this.lightParams.push(
-                { type: 'ambient', color: '#404040', intensity: 0.5 },
-                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
-            );
-        }
-
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
 
-        // Output Mode
-        // Output Mode (Toggle)
         const modeField = document.createElement("div");
         modeField.className = "vnccs-ps-field";
         const modeLabel = document.createElement("div");
@@ -2535,9 +4069,8 @@ class PoseStudioWidget {
         modeField.appendChild(modeLabel);
         modeField.appendChild(modeToggle);
 
-        // Cache for programmatic updates
         this.exportWidgets['output_mode'] = {
-            value: this.exportParams.output_mode, // dummy
+            value: this.exportParams.output_mode,
             update: (val) => {
                 this.exportParams.output_mode = val;
                 updateModeUI();
@@ -2546,21 +4079,17 @@ class PoseStudioWidget {
 
         exportSection.content.appendChild(modeField);
 
-        // Grid Columns
         const colsField = this.createInputField("Grid Columns", "grid_columns", "number", 1, 6, 1);
         exportSection.content.appendChild(colsField);
 
-        // BG Color
         const colorField = this.createColorField("Background", "bg_color");
         exportSection.content.appendChild(colorField);
 
         leftPanel.appendChild(exportSection.el);
+    }
 
-        this.container.appendChild(leftPanel);
-
-        // === CENTER PANEL ===
-        const centerPanel = document.createElement("div");
-        centerPanel.className = "vnccs-ps-center";
+    _createCenterPanel() {
+        const centerPanel = this.centerPanel;
 
         // Tab Bar
         this.tabsContainer = document.createElement("div");
@@ -2572,8 +4101,8 @@ class PoseStudioWidget {
         this.canvasContainer = document.createElement("div");
         this.canvasContainer.className = "vnccs-ps-canvas-wrap";
 
-        const canvas = document.createElement("canvas");
-        this.canvasContainer.appendChild(canvas);
+        this.canvas = document.createElement("canvas");
+        this.canvasContainer.appendChild(this.canvas);
         centerPanel.appendChild(this.canvasContainer);
 
         // Action Bar
@@ -2589,9 +4118,6 @@ class PoseStudioWidget {
         redoBtn.className = "vnccs-ps-btn";
         redoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↪</span> Redo';
         redoBtn.onclick = () => this.viewer && this.viewer.redo();
-
-        actions.appendChild(undoBtn);
-        actions.appendChild(redoBtn);
 
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-btn";
@@ -2621,6 +4147,17 @@ class PoseStudioWidget {
         pasteBtn.className = "vnccs-ps-btn";
         pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
+
+        actions.appendChild(undoBtn);
+        actions.appendChild(redoBtn);
+        actions.appendChild(resetBtn);
+        actions.appendChild(snapBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(pasteBtn);
+
+        // Footer
+        const footer = document.createElement("div");
+        footer.className = "vnccs-ps-footer";
 
         const exportBtn = document.createElement("button");
         exportBtn.className = "vnccs-ps-btn";
@@ -2656,31 +4193,6 @@ class PoseStudioWidget {
         settingsBtn.onclick = () => this.showSettingsModal();
         this.settingsBtn = settingsBtn;
 
-        // Hidden file input for import
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept = ".json";
-        fileInput.style.display = "none";
-        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
-        this.fileImportInput = fileInput;
-        this.container.appendChild(fileInput);
-
-        // Hidden file input for reference image
-        const refInput = document.createElement("input");
-        refInput.type = "file";
-        refInput.accept = "image/*";
-        refInput.style.display = "none";
-        refInput.addEventListener("change", (e) => this.handleRefImport(e));
-        this.fileRefInput = refInput;
-        this.container.appendChild(refInput);
-
-        actions.appendChild(resetBtn);
-        actions.appendChild(snapBtn);
-        actions.appendChild(copyBtn);
-        actions.appendChild(pasteBtn);
-
-        const footer = document.createElement("div");
-        footer.className = "vnccs-ps-footer";
         footer.appendChild(exportBtn);
         footer.appendChild(importBtn);
         footer.appendChild(refBtn);
@@ -2689,32 +4201,47 @@ class PoseStudioWidget {
         centerPanel.appendChild(actions);
         centerPanel.appendChild(footer);
 
-        this.container.appendChild(centerPanel);
+        // Hidden file inputs
+        const fileInput = document.createElement("input");
+        fileInput.type = "file"; fileInput.accept = ".json"; fileInput.style.display = "none";
+        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
+        this.fileImportInput = fileInput;
+        this.container.appendChild(fileInput);
 
-        // === RIGHT SIDEBAR (LIGHTING) ===
-        const rightSidebar = document.createElement("div");
-        rightSidebar.className = "vnccs-ps-right-sidebar";
+        const refInput = document.createElement("input");
+        refInput.type = "file"; refInput.accept = "image/*"; refInput.style.display = "none";
+        refInput.addEventListener("change", (e) => this.handleRefImport(e));
+        this.fileRefInput = refInput;
+        this.container.appendChild(refInput);
+    }
 
+    _createRightSidebar() {
+        const rightSidebar = this.rightSidebar;
+
+        // Pose Library Button
+        const libBtnWrap = document.createElement("div");
+        libBtnWrap.style.paddingBottom = "5px";
+        const libBtn = document.createElement("button");
+        libBtn.className = "vnccs-ps-btn primary";
+        libBtn.style.width = "100%";
+        libBtn.style.padding = "10px";
+        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
+        libBtn.onclick = () => this.showLibraryModal();
+        libBtnWrap.appendChild(libBtn);
+        rightSidebar.appendChild(libBtnWrap);
+
+        // Lighting Section
         const lightSection = this.createSection("Lighting", true);
         this.lightListContainer = document.createElement("div");
         this.lightListContainer.className = "vnccs-ps-light-list";
 
-        const lightToolbar = document.createElement("div");
-        lightToolbar.className = "vnccs-ps-light-header";
-        lightToolbar.style.padding = "0 0 8px 0";
-        lightToolbar.style.background = "transparent";
-        lightToolbar.style.border = "none";
-
-        // Keep Original Lighting Toggle Button
         const overrideBtn = document.createElement("button");
         overrideBtn.className = "vnccs-ps-btn full";
         overrideBtn.style.marginBottom = "12px";
         overrideBtn.style.height = "36px";
         overrideBtn.style.fontSize = "11px";
         overrideBtn.style.textTransform = "uppercase";
-        overrideBtn.style.letterSpacing = "0.5px";
         overrideBtn.style.fontWeight = "bold";
-        overrideBtn.style.transition = "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
 
         this.updateOverrideBtn = () => {
             const active = this.exportParams.keepOriginalLighting;
@@ -2723,15 +4250,11 @@ class PoseStudioWidget {
                 '<span style="margin-right:8px;">💡</span> KEEP ORIGINAL LIGHTING';
 
             if (active) {
-                overrideBtn.style.background = "#2ea043"; // Success green
-                overrideBtn.style.borderColor = "#3fb950";
+                overrideBtn.style.background = "#2ea043";
                 overrideBtn.style.color = "#fff";
-                overrideBtn.style.boxShadow = "0 0 15px rgba(46, 160, 67, 0.4)";
             } else {
                 overrideBtn.style.background = "var(--ps-panel)";
-                overrideBtn.style.borderColor = "var(--ps-border)";
                 overrideBtn.style.color = "var(--ps-text-muted)";
-                overrideBtn.style.boxShadow = "none";
             }
         };
 
@@ -2739,11 +4262,15 @@ class PoseStudioWidget {
             this.exportParams.keepOriginalLighting = !this.exportParams.keepOriginalLighting;
             this.updateOverrideBtn();
             this.applyLighting();
-            this.refreshLightUI(); // To dim/disable UI if needed
+            this.refreshLightUI();
             this.syncToNode(false);
         };
         this.updateOverrideBtn();
         lightSection.content.appendChild(overrideBtn);
+
+        const lightToolbar = document.createElement("div");
+        lightToolbar.className = "vnccs-ps-light-header";
+        lightToolbar.style.padding = "0 0 8px 0";
 
         const lightLabel = document.createElement("span");
         lightLabel.className = "vnccs-ps-label";
@@ -2752,7 +4279,6 @@ class PoseStudioWidget {
         const resetLightBtn = document.createElement("button");
         resetLightBtn.className = "vnccs-ps-reset-btn";
         resetLightBtn.innerHTML = "↺";
-        resetLightBtn.title = "Reset Lighting";
         resetLightBtn.onclick = () => {
             this.lightParams = [
                 { type: 'ambient', color: '#404040', intensity: 0.5 },
@@ -2767,20 +4293,6 @@ class PoseStudioWidget {
         lightSection.content.appendChild(lightToolbar);
         lightSection.content.appendChild(this.lightListContainer);
         rightSidebar.appendChild(lightSection.el);
-
-        // Pose Library Button (Top of Sidebar)
-        const libBtnWrap = document.createElement("div");
-        libBtnWrap.style.paddingBottom = "5px";
-
-        const libBtn = document.createElement("button");
-        libBtn.className = "vnccs-ps-btn primary";
-        libBtn.style.width = "100%";
-        libBtn.style.padding = "10px";
-        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
-        libBtn.onclick = () => this.showLibraryModal();
-
-        libBtnWrap.appendChild(libBtn);
-        rightSidebar.prepend(libBtnWrap);
 
         // Prompt Section
         const promptSection = this.createSection("Prompt", true);
@@ -2800,15 +4312,13 @@ class PoseStudioWidget {
             this.syncToNode(false);
         });
 
-        // Initial expand and resize observer to handle layout changes
         setTimeout(autoExpand, 0);
-        this.userPromptArea = promptArea; // Save for updates
-
+        this.userPromptArea = promptArea;
         promptSection.content.appendChild(promptArea);
         rightSidebar.appendChild(promptSection.el);
+    }
 
-        this.container.appendChild(rightSidebar);
-
+    _setupFinalUI() {
         // Loading Overlay
         this.loadingOverlay = document.createElement("div");
         this.loadingOverlay.className = "vnccs-ps-loading-overlay";
@@ -2818,11 +4328,10 @@ class PoseStudioWidget {
         `;
         this.container.appendChild(this.loadingOverlay);
 
-        // Initial render of lights
         this.refreshLightUI();
 
         // Initialize viewer
-        this.viewer = new PoseViewer(canvas);
+        this.viewer = new PoseViewer(this.canvas);
         this.viewer.syncCallback = (returnParams = false) => {
             if (returnParams) {
                 return {
@@ -2834,7 +4343,6 @@ class PoseStudioWidget {
             this.syncToNode();
         };
         this.viewer.init();
-        // Force initial lighting
         if (this.lightParams) {
             this.viewer.updateLights(this.lightParams);
         }
@@ -3585,6 +5093,14 @@ class PoseStudioWidget {
         }
         this.poses[this.activeTab] = {};
         this.syncToNode(false);
+    }
+
+    resetSelectedBone() {
+        if (this.viewer && this.viewer.selectedBone) {
+            this.viewer.recordState(); // Undo support
+            this.viewer.resetSelectedBone();
+            this.syncToNode(false);
+        }
     }
 
     copyPose() {
@@ -5293,7 +6809,7 @@ app.registerExtension({
                 try {
                     // Safe mode: ensure viewer is initialized
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.initialized) {
-                        console.log("[VNCCS] Viewer not initialized on sync. Auto-loading model...");
+
                         await node.studioWidget.loadModel();
                     }
 
