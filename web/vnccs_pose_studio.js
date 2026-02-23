@@ -1808,9 +1808,6 @@ class PoseViewer {
         // Pose state
         this.modelRotation = { x: 0, y: 0, z: 0 };
 
-        // Pose state
-        this.modelRotation = { x: 0, y: 0, z: 0 };
-
         this.syncCallback = null;
 
         this.initialized = false;
@@ -1937,7 +1934,7 @@ class PoseViewer {
             if (this.selectedIKEffector) {
                 this.solveIKForEffector();
                 // Update other (non-selected) effectors to follow their bones during IK
-                this.updateNonSelectedEffectorPositions();
+                this.updateIKEffectorPositions('nonSelected');
             } else if (this.selectedPoleTarget) {
                 // Pole target moved - solve IK for this chain
                 this.solveIKForPoleTarget();
@@ -2704,132 +2701,74 @@ class PoseViewer {
     }
 
     ensurePoleTargetsCreated() {
-        // Ensure pole targets exist for all chains that need them
         if (!this.ikController || !this.THREE || !this.scene || !this.bones) return;
 
         for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
-            if (!chainDef.poleBone) continue;
-
-            // Check if pole target already exists
-            if (this.ikController.poleTargets[chainKey]) continue;
-
-            this.createPoleTargetForChain(chainKey, chainDef);
+            if (chainDef.poleBone && !this.ikController.poleTargets[chainKey]) {
+                this.createPoleTargetForChain(chainKey, chainDef);
+            }
         }
-
         this.requestRender();
     }
 
-    updatePoleTargetPositions() {
-        // Update all pole target positions to follow their pole bones
-        // ONLY for pole targets that are NOT enabled (user hasn't set position yet)
-        // Once enabled, pole targets stay where user placed them
-        if (!this.ikController || !this.THREE || !this.bones) return;
-
-        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
-            if (!chainDef.poleBone) continue;
-
-            const poleBone = this.bones[chainDef.poleBone];
-            const poleTarget = this.ikController.poleTargets[chainKey];
-
-            if (!poleBone || !poleTarget) continue;
-
-            // Skip if this pole target is currently being dragged
-            if (poleTarget === this.selectedPoleTarget) continue;
-
-            // Skip if pole target is enabled (user has manually placed it)
-            // Pole targets should stay where user put them once enabled
-            if (this.ikController.isPoleTargetEnabled(chainKey)) continue;
-
-            // Get pole bone world position (elbow or knee)
-            const polePos = new this.THREE.Vector3();
-            poleBone.getWorldPosition(polePos);
-
-            const isArm = chainKey.includes('Arm');
-            const isLeft = chainKey.includes('left');
-
-            // Get root of chain
-            const rootBoneName = chainDef.bones[0];
-            const rootBone = this.bones[rootBoneName];
-
-            if (rootBone) {
-                const rootPos = new this.THREE.Vector3();
-                rootBone.getWorldPosition(rootPos);
-
-                const limbDir = polePos.clone().sub(rootPos).normalize();
-                const worldUp = new this.THREE.Vector3(0, 1, 0);
-
-                let outDir = new this.THREE.Vector3().crossVectors(limbDir, worldUp);
-                if (outDir.lengthSq() < 0.001) {
-                    outDir = new this.THREE.Vector3(isLeft ? 1 : -1, 0, 0);
-                }
-                outDir.normalize();
-
-                const sideOffset = isLeft ? 1 : -1;
-
-                if (isArm) {
-                    const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 1.0);
-                    const forwardOffset = new this.THREE.Vector3(0, 0, -0.8);
-                    polePos.add(outwardOffset).add(forwardOffset);
-                } else {
-                    const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 0.3);
-                    const forwardOffset = new this.THREE.Vector3(0, 0, 0.5);
-                    polePos.add(outwardOffset).add(forwardOffset);
-                }
-            }
-
-            poleTarget.position.copy(polePos);
-        }
-    }
-
-    createPoleTargetForChain(chainKey, chainDef) {
+    _calculatePolePosition(chainKey, chainDef) {
         const poleBone = this.bones[chainDef.poleBone];
-        if (!poleBone) return;
+        if (!poleBone) return null;
 
-        // Get pole bone world position (elbow or knee)
         const polePos = new this.THREE.Vector3();
         poleBone.getWorldPosition(polePos);
 
         const isArm = chainKey.includes('Arm');
         const isLeft = chainKey.includes('left');
 
-        // Get root of chain (shoulder for arm, hip/thigh for leg)
         const rootBoneName = chainDef.bones[0];
         const rootBone = this.bones[rootBoneName];
 
         if (rootBone) {
             const rootPos = new this.THREE.Vector3();
             rootBone.getWorldPosition(rootPos);
-
-            // Direction from root to pole bone (along the limb)
             const limbDir = polePos.clone().sub(rootPos).normalize();
-
-            // Use cross product with world up to get "outward" direction
             const worldUp = new this.THREE.Vector3(0, 1, 0);
+
             let outDir = new this.THREE.Vector3().crossVectors(limbDir, worldUp);
             if (outDir.lengthSq() < 0.001) {
-                // Limb is vertical, use X axis
                 outDir = new this.THREE.Vector3(isLeft ? 1 : -1, 0, 0);
             }
             outDir.normalize();
 
-            // For LEFT side: positive outward, for RIGHT: negative
             const sideOffset = isLeft ? 1 : -1;
-
-            // Apply offsets - different for arms vs legs
             if (isArm) {
-                // Arms: offset to the side and backward
                 const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 1.0);
-                const forwardOffset = new this.THREE.Vector3(0, 0, -0.8); // backward
+                const forwardOffset = new this.THREE.Vector3(0, 0, -0.8);
                 polePos.add(outwardOffset).add(forwardOffset);
             } else {
-                // Legs: pole should be close to knee, slightly in front
-                // Smaller offset since knees are closer together
                 const outwardOffset = outDir.clone().multiplyScalar(sideOffset * 0.3);
-                const forwardOffset = new this.THREE.Vector3(0, 0, 0.5); // slight forward
+                const forwardOffset = new this.THREE.Vector3(0, 0, 0.5);
                 polePos.add(outwardOffset).add(forwardOffset);
             }
         }
+        return polePos;
+    }
 
+    updatePoleTargetPositions() {
+        if (!this.ikController || !this.THREE || !this.bones) return;
+
+        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
+            if (!chainDef.poleBone) continue;
+            const poleTarget = this.ikController.poleTargets[chainKey];
+            if (!poleTarget || poleTarget === this.selectedPoleTarget) continue;
+            if (this.ikController.isPoleTargetEnabled(chainKey)) continue;
+
+            const polePos = this._calculatePolePosition(chainKey, chainDef);
+            if (polePos) poleTarget.position.copy(polePos);
+        }
+    }
+
+    createPoleTargetForChain(chainKey, chainDef) {
+        const polePos = this._calculatePolePosition(chainKey, chainDef);
+        if (!polePos) return;
+
+        const poleBone = this.bones[chainDef.poleBone];
         const poleHelper = this.ikController.createPoleTargetHelper(chainKey, poleBone, this.THREE);
         poleHelper.position.copy(polePos);
 
@@ -2943,62 +2882,23 @@ class PoseViewer {
 
     }
 
-    updateIKEffectorPositions() {
-        // Update ALL effector positions to match bones
-        // Called during FK manipulation so effectors follow bones
-        // Pole targets stay where user placed them (not updated here)
+    updateIKEffectorPositions(mode = 'nonSelected') {
         if (!this.ikController || !this.THREE) return;
 
         for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
-            const effectorBone = this.bones[chainDef.effector];
             const effector = this.ikController.effectors[chainDef.effector];
+            if (!effector) continue;
 
-            // Skip the currently selected effector - don't move it during FK
-            if (effector === this.selectedIKEffector) continue;
+            const isSelected = (effector === this.selectedIKEffector);
+            if (mode === 'nonSelected' && isSelected) continue;
+            if (mode === 'selectedOnly' && !isSelected) continue;
 
-            if (effectorBone && effector) {
+            const effectorBone = this.bones[chainDef.effector];
+            if (effectorBone) {
                 const bonePos = new this.THREE.Vector3();
                 effectorBone.getWorldPosition(bonePos);
                 effector.position.copy(bonePos);
             }
-        }
-
-        // Don't update pole target positions - they should stay where user placed them
-    }
-
-    updateNonSelectedEffectorPositions() {
-        // Update only NON-selected effector positions to match bones
-        // Called during IK manipulation so non-active effectors still follow their bones
-        // Pole targets stay where user placed them (not updated here)
-        if (!this.ikController || !this.THREE) return;
-
-        for (const [chainKey, chainDef] of Object.entries(IK_CHAINS)) {
-            const effectorBone = this.bones[chainDef.effector];
-            const effector = this.ikController.effectors[chainDef.effector];
-
-            // Skip the currently selected/active effector
-            if (effectorBone && effector && effector !== this.selectedIKEffector) {
-                const bonePos = new this.THREE.Vector3();
-                effectorBone.getWorldPosition(bonePos);
-                effector.position.copy(bonePos);
-            }
-        }
-
-        // Don't update pole target positions - they should stay where user placed them
-    }
-
-    updateSelectedEffectorPosition() {
-        // Update selected effector to match its bone position
-        // Called after IK solve to sync effector back to bone
-        if (!this.selectedIKEffector || !this.bones) return;
-
-        const effectorName = this.selectedIKEffector.userData.effectorName;
-        const effectorBone = this.bones[effectorName];
-
-        if (effectorBone) {
-            const bonePos = new this.THREE.Vector3();
-            effectorBone.getWorldPosition(bonePos);
-            this.selectedIKEffector.position.copy(bonePos);
         }
     }
 
@@ -3075,31 +2975,11 @@ class PoseViewer {
             return;
         }
         if (!data || !data.vertices || !data.bones) return;
+
+        this._cleanupPrevious();
+
+        const { geometry, vertices, indices } = this._initMeshGeometry(data);
         const THREE = this.THREE;
-
-        // Clean previous
-        if (this.skinnedMesh) {
-            this.scene.remove(this.skinnedMesh);
-            this.skinnedMesh.geometry.dispose();
-            this.skinnedMesh.material.dispose();
-            if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
-        }
-        if (this.jointMarkers) {
-            this.jointMarkers.forEach(m => {
-                if (m.parent) m.parent.remove(m);
-                // Geometries are shared, but material might need disposal if unique
-                if (m.material && m.material.dispose && !m.userData.sharedMaterial) m.material.dispose();
-            });
-        }
-        this.jointMarkers = [];
-
-        // Geometry
-        const vertices = new Float32Array(data.vertices);
-        const indices = new Uint32Array(data.indices);
-        const geometry = new THREE.BufferGeometry();
-        geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-        geometry.setIndex(new THREE.BufferAttribute(indices, 1));
-        geometry.computeVertexNormals();
 
         // Center camera
         geometry.computeBoundingBox();
@@ -3115,7 +2995,47 @@ class PoseViewer {
             this.orbit.update();
         }
 
-        // Bones
+        this._initSkeleton(data, geometry, vertices);
+        this._createJointMarkers();
+
+        // Apply cached head scale
+        if (this.headScale !== 1.0) {
+            this.updateHeadScale(this.headScale);
+        }
+
+        this._initIKHelpers();
+        this.requestRender();
+    }
+
+    _cleanupPrevious() {
+        if (this.skinnedMesh) {
+            this.scene.remove(this.skinnedMesh);
+            this.skinnedMesh.geometry.dispose();
+            this.skinnedMesh.material.dispose();
+            if (this.skeletonHelper) this.scene.remove(this.skeletonHelper);
+        }
+        if (this.jointMarkers) {
+            this.jointMarkers.forEach(m => {
+                if (m.parent) m.parent.remove(m);
+                // Geometries are shared, but material might need disposal if unique
+                if (m.material && m.material.dispose && !m.userData.sharedMaterial) m.material.dispose();
+            });
+        }
+        this.jointMarkers = [];
+    }
+
+    _initMeshGeometry(data) {
+        const vertices = new Float32Array(data.vertices);
+        const indices = new Uint32Array(data.indices);
+        const geometry = new this.THREE.BufferGeometry();
+        geometry.setAttribute('position', new this.THREE.BufferAttribute(vertices, 3));
+        geometry.setIndex(new this.THREE.BufferAttribute(indices, 1));
+        geometry.computeVertexNormals();
+        return { geometry, vertices, indices };
+    }
+
+    _initSkeleton(data, geometry, vertices) {
+        const THREE = this.THREE;
         this.bones = {};
         this.boneList = [];
         const rootBones = [];
@@ -3142,7 +3062,6 @@ class PoseViewer {
             }
         }
 
-        // Store initial bone positions and rotations for reset
         this.initialBoneStates = {};
         for (const bone of this.boneList) {
             this.initialBoneStates[bone.name] = {
@@ -3153,7 +3072,6 @@ class PoseViewer {
 
         this.skeleton = new THREE.Skeleton(this.boneList);
 
-        // Weights
         const vCount = vertices.length / 3;
         const skinInds = new Float32Array(vCount * 4);
         const skinWgts = new Float32Array(vCount * 4);
@@ -3187,7 +3105,6 @@ class PoseViewer {
                 if (tot > 0) {
                     for (let i = 0; i < 4; i++) skinWgts[v * 4 + i] /= tot;
                 } else {
-                    // Orphan vertex: find nearest bone
                     const vx = vertices[v * 3];
                     const vy = vertices[v * 3 + 1];
                     const vz = vertices[v * 3 + 2];
@@ -3212,7 +3129,6 @@ class PoseViewer {
             geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(data.uvs), 2));
         }
 
-        // Determine which texture file to load based on skin_type
         const skinType = this.currentSkinType || "dummy_white";
         const skinFile = {
             "naked": "skin.png",
@@ -3226,10 +3142,7 @@ class PoseViewer {
         } else {
             const texLoader = new THREE.TextureLoader();
             skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-                (tex) => {
-
-                    this.requestRender();
-                },
+                (tex) => this.requestRender(),
                 undefined,
                 (err) => console.error("Texture failed to load", err)
             );
@@ -3238,21 +3151,14 @@ class PoseViewer {
         }
 
         const material = new THREE.MeshPhongMaterial({
-            map: skinTex,
-            color: 0xffffff,
-            specular: 0x111111,
-            shininess: 5,
-            side: THREE.DoubleSide
+            map: skinTex, color: 0xffffff, specular: 0x111111, shininess: 5, side: THREE.DoubleSide
         });
 
-        // Add Rim Darkening (Fresnel) effect to provide depth and contours in flat lighting
         material.onBeforeCompile = (shader) => {
             shader.fragmentShader = shader.fragmentShader.replace(
                 '#include <dithering_fragment>',
                 `
                 #include <dithering_fragment>
-                // Rim darkening using the view-space normal's Z component
-                // vNormal.z is ~1.0 when facing the camera, ~0.0 at the grazing edges
                 float rim = 1.0 - abs(vNormal.z);
                 gl_FragColor.rgb *= (1.0 - pow(rim, 3.0) * 0.4);
                 `
@@ -3266,63 +3172,43 @@ class PoseViewer {
 
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
+    }
 
-        // Joint Markers
-        // Create shared resources to prevent leaks
+    _createJointMarkers() {
+        if (!this.boneList) return;
+        const THREE = this.THREE;
         if (!this.markerGeoNormal) this.markerGeoNormal = new THREE.SphereGeometry(0.12, 8, 8);
         if (!this.markerGeoFinger) this.markerGeoFinger = new THREE.SphereGeometry(0.06, 6, 6);
 
         if (!this.markerMatNormal) {
             this.markerMatNormal = new THREE.MeshBasicMaterial({
-                color: 0xffaa00,
-                transparent: true,
-                opacity: 0.8,
-                depthTest: false,
-                depthWrite: false
+                color: 0xffaa00, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false
             });
         }
         if (!this.markerMatSelected) {
             this.markerMatSelected = new THREE.MeshBasicMaterial({
-                color: 0x00ffff,
-                transparent: true,
-                opacity: 0.9,
-                depthTest: false,
-                depthWrite: false
+                color: 0x00ffff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false
             });
         }
 
         const fingerPatterns = ['finger', 'thumb', 'index', 'middle', 'ring', 'pinky', 'f_'];
-
         for (let i = 0; i < this.boneList.length; i++) {
             const bone = this.boneList[i];
-            const boneName = bone.name.toLowerCase();
-            const isFinger = fingerPatterns.some(p => boneName.includes(p));
-            const geo = isFinger ? this.markerGeoFinger : this.markerGeoNormal;
-
-            // Use the shared normal material by default
-            const sphere = new THREE.Mesh(geo, this.markerMatNormal);
+            const isFinger = fingerPatterns.some(p => bone.name.toLowerCase().includes(p));
+            const sphere = new THREE.Mesh(isFinger ? this.markerGeoFinger : this.markerGeoNormal, this.markerMatNormal);
             sphere.userData.boneIndex = i;
-            sphere.userData.sharedMaterial = true; // Flag to skip disposal
+            sphere.userData.sharedMaterial = true;
             sphere.renderOrder = 999;
             bone.add(sphere);
             sphere.position.set(0, 0, 0);
             this.jointMarkers.push(sphere);
         }
+    }
 
-        // Apply cached head scale
-        if (this.headScale !== 1.0) {
-            this.updateHeadScale(this.headScale);
-        }
+    _initIKHelpers() {
+        if (!this.ikController) this.initIK();
+        if (this.ikController) this.createIKEffectorHelpers();
 
-        // Initialize IK controller and create effector helpers
-        if (!this.ikController) {
-            this.initIK();
-        }
-        if (this.ikController) {
-            this.createIKEffectorHelpers();
-        }
-
-        this.requestRender();
     }
 
     updateHeadScale(scale) {
@@ -3869,6 +3755,7 @@ class PoseStudioWidget {
     constructor(node) {
         this.node = node;
         this.container = null;
+        this.canvas = null;
         this.viewer = null;
 
         this.poses = [{}];  // Array of pose data
@@ -3923,13 +3810,32 @@ class PoseStudioWidget {
     }
 
     createUI() {
-        // Main container
+        this._createLayout();
+        this._createLeftPanel();
+        this._createCenterPanel();
+        this._createRightSidebar();
+        this._setupFinalUI();
+    }
+
+    _createLayout() {
         this.container = document.createElement("div");
         this.container.className = "vnccs-pose-studio";
 
-        // === LEFT PANEL ===
-        const leftPanel = document.createElement("div");
-        leftPanel.className = "vnccs-ps-left";
+        this.leftPanel = document.createElement("div");
+        this.leftPanel.className = "vnccs-ps-left";
+        this.container.appendChild(this.leftPanel);
+
+        this.centerPanel = document.createElement("div");
+        this.centerPanel.className = "vnccs-ps-center";
+        this.container.appendChild(this.centerPanel);
+
+        this.rightSidebar = document.createElement("div");
+        this.rightSidebar.className = "vnccs-ps-right-sidebar";
+        this.container.appendChild(this.rightSidebar);
+    }
+
+    _createLeftPanel() {
+        const leftPanel = this.leftPanel;
 
         // --- MESH PARAMS SECTION ---
         const meshSection = this.createSection("Mesh Parameters", true);
@@ -3995,10 +3901,8 @@ class PoseStudioWidget {
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
+        this.genderFields = {};
 
-        this.genderFields = {}; // Store gender-specific fields for visibility toggle
-
-        // Female-specific sliders
         const femaleSliders = [
             { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, def: 0.5 },
             { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, def: 0.5 }
@@ -4010,7 +3914,6 @@ class PoseStudioWidget {
             this.genderFields[s.key] = { field, gender: "female" };
         }
 
-        // Male-specific sliders
         const maleSliders = [
             { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, def: 0.5 },
@@ -4023,12 +3926,8 @@ class PoseStudioWidget {
             this.genderFields[s.key] = { field, gender: "male" };
         }
 
-        // Update visibility based on initial gender
         this.updateGenderVisibility();
-
         leftPanel.appendChild(genderSection.el);
-
-
 
         // --- MODEL ROTATION SECTION ---
         const rotSection = this.createSection("Model Rotation", false);
@@ -4048,7 +3947,6 @@ class PoseStudioWidget {
             valueSpan.className = "vnccs-ps-value";
             valueSpan.textContent = "0°";
 
-            // Reset button
             const resetBtn = document.createElement("button");
             resetBtn.className = "vnccs-ps-reset-btn";
             resetBtn.innerHTML = "↺";
@@ -4062,16 +3960,13 @@ class PoseStudioWidget {
                     if (this.viewer.skinnedMesh) {
                         const r = this.viewer.modelRotation;
                         this.viewer.skinnedMesh.rotation.set(
-                            r.x * Math.PI / 180,
-                            r.y * Math.PI / 180,
-                            r.z * Math.PI / 180
+                            r.x * Math.PI / 180, r.y * Math.PI / 180, r.z * Math.PI / 180
                         );
                     }
                     this.syncToNode();
                 }
             };
 
-            // Group value and reset button together on the right
             const valueRow = document.createElement("div");
             valueRow.style.display = "flex";
             valueRow.style.alignItems = "center";
@@ -4101,9 +3996,7 @@ class PoseStudioWidget {
                     if (this.viewer.skinnedMesh) {
                         const r = this.viewer.modelRotation;
                         this.viewer.skinnedMesh.rotation.set(
-                            r.x * Math.PI / 180,
-                            r.y * Math.PI / 180,
-                            r.z * Math.PI / 180
+                            r.x * Math.PI / 180, r.y * Math.PI / 180, r.z * Math.PI / 180
                         );
                     }
                     this.syncToNode();
@@ -4122,42 +4015,21 @@ class PoseStudioWidget {
 
         // --- CAMERA SETTINGS SECTION ---
         const camSection = this.createSection("Camera", true);
-
-        // Dimensions Row
         const dimRow = document.createElement("div");
         dimRow.className = "vnccs-ps-row";
         dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
         dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
         camSection.content.appendChild(dimRow);
 
-        // Zoom (with live preview)
-        // Zoom (with live preview)
         const zoomField = this.createSliderField("Zoom", "cam_zoom", 0.1, 7.0, 0.01, 1.0, this.exportParams, true);
         camSection.content.appendChild(zoomField);
 
-        // Position X
-        // Position X
-        // Camera Radar Control
         this.createCameraRadar(camSection);
-
-
-
         leftPanel.appendChild(camSection.el);
-
-        // Initialize default lights if empty (Lighting logic remains same, just container changes)
-        if (this.lightParams.length === 0) {
-            this.lightParams.push(
-                { type: 'ambient', color: '#404040', intensity: 0.5 },
-                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
-            );
-        }
-
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
 
-        // Output Mode
-        // Output Mode (Toggle)
         const modeField = document.createElement("div");
         modeField.className = "vnccs-ps-field";
         const modeLabel = document.createElement("div");
@@ -4197,9 +4069,8 @@ class PoseStudioWidget {
         modeField.appendChild(modeLabel);
         modeField.appendChild(modeToggle);
 
-        // Cache for programmatic updates
         this.exportWidgets['output_mode'] = {
-            value: this.exportParams.output_mode, // dummy
+            value: this.exportParams.output_mode,
             update: (val) => {
                 this.exportParams.output_mode = val;
                 updateModeUI();
@@ -4208,21 +4079,17 @@ class PoseStudioWidget {
 
         exportSection.content.appendChild(modeField);
 
-        // Grid Columns
         const colsField = this.createInputField("Grid Columns", "grid_columns", "number", 1, 6, 1);
         exportSection.content.appendChild(colsField);
 
-        // BG Color
         const colorField = this.createColorField("Background", "bg_color");
         exportSection.content.appendChild(colorField);
 
         leftPanel.appendChild(exportSection.el);
+    }
 
-        this.container.appendChild(leftPanel);
-
-        // === CENTER PANEL ===
-        const centerPanel = document.createElement("div");
-        centerPanel.className = "vnccs-ps-center";
+    _createCenterPanel() {
+        const centerPanel = this.centerPanel;
 
         // Tab Bar
         this.tabsContainer = document.createElement("div");
@@ -4234,8 +4101,8 @@ class PoseStudioWidget {
         this.canvasContainer = document.createElement("div");
         this.canvasContainer.className = "vnccs-ps-canvas-wrap";
 
-        const canvas = document.createElement("canvas");
-        this.canvasContainer.appendChild(canvas);
+        this.canvas = document.createElement("canvas");
+        this.canvasContainer.appendChild(this.canvas);
         centerPanel.appendChild(this.canvasContainer);
 
         // Action Bar
@@ -4252,15 +4119,10 @@ class PoseStudioWidget {
         redoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↪</span> Redo';
         redoBtn.onclick = () => this.viewer && this.viewer.redo();
 
-        actions.appendChild(undoBtn);
-        actions.appendChild(redoBtn);
-
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-btn";
         resetBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
         resetBtn.addEventListener("click", () => this.resetCurrentPose());
-
-
 
         const snapBtn = document.createElement("button");
         snapBtn.className = "vnccs-ps-btn primary";
@@ -4285,6 +4147,17 @@ class PoseStudioWidget {
         pasteBtn.className = "vnccs-ps-btn";
         pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
+
+        actions.appendChild(undoBtn);
+        actions.appendChild(redoBtn);
+        actions.appendChild(resetBtn);
+        actions.appendChild(snapBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(pasteBtn);
+
+        // Footer
+        const footer = document.createElement("div");
+        footer.className = "vnccs-ps-footer";
 
         const exportBtn = document.createElement("button");
         exportBtn.className = "vnccs-ps-btn";
@@ -4320,32 +4193,6 @@ class PoseStudioWidget {
         settingsBtn.onclick = () => this.showSettingsModal();
         this.settingsBtn = settingsBtn;
 
-        // Hidden file input for import
-        const fileInput = document.createElement("input");
-        fileInput.type = "file";
-        fileInput.accept = ".json";
-        fileInput.style.display = "none";
-        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
-        this.fileImportInput = fileInput;
-        this.container.appendChild(fileInput);
-
-        // Hidden file input for reference image
-        const refInput = document.createElement("input");
-        refInput.type = "file";
-        refInput.accept = "image/*";
-        refInput.style.display = "none";
-        refInput.addEventListener("change", (e) => this.handleRefImport(e));
-        this.fileRefInput = refInput;
-        this.container.appendChild(refInput);
-
-        actions.appendChild(resetBtn);
-
-        actions.appendChild(snapBtn);
-        actions.appendChild(copyBtn);
-        actions.appendChild(pasteBtn);
-
-        const footer = document.createElement("div");
-        footer.className = "vnccs-ps-footer";
         footer.appendChild(exportBtn);
         footer.appendChild(importBtn);
         footer.appendChild(refBtn);
@@ -4354,32 +4201,47 @@ class PoseStudioWidget {
         centerPanel.appendChild(actions);
         centerPanel.appendChild(footer);
 
-        this.container.appendChild(centerPanel);
+        // Hidden file inputs
+        const fileInput = document.createElement("input");
+        fileInput.type = "file"; fileInput.accept = ".json"; fileInput.style.display = "none";
+        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
+        this.fileImportInput = fileInput;
+        this.container.appendChild(fileInput);
 
-        // === RIGHT SIDEBAR (LIGHTING) ===
-        const rightSidebar = document.createElement("div");
-        rightSidebar.className = "vnccs-ps-right-sidebar";
+        const refInput = document.createElement("input");
+        refInput.type = "file"; refInput.accept = "image/*"; refInput.style.display = "none";
+        refInput.addEventListener("change", (e) => this.handleRefImport(e));
+        this.fileRefInput = refInput;
+        this.container.appendChild(refInput);
+    }
 
+    _createRightSidebar() {
+        const rightSidebar = this.rightSidebar;
+
+        // Pose Library Button
+        const libBtnWrap = document.createElement("div");
+        libBtnWrap.style.paddingBottom = "5px";
+        const libBtn = document.createElement("button");
+        libBtn.className = "vnccs-ps-btn primary";
+        libBtn.style.width = "100%";
+        libBtn.style.padding = "10px";
+        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
+        libBtn.onclick = () => this.showLibraryModal();
+        libBtnWrap.appendChild(libBtn);
+        rightSidebar.appendChild(libBtnWrap);
+
+        // Lighting Section
         const lightSection = this.createSection("Lighting", true);
         this.lightListContainer = document.createElement("div");
         this.lightListContainer.className = "vnccs-ps-light-list";
 
-        const lightToolbar = document.createElement("div");
-        lightToolbar.className = "vnccs-ps-light-header";
-        lightToolbar.style.padding = "0 0 8px 0";
-        lightToolbar.style.background = "transparent";
-        lightToolbar.style.border = "none";
-
-        // Keep Original Lighting Toggle Button
         const overrideBtn = document.createElement("button");
         overrideBtn.className = "vnccs-ps-btn full";
         overrideBtn.style.marginBottom = "12px";
         overrideBtn.style.height = "36px";
         overrideBtn.style.fontSize = "11px";
         overrideBtn.style.textTransform = "uppercase";
-        overrideBtn.style.letterSpacing = "0.5px";
         overrideBtn.style.fontWeight = "bold";
-        overrideBtn.style.transition = "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)";
 
         this.updateOverrideBtn = () => {
             const active = this.exportParams.keepOriginalLighting;
@@ -4388,15 +4250,11 @@ class PoseStudioWidget {
                 '<span style="margin-right:8px;">💡</span> KEEP ORIGINAL LIGHTING';
 
             if (active) {
-                overrideBtn.style.background = "#2ea043"; // Success green
-                overrideBtn.style.borderColor = "#3fb950";
+                overrideBtn.style.background = "#2ea043";
                 overrideBtn.style.color = "#fff";
-                overrideBtn.style.boxShadow = "0 0 15px rgba(46, 160, 67, 0.4)";
             } else {
                 overrideBtn.style.background = "var(--ps-panel)";
-                overrideBtn.style.borderColor = "var(--ps-border)";
                 overrideBtn.style.color = "var(--ps-text-muted)";
-                overrideBtn.style.boxShadow = "none";
             }
         };
 
@@ -4404,11 +4262,15 @@ class PoseStudioWidget {
             this.exportParams.keepOriginalLighting = !this.exportParams.keepOriginalLighting;
             this.updateOverrideBtn();
             this.applyLighting();
-            this.refreshLightUI(); // To dim/disable UI if needed
+            this.refreshLightUI();
             this.syncToNode(false);
         };
         this.updateOverrideBtn();
         lightSection.content.appendChild(overrideBtn);
+
+        const lightToolbar = document.createElement("div");
+        lightToolbar.className = "vnccs-ps-light-header";
+        lightToolbar.style.padding = "0 0 8px 0";
 
         const lightLabel = document.createElement("span");
         lightLabel.className = "vnccs-ps-label";
@@ -4417,7 +4279,6 @@ class PoseStudioWidget {
         const resetLightBtn = document.createElement("button");
         resetLightBtn.className = "vnccs-ps-reset-btn";
         resetLightBtn.innerHTML = "↺";
-        resetLightBtn.title = "Reset Lighting";
         resetLightBtn.onclick = () => {
             this.lightParams = [
                 { type: 'ambient', color: '#404040', intensity: 0.5 },
@@ -4432,20 +4293,6 @@ class PoseStudioWidget {
         lightSection.content.appendChild(lightToolbar);
         lightSection.content.appendChild(this.lightListContainer);
         rightSidebar.appendChild(lightSection.el);
-
-        // Pose Library Button (Top of Sidebar)
-        const libBtnWrap = document.createElement("div");
-        libBtnWrap.style.paddingBottom = "5px";
-
-        const libBtn = document.createElement("button");
-        libBtn.className = "vnccs-ps-btn primary";
-        libBtn.style.width = "100%";
-        libBtn.style.padding = "10px";
-        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
-        libBtn.onclick = () => this.showLibraryModal();
-
-        libBtnWrap.appendChild(libBtn);
-        rightSidebar.prepend(libBtnWrap);
 
         // Prompt Section
         const promptSection = this.createSection("Prompt", true);
@@ -4465,15 +4312,13 @@ class PoseStudioWidget {
             this.syncToNode(false);
         });
 
-        // Initial expand and resize observer to handle layout changes
         setTimeout(autoExpand, 0);
-        this.userPromptArea = promptArea; // Save for updates
-
+        this.userPromptArea = promptArea;
         promptSection.content.appendChild(promptArea);
         rightSidebar.appendChild(promptSection.el);
+    }
 
-        this.container.appendChild(rightSidebar);
-
+    _setupFinalUI() {
         // Loading Overlay
         this.loadingOverlay = document.createElement("div");
         this.loadingOverlay.className = "vnccs-ps-loading-overlay";
@@ -4483,11 +4328,10 @@ class PoseStudioWidget {
         `;
         this.container.appendChild(this.loadingOverlay);
 
-        // Initial render of lights
         this.refreshLightUI();
 
         // Initialize viewer
-        this.viewer = new PoseViewer(canvas);
+        this.viewer = new PoseViewer(this.canvas);
         this.viewer.syncCallback = (returnParams = false) => {
             if (returnParams) {
                 return {
@@ -4499,7 +4343,6 @@ class PoseStudioWidget {
             this.syncToNode();
         };
         this.viewer.init();
-        // Force initial lighting
         if (this.lightParams) {
             this.viewer.updateLights(this.lightParams);
         }
