@@ -2,7 +2,7 @@
 ## Improvements: True Screen-Space Limb Dragging (IK)
 *   **Intuitive IK Control**: Completely overhauled the IK interaction model. You can now grab and drag limbs directly in screen-space without gizmos or modifier keys. The limb smoothly follows the mouse cursor.
 *   **FK/IK Seamless Switching**: Clicking without dragging instantly brings up the standard rotation rings (FK mode) for fine-tuning.
-*   **Cleaner Viewport**: Purged the distracting invisible proxy cubes from the 3D scene.
+*   **Unified IK Logic**: Consolidated disparate effector update methods into a single parameterized handler and extracted complex pole-target math into a reusable helper.
 *   *Credit*: This elegant interaction system was proposed and conceptualized by [DanzeluS](https://github.com/neurodanzelus-cmd) / [DanzeluS](https://www.reddit.com/user/DanzeluS/).
 
 # Version 0.4.10
