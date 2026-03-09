@@ -1,3 +1,9 @@
+# Version 0.4.13
+## Architecture: Pose Studio Core Extraction
+*   **Decoupled Viewer Logic**: Extracted the core Three.js 3D viewer, IK solvers, and rendering logic from the ComfyUI widget into a standalone, UI-agnostic module (`vnccs_pose_studio_core.js`).
+*   **External UI Integration**: Established a strict, configurable public API for the new core module, enabling secure embedding and full pose control in external applications without relying on internal variable hacks or ComfyUI dependencies.
+*   **Strict API Contract**: Refactored the internal ComfyUI Node shell (`vnccs_pose_studio.js`) to exclusively consume the new core module via its public API getters/setters (e.g., `setSkinMode`, `setCameraParams`, `isInitialized`), completely isolating the internal rendering state from the UI application.
+
 # Version 0.4.11
 ## Improvements: True Screen-Space Limb Dragging (IK)
 *   **Intuitive IK Control**: Completely overhauled the IK interaction model. You can now grab and drag limbs directly in screen-space without gizmos or modifier keys. The limb smoothly follows the mouse cursor.
