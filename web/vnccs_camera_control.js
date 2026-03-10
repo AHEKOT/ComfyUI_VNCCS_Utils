@@ -391,6 +391,7 @@ app.registerExtension({
 
                 // Add Custom Widget
                 const widget = new VNCCS_CameraWidget(this, "camera_camera", {}, app);
+                this.cameraWidget = widget;
 
                 // Add the canvas to the DOM of the node
                 // ComfyUI nodes have `addDOMWidget`
@@ -404,6 +405,22 @@ app.registerExtension({
 
                 // Keep dimensions nice
                 this.setSize([340, 380]);
+            };
+
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function () {
+                if (onConfigure) {
+                    onConfigure.apply(this, arguments);
+                }
+                if (this.cameraWidget && this.widgets && this.widgets[0]) {
+                    try {
+                        const loaded = JSON.parse(this.widgets[0].value);
+                        this.cameraWidget.state = { ...this.cameraWidget.state, ...loaded };
+                        this.cameraWidget.draw();
+                    } catch (e) {
+                        console.error("VNCCS_VisualPositionControl failed to parse widget state on load", e);
+                    }
+                }
             };
         }
     }
