@@ -1,3 +1,7 @@
+# Version 0.4.14
+## Fix: Root Bone Drift on Age Change
+*   **Fix: Model floating above root bone**: When changing the AGE parameter, the mesh would shrink but the root bone stayed at the old position, causing the model to appear floating. This was caused by stale absolute IK positions (`hipBonePosition`, `ikEffectorPositions`, `poleTargetPositions`) being restored from saved pose data after skeleton rebuild. Now all saved poses are stripped of absolute position data before re-applying after a mesh parameter change.
+
 # Version 0.4.13
 ## Architecture: Pose Studio Core Extraction
 *   **Decoupled Viewer Logic**: Extracted the core Three.js 3D viewer, IK solvers, and rendering logic from the ComfyUI widget into a standalone, UI-agnostic module (`vnccs_pose_studio_core.js`).
