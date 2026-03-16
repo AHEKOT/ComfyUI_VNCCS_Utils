@@ -3277,6 +3277,16 @@ class PoseStudioWidget {
                     this.exportParams.cam_offset_y || 0
                 );
 
+                // Strip absolute position data (hip, IK effectors, pole targets) from ALL poses
+                // since those were saved for the old mesh geometry and don't apply to the new one.
+                for (let i = 0; i < this.poses.length; i++) {
+                    if (this.poses[i]) {
+                        delete this.poses[i].hipBonePosition;
+                        delete this.poses[i].ikEffectorPositions;
+                        delete this.poses[i].poleTargetPositions;
+                    }
+                }
+
                 // Apply pose immediately (no timeout/flicker)
                 if (this.viewer.isInitialized()) {
                     this.viewer.setPose(this.poses[this.activeTab] || {});
