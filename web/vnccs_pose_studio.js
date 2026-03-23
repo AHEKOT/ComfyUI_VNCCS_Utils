@@ -2431,7 +2431,13 @@ class PoseStudioWidget {
 
         // Save current pose & capture
         if (this.viewer && this.viewer.isInitialized()) {
-            this.poses[this.activeTab] = this.viewer.getPose();
+            const savedPose = this.viewer.getPose();
+            savedPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
         }
 
@@ -2482,7 +2488,13 @@ class PoseStudioWidget {
 
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
-            this.poses[this.activeTab] = this.viewer.getPose();
+            const savedPose = this.viewer.getPose();
+            savedPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
         }
 
@@ -3985,7 +3997,13 @@ class PoseStudioWidget {
 
         // Save current pose before syncing (only if we are NOT in a sub-sync loop)
         if (!fullCapture && this.viewer && this.viewer.isInitialized()) {
-            this.poses[this.activeTab] = this.viewer.getPose();
+            const syncPose = this.viewer.getPose();
+            syncPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = syncPose;
         }
 
         // Cache Handling
