@@ -1,3 +1,14 @@
+# Version 0.4.15
+## Fixes: Pose Studio Tab State and Workflow Size
+
+*   **Fix: Frame zoom and position lost on tab switch**: When adjusting the capture frame (zoom/offset) without moving any bones, the viewer's internal `cameraParams` remained stale. On tab switch, `getPose()` saved these stale params, so returning to the tab restored the wrong frame. Fixed by always reading `exportParams` (the authoritative widget state) as the source of truth when saving a pose — in `switchTab`, `addTab`, and `syncToNode`.
+
+*   **Fix: Copy/Paste ignoring frame settings**: `copyPose` saved the pose using the potentially stale viewer-internal `cameraParams`, and `pastePose` did not restore frame zoom/offset to the widget or viewport. Both are now fixed: copy captures current `exportParams`, paste restores zoom/offset sliders and calls `snapToCaptureCamera`.
+
+*   **Fix: "Failed to save workflow draft" with 4+ poses**: Captured images (base64 PNG, ~500 KB each at 1024×1024) were being serialized into the `pose_data` widget on every sync, quickly exceeding ComfyUI's localStorage limit. Captured images are now kept only in JS memory (`poseCaptures`) and injected directly into the execution upload payload at queue time — the widget no longer stores them.
+
+*   **Fix: All poses captured with wrong frame on queue**: During full capture (`syncToNode(true)`), every pose was rendered using the global `exportParams.cam_zoom/offset` (the active tab's settings) instead of each pose's own saved `cameraParams`. Each pose is now captured with its own frame zoom and offset.
+
 # Version 0.4.14
 ## Fix: Root Bone Drift on Age Change
 *   **Fix: Model floating above root bone**: When changing the AGE parameter, the mesh would shrink but the root bone stayed at the old position, causing the model to appear floating. This was caused by stale absolute IK positions (`hipBonePosition`, `ikEffectorPositions`, `poleTargetPositions`) being restored from saved pose data after skeleton rebuild. Now all saved poses are stripped of absolute position data before re-applying after a mesh parameter change.

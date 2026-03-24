@@ -2559,7 +2559,13 @@ class PoseStudioWidget {
 
     copyPose() {
         if (this.viewer && this.viewer.isInitialized()) {
-            this.poses[this.activeTab] = this.viewer.getPose();
+            const pose = this.viewer.getPose();
+            pose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = pose;
         }
         this._clipboard = JSON.parse(JSON.stringify(this.poses[this.activeTab]));
     }
@@ -2569,6 +2575,21 @@ class PoseStudioWidget {
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(this._clipboard));
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.setPose(this.poses[this.activeTab]);
+        }
+        if (this._clipboard.cameraParams) {
+            this.exportParams.cam_offset_x = this._clipboard.cameraParams.offset_x || 0;
+            this.exportParams.cam_offset_y = this._clipboard.cameraParams.offset_y || 0;
+            this.exportParams.cam_zoom = this._clipboard.cameraParams.zoom || 1.0;
+            if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+            if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+            if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+            if (this.viewer) this.viewer.snapToCaptureCamera(
+                this.exportParams.view_width,
+                this.exportParams.view_height,
+                this.exportParams.cam_zoom,
+                this.exportParams.cam_offset_x,
+                this.exportParams.cam_offset_y
+            );
         }
         this.syncToNode();
     }
@@ -4073,9 +4094,10 @@ class PoseStudioWidget {
                     } else {
                         // Normal mode
                         this.viewer.setPose(this.poses[i]);
-                        const z = this.exportParams.cam_zoom || 1.0;
-                        const oX = this.exportParams.cam_offset_x || 0;
-                        const oY = this.exportParams.cam_offset_y || 0;
+                        const poseCam = this.poses[i].cameraParams || {};
+                        const z = poseCam.zoom || this.exportParams.cam_zoom || 1.0;
+                        const oX = (poseCam.offset_x !== undefined ? poseCam.offset_x : this.exportParams.cam_offset_x) || 0;
+                        const oY = (poseCam.offset_y !== undefined ? poseCam.offset_y : this.exportParams.cam_offset_y) || 0;
 
                         // Lighting Toggle
                         if (isOriginalLighting) {
@@ -4153,13 +4175,15 @@ class PoseStudioWidget {
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
 
+        // captured_images are excluded from the widget to avoid inflating workflow size
+        // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
+        // They are kept in this.poseCaptures (JS memory) and injected at upload time in vnccs_req_pose_sync
         const data = {
             mesh: this.meshParams,
             export: exportToSave,
             poses: this.poses,
             lights: this.lightParams,
             activeTab: this.activeTab,
-            captured_images: this.poseCaptures,
             lighting_prompts: this.lightingPrompts,
             background_url: this.exportParams.background_url || null
         };
@@ -4319,6 +4343,9 @@ app.registerExtension({
                     if (poseWidget) {
                         const data = JSON.parse(poseWidget.value);
                         data.node_id = nodeId;
+                        // Inject captured_images from JS memory (not stored in widget to avoid size overflow)
+                        data.captured_images = node.studioWidget.poseCaptures || [];
+                        data.lighting_prompts = node.studioWidget.lightingPrompts || [];
 
                         // 3. Upload to sync endpoint
                         await fetch('/vnccs/pose_sync/upload_capture', {
