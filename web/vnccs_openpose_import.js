@@ -143,13 +143,47 @@ const MH_BONE_CHILD = {
     "clavicle_l": "upperarm_l",
     "upperarm_l": "lowerarm_l",
     "lowerarm_l": "hand_l",
+    "hand_l":     "middle_01_l",  // Wrist→finger base for hand direction
     "clavicle_r": "upperarm_r",
     "upperarm_r": "lowerarm_r",
     "lowerarm_r": "hand_r",
+    "hand_r":     "middle_01_r",
     "thigh_l":    "calf_l",
     "calf_l":     "foot_l",
     "thigh_r":    "calf_r",
     "calf_r":     "foot_r",
+    // Fingers - left
+    "thumb_01_l":  "thumb_02_l",
+    "thumb_02_l":  "thumb_03_l",
+    "thumb_03_l":  null,
+    "index_01_l":  "index_02_l",
+    "index_02_l":  "index_03_l",
+    "index_03_l":  null,
+    "middle_01_l": "middle_02_l",
+    "middle_02_l": "middle_03_l",
+    "middle_03_l": null,
+    "ring_01_l":   "ring_02_l",
+    "ring_02_l":   "ring_03_l",
+    "ring_03_l":   null,
+    "pinky_01_l":  "pinky_02_l",
+    "pinky_02_l":  "pinky_03_l",
+    "pinky_03_l":  null,
+    // Fingers - right
+    "thumb_01_r":  "thumb_02_r",
+    "thumb_02_r":  "thumb_03_r",
+    "thumb_03_r":  null,
+    "index_01_r":  "index_02_r",
+    "index_02_r":  "index_03_r",
+    "index_03_r":  null,
+    "middle_01_r": "middle_02_r",
+    "middle_02_r": "middle_03_r",
+    "middle_03_r": null,
+    "ring_01_r":   "ring_02_r",
+    "ring_02_r":   "ring_03_r",
+    "ring_03_r":   null,
+    "pinky_01_r":  "pinky_02_r",
+    "pinky_02_r":  "pinky_03_r",
+    "pinky_03_r":  null,
 };
 
 
@@ -204,8 +238,46 @@ export function parseOpenPoseJSON(data) {
         };
     }
 
-    console.log(`[OpenPose Import] Detected ${numKeypoints} keypoints → ${nameMap === BODY25_NAMES ? "BODY_25" : "COCO-18"} format`);
-    return { joints, canvasWidth, canvasHeight };
+    // Parse hand keypoints (21 per hand)
+    const handLeft = _parseHandKeypoints(person.hand_left_keypoints_2d);
+    const handRight = _parseHandKeypoints(person.hand_right_keypoints_2d);
+
+    // Parse face keypoints (70 points)
+    const face = _parseFaceKeypoints(person.face_keypoints_2d);
+
+    console.log(`[OpenPose Import] Detected ${numKeypoints} body keypoints → ${nameMap === BODY25_NAMES ? "BODY_25" : "COCO-18"} format` +
+        `${handLeft ? ", left hand" : ""}${handRight ? ", right hand" : ""}${face ? ", face" : ""}`);
+    return { joints, handLeft, handRight, face, canvasWidth, canvasHeight };
+}
+
+/**
+ * Parse 21-point hand keypoints.
+ * Returns array of {x, y, c} indexed 0-20, or null.
+ */
+function _parseHandKeypoints(kp) {
+    if (!kp || kp.length < 21 * 3) return null;
+    const points = [];
+    for (let i = 0; i < 21; i++) {
+        points.push({ x: kp[i * 3], y: kp[i * 3 + 1], c: kp[i * 3 + 2] });
+    }
+    // Check if hand is actually detected (not all zeros)
+    const hasData = points.some(p => p.c > 0.1);
+    return hasData ? points : null;
+}
+
+/**
+ * Parse 70-point face keypoints.
+ * Returns array of {x, y, c} indexed 0-69, or null.
+ */
+function _parseFaceKeypoints(kp) {
+    if (!kp || kp.length < 68 * 3) return null;
+    const points = [];
+    const numPoints = Math.floor(kp.length / 3);
+    for (let i = 0; i < numPoints; i++) {
+        points.push({ x: kp[i * 3], y: kp[i * 3 + 1], c: kp[i * 3 + 2] });
+    }
+    const hasData = points.some(p => p.c > 0.1);
+    return hasData ? points : null;
 }
 
 /**
@@ -360,6 +432,35 @@ function _clusterPoints(points, maxDist) {
 
 
 // =====================================================================
+// Hand keypoint → MakeHuman finger bone mapping
+// Hand keypoints: 0=wrist, 1-4=thumb, 5-8=index, 9-12=middle, 13-16=ring, 17-20=pinky
+// Each group: [base, MCP, PIP/DIP, tip]
+// =====================================================================
+const FINGER_SEGMENTS = [
+    // { indices: [parent_kp, child_kp], bone_l, bone_r }
+    // Thumb
+    { parent: 1,  child: 2,  bone_l: "thumb_01_l", bone_r: "thumb_01_r" },
+    { parent: 2,  child: 3,  bone_l: "thumb_02_l", bone_r: "thumb_02_r" },
+    { parent: 3,  child: 4,  bone_l: "thumb_03_l", bone_r: "thumb_03_r" },
+    // Index
+    { parent: 5,  child: 6,  bone_l: "index_01_l", bone_r: "index_01_r" },
+    { parent: 6,  child: 7,  bone_l: "index_02_l", bone_r: "index_02_r" },
+    { parent: 7,  child: 8,  bone_l: "index_03_l", bone_r: "index_03_r" },
+    // Middle
+    { parent: 9,  child: 10, bone_l: "middle_01_l", bone_r: "middle_01_r" },
+    { parent: 10, child: 11, bone_l: "middle_02_l", bone_r: "middle_02_r" },
+    { parent: 11, child: 12, bone_l: "middle_03_l", bone_r: "middle_03_r" },
+    // Ring
+    { parent: 13, child: 14, bone_l: "ring_01_l", bone_r: "ring_01_r" },
+    { parent: 14, child: 15, bone_l: "ring_02_l", bone_r: "ring_02_r" },
+    { parent: 15, child: 16, bone_l: "ring_03_l", bone_r: "ring_03_r" },
+    // Pinky
+    { parent: 17, child: 18, bone_l: "pinky_01_l", bone_r: "pinky_01_r" },
+    { parent: 18, child: 19, bone_l: "pinky_02_l", bone_r: "pinky_02_r" },
+    { parent: 19, child: 20, bone_l: "pinky_03_l", bone_r: "pinky_03_r" },
+];
+
+// =====================================================================
 // 2. ANGLE MAPPING: 2D keypoints → MakeHuman bone rotations
 // =====================================================================
 
@@ -481,24 +582,218 @@ export function convertOpenPoseToPose(parsed, viewer) {
         bones[seg.mhBone] = [0, 0, delta * RAD2DEG];
     }
 
-    // --- Head tilt from eye line ---
-    // In OpenPose image: r_eye (subject's right) has SMALLER x than l_eye.
-    // For a level head we need angle ≈ 0°.
-    // Measure l_eye → r_eye direction: since l_eye.x > r_eye.x in image,
-    // going from larger X to smaller X gives negative dx → ~180°.
-    // So we use r_eye → l_eye (smaller to larger X) → positive dx → ~0° for level.
+    // --- Head tilt from eye line (Z-rotation) ---
     if (joints.l_eye && joints.r_eye &&
         joints.l_eye.c >= CONFIDENCE_THRESHOLD && joints.r_eye.c >= CONFIDENCE_THRESHOLD) {
-        const dx = joints.l_eye.x - joints.r_eye.x;   // positive when level
-        const dy = -(joints.l_eye.y - joints.r_eye.y); // Y-flip
+        const dx = joints.l_eye.x - joints.r_eye.x;
+        const dy = -(joints.l_eye.y - joints.r_eye.y);
         const eyeAngle = Math.atan2(dy, dx) * RAD2DEG;
-        // Rest pose: eyes are horizontal (0°). Only apply if significant tilt.
         if (Math.abs(eyeAngle) > 2) {
             bones["head"] = [0, 0, eyeAngle];
         }
     }
 
+    // --- Body Y-rotation from shoulder asymmetry ---
+    // When body turns, the closer shoulder appears further from neck (perspective).
+    // Measure ratio of shoulder distances to estimate Y rotation.
+    const bodyYRot = _estimateBodyYRotation(joints);
+    if (Math.abs(bodyYRot) > 3) {
+        modelRotation[1] = bodyYRot;
+    }
+
+    // --- Face direction → head Y-rotation ---
+    if (parsed.face) {
+        const headYRot = _estimateHeadYRotation(parsed.face);
+        if (Math.abs(headYRot) > 3) {
+            const headRot = bones["head"] || [0, 0, 0];
+            headRot[1] = headYRot;
+            bones["head"] = headRot;
+        }
+    }
+
+    // --- Finger bones from hand keypoints ---
+    if (parsed.handLeft) {
+        _processFingers(parsed.handLeft, "l", viewer, bones);
+    }
+    if (parsed.handRight) {
+        _processFingers(parsed.handRight, "r", viewer, bones);
+    }
+
     return { bones, modelRotation };
+}
+
+/**
+ * Estimate body Y-rotation from shoulder/hip asymmetry.
+ * Returns angle in degrees. Positive = body facing right (from camera's POV).
+ */
+function _estimateBodyYRotation(joints) {
+    let asymmetry = 0;
+    let count = 0;
+
+    // Shoulder asymmetry
+    if (joints.neck && joints.l_shoulder && joints.r_shoulder &&
+        joints.neck.c >= CONFIDENCE_THRESHOLD &&
+        joints.l_shoulder.c >= CONFIDENCE_THRESHOLD &&
+        joints.r_shoulder.c >= CONFIDENCE_THRESHOLD) {
+
+        const distL = Math.hypot(joints.l_shoulder.x - joints.neck.x, joints.l_shoulder.y - joints.neck.y);
+        const distR = Math.hypot(joints.r_shoulder.x - joints.neck.x, joints.r_shoulder.y - joints.neck.y);
+        const sum = distL + distR;
+        if (sum > 1) {
+            // In image: l_shoulder has larger X, r_shoulder has smaller X.
+            // If distR > distL → r_shoulder (left side of image) is further from neck
+            //   → right shoulder is more forward → body facing left → negative Y
+            // If distL > distR → body facing right → positive Y
+            asymmetry += (distL - distR) / sum;
+            count++;
+        }
+    }
+
+    // Hip asymmetry (reinforce the estimate)
+    if (joints.mid_hip && joints.l_hip && joints.r_hip &&
+        joints.mid_hip.c >= CONFIDENCE_THRESHOLD &&
+        joints.l_hip.c >= CONFIDENCE_THRESHOLD &&
+        joints.r_hip.c >= CONFIDENCE_THRESHOLD) {
+
+        const distL = Math.hypot(joints.l_hip.x - joints.mid_hip.x, joints.l_hip.y - joints.mid_hip.y);
+        const distR = Math.hypot(joints.r_hip.x - joints.mid_hip.x, joints.r_hip.y - joints.mid_hip.y);
+        const sum = distL + distR;
+        if (sum > 1) {
+            asymmetry += (distL - distR) / sum;
+            count++;
+        }
+    }
+
+    if (count === 0) return 0;
+    asymmetry /= count;
+
+    // Map asymmetry [-1..1] to rotation. Full asymmetry ≈ 90°.
+    // In practice, perspective makes this max ~0.3-0.5 for 45° turns.
+    // So we scale more aggressively.
+    return asymmetry * 120; // degrees
+}
+
+/**
+ * Estimate head Y-rotation from face keypoints.
+ * Uses nose position relative to jaw contour center.
+ * Face keypoints: 0-16 = jaw contour, 27-30 = nose bridge, 30 = nose tip.
+ */
+function _estimateHeadYRotation(face) {
+    // Jaw extremes: 0 (right side of face in image) and 16 (left side)
+    if (!face[0] || !face[16] || !face[30]) return 0;
+    if (face[0].c < CONFIDENCE_THRESHOLD || face[16].c < CONFIDENCE_THRESHOLD || face[30].c < CONFIDENCE_THRESHOLD) return 0;
+
+    const jawWidth = face[16].x - face[0].x;
+    if (Math.abs(jawWidth) < 5) return 0;
+
+    const jawCenter = (face[0].x + face[16].x) / 2;
+    const noseTip = face[30].x;
+
+    // Offset: how far nose is from jaw center, normalized by jaw width
+    const offset = (noseTip - jawCenter) / jawWidth;
+
+    // offset ~0 = facing forward, offset ~0.3-0.5 = 45° turn
+    // In image: face[0] is right side (smaller X for subject's right jawline)
+    // face[16] is left side (larger X for subject's left jawline)
+    // If nose shifts toward larger X → face turned right (from camera POV)
+    //   → positive Y rotation in MakeHuman
+    return offset * 90;
+}
+
+/**
+ * Process finger bones from hand keypoints.
+ * @param {Array} handKp - 21 keypoints [{x,y,c}, ...]
+ * @param {string} side - "l" or "r"
+ * @param {Object} viewer - PoseViewerCore
+ * @param {Object} bones - output bone rotations dict
+ */
+function _processFingers(handKp, side, viewer, bones) {
+    for (const seg of FINGER_SEGMENTS) {
+        const parentKp = handKp[seg.parent];
+        const childKp = handKp[seg.child];
+
+        if (!parentKp || !childKp ||
+            parentKp.c < CONFIDENCE_THRESHOLD || childKp.c < CONFIDENCE_THRESHOLD) continue;
+
+        const boneName = side === "l" ? seg.bone_l : seg.bone_r;
+        if (!viewer.bones[boneName]) continue;
+
+        // 2D angle of this finger segment
+        const dx = childKp.x - parentKp.x;
+        const dy = -(childKp.y - parentKp.y);
+        const opAngle = Math.atan2(dy, dx);
+
+        // Rest angle
+        const restAng = _restAngle(viewer, boneName);
+        if (restAng === null) continue;
+
+        // For finger child segments, compute relative to parent segment
+        let delta;
+        if (seg.parent > 1 && seg.parent !== 5 && seg.parent !== 9 &&
+            seg.parent !== 13 && seg.parent !== 17) {
+            // This is a middle/tip segment — compute relative to previous segment
+            const prevParent = handKp[seg.parent - 1];
+            if (prevParent && prevParent.c >= CONFIDENCE_THRESHOLD) {
+                const prevDx = parentKp.x - prevParent.x;
+                const prevDy = -(parentKp.y - prevParent.y);
+                const prevAngle = Math.atan2(prevDy, prevDx);
+
+                // Find parent bone rest angle
+                const prevBoneName = _findPrevFingerBone(boneName);
+                const prevRestAng = prevBoneName ? _restAngle(viewer, prevBoneName) : null;
+
+                if (prevRestAng !== null) {
+                    const relOp = _normalizeAngle(opAngle - prevAngle);
+                    const relRest = _normalizeAngle(restAng - prevRestAng);
+                    delta = _normalizeAngle(relOp - relRest);
+                } else {
+                    delta = _normalizeAngle(opAngle - restAng);
+                }
+            } else {
+                delta = _normalizeAngle(opAngle - restAng);
+            }
+        } else {
+            // Base segment — use wrist direction as reference
+            const wrist = handKp[0];
+            if (wrist && wrist.c >= CONFIDENCE_THRESHOLD) {
+                const wristDx = parentKp.x - wrist.x;
+                const wristDy = -(parentKp.y - wrist.y);
+                const wristAngle = Math.atan2(wristDy, wristDx);
+
+                // Use hand bone rest angle as reference
+                const handBone = side === "l" ? "hand_l" : "hand_r";
+                const handRestAng = _restAngle(viewer, handBone);
+                if (handRestAng !== null) {
+                    const relOp = _normalizeAngle(opAngle - wristAngle);
+                    const relRest = _normalizeAngle(restAng - handRestAng);
+                    delta = _normalizeAngle(relOp - relRest);
+                } else {
+                    delta = _normalizeAngle(opAngle - restAng);
+                }
+            } else {
+                delta = _normalizeAngle(opAngle - restAng);
+            }
+        }
+
+        const degVal = delta * RAD2DEG;
+        // Clamp finger rotations to reasonable range
+        if (Math.abs(degVal) < 120) {
+            bones[boneName] = [0, 0, degVal];
+        }
+    }
+}
+
+/**
+ * Find the previous (parent) finger bone name.
+ * e.g., index_02_l → index_01_l, index_03_l → index_02_l
+ */
+function _findPrevFingerBone(boneName) {
+    const match = boneName.match(/^(.+)_(\d+)_([lr])$/);
+    if (!match) return null;
+    const [, finger, num, side] = match;
+    const prevNum = parseInt(num) - 1;
+    if (prevNum < 1) return null;
+    return `${finger}_0${prevNum}_${side}`;
 }
 
 /**
