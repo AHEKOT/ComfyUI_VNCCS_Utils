@@ -7,6 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose } from "./vnccs_openpose_import.js";
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -1639,7 +1640,7 @@ class PoseStudioWidget {
 
         // Hidden file inputs
         const fileInput = document.createElement("input");
-        fileInput.type = "file"; fileInput.accept = ".json"; fileInput.style.display = "none";
+        fileInput.type = "file"; fileInput.accept = ".json,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
         fileInput.addEventListener("change", (e) => this.handleFileImport(e));
         this.fileImportInput = fileInput;
         this.container.appendChild(fileInput);
@@ -2672,12 +2673,57 @@ class PoseStudioWidget {
         const file = e.target.files[0];
         if (!file) return;
 
+        // Image files → parse as OpenPose image
+        if (file.type.startsWith("image/")) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const keypoints = extractKeypointsFromImage(img);
+                    if (keypoints && this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(keypoints, this.viewer);
+                        if (poseData) {
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("OpenPose image imported successfully.");
+                        } else {
+                            this.showMessage("Failed to convert OpenPose keypoints to pose.", true);
+                        }
+                    } else {
+                        this.showMessage("Could not detect OpenPose keypoints in image.", true);
+                    }
+                };
+                img.src = event.target.result;
+                e.target.value = '';
+            };
+            reader.readAsDataURL(file);
+            return;
+        }
+
+        // JSON files
         const reader = new FileReader();
         reader.onload = (event) => {
             try {
                 const data = JSON.parse(event.target.result);
 
-                if (data.type === "pose_set" || Array.isArray(data.poses)) {
+                // Try OpenPose JSON formats first
+                const openPoseKeypoints = detectAndParseJSON(data);
+                if (openPoseKeypoints) {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(openPoseKeypoints, this.viewer);
+                        if (poseData) {
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("OpenPose JSON imported successfully.");
+                        } else {
+                            this.showMessage("Failed to convert OpenPose data to pose.", true);
+                        }
+                    }
+                } else if (data.type === "pose_set" || Array.isArray(data.poses)) {
                     // Import Set
                     const newPoses = data.poses || (Array.isArray(data) ? data : null);
                     if (newPoses && Array.isArray(newPoses)) {
@@ -2693,7 +2739,6 @@ class PoseStudioWidget {
                     this.syncToNode(true);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
-                    // Strip metadata if present
                     const poseData = data.bones ? data : data;
 
                     this.poses[this.activeTab] = poseData;
@@ -2706,7 +2751,7 @@ class PoseStudioWidget {
 
             } catch (err) {
                 console.error("Error importing pose:", err);
-                this.showMessage("Failed to load pose file. invalid JSON.", true);
+                this.showMessage("Failed to load pose file. Invalid JSON.", true);
             }
 
             // Reset input so same file can be selected again
