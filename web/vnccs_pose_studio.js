@@ -7,6 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -1639,7 +1640,7 @@ class PoseStudioWidget {
 
         // Hidden file inputs
         const fileInput = document.createElement("input");
-        fileInput.type = "file"; fileInput.accept = ".json"; fileInput.style.display = "none";
+        fileInput.type = "file"; fileInput.accept = ".json,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
         fileInput.addEventListener("change", (e) => this.handleFileImport(e));
         this.fileImportInput = fileInput;
         this.container.appendChild(fileInput);
@@ -2705,12 +2706,61 @@ class PoseStudioWidget {
         const file = e.target.files[0];
         if (!file) return;
 
+        // Image files → parse as OpenPose image
+        if (file.type.startsWith("image/")) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const keypoints = extractKeypointsFromImage(img);
+                    if (keypoints && this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(keypoints, this.viewer);
+                        if (poseData) {
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("OpenPose image imported successfully.");
+                        } else {
+                            this.showMessage("Failed to convert OpenPose keypoints to pose.", true);
+                        }
+                    } else {
+                        this.showMessage("Could not detect OpenPose keypoints in image.", true);
+                    }
+                };
+                img.src = event.target.result;
+                e.target.value = '';
+            };
+            reader.readAsDataURL(file);
+            return;
+        }
+
+        // JSON files
         const reader = new FileReader();
         reader.onload = (event) => {
             try {
                 const data = JSON.parse(event.target.result);
 
-                if (data.type === "pose_set" || Array.isArray(data.poses)) {
+                // Try OpenPose JSON formats first
+                const openPoseKeypoints = detectAndParseJSON(data);
+                if (openPoseKeypoints) {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(openPoseKeypoints, this.viewer);
+                        if (poseData) {
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+
+                            this.showMessage("OpenPose JSON imported successfully.");
+
+                            // Debug: round-trip angle test
+                            roundTripTest(openPoseKeypoints, this.viewer, poseData);
+                        } else {
+                            this.showMessage("Failed to convert OpenPose data to pose.", true);
+                        }
+                    }
+                } else if (data.type === "pose_set" || Array.isArray(data.poses)) {
                     // Import Set
                     const newPoses = data.poses || (Array.isArray(data) ? data : null);
                     if (newPoses && Array.isArray(newPoses)) {
@@ -2726,7 +2776,6 @@ class PoseStudioWidget {
                     this.syncToNode(true);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
-                    // Strip metadata if present
                     const poseData = data.bones ? data : data;
 
                     this.poses[this.activeTab] = poseData;
@@ -2739,7 +2788,7 @@ class PoseStudioWidget {
 
             } catch (err) {
                 console.error("Error importing pose:", err);
-                this.showMessage("Failed to load pose file. invalid JSON.", true);
+                this.showMessage("Failed to load pose file. Invalid JSON.", true);
             }
 
             // Reset input so same file can be selected again
@@ -4171,27 +4220,45 @@ class PoseStudioWidget {
         }
 
         // Update hidden pose_data widget
-        // Exclude background_url from export to avoid inflating pose_data widget
+        // Exclude background_url and captured_images from widget to avoid inflating workflow size.
+        // Captures are uploaded to server-side LRU cache; only the capture_id is stored in widget.
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
-        // They are kept in this.poseCaptures (JS memory) and injected at upload time in vnccs_req_pose_sync
+        // They are kept in this.poseCaptures (JS memory) and also uploaded to server-side LRU cache.
+        // Only capture_id is stored in the widget so Python can fallback to the cache if needed.
+        const captureId = `vnccs_capture_${this.node.id}`;
+
         const data = {
             mesh: this.meshParams,
             export: exportToSave,
             poses: this.poses,
             lights: this.lightParams,
             activeTab: this.activeTab,
+            capture_id: captureId,
             lighting_prompts: this.lightingPrompts,
             background_url: this.exportParams.background_url || null
         };
 
+        // Upload captures to server cache (fire-and-forget; errors are non-fatal)
+        if (this.poseCaptures && this.poseCaptures.some(c => c)) {
+            fetch('/vnccs/pose_captures_upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    capture_id: captureId,
+                    captured_images: this.poseCaptures,
+                    lighting_prompts: this.lightingPrompts || []
+                })
+            }).catch(e => console.warn("[VNCCS PoseStudio] Capture upload failed:", e));
+        }
+
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (widget) {
             widget.value = JSON.stringify(data);
-            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. captured_images count:", this.poseCaptures.length);
+            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. capture_id:", captureId, "captures count:", this.poseCaptures.length);
 
             // Force ComfyUI to recognize the state change so it saves to the workflow
             if (widget.callback) {
@@ -4293,9 +4360,8 @@ class PoseStudioWidget {
                 this.activeTab = Math.min(data.activeTab, this.poses.length - 1);
             }
 
-            if (data.captured_images && Array.isArray(data.captured_images)) {
-                this.poseCaptures = data.captured_images;
-            }
+            // captured_images are no longer persisted in widget (stored in server-side LRU cache).
+            // poseCaptures will be regenerated on the next syncToNode(true) call.
 
             this.updateTabs();
 
@@ -4328,7 +4394,6 @@ app.registerExtension({
                 try {
                     // Safe mode: ensure viewer is initialized
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.isInitialized()) {
-
                         await node.studioWidget.loadModel();
                     }
 
@@ -4338,20 +4403,23 @@ app.registerExtension({
                     }
                     node.studioWidget.syncToNode(true);
 
-                    // 2. Retrieve data
+                    // Build payload from widget metadata + in-memory captures
+                    // (captured_images are no longer stored in the widget to keep workflow size small)
                     const poseWidget = node.widgets.find(w => w.name === "pose_data");
                     if (poseWidget) {
-                        const data = JSON.parse(poseWidget.value);
-                        data.node_id = nodeId;
-                        // Inject captured_images from JS memory (not stored in widget to avoid size overflow)
-                        data.captured_images = node.studioWidget.poseCaptures || [];
-                        data.lighting_prompts = node.studioWidget.lightingPrompts || [];
+                        const widgetData = JSON.parse(poseWidget.value);
+                        const payload = {
+                            ...widgetData,
+                            node_id: nodeId,
+                            // Inject captured_images from JS memory (not stored in widget to avoid size overflow)
+                            captured_images: node.studioWidget.poseCaptures || [],
+                            lighting_prompts: node.studioWidget.lightingPrompts || []
+                        };
 
-                        // 3. Upload to sync endpoint
                         await fetch('/vnccs/pose_sync/upload_capture', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(data)
+                            body: JSON.stringify(payload)
                         });
                     }
                 } catch (e) {

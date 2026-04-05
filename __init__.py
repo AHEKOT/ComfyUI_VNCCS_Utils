@@ -172,3 +172,47 @@ def _vnccs_register_pose_library():
         print(f"[VNCCS] Failed to register Pose Library API: {e}")
 
 _vnccs_register_pose_library()
+
+
+# === Pose Studio Capture Cache ===
+VNCCS_CAPTURE_CACHE = {}
+_CAPTURE_CACHE_MAX = 10
+
+def _vnccs_register_capture_cache():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return
+
+    @PromptServer.instance.routes.post("/vnccs/pose_captures_upload")
+    async def vnccs_pose_captures_upload(request):
+        try:
+            data = await request.json()
+            capture_id = data.get("capture_id")
+            if not capture_id:
+                return web.json_response({"error": "missing capture_id"}, status=400)
+
+            VNCCS_CAPTURE_CACHE[capture_id] = {
+                "captured_images": data.get("captured_images", []),
+                "lighting_prompts": data.get("lighting_prompts", []),
+            }
+
+            # LRU eviction: keep only last _CAPTURE_CACHE_MAX entries
+            while len(VNCCS_CAPTURE_CACHE) > _CAPTURE_CACHE_MAX:
+                oldest = next(iter(VNCCS_CAPTURE_CACHE))
+                del VNCCS_CAPTURE_CACHE[oldest]
+
+            return web.json_response({"status": "ok", "capture_id": capture_id})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/pose_captures/{capture_id}")
+    async def vnccs_pose_captures_get(request):
+        capture_id = request.match_info["capture_id"]
+        entry = VNCCS_CAPTURE_CACHE.get(capture_id)
+        if not entry:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(entry)
+
+_vnccs_register_capture_cache()
