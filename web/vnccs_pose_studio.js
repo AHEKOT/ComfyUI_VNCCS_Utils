@@ -4351,7 +4351,6 @@ app.registerExtension({
                 try {
                     // Safe mode: ensure viewer is initialized
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.isInitialized()) {
-
                         await node.studioWidget.loadModel();
                     }
 
@@ -4361,17 +4360,22 @@ app.registerExtension({
                     }
                     node.studioWidget.syncToNode(true);
 
-                    // 2. Retrieve data
+                    // Build payload from widget metadata + in-memory captures
+                    // (captured_images are no longer stored in the widget to keep workflow size small)
                     const poseWidget = node.widgets.find(w => w.name === "pose_data");
                     if (poseWidget) {
-                        const data = JSON.parse(poseWidget.value);
-                        data.node_id = nodeId;
+                        const widgetData = JSON.parse(poseWidget.value);
+                        const payload = {
+                            ...widgetData,
+                            node_id: nodeId,
+                            captured_images: node.studioWidget.poseCaptures || [],
+                            lighting_prompts: node.studioWidget.lightingPrompts || []
+                        };
 
-                        // 3. Upload to sync endpoint
                         await fetch('/vnccs/pose_sync/upload_capture', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(data)
+                            body: JSON.stringify(payload)
                         });
                     }
                 } catch (e) {
