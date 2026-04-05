@@ -176,7 +176,21 @@ class VNCCS_PoseStudio:
             
         except (json.JSONDecodeError, TypeError):
             data = {}
-            
+
+        # Fallback: if live sync produced no captured_images, try LRU cache
+        if isinstance(data, dict) and not data.get("captured_images"):
+            capture_id = data.get("capture_id")
+            if capture_id:
+                try:
+                    from .. import VNCCS_CAPTURE_CACHE
+                    cached = VNCCS_CAPTURE_CACHE.get(capture_id)
+                    if cached:
+                        data["captured_images"] = cached.get("captured_images", [])
+                        data["lighting_prompts"] = cached.get("lighting_prompts", [])
+                        print(f"[VNCCS Pose Studio] Loaded {len(data['captured_images'])} captures from LRU cache (id={capture_id})")
+                except Exception as e:
+                    print(f"[VNCCS Pose Studio] Cache fallback failed: {e}")
+
         if not isinstance(data, dict):
             print(f"Pose Studio Error: pose_data is not a dict, got {type(data)}. Using default.")
             data = {}
