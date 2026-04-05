@@ -185,7 +185,7 @@ def _vnccs_register_capture_cache():
     except Exception:
         return
 
-    @PromptServer.instance.routes.post("/vnccs/pose_captures/upload")
+    @PromptServer.instance.routes.post("/vnccs/pose_captures_upload")
     async def vnccs_pose_captures_upload(request):
         try:
             data = await request.json()

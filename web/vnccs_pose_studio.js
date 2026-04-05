@@ -4200,7 +4200,7 @@ class PoseStudioWidget {
 
         // Upload captures to server cache (fire-and-forget; errors are non-fatal)
         if (this.poseCaptures && this.poseCaptures.some(c => c)) {
-            fetch('/vnccs/pose_captures/upload', {
+            fetch('/vnccs/pose_captures_upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
