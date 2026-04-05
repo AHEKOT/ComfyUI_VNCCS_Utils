@@ -4316,9 +4316,8 @@ class PoseStudioWidget {
                 this.activeTab = Math.min(data.activeTab, this.poses.length - 1);
             }
 
-            if (data.captured_images && Array.isArray(data.captured_images)) {
-                this.poseCaptures = data.captured_images;
-            }
+            // captured_images are no longer persisted in widget (stored in server-side LRU cache).
+            // poseCaptures will be regenerated on the next syncToNode(true) call.
 
             this.updateTabs();
 
