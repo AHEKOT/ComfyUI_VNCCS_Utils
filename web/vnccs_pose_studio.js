@@ -4180,9 +4180,13 @@ class PoseStudioWidget {
         }
 
         // Update hidden pose_data widget
-        // Exclude background_url from export to avoid inflating pose_data widget
+        // Exclude background_url and captured_images from widget to avoid inflating workflow size.
+        // Captures are uploaded to server-side LRU cache; only the capture_id is stored in widget.
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
+
+        // Derive stable capture_id from node id
+        const captureId = `vnccs_capture_${this.node.id}`;
 
         const data = {
             mesh: this.meshParams,
@@ -4190,15 +4194,27 @@ class PoseStudioWidget {
             poses: this.poses,
             lights: this.lightParams,
             activeTab: this.activeTab,
-            captured_images: this.poseCaptures,
-            lighting_prompts: this.lightingPrompts,
+            capture_id: captureId,
             background_url: this.exportParams.background_url || null
         };
+
+        // Upload captures to server cache (fire-and-forget; errors are non-fatal)
+        if (this.poseCaptures && this.poseCaptures.some(c => c)) {
+            fetch('/vnccs/pose_captures/upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    capture_id: captureId,
+                    captured_images: this.poseCaptures,
+                    lighting_prompts: this.lightingPrompts || []
+                })
+            }).catch(e => console.warn("[VNCCS PoseStudio] Capture upload failed:", e));
+        }
 
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (widget) {
             widget.value = JSON.stringify(data);
-            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. captured_images count:", this.poseCaptures.length);
+            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. capture_id:", captureId, "captures count:", this.poseCaptures.length);
 
             // Force ComfyUI to recognize the state change so it saves to the workflow
             if (widget.callback) {
