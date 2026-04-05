@@ -1,3 +1,18 @@
+# Version 0.4.16
+## Pose Studio: OpenPose Import and Workflow Size Fix
+
+### New Features
+
+*   **OpenPose Import**: Import `.json` and image files (`.png`, `.jpg`, `.webp`) directly into the Pose Studio to import poses from OpenPose-compatible sources.
+    *   Supports both OpenPose JSON format (body, hand, face keypoints) and OpenPose-rendered images via keypoint extraction.
+    *   Converts OpenPose skeleton to MakeHuman bone rotations automatically.
+    *   Includes a round-trip angle validation test to verify conversion accuracy.
+    * STILL WIP, CAN BE BUGS, BROKEN JOINTS, OR JUST WRONG RESULTS. For now it works only with full body poses without heavy body rotations.
+
+### Fixes
+
+*   **Fix: "Failed to save workflow draft" with many active tabs**: Captured images (base64 PNG, ~500 KB each at 1024×1024) were being serialized into the `pose_data` widget on every sync. With many tabs this exceeded ComfyUI's workflow draft size limit. Captured images are now uploaded to a server-side LRU cache (`/vnccs/pose_captures_upload`) keyed by node ID — the widget stores only a lightweight `capture_id` string. The cache holds up to 10 entries with automatic eviction.
+
 # Version 0.4.15
 ## Fixes: Pose Studio Tab State and Workflow Size
 
