@@ -7,7 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
-import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose } from "./vnccs_openpose_import.js";
+import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -2718,7 +2718,11 @@ class PoseStudioWidget {
                             this.viewer.setPose(poseData);
                             this.updateRotationSliders();
                             this.syncToNode(false);
+
                             this.showMessage("OpenPose JSON imported successfully.");
+
+                            // Debug: round-trip angle test
+                            roundTripTest(openPoseKeypoints, this.viewer, poseData);
                         } else {
                             this.showMessage("Failed to convert OpenPose data to pose.", true);
                         }

@@ -114,22 +114,22 @@ const SEGMENT_TO_BONE = [
     { parent: "neck", child: "nose", mhBone: "neck_01", parentSegment: { parent: "mid_hip", child: "neck" } },
 
     // Right arm
-    { parent: "neck",       child: "r_shoulder", mhBone: "clavicle_r" },
-    { parent: "r_shoulder", child: "r_elbow",    mhBone: "upperarm_r", parentSegment: { parent: "neck", child: "r_shoulder" } },
-    { parent: "r_elbow",    child: "r_wrist",    mhBone: "lowerarm_r", parentSegment: { parent: "r_shoulder", child: "r_elbow" } },
+    { parent: "neck",       child: "r_shoulder", mhBone: "clavicle_r",  parentSegment: { parent: "mid_hip", child: "neck" } },
+    { parent: "r_shoulder", child: "r_elbow",    mhBone: "upperarm_r",  parentSegment: { parent: "neck", child: "r_shoulder" } },
+    { parent: "r_elbow",    child: "r_wrist",    mhBone: "lowerarm_r",  parentSegment: { parent: "r_shoulder", child: "r_elbow" } },
 
     // Left arm
-    { parent: "neck",       child: "l_shoulder", mhBone: "clavicle_l" },
-    { parent: "l_shoulder", child: "l_elbow",    mhBone: "upperarm_l", parentSegment: { parent: "neck", child: "l_shoulder" } },
-    { parent: "l_elbow",    child: "l_wrist",    mhBone: "lowerarm_l", parentSegment: { parent: "l_shoulder", child: "l_elbow" } },
+    { parent: "neck",       child: "l_shoulder", mhBone: "clavicle_l",  parentSegment: { parent: "mid_hip", child: "neck" } },
+    { parent: "l_shoulder", child: "l_elbow",    mhBone: "upperarm_l",  parentSegment: { parent: "neck", child: "l_shoulder" } },
+    { parent: "l_elbow",    child: "l_wrist",    mhBone: "lowerarm_l",  parentSegment: { parent: "l_shoulder", child: "l_elbow" } },
 
     // Right leg
-    { parent: "r_hip",  child: "r_knee",  mhBone: "thigh_r" },
-    { parent: "r_knee", child: "r_ankle", mhBone: "calf_r", parentSegment: { parent: "r_hip", child: "r_knee" } },
+    { parent: "r_hip",  child: "r_knee",  mhBone: "thigh_r",  parentSegment: { parent: "mid_hip", child: "neck" } },
+    { parent: "r_knee", child: "r_ankle", mhBone: "calf_r",   parentSegment: { parent: "r_hip", child: "r_knee" } },
 
     // Left leg
-    { parent: "l_hip",  child: "l_knee",  mhBone: "thigh_l" },
-    { parent: "l_knee", child: "l_ankle", mhBone: "calf_l", parentSegment: { parent: "l_hip", child: "l_knee" } },
+    { parent: "l_hip",  child: "l_knee",  mhBone: "thigh_l",  parentSegment: { parent: "mid_hip", child: "neck" } },
+    { parent: "l_knee", child: "l_ankle", mhBone: "calf_l",   parentSegment: { parent: "l_hip", child: "l_knee" } },
 ];
 
 // MakeHuman bone → which child bone defines its "tail" direction
@@ -528,25 +528,34 @@ export function convertOpenPoseToPose(parsed, viewer) {
     const modelRotation = [0, 0, 0];
 
     // --- Pelvis tilt from hip line ---
-    // In OpenPose image: r_hip is on the LEFT side of image (mirrored).
-    // In MakeHuman: X+ is right. So l_hip→r_hip goes left-to-right in MH space,
-    // which is right-to-left in image space (l_hip has LARGER x in image).
-    // We measure tilt as deviation from horizontal.
+    // Computes the TILT of the hip line (one hip higher than the other).
+    // The hip line may point left-to-right or right-to-left depending on whether
+    // the person faces camera or not — we normalize to [-90°, 90°] so that
+    // a back-facing or side-facing subject doesn't produce a ~180° flip.
     if (joints.l_hip && joints.r_hip &&
         joints.l_hip.c >= CONFIDENCE_THRESHOLD && joints.r_hip.c >= CONFIDENCE_THRESHOLD) {
-        // l_hip→r_hip in image, with Y-flip
-        const dx = joints.l_hip.x - joints.r_hip.x; // positive when level (l_hip.x > r_hip.x in image)
+        const dx = joints.l_hip.x - joints.r_hip.x;
         const dy = -(joints.l_hip.y - joints.r_hip.y);
-        const hipAngle = Math.atan2(dy, dx) * RAD2DEG;
-        // Rest pose hip line is at 0° (horizontal). Only apply if significant.
+        let hipAngle = Math.atan2(dy, dx) * RAD2DEG;
+        // Normalize to [-90°, 90°]: tilt only, regardless of facing direction
+        if (hipAngle > 90)  hipAngle -= 180;
+        if (hipAngle < -90) hipAngle += 180;
         if (Math.abs(hipAngle) > 2) {
             modelRotation[2] = hipAngle;
         }
     }
 
+    // --- Body Y-rotation from shoulder inversion ---
+    const bodyYRot = _estimateBodyYRotation(joints);
+    const facingAway = Math.abs(bodyYRot) > 90;
+    const bodyYRad = bodyYRot * Math.PI / 180;
+    console.log("[OpenPose Import] bodyYRot:", bodyYRot, "facingAway:", facingAway);
+    if (Math.abs(bodyYRot) > 3) {
+        modelRotation[1] = bodyYRot;
+    }
+
     // --- Process each segment ---
     for (const seg of SEGMENT_TO_BONE) {
-        // Spine is handled separately
         if (seg.isSpine) {
             _processSpine(joints, viewer, bones);
             continue;
@@ -561,12 +570,9 @@ export function convertOpenPoseToPose(parsed, viewer) {
         let delta;
 
         if (seg.parentSegment) {
-            // Relative angle: compute delta relative to parent segment
             const parentOpAngle = _opAngle(joints, seg.parentSegment.parent, seg.parentSegment.child);
             if (parentOpAngle === null) continue;
 
-            // Find parent MH bone for rest angle
-            // The parent segment maps to a bone — find it
             const parentBone = _findMhBoneForSegment(seg.parentSegment);
             const parentRestAngle = parentBone ? _restAngle(viewer, parentBone) : null;
             if (parentRestAngle === null) continue;
@@ -575,11 +581,17 @@ export function convertOpenPoseToPose(parsed, viewer) {
             const relativeRest = _normalizeAngle(restAngle - parentRestAngle);
             delta = _normalizeAngle(relativeOp - relativeRest);
         } else {
-            // Absolute angle
             delta = _normalizeAngle(opAngle - restAngle);
         }
 
-        bones[seg.mhBone] = [0, 0, delta * RAD2DEG];
+        const deltaDeg = delta * RAD2DEG;
+        // Project 2D image-plane rotation into model-local space
+        // When model is rotated by bodyYRot around Y:
+        //   bone Z-rotation (frontal plane) = delta * cos(bodyYRot)
+        //   bone X-rotation (sagittal plane) = delta * sin(bodyYRot)
+        const cosB = Math.cos(bodyYRad);
+        const sinB = Math.sin(bodyYRad);
+        bones[seg.mhBone] = [deltaDeg * sinB, 0, deltaDeg * cosB];
     }
 
     // --- Head tilt from eye line (Z-rotation) ---
@@ -593,16 +605,12 @@ export function convertOpenPoseToPose(parsed, viewer) {
         }
     }
 
-    // --- Body Y-rotation from shoulder asymmetry ---
-    // When body turns, the closer shoulder appears further from neck (perspective).
-    // Measure ratio of shoulder distances to estimate Y rotation.
-    const bodyYRot = _estimateBodyYRotation(joints);
-    if (Math.abs(bodyYRot) > 3) {
-        modelRotation[1] = bodyYRot;
-    }
-
-    // --- Face direction → head Y-rotation ---
-    if (parsed.face) {
+    // --- Head Y-rotation ---
+    if (facingAway) {
+        const headRot = bones["head"] || [0, 0, 0];
+        headRot[1] = -(180 - bodyYRot);
+        bones["head"] = headRot;
+    } else if (parsed.face) {
         const headYRot = _estimateHeadYRotation(parsed.face);
         if (Math.abs(headYRot) > 3) {
             const headRot = bones["head"] || [0, 0, 0];
@@ -619,58 +627,52 @@ export function convertOpenPoseToPose(parsed, viewer) {
         _processFingers(parsed.handRight, "r", viewer, bones);
     }
 
-    return { bones, modelRotation };
+    return { bones, modelRotation, cameraYRotation: bodyYRot };
 }
 
 /**
- * Estimate body Y-rotation from shoulder/hip asymmetry.
- * Returns angle in degrees. Positive = body facing right (from camera's POV).
+ * Estimate body Y-rotation from shoulder/hip inversion.
+ * In OpenPose, "r" and "l" are subject's sides.
+ * Facing camera: r_shoulder is LEFT in image (r_shoulder.x < l_shoulder.x).
+ * Facing away:   r_shoulder is RIGHT in image (r_shoulder.x > l_shoulder.x).
+ * Returns angle in degrees.
  */
 function _estimateBodyYRotation(joints) {
-    let asymmetry = 0;
-    let count = 0;
+    let facingAway = false;
+    let noseOffset = 0;
 
-    // Shoulder asymmetry
-    if (joints.neck && joints.l_shoulder && joints.r_shoulder &&
-        joints.neck.c >= CONFIDENCE_THRESHOLD &&
+    // Determine facing direction from shoulder inversion
+    if (joints.l_shoulder && joints.r_shoulder &&
         joints.l_shoulder.c >= CONFIDENCE_THRESHOLD &&
         joints.r_shoulder.c >= CONFIDENCE_THRESHOLD) {
+        // Normal (facing camera): r_shoulder.x < l_shoulder.x
+        // Inverted (facing away):  r_shoulder.x > l_shoulder.x
+        facingAway = joints.r_shoulder.x > joints.l_shoulder.x;
+    }
 
-        const distL = Math.hypot(joints.l_shoulder.x - joints.neck.x, joints.l_shoulder.y - joints.neck.y);
-        const distR = Math.hypot(joints.r_shoulder.x - joints.neck.x, joints.r_shoulder.y - joints.neck.y);
-        const sum = distL + distR;
-        if (sum > 1) {
-            // In image: l_shoulder has larger X, r_shoulder has smaller X.
-            // If distR > distL → r_shoulder (left side of image) is further from neck
-            //   → right shoulder is more forward → body facing left → negative Y
-            // If distL > distR → body facing right → positive Y
-            asymmetry += (distL - distR) / sum;
-            count++;
+    // Use nose offset from neck to estimate how much turn
+    if (joints.nose && joints.neck &&
+        joints.nose.c >= CONFIDENCE_THRESHOLD &&
+        joints.neck.c >= CONFIDENCE_THRESHOLD) {
+        let scale = 100;
+        if (joints.l_shoulder && joints.r_shoulder &&
+            joints.l_shoulder.c >= CONFIDENCE_THRESHOLD &&
+            joints.r_shoulder.c >= CONFIDENCE_THRESHOLD) {
+            scale = Math.abs(joints.l_shoulder.x - joints.r_shoulder.x);
+        }
+        if (scale > 10) {
+            noseOffset = (joints.nose.x - joints.neck.x) / scale;
         }
     }
 
-    // Hip asymmetry (reinforce the estimate)
-    if (joints.mid_hip && joints.l_hip && joints.r_hip &&
-        joints.mid_hip.c >= CONFIDENCE_THRESHOLD &&
-        joints.l_hip.c >= CONFIDENCE_THRESHOLD &&
-        joints.r_hip.c >= CONFIDENCE_THRESHOLD) {
-
-        const distL = Math.hypot(joints.l_hip.x - joints.mid_hip.x, joints.l_hip.y - joints.mid_hip.y);
-        const distR = Math.hypot(joints.r_hip.x - joints.mid_hip.x, joints.r_hip.y - joints.mid_hip.y);
-        const sum = distL + distR;
-        if (sum > 1) {
-            asymmetry += (distL - distR) / sum;
-            count++;
-        }
+    if (facingAway) {
+        // Base 180° + nose offset refines how much they turned back
+        // noseOffset positive = head turned right = less than full 180
+        return 180 - noseOffset * 50;
+    } else {
+        // Facing camera — nose offset gives partial turn
+        return noseOffset * 90;
     }
-
-    if (count === 0) return 0;
-    asymmetry /= count;
-
-    // Map asymmetry [-1..1] to rotation. Full asymmetry ≈ 90°.
-    // In practice, perspective makes this max ~0.3-0.5 for 45° turns.
-    // So we scale more aggressively.
-    return asymmetry * 120; // degrees
 }
 
 /**
@@ -846,6 +848,83 @@ function _findMhBoneForSegment(seg) {
  * Handles both direct objects and arrays (DWPreprocessor wraps in array).
  * Returns parsed keypoints or null.
  */
+/**
+ * Round-trip angle test: for each segment, compute the angle from convertOpenPoseToPose,
+ * then reconstruct child position from parent position + (restAngle + delta) + segment length.
+ * Compare reconstructed position with original keypoint position.
+ *
+ * @param {Object} parsed - parsed keypoints from parseOpenPoseJSON
+ * @param {Object} viewer - PoseViewerCore instance
+ * @param {Object} poseResult - result from convertOpenPoseToPose
+ */
+export function roundTripTest(parsed, viewer, poseResult) {
+    if (!parsed || !viewer || !poseResult) return;
+
+    const joints = parsed.joints;
+    const bones = poseResult.bones;
+    let totalError = 0;
+    let count = 0;
+
+    console.log("[RoundTrip] === Angle Round-Trip Test ===");
+
+    for (const seg of SEGMENT_TO_BONE) {
+        if (seg.isSpine) continue; // spine splits across 3 bones, skip
+
+        const parentJoint = joints[seg.parent];
+        const childJoint = joints[seg.child];
+        if (!parentJoint || !childJoint ||
+            parentJoint.c < CONFIDENCE_THRESHOLD || childJoint.c < CONFIDENCE_THRESHOLD) continue;
+
+        const boneName = seg.mhBone;
+        const boneRot = bones[boneName];
+        if (!boneRot) continue;
+
+        const deltaZ = boneRot[2] / RAD2DEG; // back to radians
+        const restAng = _restAngle(viewer, boneName);
+        if (restAng === null) continue;
+
+        // Original segment
+        const origDx = childJoint.x - parentJoint.x;
+        const origDy = -(childJoint.y - parentJoint.y); // flip Y
+        const segLength = Math.sqrt(origDx * origDx + origDy * origDy);
+        const origAngle = Math.atan2(origDy, origDx);
+
+        // Reconstructed angle
+        let reconstructedAngle;
+        if (seg.parentSegment) {
+            // Relative: reconstructedAngle = parentOpAngle + relativeRest + delta
+            const parentOpAngle = _opAngle(joints, seg.parentSegment.parent, seg.parentSegment.child);
+            const parentBone = _findMhBoneForSegment(seg.parentSegment);
+            const parentRestAngle = parentBone ? _restAngle(viewer, parentBone) : null;
+            if (parentOpAngle === null || parentRestAngle === null) continue;
+            const relativeRest = _normalizeAngle(restAng - parentRestAngle);
+            reconstructedAngle = parentOpAngle + relativeRest + deltaZ;
+        } else {
+            // Absolute: reconstructedAngle = restAngle + delta
+            reconstructedAngle = restAng + deltaZ;
+        }
+
+        // Reconstruct child position
+        const recDx = Math.cos(reconstructedAngle) * segLength;
+        const recDy = Math.sin(reconstructedAngle) * segLength;
+        const recX = parentJoint.x + recDx;
+        const recY = parentJoint.y - recDy; // flip Y back
+
+        const errX = recX - childJoint.x;
+        const errY = recY - childJoint.y;
+        const err = Math.sqrt(errX * errX + errY * errY);
+        totalError += err;
+        count++;
+
+        const status = err < 1 ? "OK" : "FAIL";
+        console.log(`[RoundTrip] ${status} ${boneName.padEnd(14)} origAngle=${(origAngle * RAD2DEG).toFixed(1)}° reconAngle=${(reconstructedAngle * RAD2DEG).toFixed(1)}° delta=${boneRot[2].toFixed(1)}° err=${err.toFixed(1)}px`);
+    }
+
+    if (count > 0) {
+        console.log(`[RoundTrip] Average error: ${(totalError / count).toFixed(1)}px across ${count} segments`);
+    }
+}
+
 export function detectAndParseJSON(data) {
     // DWPreprocessor / controlnet_aux wraps output in an array
     if (Array.isArray(data)) {
