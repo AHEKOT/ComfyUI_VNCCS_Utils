@@ -1393,8 +1393,10 @@ class PoseStudioWidget {
             breast_size: 0.5, firmness: 0.5,
             // Male-specific
             penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5,
-            // Visual modifiers
-            head_size: 1.0
+            // Visual modifiers (client-side bone scaling)
+            head_size: 1.0,
+            arm_size: 1.0,
+            hand_size: 1.0
         };
 
         // Export settings
@@ -1511,7 +1513,9 @@ class PoseStudioWidget {
             { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "height", label: "Height", min: 0, max: 2, step: 0.01, def: 0.5 },
-            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 }
+            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 }
         ];
 
         for (const s of baseSliderDefs) {
@@ -2066,9 +2070,16 @@ class PoseStudioWidget {
                 }
             } else {
                 if (key === 'head_size') {
-                    // Update head scale immediately without backend rebuild
                     if (this.viewer) this.viewer.updateHeadScale(val);
-                    this.meshParams[key] = val; // Just save
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'arm_size') {
+                    if (this.viewer) this.viewer.updateArmScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'hand_size') {
+                    if (this.viewer) this.viewer.updateHandScale(val);
+                    this.meshParams[key] = val;
                     this.syncToNode(false);
                 } else {
                     // Directly update meshParams and trigger mesh rebuild
@@ -4510,9 +4521,15 @@ class PoseStudioWidget {
                 if (this.updateGenderUI) this.updateGenderUI();
                 this.updateGenderVisibility();
 
-                // Sync Head Scale
+                // Sync bone scales
                 if (this.viewer && this.meshParams.head_size !== undefined) {
                     this.viewer.updateHeadScale(this.meshParams.head_size);
+                }
+                if (this.viewer && this.meshParams.arm_size !== undefined) {
+                    this.viewer.updateArmScale(this.meshParams.arm_size);
+                }
+                if (this.viewer && this.meshParams.hand_size !== undefined) {
+                    this.viewer.updateHandScale(this.meshParams.hand_size);
                 }
             }
 
