@@ -649,6 +649,8 @@ export class PoseViewerCore {
         this.future = [];
         this.maxHistory = 10;
         this.headScale = 1.0;
+        this.armScale = 1.0;
+        this.handScale = 1.0;
 
         // Managed lights array
         this.lights = [];
@@ -1937,9 +1939,15 @@ export class PoseViewerCore {
         this._initSkeleton(data, geometry, vertices);
         this._createJointMarkers();
 
-        // Apply cached head scale
+        // Apply cached bone scales
         if (this.headScale !== 1.0) {
             this.updateHeadScale(this.headScale);
+        }
+        if (this.armScale !== 1.0) {
+            this.updateArmScale(this.armScale);
+        }
+        if (this.handScale !== 1.0) {
+            this.updateHandScale(this.handScale);
         }
 
         this._initIKHelpers();
@@ -2152,12 +2160,33 @@ export class PoseViewerCore {
 
     updateHeadScale(scale) {
         this.headScale = scale;
-        // Find head bone if not cached or verify
         const headBone = this.boneList.find(b => b.name.toLowerCase().includes('head'));
         if (headBone) {
             headBone.scale.set(scale, scale, scale);
             this.requestRender();
         }
+    }
+
+    updateArmScale(scale) {
+        this.armScale = scale;
+        for (const bone of this.boneList) {
+            const n = bone.name.toLowerCase();
+            if (n === 'upperarm_l' || n === 'upperarm_r') {
+                bone.scale.set(scale, scale, scale);
+            }
+        }
+        this.requestRender();
+    }
+
+    updateHandScale(scale) {
+        this.handScale = scale;
+        for (const bone of this.boneList) {
+            const n = bone.name.toLowerCase();
+            if (n === 'hand_l' || n === 'hand_r') {
+                bone.scale.set(scale, scale, scale);
+            }
+        }
+        this.requestRender();
     }
 
     setSkinTexture(skinType) {

@@ -1,3 +1,27 @@
+# Version 0.4.17
+## Pose Studio: Sakura Design System and Sync Tabs
+
+### New Features
+
+*   **Arm Size and Hand Size sliders**: Two new sliders in the Character Mesh section (below Head Size).
+    *   `Arm Size` — scales the `upperarm_l` / `upperarm_r` bones, affecting the full arm length and thickness.
+    *   `Hand Size` — scales the `hand_l` / `hand_r` bones independently from arm size.
+    *   Both work client-side (no server roundtrip), persist in the workflow, and are re-applied automatically after mesh rebuilds (age/weight/etc. changes).
+
+*   **Sakura Design System**: Redesigned the entire Pose Studio node UI with the Sakura Archive premium dark-anime aesthetic.
+    *   All CSS variables are now scoped to `.vnccs-pose-studio` instead of `:root` — no style leakage to other ComfyUI tabs or extensions.
+    *   Deep dark backgrounds (`#0a0a0f`) with glassmorphic panels and translucent surfaces.
+    *   Sakura pink (`#ff8fa3`) accent with glow effects replacing the previous blue accent.
+    *   Section headers feature a luminous top highlight gradient and a left accent bar.
+    *   Slider thumbs have a sakura glow, primary buttons include a shimmer animation.
+    *   Canvas area uses a subtle sakura dot-grid background.
+    *   Loading spinner upgraded to a dual-ring sakura/lavender design.
+    *   Typography updated to Sora (UI) and JetBrains Mono (values/numbers).
+
+*   **Sync Zoom to All Tabs**: New button in the Camera section that appears only when more than one pose tab is active.
+    *   Sets the current Zoom level to all tabs simultaneously.
+    *   Automatically re-renders previews for all tabs after syncing.
+
 # Version 0.4.16
 ## Pose Studio: OpenPose Import and Workflow Size Fix
 
