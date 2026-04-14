@@ -745,6 +745,18 @@ const STYLES = `
     color: white;
 }
 
+.vnccs-ps-btn--sync-tabs {
+    background: rgba(80, 120, 200, 0.18);
+    border-color: rgba(100, 150, 255, 0.35);
+    color: #8ab4ff;
+}
+
+.vnccs-ps-btn--sync-tabs:hover {
+    background: rgba(80, 120, 200, 0.32);
+    border-color: rgba(100, 150, 255, 0.6);
+    color: #b8d0ff;
+}
+
 .vnccs-ps-btn-icon {
     font-size: 14px;
 }
@@ -2218,8 +2230,40 @@ class PoseStudioWidget {
             this.syncToNode(false);
         };
 
+        // Sync Tabs Button
+        const syncTabsBtn = document.createElement("button");
+        syncTabsBtn.className = "vnccs-ps-btn vnccs-ps-btn--sync-tabs";
+        syncTabsBtn.style.marginTop = "6px";
+        syncTabsBtn.style.width = "100%";
+        syncTabsBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⇄</span> Sync Zoom to All Tabs';
+        syncTabsBtn.style.display = "none"; // Hidden by default
+        syncTabsBtn.onclick = () => {
+            const currentZoom = this.exportParams.cam_zoom;
+            // Save current pose first
+            if (this.viewer && this.viewer.isInitialized()) {
+                const currentPose = this.viewer.getPose();
+                currentPose.cameraParams = {
+                    offset_x: this.exportParams.cam_offset_x,
+                    offset_y: this.exportParams.cam_offset_y,
+                    zoom: currentZoom
+                };
+                this.poses[this.activeTab] = currentPose;
+            }
+            // Apply zoom to all tabs
+            for (let i = 0; i < this.poses.length; i++) {
+                if (!this.poses[i].cameraParams) {
+                    this.poses[i].cameraParams = { offset_x: 0, offset_y: 0 };
+                }
+                this.poses[i].cameraParams.zoom = currentZoom;
+            }
+            // Re-render all tabs
+            this.syncToNode(true);
+        };
+        this.syncTabsBtn = syncTabsBtn;
+
         wrap.appendChild(canvas);
         wrap.appendChild(recenterBtn);
+        wrap.appendChild(syncTabsBtn);
         section.content.appendChild(wrap);
 
         // Initial Draw
@@ -2392,6 +2436,11 @@ class PoseStudioWidget {
 
     updateTabs() {
         this.tabsContainer.innerHTML = "";
+
+        // Show/hide Sync Tabs button based on tab count
+        if (this.syncTabsBtn) {
+            this.syncTabsBtn.style.display = this.poses.length > 1 ? "flex" : "none";
+        }
 
         for (let i = 0; i < this.poses.length; i++) {
             const tab = document.createElement("button");
