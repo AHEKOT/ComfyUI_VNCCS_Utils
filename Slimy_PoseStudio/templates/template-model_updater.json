@@ -1,0 +1,36 @@
+{
+    "models": [
+        {
+            "name": "VN Character Sheet",
+            "hf_repo": "MIUProject/VNCCS",
+            "hf_path": "models/loras/vn_character_sheet_v4.safetensors",
+            "local_path": "models/loras/vn_character_sheet_v4.safetensors",
+            "version": "4.0.0",
+            "description": "Latest V4 LoRA for creating consistent character sheets."
+        },
+        {
+            "name": "VN Character Sheet",
+            "hf_repo": "MIUProject/VNCCS",
+            "hf_path": "models/loras/vn_character_sheet.safetensors",
+            "local_path": "models/loras/vn_character_sheet.safetensors",
+            "version": "1.0.0",
+            "description": "Legacy V1 LoRA for character sheets."
+        },
+        {
+            "name": "VNCCS Clothes Helper",
+            "hf_repo": "MIUProject/VNCCS",
+            "hf_path": "models/loras/qwen/VNCCS/ClothesHelperUltimateV1_000005100.safetensors",
+            "local_path": "models/loras/qwen/VNCCS/ClothesHelperUltimateV1_000005100.safetensors",
+            "version": "1.0.0",
+            "description": "Helps maintain clothing consistency (V1)."
+        },
+        {
+            "name": "Some Civitai Model",
+            "url": "https://civitai.com/models/929497?modelVersionId=2241189",
+            "local_path": "models/loras/some_model.safetensors",
+            "version": "1.0.0",
+            "description": "Downloaded from Civitai"
+        }
+    ],
+    "config_version": "1.0"
+}

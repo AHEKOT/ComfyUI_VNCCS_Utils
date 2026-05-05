@@ -247,7 +247,7 @@ export function parseOpenPoseJSON(data) {
 
     console.log(`[OpenPose Import] Detected ${numKeypoints} body keypoints → ${nameMap === BODY25_NAMES ? "BODY_25" : "COCO-18"} format` +
         `${handLeft ? ", left hand" : ""}${handRight ? ", right hand" : ""}${face ? ", face" : ""}`);
-    return { joints, handLeft, handRight, face, canvasWidth, canvasHeight };
+    return { joints, handLeft, handRight, face, canvasWidth, canvasHeight, source: 'openpose' };
 }
 
 /**
@@ -306,7 +306,7 @@ export function parseVNCCSSkeletonJSON(data) {
         };
     }
 
-    return { joints, canvasWidth: canvas.width, canvasHeight: canvas.height };
+    return { joints, canvasWidth: canvas.width, canvasHeight: canvas.height, source: 'vnccs' };
 }
 
 /**
@@ -389,6 +389,183 @@ function _computeCentroid(points) {
     let sx = 0, sy = 0;
     for (const p of points) { sx += p.x; sy += p.y; }
     return { x: sx / points.length, y: sy / points.length };
+}
+
+const RTMW_INDEX_NAMES = [
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+    "left_big_toe",
+    "left_small_toe",
+    "left_heel",
+    "right_big_toe",
+    "right_small_toe",
+    "right_heel",
+];
+
+function _normalizeImportJointName(rawName) {
+    if (!rawName) return null;
+
+    let name = String(rawName).trim().toLowerCase().replace(/[\s-]+/g, "_");
+    if (!name) return null;
+
+    name = name
+        .replace(/^(left|lft)_/, "l_")
+        .replace(/^(right|rgt)_/, "r_");
+
+    for (const suffix of ["_coco", "_h36m", "_smpl", "_joint"]) {
+        if (name.endsWith(suffix)) {
+            name = name.slice(0, -suffix.length);
+        }
+    }
+
+    if (name === "pelvis" || name === "pelv" || name === "hip") {
+        return "mid_hip";
+    }
+
+    return name;
+}
+
+function _finalizeImportedJoints(joints, canvasWidth, canvasHeight, source) {
+    if (!joints.neck && joints.l_shoulder && joints.r_shoulder) {
+        joints.neck = {
+            x: (joints.l_shoulder.x + joints.r_shoulder.x) / 2,
+            y: (joints.l_shoulder.y + joints.r_shoulder.y) / 2,
+            c: Math.min(joints.l_shoulder.c, joints.r_shoulder.c),
+        };
+    }
+
+    if (!joints.mid_hip && joints.l_hip && joints.r_hip) {
+        joints.mid_hip = {
+            x: (joints.l_hip.x + joints.r_hip.x) / 2,
+            y: (joints.l_hip.y + joints.r_hip.y) / 2,
+            c: Math.min(joints.l_hip.c, joints.r_hip.c),
+        };
+    }
+
+    return Object.keys(joints).length > 0 ? { joints, canvasWidth, canvasHeight, source } : null;
+}
+
+function _extractNamed2DJoints(points, canvasWidth, canvasHeight, assumeNormalized = false) {
+    const entries = [];
+
+    if (Array.isArray(points)) {
+        for (let index = 0; index < points.length; index++) {
+            entries.push([index, points[index]]);
+        }
+    } else if (points && typeof points === "object") {
+        for (const entry of Object.entries(points)) {
+            entries.push(entry);
+        }
+    }
+
+    if (entries.length === 0) return null;
+
+    let isNormalized = assumeNormalized;
+    if (!assumeNormalized) {
+        const maxCoord = entries.reduce((currentMax, [, value]) => {
+            if (Array.isArray(value)) {
+                return Math.max(currentMax, Math.abs(value[0] || 0), Math.abs(value[1] || 0));
+            }
+            if (value && typeof value === "object") {
+                return Math.max(currentMax, Math.abs(value.x || 0), Math.abs(value.y || 0));
+            }
+            return currentMax;
+        }, 0);
+        isNormalized = maxCoord <= 1.5;
+    }
+
+    const joints = {};
+    for (const [rawKey, value] of entries) {
+        let rawName = rawKey;
+        let x;
+        let y;
+
+        if (Array.isArray(value)) {
+            x = value[0];
+            y = value[1];
+        } else if (value && typeof value === "object") {
+            x = value.x;
+            y = value.y;
+            rawName = value.name ?? rawKey;
+        }
+
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+        const name = _normalizeImportJointName(rawName);
+        if (!name) continue;
+
+        joints[name] = {
+            x: isNormalized ? x * canvasWidth : x,
+            y: isNormalized ? y * canvasHeight : y,
+            c: 1.0,
+        };
+    }
+
+    return joints;
+}
+
+function _projectNamed3DTo2D(points, canvasWidth, canvasHeight) {
+    const samples = [];
+
+    if (!points || typeof points !== "object") return null;
+
+    for (const [rawName, value] of Object.entries(points)) {
+        let x;
+        let y;
+        if (Array.isArray(value)) {
+            x = value[0];
+            y = value[1];
+        } else if (value && typeof value === "object") {
+            x = value.x;
+            y = value.y;
+        }
+
+        if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+
+        const name = _normalizeImportJointName(rawName);
+        if (!name) continue;
+
+        samples.push({ name, x, y });
+    }
+
+    if (samples.length === 0) return null;
+
+    const maxAbsCoord = samples.reduce((currentMax, point) => Math.max(currentMax, Math.abs(point.x), Math.abs(point.y)), 0);
+    const normalized = maxAbsCoord <= 1.5;
+    const minX = Math.min(...samples.map(point => point.x));
+    const maxX = Math.max(...samples.map(point => point.x));
+    const minY = Math.min(...samples.map(point => point.y));
+    const maxY = Math.max(...samples.map(point => point.y));
+    const spanX = Math.max(maxX - minX, 1e-6);
+    const spanY = Math.max(maxY - minY, 1e-6);
+
+    const joints = {};
+    for (const point of samples) {
+        joints[point.name] = normalized
+            ? { x: point.x * canvasWidth, y: point.y * canvasHeight, c: 1.0 }
+            : {
+                x: canvasWidth * 0.2 + ((point.x - minX) / spanX) * canvasWidth * 0.6,
+                y: canvasHeight * 0.2 + ((point.y - minY) / spanY) * canvasHeight * 0.6,
+                c: 1.0,
+            };
+    }
+
+    return joints;
 }
 
 /**
@@ -925,6 +1102,134 @@ export function roundTripTest(parsed, viewer, poseResult) {
     }
 }
 
+/**
+ * Parse HMR2 / pose3d JSON output.
+ * Supports per-person `keypoints_2d_norm` (name -> [nx, ny]) and
+ * name-keyed `keypoints_3d` where available. Falls back to default canvas size.
+ */
+export function parseHMR2JSON(data) {
+    const people = data.people || [];
+    if (!people || people.length === 0) return null;
+
+    const person = people[0];
+
+    // Prefer normalized 2D keypoints (name -> [nx, ny])
+    const kp2dnorm = person.keypoints_2d_norm || person.keypoints_2d || null;
+    const canvasFromSource = Array.isArray(data.source_image_size) ? data.source_image_size : null;
+    const canvasWidth = data.canvas_width || (data.canvas && data.canvas.width) || (canvasFromSource ? canvasFromSource[0] : 512);
+    const canvasHeight = data.canvas_height || (data.canvas && data.canvas.height) || (canvasFromSource ? canvasFromSource[1] : 1536);
+
+    if (kp2dnorm && typeof kp2dnorm === 'object') {
+        const joints = {};
+        for (const [rawName, val] of Object.entries(kp2dnorm)) {
+            if (!val) continue;
+            // val may be [nx, ny] or {x,y}
+            let nx, ny;
+            if (Array.isArray(val)) {
+                nx = val[0]; ny = val[1];
+            } else if (val.x !== undefined && val.y !== undefined) {
+                nx = val.x; ny = val.y;
+            } else {
+                continue;
+            }
+
+            // Normalize name conventions: left_ -> l_, right_ -> r_
+            let name = rawName.replace(/^left_/, 'l_').replace(/^right_/, 'r_');
+
+            joints[name] = { x: nx * canvasWidth, y: ny * canvasHeight, c: 1.0 };
+        }
+
+        // compute mid_hip if missing
+        if (!joints.mid_hip && joints.l_hip && joints.r_hip) {
+            joints.mid_hip = { x: (joints.l_hip.x + joints.r_hip.x) / 2, y: (joints.l_hip.y + joints.r_hip.y) / 2, c: 1.0 };
+        }
+
+        return { joints, canvasWidth, canvasHeight, source: 'hmr2' };
+    }
+
+    // If name-keyed 3D keypoints exist, project X/Y using provided canvas or fallbacks
+    const kp3d = person.keypoints_3d || null;
+    if (kp3d && typeof kp3d === 'object') {
+        const joints = {};
+        for (const [rawName, val] of Object.entries(kp3d)) {
+            if (!val || !Array.isArray(val) || val.length < 2) continue;
+            let nx = val[0], ny = val[1];
+            let name = rawName.replace(/^left_/, 'l_').replace(/^right_/, 'r_');
+            // If values look already pixel coords (large), use as-is; else assume normalized
+            const x = Math.abs(nx) > 1.5 ? nx : nx * canvasWidth;
+            const y = Math.abs(ny) > 1.5 ? ny : ny * canvasHeight;
+            joints[name] = { x: x, y: y, c: 1.0 };
+        }
+        if (!joints.mid_hip && joints.l_hip && joints.r_hip) {
+            joints.mid_hip = { x: (joints.l_hip.x + joints.r_hip.x) / 2, y: (joints.l_hip.y + joints.r_hip.y) / 2, c: 1.0 };
+        }
+        return { joints, canvasWidth, canvasHeight, source: 'hmr2' };
+    }
+
+    return null;
+}
+
+export function parseRTMWJSON(data) {
+    const people = data.persons || [];
+    if (!Array.isArray(people) || people.length === 0) return null;
+
+    const person = people[0];
+    const keypoints = person?.keypoints;
+    if (!Array.isArray(keypoints) || keypoints.length === 0) return null;
+
+    const canvasWidth = data.width || data.canvas_width || (data.canvas && data.canvas.width) || 512;
+    const canvasHeight = data.height || data.canvas_height || (data.canvas && data.canvas.height) || 1536;
+    const joints = {};
+
+    for (let index = 0; index < keypoints.length; index++) {
+        const point = keypoints[index];
+        if (!point || !Number.isFinite(point.px) || !Number.isFinite(point.py)) continue;
+
+        const confidence = Number.isFinite(point.score) ? point.score : 1.0;
+        const isUsable = point.valid === true || (!('valid' in point) && confidence >= 0.1) || confidence >= 0.1;
+        if (!isUsable) continue;
+
+        const name = _normalizeImportJointName(point.name || RTMW_INDEX_NAMES[index]);
+        if (!name) continue;
+
+        joints[name] = {
+            x: point.px,
+            y: point.py,
+            c: confidence,
+        };
+    }
+
+    return _finalizeImportedJoints(joints, canvasWidth, canvasHeight, 'rtmw');
+}
+
+export function parseMeTRAbsJSON(data) {
+    const people = data.people || [];
+    if (!Array.isArray(people) || people.length === 0) return null;
+
+    const person = people[0];
+    const isMeTRAbsShape =
+        (typeof data.version === 'string' && data.version.toLowerCase().includes('metrabs')) ||
+        !!person?.vnccs_ik_targets ||
+        (!!person?.keypoints_2d && !person?.keypoints_2d_norm && Array.isArray(data.joint_names));
+
+    if (!isMeTRAbsShape) return null;
+
+    const sourceImageSize = Array.isArray(data.source_image_size) ? data.source_image_size : null;
+    const canvasWidth = data.canvas_width || (data.canvas && data.canvas.width) || (sourceImageSize ? sourceImageSize[0] : 512);
+    const canvasHeight = data.canvas_height || (data.canvas && data.canvas.height) || (sourceImageSize ? sourceImageSize[1] : 1536);
+
+    let joints = null;
+    if (person.keypoints_2d && typeof person.keypoints_2d === 'object') {
+        joints = _extractNamed2DJoints(person.keypoints_2d, canvasWidth, canvasHeight, false);
+    }
+
+    if (!joints && person.keypoints_3d && typeof person.keypoints_3d === 'object') {
+        joints = _projectNamed3DTo2D(person.keypoints_3d, canvasWidth, canvasHeight);
+    }
+
+    return joints ? _finalizeImportedJoints(joints, canvasWidth, canvasHeight, 'metrabs') : null;
+}
+
 export function detectAndParseJSON(data) {
     // DWPreprocessor / controlnet_aux wraps output in an array
     if (Array.isArray(data)) {
@@ -933,9 +1238,21 @@ export function detectAndParseJSON(data) {
         }
         return null;
     }
-    // POSE_KEYPOINT format
+    // RTMW pose3d output
+    if (data.persons && Array.isArray(data.persons)) {
+        const r = parseRTMWJSON(data);
+        if (r) return r;
+    }
+    // HMR2 / pose3d output (keypoints_2d_norm or keypoints_3d)
     if (data.people && Array.isArray(data.people)) {
-        return parseOpenPoseJSON(data);
+        const m = parseMeTRAbsJSON(data);
+        if (m) return m;
+        // Try HMR2-style first
+        const h = parseHMR2JSON(data);
+        if (h) return h;
+        // Fallback to POSE_KEYPOINT format
+        const p = parseOpenPoseJSON(data);
+        if (p) return p;
     }
     // VNCCS skeleton format
     if (data.joints && (data.canvas || data.canvas_width)) {

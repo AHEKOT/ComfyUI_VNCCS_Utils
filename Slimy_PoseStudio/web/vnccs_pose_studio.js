@@ -1,0 +1,6566 @@
+﻿/**
+ * VNCCS Pose Studio - Combined mesh editor and multi-pose generator
+ * 
+ * Combines Character Studio sliders, dynamic pose tabs, and Debug3 gizmo controls.
+ */
+
+import { app } from "../../scripts/app.js";
+import { api } from "../../scripts/api.js";
+import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
+
+// Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
+const EXTENSION_URL = new URL(".", import.meta.url).toString();
+
+/**
+ * [DEBUG] Set camera to a fixed front view that fits the mannequin.
+ * Uses measured chest world position (~0.5, ~0.5, ~0.6) and model height ~1.7m.
+ * Replace resetCamera() during OpenPose import debugging.
+ */
+function _opDebugCamera(viewer) {
+    if (!viewer || !viewer.camera || !viewer.orbit) return;
+    // Target: mid-body (~hip height)
+    const targetY = 0.9;
+    viewer.camera.position.set(0, targetY, 3.0);
+    viewer.camera.fov = 45;
+    viewer.camera.updateProjectionMatrix();
+    viewer.orbit.target.set(0, targetY, 0);
+    viewer.orbit.update();
+    viewer.requestRender();
+}
+
+// === Styles ===
+const STYLES = `
+/* ===== VNCCS Pose Studio — Sakura Theme ===== */
+/* Variables scoped to the node container — won't leak to other ComfyUI tabs */
+
+
+
+/* パネル本体も、中にあるレイアウト用divもすべてスルー */
+.vnccs-pose-studio,
+.vnccs-ps-center,
+.vnccs-ps-tabs,
+.vnccs-ps-canvas-wrap,
+.vnccs-ps-footer,
+.vnccs-ps-right-sidebar {
+    pointer-events: none !important;
+    background-color: rgba(255, 0, 0, 0.1); /* 余白確認用 */
+}
+
+/* 「実際に触るパーツ」だけをピンポイントで auto にする */
+/* これで、ボタンの形、文字の形、Canvasの形以外はすべて透明（パン可能）になります */
+.vnccs-ps-btn,
+.vnccs-ps-tab,
+.vnccs-ps-slider,
+input,
+select,
+canvas {
+    pointer-events: auto !important;
+}
+
+
+
+
+.vnccs-pose-studio {
+    --ps-bg:            #0a0a0f;
+    --ps-panel:         rgba(16, 14, 24, 0.92);
+    --ps-elevated:      #1a1a26;
+    --ps-surface:       rgba(30, 28, 44, 0.85);
+    --ps-hover:         rgba(42, 40, 60, 0.9);
+    --ps-border:        rgba(255, 255, 255, 0.06);
+    --ps-border-hover:  rgba(255, 255, 255, 0.14);
+    --ps-accent:        #4caf7d;
+    --ps-accent-hover:  #6dd49a;
+    --ps-accent-glow:   rgba(76, 175, 125, 0.3);
+    --ps-accent-subtle: rgba(76, 175, 125, 0.1);
+    --ps-accent-border: rgba(76, 175, 125, 0.22);
+    --ps-accent-lavender: #88d4a0;
+    --ps-success: #00d68f;
+    --ps-danger:  #ff4757;
+    --ps-warning: #ffaa00;
+    --ps-text:       #e8e8f0;
+    --ps-text-muted: #9898a8;
+    --ps-text-dim:   #5e5e70;
+    --ps-input-bg:   rgba(255, 255, 255, 0.04);
+    --ps-font:       'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    --ps-font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+    --ps-radius-sm:  8px;
+    --ps-radius-md:  12px;
+    --ps-radius-lg:  16px;
+    --ps-transition: 0.2s ease;
+}
+
+/* Main Container */
+/* Fullscreen floating button */
+.vnccs-ps-fs-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 50;
+    width: 32px;
+    height: 32px;
+    background: rgba(20, 16, 30, 0.75);
+    border: 1px solid var(--ps-accent-border);
+    border-radius: var(--ps-radius-sm);
+    color: var(--ps-accent);
+    font-size: 16px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--ps-transition);
+    pointer-events: auto !important;
+}
+.vnccs-ps-fs-btn:hover {
+    background: var(--ps-accent-subtle);
+    border-color: var(--ps-accent);
+}
+
+.vnccs-pose-studio:fullscreen,
+.vnccs-pose-studio:-webkit-full-screen {
+    width: 100vw !important;
+    height: 100vh !important;
+}
+
+.vnccs-pose-studio {
+    display: flex;
+    flex-direction: row;
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    font-family: var(--ps-font);
+    font-size: 15px;
+    color: var(--ps-text);
+    overflow: hidden;
+    box-sizing: border-box;
+
+    pointer-events: none;
+
+    position: relative;
+}
+
+/* === Left Panel === */
+.vnccs-ps-left {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    overflow-y: auto;
+    border-right: none;
+    background: transparent;
+
+    pointer-events: none;
+
+}
+.vnccs-ps-left > * {
+
+    pointer-events: auto;
+    //pointer-events: none;
+}
+
+.vnccs-ps-left::-webkit-scrollbar { width: 8px; }
+.vnccs-ps-left::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 4px; }
+.vnccs-ps-left::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 4px; }
+
+/* === Center Panel (Canvas) === */
+.vnccs-ps-center {
+    flex: 1;
+    min-width: 400px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+
+}
+
+/* === Right Sidebar (Lighting) === */
+.vnccs-ps-right-sidebar {
+    width: 220px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    overflow-y: auto;
+    border-left: none;
+    pointer-events: none;
+    background: transparent;
+}
+.vnccs-ps-right-sidebar > * {
+
+    pointer-events: auto;
+    //pointer-events: none;
+
+}
+
+.vnccs-ps-right-sidebar::-webkit-scrollbar { width: 8px; }
+.vnccs-ps-right-sidebar::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 4px; }
+.vnccs-ps-right-sidebar::-webkit-scrollbar-track { background: rgba(255,255,255,0.03); border-radius: 4px; }
+
+/* === Section Component — Glassmorphic === */
+.vnccs-ps-section {
+    background: rgba(20, 16, 30, 0.72);
+    border: 1px solid var(--ps-accent-border);
+    border-radius: var(--ps-radius-md);
+    overflow: visible;
+    flex-shrink: 0;
+    position: relative;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+}
+
+/* Luminous top highlight */
+.vnccs-ps-section::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 14%; right: 14%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.55), transparent);
+    border-radius: 1px;
+    pointer-events: none;
+    z-index: 1;
+}
+
+.vnccs-ps-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 10px;
+    background: rgba(0, 0, 0, 0.22);
+    border-bottom: 1px solid var(--ps-border);
+    cursor: pointer;
+    user-select: none;
+    border-radius: var(--ps-radius-md) var(--ps-radius-md) 0 0;
+    overflow: hidden;
+}
+
+.vnccs-ps-section-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: #aadd44;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+}
+
+.vnccs-ps-section-title::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    background: #aadd44;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+.vnccs-ps-section-toggle {
+    font-size: 12px;
+    color: var(--ps-text-muted);
+    transition: transform var(--ps-transition);
+}
+
+.vnccs-ps-section.collapsed .vnccs-ps-section-toggle {
+    transform: rotate(-90deg);
+}
+
+/* CameraPane */
+.vnccs-ps-section-content {
+    padding: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+
+    pointer-events: auto;
+    //pointer-events: none;
+}
+
+.vnccs-ps-section.collapsed .vnccs-ps-section-content {
+    display: none;
+}
+
+/* ExportSetting === Form Fields === */
+.vnccs-ps-field {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+
+    pointer-events: auto;
+    //pointer-events: none;
+}
+
+.vnccs-ps-label {
+    font-size: 13px;
+    color: var(--ps-text-muted);
+    text-transform: uppercase;
+    font-weight: 700;
+    letter-spacing: 0.8px;
+}
+
+.vnccs-ps-value {
+    font-size: 13px;
+    color: var(--ps-accent);
+    margin-left: auto;
+    font-family: var(--ps-font-mono);
+}
+
+.vnccs-ps-label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+/* Race Slider */
+.vnccs-ps-slider-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    padding: 4px 8px;
+
+    pointer-events: auto;
+    //pointer-events: none;
+
+    transition: border-color var(--ps-transition);
+}
+
+.vnccs-ps-slider-wrap:hover {
+    border-color: var(--ps-border-hover);
+}
+
+/* MeshParam Slider */
+.vnccs-ps-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 3px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 2px;
+    cursor: pointer;
+
+    pointer-events: auto;
+    //pointer-events: none;
+}
+
+.vnccs-ps-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 13px;
+    height: 13px;
+    background: var(--ps-accent);
+    border-radius: 50%;
+    cursor: pointer;
+    box-shadow: 0 0 6px var(--ps-accent-glow);
+    transition: box-shadow var(--ps-transition);
+}
+
+.vnccs-ps-slider::-webkit-slider-thumb:hover {
+    box-shadow: 0 0 12px var(--ps-accent-glow);
+}
+
+.vnccs-ps-slider::-moz-range-thumb {
+    width: 13px;
+    height: 13px;
+    background: var(--ps-accent);
+    border-radius: 50%;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 0 6px var(--ps-accent-glow);
+}
+
+.vnccs-ps-slider-val {
+    width: 35px;
+    text-align: right;
+    font-size: 14px;
+    color: var(--ps-accent);
+    background: transparent;
+    border: none;
+    font-family: var(--ps-font-mono);
+}
+
+/* Input */
+.vnccs-ps-input {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: var(--ps-text);
+    border-radius: var(--ps-radius-sm);
+    padding: 5px 8px;
+    font-family: var(--ps-font);
+    font-size: 14px;
+    width: 100%;
+    box-sizing: border-box;
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-input:focus {
+    outline: none;
+    border-color: var(--ps-accent-border);
+    background: rgba(255, 143, 163, 0.03);
+    box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.06);
+}
+
+.vnccs-ps-textarea {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: var(--ps-text);
+    border-radius: var(--ps-radius-sm);
+    padding: 8px 10px;
+    font-family: var(--ps-font);
+    font-size: 13px;
+    width: 100%;
+    box-sizing: border-box;
+    resize: none;
+    overflow-y: hidden;
+    line-height: 1.5;
+    min-height: 60px;
+
+    pointer-events: auto;
+    //pointer-events: none;
+
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-textarea:focus {
+    outline: none;
+    border-color: var(--ps-accent-border);
+    background: rgba(255, 143, 163, 0.03);
+    box-shadow: 0 0 0 2px rgba(255, 143, 163, 0.06);
+}
+
+/* Select */
+.vnccs-ps-select {
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    color: var(--ps-text);
+    border-radius: var(--ps-radius-sm);
+    padding: 5px 8px;
+    font-family: var(--ps-font);
+    font-size: 14px;
+    width: 100%;
+    cursor: pointer;
+    transition: all var(--ps-transition);
+}
+
+/* Counter-zoom removed as zoom is now 1.0 */
+.vnccs-ps-select:focus {
+    outline: none;
+    border-color: var(--ps-accent-border);
+    transform: none;
+    transform-origin: top left;
+}
+
+/* Toggle */
+.vnccs-ps-toggle {
+    display: flex;
+    gap: 2px;
+    background: rgba(0, 0, 0, 0.3);
+    border-radius: var(--ps-radius-sm);
+    padding: 2px;
+    border: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-toggle-btn {
+    flex: 1;
+    border: none;
+    padding: 4px 8px;
+    cursor: pointer;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--ps-font);
+    transition: all var(--ps-transition);
+    background: transparent;
+    color: var(--ps-text-muted);
+}
+
+.vnccs-ps-toggle-btn.active {
+    color: #1a1525;
+}
+
+.vnccs-ps-toggle-btn.male.active {
+    background: linear-gradient(135deg, #6ab0f5, #a3d0ff);
+    box-shadow: 0 2px 8px rgba(106, 176, 245, 0.3);
+}
+
+.vnccs-ps-toggle-btn.female.active {
+    background: linear-gradient(135deg, var(--ps-accent), var(--ps-accent-hover));
+    box-shadow: 0 2px 8px var(--ps-accent-glow);
+}
+
+.vnccs-ps-toggle-btn.list.active {
+    background: linear-gradient(135deg, #64d8cb, #a0ede6);
+    box-shadow: 0 2px 8px rgba(100, 216, 203, 0.3);
+}
+
+.vnccs-ps-toggle-btn.grid.active {
+    background: linear-gradient(135deg, #ffb347, #ffd580);
+    box-shadow: 0 2px 8px rgba(255, 179, 71, 0.3);
+}
+
+/* Input Row */
+.vnccs-ps-row {
+    display: flex;
+    gap: 8px;
+}
+
+.vnccs-ps-row > * {
+    flex: 1;
+}
+
+/* Color Picker */
+.vnccs-ps-color {
+    width: 100%;
+    height: 26px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    cursor: pointer;
+    padding: 2px;
+    background: var(--ps-input-bg);
+    transition: border-color var(--ps-transition);
+}
+
+.vnccs-ps-color:hover {
+    border-color: var(--ps-accent-border);
+}
+
+/* === Tab Bar === */
+.vnccs-ps-tabs {
+    display: flex;
+    align-items: flex-end;
+    padding: 8px 10px 0;
+    background: rgba(0, 0, 0, 0.35);
+    gap: 3px;
+    border-bottom: 1px solid var(--ps-border);
+    overflow-x: auto;
+    flex-shrink: 0;
+}
+
+.vnccs-ps-tabs::-webkit-scrollbar { height: 2px; }
+.vnccs-ps-tabs::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 1px; }
+
+.vnccs-ps-tab {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--ps-border);
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    color: var(--ps-text-muted);
+    cursor: pointer;
+    font-size: 14px;
+    font-family: var(--ps-font);
+    font-weight: 600;
+    white-space: nowrap;
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-tab:hover {
+    background: rgba(255, 143, 163, 0.08);
+    color: var(--ps-text);
+    border-color: var(--ps-accent-border);
+}
+
+.vnccs-ps-reset-btn {
+    width: 20px;
+    height: 20px;
+    background: transparent;
+    border: 1px solid var(--ps-border);
+    color: var(--ps-text-muted);
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-reset-btn:hover {
+    color: var(--ps-accent);
+    border-color: var(--ps-accent-border);
+    background: var(--ps-accent-subtle);
+}
+
+/* Lighting UI Styles */
+.vnccs-ps-light-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 15px;
+    padding-right: 4px;
+    padding-bottom: 8px;
+}
+
+/* Light Card */
+.vnccs-ps-light-card {
+    background: rgba(20, 16, 30, 0.7);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    overflow: hidden;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    transition: all var(--ps-transition);
+}
+.vnccs-ps-light-card:hover {
+    border-color: var(--ps-border-hover);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+    transform: translateY(-1px);
+}
+
+/* Header */
+.vnccs-ps-light-header {
+    background: rgba(0,0,0,0.2);
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-title {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--ps-text);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--ps-font);
+}
+.vnccs-ps-light-icon {
+    font-size: 14px;
+    opacity: 0.8;
+}
+
+/* Remove Button */
+.vnccs-ps-light-remove {
+    width: 20px; height: 20px;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--ps-text-dim);
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    transition: all var(--ps-transition);
+    padding: 0;
+}
+.vnccs-ps-light-remove:hover {
+    background: rgba(255, 71, 87, 0.12);
+    color: #ff4757;
+    border-color: rgba(255, 71, 87, 0.3);
+}
+
+/* Body */
+.vnccs-ps-light-body {
+    padding: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* Controls Grid */
+.vnccs-ps-light-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+    align-items: center;
+}
+
+/* Input Styles */
+.vnccs-ps-light-select {
+    width: 100%;
+    background: var(--ps-input-bg);
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    color: var(--ps-text);
+    font-size: 14px;
+    padding: 4px 7px;
+    font-family: var(--ps-font);
+    cursor: pointer;
+    transition: border-color var(--ps-transition);
+}
+.vnccs-ps-light-select:focus { border-color: var(--ps-accent-border); outline: none; }
+
+.vnccs-ps-light-color {
+    width: 100%;
+    height: 22px;
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    padding: 2px;
+    cursor: pointer;
+    background: var(--ps-input-bg);
+    transition: border-color var(--ps-transition);
+}
+
+.vnccs-ps-light-color:hover { border-color: var(--ps-accent-border); }
+
+/* Sliders */
+.vnccs-ps-light-slider-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.vnccs-ps-light-slider {
+    flex: 1;
+    height: 3px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 2px;
+    -webkit-appearance: none;
+}
+.vnccs-ps-light-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    background: var(--ps-accent);
+    cursor: pointer;
+    box-shadow: 0 0 5px var(--ps-accent-glow);
+}
+
+/* Position Grid */
+.vnccs-ps-light-pos-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 10px;
+    align-items: center;
+    background: rgba(0,0,0,0.25);
+    padding: 8px;
+    border-radius: var(--ps-radius-sm);
+    border: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-pos-label {
+    font-size: 13px;
+    color: var(--ps-text-muted);
+    font-weight: 700;
+    width: 10px;
+}
+.vnccs-ps-light-value {
+    width: 30px;
+    flex-shrink: 0;
+    text-align: right;
+    font-size: 13px;
+    color: var(--ps-accent);
+    font-family: var(--ps-font-mono);
+}
+
+/* Light Radar */
+.vnccs-ps-light-radar-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    background: rgba(0,0,0,0.35);
+    padding: 10px;
+    border-radius: var(--ps-radius-sm);
+    border: 1px solid var(--ps-border);
+}
+.vnccs-ps-light-radar-main {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    justify-content: center;
+    width: 100%;
+}
+.vnccs-ps-light-radar-canvas {
+    border-radius: 50%;
+    border: 1px solid var(--ps-border);
+    cursor: crosshair;
+    background: rgba(8, 6, 14, 0.9);
+    box-shadow: inset 0 0 12px rgba(0,0,0,0.6), 0 0 8px rgba(255,143,163,0.05);
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: space-between;
+    height: 100px;
+    width: 35px;
+    flex-shrink: 0;
+}
+.vnccs-ps-light-slider-vert {
+    -webkit-appearance: slider-vertical;
+    appearance: slider-vertical;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    width: 6px;
+    height: 70px;
+    cursor: pointer;
+    background: rgba(255,255,255,0.1);
+    margin: 0;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-runnable-track {
+    background: transparent;
+}
+.vnccs-ps-light-slider-vert::-webkit-slider-thumb {
+    width: 12px; height: 12px;
+}
+.vnccs-ps-light-h-val {
+    font-size: 14px;
+    color: var(--ps-accent);
+    height: 12px;
+    line-height: 12px;
+    font-family: var(--ps-font-mono);
+}
+.vnccs-ps-light-h-label {
+    font-size: 13px;
+    color: var(--ps-text-dim);
+    font-weight: 700;
+    height: 12px;
+    line-height: 12px;
+}
+
+
+
+/* Large Add Btn */
+.vnccs-ps-btn-add-large {
+    width: 100%;
+    padding: 8px;
+    background: rgba(255, 143, 163, 0.04);
+    border: 1px dashed var(--ps-accent-border);
+    border-radius: var(--ps-radius-sm);
+    color: var(--ps-text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    font-family: var(--ps-font);
+    transition: all var(--ps-transition);
+    margin-top: 5px;
+}
+.vnccs-ps-btn-add-large:hover {
+    border-color: var(--ps-accent);
+    color: var(--ps-accent);
+    background: var(--ps-accent-subtle);
+}
+
+.vnccs-ps-tab.active {
+    background: rgba(255, 143, 163, 0.12);
+    color: var(--ps-accent);
+    border-color: var(--ps-accent-border);
+    border-bottom: 1px solid rgba(16, 14, 24, 0.92);
+    margin-bottom: -1px;
+    box-shadow: 0 -3px 10px rgba(255, 143, 163, 0.1);
+}
+
+.vnccs-ps-tab-close {
+    font-size: 14px;
+    line-height: 1;
+    color: var(--ps-text-muted);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-tab-close:hover {
+    color: var(--ps-danger);
+    opacity: 1;
+}
+
+.vnccs-ps-tab-add {
+    padding: 5px 10px;
+    background: transparent;
+    border: 1px dashed rgba(255, 255, 255, 0.12);
+    border-radius: 8px 8px 0 0;
+    color: var(--ps-text-muted);
+    cursor: pointer;
+    font-size: 16px;
+    font-family: var(--ps-font);
+    transition: all var(--ps-transition);
+    line-height: 1;
+}
+
+.vnccs-ps-tab-add:hover {
+    background: var(--ps-accent-subtle);
+    border-color: var(--ps-accent-border);
+    color: var(--ps-accent);
+}
+
+/* === 3D Canvas === */
+.vnccs-ps-canvas-wrap {
+    flex: 1;
+    position: relative;
+    overflow: hidden;
+    background:
+        radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px),
+        linear-gradient(180deg, #080810 0%, #0d0b18 100%);
+    background-size: 22px 22px, 100% 100%;
+}
+
+.vnccs-ps-canvas-wrap canvas {
+    width: 100% !important;
+    height: 100% !important;
+    display: block;
+}
+
+/* === Action Bar === */
+.vnccs-ps-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    padding: 7px 8px;
+    background: rgba(0, 0, 0, 0.3);
+    border-top: 1px solid var(--ps-border);
+    flex-shrink: 0;
+}
+
+.vnccs-ps-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 12px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    color: var(--ps-text);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: var(--ps-font);
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-btn:hover {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: var(--ps-border-hover);
+    transform: translateY(-1px);
+}
+
+.vnccs-ps-btn.primary {
+    background: linear-gradient(135deg, var(--ps-accent) 0%, var(--ps-accent-hover) 100%);
+    border-color: var(--ps-accent);
+    color: #0e1f14;
+    font-weight: 700;
+    box-shadow: 0 3px 12px var(--ps-accent-glow);
+    position: relative;
+    overflow: hidden;
+}
+
+.vnccs-ps-btn.primary::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.18) 45%, rgba(255,255,255,0.28) 50%, rgba(255,255,255,0.18) 55%, transparent 100%);
+    transform: translateX(-120%) skewX(-15deg);
+    animation: ps-btn-shimmer 3.5s ease-in-out infinite;
+    pointer-events: none;
+}
+
+@keyframes ps-btn-shimmer {
+    0%  { transform: translateX(-120%) skewX(-15deg); opacity: 1; }
+    35% { transform: translateX(120%) skewX(-15deg); opacity: 1; }
+    100%{ transform: translateX(120%) skewX(-15deg); opacity: 0; }
+}
+
+.vnccs-ps-btn.primary:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px var(--ps-accent-glow);
+}
+
+.vnccs-ps-btn.danger {
+    background: rgba(255, 71, 87, 0.12);
+    border-color: rgba(255, 71, 87, 0.3);
+    color: #ff4757;
+}
+
+.vnccs-ps-btn.danger:hover {
+    background: #ff4757;
+    border-color: #ff4757;
+    color: white;
+}
+
+.vnccs-ps-btn--sync-tabs {
+    background: rgba(80, 120, 200, 0.18);
+    border-color: rgba(100, 150, 255, 0.35);
+    color: #8ab4ff;
+}
+
+.vnccs-ps-btn--sync-tabs:hover {
+    background: rgba(80, 120, 200, 0.32);
+    border-color: rgba(100, 150, 255, 0.6);
+    color: #b8d0ff;
+}
+
+.vnccs-ps-btn-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+/* === Modal Dialog === */
+.vnccs-ps-modal-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.75);
+    backdrop-filter: blur(8px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+
+    pointer-events: auto;
+    //pointer-events: none;
+}
+
+.vnccs-ps-modal {
+    background: rgba(18, 14, 28, 0.95);
+    border: 1px solid var(--ps-accent-border);
+    border-radius: var(--ps-radius-lg);
+    width: 340px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.7), 0 0 0 1px rgba(255, 143, 163, 0.05);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+    position: relative;
+}
+
+.vnccs-ps-modal::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 15%; right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.6), transparent);
+    pointer-events: none;
+}
+
+.vnccs-ps-footer {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding-top: 8px;
+    border-top: 1px solid var(--ps-border);
+    margin-top: 8px;
+}
+
+.vnccs-ps-footer .vnccs-ps-btn {
+    flex: 1;
+    min-width: 40px;
+}
+
+.vnccs-ps-actions .vnccs-ps-btn {
+    flex: 1;
+    min-width: 40px;
+}
+
+.vnccs-ps-modal-title {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--ps-border);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ps-accent);
+    margin: 0;
+    font-family: var(--ps-font);
+    letter-spacing: 0.5px;
+}
+
+.vnccs-ps-modal-content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+}
+
+.vnccs-ps-modal-btn {
+    padding: 10px 12px;
+    border: 1px solid var(--ps-border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--ps-text);
+    border-radius: var(--ps-radius-sm);
+    cursor: pointer;
+    text-align: left;
+    transition: all var(--ps-transition);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--ps-font);
+    font-size: 13px;
+}
+
+.vnccs-ps-modal-btn:hover {
+    background: var(--ps-accent-subtle);
+    border-color: var(--ps-accent-border);
+    color: var(--ps-accent-hover);
+}
+
+.vnccs-ps-settings-panel {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(8, 6, 16, 0.97);
+    backdrop-filter: blur(12px);
+    z-index: 100;
+    display: flex;
+    flex-direction: column;
+}
+
+.vnccs-ps-settings-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-settings-title {
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--ps-accent);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-family: var(--ps-font);
+    letter-spacing: 0.5px;
+}
+
+.vnccs-ps-settings-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.vnccs-ps-settings-close {
+    background: transparent;
+    border: none;
+    color: var(--ps-text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+    transition: color var(--ps-transition);
+}
+
+.vnccs-ps-settings-close:hover {
+    color: var(--ps-accent);
+}
+
+.vnccs-ps-msg-modal {
+    background: rgba(18, 14, 28, 0.95);
+    border: 1px solid var(--ps-accent-border);
+    border-radius: var(--ps-radius-lg);
+    width: 340px;
+    box-shadow: 0 24px 60px rgba(0,0,0,0.7);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+.vnccs-ps-modal-btn.cancel:hover {
+    color: var(--ps-text);
+    background: rgba(255, 255, 255, 0.06);
+}
+
+/* === Pose Library Panel === */
+.vnccs-ps-library-btn {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    background: linear-gradient(180deg, var(--ps-accent), var(--ps-accent-lavender));
+    color: #1a1525;
+    border: none;
+    border-radius: 8px 0 0 8px;
+    padding: 14px 7px;
+    cursor: pointer;
+    font-size: 16px;
+    z-index: 100;
+    transition: all var(--ps-transition);
+
+    pointer-events: auto;
+    //pointer-events: none;
+
+    box-shadow: -4px 0 20px var(--ps-accent-glow);
+}
+
+.vnccs-ps-library-btn:hover {
+    padding-right: 12px;
+    box-shadow: -6px 0 28px var(--ps-accent-glow);
+}
+
+/* POSELibrary Modal Overlay */
+.vnccs-ps-modal-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(0, 0, 200, 0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+
+    pointer-events: auto;
+    //pointer-events: none;
+
+    backdrop-filter: blur(10px);
+}
+
+.vnccs-ps-library-modal {
+    width: 95%;
+    max-width: 1200px;
+    height: 90%;
+    max-height: 900px;
+    background: rgba(14, 11, 22, 0.96);
+    border: 1px solid var(--ps-accent-border);
+    border-radius: var(--ps-radius-lg);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 32px 80px rgba(0,0,0,0.85), 0 0 0 1px rgba(255,143,163,0.05);
+    overflow: hidden;
+    flex-shrink: 0;
+    position: relative;
+}
+
+.vnccs-ps-library-modal::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 15%; right: 15%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.7), transparent);
+    pointer-events: none;
+}
+
+.vnccs-ps-library-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 22px;
+    background: rgba(0, 0, 0, 0.3);
+    border-bottom: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-library-modal-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--ps-accent);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--ps-font);
+    letter-spacing: 0.5px;
+}
+
+.vnccs-ps-modal-close {
+    background: transparent;
+    border: none;
+    color: var(--ps-text-muted);
+    font-size: 22px;
+    cursor: pointer;
+    transition: color var(--ps-transition);
+    padding: 2px 6px;
+}
+
+.vnccs-ps-modal-close:hover { color: var(--ps-accent); }
+
+.vnccs-ps-library-modal-grid {
+    flex: 1;
+    overflow-y: scroll;
+    padding: 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 16px;
+    align-content: start;
+    align-items: start;
+}
+.vnccs-ps-library-modal-grid::-webkit-scrollbar { width: 6px; }
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 3px; }
+.vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb:hover { background: var(--ps-accent); }
+
+.vnccs-ps-library-modal-footer {
+    padding: 14px 20px;
+    border-top: 1px solid var(--ps-border);
+    background: rgba(0, 0, 0, 0.3);
+    display: flex;
+    justify-content: flex-end;
+}
+
+.vnccs-ps-library-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--ps-border);
+    background: rgba(0, 0, 0, 0.25);
+}
+
+.vnccs-ps-library-title {
+    font-weight: 700;
+    color: var(--ps-accent);
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    font-family: var(--ps-font);
+}
+
+.vnccs-ps-library-close {
+    background: transparent;
+    border: none;
+    color: var(--ps-text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+    transition: color var(--ps-transition);
+}
+
+.vnccs-ps-library-close:hover {
+    color: var(--ps-accent);
+}
+
+.vnccs-ps-library-grid {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 8px;
+    align-content: start;
+}
+
+.vnccs-ps-library-item {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    overflow: hidden;
+    cursor: pointer;
+    transition: all var(--ps-transition);
+    position: relative;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+}
+
+.vnccs-ps-library-item-delete {
+    position: absolute;
+    top: 6px; right: 6px;
+    width: 22px; height: 22px;
+    background: rgba(255, 71, 87, 0.75);
+    color: white;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: all var(--ps-transition);
+    z-index: 10;
+}
+
+.vnccs-ps-library-item:hover .vnccs-ps-library-item-delete {
+    opacity: 1;
+}
+
+.vnccs-ps-library-item-delete:hover {
+    background: #ff4757;
+    transform: scale(1.15);
+}
+
+.vnccs-ps-library-item:hover {
+    border-color: var(--ps-accent-border);
+    transform: translateY(-3px);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3), 0 0 12px var(--ps-accent-subtle);
+}
+
+.vnccs-ps-library-item-preview {
+    width: 100%;
+    background: rgba(8, 6, 16, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ps-text-muted);
+    font-size: 28px;
+    overflow: hidden;
+}
+
+.vnccs-ps-library-item-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.vnccs-ps-library-item-name {
+    position: absolute;
+    bottom: 0; left: 0;
+    width: 100%;
+    padding: 7px 6px;
+    background: rgba(0, 0, 0, 0.82);
+    backdrop-filter: blur(4px);
+    font-size: 14px;
+    text-align: center;
+    color: var(--ps-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    z-index: 5;
+    font-family: var(--ps-font);
+}
+
+.vnccs-ps-library-footer {
+    padding: 8px;
+    border-top: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-library-empty {
+    grid-column: 1 / -1;
+    text-align: center;
+    color: var(--ps-text-muted);
+    padding: 24px;
+    font-size: 14px;
+    font-family: var(--ps-font);
+}
+
+/* === Loading Overlay === */
+.vnccs-ps-loading-overlay {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(6, 4, 12, 0.88);
+    backdrop-filter: blur(12px);
+    display: none;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    gap: 20px;
+    z-index: 2000;
+    color: var(--ps-text);
+    cursor: wait;
+}
+
+/* Dual-ring sakura spinner */
+.vnccs-ps-loading-spinner {
+    width: 50px;
+    height: 50px;
+    position: relative;
+}
+
+.vnccs-ps-loading-spinner::before,
+.vnccs-ps-loading-spinner::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    border: 3px solid transparent;
+}
+
+.vnccs-ps-loading-spinner::before {
+    border-top-color: var(--ps-accent);
+    border-right-color: rgba(255, 143, 163, 0.3);
+    animation: ps-spin 1s linear infinite;
+    box-shadow: 0 0 18px var(--ps-accent-glow);
+}
+
+.vnccs-ps-loading-spinner::after {
+    inset: 8px;
+    border-bottom-color: var(--ps-accent-lavender);
+    border-left-color: rgba(184, 169, 232, 0.25);
+    animation: ps-spin 1.5s linear infinite reverse;
+}
+
+@keyframes ps-spin {
+    0%   { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.vnccs-ps-loading-text {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 2px;
+    color: var(--ps-accent);
+    text-transform: uppercase;
+    font-family: var(--ps-font);
+}
+`;
+
+// Inject styles
+const OLD_STYLE = document.getElementById('vnccs-pose-studio-styles');
+if (OLD_STYLE) OLD_STYLE.remove();
+const styleEl = document.createElement("style");
+styleEl.id = 'vnccs-pose-studio-styles';
+styleEl.textContent = STYLES;
+document.head.appendChild(styleEl);
+
+
+// === 3D Viewer (from Debug3) ===
+class PoseStudioWidget {
+    constructor(node) {
+        this.node = node;
+        this.container = null;
+        this.canvas = null;
+        this.viewer = null;
+
+        this.poses = [{}];  // Array of pose data
+        this.activeTab = 0;
+        this.poseCaptures = []; // Cache for captured images
+        this.ikMode = true; // IK mode toggle (false = FK, true = IK)
+
+        // Slider values
+        this.meshParams = {
+            age: 25, gender: 0.5, weight: 0.5,
+            muscle: 0.5, height: 0.5,
+            // Female-specific
+            breast_size: 0.5, firmness: 0.5,
+            // Male-specific
+            penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5,
+            // Visual modifiers (client-side bone scaling)
+            head_size: 1.0,
+            arm_size: 1.0,
+            hand_size: 1.0
+        };
+
+        // Export settings
+        this.exportParams = {
+            view_width: 1024,
+            view_height: 1024,
+            cam_zoom: 1.0,
+            cam_offset_x: 0,
+            cam_offset_y: 0,
+            output_mode: "LIST",
+            grid_columns: 2,
+            bg_color: [255, 255, 255],
+            debugMode: false,
+            debugPortraitMode: false, // Focus on upper body in debug mode
+            debugKeepLighting: false, // Use manual lighting in debug mode
+            keepOriginalLighting: false, // Override to clean white lighting, no prompts
+            user_prompt: "",
+            prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
+            skin_type: "naked", // naked | naked_marks | dummy_white
+            background_url: null
+        };
+
+        // Lighting settings (array of light configs)
+        this.lightParams = [
+            { type: 'directional', color: '#ffffff', intensity: 2.0, x: 10, y: 20, z: 30 },
+            { type: 'ambient', color: '#505050', intensity: 1.0, x: 0, y: 0, z: 0 }
+        ];
+
+        this.sliders = {};
+        this.exportWidgets = {};
+        this.tabsContainer = null;
+        this.canvasContainer = null;
+
+        this.createUI();
+    }
+
+    createUI() {
+        this._createLayout();
+        this._createLeftPanel();
+        this._createLeftPanelControls();
+        this._createCenterPanel();
+        this._createRightSidebar();
+        this._setupFinalUI();
+    }
+
+
+
+
+/*
+    _createLayout() {
+        this.container = document.createElement("div");
+        this.container.className = "vnccs-pose-studio";
+
+        // Suppress right-click context menu across the entire node UI (capture phase)
+        //this.container.addEventListener("contextmenu", (e) => e.preventDefault());
+
+        this.leftPanel = document.createElement("div");
+        this.leftPanel.className = "vnccs-ps-left";
+        this.container.appendChild(this.leftPanel);
+
+        this.centerPanel = document.createElement("div");
+        this.centerPanel.className = "vnccs-ps-center";
+        this.container.appendChild(this.centerPanel);
+
+        this.rightSidebar = document.createElement("div");
+        this.rightSidebar.className = "vnccs-ps-right-sidebar";
+        this.container.appendChild(this.rightSidebar);
+    }
+*/
+
+
+
+// --- ここから追加：中ボタン（ホイールクリック）でのドラッグを透過させる ---
+_createLayout() {
+        this.container = document.createElement("div");
+        this.container.className = "vnccs-pose-studio";
+
+
+/*
+// --- ここを追加 ---
+        // 親の .dom-widget 自体はイベントをスルーさせ、
+        // 子要素の .vnccs-pose-studio だけが反応するように設定します
+        setTimeout(() => {
+            const parent = this.container.parentElement;
+            if (parent && parent.classList.contains("dom-widget")) {
+                parent.style.pointerEvents = "none";
+            }
+        }, 0);
+
+        // ノードの本体（赤く見えている部分）はマウスに反応させる
+        this.container.style.pointerEvents = "auto";
+        // ------------------
+
+
+// --- 1. 親(dom-widget)への対策 ---
+        setTimeout(() => {
+            const parent = this.container.parentElement;
+            if (parent && parent.classList.contains("dom-widget")) {
+                // 親の背景を消し、マウスイベントを完全にスルーさせる（透明なトンネル化）
+                parent.style.background = "transparent";
+                //parent.style.pointerEvents = "none";
+                parent.style.pointerEvents = "auto";
+                // デバッグ用（青い点線）
+                parent.style.outline = "2px dashed blue";
+            }
+        }, 0);
+
+// --- デバッグ用：全体を覆うDIVを半透明の赤色にする ---
+        this.container.style.backgroundColor = "rgba(0, 250, 0, 0.2)"; 
+        this.container.style.outline = "5px solid red";
+        this.container.style.boxSizing = "border-box";
+// --- ここで高さを調整 ---
+        this.container.style.height = "100%"; // 親要素（ノード）の半分にする
+　　　　this.container.style.pointerEvents = "none";
+// --------------------------------------------------
+
+*/
+
+
+
+
+        this.leftPanel = document.createElement("div");
+        this.leftPanel.className = "vnccs-ps-left";
+        this.container.appendChild(this.leftPanel);
+
+        this.centerPanel = document.createElement("div");
+        this.centerPanel.className = "vnccs-ps-center";
+        this.container.appendChild(this.centerPanel);
+
+　　　　this.centerPanel.background = "transparent";
+　　　　this.centerPanel.style.backgroundColor = "rgba(0, 0, 0, 0.2)"; 
+
+
+
+
+
+        this.rightSidebar = document.createElement("div");
+        this.rightSidebar.className = "vnccs-ps-right-sidebar";
+        this.container.appendChild(this.rightSidebar);
+
+    }
+// --- ここまで追加 ---
+
+
+
+    _createLeftPanel() {
+        const leftPanel = this.leftPanel;
+
+        // --- MESH PARAMS SECTION ---
+        const meshSection = this.createSection("Mesh Parameters", false);
+
+        // Gender Toggle
+        const genderField = document.createElement("div");
+        genderField.className = "vnccs-ps-field";
+
+        const genderLabel = document.createElement("div");
+        genderLabel.className = "vnccs-ps-label";
+        genderLabel.innerText = "Gender";
+        genderField.appendChild(genderLabel);
+
+        const genderToggle = document.createElement("div");
+        genderToggle.className = "vnccs-ps-toggle";
+
+        const btnMale = document.createElement("button");
+        btnMale.className = "vnccs-ps-toggle-btn male";
+        btnMale.innerText = "Male";
+
+        const btnFemale = document.createElement("button");
+        btnFemale.className = "vnccs-ps-toggle-btn female";
+        btnFemale.innerText = "Female";
+
+        this.genderBtns = { male: btnMale, female: btnFemale };
+
+        btnMale.addEventListener("click", () => {
+            this.meshParams.gender = 1.0;
+            this.updateGenderUI();
+            this.updateGenderVisibility();
+            this.onMeshParamsChanged();
+        });
+
+        btnFemale.addEventListener("click", () => {
+            this.meshParams.gender = 0.0;
+            this.updateGenderUI();
+            this.updateGenderVisibility();
+            this.onMeshParamsChanged();
+        });
+
+        this.updateGenderUI();
+
+        genderToggle.appendChild(btnMale);
+        genderToggle.appendChild(btnFemale);
+        genderField.appendChild(genderToggle);
+        meshSection.content.appendChild(genderField);
+
+        // Base Mesh Sliders (gender-neutral)
+        const baseSliderDefs = [
+            { key: "age", label: "Age", min: 1, max: 90, step: 1, def: 25 },
+            { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01, def: 0.5 },
+            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 }
+        ];
+
+        for (const s of baseSliderDefs) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
+            meshSection.content.appendChild(field);
+        }
+
+        leftPanel.appendChild(meshSection.el);
+
+        // --- GENDER SETTINGS SECTION ---
+        const genderSection = this.createSection("Gender Settings", false);
+        this.genderFields = {};
+
+        const femaleSliders = [
+            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, def: 0.5 },
+            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, def: 0.5 }
+        ];
+
+        for (const s of femaleSliders) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
+            genderSection.content.appendChild(field);
+            this.genderFields[s.key] = { field, gender: "female" };
+        }
+
+        const maleSliders = [
+            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, def: 0.5 }
+        ];
+
+        for (const s of maleSliders) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
+            genderSection.content.appendChild(field);
+            this.genderFields[s.key] = { field, gender: "male" };
+        }
+
+        this.updateGenderVisibility();
+        leftPanel.appendChild(genderSection.el);
+
+        // --- CAMERA SETTINGS SECTION ---
+        const camSection = this.createSection("Camera", false);
+        const dimRow = document.createElement("div");
+        dimRow.className = "vnccs-ps-row";
+        dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
+        dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
+        camSection.content.appendChild(dimRow);
+
+        // FOV slider (focal length 15-70mm equivalent)
+        const fovRow = document.createElement("div");
+        fovRow.style.cssText = "display:flex;align-items:center;gap:6px;width:100%;box-sizing:border-box;margin-bottom:4px;";
+
+        const fovLabel = document.createElement("span");
+        fovLabel.textContent = "FOV";
+        fovLabel.style.cssText = "font-size:11px;color:#aaa;min-width:28px;flex:0 0 auto;";
+
+        const fovSlider = document.createElement("input");
+        fovSlider.type = "range";
+        fovSlider.min = 15; fovSlider.max = 70; fovSlider.step = 1;
+        fovSlider.value = 30;
+        fovSlider.style.cssText = "flex:1;min-width:0;";
+
+        const fovValue = document.createElement("span");
+        fovValue.style.cssText = "font-size:11px;color:#fff;min-width:32px;flex:0 0 auto;text-align:right;";
+        fovValue.textContent = "30°";
+
+        fovSlider.addEventListener("input", () => {
+            const mm = parseInt(fovSlider.value);
+            fovValue.textContent = mm + "°";
+            if (this.viewer) this.viewer.setFocalLength(mm);
+        });
+
+        fovRow.appendChild(fovLabel);
+        fovRow.appendChild(fovSlider);
+        fovRow.appendChild(fovValue);
+        camSection.content.appendChild(fovRow);
+        this.fovSlider = fovSlider;
+        this.fovValue = fovValue;
+
+        // Center Reset button
+        const resetCamBtn = document.createElement("button");
+        resetCamBtn.textContent = "⊙ Reset Camera";
+        resetCamBtn.className = "vnccs-ps-btn";
+        resetCamBtn.style.marginTop = "6px";
+        resetCamBtn.addEventListener("click", () => {
+            if (this.viewer) {
+                this.viewer.resetCamera();
+                fovSlider.value = 30;
+                fovValue.textContent = "30°";
+            }
+        });
+        camSection.content.appendChild(resetCamBtn);
+
+
+        // Debug log uses floating window (see showDebugLog method)
+        this.debugTextarea = null;
+
+        const svRow = document.createElement("div");
+        svRow.style.cssText = "display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:6px;";
+        const saveViewBtn = document.createElement("button");
+        saveViewBtn.className = "vnccs-ps-btn";
+        saveViewBtn.innerHTML = '📷 Save View';
+        saveViewBtn.addEventListener("click", () => {
+            if (!this.viewer) return;
+            this.viewer.saveRTMWCameraState();
+            this._updateFrustumToCurrentCamera();
+            saveViewBtn.innerHTML = '📷 Save ✓';
+            setTimeout(() => { saveViewBtn.innerHTML = '📷 Save View'; }, 1000);
+        });
+        const restoreViewBtn = document.createElement("button");
+        restoreViewBtn.className = "vnccs-ps-btn";
+        restoreViewBtn.innerHTML = '📷 Restore';
+        restoreViewBtn.addEventListener("click", () => {
+            if (!this.viewer) return;
+            const ok = this.viewer.restoreRTMWCameraState();
+            if (ok) this._updateFrustumToCurrentCamera();
+            restoreViewBtn.innerHTML = ok ? '📷 Restore ✓' : '📷 Restore —';
+            setTimeout(() => { restoreViewBtn.innerHTML = '📷 Restore'; }, 1000);
+        });
+        svRow.appendChild(saveViewBtn);
+        svRow.appendChild(restoreViewBtn);
+        camSection.content.appendChild(svRow);
+
+
+        leftPanel.appendChild(camSection.el);
+
+    }
+
+    _createCenterPanel() {
+        const centerPanel = this.centerPanel;
+
+        // Tab Bar
+        this.tabsContainer = document.createElement("div");
+        this.tabsContainer.className = "vnccs-ps-tabs";
+        this.updateTabs();
+        centerPanel.appendChild(this.tabsContainer);
+
+        // Canvas Container
+        this.canvasContainer = document.createElement("div");
+        this.canvasContainer.className = "vnccs-ps-canvas-wrap";
+
+        this.canvas = document.createElement("canvas");
+        this.canvasContainer.appendChild(this.canvas);
+
+        centerPanel.appendChild(this.canvasContainer);
+
+        // ── controls are in _createLeftPanelControls() ──
+        /* BEGIN_DEAD_CONTROLS */
+        if (false) {
+        const actions = document.createElement("div");
+        actions.className = "vnccs-ps-actions";
+
+        const undoBtn = document.createElement("button");
+        undoBtn.className = "vnccs-ps-btn";
+        undoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↩</span> Undo';
+        undoBtn.onclick = () => this.viewer && this.viewer.undo();
+
+        const redoBtn = document.createElement("button");
+        redoBtn.className = "vnccs-ps-btn";
+        redoBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↪</span> Redo';
+        redoBtn.onclick = () => this.viewer && this.viewer.redo();
+
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "vnccs-ps-btn";
+        resetBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
+        resetBtn.addEventListener("click", () => this.resetCurrentPose());
+
+        const snapBtn = document.createElement("button");
+        snapBtn.className = "vnccs-ps-btn primary";
+        snapBtn.innerHTML = '<span class="vnccs-ps-btn-icon">👁</span> Preview';
+        snapBtn.title = "Snap viewport camera to output camera";
+        snapBtn.addEventListener("click", () => {
+                // [DISABLED] if (this.viewer) this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom || 1.0,
+                // [DISABLED] this.exportParams.cam_offset_x || 0,
+                // [DISABLED] this.exportParams.cam_offset_y || 0
+                // [DISABLED] );
+        });
+
+        const copyBtn = document.createElement("button");
+        copyBtn.className = "vnccs-ps-btn";
+        copyBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Copy';
+        copyBtn.addEventListener("click", () => this.copyPose());
+
+        const pasteBtn = document.createElement("button");
+        pasteBtn.className = "vnccs-ps-btn";
+        pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
+        pasteBtn.addEventListener("click", () => this.pastePose());
+
+        actions.appendChild(undoBtn);
+        actions.appendChild(redoBtn);
+        actions.appendChild(resetBtn);
+        actions.appendChild(snapBtn);
+        actions.appendChild(copyBtn);
+        actions.appendChild(pasteBtn);
+
+        // Mirror pose buttons
+        const mirrorRLBtn = document.createElement("button");
+        mirrorRLBtn.className = "vnccs-ps-btn";
+        mirrorRLBtn.innerHTML = '<span class="vnccs-ps-btn-icon"></span> R➡️L';
+        mirrorRLBtn.title = "Mirror pose: Right to Left";
+        mirrorRLBtn.addEventListener("click", () => {
+            if (this.viewer) this.viewer.mirrorPose('right_to_left');
+        });
+
+        const mirrorLRBtn = document.createElement("button");
+        mirrorLRBtn.className = "vnccs-ps-btn";
+        mirrorLRBtn.innerHTML = '<span class="vnccs-ps-btn-icon"></span> R⬅️L';
+        mirrorLRBtn.title = "Mirror pose: Left to Right";
+        mirrorLRBtn.addEventListener("click", () => {
+            if (this.viewer) this.viewer.mirrorPose('left_to_right');
+        });
+
+        actions.appendChild(mirrorRLBtn);
+        actions.appendChild(mirrorLRBtn);
+
+        // Footer
+        const footer = document.createElement("div");
+        footer.className = "vnccs-ps-footer";
+
+        const exportBtn = document.createElement("button");
+        exportBtn.className = "vnccs-ps-btn";
+        exportBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📥</span> Export';
+        exportBtn.addEventListener("click", () => this.showExportModal());
+
+        const importBtn = document.createElement("button");
+        importBtn.className = "vnccs-ps-btn";
+        importBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📤</span> Import<br>DwPoseIMG';
+        importBtn.addEventListener("click", () => this.importPose());
+
+        const refBtn = document.createElement("button");
+        refBtn.className = "vnccs-ps-btn";
+        refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+        refBtn.title = "Load or Remove Background Image";
+        refBtn.onclick = () => {
+            if (this.viewer && this.viewer.hasReferenceImage()) {
+                this.viewer.removeReferenceImage();
+                this.exportParams.background_url = null;
+                this.syncToNode(false);
+                refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+                refBtn.classList.remove('danger');
+            } else {
+                this.loadReference();
+            }
+        };
+        this.refBtn = refBtn;
+
+        // Overlay controls row (toggle + opacity slider)
+        const overlayRow = document.createElement('div');
+        overlayRow.style.cssText = 'display:flex;gap:6px;align-items:center;padding:2px 8px;';
+
+        const overlayToggle = document.createElement('button');
+        overlayToggle.className = 'vnccs-ps-btn';
+        overlayToggle.textContent = 'Overlay: OFF';
+        overlayToggle.style.fontSize = '10px';
+        overlayToggle.title = 'Toggle background image between background and foreground overlay';
+        this._overlayMode = false;
+
+        const opacityLabel = document.createElement('span');
+        opacityLabel.style.cssText = 'font-size:10px;color:var(--ps-text);white-space:nowrap;';
+        opacityLabel.textContent = 'Opacity:';
+
+        const opacitySlider = document.createElement('input');
+        opacitySlider.type = 'range';
+        opacitySlider.min = '0';
+        opacitySlider.max = '100';
+        opacitySlider.value = '100';
+        opacitySlider.style.cssText = 'width:70px;';
+        opacitySlider.title = 'Reference image opacity';
+
+        const opacityValue = document.createElement('span');
+        opacityValue.style.cssText = 'font-size:10px;color:var(--ps-text);width:28px;';
+        opacityValue.textContent = '100%';
+
+        opacitySlider.addEventListener('input', () => {
+            const val = parseInt(opacitySlider.value) / 100;
+            opacityValue.textContent = opacitySlider.value + '%';
+            if (this.viewer) this.viewer.setRefPlaneOpacity(val);
+        });
+
+        overlayToggle.addEventListener('click', () => {
+            this._overlayMode = !this._overlayMode;
+            overlayToggle.textContent = this._overlayMode ? 'Overlay: ON' : 'Overlay: OFF';
+            overlayToggle.classList.toggle('primary', this._overlayMode);
+            if (this.viewer) this.viewer.setRefPlaneOverlay(this._overlayMode);
+        });
+
+        overlayRow.appendChild(overlayToggle);
+        overlayRow.appendChild(opacityLabel);
+        overlayRow.appendChild(opacitySlider);
+        overlayRow.appendChild(opacityValue);
+
+        this._kpScaleMultiplier = 1.0;
+
+        // Depth Scale slider
+
+
+        const settingsBtn = document.createElement("button");
+        settingsBtn.className = "vnccs-ps-btn";
+        settingsBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⚙️</span>';
+        settingsBtn.title = "Settings (Debug)";
+        settingsBtn.onclick = () => this.showSettingsModal();
+        this.settingsBtn = settingsBtn;
+
+        // Load OpenPose button
+        const loadPoseBtn = document.createElement("button");
+        loadPoseBtn.className = "vnccs-ps-btn";
+        loadPoseBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🦴</span> Load<br>keyPointJson';
+        loadPoseBtn.title = "Load pose from OpenPose keypoint image (JSON)";
+        loadPoseBtn.addEventListener("click", () => this.loadOpenPoseFile());
+
+        // 棒人形 ON/OFF トグル
+        const kpFigureBtn = document.createElement("button");
+        kpFigureBtn.className = "vnccs-ps-btn";
+        kpFigureBtn.innerHTML = '🕴 棒人形<br>ON';
+        kpFigureBtn.title = "棒人形の表示/非表示";
+        let kpFigureVisible = true;
+        kpFigureBtn.addEventListener("click", () => {
+            kpFigureVisible = !kpFigureVisible;
+            kpFigureBtn.innerHTML = `🕴 棒人形<br>${kpFigureVisible ? 'ON' : 'OFF'}`;
+            kpFigureBtn.style.opacity = kpFigureVisible ? "1.0" : "0.5";
+            if (this.viewer) this.viewer.setKpFigureVisible(kpFigureVisible);
+        });
+
+        // 棒人形 カメラ追従トグル
+        const rtmwCamBtn = document.createElement("button");
+        rtmwCamBtn.className = "vnccs-ps-btn";
+        rtmwCamBtn.innerHTML = '📌 追従<br>ON';
+        rtmwCamBtn.title = "棒人形のカメラ追従/ワールド空間切り替え（3D確認用）";
+        let rtmwCameraParented = true;
+        rtmwCamBtn.addEventListener("click", () => {
+            rtmwCameraParented = !rtmwCameraParented;
+            rtmwCamBtn.innerHTML = `📌 追従<br>${rtmwCameraParented ? 'ON' : 'OFF'}`;
+            rtmwCamBtn.style.opacity = rtmwCameraParented ? "1.0" : "0.5";
+            if (this.viewer) this.viewer.setRTMWFigureCameraParented(rtmwCameraParented);
+        });
+
+        // SaveView / RestoreView ボタン
+        const saveViewBtn = document.createElement("button");
+        saveViewBtn.className = "vnccs-ps-btn";
+        saveViewBtn.innerHTML = '📷 Save<br>View';
+        saveViewBtn.title = "現在のカメラ位置・角度・FOVを保存（ロード時は自動保存）";
+        saveViewBtn.addEventListener("click", () => {
+            if (!this.viewer) return;
+            this.viewer.saveRTMWCameraState();
+            saveViewBtn.innerHTML = '📷 Save<br>✓';
+            setTimeout(() => { saveViewBtn.innerHTML = '📷 Save<br>View'; }, 1000);
+        });
+
+        const restoreViewBtn = document.createElement("button");
+        restoreViewBtn.className = "vnccs-ps-btn";
+        restoreViewBtn.innerHTML = '📷 Restore<br>View';
+        restoreViewBtn.title = "保存したカメラ位置・角度・FOVに戻す";
+        restoreViewBtn.addEventListener("click", () => {
+            if (!this.viewer) return;
+            const ok = this.viewer.restoreRTMWCameraState();
+            restoreViewBtn.innerHTML = ok ? '📷 Restore<br>✓' : '📷 Restore<br>—';
+            setTimeout(() => { restoreViewBtn.innerHTML = '📷 Restore<br>View'; }, 1000);
+        });
+
+        // マネキン ON/OFF トグル
+        const mannequinBtn = document.createElement("button");
+        mannequinBtn.className = "vnccs-ps-btn";
+        mannequinBtn.innerHTML = '👤 マネキン<br>ON';
+        mannequinBtn.title = "マネキンの表示/非表示";
+        let mannequinVisible = true;
+        mannequinBtn.addEventListener("click", () => {
+            mannequinVisible = !mannequinVisible;
+            mannequinBtn.innerHTML = `👤 マネキン<br>${mannequinVisible ? 'ON' : 'OFF'}`;
+            mannequinBtn.style.opacity = mannequinVisible ? "1.0" : "0.5";
+            if (this.viewer) this.viewer.setMannequinVisible(mannequinVisible);
+        });
+
+        // IK/FK トグル
+        const ikFkBtn = document.createElement("button");
+        ikFkBtn.className = "vnccs-ps-btn";
+        ikFkBtn.innerHTML = '⚙ IK<br>MODE';
+        ikFkBtn.title = "IK/FKモード切り替え";
+        let ikModeActive = true;
+        ikFkBtn.addEventListener("click", () => {
+            ikModeActive = !ikModeActive;
+            ikFkBtn.innerHTML = `⚙ ${ikModeActive ? 'IK' : 'FK'}<br>MODE`;
+            ikFkBtn.style.opacity = ikModeActive ? "1.0" : "0.7";
+            if (this.viewer) {
+                if (ikModeActive) {
+                    this.viewer.updateIKEffectorPositions();
+                }
+                this.viewer.setIKMode(ikModeActive);
+            }
+        });
+
+        footer.appendChild(exportBtn);
+        footer.appendChild(importBtn);
+        footer.appendChild(refBtn);
+        footer.appendChild(loadPoseBtn);
+        footer.appendChild(kpFigureBtn);
+        footer.appendChild(rtmwCamBtn);
+        footer.appendChild(saveViewBtn);
+        footer.appendChild(restoreViewBtn);
+        footer.appendChild(mannequinBtn);
+        footer.appendChild(ikFkBtn);
+        footer.appendChild(settingsBtn);
+        centerPanel.appendChild(footer);
+        centerPanel.appendChild(overlayRow);
+
+        // KP Depth scale row
+
+
+        // Debug: bone position tool
+        const debugRow = document.createElement('div');
+        debugRow.style.cssText = 'display:flex;gap:4px;align-items:center;padding:4px 8px;flex-wrap:wrap;';
+
+        const boneInput = document.createElement('input');
+        boneInput.type = 'text'; boneInput.placeholder = 'bone name';
+        boneInput.style.cssText = 'width:90px;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+        this.boneNameInput = boneInput;
+
+        const xInput = document.createElement('input');
+        xInput.type = 'number'; xInput.placeholder = 'X'; xInput.step = '0.1';
+        xInput.style.cssText = 'width:55px;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+
+        const yInput = document.createElement('input');
+        yInput.type = 'number'; yInput.placeholder = 'Y'; yInput.step = '0.1';
+        yInput.style.cssText = 'width:55px;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+
+        const zInput = document.createElement('input');
+        zInput.type = 'number'; zInput.placeholder = 'Z'; zInput.step = '0.1';
+        zInput.style.cssText = 'width:55px;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+
+        const moveBtn = document.createElement('button');
+        moveBtn.className = 'vnccs-ps-btn';
+        moveBtn.textContent = 'Move';
+        moveBtn.addEventListener('click', () => {
+            if (!this.viewer) return;
+            const name = boneInput.value.trim();
+            const x = parseFloat(xInput.value) || 0;
+            const y = parseFloat(yInput.value) || 0;
+            const z = parseFloat(zInput.value) || 0;
+            // Try mannequin bone first, fall through to RTMW joint
+            const ok = this.viewer.moveBoneToPosition(name, x, y, z)
+                    || this.viewer.moveRTMWJoint(name, x, y, z);
+            moveBtn.textContent = ok ? '✓ OK' : '✗ Not found';
+            setTimeout(() => moveBtn.textContent = 'Move', 1500);
+        });
+
+        const getBtn = document.createElement('button');
+        getBtn.className = 'vnccs-ps-btn';
+        getBtn.textContent = 'Get';
+        getBtn.addEventListener('click', () => {
+            if (!this.viewer) return;
+            const name = boneInput.value.trim();
+            // Try mannequin bone first
+            const bone = this.viewer.boneList.find(b => b.name === name);
+            if (bone) {
+                const wp = new this.viewer.THREE.Vector3();
+                bone.getWorldPosition(wp);
+                xInput.value = wp.x.toFixed(3);
+                yInput.value = wp.y.toFixed(3);
+                zInput.value = wp.z.toFixed(3);
+                return;
+            }
+            // Fall through to RTMW joint
+            const rtmwPos = this.viewer.getRTMWJointWorldPos(name);
+            if (rtmwPos) {
+                xInput.value = rtmwPos.x.toFixed(3);
+                yInput.value = rtmwPos.y.toFixed(3);
+                zInput.value = rtmwPos.z.toFixed(3);
+            } else {
+                xInput.value = '?'; yInput.value = '?'; zInput.value = '?';
+            }
+        });
+
+        debugRow.appendChild(boneInput);
+        debugRow.appendChild(xInput);
+        debugRow.appendChild(yInput);
+        debugRow.appendChild(zInput);
+        debugRow.appendChild(moveBtn);
+        debugRow.appendChild(getBtn);
+
+        // Debug log buttons
+        const debugLogRow = document.createElement('div');
+        debugLogRow.style.cssText = 'display:flex;gap:4px;align-items:center;padding:4px 8px;flex-wrap:wrap;';
+
+        const debugLogBtn = document.createElement('button');
+        debugLogBtn.className = 'vnccs-ps-btn';
+        debugLogBtn.textContent = 'DebugLog';
+        debugLogBtn.addEventListener('click', () => {
+            if (!this.viewer) return;
+            const log = this.viewer.getBonePositionLog();
+            this.showDebugLog(log);
+        });
+
+        const clearLogBtn = document.createElement('button');
+        clearLogBtn.className = 'vnccs-ps-btn';
+        clearLogBtn.textContent = 'ClearLog';
+        clearLogBtn.addEventListener('click', () => {
+            const pre = document.getElementById('vnccs-debug-pre');
+            if (pre) pre.textContent = '';
+        });
+
+        const refreshLogBtn = document.createElement('button');
+        refreshLogBtn.className = 'vnccs-ps-btn';
+        refreshLogBtn.textContent = 'Refresh';
+        refreshLogBtn.addEventListener('click', () => {
+            if (!this.viewer) return;
+            const log = this.viewer.getBonePositionLog();
+            const pre = document.getElementById('vnccs-debug-pre');
+            if (pre) pre.textContent = log;
+        });
+
+        debugLogRow.appendChild(debugLogBtn);
+        debugLogRow.appendChild(clearLogBtn);
+        debugLogRow.appendChild(refreshLogBtn);
+        centerPanel.appendChild(debugRow);
+        centerPanel.appendChild(debugLogRow);
+
+        centerPanel.appendChild(actions);
+        } /* END_DEAD_CONTROLS */
+
+        // Hidden file inputs
+        const fileInput = document.createElement("input");
+        fileInput.type = "file"; fileInput.accept = ".json,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
+        fileInput.addEventListener("change", (e) => this.handleFileImport(e));
+        this.fileImportInput = fileInput;
+        this.container.appendChild(fileInput);
+
+        const refInput = document.createElement("input");
+        refInput.type = "file"; refInput.accept = "image/*"; refInput.style.display = "none";
+        refInput.addEventListener("change", (e) => this.handleRefImport(e));
+        this.fileRefInput = refInput;
+        this.container.appendChild(refInput);
+    }
+
+    _createLeftPanelControls() {
+        const lp = this.leftPanel;
+        this._kpScaleMultiplier = 1.0;
+        this._overlayMode = false;
+
+        // ── helpers ─────────────────────────────────────────
+        const mkBtn = (html, onclick, cls = '') => {
+            const b = document.createElement('button');
+            b.className = 'vnccs-ps-btn' + (cls ? ' ' + cls : '');
+            b.innerHTML = html;
+            b.addEventListener('click', onclick);
+            return b;
+        };
+        const btnGrid2 = () => {
+            const g = document.createElement('div');
+            g.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px;';
+            return g;
+        };
+        const fullBtn = (b) => { b.style.cssText += 'width:100%;margin-bottom:4px;'; return b; };
+
+        // ── MIRROR ───────────────────────────────────────────
+        const editSec = this.createSection('Mirror', true);
+
+        const mirrorRow = btnGrid2();
+        const mirrorRLBtn = mkBtn(' R▶L', () => this.viewer?.mirrorPose('right_to_left'));
+        mirrorRLBtn.title = 'Mirror pose: Right to Left';
+        const mirrorLRBtn = mkBtn(' R◀L', () => this.viewer?.mirrorPose('left_to_right'));
+        mirrorLRBtn.title = 'Mirror pose: Left to Right';
+        mirrorRow.appendChild(mirrorRLBtn);
+        mirrorRow.appendChild(mirrorLRBtn);
+        editSec.content.appendChild(mirrorRow);
+
+        // T-Pose button
+        const tposeBtn = mkBtn('T-Pose', () => {
+            if (this.viewer) {
+                this.viewer.resetToTPose();
+                this.resetHandSliders();
+                this.viewer.setModelRotation(0, 0, 0);
+                const rootBone = this.viewer.boneList?.find(b => !b.userData.parentName || !this.viewer.bones[b.userData.parentName]);
+                if (rootBone) {
+                    rootBone.position.set(0, 0, 0);
+                    rootBone.updateMatrixWorld(true);
+                    if (this.viewer.skeleton) this.viewer.skeleton.update();
+                    this.viewer.updateIKEffectorPositions();
+                }
+                this.syncToNode();
+            }
+        });
+        fullBtn(tposeBtn);
+        editSec.content.appendChild(tposeBtn);
+
+        // IK ⇔ FK toggle
+        let ikModeActive = true;
+        const ikFkBtn = mkBtn('IK ⇔ FK  <small>[IK]</small>', () => {
+            ikModeActive = !ikModeActive;
+            ikFkBtn.innerHTML = ikModeActive ? 'IK ⇔ FK  <small>[IK]</small>' : 'IK ⇔ FK  <small>[FK]</small>';
+            ikFkBtn.style.opacity = ikModeActive ? '1' : '0.7';
+            if (this.viewer) {
+                if (ikModeActive) this.viewer.updateIKEffectorPositions();
+                this.viewer.setIKMode(ikModeActive);
+            }
+        });
+        fullBtn(ikFkBtn);
+        editSec.content.appendChild(ikFkBtn);
+
+        // Bone tool: row1=name, row2=XYZ, row3=Get/Move/Reset
+        const boneNameRow = document.createElement('div');
+        boneNameRow.style.cssText = 'display:flex;gap:3px;align-items:center;margin-top:6px;margin-bottom:3px;';
+        const boneInput = document.createElement('input');
+        boneInput.type = 'text'; boneInput.placeholder = 'bone name';
+        boneInput.style.cssText = 'flex:1;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+        this.boneNameInput = boneInput;
+        boneNameRow.appendChild(boneInput);
+        editSec.content.appendChild(boneNameRow);
+
+        const mkNumInput = (ph) => {
+            const i = document.createElement('input');
+            i.type = 'number'; i.placeholder = ph; i.step = '0.1';
+            i.style.cssText = 'flex:1;min-width:0;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 3px;border-radius:4px;';
+            return i;
+        };
+        const xyzRow = document.createElement('div');
+        xyzRow.style.cssText = 'display:flex;gap:3px;margin-bottom:3px;';
+        const xInput = mkNumInput('X');
+        const yInput = mkNumInput('Y');
+        const zInput = mkNumInput('Z');
+        xyzRow.append(xInput, yInput, zInput);
+        editSec.content.appendChild(xyzRow);
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;';
+
+        const getBoneBtn = mkBtn('Get', () => {
+            if (!this.viewer) return;
+            const name = boneInput.value.trim();
+            const bone = this.viewer.boneList?.find(b => b.name === name);
+            if (bone) {
+                const wp = new this.viewer.THREE.Vector3();
+                bone.getWorldPosition(wp);
+                xInput.value = wp.x.toFixed(3);
+                yInput.value = wp.y.toFixed(3);
+                zInput.value = wp.z.toFixed(3);
+                return;
+            }
+            const rtmwPos = this.viewer.getRTMWJointWorldPos?.(name);
+            if (rtmwPos) {
+                xInput.value = rtmwPos.x.toFixed(3);
+                yInput.value = rtmwPos.y.toFixed(3);
+                zInput.value = rtmwPos.z.toFixed(3);
+            } else {
+                xInput.value = '?'; yInput.value = '?'; zInput.value = '?';
+            }
+        });
+
+        const moveBoneBtn = mkBtn('Move', () => {
+            if (!this.viewer) return;
+            const name = boneInput.value.trim();
+            const x = parseFloat(xInput.value) || 0;
+            const y = parseFloat(yInput.value) || 0;
+            const z = parseFloat(zInput.value) || 0;
+            const ok = this.viewer.moveBoneToPosition(name, x, y, z)
+                    || this.viewer.moveRTMWJoint(name, x, y, z);
+            moveBoneBtn.textContent = ok ? '✓' : '✗';
+            setTimeout(() => { moveBoneBtn.textContent = 'Move'; }, 1500);
+        });
+
+        const resetBoneBtn = mkBtn('Reset', () => {
+            if (!this.viewer) return;
+            const name = boneInput.value.trim() || (this.viewer.selectedBone?.name);
+            if (!name) return;
+            const bone = this.viewer.boneList?.find(b => b.name === name);
+            if (!bone) return;
+            this.viewer.recordState();
+            bone.quaternion.set(0, 0, 0, 1);
+            bone.rotation.set(0, 0, 0);
+            bone.updateMatrixWorld(true);
+            if (this.viewer.skeleton) this.viewer.skeleton.update();
+            this.viewer.updateIKEffectorPositions();
+            this.viewer.updateMarkers();
+            this.viewer.requestRender();
+            this.syncToNode(false);
+        });
+
+        btnRow.append(getBoneBtn, moveBoneBtn, resetBoneBtn);
+        editSec.content.appendChild(btnRow);
+        lp.appendChild(editSec.el);
+
+        // ── 表示 / VIEW ───────────────────────────────────────
+        const viewSec = this.createSection('OpenPose3D', true);
+
+        let mannequinVisible = true;
+        const loadJsonBtn = mkBtn('🦴 Load KeyPointJSON', () => this.loadOpenPoseFile());
+        loadJsonBtn.title = '別のノード HMR2_keyPoint3D を使って画像からJSONを作って、このボタンで読み込みます';
+        fullBtn(loadJsonBtn);
+        viewSec.content.appendChild(loadJsonBtn);
+
+        // SMPL reference height for scale correction
+        const smplRow = document.createElement('div');
+        smplRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:4px;';
+        const smplLabel = document.createElement('span');
+        smplLabel.style.cssText = 'font-size:10px;color:var(--ps-text-muted);white-space:nowrap;';
+        smplLabel.textContent = 'SMPL Ref H:';
+        const smplInput = document.createElement('input');
+        smplInput.type = 'number';
+        smplInput.step = '0.05';
+        smplInput.min = '0.5';
+        smplInput.max = '3.0';
+        smplInput.value = '1.45';
+        smplInput.style.cssText = 'flex:1;font-size:11px;background:#1a1a2e;color:#fff;border:1px solid #333;padding:2px 4px;border-radius:4px;';
+        smplInput.title = 'SMPL基準身長（棒人形とマネキンのスケール補正）';
+        this._smplRefHeight = 1.45;
+        smplInput.addEventListener('change', () => {
+            const v = parseFloat(smplInput.value);
+            if (!isNaN(v) && v > 0) this._smplRefHeight = v;
+        });
+        smplRow.append(smplLabel, smplInput);
+        viewSec.content.appendChild(smplRow);
+
+        // Shoulder Y offset for mannequin fit correction
+        const shdrRow = document.createElement('div');
+        shdrRow.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:4px;';
+        const shdrLabel = document.createElement('span');
+        shdrLabel.style.cssText = 'font-size:10px;color:var(--ps-text-muted);white-space:nowrap;';
+        shdrLabel.textContent = 'Shoulder Y:';
+        const shdrSlider = document.createElement('input');
+        shdrSlider.type = 'range';
+        shdrSlider.min = '-0.2'; shdrSlider.max = '0.8'; shdrSlider.step = '0.01';
+        shdrSlider.value = '0.5';
+        shdrSlider.style.cssText = 'width:80px;flex:none;';
+        const shdrVal = document.createElement('span');
+        shdrVal.style.cssText = 'font-size:10px;color:var(--ps-accent);width:36px;text-align:right;font-family:monospace;';
+        shdrVal.textContent = '0.50';
+        this._shoulderYOffset = 0.5;
+        shdrSlider.addEventListener('input', () => {
+            const v = parseFloat(shdrSlider.value);
+            this._shoulderYOffset = v;
+            shdrVal.textContent = v.toFixed(2);
+        });
+        shdrRow.append(shdrLabel, shdrSlider, shdrVal);
+        viewSec.content.appendChild(shdrRow);
+
+        const mannequinBtn = mkBtn('👤 マネキン ON', () => {
+            mannequinVisible = !mannequinVisible;
+            mannequinBtn.innerHTML = `👤 マネキン ${mannequinVisible ? 'ON' : 'OFF'}`;
+            mannequinBtn.style.opacity = mannequinVisible ? '1' : '0.5';
+            this.viewer?.setMannequinVisible(mannequinVisible);
+        });
+        fullBtn(mannequinBtn);
+        viewSec.content.appendChild(mannequinBtn);
+
+        let kpFigureVisible = true;
+        const kpFigureBtn = mkBtn('🕴 棒人形 ON', () => {
+            kpFigureVisible = !kpFigureVisible;
+            kpFigureBtn.innerHTML = `🕴 棒人形 ${kpFigureVisible ? 'ON' : 'OFF'}`;
+            kpFigureBtn.style.opacity = kpFigureVisible ? '1' : '0.5';
+            this.viewer?.setKpFigureVisible(kpFigureVisible);
+        });
+        fullBtn(kpFigureBtn);
+        viewSec.content.appendChild(kpFigureBtn);
+
+        lp.appendChild(viewSec.el);
+
+        // ── IMPORT / EXPORT ───────────────────────────────────
+        const ioSec = this.createSection('Background', true);
+
+        // Row1: Background画像ボタン + BG Color 横並び
+        const ioRow1 = document.createElement('div');
+        ioRow1.style.cssText = 'display:grid;grid-template-columns:1fr auto;gap:6px;align-items:center;margin-bottom:6px;';
+
+        const refBtn = mkBtn('🖼️ BG Image', () => {
+            if (this.viewer?.hasReferenceImage()) {
+                this.viewer.removeReferenceImage();
+                this.exportParams.background_url = null;
+                this.syncToNode(false);
+                refBtn.innerHTML = '🖼️ BG Image';
+                refBtn.classList.remove('danger');
+            } else {
+                this.loadReference();
+            }
+        });
+        refBtn.title = 'Load or Remove Background Image';
+        this.refBtn = refBtn;
+
+        const bgColorInput = document.createElement('input');
+        bgColorInput.type = 'color';
+        bgColorInput.className = 'vnccs-ps-color';
+        bgColorInput.style.cssText = 'width:36px;height:32px;padding:2px;border-radius:6px;cursor:pointer;flex-shrink:0;';
+        bgColorInput.title = 'Background Color';
+        const rgb = this.exportParams.bg_color;
+        bgColorInput.value = '#' + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
+        bgColorInput.addEventListener('input', () => {
+            const h = bgColorInput.value;
+            this.exportParams.bg_color = [parseInt(h.slice(1,3),16), parseInt(h.slice(3,5),16), parseInt(h.slice(5,7),16)];
+        });
+        bgColorInput.addEventListener('change', () => this.syncToNode(true));
+        this.exportWidgets['bg_color'] = bgColorInput;
+
+        ioRow1.append(refBtn, bgColorInput);
+        ioSec.content.appendChild(ioRow1);
+
+        // Row2: Overlay toggle + Opacity スライダー 1行
+        const overlayRow = document.createElement('div');
+        overlayRow.style.cssText = 'display:grid;grid-template-columns:auto 1fr auto;gap:6px;align-items:center;';
+
+        const overlayToggle = document.createElement('button');
+        overlayToggle.className = 'vnccs-ps-btn';
+        overlayToggle.textContent = 'Overlay';
+        overlayToggle.style.cssText = 'font-size:11px;padding:4px 8px;white-space:nowrap;';
+        overlayToggle.title = 'Toggle background between background and foreground overlay';
+        overlayToggle.addEventListener('click', () => {
+            this._overlayMode = !this._overlayMode;
+            overlayToggle.textContent = this._overlayMode ? 'Overlay ✓' : 'Overlay';
+            overlayToggle.classList.toggle('primary', this._overlayMode);
+            this.viewer?.setRefPlaneOverlay(this._overlayMode);
+        });
+
+        const opacitySlider = document.createElement('input');
+        opacitySlider.type = 'range';
+        opacitySlider.min = '0'; opacitySlider.max = '100'; opacitySlider.value = '100';
+        opacitySlider.style.cssText = 'width:100%;min-width:0;';
+        opacitySlider.title = 'Reference image opacity';
+
+        const opacityValue = document.createElement('span');
+        opacityValue.style.cssText = 'font-size:11px;color:var(--ps-accent);width:36px;text-align:right;font-family:monospace;white-space:nowrap;';
+        opacityValue.textContent = '100%';
+
+        opacitySlider.addEventListener('input', () => {
+            opacityValue.textContent = opacitySlider.value + '%';
+            this.viewer?.setRefPlaneOpacity(parseInt(opacitySlider.value) / 100);
+        });
+
+        overlayRow.append(overlayToggle, opacitySlider, opacityValue);
+        ioSec.content.appendChild(overlayRow);
+
+        lp.appendChild(ioSec.el);
+
+        // ── DEBUG ─────────────────────────────────────────────
+        const debugSec = this.createSection('Debug', false);
+
+        const settingsBtn = mkBtn('⚙️ Settings', () => this.showSettingsModal());
+        fullBtn(settingsBtn);
+        this.settingsBtn = settingsBtn;
+        debugSec.content.appendChild(settingsBtn);
+
+
+        // Debug log buttons
+        const logRow = document.createElement('div');
+        logRow.style.cssText = 'display:flex;gap:4px;flex-wrap:wrap;';
+        logRow.appendChild(mkBtn('DebugLog', () => {
+            if (this.viewer) this.showDebugLog(this.viewer.getBonePositionLog());
+        }));
+        logRow.appendChild(mkBtn('ClearLog', () => {
+            const pre = document.getElementById('vnccs-debug-pre');
+            if (pre) pre.textContent = '';
+        }));
+        logRow.appendChild(mkBtn('Refresh', () => {
+            if (!this.viewer) return;
+            const pre = document.getElementById('vnccs-debug-pre');
+            if (pre) pre.textContent = this.viewer.getBonePositionLog();
+        }));
+        debugSec.content.appendChild(logRow);
+
+        lp.appendChild(debugSec.el);
+    }
+
+    _createRightSidebar() {
+        const rightSidebar = this.rightSidebar;
+
+        // Fullscreen button
+        const fsBtn = document.createElement('button');
+        fsBtn.className = 'vnccs-ps-btn';
+        fsBtn.style.cssText = 'width:100%;margin-bottom:5px;';
+        fsBtn.innerHTML = '⛶ Fullscreen';
+        fsBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                this.container.requestFullscreen().then(() => {
+                    fsBtn.innerHTML = '✕ Exit Fullscreen';
+                    setTimeout(() => this.resize(), 50);
+                    setTimeout(() => this.resize(), 300);
+                }).catch(err => console.warn('[VNCCS] Fullscreen error:', err));
+            } else {
+                document.exitFullscreen();
+            }
+        });
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement) {
+                fsBtn.innerHTML = '⛶ Fullscreen';
+                setTimeout(() => this.resize(), 50);
+                setTimeout(() => this.resize(), 300);
+            }
+        });
+        rightSidebar.appendChild(fsBtn);
+
+        // Pose Library Button
+        const libBtnWrap = document.createElement("div");
+        libBtnWrap.style.paddingBottom = "5px";
+        const libBtn = document.createElement("button");
+        libBtn.className = "vnccs-ps-btn primary";
+        libBtn.style.width = "100%";
+        libBtn.style.padding = "10px";
+        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> POSE Save/Load';
+        libBtn.onclick = () => this.showLibraryModal();
+        libBtnWrap.appendChild(libBtn);
+        rightSidebar.appendChild(libBtnWrap);
+
+        // Lighting Section
+        const lightSection = this.createSection("Lighting", false);
+        this.lightListContainer = document.createElement("div");
+        this.lightListContainer.className = "vnccs-ps-light-list";
+
+        const overrideBtn = document.createElement("button");
+        overrideBtn.className = "vnccs-ps-btn full";
+        overrideBtn.style.marginBottom = "12px";
+        overrideBtn.style.height = "36px";
+        overrideBtn.style.fontSize = "11px";
+        overrideBtn.style.textTransform = "uppercase";
+        overrideBtn.style.fontWeight = "bold";
+
+        this.updateOverrideBtn = () => {
+            const active = this.exportParams.keepOriginalLighting;
+            overrideBtn.innerHTML = active ?
+                '<span style="margin-right:8px;">🧼</span> KEEPING ORIGINAL LIGHTING' :
+                '<span style="margin-right:8px;">💡</span> KEEP ORIGINAL LIGHTING';
+
+            if (active) {
+                overrideBtn.style.background = "#2ea043";
+                overrideBtn.style.color = "#fff";
+            } else {
+                overrideBtn.style.background = "var(--ps-panel)";
+                overrideBtn.style.color = "var(--ps-text-muted)";
+            }
+        };
+
+        overrideBtn.onclick = () => {
+            this.exportParams.keepOriginalLighting = !this.exportParams.keepOriginalLighting;
+            this.updateOverrideBtn();
+            this.applyLighting();
+            this.refreshLightUI();
+            this.syncToNode(false);
+        };
+        this.updateOverrideBtn();
+        lightSection.content.appendChild(overrideBtn);
+
+        const lightToolbar = document.createElement("div");
+        lightToolbar.className = "vnccs-ps-light-header";
+        lightToolbar.style.padding = "0 0 8px 0";
+
+        const lightLabel = document.createElement("span");
+        lightLabel.className = "vnccs-ps-label";
+        lightLabel.innerText = "Scene Lights";
+
+        const resetLightBtn = document.createElement("button");
+        resetLightBtn.className = "vnccs-ps-reset-btn";
+        resetLightBtn.innerHTML = "↺";
+        resetLightBtn.onclick = () => {
+            this.lightParams = [
+                { type: 'ambient', color: '#404040', intensity: 0.5 },
+                { type: 'directional', color: '#ffffff', intensity: 1.0, x: 1, y: 2, z: 3 }
+            ];
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+
+        lightToolbar.appendChild(lightLabel);
+        lightToolbar.appendChild(resetLightBtn);
+        lightSection.content.appendChild(lightToolbar);
+        lightSection.content.appendChild(this.lightListContainer);
+        rightSidebar.appendChild(lightSection.el);
+
+        // Prompt Section
+        const promptSection = this.createSection("Prompt", false);
+        const promptArea = document.createElement("textarea");
+        promptArea.className = "vnccs-ps-textarea";
+        promptArea.placeholder = "Describe your scene/character details...";
+        promptArea.value = this.exportParams.user_prompt || "";
+
+        const autoExpand = () => {
+            promptArea.style.height = 'auto';
+            promptArea.style.height = (promptArea.scrollHeight) + 'px';
+        };
+
+        promptArea.addEventListener('input', () => {
+            this.exportParams.user_prompt = promptArea.value;
+            autoExpand();
+            this.syncToNode(false);
+        });
+
+        setTimeout(autoExpand, 0);
+        this.userPromptArea = promptArea;
+        promptSection.content.appendChild(promptArea);
+        rightSidebar.appendChild(promptSection.el);
+
+        // Hand Control Section
+        const handCtrlSec = this.createSection('✊ Hand Control', true);
+
+        // Built-in pose data
+        const HAND_POSE_OPEN = {"source_side":"l","preset_l":{"thumb_01":[-0.13720544603689652,0.10832398879715235,-0.17580927980515873,0.9687784453440746],"thumb_02":[-0.05073807952974384,-0.010904239028835985,-0.14398792100708405,0.9882177004389737],"thumb_03":[-0.0637184002115847,0.08495340746584812,-0.07434587313668746,0.9915621892659893],"index_01":[-0.18234548871101025,0.07987600886016208,0.0645467550369696,0.9778566675998643],"index_02":[-0.054076966382105754,0.05773364889806841,0.04057683006309617,0.9960401740662139],"index_03":[-0.034890609282494586,0.03675636544924377,0.026039372049134892,0.9983754634836259],"middle_01":[-0.10180816789187547,0.05364754816917245,0.0871395333763862,0.9895270280537474],"middle_02":[-0.047787723735679556,0.05070542056845075,0.06608072411900397,0.9953786373461342],"middle_03":[-0.02147954349366744,0.012870906166594505,0.03274114477321023,0.9991501320746019],"ring_01":[-0.024972380031255,0.04547248598795393,0.07280411141909462,0.9959960816258896],"ring_02":[-0.024094828084863396,0.01597407822649981,0.04781195937058897,0.9984379222693416],"ring_03":[-0.01637596191407609,0.013539067765845682,0.029545060453725003,0.9993375860629912],"pinky_01":[-0.017747511998309422,0.10553741261840383,0.11822536627994708,0.9872029391789992],"pinky_02":[-0.008488710903683314,0.02600225118234192,0.05697757769446566,0.9980006915632451],"pinky_03":[-0.007769622339505466,0.02050446043022238,0.05258939022149892,0.9983754584860838]},"preset_r":{"thumb_01":[0.13720544603689652,0.10832398879715235,-0.17580927980515873,-0.9687784453440746],"thumb_02":[0.05073807952974384,-0.010904239028835985,-0.14398792100708405,-0.9882177004389737],"thumb_03":[0.0637184002115847,0.08495340746584812,-0.07434587313668746,-0.9915621892659893],"index_01":[0.18234548871101025,0.07987600886016208,0.0645467550369696,-0.9778566675998643],"index_02":[0.054076966382105754,0.05773364889806841,0.04057683006309617,-0.9960401740662139],"index_03":[0.034890609282494586,0.03675636544924377,0.026039372049134892,-0.9983754634836259],"middle_01":[0.10180816789187547,0.05364754816917245,0.0871395333763862,-0.9895270280537474],"middle_02":[0.047787723735679556,0.05070542056845075,0.06608072411900397,-0.9953786373461342],"middle_03":[0.02147954349366744,0.012870906166594505,0.03274114477321023,-0.9991501320746019],"ring_01":[0.024972380031255,0.04547248598795393,0.07280411141909462,-0.9959960816258896],"ring_02":[0.024094828084863396,0.01597407822649981,0.04781195937058897,-0.9984379222693416],"ring_03":[0.01637596191407609,0.013539067765845682,0.029545060453725003,-0.9993375860629912],"pinky_01":[0.017747511998309422,0.10553741261840383,0.11822536627994708,-0.9872029391789992],"pinky_02":[0.008488710903683314,0.02600225118234192,0.05697757769446566,-0.9980006915632451],"pinky_03":[0.007769622339505466,0.02050446043022238,0.05258939022149892,-0.9983754584860838]}};
+        const HAND_POSE_CHOP = {"source_side":"l","preset_l":{"thumb_01":[-0.11218644155700765,0.26479669437222025,-0.08909711451086874,0.9536029662108639],"thumb_02":[0.057344540005484654,0.07153417240516512,0.16354501068376068,0.9822665093498384],"thumb_03":[0.012223997584035825,0.02912359129726497,0.03243518445665448,0.9989746488886884],"index_01":[0.0546686762627437,0.08260588526258357,0.19136776270029965,0.9765070316975428],"index_02":[-0.030550669522877945,0.027534536948391627,0.0024436179834006794,0.9991509068193315],"index_03":[0,0,0,1],"middle_01":[-0.04932888545866675,-0.020429162672349024,0.10591666025580966,0.9929405679355476],"middle_02":[-0.02009234645784536,0.046897453635141,0.022970206356045034,0.9984334209532042],"middle_03":[-0.021479543493667437,0.012870906166594502,0.03274114477321024,0.9991501320746019],"ring_01":[-0.0888433661177363,-0.09753072233118655,0.0690138310639133,0.9888537331781221],"ring_02":[-0.0240948280848634,0.01597407822649981,0.04781195937058897,0.9984379222693416],"ring_03":[-0.01637596191407609,0.013539067765845686,0.02954506045372501,0.9993375860629912],"pinky_01":[-0.21856008800812737,-0.10206694426370616,0.1541545848533417,0.9581493572440798],"pinky_02":[-0.008488710903683312,0.026002251182341923,0.05697757769446568,0.9980006915632451],"pinky_03":[-0.0077696223395054675,0.020504460430222384,0.05258939022149892,0.9983754584860838]},"preset_r":{"thumb_01":[0.11218644155700765,0.26479669437222025,-0.08909711451086874,-0.9536029662108639],"thumb_02":[-0.057344540005484654,0.07153417240516512,0.16354501068376068,-0.9822665093498384],"thumb_03":[-0.012223997584035825,0.02912359129726497,0.03243518445665448,-0.9989746488886884],"index_01":[-0.0546686762627437,0.08260588526258357,0.19136776270029965,-0.9765070316975428],"index_02":[0.030550669522877945,0.027534536948391627,0.0024436179834006794,-0.9991509068193315],"index_03":[0,0,0,-1],"middle_01":[0.04932888545866675,-0.020429162672349024,0.10591666025580966,-0.9929405679355476],"middle_02":[0.02009234645784536,0.046897453635141,0.022970206356045034,-0.9984334209532042],"middle_03":[0.021479543493667437,0.012870906166594502,0.03274114477321024,-0.9991501320746019],"ring_01":[0.0888433661177363,-0.09753072233118655,0.0690138310639133,-0.9888537331781221],"ring_02":[0.0240948280848634,0.01597407822649981,0.04781195937058897,-0.9984379222693416],"ring_03":[0.01637596191407609,0.013539067765845686,0.02954506045372501,-0.9993375860629912],"pinky_01":[0.21856008800812737,-0.10206694426370616,0.1541545848533417,-0.9581493572440798],"pinky_02":[0.008488710903683312,0.026002251182341923,0.05697757769446568,-0.9980006915632451],"pinky_03":[0.0077696223395054675,0.020504460430222384,0.05258939022149892,-0.9983754584860838]}};
+        const HAND_POSE_FIST = {"source_side":"l","preset_l":{"thumb_01":[0,0,0,1],"thumb_02":[0.132405316320699,0.18585495078131112,0.035111519417413445,0.9729819888796979],"thumb_03":[0.31377198210388674,0.03568240519045323,0.16222440955442846,0.934856753813727],"index_01":[0.31172006505305605,-0.3378254961753802,-0.23015993265766227,0.8577475972430334],"index_02":[0.20284497436828702,-0.2137431141961466,-0.2191275173404543,0.9301348980935351],"index_03":[0.17198799239138954,-0.3089858589261866,-0.43370142393479594,0.8287647098747367],"middle_01":[0.14893446505579772,-0.36184653220883345,-0.3434640941582824,0.8537669636797945],"middle_02":[0.24238181556250415,-0.1432582695336492,-0.5297479002676369,0.8000595514440648],"middle_03":[0.14158699069803765,-0.10226732887207433,-0.2617885362323039,0.9491898017824424],"ring_01":[0.15112867852248044,-0.27503519493065415,-0.540359982583664,0.7807220076952411],"ring_02":[0.3042555445355691,0.07194596043331655,-0.34567127310849854,0.8847393476862221],"ring_03":[0.2701215748785559,-0.146710265022109,-0.36337515130716824,0.8794708251754368],"pinky_01":[0.028430342490078378,-0.13765409582877344,-0.44215976249586564,0.8858542825753338],"pinky_02":[0.18528716241427967,-0.10423428923627678,-0.27993270839024453,0.9361845753723862],"pinky_03":[0.20503355408368013,-0.0659909896866002,-0.3494226159266155,0.9118718476074358]},"preset_r":{"thumb_01":[0,0,0,-1],"thumb_02":[-0.132405316320699,0.18585495078131112,0.035111519417413445,-0.9729819888796979],"thumb_03":[-0.31377198210388674,0.03568240519045323,0.16222440955442846,-0.934856753813727],"index_01":[-0.31172006505305605,-0.3378254961753802,-0.23015993265766227,-0.8577475972430334],"index_02":[-0.20284497436828702,-0.2137431141961466,-0.2191275173404543,-0.9301348980935351],"index_03":[-0.17198799239138954,-0.3089858589261866,-0.43370142393479594,-0.8287647098747367],"middle_01":[-0.14893446505579772,-0.36184653220883345,-0.3434640941582824,-0.8537669636797945],"middle_02":[-0.24238181556250415,-0.1432582695336492,-0.5297479002676369,-0.8000595514440648],"middle_03":[-0.14158699069803765,-0.10226732887207433,-0.2617885362323039,-0.9491898017824424],"ring_01":[-0.15112867852248044,-0.27503519493065415,-0.540359982583664,-0.7807220076952411],"ring_02":[-0.3042555445355691,0.07194596043331655,-0.34567127310849854,-0.8847393476862221],"ring_03":[-0.2701215748785559,-0.146710265022109,-0.36337515130716824,-0.8794708251754368],"pinky_01":[-0.028430342490078378,-0.13765409582877344,-0.44215976249586564,-0.8858542825753338],"pinky_02":[-0.18528716241427967,-0.10423428923627678,-0.27993270839024453,-0.9361845753723862],"pinky_03":[-0.20503355408368013,-0.0659909896866002,-0.3494226159266155,-0.9118718476074358]}};
+
+        // Grasp slider
+        const mkSliderRow = (label, onChange) => {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex;align-items:center;gap:6px;margin-bottom:6px;';
+            const lbl = document.createElement('span');
+            lbl.style.cssText = 'font-size:10px;color:var(--ps-text-muted);width:40px;flex-shrink:0;';
+            lbl.textContent = label;
+            const slider = document.createElement('input');
+            slider.type = 'range'; slider.min = '-0.2'; slider.max = '1.2'; slider.step = '0.01'; slider.value = '0';
+            slider.style.cssText = 'width:100px;flex-shrink:0;';
+            const val = document.createElement('span');
+            val.style.cssText = 'font-size:10px;color:var(--ps-accent);width:28px;text-align:right;font-family:monospace;';
+            val.textContent = '0.00';
+            slider.addEventListener('input', () => {
+                val.textContent = parseFloat(slider.value).toFixed(2);
+                onChange(parseFloat(slider.value));
+            });
+            row.append(lbl, slider, val);
+            return { row, slider, val };
+        };
+
+        // Store all slider values
+        this._handSliderValues = { spread: 0, grasp: 0, thumb: 1, index: 1, middle: 1, ring: 1, pinky: 1 };
+        this._handSliderRefs = {};
+        let applyAllSliders = () => {};
+
+        // L/R/Both toggle
+        let graspSide = 'both';
+        const sideRow = document.createElement('div');
+        sideRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:6px;';
+        ['L', 'Both', 'R'].forEach(s => {
+            const b = document.createElement('button');
+            b.className = 'vnccs-ps-btn';
+            b.style.cssText = 'font-size:10px;padding:3px;';
+            b.textContent = s;
+            if (s === 'Both') b.style.opacity = '1';
+            b.onclick = () => {
+                graspSide = s.toLowerCase();
+                sideRow.querySelectorAll('button').forEach(btn => btn.style.opacity = '0.5');
+                b.style.opacity = '1';
+                applyAllSliders();
+            };
+            if (s !== 'Both') b.style.opacity = '0.5';
+            sideRow.appendChild(b);
+        });
+        handCtrlSec.content.appendChild(sideRow);
+
+        applyAllSliders = () => {
+            if (!this.viewer) return;
+            const sides = graspSide === 'both' ? ['l', 'r'] : [graspSide];
+
+            // Compute spread-interpolated pose data (no bone changes, just data)
+            const lerpPresetData = (poseA, poseB, t, side) => {
+                const dataA = side === 'r' ? poseA.preset_r : poseA.preset_l;
+                const dataB = side === 'r' ? poseB.preset_r : poseB.preset_l;
+                const result = {};
+                for (const key of Object.keys(dataA)) {
+                    const a = dataA[key], b = dataB[key];
+                    if (!a || !b) continue;
+                    // Simple lerp + normalize (slerp approximation for data only)
+                    const dot = a[0]*b[0] + a[1]*b[1] + a[2]*b[2] + a[3]*b[3];
+                    const bFlip = dot < 0 ? [-b[0],-b[1],-b[2],-b[3]] : b;
+                    const r = [
+                        a[0]*(1-t) + bFlip[0]*t,
+                        a[1]*(1-t) + bFlip[1]*t,
+                        a[2]*(1-t) + bFlip[2]*t,
+                        a[3]*(1-t) + bFlip[3]*t,
+                    ];
+                    const len = Math.sqrt(r[0]*r[0]+r[1]*r[1]+r[2]*r[2]+r[3]*r[3]);
+                    result[key] = [r[0]/len, r[1]/len, r[2]/len, r[3]/len];
+                }
+                return result;
+            };
+
+            for (const s of sides) {
+                // 1. Spread: CHOP→OPEN full pose
+                this.viewer.interpolateHandPose(HAND_POSE_CHOP, HAND_POSE_OPEN, this._handSliderValues.spread, s);
+
+                // 2. Individual fingers: spread-base→FIST
+                for (const prefix of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+                    const effectiveT = this._handSliderValues[prefix];
+                    const spreadBaseData = lerpPresetData(HAND_POSE_CHOP, HAND_POSE_OPEN, this._handSliderValues.spread, s);
+                    const fistData = s === 'r' ? HAND_POSE_FIST.preset_r : HAND_POSE_FIST.preset_l;
+                    const startPose = { preset_l: spreadBaseData, preset_r: spreadBaseData };
+                    const endPose = { preset_l: fistData, preset_r: fistData };
+                    this.viewer.interpolateFingerPose(startPose, endPose, effectiveT, s, prefix, biasValues);
+                }
+            }
+        };
+
+        this._handSliderValRefs = {};
+
+        const mkSliderRowTracked = (label, key, initVal = 0) => {
+            const { row, slider, val } = mkSliderRow(label, (t) => {
+                if (key === 'grasp') {
+                    const oldGrasp = this._handSliderValues.grasp;
+                    this._handSliderValues.grasp = t;
+                    const eps = 1e-9;
+                    for (const prefix of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+                        const f = this._handSliderValues[prefix];
+                        let newF;
+                        if (t >= oldGrasp) {
+                            const denom = 1.0 - oldGrasp;
+                            newF = denom < eps ? 1.0 : f + (t - oldGrasp) * (1.0 - f) / denom;
+                        } else {
+                            newF = oldGrasp < eps ? 0.0 : f * (t / oldGrasp);
+                        }
+                        newF = Math.max(0, Math.min(1, newF));
+                        this._handSliderValues[prefix] = newF;
+                        if (this._handSliderRefs[prefix]) this._handSliderRefs[prefix].value = newF;
+                        if (this._handSliderValRefs[prefix]) this._handSliderValRefs[prefix].textContent = newF.toFixed(2);
+                    }
+                } else {
+                    this._handSliderValues[key] = t;
+                }
+                applyAllSliders();
+            });
+            slider.value = initVal;
+            val.textContent = parseFloat(initVal).toFixed(2);
+            this._handSliderRefs[key] = slider;
+            this._handSliderValRefs[key] = val;
+            return { row, slider, val };
+        };
+
+        const { row: spreadRow } = mkSliderRowTracked('Spread', 'spread', 0);
+        handCtrlSec.content.appendChild(spreadRow);
+
+        const { row: graspRow } = mkSliderRowTracked('Grasp', 'grasp', 0);
+        handCtrlSec.content.appendChild(graspRow);
+
+        const FINGER_LABELS = [
+            ['Thumb', 'thumb'],
+            ['Index', 'index'],
+            ['Middle', 'middle'],
+            ['Ring', 'ring'],
+            ['Pinky', 'pinky'],
+        ];
+
+        for (const [label, prefix] of FINGER_LABELS) {
+            const { row } = mkSliderRowTracked(label, prefix, 1);
+            handCtrlSec.content.appendChild(row);
+        }
+
+        // Curl bias sliders (joint 1/2/3 weighting)
+        const biasValues = [1.0, 1.0, 1.0];
+        const biasLabels = ['J1', 'J2', 'J3'];
+        const biasRow = document.createElement('div');
+        biasRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;margin-bottom:6px;';
+        biasLabels.forEach((label, i) => {
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex;flex-direction:column;align-items:center;gap:2px;';
+            const lbl = document.createElement('span');
+            lbl.style.cssText = 'font-size:9px;color:var(--ps-text-muted);';
+            lbl.textContent = label;
+            const slider = document.createElement('input');
+            slider.type = 'range'; slider.min = '0'; slider.max = '2'; slider.step = '0.05'; slider.value = '1';
+            slider.style.cssText = 'width:100%;writing-mode:vertical-lr;height:60px;';
+            const val = document.createElement('span');
+            val.style.cssText = 'font-size:9px;color:var(--ps-accent);font-family:monospace;';
+            val.textContent = '1.00';
+            slider.addEventListener('input', () => {
+                biasValues[i] = parseFloat(slider.value);
+                val.textContent = biasValues[i].toFixed(2);
+                applyAllSliders();
+            });
+            wrap.append(lbl, slider, val);
+            biasRow.appendChild(wrap);
+        });
+        handCtrlSec.content.appendChild(biasRow);
+
+        rightSidebar.appendChild(handCtrlSec.el);
+
+        // Hand Pose Library Section (permanent, no modal)
+        const handPoseSec = this.createSection('✊ Hand Pose', true);
+
+        // Save button - above grid
+        const handSaveBtn = document.createElement('button');
+        handSaveBtn.className = 'vnccs-ps-btn primary';
+        handSaveBtn.style.cssText = 'width:100%;margin-bottom:6px;padding:8px;';
+        handSaveBtn.innerHTML = '💾 Save Current Hand';
+        handSaveBtn.onclick = () => {
+            const existing = this.rightSidebar.querySelector('.vnccs-hand-save-panel');
+            if (existing) { existing.remove(); return; }
+            this.showSaveHandPoseModal(handSaveBtn);
+        };
+        handPoseSec.content.appendChild(handSaveBtn);
+
+        // Grid for thumbnails
+        const handGrid = document.createElement('div');
+        handGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:4px;align-items:start;overflow-y:auto;';
+        this.handLibraryGrid = handGrid;
+        handPoseSec.content.appendChild(handGrid);
+
+        rightSidebar.appendChild(handPoseSec.el);
+
+        // Load hand library on init
+        this.refreshHandLibrary();
+    }
+
+    _setupFinalUI() {
+        // Loading Overlay
+        this.loadingOverlay = document.createElement("div");
+        this.loadingOverlay.className = "vnccs-ps-loading-overlay";
+        this.loadingOverlay.innerHTML = `
+            <div class="vnccs-ps-loading-spinner"></div>
+            <div class="vnccs-ps-loading-text">Loading Model...</div>
+        `;
+        this.container.appendChild(this.loadingOverlay);
+
+        this.refreshLightUI();
+
+        // Initialize viewer
+        this.viewer = new PoseViewerCore(this.canvas, {
+            skinMode: 'naked',
+            enableTextureSkinning: true,
+            enableMultiPass: true,
+            showSkeletonHelper: true,
+            showCaptureFrame: true,
+            syncMode: 'end',
+            onPoseChange: (pose) => {
+                // Return params request logic mapped into direct assignment beforehand 
+                this.viewer.setCameraParams({
+                    offset_x: this.exportParams.cam_offset_x,
+                    offset_y: this.exportParams.cam_offset_y,
+                    zoom: this.exportParams.cam_zoom
+                });
+                this.syncToNode();
+            },
+            onBoneSelect: (boneName) => {
+                if (this.boneNameInput) {
+                    this.boneNameInput.value = boneName;
+                }
+            }
+        });
+
+        this.viewer.init();
+        if (this.lightParams) {
+            this.viewer.updateLights(this.lightParams);
+        }
+        // Start observing canvasContainer for size changes
+        this.startResizeObserver();
+    }
+
+    // === UI Helper Methods ===
+
+    createSection(title, expanded = true) {
+        const section = document.createElement("div");
+        section.className = "vnccs-ps-section" + (expanded ? "" : " collapsed");
+
+        const header = document.createElement("div");
+        header.className = "vnccs-ps-section-header";
+        header.innerHTML = `
+            <span class="vnccs-ps-section-title">${title}</span>
+            <span class="vnccs-ps-section-toggle">▼</span>
+        `;
+        header.addEventListener("click", () => {
+            section.classList.toggle("collapsed");
+        });
+
+        const content = document.createElement("div");
+        content.className = "vnccs-ps-section-content";
+
+        section.appendChild(header);
+        section.appendChild(content);
+
+        return { el: section, content };
+    }
+
+    createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelRow = document.createElement("div");
+        labelRow.className = "vnccs-ps-label-row";
+        labelRow.style.display = "flex";
+        labelRow.style.justifyContent = "space-between";
+        labelRow.style.alignItems = "center";
+
+        const value = target[key];
+        const displayVal = key === 'age' ? Math.round(value) : value.toFixed(2);
+        const valueRow = document.createElement("div");
+        valueRow.style.display = "flex";
+        valueRow.style.alignItems = "center";
+        valueRow.style.gap = "6px";
+
+        const valueSpan = document.createElement("span");
+        valueSpan.className = "vnccs-ps-value";
+        valueSpan.innerText = displayVal;
+
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "vnccs-ps-reset-btn";
+        resetBtn.innerHTML = "↺";
+        resetBtn.title = `Reset to ${defaultValue}`;
+
+        valueRow.appendChild(valueSpan);
+        valueRow.appendChild(resetBtn);
+
+        // Label Side
+        const labelEl = document.createElement("span");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        labelRow.innerHTML = '';
+        labelRow.appendChild(labelEl);
+        labelRow.appendChild(valueRow);
+
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-slider-wrap";
+
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.className = "vnccs-ps-slider";
+        slider.min = min;
+        slider.max = max;
+        slider.step = step;
+        slider.value = value;
+
+        // Reset logic
+        resetBtn.onclick = (e) => {
+            e.stopPropagation();
+            slider.value = defaultValue;
+            slider.dispatchEvent(new Event('input'));
+            slider.dispatchEvent(new Event('change'));
+        };
+
+        slider.addEventListener("input", () => {
+            const val = parseFloat(slider.value);
+            valueSpan.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
+
+            if (isExport) {
+                this.exportParams[key] = val;
+                // Live preview for camera params - sync viewport too
+                const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y'].includes(key);
+                if (isCamParam && this.viewer) {
+                // [DISABLED] this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom,
+                // [DISABLED] this.exportParams.cam_offset_x,
+                // [DISABLED] this.exportParams.cam_offset_y
+                // [DISABLED] );
+                }
+            } else {
+                if (key === 'head_size') {
+                    if (this.viewer) this.viewer.updateHeadScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'arm_size') {
+                    if (this.viewer) this.viewer.updateArmScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'hand_size') {
+                    if (this.viewer) this.viewer.updateHandScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else {
+                    // Directly update meshParams and trigger mesh rebuild
+                    this.meshParams[key] = val;
+                    this.onMeshParamsChanged();
+                }
+            }
+        });
+
+        slider.addEventListener("change", () => {
+            if (isExport) {
+                const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color', 'cam_offset_x', 'cam_offset_y'].includes(key);
+                this.syncToNode(needsFull);
+            }
+        });
+
+        if (!isExport) {
+            this.sliders[key] = { slider, label: valueSpan, def: { key, label, min, max, step } };
+        } else {
+            this.exportWidgets[key] = slider;
+        }
+
+        wrap.appendChild(slider);
+        field.appendChild(labelRow);
+        field.appendChild(wrap);
+        return field;
+    }
+
+    createInputField(label, key, type, min, max, step) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const input = document.createElement("input");
+        input.type = type;
+        input.className = "vnccs-ps-input";
+        input.min = min;
+        input.max = max;
+        input.step = step;
+        input.value = this.exportParams[key];
+
+        const isDimension = (key === 'view_width' || key === 'view_height');
+        const eventType = isDimension ? 'change' : 'input';
+
+        input.addEventListener(eventType, () => {
+            let val = parseFloat(input.value);
+            if (isNaN(val)) val = this.exportParams[key];
+            val = Math.max(min, Math.min(max, val));
+
+            // For grid columns, integer only
+            if (key === 'grid_columns') val = Math.round(val);
+
+            input.value = val;
+            this.exportParams[key] = val;
+            this.syncToNode(isDimension);
+        });
+
+        this.exportWidgets[key] = input;
+
+        field.appendChild(labelEl);
+        field.appendChild(input);
+        return field;
+    }
+
+    createSelectField(label, key, options) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const select = document.createElement("select");
+        select.className = "vnccs-ps-select";
+
+        options.forEach(opt => {
+            const el = document.createElement("option");
+            el.value = opt;
+            el.innerText = opt;
+            el.selected = this.exportParams[key] === opt;
+            select.appendChild(el);
+        });
+
+        select.addEventListener("change", () => {
+            this.exportParams[key] = select.value;
+            this.syncToNode();
+        });
+
+        this.exportWidgets[key] = select;
+
+        field.appendChild(labelEl);
+        field.appendChild(select);
+        return field;
+    }
+
+    createCameraRadar(section) {
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-radar-wrap";
+        wrap.style.display = "flex";
+        wrap.style.flexDirection = "column";
+        wrap.style.alignItems = "center";
+        wrap.style.marginTop = "10px";
+        wrap.style.background = "#181818";
+        wrap.style.border = "1px solid #333";
+        wrap.style.borderRadius = "4px";
+        wrap.style.padding = "4px";
+
+        // Canvas
+        const canvas = document.createElement("canvas");
+        const size = 140;
+        canvas.width = size;
+        canvas.height = size;
+        canvas.style.width = "140px";
+        canvas.style.height = "140px";
+        canvas.style.cursor = "crosshair";
+
+        const ctx = canvas.getContext("2d");
+
+        // Interaction State
+        let isDragging = false;
+
+        const range = 20.0; // Max offset range (+/- 20)
+
+        const updateFromMouse = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // Scaling support
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+
+            const mouseX = (e.clientX - rect.left) * scaleX;
+            const mouseY = (e.clientY - rect.top) * scaleY;
+
+            // Aspect Ratio Logic to find active area
+            const viewW = this.exportParams.view_width || 1024;
+            const viewH = this.exportParams.view_height || 1024;
+            const ar = viewW / viewH;
+
+            // Dynamic Range calculation based on Zoom
+            const zoom = this.exportParams.cam_zoom || 1.0;
+            const baseRange = 12.05;
+            const rangeY = baseRange / zoom;
+            const rangeX = rangeY * ar;
+
+            // Fit box in canvas (margin 10px) (Visual Scale 0.5 for 2x Range)
+            const margin = 10;
+            const visualScale = 0.5;
+            const maxW = (size - margin * 2) * visualScale;
+            const maxH = (size - margin * 2) * visualScale;
+            let drawW, drawH;
+
+            if (ar >= 1) { // Landscape
+                drawW = maxW;
+                drawH = maxW / ar;
+            } else { // Portrait
+                drawH = maxH;
+                drawW = maxH * ar;
+            }
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Clamping to box
+            const halfW = drawW / 2;
+            const halfH = drawH / 2;
+
+            let dx = (mouseX - cx);
+            let dy = (mouseY - cy);
+
+            // Clamp to Canvas size (not frame size), so we can drag outside frame
+            // Frame is drawW/drawH. Canvas is size (200).
+            // Let's allow dragging to the very edge of canvas minus margin
+            const maxDragX = (size / 2) - 5;
+            const maxDragY = (size / 2) - 5;
+
+            dx = Math.max(-maxDragX, Math.min(maxDragX, dx));
+            dy = Math.max(-maxDragY, Math.min(maxDragY, dy));
+
+            const normX = dx / halfW;
+            const normY = dy / halfH;
+
+            // X: Dot Right -> Model Right
+            this.exportParams.cam_offset_x = normX * rangeX;
+
+            // Y: Dot Top (neg) -> Model Top
+            this.exportParams.cam_offset_y = -normY * rangeY;
+
+            draw();
+
+            // Sync Viewport
+            if (this.viewer) {
+                // [DISABLED] this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom,
+                // [DISABLED] this.exportParams.cam_offset_x,
+                // [DISABLED] this.exportParams.cam_offset_y
+                // [DISABLED] );
+            }
+        };
+
+        canvas.addEventListener("mousedown", (e) => {
+            isDragging = true;
+            updateFromMouse(e);
+        });
+
+        document.addEventListener("mousemove", (e) => {
+            if (isDragging) updateFromMouse(e);
+        });
+
+        document.addEventListener("mouseup", () => {
+            if (isDragging) {
+                isDragging = false;
+                this.syncToNode(false);
+            }
+        });
+
+        const draw = () => {
+            // Clear
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, size, size);
+
+            const viewW = this.exportParams.view_width || 1024;
+            const viewH = this.exportParams.view_height || 1024;
+            const ar = viewW / viewH;
+
+            // Recalculate ranges for drawing
+            const zoom = this.exportParams.cam_zoom || 1.0;
+            const baseRange = 12.05;
+            const rangeY = baseRange / zoom;
+            const rangeX = rangeY * ar;
+
+            // Fit box (Visual Scale 0.5)
+            const margin = 10;
+            const visualScale = 0.5;
+            const maxW = (size - margin * 2) * visualScale;
+            const maxH = (size - margin * 2) * visualScale;
+            let drawW, drawH;
+
+            if (ar >= 1) { // Landscape
+                drawW = maxW;
+                drawH = maxW / ar;
+            } else { // Portrait
+                drawH = maxH;
+                drawW = maxH * ar;
+            }
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Draw Viewer Frame
+            ctx.fillStyle = "#222";
+            ctx.fillRect(cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+            ctx.strokeStyle = "#444";
+            ctx.lineWidth = 1;
+            ctx.strokeRect(cx - drawW / 2, cy - drawH / 2, drawW, drawH);
+
+            // Grid
+            ctx.beginPath();
+            ctx.strokeStyle = "#333";
+            ctx.moveTo(cx, cy - drawH / 2);
+            ctx.lineTo(cx, cy + drawH / 2);
+            ctx.moveTo(cx - drawW / 2, cy);
+            ctx.lineTo(cx + drawW / 2, cy);
+            ctx.stroke();
+
+            // Draw Dot (Target)
+            const normX = (this.exportParams.cam_offset_x || 0) / rangeX;
+            const normY = -(this.exportParams.cam_offset_y || 0) / rangeY;
+
+            const dotX = cx + normX * (drawW / 2);
+            const dotY = cy + normY * (drawH / 2);
+
+            // Dot
+            ctx.beginPath();
+            ctx.fillStyle = "#3584e4";
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Crosshair
+            ctx.beginPath();
+            ctx.strokeStyle = "#3584e4";
+            ctx.lineWidth = 1;
+            ctx.moveTo(dotX - 6, dotY);
+            ctx.lineTo(dotX + 6, dotY);
+            ctx.moveTo(dotX, dotY - 6);
+            ctx.lineTo(dotX, dotY + 6);
+            ctx.stroke();
+
+            // Info Text
+            ctx.fillStyle = "#666";
+            ctx.font = "10px monospace";
+            ctx.textAlign = "right";
+            // ctx.fillText(`X:${(this.exportParams.cam_offset_x||0).toFixed(1)}`, size-5, 12);
+        };
+
+        // Expose redraw
+        this.radarRedraw = draw;
+
+        // Recenter Button
+        const recenterBtn = document.createElement("button");
+        recenterBtn.className = "vnccs-ps-btn";
+        recenterBtn.style.marginTop = "8px";
+        recenterBtn.style.width = "100%";
+        recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
+        recenterBtn.onclick = () => {
+            this.exportParams.cam_offset_x = 0;
+            this.exportParams.cam_offset_y = 0;
+            draw();
+            if (this.viewer) {
+                // [DISABLED] this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom,
+                // [DISABLED] 0, 0
+                // [DISABLED] );
+            }
+            this.syncToNode(false);
+        };
+
+        // Sync Tabs Button
+        const syncTabsBtn = document.createElement("button");
+        syncTabsBtn.className = "vnccs-ps-btn vnccs-ps-btn--sync-tabs";
+        syncTabsBtn.style.marginTop = "6px";
+        syncTabsBtn.style.width = "100%";
+        syncTabsBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⇄</span> Sync Zoom to All Tabs';
+        syncTabsBtn.style.display = "none"; // Hidden by default
+        syncTabsBtn.onclick = () => {
+            const currentZoom = this.exportParams.cam_zoom;
+            // Save current pose first
+            if (this.viewer && this.viewer.isInitialized()) {
+                const currentPose = this.viewer.getPose();
+                currentPose.cameraParams = {
+                    offset_x: this.exportParams.cam_offset_x,
+                    offset_y: this.exportParams.cam_offset_y,
+                    zoom: currentZoom
+                };
+                this.poses[this.activeTab] = currentPose;
+            }
+            // Apply zoom to all tabs
+            for (let i = 0; i < this.poses.length; i++) {
+                if (!this.poses[i].cameraParams) {
+                    this.poses[i].cameraParams = { offset_x: 0, offset_y: 0 };
+                }
+                this.poses[i].cameraParams.zoom = currentZoom;
+            }
+            // Re-render all tabs
+            this.syncToNode(true);
+        };
+        this.syncTabsBtn = syncTabsBtn;
+
+        wrap.appendChild(canvas);
+        wrap.appendChild(recenterBtn);
+        wrap.appendChild(syncTabsBtn);
+        section.content.appendChild(wrap);
+
+        // Initial Draw
+        requestAnimationFrame(() => draw());
+    }
+
+    createLightRadar(light) {
+        const size = 100;
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        canvas.className = "vnccs-ps-light-radar-canvas";
+        const ctx = canvas.getContext("2d");
+
+        let isDragging = false;
+        
+
+        const range = (light.type === 'point') ? 10.0 : 100;
+
+        const draw = () => {
+            ctx.fillStyle = "#111";
+            ctx.fillRect(0, 0, size, size);
+
+            const cx = size / 2;
+            const cy = size / 2;
+
+            // Grid
+            ctx.beginPath();
+            ctx.strokeStyle = "#222";
+            ctx.lineWidth = 1;
+            ctx.moveTo(cx, 0); ctx.lineTo(cx, size);
+            ctx.moveTo(0, cy); ctx.lineTo(size, cy);
+            ctx.stroke();
+
+            // Circles
+            ctx.beginPath();
+            ctx.strokeStyle = "#1a1a1a";
+            ctx.arc(cx, cy, size / 4, 0, Math.PI * 2);
+            ctx.arc(cx, cy, size / 2 - 2, 0, Math.PI * 2);
+            ctx.stroke();
+
+            // Dot (X and Z)
+            const dotX = cx + (light.x / range) * (size / 2);
+            const dotY = cy + (light.z / range) * (size / 2);
+            const hex = this.parseColorToHex(light.color);
+
+            // Shadow/Glow
+            const grad = ctx.createRadialGradient(dotX, dotY, 2, dotX, dotY, 12);
+            grad.addColorStop(0, hex + "66");
+            grad.addColorStop(1, "transparent");
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.arc(dotX, dotY, 12, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Core
+            ctx.beginPath();
+            ctx.fillStyle = hex;
+            ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            // Labels
+            ctx.fillStyle = "#444";
+            ctx.font = "8px monospace";
+            ctx.textAlign = "center";
+            ctx.fillText("BACK", cx, 10);
+            ctx.fillText("FRONT", cx, size - 4);
+        };
+
+        const updateFromMouse = (e) => {
+            const rect = canvas.getBoundingClientRect();
+            // Scaling support (accounts for CSS zoom)
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const mouseX = (e.clientX - rect.left) * scaleX;
+            const mouseY = (e.clientY - rect.top) * scaleY;
+            const cx = size / 2;
+            const cy = size / 2;
+
+            let dx = (mouseX - cx);
+            let dy = (mouseY - cy);
+
+            const maxDrag = (size / 2) - 2;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            if (dist > maxDrag) {
+                dx *= maxDrag / dist;
+                dy *= maxDrag / dist;
+            }
+
+            light.x = (dx / (size / 2)) * range;
+            light.z = (dy / (size / 2)) * range;
+
+            draw();
+            this.applyLighting();
+        };
+
+        canvas.addEventListener("pointerdown", (e) => {
+            canvas.setPointerCapture(e.pointerId);
+            isDragging = true;
+            updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointermove", (e) => {
+            if (isDragging) updateFromMouse(e);
+        });
+
+        canvas.addEventListener("pointerup", (e) => {
+            if (isDragging) {
+                if (canvas.hasPointerCapture(e.pointerId)) {
+                    canvas.releasePointerCapture(e.pointerId);
+                }
+                isDragging = false;
+                this.syncToNode(false);
+            }
+        });
+
+        draw();
+        return canvas;
+    }
+
+
+    parseColorToHex(c) {
+        if (!c) return "#ffffff";
+        if (typeof c === 'string') return c.startsWith('#') ? c : "#ffffff";
+        if (Array.isArray(c)) {
+            const r = Math.round(c[0]).toString(16).padStart(2, '0');
+            const g = Math.round(c[1]).toString(16).padStart(2, '0');
+            const b = Math.round(c[2]).toString(16).padStart(2, '0');
+            return `#${r}${g}${b}`;
+        }
+        return "#ffffff";
+    }
+
+    createColorField(label, key) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelEl = document.createElement("div");
+        labelEl.className = "vnccs-ps-label";
+        labelEl.innerText = label;
+
+        const input = document.createElement("input");
+        input.type = "color";
+        input.className = "vnccs-ps-color";
+
+        // Convert RGB to Hex
+        const rgb = this.exportParams[key];
+        const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
+        input.value = hex;
+
+        input.addEventListener("input", () => {
+            const hex = input.value;
+            const r = parseInt(hex.slice(1, 3), 16);
+            const g = parseInt(hex.slice(3, 5), 16);
+            const b = parseInt(hex.slice(5, 7), 16);
+            this.exportParams[key] = [r, g, b];
+        });
+
+        input.addEventListener("change", () => {
+            this.syncToNode(true);
+        });
+
+        this.exportWidgets[key] = input;
+
+        field.appendChild(labelEl);
+        field.appendChild(input);
+        return field;
+    }
+
+    updateTabs() {
+        this.tabsContainer.innerHTML = "";
+
+        // Show/hide Sync Tabs button based on tab count
+        if (this.syncTabsBtn) {
+            this.syncTabsBtn.style.display = this.poses.length > 1 ? "flex" : "none";
+        }
+
+        for (let i = 0; i < this.poses.length; i++) {
+            const tab = document.createElement("button");
+            tab.className = "vnccs-ps-tab" + (i === this.activeTab ? " active" : "");
+
+            const text = document.createElement("span");
+            text.innerText = `Pose ${i + 1}`;
+            tab.appendChild(text);
+
+            if (this.poses.length > 1) {
+                const close = document.createElement("span");
+                close.className = "vnccs-ps-tab-close";
+                close.innerText = "×";
+
+                close.onclick = (e) => {
+                    e.stopPropagation();
+                    this.deleteTab(i);
+                };
+                tab.appendChild(close);
+            }
+
+            tab.addEventListener("click", () => this.switchTab(i));
+            this.tabsContainer.appendChild(tab);
+        }
+
+        // Add button (max 12)
+        if (this.poses.length < 12) {
+            const addBtn = document.createElement("button");
+            addBtn.className = "vnccs-ps-tab-add";
+            addBtn.innerText = "+";
+            addBtn.addEventListener("click", () => this.addTab());
+            this.tabsContainer.appendChild(addBtn);
+        }
+    }
+
+    switchTab(index) {
+        if (index === this.activeTab) return;
+
+        // Save current pose & capture
+        if (this.viewer && this.viewer.isInitialized()) {
+            const savedPose = this.viewer.getPose();
+            savedPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = savedPose;
+            this.syncToNode(false);
+        }
+
+        this.activeTab = index;
+        this.updateTabs();
+
+        // Load new pose
+        const newPose = this.poses[this.activeTab] || {};
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.setPose(newPose);
+            this.updateRotationSliders();
+        }
+
+        // Restore Camera Sliders if saved
+        // Restore Camera Sliders if saved
+        if (newPose.cameraParams) {
+            this.exportParams.cam_offset_x = newPose.cameraParams.offset_x || 0;
+            this.exportParams.cam_offset_y = newPose.cameraParams.offset_y || 0;
+            this.exportParams.cam_zoom = newPose.cameraParams.zoom || 1.0;
+        } else {
+            // Default params if new pose has none
+            this.exportParams.cam_offset_x = 0;
+            this.exportParams.cam_offset_y = 0;
+            this.exportParams.cam_zoom = 1.0;
+        }
+
+        // Update DOM widgets
+        if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+        if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+        if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+
+        // Force Camera Snap
+        if (this.viewer) {
+                // [DISABLED] this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom,
+                // [DISABLED] this.exportParams.cam_offset_x,
+                // [DISABLED] this.exportParams.cam_offset_y
+                // [DISABLED] );
+        }
+
+        this.syncToNode(false);
+    }
+
+    addTab() {
+        if (this.poses.length >= 12) return;
+
+        // Save current & capture
+        if (this.viewer && this.viewer.isInitialized()) {
+            const savedPose = this.viewer.getPose();
+            savedPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = savedPose;
+            this.syncToNode(false);
+        }
+
+        this.poses.push({});
+        this.activeTab = this.poses.length - 1;
+        this.updateTabs();
+
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.resetPose();
+        }
+
+        this.syncToNode(false);
+    }
+
+    deleteTab(targetIndex = -1) {
+        if (this.poses.length <= 1) return;
+        const idx = targetIndex === -1 ? this.activeTab : targetIndex;
+
+        // Remove capture
+        if (this.poseCaptures && this.poseCaptures.length > idx) {
+            this.poseCaptures.splice(idx, 1);
+        }
+
+        this.poses.splice(idx, 1);
+
+        // Adjust active tab logic
+        if (idx < this.activeTab) {
+            this.activeTab--;
+        } else if (idx === this.activeTab) {
+            if (this.activeTab >= this.poses.length) {
+                this.activeTab = this.poses.length - 1;
+            }
+            // Load new pose since active was deleted
+            if (this.viewer && this.viewer.isInitialized()) {
+                this.viewer.setPose(this.poses[this.activeTab] || {});
+                this.updateRotationSliders();
+            }
+        }
+
+        this.updateTabs();
+        this.syncToNode(false);
+    }
+
+
+
+    resetCurrentPose() {
+        if (this.viewer) {
+            this.viewer.recordState(); // Undo support
+            this.viewer.resetPose();
+            this.updateRotationSliders();
+        }
+        this.poses[this.activeTab] = {};
+        this.syncToNode(false);
+    }
+
+    resetSelectedBone() {
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.resetSelectedBone();
+            this.syncToNode(false);
+        }
+    }
+
+    copyPose() {
+        if (this.viewer && this.viewer.isInitialized()) {
+            const pose = this.viewer.getPose();
+            pose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = pose;
+        }
+        this._clipboard = JSON.parse(JSON.stringify(this.poses[this.activeTab]));
+    }
+
+    pastePose() {
+        if (!this._clipboard) return;
+        this.poses[this.activeTab] = JSON.parse(JSON.stringify(this._clipboard));
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.setPose(this.poses[this.activeTab]);
+        }
+        if (this._clipboard.cameraParams) {
+            this.exportParams.cam_offset_x = this._clipboard.cameraParams.offset_x || 0;
+            this.exportParams.cam_offset_y = this._clipboard.cameraParams.offset_y || 0;
+            this.exportParams.cam_zoom = this._clipboard.cameraParams.zoom || 1.0;
+            if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+            if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+            if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+                // [DISABLED] if (this.viewer) this.viewer.snapToCaptureCamera(
+                // [DISABLED] this.exportParams.view_width,
+                // [DISABLED] this.exportParams.view_height,
+                // [DISABLED] this.exportParams.cam_zoom,
+                // [DISABLED] this.exportParams.cam_offset_x,
+                // [DISABLED] this.exportParams.cam_offset_y
+                // [DISABLED] );
+        }
+        this.syncToNode();
+    }
+
+    showExportModal() {
+        // Create modal structure
+        const overlay = document.createElement("div");
+        overlay.className = "vnccs-ps-modal-overlay";
+
+        const modal = document.createElement("div");
+        modal.className = "vnccs-ps-modal";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-ps-modal-title";
+        title.innerText = "Export Pose Data";
+
+        const content = document.createElement("div");
+        content.className = "vnccs-ps-modal-content";
+
+        const inputRow = document.createElement("div");
+        inputRow.style.marginBottom = "10px";
+
+        const nameInput = document.createElement("input");
+        nameInput.type = "text";
+        nameInput.placeholder = "Filename (optional)";
+        nameInput.className = "vnccs-ps-input";
+        nameInput.style.width = "100%";
+        nameInput.style.marginBottom = "5px";
+
+        inputRow.appendChild(nameInput);
+
+        const btnSingle = document.createElement("button");
+        btnSingle.className = "vnccs-ps-modal-btn";
+        btnSingle.innerText = "Current Pose Only";
+        btnSingle.onclick = () => {
+            this.exportPose('single', nameInput.value);
+            this.container.removeChild(overlay);
+        };
+
+        const btnSet = document.createElement("button");
+        btnSet.className = "vnccs-ps-modal-btn";
+        btnSet.innerText = "All Poses (Set)";
+        btnSet.onclick = () => {
+            this.exportPose('set', nameInput.value);
+            this.container.removeChild(overlay);
+        };
+
+        const btnCancel = document.createElement("button");
+        btnCancel.className = "vnccs-ps-modal-btn cancel";
+        btnCancel.innerText = "Cancel";
+        btnCancel.onclick = () => {
+            this.container.removeChild(overlay);
+        };
+
+        content.appendChild(inputRow);
+        content.appendChild(btnSingle);
+        content.appendChild(btnSet);
+        content.appendChild(btnCancel);
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        overlay.appendChild(modal);
+
+        this.container.appendChild(overlay);
+    }
+
+    exportPose(type, customName) {
+        let data, filename;
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        const name = (customName && customName.trim()) ? customName.trim().replace(/[^a-z0-9_\-\.]/gi, '_') : timestamp;
+
+        if (type === 'set') {
+            // Ensure current active pose is saved to array
+            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+
+            data = {
+                type: "pose_set",
+                version: "1.0",
+                poses: this.poses
+            };
+            filename = `pose_set_${name}.json`;
+        } else {
+            // Single pose
+            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+
+            data = {
+                type: "single_pose",
+                version: "1.0",
+                bones: this.poses[this.activeTab].bones,
+                modelRotation: this.poses[this.activeTab].modelRotation
+            };
+            filename = `pose_${name}.json`;
+        }
+
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+    }
+
+    importPose() {
+        if (this.fileImportInput) {
+            this.fileImportInput.click();
+        }
+    }
+
+    handleFileImport(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        // Image files → parse as OpenPose image
+        if (file.type.startsWith("image/")) {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const keypoints = extractKeypointsFromImage(img);
+                    if (keypoints && this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(keypoints, this.viewer);
+                        if (poseData) {
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            // this.showMessage("OpenPose image imported successfully.");
+                        } else {
+                            this.showMessage("Failed to convert OpenPose keypoints to pose.", true);
+                        }
+                    } else {
+                        this.showMessage("Could not detect OpenPose keypoints in image.", true);
+                    }
+                };
+                img.src = event.target.result;
+                e.target.value = '';
+            };
+            reader.readAsDataURL(file);
+            return;
+        }
+
+        // JSON files
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            try {
+                const data = JSON.parse(event.target.result);
+
+                // Try OpenPose JSON formats first
+                const openPoseKeypoints = detectAndParseJSON(data);
+                if (openPoseKeypoints) {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const poseData = convertOpenPoseToPose(openPoseKeypoints, this.viewer);
+                        if (poseData) {
+                            // Disable shoulder IK during import to prevent clavicle interference
+                            if (this.viewer.setShoulderIKEnabled) this.viewer.setShoulderIKEnabled(false);
+                            this.poses[this.activeTab] = poseData;
+                            this.viewer.setPose(poseData);
+                            if (this.viewer.setShoulderIKEnabled) this.viewer.setShoulderIKEnabled(this.exportParams.shoulderIKEnabled !== false);
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+
+                            // Auto show debug log: keypoints vs bone positions
+                            const kp = openPoseKeypoints.joints;
+                            const lines = ['=== KeyPoint (pixel) ==='];
+                            const kpNames = ['nose','neck','r_shoulder','r_elbow','r_wrist','l_shoulder','l_elbow','l_wrist','r_hip','r_knee','r_ankle','l_hip','l_knee','l_ankle','r_eye','l_eye','r_ear','l_ear'];
+                            for (const name of kpNames) {
+                                if (kp[name]) lines.push(`${name}: X=${kp[name].x.toFixed(1)} Y=${kp[name].y.toFixed(1)} c=${kp[name].c.toFixed(2)}`);
+                            }
+                            lines.push('');
+                            lines.push(this.viewer.getBonePositionLog());
+                            this.showDebugLog(lines.join('\n'));
+
+                            // Debug: round-trip angle test
+                            roundTripTest(openPoseKeypoints, this.viewer, poseData);
+                        } else {
+                            this.showMessage("Failed to convert OpenPose data to pose.", true);
+                        }
+                    }
+                } else if (data.type === "pose_set" || Array.isArray(data.poses)) {
+                    // Import Set
+                    const newPoses = data.poses || (Array.isArray(data) ? data : null);
+                    if (newPoses && Array.isArray(newPoses)) {
+                        this.poses = newPoses;
+                        this.activeTab = 0;
+                        this.updateTabs();
+                        // Load first pose
+                        if (this.viewer && this.viewer.isInitialized()) {
+                            this.viewer.setPose(this.poses[0]);
+                            this.updateRotationSliders();
+                        }
+                    }
+                    this.syncToNode(true);
+                } else if (data.type === "single_pose" || data.bones) {
+                    // Import Single to current tab
+                    const poseData = data.bones ? data : data;
+
+                    this.poses[this.activeTab] = poseData;
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        this.viewer.setPose(poseData);
+                        this.updateRotationSliders();
+                    }
+                    this.syncToNode(false);
+                }
+
+            } catch (err) {
+                console.error("Error importing pose:", err);
+                this.showMessage("Failed to load pose file. Invalid JSON.", true);
+            }
+
+            // Reset input so same file can be selected again
+            e.target.value = '';
+        };
+        reader.readAsText(file);
+    }
+
+    loadReference() {
+        if (this.fileRefInput) {
+            this.fileRefInput.click();
+        }
+    }
+
+    handleRefImport(e) {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+            const dataUrl = event.target.result;
+            if (this.viewer) {
+                this.viewer.loadReferenceImage(dataUrl);
+                this.exportParams.background_url = dataUrl;
+                this.syncToNode(false);
+
+                // Force model update (preview button effect) to fix camera shift
+                this.loadModel(false);
+
+                if (this.refBtn) {
+                    this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
+                    this.refBtn.classList.add('danger');
+                }
+            }
+            e.target.value = '';
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // === Pose Library Methods ===
+
+    resetHandSliders() {
+        if (!this._handSliderValues) return;
+        const defaults = { spread: 0, grasp: 0, thumb: 1, index: 1, middle: 1, ring: 1, pinky: 1 };
+        for (const [key, val] of Object.entries(defaults)) {
+            this._handSliderValues[key] = val;
+            if (this._handSliderRefs[key]) this._handSliderRefs[key].value = val;
+            if (this._handSliderValRefs[key]) this._handSliderValRefs[key].textContent = parseFloat(val).toFixed(2);
+        }
+    }
+
+    showHandPoseLibraryModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-library-modal';
+        modal.innerHTML = `
+            <div class="vnccs-ps-library-modal-header">
+                <div class="vnccs-ps-library-modal-title">🤚 Hand Pose Library</div>
+                <button class="vnccs-ps-modal-close">✕</button>
+            </div>
+            <div class="vnccs-ps-library-modal-grid"></div>
+            <div class="vnccs-ps-library-modal-footer">
+                <button class="vnccs-ps-btn primary" style="width:auto;padding:10px 20px;">
+                    <span class="vnccs-ps-btn-icon">💾</span> Save Current Hand
+                </button>
+            </div>
+        `;
+
+        this.handLibraryGrid = modal.querySelector('.vnccs-ps-library-modal-grid');
+        modal.querySelector('.vnccs-ps-modal-close').onclick = () => overlay.remove();
+        modal.querySelector('.vnccs-ps-library-modal-footer button').onclick = () => this.showSaveHandPoseModal(overlay);
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        this.refreshHandLibrary();
+    }
+
+    async refreshHandLibrary() {
+        try {
+            const res = await fetch('/vnccs/hand_pose_library/list');
+            const data = await res.json();
+
+            // Cache names for unique name generation
+            this._handPoseNames = new Set((data.poses || []).map(p => p.name));
+
+            if (!this.handLibraryGrid) return;
+            this.handLibraryGrid.innerHTML = '';
+
+            if (!data.poses || data.poses.length === 0) {
+                this.handLibraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved hand poses.<br>Click "Save Current Hand" to add one.</div>';
+                return;
+            }
+
+            for (const pose of data.poses) {
+                const item = document.createElement('div');
+                item.className = 'vnccs-ps-library-item';
+                item.style.cssText = 'overflow:visible;display:flex;flex-direction:column;min-height:0;height:auto;';
+
+
+
+                const preview = document.createElement('div');
+                preview.className = 'vnccs-ps-library-item-preview';
+                preview.style.cssText = 'width:100%;aspect-ratio:2/3;overflow:hidden;flex:none;background:#111;justify-content:flex-start;align-items:flex-start;';
+                if (pose.has_preview) {
+                    preview.innerHTML = `<img src="/vnccs/hand_pose_library/preview/${encodeURIComponent(pose.name)}" alt="${pose.name}" style="width:100%;height:auto;display:block;">`;
+                } else {
+                    preview.innerHTML = '🤚';
+                }
+
+                const nameEl = document.createElement('div');
+                nameEl.className = 'vnccs-ps-library-item-name';
+                nameEl.style.cssText = 'display:flex;flex-direction:column;gap:3px;padding:4px;';
+
+                const nameText = document.createElement('div');
+                nameText.style.cssText = 'font-size:10px;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+                nameText.textContent = pose.name;
+
+                const applyRow = document.createElement('div');
+                applyRow.style.cssText = 'display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;';
+                const mkApplyBtn = (label, side) => {
+                    const b = document.createElement('button');
+                    b.className = 'vnccs-ps-btn';
+                    b.style.cssText = 'font-size:10px;padding:3px;';
+                    b.textContent = label;
+                    b.onmouseenter = () => {
+                        this.viewer?.highlightHandMarkers(side);
+                        this.viewer?.showHandHighlightRing(side);
+                        this.viewer?.saveHandSnapshot();
+                        this.viewer?.applyHandPresetPreview(pose._cachedPreset, side);
+                        if (!pose._cachedPreset) {
+                            fetch(`/vnccs/hand_pose_library/get/${encodeURIComponent(pose.name)}`)
+                                .then(r => r.json())
+                                .then(data => {
+                                    pose._cachedPreset = data.preset;
+                                    this.viewer?.applyHandPresetPreview(data.preset, side);
+                                });
+                        }
+                    };
+                    b.onmouseleave = () => {
+                        this.viewer?.unhighlightHandMarkers();
+                        this.viewer?.hideHandHighlightRing();
+                        this.viewer?.restoreHandSnapshot();
+                    };
+                    b.onclick = (e) => {
+                        e.stopPropagation();
+                        // Already previewing - just commit (snapshot no longer needed)
+                        this.viewer?._handSnapshot && (this.viewer._handSnapshot = null);
+                        this.loadHandPose(pose.name, side);
+                    };
+                    return b;
+                };
+                applyRow.appendChild(mkApplyBtn('L', 'l'));
+                applyRow.appendChild(mkApplyBtn('Both', 'both'));
+                applyRow.appendChild(mkApplyBtn('R', 'r'));
+
+                nameEl.appendChild(nameText);
+                nameEl.appendChild(applyRow);
+
+                const delBtn = document.createElement('div');
+                delBtn.className = 'vnccs-ps-library-item-delete';
+                delBtn.innerHTML = '✕';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    if (confirm(`Delete "${pose.name}"?`)) {
+                        fetch(`/vnccs/hand_pose_library/delete/${encodeURIComponent(pose.name)}`, { method: 'DELETE' })
+                            .then(() => this.refreshHandLibrary());
+                    }
+                };
+
+                item.appendChild(preview);
+                item.appendChild(nameEl);
+                item.appendChild(delBtn);
+                this.handLibraryGrid.appendChild(item);
+            }
+        } catch (err) {
+            if (this.handLibraryGrid) {
+                this.handLibraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+            }
+        }
+    }
+
+    showSaveHandPoseModal(anchorBtn = null) {
+        const existing = this.rightSidebar.querySelector('.vnccs-hand-save-panel');
+        if (existing) { existing.remove(); return; }
+
+        const panel = document.createElement('div');
+        panel.className = 'vnccs-hand-save-panel';
+        panel.style.cssText = 'background:var(--ps-panel);border:1px solid var(--ps-accent-border);border-radius:var(--ps-radius);padding:12px;z-index:200;width:100%;box-sizing:border-box;';
+
+        panel.innerHTML = `
+            <div style="font-size:12px;color:var(--ps-accent);margin-bottom:8px;">Save Hand Pose</div>
+            <input type="text" placeholder="Name..." style="width:100%;box-sizing:border-box;padding:6px;background:#1a1a2e;color:#fff;border:1px solid #333;border-radius:4px;font-size:11px;margin-bottom:8px;">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-bottom:4px;">
+                <button class="vnccs-ps-btn save-l" style="padding:6px;">Save L</button>
+                <button class="vnccs-ps-btn save-r" style="padding:6px;">Save R</button>
+            </div>
+            <button class="vnccs-ps-btn cancel-btn" style="padding:6px;width:100%;">Cancel</button>
+        `;
+
+        const nameInput = panel.querySelector('input[type="text"]');
+
+        // Auto-generate unique initial name
+        const genUniqueName = () => {
+            const names = this._handPoseNames || new Set();
+            let i = 1;
+            while (names.has(`hand_${String(i).padStart(3, '0')}`)) i++;
+            return `hand_${String(i).padStart(3, '0')}`;
+        };
+        nameInput.value = genUniqueName();
+
+        const doSave = async (side) => {
+            let name = nameInput.value.trim() || genUniqueName();
+            // Auto-rename if exists
+            const names = this._handPoseNames || new Set();
+            if (names.has(name)) {
+                let i = 2;
+                while (names.has(`${name}_${String(i).padStart(2, '0')}`)) i++;
+                name = `${name}_${String(i).padStart(2, '0')}`;
+            }
+            if (!this.viewer) return;
+            const preset = this.viewer.captureHandPreset(side);
+            this.viewer.hideHandHighlightRing();
+            const preview = this.viewer.capture(512, 512,
+                this.exportParams.cam_zoom || 1.0,
+                this.exportParams.bg_color || [40, 40, 40],
+                this.exportParams.cam_offset_x || 0,
+                this.exportParams.cam_offset_y || 0
+            );
+            await fetch('/vnccs/hand_pose_library/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, preset, preview })
+            });
+            panel.remove();
+            this.refreshHandLibrary();
+        };
+
+        panel.querySelector('.save-l').onmouseenter = () => { this.viewer?.highlightHandMarkers('l'); this.viewer?.showHandHighlightRing('l'); };
+        panel.querySelector('.save-l').onmouseleave = () => { this.viewer?.unhighlightHandMarkers(); this.viewer?.hideHandHighlightRing(); };
+        panel.querySelector('.save-r').onmouseenter = () => { this.viewer?.highlightHandMarkers('r'); this.viewer?.showHandHighlightRing('r'); };
+        panel.querySelector('.save-r').onmouseleave = () => { this.viewer?.unhighlightHandMarkers(); this.viewer?.hideHandHighlightRing(); };
+
+        panel.querySelector('.save-l').onclick = () => doSave('l');
+        panel.querySelector('.save-r').onclick = () => doSave('r');
+        panel.querySelector('.cancel-btn').onclick = () => panel.remove();
+
+        if (anchorBtn) {
+            anchorBtn.insertAdjacentElement('afterend', panel);
+        } else {
+            this.rightSidebar.appendChild(panel);
+        }
+        nameInput.focus();
+    }
+
+    async loadHandPose(name, side) {
+        // Close save panel if open
+        const panel = this.rightSidebar?.querySelector('.vnccs-hand-save-panel');
+        if (panel) panel.remove();
+
+        // Clear hover snapshot so we don't restore after click
+        if (this.viewer) this.viewer._handSnapshot = null;
+
+        this.resetHandSliders();
+
+        try {
+            const res = await fetch(`/vnccs/hand_pose_library/get/${encodeURIComponent(name)}`);
+            const data = await res.json();
+            if (data.preset && this.viewer) {
+                this.viewer.applyHandPreset(side, data.preset);
+                this.syncToNode(false);
+                // Flash hand markers
+                this.viewer.flashHandMarkers(side);
+            }
+        } catch (err) {
+            console.error('Failed to load hand pose:', err);
+        }
+    }
+
+    showLibraryModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+        overlay.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
+
+        // Hide orange capture frame rect while modal is open
+        if (this.viewer && this.viewer.captureFrameOverlay) {
+            this.viewer.captureFrameOverlay.style.display = 'none';
+        }
+        const restoreRect = () => {
+            if (this.viewer && this.viewer.captureFrameOverlay) {
+                this.viewer.captureFrameOverlay.style.display = '';
+            }
+        };
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-library-modal';
+        modal.innerHTML = `
+            <div class="vnccs-ps-library-modal-header">
+                <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
+                <button class="vnccs-ps-modal-close">✕</button>
+            </div>
+            <div class="vnccs-ps-library-modal-grid"></div>
+            <div class="vnccs-ps-library-modal-footer">
+                 <button class="vnccs-ps-btn primary" style="width: auto; padding: 10px 20px;">
+                    <span class="vnccs-ps-btn-icon">💾</span> Save Current Pose
+                </button>
+                <button class="vnccs-ps-btn" style="width: auto; padding: 10px 20px;" data-export-pose>
+                    <span class="vnccs-ps-btn-icon">📥</span> Export Pose Data
+                </button>
+                <button class="vnccs-ps-btn" style="width: auto; padding: 10px 20px;" data-import-pose>
+                    <span class="vnccs-ps-btn-icon">📤</span> Load Pose Data
+                </button>
+            </div>
+        `;
+
+        this.libraryGrid = modal.querySelector('.vnccs-ps-library-modal-grid');
+
+        modal.querySelector('.vnccs-ps-modal-close').onclick = () => { restoreRect(); overlay.remove(); };
+        modal.querySelector('.vnccs-ps-library-modal-footer button').onclick = () => this.showSaveToLibraryModal();
+        modal.querySelector('[data-export-pose]').onclick = () => this.showExportModal();
+        modal.querySelector('[data-import-pose]').onclick = () => this.importPose();
+        overlay.onclick = (e) => { if (e.target === overlay) { restoreRect(); overlay.remove(); } };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+
+        this.refreshLibrary();
+    }
+
+    async refreshLibrary(forceFull = false) {
+        try {
+            const res = await fetch('/vnccs/pose_library/list' + (forceFull ? '?full=true' : ''));
+            const data = await res.json();
+            this.libraryPoses = data.poses || []; // Cache for random selection
+
+            if (!this.libraryGrid) {
+                this.libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
+            }
+            if (!this.libraryGrid) return; // Still not found (modal closed)
+
+            this.libraryGrid.innerHTML = '';
+
+            if (!data.poses || data.poses.length === 0) {
+                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses.<br>Click "Save Current" to add one.</div>';
+                return;
+            }
+
+            for (const pose of data.poses) {
+                const item = document.createElement('div');
+                item.className = 'vnccs-ps-library-item';
+
+                const preview = document.createElement('div');
+                preview.className = 'vnccs-ps-library-item-preview';
+                if (pose.has_preview) {
+                    preview.innerHTML = `<img src="/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}" alt="${pose.name}">`;
+                } else {
+                    preview.innerHTML = '🦴';
+                }
+
+                const name = document.createElement('div');
+                name.className = 'vnccs-ps-library-item-name';
+                name.innerText = pose.name;
+
+                item.onclick = () => {
+                    this.loadFromLibrary(pose.name);
+                    const overlay = item.closest('.vnccs-ps-modal-overlay');
+                    if (overlay) overlay.remove();
+                };
+
+                // Delete button
+                const delBtn = document.createElement('div');
+                delBtn.className = 'vnccs-ps-library-item-delete';
+                delBtn.innerHTML = '✕';
+                delBtn.onclick = (e) => {
+                    e.stopPropagation(); // Prevent loading pose
+                    this.showDeleteConfirmModal(pose.name);
+                };
+
+                item.appendChild(preview);
+                item.appendChild(name);
+                item.appendChild(delBtn);
+
+                this.libraryGrid.appendChild(item);
+            }
+        } catch (err) {
+            console.error("Failed to load library:", err);
+            if (this.libraryGrid) {
+                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
+            }
+        }
+    }
+
+    showSaveToLibraryModal() {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">Save to Library</div>
+            <div class="vnccs-ps-modal-content">
+                <input type="text" placeholder="Pose name..." class="vnccs-ps-input" style="width:100%;padding:8px;">
+                <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:11px;">
+                    <input type="checkbox" checked> Include preview image
+                </label>
+            </div>
+            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">💾 Save</button>
+            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+        `;
+
+        const nameInput = modal.querySelector('input[type="text"]');
+        const previewCheck = modal.querySelector('input[type="checkbox"]');
+
+        modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = () => {
+            const name = nameInput.value.trim();
+            if (name) {
+                this.saveToLibrary(name, previewCheck.checked);
+                overlay.remove();
+                // Refresh modal if open
+                const libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
+                if (libraryGrid) this.refreshLibrary(false);
+            }
+        };
+
+        modal.querySelector('.vnccs-ps-modal-btn.cancel').onclick = () => overlay.remove();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        nameInput.focus();
+    }
+
+    async saveToLibrary(name, includePreview = true) {
+        if (!this.viewer) return;
+
+        const pose = this.viewer.getPose();
+        let preview = null;
+
+        if (includePreview) {
+            preview = this.viewer.capture(
+                this.exportParams.view_width,
+                this.exportParams.view_height,
+                this.exportParams.cam_zoom || 1.0,
+                this.exportParams.bg_color || [40, 40, 40],
+                this.exportParams.cam_offset_x || 0,
+                this.exportParams.cam_offset_y || 0
+            );
+        }
+
+        try {
+            await fetch('/vnccs/pose_library/save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, pose, preview })
+            });
+            this.refreshLibrary(false);
+        } catch (err) {
+            console.error("Failed to save pose:", err);
+        }
+    }
+
+    async loadFromLibrary(name) {
+        console.log("[VNCCS PoseStudio] loadFromLibrary triggered for:", name);
+        try {
+            const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}`);
+            const data = await res.json();
+
+            if (data.pose && this.viewer) {
+                // Only apply bones and modelRotation from library - NOT camera settings
+                // Library poses should not override user's export camera framing
+                const poseWithoutCamera = {
+                    bones: data.pose.bones,
+                    modelRotation: data.pose.modelRotation
+                    // Intentionally omit: camera
+                };
+                this.viewer.setPose(poseWithoutCamera, true); // preserveCamera = true
+                this.updateRotationSliders();
+                this.syncToNode();
+            }
+        } catch (err) {
+            console.error("Failed to load pose:", err);
+        }
+    }
+
+    showSettingsModal() {
+        // Toggle behavior: check if already exists
+        const existing = this.canvasContainer.querySelector('.vnccs-ps-settings-panel');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+
+        const panel = document.createElement('div');
+        panel.className = 'vnccs-ps-settings-panel';
+
+        // Header
+        const header = document.createElement('div');
+        header.className = 'vnccs-ps-settings-header';
+        header.innerHTML = `
+            <span class="vnccs-ps-settings-title">⚙️ Settings</span>
+            <button class="vnccs-ps-settings-close" title="Close">✕</button>
+        `;
+        header.querySelector('.vnccs-ps-settings-close').onclick = () => panel.remove();
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-settings-content';
+
+        // Debug Toggle
+        const debugRow = document.createElement("div");
+        debugRow.className = "vnccs-ps-field";
+
+        const debugLabel = document.createElement("label");
+        debugLabel.style.display = "flex";
+        debugLabel.style.alignItems = "center";
+        debugLabel.style.gap = "10px";
+        debugLabel.style.cursor = "pointer";
+        debugLabel.style.userSelect = "none";
+
+        const debugCheckbox = document.createElement("input");
+        debugCheckbox.type = "checkbox";
+        debugCheckbox.checked = this.exportParams.debugMode || false;
+        debugCheckbox.style.width = "16px";
+        debugCheckbox.style.height = "16px";
+        debugCheckbox.onchange = () => {
+            this.exportParams.debugMode = debugCheckbox.checked;
+            // If debug mode (randomization) is enabled, we need to load full library data
+            if (this.exportParams.debugMode) {
+                this.refreshLibrary(true);
+            }
+            this.syncToNode(false);
+        };
+
+        const debugText = document.createElement("div");
+        debugText.innerHTML = "<strong>Debug Mode (Randomize on Queue)</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Automatically randomizes pose, lighting and camera for each queued run. Used for generating synthetic datasets.</div>";
+
+        debugLabel.appendChild(debugCheckbox);
+        debugLabel.appendChild(debugText);
+        debugRow.appendChild(debugLabel);
+        content.appendChild(debugRow);
+
+        // Portrait Mode Toggle
+        const portraitRow = document.createElement("div");
+        portraitRow.className = "vnccs-ps-field";
+        portraitRow.style.marginTop = "10px";
+
+        const portraitLabel = document.createElement("label");
+        portraitLabel.style.display = "flex";
+        portraitLabel.style.alignItems = "center";
+        portraitLabel.style.gap = "10px";
+        portraitLabel.style.cursor = "pointer";
+
+        const portraitCheckbox = document.createElement("input");
+        portraitCheckbox.type = "checkbox";
+        portraitCheckbox.checked = this.exportParams.debugPortraitMode || false;
+        portraitCheckbox.onchange = () => {
+            this.exportParams.debugPortraitMode = portraitCheckbox.checked;
+            this.syncToNode(false);
+        };
+
+        const portraitText = document.createElement("div");
+        portraitText.innerHTML = "<strong>Portrait Mode</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will focus framing on the head and upper torso.</div>";
+
+        portraitLabel.appendChild(portraitCheckbox);
+        portraitLabel.appendChild(portraitText);
+        portraitRow.appendChild(portraitLabel);
+        content.appendChild(portraitRow);
+
+        // Keep Lighting Toggle
+        const keepLightRow = document.createElement("div");
+        keepLightRow.className = "vnccs-ps-field";
+        keepLightRow.style.marginTop = "10px";
+
+        const keepLightLabel = document.createElement("label");
+        keepLightLabel.style.display = "flex";
+        keepLightLabel.style.alignItems = "center";
+        keepLightLabel.style.gap = "10px";
+        keepLightLabel.style.cursor = "pointer";
+
+        const keepLightCheckbox = document.createElement("input");
+        keepLightCheckbox.type = "checkbox";
+        keepLightCheckbox.checked = this.exportParams.debugKeepLighting || false;
+        keepLightCheckbox.onchange = () => {
+            this.exportParams.debugKeepLighting = keepLightCheckbox.checked;
+            this.syncToNode(false);
+        };
+
+        const keepLightText = document.createElement("div");
+        keepLightText.innerHTML = "<strong>Keep Manual Lighting</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will use your current lighting settings instead of randomizing them.</div>";
+
+        keepLightLabel.appendChild(keepLightCheckbox);
+        keepLightLabel.appendChild(keepLightText);
+        keepLightRow.appendChild(keepLightLabel);
+        content.appendChild(keepLightRow);
+
+        // Skin Texture Section
+        const skinHeader = document.createElement("div");
+        skinHeader.className = "vnccs-ps-settings-title";
+        skinHeader.style.marginTop = "20px";
+        skinHeader.style.padding = "10px 0";
+        skinHeader.style.borderTop = "1px solid var(--ps-border)";
+        skinHeader.innerText = "Skin";
+        content.appendChild(skinHeader);
+
+        const skinRow = document.createElement("div");
+        skinRow.className = "vnccs-ps-field";
+        skinRow.style.marginTop = "5px";
+
+        const skinToggle = document.createElement("div");
+        skinToggle.className = "vnccs-ps-toggle";
+        skinToggle.style.width = "100%";
+
+        const skinOptions = [
+            { key: "dummy_white", label: "Dummy White" },
+            { key: "naked", label: "Naked" },
+            { key: "naked_marks", label: "Marked" }
+        ];
+
+        const skinButtons = {};
+        const updateSkinUI = () => {
+            const current = this.exportParams.skin_type || "naked";
+            for (const opt of skinOptions) {
+                skinButtons[opt.key].classList.toggle("active", current === opt.key);
+            }
+        };
+
+        for (const opt of skinOptions) {
+            const btn = document.createElement("button");
+            btn.className = "vnccs-ps-toggle-btn";
+            btn.innerText = opt.label;
+            btn.style.flex = "1";
+            btn.onclick = () => {
+                this.exportParams.skin_type = opt.key;
+                updateSkinUI();
+                if (this.viewer && this.viewer.isInitialized()) {
+                    this.viewer.setSkinMode(opt.key);
+                }
+                this.syncToNode(false);
+            };
+            skinButtons[opt.key] = btn;
+            skinToggle.appendChild(btn);
+        }
+
+        updateSkinUI();
+        skinRow.appendChild(skinToggle);
+        content.appendChild(skinRow);
+
+        // Prompt Templates Section
+        const templateHeader = document.createElement("div");
+        templateHeader.className = "vnccs-ps-settings-title";
+        templateHeader.style.marginTop = "20px";
+        templateHeader.style.padding = "10px 0";
+        templateHeader.style.borderTop = "1px solid var(--ps-border)";
+        templateHeader.innerText = "Prompt Templates";
+        content.appendChild(templateHeader);
+
+        const createTemplateField = (label, key) => {
+            const field = document.createElement("div");
+            field.className = "vnccs-ps-field";
+            field.style.flexDirection = "column";
+            field.style.alignItems = "stretch";
+
+            const l = document.createElement("div");
+            l.className = "vnccs-ps-label";
+            l.innerText = label;
+            l.style.marginBottom = "5px";
+
+            const area = document.createElement("textarea");
+            area.style.width = "100%";
+            area.style.height = "60px";
+            area.style.background = "var(--ps-input-bg)";
+            area.style.color = "var(--ps-text)";
+            area.style.border = "1px solid var(--ps-border)";
+            area.style.borderRadius = "4px";
+            area.style.padding = "8px";
+            area.style.fontSize = "12px";
+            area.style.resize = "vertical";
+            area.style.fontFamily = "monospace";
+            area.value = this.exportParams[key] || "";
+
+            area.onchange = () => {
+                this.exportParams[key] = area.value;
+                this.syncToNode(false);
+            };
+
+            field.appendChild(l);
+            field.appendChild(area);
+            return field;
+        };
+
+        content.appendChild(createTemplateField("Prompt Template", "prompt_template"));
+
+        // Donation Section
+        const donationSection = document.createElement("div");
+        donationSection.style.marginTop = "30px";
+        donationSection.style.paddingTop = "20px";
+        donationSection.style.borderTop = "1px solid var(--ps-border)";
+        donationSection.style.textAlign = "center";
+        donationSection.innerHTML = `
+            <div style="font-size: 11px; color: var(--ps-text); margin-bottom: 20px; line-height: 1.6; font-weight: bold; padding: 0 10px;">
+                If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!
+            </div>
+            <a href="https://www.buymeacoffee.com/MIUProject" target="_blank" style="display: inline-block; transition: transform 0.2s;" 
+               onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important; width: 217px !important; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.3);" >
+            </a>
+        `;
+        content.appendChild(donationSection);
+
+        // Shoulder IK Toggle (experimental)
+        const shoulderIKHeader = document.createElement("div");
+        shoulderIKHeader.className = "vnccs-ps-settings-title";
+        shoulderIKHeader.style.marginTop = "20px";
+        shoulderIKHeader.style.padding = "10px 0";
+        shoulderIKHeader.style.borderTop = "1px solid var(--ps-border)";
+        shoulderIKHeader.innerText = "Experimental";
+        content.appendChild(shoulderIKHeader);
+
+        const shoulderIKRow = document.createElement("div");
+        shoulderIKRow.className = "vnccs-ps-field";
+        shoulderIKRow.style.marginTop = "5px";
+
+        const shoulderIKLabel = document.createElement("label");
+        shoulderIKLabel.style.display = "flex";
+        shoulderIKLabel.style.alignItems = "center";
+        shoulderIKLabel.style.gap = "10px";
+        shoulderIKLabel.style.cursor = "pointer";
+        shoulderIKLabel.style.userSelect = "none";
+
+        const shoulderIKCheckbox = document.createElement("input");
+        shoulderIKCheckbox.type = "checkbox";
+        shoulderIKCheckbox.style.width = "16px";
+        shoulderIKCheckbox.style.height = "16px";
+        shoulderIKCheckbox.checked = this.exportParams.shoulderIKEnabled !== false; // default ON
+        shoulderIKCheckbox.onchange = () => {
+            this.exportParams.shoulderIKEnabled = shoulderIKCheckbox.checked;
+            if (this.viewer && this.viewer.setShoulderIKEnabled) {
+                this.viewer.setShoulderIKEnabled(shoulderIKCheckbox.checked);
+            }
+            this.syncToNode(false);
+        };
+
+        const shoulderIKText = document.createElement("div");
+        shoulderIKText.innerHTML = "<strong>Shoulder IK</strong><div style='font-size:11px; color:#888; margin-top:4px;'>OFF にすると鎖骨をFKのみで制御します。OpenPoseインポートの精度比較用。</div>";
+
+        shoulderIKLabel.appendChild(shoulderIKCheckbox);
+        shoulderIKLabel.appendChild(shoulderIKText);
+        shoulderIKRow.appendChild(shoulderIKLabel);
+        content.appendChild(shoulderIKRow);
+
+        panel.appendChild(header);
+        panel.appendChild(content);
+
+        this.canvasContainer.appendChild(panel);
+    }
+
+    showMessage(text, isError = false) {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.style.maxWidth = "300px";
+
+        const title = document.createElement('div');
+        title.className = 'vnccs-ps-modal-title';
+        title.textContent = isError ? '⚠️ Error' : 'ℹ️ Information';
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-modal-content';
+        content.style.textAlign = 'center';
+        content.textContent = text;
+
+        const okBtn = document.createElement('button');
+        okBtn.className = 'vnccs-ps-modal-btn';
+        okBtn.style.justifyContent = 'center';
+        okBtn.textContent = 'OK';
+        okBtn.onclick = () => overlay.remove();
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        modal.appendChild(okBtn);
+        overlay.appendChild(modal);
+
+        this.canvasContainer.appendChild(overlay);
+    }
+
+    showDeleteConfirmModal(poseName) {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+
+        const title = document.createElement('div');
+        title.className = 'vnccs-ps-modal-title';
+        title.textContent = '⚠️ Delete Pose';
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-modal-content';
+        content.style.textAlign = 'center';
+
+        const message = document.createElement('div');
+        message.innerHTML = `Delete pose "<strong>${poseName}</strong>"?<br>This cannot be undone.`;
+        content.appendChild(message);
+
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'vnccs-ps-modal-btn danger';
+        deleteBtn.style.justifyContent = 'center';
+        deleteBtn.textContent = '🗑️ Delete';
+
+        const cancelBtn = document.createElement('button');
+        cancelBtn.className = 'vnccs-ps-modal-btn cancel';
+        cancelBtn.textContent = 'Cancel';
+
+        modal.appendChild(title);
+        modal.appendChild(content);
+        modal.appendChild(deleteBtn);
+        modal.appendChild(cancelBtn);
+
+        deleteBtn.onclick = () => {
+            this.deleteFromLibrary(poseName);
+            overlay.remove();
+        };
+
+        cancelBtn.onclick = () => overlay.remove();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+    }
+
+    async deleteFromLibrary(name) {
+        try {
+            await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            this.refreshLibrary(false);
+        } catch (err) {
+            console.error("Failed to delete pose:", err);
+        }
+    }
+
+    loadModel(showOverlay = true) {
+        if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
+
+        // Sync skin type to viewer before loading
+        if (this.viewer) {
+            this.viewer.setSkinMode(this.exportParams.skin_type || "naked");
+        }
+
+        return api.fetchApi("/vnccs/character_studio/update_preview", {
+            method: "POST",
+            body: JSON.stringify(this.meshParams)
+        }).then(r => r.json()).then(d => {
+            if (this.viewer) {
+                // Keep camera during updates
+                this.viewer.loadData(d, true);
+
+                // Apply lighting configuration
+                this.viewer.updateLights(this.lightParams);
+
+                // FORCE camera sync on every model change - DISABLED (Slimy_VNCCS: camera is user-controlled)
+                // this.viewer.snapToCaptureCamera(
+                //     this.exportParams.view_width,
+                //     this.exportParams.view_height,
+                //     this.exportParams.cam_zoom || 1.0,
+                //     this.exportParams.cam_offset_x || 0,
+                //     this.exportParams.cam_offset_y || 0
+                // );
+
+                // Strip absolute position data (hip, IK effectors, pole targets) from ALL poses
+                // since those were saved for the old mesh geometry and don't apply to the new one.
+                for (let i = 0; i < this.poses.length; i++) {
+                    if (this.poses[i]) {
+                        delete this.poses[i].hipBonePosition;
+                        delete this.poses[i].ikEffectorPositions;
+                        delete this.poses[i].poleTargetPositions;
+                    }
+                }
+
+                // Apply pose immediately (no timeout/flicker)
+                if (this.viewer.isInitialized()) {
+                    this.viewer.setPose(this.poses[this.activeTab] || {});
+                    this.updateRotationSliders();
+                    // Full recapture needed because mesh changed
+                    this.syncToNode(true);
+                }
+            }
+        }).finally(() => {
+            if (this.loadingOverlay) this.loadingOverlay.style.display = "none";
+        });
+    }
+
+    processMeshUpdate() {
+        if (this.isMeshUpdating) return;
+        this.isMeshUpdating = true;
+        this.pendingMeshUpdate = false;
+
+        this.loadModel().finally(() => {
+            this.isMeshUpdating = false;
+            if (this.pendingMeshUpdate) {
+                this.processMeshUpdate();
+            }
+        });
+    }
+
+    refreshLightUI() {
+        if (!this.lightListContainer) return;
+        this.lightListContainer.innerHTML = '';
+
+        const isOverridden = this.exportParams.keepOriginalLighting;
+        this.lightListContainer.style.opacity = isOverridden ? "0.3" : "1.0";
+        this.lightListContainer.style.pointerEvents = isOverridden ? "none" : "auto";
+        this.lightListContainer.title = isOverridden ? "Lighting is overridden by 'Keep Original Lighting' mode" : "";
+
+        this.lightParams.forEach((light, index) => {
+            const item = document.createElement('div');
+            item.className = 'vnccs-ps-light-card';
+
+            // --- Header ---
+            const header = document.createElement('div');
+            header.className = 'vnccs-ps-light-header';
+
+            const title = document.createElement('span');
+            title.className = 'vnccs-ps-light-title';
+
+            // Icon
+            let iconChar = '💡';
+            if (light.type === 'directional') iconChar = '☀️';
+            else if (light.type === 'ambient') iconChar = '☁️';
+
+            title.innerHTML = `<span class="vnccs-ps-light-icon">${iconChar}</span> Light ${index + 1}`;
+
+            const removeBtn = document.createElement('button');
+            removeBtn.className = 'vnccs-ps-light-remove';
+            removeBtn.innerHTML = '×';
+            removeBtn.title = "Remove Light";
+            removeBtn.onclick = (e) => {
+                e.stopPropagation();
+                this.lightParams.splice(index, 1);
+                this.refreshLightUI();
+                this.applyLighting();
+            };
+
+            header.appendChild(title);
+            header.appendChild(removeBtn);
+            item.appendChild(header);
+
+            // --- Body ---
+            const body = document.createElement('div');
+            body.className = 'vnccs-ps-light-body';
+
+            // Grid 1: Type & Color
+            const grid1 = document.createElement('div');
+            grid1.className = 'vnccs-ps-light-grid';
+
+            // Type
+            const typeSelect = document.createElement('select');
+            typeSelect.className = 'vnccs-ps-light-select';
+            ['ambient', 'directional', 'point'].forEach(t => {
+                const opt = document.createElement('option');
+                opt.value = t;
+                opt.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+                if (t === light.type) opt.selected = true;
+                typeSelect.appendChild(opt);
+            });
+            typeSelect.onchange = () => {
+                light.type = typeSelect.value;
+                this.refreshLightUI();
+                this.applyLighting();
+            };
+            grid1.appendChild(typeSelect);
+
+            // Color
+            const colorInput = document.createElement('input');
+            colorInput.type = 'color';
+            colorInput.className = 'vnccs-ps-light-color';
+            colorInput.value = light.color || '#ffffff';
+            colorInput.oninput = (e) => {
+                light.color = colorInput.value;
+                clearTimeout(this.colorTimeout);
+                this.colorTimeout = setTimeout(() => this.applyLighting(), 50);
+            };
+            grid1.appendChild(colorInput);
+            body.appendChild(grid1);
+
+            // Intensity
+            const intensityRow = document.createElement('div');
+            intensityRow.className = 'vnccs-ps-light-slider-row';
+
+            const intLabel = document.createElement('span');
+            intLabel.className = 'vnccs-ps-light-pos-label';
+            intLabel.innerText = "Int";
+
+            const isAmbient = light.type === 'ambient';
+            const intSlider = document.createElement('input');
+            intSlider.type = 'range';
+            intSlider.className = 'vnccs-ps-light-slider';
+            intSlider.min = 0;
+            intSlider.max = isAmbient ? 2 : 5;
+            intSlider.step = isAmbient ? 0.01 : 0.1;
+            intSlider.value = light.intensity ?? (isAmbient ? 0.5 : 1);
+
+            const intValue = document.createElement('span');
+            intValue.className = 'vnccs-ps-light-value';
+            intValue.innerText = parseFloat(intSlider.value).toFixed(2);
+
+            intSlider.oninput = () => {
+                light.intensity = parseFloat(intSlider.value);
+                intValue.innerText = light.intensity.toFixed(2);
+                this.applyLighting();
+            };
+
+            intensityRow.appendChild(intLabel);
+            intensityRow.appendChild(intSlider);
+            intensityRow.appendChild(intValue);
+            body.appendChild(intensityRow);
+
+            // Radius Slider (Point Light Only)
+            if (light.type === 'point') {
+                const radiusRow = document.createElement('div');
+                radiusRow.className = 'vnccs-ps-light-slider-row';
+
+                const radLabel = document.createElement('span');
+                radLabel.className = 'vnccs-ps-light-pos-label';
+                radLabel.innerText = "Rad";
+
+                const radSlider = document.createElement('input');
+                radSlider.type = 'range';
+                radSlider.className = 'vnccs-ps-light-slider';
+                radSlider.min = 5; radSlider.max = 300; radSlider.step = 1;
+                radSlider.value = light.radius ?? 100;
+
+                const radValue = document.createElement('span');
+                radValue.className = 'vnccs-ps-light-value';
+                radValue.innerText = radSlider.value;
+
+                radSlider.oninput = () => {
+                    light.radius = parseFloat(radSlider.value);
+                    radValue.innerText = radSlider.value;
+                    this.applyLighting();
+                };
+
+                radiusRow.appendChild(radLabel);
+                radiusRow.appendChild(radSlider);
+                radiusRow.appendChild(radValue);
+                body.appendChild(radiusRow);
+            }
+
+            // Position Controls (if not Ambient)
+            if (light.type !== 'ambient') {
+                const radarWrap = document.createElement('div');
+                radarWrap.className = 'vnccs-ps-light-radar-wrap';
+
+                const radarMain = document.createElement('div');
+                radarMain.className = 'vnccs-ps-light-radar-main';
+
+                // Radar (X and Z - Top Down)
+                const radar = this.createLightRadar(light);
+                radarMain.appendChild(radar);
+
+                // Height Slider (Y) - Vertical
+                const hVertWrap = document.createElement('div');
+                hVertWrap.className = 'vnccs-ps-light-slider-vert-wrap';
+
+                const hLabel = document.createElement('span');
+                hLabel.className = 'vnccs-ps-light-h-label';
+                hLabel.innerText = "Y-HGT";
+
+                const hVal = document.createElement('span');
+                hVal.className = 'vnccs-ps-light-h-val';
+                hVal.innerText = light.y || 0;
+
+                const hSlider = document.createElement('input');
+                hSlider.type = 'range';
+                hSlider.className = 'vnccs-ps-light-slider-vert';
+                hSlider.setAttribute('orient', 'vertical'); // Firefox support
+                const isPoint = light.type === 'point';
+                hSlider.min = isPoint ? -10 : -100;
+                hSlider.max = isPoint ? 10 : 100;
+                hSlider.step = isPoint ? 0.1 : 1;
+                hSlider.value = light.y || 0;
+
+                hSlider.oninput = () => {
+                    light.y = parseFloat(hSlider.value);
+                    hVal.innerText = hSlider.value;
+                    this.applyLighting();
+                };
+
+                hVertWrap.appendChild(hVal);
+                hVertWrap.appendChild(hSlider);
+                hVertWrap.appendChild(hLabel);
+
+                radarMain.appendChild(hVertWrap);
+                radarWrap.appendChild(radarMain);
+                body.appendChild(radarWrap);
+            }
+
+            item.appendChild(body);
+            this.lightListContainer.appendChild(item);
+        });
+
+        // Add Light Button (Big)
+        const addBtn = document.createElement('button');
+        addBtn.className = 'vnccs-ps-btn-add-large';
+        addBtn.innerHTML = '+ Add Light Source';
+        addBtn.disabled = isOverridden;
+        if (isOverridden) {
+            addBtn.style.opacity = "0.5";
+            addBtn.style.cursor = "not-allowed";
+        }
+        addBtn.onclick = () => {
+            this.lightParams.push({
+                type: 'directional',
+                color: '#ffffff',
+                intensity: 1.0,
+                x: 0, y: 0, z: 5
+            });
+            this.refreshLightUI();
+            this.applyLighting();
+        };
+        this.lightListContainer.appendChild(addBtn);
+    }
+
+    applyLighting() {
+        if (this.viewer && this.viewer.isInitialized()) {
+            if (this.exportParams.keepOriginalLighting) {
+                // Override: Clean white render with 1.0 ambient only
+                this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+            } else {
+                // Manual/User lights
+                this.viewer.updateLights(this.lightParams);
+            }
+        }
+
+        // Lightweight sync for prompt/data (no capture) - Debounced to prevent UI lag during drag
+        clearTimeout(this.lightingQuickSyncTimeout);
+        this.lightingQuickSyncTimeout = setTimeout(() => {
+            this.syncToNode(false);
+        }, 100);
+
+        // Debounce full capture (previews) to avoid lag/shaking during drag
+        clearTimeout(this.lightingSyncTimeout);
+        this.lightingSyncTimeout = setTimeout(() => {
+            this.syncToNode(true);
+        }, 500);
+    }
+
+    updateRotationSliders() {
+        if (!this.viewer) return;
+        const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
+        const r = { x: rArray[0], y: rArray[1], z: rArray[2] };
+        ['x', 'y', 'z'].forEach(axis => {
+            const info = this.sliders[`rot_${axis}`];
+            if (info) {
+                info.slider.value = r[axis];
+                info.label.innerText = `${r[axis]}°`;
+            }
+        });
+    }
+
+    updateGenderVisibility() {
+        if (!this.genderFields) return;
+        const isFemale = this.meshParams.gender < 0.5;
+
+        for (const [key, info] of Object.entries(this.genderFields)) {
+            if (info.gender === "female") {
+                info.field.style.display = isFemale ? "" : "none";
+            } else if (info.gender === "male") {
+                info.field.style.display = isFemale ? "none" : "";
+            }
+        }
+    }
+
+    updateGenderUI() {
+        if (!this.genderBtns) return;
+        const isFemale = this.meshParams.gender < 0.5;
+        this.genderBtns.male.classList.toggle("active", !isFemale);
+        this.genderBtns.female.classList.toggle("active", isFemale);
+    }
+
+    onMeshParamsChanged() {
+        // Update node widgets
+        for (const [key, value] of Object.entries(this.meshParams)) {
+            const widget = this.node.widgets?.find(w => w.name === key);
+            if (widget) {
+                widget.value = value;
+            }
+        }
+
+        // Async Queue update
+        this.pendingMeshUpdate = true;
+
+        if (this.isMeshUpdating) return;
+        this.isMeshUpdating = true;
+        this.pendingMeshUpdate = false;
+
+        this.loadModel(false).finally(() => {
+            this.isMeshUpdating = false;
+            if (this.pendingMeshUpdate) {
+                this.onMeshParamsChanged();
+            }
+        });
+    }
+
+    resize() {
+        if (this.viewer && this.canvasContainer) {
+            const rect = this.canvasContainer.getBoundingClientRect();
+            const targetW = Math.round(rect.width);
+            const targetH = Math.round(rect.height);
+
+            if (targetW > 1 && targetH > 1) {
+                const dw = Math.abs(targetW - (this._lastResizeW || 0));
+                const dh = Math.abs(targetH - (this._lastResizeH || 0));
+                if (dw < 2 && dh < 2) return;
+
+                this._lastResizeW = targetW;
+                this._lastResizeH = targetH;
+                this.viewer.resize(targetW, targetH);
+            }
+        }
+    }
+
+    startResizeObserver() {
+        if (this._containerResizeObserver || !this.canvasContainer) return;
+        this._containerResizeObserver = new ResizeObserver(() => {
+            // Debounce setSize only - rendering continues uninterrupted
+            clearTimeout(this._resizeDebounce);
+            this._resizeDebounce = setTimeout(() => this.resize(), 80);
+        });
+        this._containerResizeObserver.observe(this.canvasContainer);
+
+        // Global wheel listener: update capture frame overlay when zooming outside the node
+        if (!this._globalWheelListener) {
+            this._globalWheelListener = () => {
+                clearTimeout(this._overlayWheelDebounce);
+                this._overlayWheelDebounce = setTimeout(() => {
+                    if (this.viewer && typeof this.viewer.updateCaptureFrameOverlay === 'function') {
+                        if (this.node) this.node._lastRect = null;
+                        this.viewer.updateCaptureFrameOverlay();
+                    }
+                }, 50);
+            };
+            document.addEventListener('wheel', this._globalWheelListener, { passive: true });
+        }
+    }
+
+    /**
+     * Generate a natural language prompt from light parameters.
+     * Maps RGB colors to basic names and describes position/intensity.
+     */
+    generatePromptFromLights(lights) {
+        let finalPrompt = "";
+
+        if (this.exportParams.keepOriginalLighting) {
+            finalPrompt = "";
+        } else if (lights && Array.isArray(lights)) {
+            const getColorName = (lightColor) => {
+                // Determine RGB components
+                let r, g, b;
+                if (typeof lightColor === 'string') {
+                    const hex = lightColor.replace('#', '');
+                    r = parseInt(hex.substring(0, 2), 16);
+                    g = parseInt(hex.substring(2, 4), 16);
+                    b = parseInt(hex.substring(4, 6), 16);
+                } else if (Array.isArray(lightColor)) {
+                    [r, g, b] = lightColor;
+                } else if (lightColor && typeof lightColor.r === 'number') { // Handle THREE.Color
+                    r = Math.round(lightColor.r * 255);
+                    g = Math.round(lightColor.g * 255);
+                    b = Math.round(lightColor.b * 255);
+                } else {
+                    r = g = b = 255;
+                }
+
+                // Reference color map for nearest-neighbor matching
+                const colorMap = {
+                    "White": [255, 255, 255], "Silver": [192, 192, 192], "Grey": [128, 128, 128], "Dark Grey": [64, 64, 64], "Black": [0, 0, 0],
+                    "Red": [255, 0, 0], "Crimson": [220, 20, 60], "Maroon": [128, 0, 0], "Ruby": [224, 17, 95], "Rose": [255, 0, 127],
+                    "Orange": [255, 165, 0], "Amber": [255, 191, 0], "Gold": [255, 215, 0], "Peach": [255, 218, 185], "Coral": [255, 127, 80],
+                    "Yellow": [255, 255, 0], "Lemon": [255, 250, 205], "Cream": [255, 253, 208], "Sand": [194, 178, 128], "Sepia": [112, 66, 20],
+                    "Green": [0, 255, 0], "Lime": [50, 205, 50], "Forest Green": [34, 139, 34], "Olive": [128, 128, 0], "Emerald": [80, 200, 120],
+                    "Mint": [189, 252, 201], "Turquoise": [64, 224, 208], "Teal": [0, 128, 128], "Cyan": [0, 255, 255], "Aqua": [0, 255, 255],
+                    "Blue": [0, 0, 255], "Navy": [0, 0, 128], "Azure": [0, 127, 255], "Sky Blue": [135, 206, 235], "Electric Blue": [125, 249, 255],
+                    "Indigo": [75, 0, 130], "Purple": [128, 0, 128], "Violet": [238, 130, 238], "Lavender": [230, 230, 250], "Plum": [142, 69, 133],
+                    "Magenta": [255, 0, 255], "Pink": [255, 192, 203], "Hot Pink": [255, 105, 180], "Deep Pink": [255, 20, 147], "Salmon": [250, 128, 114],
+                    "Tan": [210, 180, 140], "Brown": [165, 42, 42], "Chocolate": [210, 105, 30], "Coffee": [111, 78, 55], "Copper": [184, 115, 51]
+                };
+
+                let bestName = "White";
+                let minDistance = Infinity;
+
+                for (const [name, [cr, cg, cb]] of Object.entries(colorMap)) {
+                    // Simple Euclidean distance in RGB space
+                    const distance = Math.sqrt(
+                        Math.pow(r - cr, 2) +
+                        Math.pow(g - cg, 2) +
+                        Math.pow(b - cb, 2)
+                    );
+                    if (distance < minDistance) {
+                        minDistance = distance;
+                        bestName = name;
+                    }
+                }
+
+                // Add saturation/lightness adjectives for more nuance
+                const max = Math.max(r / 255, g / 255, b / 255);
+                const min = Math.min(r / 255, g / 255, b / 255);
+                const l = (max + min) / 2;
+                const sat = (max === min) ? 0 : (l > 0.5 ? (max - min) / (2 - max - min) : (max - min) / (max + min)) * 100;
+
+                let name = bestName;
+                if (sat < 15 && !["White", "Silver", "Grey", "Dark Grey", "Black"].includes(bestName)) {
+                    if (l < 0.1) name = "Black";
+                    else if (l < 0.35) name = "Dark Grey";
+                    else if (l < 0.65) name = "Grey";
+                    else name = "Whiteish";
+                } else if (l < 0.25 && !bestName.includes("Dark") && !bestName.includes("Deep")) {
+                    name = "Deep " + bestName;
+                } else if (l > 0.85 && !bestName.includes("Pale") && !bestName.includes("Light")) {
+                    name = "Pale " + bestName;
+                }
+
+                return { name, sat, l };
+            };
+
+            const dirPrompts = [];
+            const ambPrompts = [];
+
+            for (const light of lights) {
+                const { name: colorName, sat, l } = getColorName(light.color);
+
+                if (light.type === 'directional') {
+                    // --- 2. Determine Position ---
+                    const y = light.y || 0;
+                    const x = light.x || 0;
+                    const z = light.z || 0;
+                    const isPoint = light.type === 'point';
+                    const yRange = isPoint ? 10 : 100; // Point lights use -10..10, Directional -100..100
+                    const yNorm = (y / yRange) * 100;
+
+                    let vertDesc = "eye-level";
+                    if (yNorm > 70) vertDesc = "overhead";
+                    else if (yNorm > 25) vertDesc = "high";
+                    else if (yNorm < -25) vertDesc = "low";
+                    else if (yNorm < -70) vertDesc = "bottom-up";
+
+                    const distXZ = Math.sqrt(x * x + z * z);
+                    let horizDesc = "centered";
+
+                    if (distXZ > (isPoint ? 0.5 : 5)) {
+                        const angle = Math.atan2(z, x) * 180 / Math.PI;
+                        let deg = angle;
+                        if (deg < 0) deg += 360;
+
+                        if (deg >= 337.5 || deg < 22.5) horizDesc = "right";
+                        else if (deg >= 22.5 && deg < 67.5) horizDesc = "front-right";
+                        else if (deg >= 67.5 && deg < 112.5) horizDesc = "front";
+                        else if (deg >= 112.5 && deg < 157.5) horizDesc = "front-left";
+                        else if (deg >= 157.5 && deg < 202.5) horizDesc = "left";
+                        else if (deg >= 202.5 && deg < 247.5) horizDesc = "back-left";
+                        else if (deg >= 247.5 && deg < 292.5) horizDesc = "back";
+                        else if (deg >= 292.5 && deg < 337.5) horizDesc = "back-right";
+                    }
+
+                    const posName = (horizDesc === "centered") ? vertDesc : `${vertDesc} ${horizDesc}`;
+
+                    // 3. Determine Intensity
+                    const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
+                    if (intensity < 0.1) continue; // Skip near-zero lights
+
+                    let intDesc = "moderate";
+                    if (intensity < 0.4) intDesc = "subtle";
+                    else if (intensity < 0.8) intDesc = "faint";
+                    else if (intensity < 1.2) intDesc = "soft";
+                    else if (intensity < 1.7) intDesc = "gentle";
+                    else if (intensity < 2.4) intDesc = "strong";
+                    else if (intensity < 3.0) intDesc = "bright";
+                    else if (intensity < 3.8) intDesc = "intense";
+                    else if (intensity < 4.5) intDesc = "dazzling";
+                    else intDesc = "blinding";
+
+                    dirPrompts.push(`${intDesc} ${colorName} lighting coming from the ${posName}`);
+                } else if (light.type === 'ambient') {
+                    const intensity = (light.intensity !== undefined) ? light.intensity : 1.0;
+
+                    // Slightly more specific suppression of the "default" mid-grey ambient
+                    const isDefaultGrey = (colorName === "Dark Grey" && sat < 10 && intensity < 1.1 && l < 0.4);
+
+                    if (intensity >= 0.05 && !isDefaultGrey) {
+                        let ambPart = "";
+                        if (colorName === "Black" || (l < 0.1 && sat < 10)) {
+                            ambPart = "a pitch black, unlit environment";
+                        } else {
+                            let ambIntDesc = "moderate";
+                            if (intensity < 0.4) ambIntDesc = "subtle";
+                            else if (intensity < 0.8) ambIntDesc = "faint";
+                            else if (intensity < 1.2) ambIntDesc = "soft";
+                            else if (intensity < 1.7) ambIntDesc = "gentle";
+                            else if (intensity < 2.4) ambIntDesc = "strong";
+                            else if (intensity < 3.0) ambIntDesc = "bright";
+                            else if (intensity < 3.8) ambIntDesc = "intense";
+                            else if (intensity < 4.5) ambIntDesc = "dazzling";
+                            else ambIntDesc = "blinding";
+                            ambPart = `a ${ambIntDesc} ${colorName} ambient glow`;
+                        }
+                        ambPrompts.push(ambPart);
+                    }
+                }
+            }
+
+            finalPrompt = dirPrompts.join(". ");
+            if (ambPrompts.length > 0) {
+                if (finalPrompt.length > 0) finalPrompt += ". ";
+                finalPrompt += "Scene filled with " + ambPrompts.join(" and ");
+            } else {
+                // If there are directional lights but no reported ambient light, emphasize the darkness of shadows
+                finalPrompt += "";
+            }
+        }
+
+        // Final Construction using Template
+        let template = this.exportParams.prompt_template || "Draw character from image2\n<lighting>\n<user_prompt>";
+
+        // Final Lighting string
+        const lightingString = finalPrompt.trim();
+
+        // User Prompt string
+        const userPromptString = (this.exportParams.user_prompt || "").trim();
+
+        // Perform Replacements (Robust Global Replace)
+        let result = template
+            .replace(/<lighting>/g, lightingString)
+            .replace(/<user_prompt>/g, userPromptString);
+
+        // Clean up accidental double-newlines, extra spaces, and empty lines
+        result = result.split('\n')
+            .map(line => line.trim())
+            .filter(line => line.length > 0)
+            .join('\n');
+
+        return result;
+    }
+
+    /**
+     * Generate random debug parameters for model rotation, camera, and lighting.
+     * Model must remain at least ~20% visible in frame.
+     */
+    generateDebugParams() {
+        // Random Y rotation for model (-90 to 90)
+        const modelYRotation = Math.random() * 180 - 90;
+
+        // Camera Settings
+        const viewW = this.exportParams.view_width || 1024;
+        const viewH = this.exportParams.view_height || 1024;
+        const ar = viewW / viewH;
+
+        let zoom = 1.3 + Math.random() * 0.7;
+        let offsetX = (Math.random() * 2 - 1) * (2.0 / zoom);
+        let offsetY = (Math.random() * 2 - 1) * (2.0 / zoom);
+
+        if (this.exportParams.debugPortraitMode) {
+            // Portrait framing: High zoom, focused on head/torso
+            // If AR is narrow (< 0.7), cap zoom to avoid shoulder clipping
+            const maxZoom = ar < 0.7 ? (2.0 + ar * 2) : 3.5;
+            zoom = 2.2 + Math.random() * (maxZoom - 2.2);
+
+            offsetX = (Math.random() * 2 - 1) * 0.3; // Slight side jitter (world units)
+            // Shift target UP to head area (Y approx 15-16). 
+            // Pelvis is at Y=10. so offsetY = -5 to -6.
+            offsetY = -5.5 + (Math.random() * 2 - 1) * 1.0;
+        }
+
+        // Random directional lighting
+        let lights = [];
+        let lightingPrompt = "";
+
+        if (this.exportParams.debugKeepLighting) {
+            // Use current manual lights
+            lights = JSON.parse(JSON.stringify(this.lightParams));
+            lightingPrompt = this.generatePromptFromLights(lights);
+        } else {
+            // Original randomization logic
+            const prompts = [];
+            const r = Math.random();
+            const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
+
+            // Basic Vivid Colors
+            const colorPalette = [
+                { name: "Red", hex: "#ff0000" },
+                { name: "Green", hex: "#00ff00" },
+                { name: "Blue", hex: "#0000ff" },
+                { name: "Yellow", hex: "#ffff00" },
+                { name: "Cyan", hex: "#00ffff" },
+                { name: "Magenta", hex: "#ff00ff" },
+                { name: "Orange", hex: "#ff8000" },
+                { name: "White", hex: "#ffffff" }
+            ];
+
+            for (let i = 0; i < numLights; i++) {
+                const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                const intensity = 2.0 + Math.random() * 1.5;
+                let x, y, z;
+                if (numLights > 1) {
+                    const slice = 120 / numLights;
+                    const center = -60 + slice * i + slice / 2;
+                    x = center + (Math.random() * 20 - 10);
+                } else {
+                    x = (Math.random() * 2 - 1) * 60;
+                }
+                y = 10 + Math.random() * 50;
+                z = Math.random() * 60;
+
+                let posDesc = "";
+                if (y > 40) posDesc += "top ";
+                else if (y < 20) posDesc += "low ";
+                if (x > 20) posDesc += "right";
+                else if (x < -20) posDesc += "left";
+                else if (z > 30) posDesc += "front";
+                else posDesc += "side";
+
+                let intDesc = "strong";
+                if (intensity > 3.0) intDesc = "blinding";
+                else if (intensity < 2.5) intDesc = "bright";
+
+                prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc.trim()}`);
+                lights.push({
+                    type: 'directional',
+                    color: colorObj.hex,
+                    intensity: parseFloat(intensity.toFixed(2)),
+                    x: parseFloat(x.toFixed(1)),
+                    y: parseFloat(y.toFixed(1)),
+                    z: parseFloat(z.toFixed(1))
+                });
+            }
+            lightingPrompt = prompts.join(". ") + ".";
+
+            // Random Ambient Light
+            let ambColor = '#505050';
+            let ambIntensity = 0.1;
+
+            if (Math.random() < 0.7) {
+                const h = Math.random();
+                const s = 0.3 + Math.random() * 0.7;
+                const l = 0.3 + Math.random() * 0.5;
+                const hue2rgb = (p, q, t) => {
+                    if (t < 0) t += 1;
+                    if (t > 1) t -= 1;
+                    if (t < 1 / 6) return p + (q - p) * 6 * t;
+                    if (t < 1 / 2) return q;
+                    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+                    return p;
+                };
+                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+                const p = 2 * l - q;
+                const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
+                const g = Math.round(hue2rgb(p, q, h) * 255);
+                const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
+                const toHex = c => {
+                    const hex = c.toString(16);
+                    return hex.length === 1 ? '0' + hex : hex;
+                };
+                ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
+                ambIntensity = 0.2 + Math.random() * 1.0;
+            }
+
+            lights.push({
+                type: 'ambient',
+                color: ambColor,
+                intensity: parseFloat(ambIntensity.toFixed(2)),
+                x: 0, y: 0, z: 0
+            });
+        }
+
+        // Debug background color (White)
+        const bgColor = [255, 255, 255];
+
+        return {
+            modelYRotation,
+            zoom: parseFloat(zoom.toFixed(2)),
+            offsetX: parseFloat(offsetX.toFixed(1)),
+            offsetY: parseFloat(offsetY.toFixed(1)),
+            lights,
+            lightingPrompt,
+            bgColor
+        };
+    }
+
+    // 現在のカメラビューにフィットしたオレンジのフラスタムRectを生成/更新する
+    _updateFrustumToCurrentCamera() {
+        const v = this.viewer;
+        if (!v || !v.THREE || !v.camera || !v.orbit || !v.scene) return;
+
+        const THREE = v.THREE;
+        const cam = v.camera;
+        const target = v.orbit.target.clone();
+
+        // カメラ→ターゲット方向
+        const dir = target.clone().sub(cam.position).normalize();
+        const dist = cam.position.distanceTo(target);
+
+        // 出力アスペクト比（view_width/height）
+        const outW = this.exportParams.view_width || 1024;
+        const outH = this.exportParams.view_height || 1024;
+        const outAspect = outW / outH;
+
+        // ターゲット面でのFOVから半サイズを計算
+        const fovYRad = cam.fov * Math.PI / 180;
+        const halfH = Math.tan(fovYRad / 2) * dist;
+        const halfW = halfH * outAspect;
+
+        // ターゲット面の上・右ベクトル
+        const up = new THREE.Vector3(0, 1, 0);
+        const right = new THREE.Vector3().crossVectors(dir, up).normalize();
+        const upOrtho = new THREE.Vector3().crossVectors(right, dir).normalize();
+
+        // Rectの4隅
+        const cTopL = target.clone().addScaledVector(upOrtho,  halfH).addScaledVector(right, -halfW);
+        const cTopR = target.clone().addScaledVector(upOrtho,  halfH).addScaledVector(right,  halfW);
+        const cBotR = target.clone().addScaledVector(upOrtho, -halfH).addScaledVector(right,  halfW);
+        const cBotL = target.clone().addScaledVector(upOrtho, -halfH).addScaledVector(right, -halfW);
+
+        // 既存のfrustrumGroupを破棄
+        if (v._rtmwFrustumGroup) {
+            v.scene.remove(v._rtmwFrustumGroup);
+            v._rtmwFrustumGroup.traverse(o => {
+                if (o.geometry) o.geometry.dispose();
+                if (o.material) o.material.dispose();
+            });
+        }
+
+        const group = new THREE.Group();
+        const mat = new THREE.LineBasicMaterial({ color: 0xff8800, depthTest: false });
+        const mkLine = (a, b) => {
+            const geo = new THREE.BufferGeometry().setFromPoints([a, b]);
+            return new THREE.Line(geo, mat);
+        };
+
+        // ピラミッドエッジ（カメラ→4隅）は不要
+        // Rect エッジのみ
+        group.add(mkLine(cTopL, cTopR));
+        group.add(mkLine(cTopR, cBotR));
+        group.add(mkLine(cBotR, cBotL));
+        group.add(mkLine(cBotL, cTopL));
+
+        v.scene.add(group);
+        v._rtmwFrustumGroup = group;
+        v.requestRender();
+    }
+
+    syncToNode(fullCapture = false) {
+        if (this._isSyncing) return;
+        this._isSyncing = true;
+
+        if (this.radarRedraw) this.radarRedraw();
+
+        // Save current pose before syncing (only if we are NOT in a sub-sync loop)
+        if (!fullCapture && this.viewer && this.viewer.isInitialized()) {
+            const syncPose = this.viewer.getPose();
+            syncPose.cameraParams = {
+                offset_x: this.exportParams.cam_offset_x,
+                offset_y: this.exportParams.cam_offset_y,
+                zoom: this.exportParams.cam_zoom
+            };
+            this.poses[this.activeTab] = syncPose;
+        }
+
+        // Cache Handling
+        if (!this.poseCaptures) this.poseCaptures = [];
+        if (!this.lightingPrompts) this.lightingPrompts = [];
+
+        // Ensure size
+        while (this.poseCaptures.length < this.poses.length) this.poseCaptures.push(null);
+        while (this.poseCaptures.length > this.poses.length) this.poseCaptures.pop();
+
+        while (this.lightingPrompts.length < this.poses.length) this.lightingPrompts.push("");
+        while (this.lightingPrompts.length > this.poses.length) this.lightingPrompts.pop();
+
+        // Capture Image (CSR)
+        if (this.viewer && this.viewer.isInitialized()) {
+            const w = this.exportParams.view_width || 1024;
+            const h = this.exportParams.view_height || 1024;
+            const bg = this.exportParams.bg_color || [40, 40, 40];
+
+            // Debug/Export Mode: apply randomized params if needed
+            const isDebug = this.exportParams.debugMode;
+            const isOriginalLighting = this.exportParams.keepOriginalLighting;
+            const userLights = JSON.parse(JSON.stringify(this.lightParams));
+
+            if (fullCapture) {
+                const originalTab = this.activeTab;
+                const originalLights = [...this.lightParams]; // Save original lighting
+
+                for (let i = 0; i < this.poses.length; i++) {
+                    this.activeTab = i; // Switch tab for capture
+
+                    if (isDebug) {
+                        console.log("PoseStudio: Randomizing due to debugMode=true");
+                        // Generate fresh random params for each pose
+                        const debugParams = this.generateDebugParams();
+
+                        // Random Pose logic...
+                        let randomPoseUsed = false;
+                        if (this.libraryPoses && this.libraryPoses.length > 0) {
+                            const randIdx = Math.floor(Math.random() * this.libraryPoses.length);
+                            const poseItem = this.libraryPoses[randIdx];
+                            if (poseItem.data) {
+                                this.viewer.setPose(poseItem.data);
+                                randomPoseUsed = true;
+                            }
+                        }
+                        if (!randomPoseUsed) this.viewer.setPose(this.poses[i]);
+
+                        // Model Rotation
+                        const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
+                        const currentRot = { x: rArray[0], y: rArray[1], z: rArray[2] };
+                        this.viewer.setModelRotation(currentRot.x, debugParams.modelYRotation, currentRot.z);
+
+                        // Lighting
+                        if (isOriginalLighting) {
+                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                        } else if (debugParams.lights) {
+                            this.viewer.updateLights(debugParams.lights);
+                        }
+
+                        // Capture
+                        this.poseCaptures[i] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY);
+
+                        // Prompt
+                        const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || originalLights);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(promptLights);
+                    } else {
+                        // Normal mode
+                        this.viewer.setPose(this.poses[i]);
+                        const poseCam = this.poses[i].cameraParams || {};
+                        const z = poseCam.zoom || this.exportParams.cam_zoom || 1.0;
+                        const oX = (poseCam.offset_x !== undefined ? poseCam.offset_x : this.exportParams.cam_offset_x) || 0;
+                        const oY = (poseCam.offset_y !== undefined ? poseCam.offset_y : this.exportParams.cam_offset_y) || 0;
+
+                        // Lighting Toggle
+                        if (isOriginalLighting) {
+                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                        } else {
+                            this.viewer.updateLights(this.lightParams);
+                        }
+
+                        this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
+                    }
+                }
+
+                // Restore original state and UI
+                this.viewer.updateLights(userLights);
+                this.activeTab = originalTab;
+                this.viewer.setPose(this.poses[this.activeTab]);
+                this.updateTabs(); // Ensure UI reflects correct tab
+                this.updateRotationSliders();
+
+                // Restore Camera Visualization
+                const z = this.exportParams.cam_zoom || 1.0;
+                const oX = this.exportParams.cam_offset_x || 0;
+                const oY = this.exportParams.cam_offset_y || 0;
+                this.viewer.updateCaptureCamera(w, h, z, oX, oY);
+
+            } else {
+                // Capture only ACTIVE
+                if (isDebug) {
+                    const debugParams = this.generateDebugParams();
+                    this.viewer.resetPose();
+                    this.viewer.setModelRotation(0, debugParams.modelYRotation, 0);
+
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                    } else if (debugParams.lights) {
+                        this.viewer.updateLights(debugParams.lights);
+                    }
+
+                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY);
+
+                    const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || userLights);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights);
+
+                    this.viewer.updateLights(userLights);
+                    this.viewer.setPose(this.poses[this.activeTab]);
+
+                    const z = this.exportParams.cam_zoom || 1.0;
+                    const oX = this.exportParams.cam_offset_x || 0;
+                    const oY = this.exportParams.cam_offset_y || 0;
+                    this.viewer.updateCaptureCamera(w, h, z, oX, oY);
+                } else {
+                    const z = this.exportParams.cam_zoom || 1.0;
+                    const oX = this.exportParams.cam_offset_x || 0;
+                    const oY = this.exportParams.cam_offset_y || 0;
+
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                    } else {
+                        this.viewer.updateLights(this.lightParams);
+                    }
+
+                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
+
+                    if (isOriginalLighting) {
+                        this.viewer.updateLights(userLights);
+                    }
+                }
+            }
+        }
+
+        // Update hidden pose_data widget
+        // Exclude background_url and captured_images from widget to avoid inflating workflow size.
+        // Captures are uploaded to server-side LRU cache; only the capture_id is stored in widget.
+        const exportToSave = { ...this.exportParams };
+        delete exportToSave.background_url;
+
+        // captured_images are excluded from the widget to avoid inflating workflow size
+        // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
+        // They are kept in this.poseCaptures (JS memory) and also uploaded to server-side LRU cache.
+        // Only capture_id is stored in the widget so Python can fallback to the cache if needed.
+        const captureId = `vnccs_capture_${this.node.id}_${Date.now()}`;
+
+        const data = {
+            mesh: this.meshParams,
+            export: exportToSave,
+            poses: this.poses,
+            lights: this.lightParams,
+            activeTab: this.activeTab,
+            capture_id: captureId,
+            lighting_prompts: this.lightingPrompts,
+            background_url: this.exportParams.background_url || null
+        };
+
+        // Upload captures then update widget
+        const updateWidget = () => {
+            const widget = this.node.widgets?.find(w => w.name === "pose_data");
+            if (widget) {
+                widget.value = JSON.stringify(data);
+                if (widget.callback) widget.callback(widget.value);
+                if (app.graph && app.graph.setDirtyCanvas) app.graph.setDirtyCanvas(true, true);
+            }
+        };
+
+        this._isSyncing = false;
+
+        // Update widget immediately
+        updateWidget();
+
+        if (this.poseCaptures && this.poseCaptures.some(c => c)) {
+            fetch('/vnccs/pose_captures_upload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    capture_id: captureId,
+                    captured_images: this.poseCaptures,
+                    lighting_prompts: this.lightingPrompts || []
+                })
+            }).catch(e => console.warn("[VNCCS PoseStudio] Capture upload failed:", e));
+        }
+    }
+
+    showDebugLog(text) {
+        let win = document.getElementById('vnccs-debug-window');
+        if (!win) {
+            win = document.createElement('div');
+            win.id = 'vnccs-debug-window';
+            win.style.cssText = `
+                position: fixed; top: 80px; right: 20px; width: 400px; height: 500px;
+                background: #1a1a1a; border: 1px solid #444; border-radius: 6px;
+                z-index: 99999; display: flex; flex-direction: column;
+                box-shadow: 0 4px 20px rgba(0,0,0,0.8);
+            `;
+            const header = document.createElement('div');
+            header.style.cssText = 'padding:6px 10px;background:#333;border-radius:6px 6px 0 0;display:flex;justify-content:space-between;align-items:center;cursor:move;';
+            header.innerHTML = '<span style="color:#fff;font-size:12px;font-family:monospace;">VNCCS Debug Log</span>';
+            const closeBtn = document.createElement('button');
+            closeBtn.textContent = '✕';
+            closeBtn.style.cssText = 'background:none;border:none;color:#aaa;cursor:pointer;font-size:14px;';
+            closeBtn.onclick = () => win.remove();
+            header.appendChild(closeBtn);
+
+            const pre = document.createElement('pre');
+            pre.id = 'vnccs-debug-pre';
+            pre.style.cssText = 'flex:1;margin:0;padding:8px;font-size:11px;font-family:monospace;color:#0f0;overflow:auto;white-space:pre-wrap;word-break:break-all;';
+
+            win.appendChild(header);
+            win.appendChild(pre);
+            document.body.appendChild(win);
+
+            // Drag to move
+            let dragging = false, ox, oy;
+            header.addEventListener('mousedown', e => { dragging=true; ox=e.clientX-win.offsetLeft; oy=e.clientY-win.offsetTop; });
+            document.addEventListener('mousemove', e => { if(dragging) { win.style.left=e.clientX-ox+'px'; win.style.top=e.clientY-oy+'px'; win.style.right='auto'; } });
+            document.addEventListener('mouseup', () => dragging=false);
+        }
+        document.getElementById('vnccs-debug-pre').textContent = text;
+        win.style.display = 'flex';
+    }
+
+    loadOpenPoseFile() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                try {
+                    const data = JSON.parse(ev.target.result);
+
+                    // HMR2 v1 format (keypoints_3d as named dict, SMPL root-relative)
+                    if (data.version === 'hmr2_3d_v1') {
+                        this._applyHMR2v1Data(data);
+                        return;
+                    }
+
+                    const first = Array.isArray(data) ? data[0] : data;
+                    const people = first.people || [];
+                    if (!people.length) {
+                        alert('No people found in pose JSON');
+                        return;
+                    }
+                    const kp2d = people[0].pose_keypoints_2d;
+
+
+                    //const kp3d = people[0].pose_keypoints_3d || null;
+
+let kp3d = people[0].pose_keypoints_3d || null;
+
+
+
+                    const w = first.canvas_width || 512;
+                    const h = first.canvas_height || 512;
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        if (kp3d) {
+                            const result = this.viewer.applyPoseKeypoints(kp2d, w, h, this._kpScaleMultiplier || 1.0, null, kp3d);
+                            if (this.viewer.drawKeypointFigure) {
+                                this.viewer.drawKeypointFigure(
+                                    kp2d, kp3d, w, h,
+                                    result ? result.scale   : null,
+                                    result ? result.offsetX : null,
+                                    result ? result.offsetY : null
+                                );
+                            }
+                            this.poses[this.activeTab] = this.viewer.getPose();
+                            if (!this.poseCaptures) this.poseCaptures = [];
+                            while (this.poseCaptures.length < this.poses.length) this.poseCaptures.push(null);
+                            const bg = this.exportParams.bg_color || [40, 40, 40];
+                            const zoom = this.exportParams.cam_zoom || 1.0;
+                            this.poseCaptures[this.activeTab] = this.viewer.capture(
+                                this.exportParams.view_width || 1024,
+                                this.exportParams.view_height || 1024,
+                                zoom, bg, 0, 0
+                            );
+                            this.updateRotationSliders();
+                            requestAnimationFrame(() => {
+                                this._updateFrustumToCurrentCamera();
+                                this.syncToNode(false);
+                            });
+                        } else {
+                            this._showKeypointGacha(kp2d, w, h);
+                        }
+                    }
+                } catch(err) {
+                    alert('Failed to parse pose JSON: ' + err.message);
+                }
+            };
+            reader.readAsText(file);
+        });
+        input.click();
+    }
+
+    _applyHMR2v1Data(data) {
+        if (!this.viewer || !this.viewer.isInitialized()) return;
+        const people = data.people || [];
+        if (!people.length) { alert('No people found in HMR2 JSON'); return; }
+        const debugStr = this.viewer.drawHMR2v1Figure(people, data.source_image_size || [1024, 1024], this._smplRefHeight || 1.5, this._shoulderYOffset || 0);
+        // 棒人形描画後、即座にマネキンをフィット
+        // （_hmr2WorldKps は drawHMR2v1Figure 内でキャッシュ済み）
+        this.viewer.fitMannequinToHMR2(this._shoulderYOffset || 0);
+        requestAnimationFrame(() => {
+            this._updateFrustumToCurrentCamera();
+            this.syncToNode(false);
+        });
+    }
+
+    // ガチャUI: 複数のZ変換パターンをサムネイルで並べてユーザーに選ばせる
+    _showKeypointGacha(kp2d, canvasW, canvasH) {
+        // Z変換バリエーション定義
+        // wristZ: 手首の前後 (+ = カメラ側, - = 奥)
+        // elbowZ: 肘の前後オフセット
+        // kneeZ:  膝の前後オフセット
+        const VARIANTS = [
+            { label: '①標準',       wristZ:  0.0, elbowZ: -0.5, kneeZ:  0.8 },
+            { label: '②腕前',       wristZ:  1.5, elbowZ:  0.5, kneeZ:  0.8 },
+            { label: '③腕奥',       wristZ: -1.5, elbowZ: -1.5, kneeZ:  0.8 },
+            { label: '④足前',       wristZ:  0.0, elbowZ: -0.5, kneeZ:  2.0 },
+            { label: '⑤足奥',       wristZ:  0.0, elbowZ: -0.5, kneeZ: -0.5 },
+            { label: '⑥腕前+足前', wristZ:  1.5, elbowZ:  0.5, kneeZ:  2.0 },
+            { label: '⑦腕前+足奥', wristZ:  1.5, elbowZ:  0.5, kneeZ: -0.5 },
+            { label: '⑧腕奥+足前', wristZ: -1.5, elbowZ: -1.5, kneeZ:  2.0 },
+            { label: '⑨腕奥+足奥', wristZ: -1.5, elbowZ: -1.5, kneeZ: -0.5 },
+            { label: '⑩ニュートラル', wristZ: 0.0, elbowZ: 0.0, kneeZ:  0.0 },
+        ];
+
+        const scale = this._kpScaleMultiplier || 1.0;
+        const thumbSize = 160;
+
+        // モーダル背景
+        const overlay = document.createElement('div');
+        overlay.style.cssText = `
+            position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999;
+            background:rgba(0,0,0,0.85); display:flex; flex-direction:column;
+            align-items:center; justify-content:center; gap:16px;
+        `;
+
+        const title = document.createElement('div');
+        title.textContent = 'ポーズを選択してください';
+        title.style.cssText = 'color:#ff8fa3; font-size:18px; font-weight:bold;';
+        overlay.appendChild(title);
+
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:flex; flex-wrap:wrap; gap:12px; justify-content:center; max-width:900px;';
+        overlay.appendChild(grid);
+
+        const closeBtn = document.createElement('button');
+        closeBtn.textContent = 'キャンセル';
+        closeBtn.style.cssText = 'padding:8px 24px; background:#333; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:14px;';
+        closeBtn.onclick = () => document.body.removeChild(overlay);
+        overlay.appendChild(closeBtn);
+
+        // 先に全パターンのサムネイルを生成してからモーダルを表示
+        const cw = thumbSize;
+        const ch = thumbSize;
+        const bg = this.exportParams.bg_color || [20, 20, 30];
+        const zoom = this.exportParams.cam_zoom || 1.0;
+
+        // ガチャ生成中はposeChangeイベントを抑制
+        const savedOnPoseChange = this.viewer.options.onPoseChange;
+        this.viewer.options.onPoseChange = null;
+
+        // 全パターンを同期的に生成
+        const thumbDataURLs = VARIANTS.map((variant, idx) => {
+            try {
+                this.viewer.applyPoseKeypoints(kp2d, canvasW, canvasH, scale, variant);
+                this.viewer.skinnedMesh?.updateMatrixWorld(true);
+                const thumb = this.viewer.capture(cw, ch, zoom, bg, 0, 0);
+                console.log(`[VNCCS Gacha] variant ${idx} thumb:`, thumb ? thumb.substring(0, 50) : 'NULL');
+                return thumb;
+            } catch(e) {
+                console.warn('[VNCCS Gacha] variant error:', e);
+                return null;
+            }
+        });
+
+        // イベント抑制を解除
+        this.viewer.options.onPoseChange = savedOnPoseChange;
+
+        document.body.appendChild(overlay);
+
+        VARIANTS.forEach((variant, idx) => {
+            const card = document.createElement('div');
+            card.style.cssText = `
+                display:flex; flex-direction:column; align-items:center; gap:4px;
+                cursor:pointer; padding:6px; border-radius:8px;
+                border:2px solid #333; transition:border-color 0.2s;
+            `;
+            card.onmouseover = () => card.style.borderColor = '#ff8fa3';
+            card.onmouseout  = () => card.style.borderColor = '#333';
+
+            const imgEl = document.createElement('img');
+            imgEl.width  = thumbSize;
+            imgEl.height = thumbSize;
+            imgEl.style.cssText = `width:${thumbSize}px; height:${thumbSize}px; border-radius:4px; display:block; background:#111;`;
+
+            // サムネイルを描画
+            const thumb = thumbDataURLs[idx];
+            if (thumb) {
+                imgEl.src = thumb;
+            }
+
+            const lbl = document.createElement('div');
+            lbl.textContent = variant.label;
+            lbl.style.cssText = 'color:#ccc; font-size:12px;';
+
+            card.appendChild(imgEl);
+            card.appendChild(lbl);
+            grid.appendChild(card);
+
+            // 選択時の処理
+            card.onclick = () => {
+                this.viewer.applyPoseKeypoints(kp2d, canvasW, canvasH, scale, variant);
+                this.poses[this.activeTab] = this.viewer.getPose();
+
+                if (!this.poseCaptures) this.poseCaptures = [];
+                while (this.poseCaptures.length < this.poses.length) this.poseCaptures.push(null);
+                this.poseCaptures[this.activeTab] = this.viewer.capture(
+                    this.exportParams.view_width  || 1024,
+                    this.exportParams.view_height || 1024,
+                    zoom, bg, 0, 0
+                );
+
+                this.updateRotationSliders();
+                requestAnimationFrame(() => { this.syncToNode(false); });
+                document.body.removeChild(overlay);
+            };
+        });
+    }
+
+    loadFromNode() {
+        console.log("[VNCCS PoseStudio] loadFromNode started");
+        // Load from pose_data widget
+        const widget = this.node.widgets?.find(w => w.name === "pose_data");
+        if (!widget || !widget.value) {
+            console.log("[VNCCS PoseStudio] loadFromNode: No widget or widget value found.");
+            return;
+        }
+
+        try {
+            const data = JSON.parse(widget.value);
+            console.log("[VNCCS PoseStudio] loadFromNode data parsed successfully. Includes poses:", !!data.poses);
+
+            if (data.mesh) {
+                this.meshParams = { ...this.meshParams, ...data.mesh };
+                // Update sliders
+                for (const [key, info] of Object.entries(this.sliders)) {
+                    if (key.startsWith('rot_')) continue; // Skip rotation sliders here
+                    if (info.def && this.meshParams[key] !== undefined) {
+                        info.slider.value = this.meshParams[key];
+                        const val = this.meshParams[key];
+                        info.label.innerText = key === 'age' ? Math.round(val) : val.toFixed(2);
+                    }
+                }
+                // Update gender switch
+                if (this.updateGenderUI) this.updateGenderUI();
+                this.updateGenderVisibility();
+
+                // Sync bone scales
+                if (this.viewer && this.meshParams.head_size !== undefined) {
+                    this.viewer.updateHeadScale(this.meshParams.head_size);
+                }
+                if (this.viewer && this.meshParams.arm_size !== undefined) {
+                    this.viewer.updateArmScale(this.meshParams.arm_size);
+                }
+                if (this.viewer && this.meshParams.hand_size !== undefined) {
+                    this.viewer.updateHandScale(this.meshParams.hand_size);
+                }
+            }
+
+            if (data.export) {
+                this.exportParams = { ...this.exportParams, ...data.export };
+
+                // Sync user_prompt to sidebar if it exists
+                if (data.export.user_prompt !== undefined && this.userPromptArea) {
+                    this.userPromptArea.value = data.export.user_prompt;
+                    // Trigger auto-expand
+                    this.userPromptArea.style.height = 'auto';
+                    this.userPromptArea.style.height = (this.userPromptArea.scrollHeight) + 'px';
+                }
+                // Update export widgets
+                for (const [key, widget] of Object.entries(this.exportWidgets)) {
+                    if (key === 'bg_color') {
+                        const rgb = this.exportParams.bg_color;
+                        const hex = "#" + ((1 << 24) + (rgb[0] << 16) + (rgb[1] << 8) + rgb[2]).toString(16).slice(1);
+                        widget.value = hex;
+                    } else if (this.exportParams[key] !== undefined) {
+                        if (widget.update) {
+                            widget.update(this.exportParams[key]);
+                        } else {
+                            widget.value = this.exportParams[key];
+                        }
+                    }
+                }
+            }
+            if (this.updateOverrideBtn) this.updateOverrideBtn();
+
+            if (data.poses && Array.isArray(data.poses)) {
+                this.poses = data.poses;
+            }
+
+            // Restore background image if present
+            const bgUrl = data.background_url || this.exportParams.background_url;
+            if (bgUrl && this.viewer) {
+                this.exportParams.background_url = bgUrl;
+                this.viewer.loadReferenceImage(bgUrl);
+                if (this.refBtn) {
+                    this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
+                    this.refBtn.classList.add('danger');
+                }
+            }
+
+            if (data.lights && Array.isArray(data.lights)) {
+                this.lightParams = data.lights;
+                this.refreshLightUI();
+                if (this.viewer) {
+                    this.viewer.updateLights(this.lightParams);
+                }
+            }
+
+            if (typeof data.activeTab === 'number') {
+                this.activeTab = Math.min(data.activeTab, this.poses.length - 1);
+            }
+
+            // captured_images are no longer persisted in widget (stored in server-side LRU cache).
+            // poseCaptures will be regenerated on the next syncToNode(true) call.
+
+            this.updateTabs();
+
+            // Auto-load model
+            // Restore skin type on the viewer before loading model
+            if (this.exportParams.skin_type && this.viewer) {
+                this.viewer.setSkinMode(this.exportParams.skin_type);
+            }
+
+            this.loadModel().then(() => {
+                // Apply incoming pose keypoints if present
+                if (data.incoming_pose_keypoints && this.viewer) {
+                    setTimeout(() => {
+                        this.viewer.applyPoseKeypoints(
+                            data.incoming_pose_keypoints,
+                            data.incoming_canvas_width || 512,
+                            data.incoming_canvas_height || 512
+                        );
+                    }, 500);
+                }
+            });
+
+        } catch (e) {
+            console.error("Failed to parse pose_data:", e);
+        }
+    }
+
+
+}
+
+
+// === ComfyUI Extension Registration ===
+app.registerExtension({
+    name: "VNCCS.PoseStudio",
+
+    setup() {
+        // On job execution: JS captures current view and POSTs to Python immediately
+        api.addEventListener("vnccs_req_capture", async (event) => {
+            const nodeId = event.detail.node_id;
+            const node = app.graph.getNodeById(nodeId);
+            if (!node || !node.studioWidget) return;
+            const sw = node.studioWidget;
+            try {
+                if (!sw.viewer || !sw.viewer.isInitialized()) await sw.loadModel();
+                const w = sw.exportParams.view_width || 1024;
+                const h = sw.exportParams.view_height || 1024;
+                const bg = sw.exportParams.bg_color || [40, 40, 40];
+                const z = sw.exportParams.cam_zoom || 1.0;
+                const oX = sw.exportParams.cam_offset_x || 0;
+                const oY = sw.exportParams.cam_offset_y || 0;
+                const image = sw.viewer.capture(w, h, z, bg, oX, oY);
+                const lightingPrompt = sw.generatePromptFromLights ? sw.generatePromptFromLights(sw.lightParams) : "";
+                await fetch('/vnccs/capture_result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: nodeId,
+                        captured_images: [image],
+                        lighting_prompts: [lightingPrompt]
+                    })
+                });
+            } catch(e) {
+                console.error("[VNCCS] Capture error:", e);
+                // POST empty so Python doesn't hang
+                await fetch('/vnccs/capture_result', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ node_id: nodeId, captured_images: [], lighting_prompts: [] })
+                });
+            }
+        });
+
+        // Receive pose keypoints from backend and apply to viewer
+        api.addEventListener("vnccs_apply_pose_keypoints", async (event) => {
+            const { node_id, pose_keypoints_2d, canvas_width, canvas_height, request_bone_debug } = event.detail;
+            const node = app.graph.getNodeById(node_id);
+            if (node && node.studioWidget && node.studioWidget.viewer) {
+                node.studioWidget.viewer.applyPoseKeypoints(pose_keypoints_2d, canvas_width, canvas_height);
+
+                // Log bone debug info to console
+                if (request_bone_debug) {
+                    const debugInfo = node.studioWidget.viewer.getBoneDebugInfo();
+                    console.log("[VNCCS] Bone debug info:", debugInfo);
+                }
+            }
+        });
+    },
+
+    async beforeRegisterNodeDef(nodeType, nodeData, _app) {
+        if (nodeData.name !== "VNCCS_PoseStudio") return;
+
+        const onCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            if (onCreated) onCreated.apply(this, arguments);
+
+            this.setSize([900, 740]);
+
+            // Create widget
+            this.studioWidget = new PoseStudioWidget(this);
+
+            const domWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
+                serialize: false,
+                hideOnZoom: false
+            });
+            if (domWidget && domWidget.element) {
+                const el = domWidget.element;
+                el._studioWidgetRef = this.studioWidget;
+                el.addEventListener("contextmenu", (e) => e.preventDefault());
+
+                // el.parentElement is null at this point (not yet mounted).
+                // Use setTimeout so the element is in the DOM before we access its parent.
+                setTimeout(() => {
+                    const wrapper = el.parentElement;
+                    if (!wrapper) return;
+
+                    wrapper.addEventListener("contextmenu", (e) => e.preventDefault());
+
+                    const INTERACTIVE_TAGS = new Set(["BUTTON", "INPUT", "SELECT", "TEXTAREA", "CANVAS"]);
+                    const INTERACTIVE_CLASSES = ["vnccs-ps-btn", "vnccs-ps-tab", "vnccs-ps-slider"];
+
+                    function shouldForward(target) {
+                        let node = target;
+                        while (node && node !== wrapper) {
+                            if (INTERACTIVE_TAGS.has(node.tagName)) return false;
+                            if (node.classList && INTERACTIVE_CLASSES.some(c => node.classList.contains(c))) return false;
+                            node = node.parentElement;
+                        }
+                        return true;
+                    }
+
+                    const lgCanvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+
+                    const SCROLLBAR_WIDTH = 15;
+                    function getScrollablePanel(target) {
+                        // ターゲットが左/右パネルのスクロールバーゾーン（右端8px）にいるか判定
+                        const panels = [
+                            wrapper.querySelector('.vnccs-ps-left'),
+                            wrapper.querySelector('.vnccs-ps-right-sidebar'),
+                        ].filter(Boolean);
+                        for (const panel of panels) {
+                            const rect = panel.getBoundingClientRect();
+                            const mouseX = target._wheelClientX;
+                            if (mouseX !== undefined && mouseX >= rect.right - SCROLLBAR_WIDTH && mouseX <= rect.right) {
+                                return panel;
+                            }
+                        }
+                        return null;
+                    }
+
+                    wrapper.addEventListener("wheel", (e) => {
+                        e.target._wheelClientX = e.clientX;
+                        const panel = getScrollablePanel(e.target);
+                        if (panel) {
+                            panel.scrollTop += e.deltaY;
+                            e.preventDefault();
+                            e.stopPropagation();
+                            return;
+                        }
+                        // canvas（3Dビュー）はネイティブに任せる
+                        if (e.target.tagName === 'CANVAS') return;
+                        // それ以外は常にLiteGraphに転送
+                        lgCanvas()?.dispatchEvent(new WheelEvent("wheel", {
+                            bubbles: true, cancelable: true,
+                            deltaX: e.deltaX, deltaY: e.deltaY, deltaMode: e.deltaMode,
+                            clientX: e.clientX, clientY: e.clientY,
+                            ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, altKey: e.altKey,
+                        }));
+                        e.preventDefault();
+                        e.stopPropagation();
+                        // ズーム後に overlay を強制更新（_lastRect キャッシュを無効化してから実行）
+                        requestAnimationFrame(() => {
+                            const sw = el._studioWidgetRef;
+                            if (sw && sw.viewer && typeof sw.viewer.updateCaptureFrameOverlay === "function") {
+                                if (sw.node) sw.node._lastRect = null;
+                                sw.viewer.updateCaptureFrameOverlay();
+                            }
+                        });
+                    }, { passive: false });
+
+                    let middleDragging = false;
+
+                    wrapper.addEventListener("mousedown", (e) => {
+                        if (e.button !== 1 || !shouldForward(e.target)) return;
+                        middleDragging = true;
+                        lgCanvas()?.dispatchEvent(new PointerEvent("pointerdown", {
+                            bubbles: true, cancelable: true,
+                            button: 1, buttons: 4,
+                            pointerId: 1, isPrimary: true,
+                            clientX: e.clientX, clientY: e.clientY,
+                        }));
+                        e.preventDefault();
+                    });
+
+                    document.addEventListener("mousemove", (e) => {
+                        if (!middleDragging) return;
+                        lgCanvas()?.dispatchEvent(new PointerEvent("pointermove", {
+                            bubbles: true, cancelable: true,
+                            button: 1, buttons: 4,
+                            pointerId: 1, isPrimary: true,
+                            clientX: e.clientX, clientY: e.clientY,
+                        }));
+                    });
+
+                    document.addEventListener("mouseup", (e) => {
+                        if (!middleDragging || e.button !== 1) return;
+                        middleDragging = false;
+                        lgCanvas()?.dispatchEvent(new PointerEvent("pointerup", {
+                            bubbles: true, cancelable: true,
+                            button: 1, buttons: 0,
+                            pointerId: 1, isPrimary: true,
+                            clientX: e.clientX, clientY: e.clientY,
+                        }));
+                    });
+                }, 0);
+            }
+            // Also hook via container's parent (dom-widget div) after mount
+            setTimeout(() => {
+                const parent = this.studioWidget.container.parentElement;
+                if (parent) parent.addEventListener("contextmenu", (e) => e.preventDefault());
+            }, 0);
+
+            // Pre-load library for random functionality
+            setTimeout(() => {
+                if (this.studioWidget) this.studioWidget.refreshLibrary(false);
+            }, 1000);
+
+            // Hide pose_data widget (must work in both legacy LiteGraph and node2.0 Vue modes)
+            const poseWidget = this.widgets?.find(w => w.name === "pose_data");
+            if (poseWidget) {
+                // Legacy LiteGraph mode
+                poseWidget.type = "hidden";
+                poseWidget.computeSize = () => [0, -4];
+                // Node 2.0 Vue mode
+                poseWidget.hidden = true;
+                // Hide DOM element if it exists (node2.0 creates input elements)
+                if (poseWidget.element) {
+                    poseWidget.element.style.display = "none";
+                }
+            }
+            // Load model after initialization
+            setTimeout(() => {
+                this.studioWidget.loadFromNode();
+                this.studioWidget.loadModel().then(() => {
+                    // Auto-center camera on initialization
+                    if (this.studioWidget.viewer) {
+                // [DISABLED] this.studioWidget.viewer.snapToCaptureCamera(
+                // [DISABLED] this.studioWidget.exportParams.view_width,
+                // [DISABLED] this.studioWidget.exportParams.view_height,
+                // [DISABLED] this.studioWidget.exportParams.cam_zoom || 1.0,
+                // [DISABLED] this.studioWidget.exportParams.cam_offset_x || 0,
+                // [DISABLED] this.studioWidget.exportParams.cam_offset_y || 0
+                // [DISABLED] );
+                        // Force resize again after model load to ensure Three.js matches container
+                        this.studioWidget.resize();
+                    }
+                });
+                // Force a resize after initialization to fix stretching
+                this.onResize(this.size);
+            }, 800);
+        };
+
+        // Update overlay position when node is drawn (catches node drag/move)
+        nodeType.prototype.onDrawForeground = function (ctx) {
+            if (this.studioWidget && this.studioWidget.viewer) {
+                this.studioWidget.viewer.updateCaptureFrameOverlay();
+            }
+        };
+
+        nodeType.prototype.onResize = function (size) {
+            if (this.studioWidget) {
+                // Immediate resize + deferred to catch final settled size
+                this.studioWidget.resize();
+                clearTimeout(this.resizeTimer);
+                this.resizeTimer = setTimeout(() => {
+                    this.studioWidget.resize();
+                }, 50);
+            }
+        };
+
+        // Save state on configure
+        const onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function (info) {
+            if (onConfigure) onConfigure.apply(this, arguments);
+
+            if (this.studioWidget) {
+                setTimeout(() => {
+                    this.studioWidget.loadFromNode();
+                    this.studioWidget.loadModel();
+                    this.studioWidget.refreshLibrary(false); // Pre-load library meta only
+                    this.onResize(this.size); // Force correct aspect ratio on config
+                }, 500);
+            }
+        };
+
+        // Re-capture with fresh random params on each execution when Debug Mode is enabled
+        const onExecutionStart = nodeType.prototype.onExecutionStart;
+        nodeType.prototype.onExecutionStart = function () {
+            if (onExecutionStart) onExecutionStart.apply(this, arguments);
+
+            // Removed redundant syncToNode(true) to avoid race conditions with vnccs_req_pose_sync
+        };
+    }
+});
+
+
+
+/* ===== VNCCS Pose Studio: Safe Overlay Throttle Patch (non-destructive) ===== */
+(function () {
+    try {
+        const orig = LGraphNode && LGraphNode.prototype && LGraphNode.prototype.onDrawForeground;
+
+        if (!LGraphNode || !LGraphNode.prototype) return;
+
+        LGraphNode.prototype.onDrawForeground = function (ctx) {
+            if (orig) {
+                try { orig.call(this, ctx); } catch (e) { console.warn("orig onDrawForeground error:", e); }
+            }
+
+            if (!this.studioWidget || !this.studioWidget.viewer) return;
+
+            if (this._overlayRAF) return;
+
+            this._overlayRAF = requestAnimationFrame(() => {
+                this._overlayRAF = null;
+
+                const viewer = this.studioWidget.viewer;
+                if (!viewer || !viewer.canvas) return;
+
+                const rect = viewer.canvas.getBoundingClientRect();
+
+                if (this._lastRect &&
+                    this._lastRect.left === rect.left &&
+                    this._lastRect.top === rect.top &&
+                    this._lastRect.width === rect.width &&
+                    this._lastRect.height === rect.height) {
+                    return;
+                }
+
+                this._lastRect = rect;
+
+                if (typeof viewer.updateCaptureFrameOverlay === "function") {
+                    viewer.updateCaptureFrameOverlay();
+                }
+            });
+        };
+    } catch (e) {
+        console.error("VNCCS overlay throttle patch failed:", e);
+    }
+})();

@@ -1,0 +1,58 @@
+train_dataset_str: <DATSET_PATH> #Example: CocoCaptions:split=TRAIN:root=<PATH/TO/COCO_CAPTIONS_ROOT> 
+embed_dim: 2048
+vision_backbone_config: <PATH/TO/DINOv3/VIT-L/16/CONFIG> #Example: <DINOv3_REPO_DIR>/dinov3/configs/train/dinov3_vitl16_lvd1689m_distilled.yaml 
+vision_backbone_pretrained_weights: <PATH/TO/DINOv3/VIT-L/16/CHECKPOINT> #Example ~/.cache/torch/hub/checkpoints/dinov3_vitl16_pretrain_lvd1689m-8aa4cbdd.pth #Example: 
+vision_model_train_img_size: 224
+vision_model_use_class_token: true
+vision_model_freeze_backbone: true
+vision_model_num_head_blocks: 2
+vision_model_head_blocks_drop_path: 0.3
+vision_model_use_linear_projection: false
+vision_model_use_patch_tokens: true
+vision_model_patch_tokens_pooler_type: mean
+vision_model_patch_token_layer: 1
+vision_model_use_gram_loss: false
+vision_model_patch_sampling_rate_for_gram_loss: 1.0
+vision_model_normalize_patch_tokens_for_gram_loss: true
+vision_model_gram_loss_weight: 1.0
+text_backbone_config: <PATH/TO/DINOv3/VIT-L/16/CHECKPOINT> #Example: <DINOv3_REPO_DIR>/dinov3/eval/text/configs/text_backbone.yaml 
+text_backbone_pretrained_weights: null  
+text_model_freeze_backbone: false
+text_model_num_head_blocks: 0
+text_model_head_blocks_drop_prob: 0.0
+text_model_head_blocks_is_causal: true
+text_model_tokens_pooler_type: argmax
+text_model_use_linear_projection: true
+text_vocab_path_or_url: <PATH/OR/URL/TO/BPE_VOCAB> # https://dl.fbaipublicfiles.com/dinov3/thirdparty/bpe_simple_vocab_16e6.txt.gz
+init_logit_scale: 2.659260036932778
+init_logit_bias: null
+freeze_logit_scale: false
+output_dict: false
+no_resume: false
+lr_scheduler_type: cosine
+lr: 0.0007
+weight_decay: 0.0001
+batch_size: 256
+beta1: 0.9
+beta2: 0.99
+eps: 1.0e-08
+eval_only: false
+dataset_use_cache: false
+max_checkpoints_to_keep: 5
+max_iteration: 50000
+warmup_length: 2000
+checkpointing_period: 500
+eval_freq: 5000
+gc_freq: 100
+eval_pretrained_weights: ''
+output_dir: <OUTPUT/DIR> #Example: ~/tmp/dinov3_dinnotxt_vitl16 
+seed: 11
+do_compile: true
+use_fsdp: true
+use_ac: true
+use_full_ac: false
+use_cuda_graphs: false
+param_dtype_str: bf16
+reduce_dtype_str: fp32
+profiling: false
+dtype_str: bf16

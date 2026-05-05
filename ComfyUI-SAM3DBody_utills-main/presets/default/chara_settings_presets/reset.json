@@ -1,0 +1,41 @@
+{
+  "body_params": {
+    "fat": 0.0,
+    "muscle": 0.0,
+    "fat_muscle": 0.0,
+    "limb_girth": 0.0,
+    "limb_muscle": 0.0,
+    "limb_fat": 0.0,
+    "chest_shoulder": 0.0,
+    "waist_hip": 0.0,
+    "thigh_calf": 0.0
+  },
+  "bone_lengths": {
+    "torso": 1.0,
+    "neck": 1.0,
+    "arm": 1.0,
+    "leg": 1.0
+  },
+  "blendshapes": {
+    "MuscleScale": 0.0,
+    "breast_flat": 0.0,
+    "breast_full": 0.0,
+    "chest_slim": 0.0,
+    "chin_sharp": 0.0,
+    "face_big": 0.0,
+    "face_manga": 0.0,
+    "face_mangabig": 0.0,
+    "face_small": 0.0,
+    "face_wide": 0.0,
+    "foot_big": 0.0,
+    "hand_big": 0.0,
+    "limb_thick": 0.0,
+    "limb_thin": 0.0,
+    "neck_thick": 0.0,
+    "neck_thin": 0.0,
+    "shoulder_narrow": 0.0,
+    "shoulder_slope": 0.0,
+    "shoulder_wide": 0.0,
+    "waist_slim": 0.0
+  }
+}

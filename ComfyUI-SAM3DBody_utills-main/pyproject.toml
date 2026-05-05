@@ -1,0 +1,13 @@
+[project]
+name = "ComfyUI-SAM3DBody_utills"
+description = "Fork of ComfyUI-SAM3DBody with Auto/CUDA/CPU device selection and CUDA-to-CPU fallback for model loading."
+version = "0.2.1"
+license = {file = "LICENSE"}
+
+[tool.comfy]
+PublisherId = "pznodes"
+DisplayName = "SAM3DBody_utills"
+Icon = ""
+
+[project.urls]
+Repository = "https://github.com/PozzettiAndrea/ComfyUI-SAM3DBody"

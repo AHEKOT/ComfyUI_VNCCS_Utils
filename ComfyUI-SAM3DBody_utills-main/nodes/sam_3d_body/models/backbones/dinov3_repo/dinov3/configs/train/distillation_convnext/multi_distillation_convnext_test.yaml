@@ -1,0 +1,41 @@
+MODEL:
+  META_ARCHITECTURE: MultiDistillationMetaArch
+multidistillation:
+  enabled: true
+  global_batch_size: 32  # 4096 for 16 nodes
+  students:
+  - name: convnext_tiny
+    config_path: dinov3/configs/train/distillation_convnext/convnext_tiny_p16.yaml
+    ranks_range:
+    - 0
+    - 2
+  - name: convnext_small
+    config_path: dinov3/configs/train/distillation_convnext/convnext_small_p16.yaml
+    ranks_range:
+    - 2
+    - 4
+  - name: convnext_base
+    config_path: dinov3/configs/train/distillation_convnext/convnext_base_p16.yaml
+    ranks_range:
+    - 4
+    - 6
+  - name: convnext_large
+    config_path: dinov3/configs/train/distillation_convnext/convnext_large_p16.yaml
+    ranks_range:
+    - 6
+    - 8
+distillation:  # teacher
+  enabled: true
+  full_cfg_path: dinov3/configs/train/vitl_im1k_lin834.yaml
+  checkpoint_path: ignore
+crops:
+  global_crops_size: 512
+  local_crops_size: 224
+  teacher_to_student_resolution_scale: 2.0
+train:
+  dataset_path: ImageNet:split=TRAIN
+  cache_dataset: false
+  centering: "sinkhorn_knopp"
+  compile: true
+ibot:
+  separate_head: true

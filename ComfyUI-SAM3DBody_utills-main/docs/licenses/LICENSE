@@ -1,0 +1,43 @@
+ComfyUI-SAM3DBody License
+===========================
+
+This project contains code under multiple licenses:
+
+1. WRAPPER CODE (MIT License)
+   - Files: nodes/, lib/, web/, install.py, __init__.py, prestartup_script.py,
+     constants.py, and other ComfyUI integration code
+   - Copyright (c) 2025 Andrea Pozzetti
+   - License: MIT License (see LICENSE-MIT)
+
+2. SAM 3D BODY LIBRARY (SAM License)
+   - Directory: sam_3d_body/
+   - Copyright (c) Meta Platforms, Inc. and affiliates
+   - License: SAM License (see LICENSE-SAM)
+   - This is the vendored SAM 3D Body library from:
+     https://github.com/facebookresearch/sam-3d-body
+
+3. THIRD-PARTY CODE AND ATTRIBUTIONS
+   - See THIRD_PARTY_NOTICES for full list of third-party attributions
+
+---
+
+SUMMARY OF LICENSING:
+
+- The ComfyUI wrapper and integration code is licensed under the MIT License.
+  You may freely use, modify, and distribute this code under MIT terms.
+
+- The vendored SAM 3D Body library (sam_3d_body/ directory) is licensed under
+  Meta's SAM License. This is a permissive research license that allows
+  commercial use and derivative works, with certain requirements for
+  redistribution and acknowledgment. See LICENSE-SAM for full terms.
+
+- When redistributing this project, both LICENSE-MIT and LICENSE-SAM must be
+  included, and proper attribution must be provided as specified in each
+  license.
+
+---
+
+For the full text of each license, see:
+- LICENSE-MIT: MIT License for wrapper code
+- LICENSE-SAM: SAM License for SAM 3D Body library
+- THIRD_PARTY_NOTICES: Third-party attributions and notices

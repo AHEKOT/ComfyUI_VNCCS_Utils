@@ -1,0 +1,745 @@
+{
+  "id": "c4a72d4a-2f17-4a54-be55-f0c057228a17",
+  "revision": 0,
+  "last_node_id": 132,
+  "last_link_id": 438,
+  "nodes": [
+    {
+      "id": 52,
+      "type": "GetImageSize",
+      "pos": [
+        476.4635264811606,
+        -1047.0250128543023
+      ],
+      "size": [
+        140,
+        66
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 94
+        }
+      ],
+      "outputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "links": [
+            95
+          ]
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "links": [
+            96
+          ]
+        },
+        {
+          "name": "batch_size",
+          "type": "INT",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "GetImageSize"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 51,
+      "type": "EmptyImage",
+      "pos": [
+        655.5874436920375,
+        -1062.0399452468068
+      ],
+      "size": [
+        270,
+        130
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "width",
+          "type": "INT",
+          "widget": {
+            "name": "width"
+          },
+          "link": 95
+        },
+        {
+          "name": "height",
+          "type": "INT",
+          "widget": {
+            "name": "height"
+          },
+          "link": 96
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            427
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "EmptyImage"
+      },
+      "widgets_values": [
+        512,
+        512,
+        1,
+        16777215
+      ]
+    },
+    {
+      "id": 49,
+      "type": "LoadImage",
+      "pos": [
+        -309.31519272690105,
+        -1078.9017465993072
+      ],
+      "size": [
+        284,
+        314
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            92,
+            94,
+            266
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.3.70",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "input_image.png",
+        "image"
+      ]
+    },
+    {
+      "id": 95,
+      "type": "ImageConcanate",
+      "pos": [
+        1776.068105824011,
+        -101.17491681653547
+      ],
+      "size": [
+        270,
+        102
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image1",
+          "type": "IMAGE",
+          "link": 266
+        },
+        {
+          "name": "image2",
+          "type": "IMAGE",
+          "link": 430
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            267
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-kjnodes",
+        "ver": "c88ac88a8f8a6a090a0d5d607156090cb2911503",
+        "Node name for S&R": "ImageConcanate"
+      },
+      "widgets_values": [
+        "right",
+        true
+      ]
+    },
+    {
+      "id": 96,
+      "type": "PreviewImage",
+      "pos": [
+        2246.6630132887854,
+        -76.20987666843175
+      ],
+      "size": [
+        140,
+        246
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 267
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "PreviewImage"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 123,
+      "type": "LoadSAM3DBodyModel",
+      "pos": [
+        61.52151256311835,
+        -1241.705631258246
+      ],
+      "size": [
+        273.7994140625,
+        58
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "links": [
+            424,
+            426
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3dbody_utills",
+        "ver": "0.2.1",
+        "Node name for S&R": "LoadSAM3DBodyModel"
+      },
+      "widgets_values": [
+        "Auto"
+      ]
+    },
+    {
+      "id": 45,
+      "type": "SAM3DBodyProcessToJson",
+      "pos": [
+        665.5873162527363,
+        -1303.5991130479174
+      ],
+      "size": [
+        393.421484375,
+        122
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "link": 424
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 92
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": 438
+        }
+      ],
+      "outputs": [
+        {
+          "name": "pose_json",
+          "type": "STRING",
+          "links": [
+            428
+          ]
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3dbody_utills",
+        "ver": "0.2.1",
+        "Node name for S&R": "SAM3DBodyProcessToJson"
+      },
+      "widgets_values": [
+        0.8,
+        "full"
+      ]
+    },
+    {
+      "id": 125,
+      "type": "SaveImage",
+      "pos": [
+        1741.1474187297372,
+        -950.9882455578006
+      ],
+      "size": [
+        313.47265625,
+        270
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 432
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    },
+    {
+      "id": 66,
+      "type": "ttN textDebug",
+      "pos": [
+        1713.0509494365353,
+        -667.877823259899
+      ],
+      "size": [
+        295.2723514249642,
+        241.04820297373203
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 431
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui_tinyterranodes",
+        "ver": "b5bb57f4b13463bd31355edf0aeb83c57ff795b3",
+        "Node name for S&R": "ttN textDebug",
+        "ttNnodeVersion": "1.0."
+      },
+      "widgets_values": [
+        false,
+        "",
+        "Always",
+        "{\n  \"body_params\": {\n    \"fat\": -1.0,\n    \"muscle\": 0.0,\n    \"fat_muscle\": 0.0,\n    \"limb_girth\": 0.0,\n    \"limb_muscle\": 0.5,\n    \"limb_fat\": 0.0,\n    \"chest_shoulder\": 0.5,\n    \"waist_hip\": -0.5,\n    \"thigh_calf\": 0.0\n  },\n  \"bone_lengths\": {\n    \"torso\": 1.0,\n    \"neck\": 1.0,\n    \"arm\": 1.0,\n    \"leg\": 1.0\n  },\n  \"blendshapes\": {\n    \"breast_flat\": 1.0,\n    \"breast_full\": 0.0,\n    \"chest_slim\": 0.0,\n    \"chin_sharp\": 0.0,\n    \"face_big\": 0.0,\n    \"face_manga\": 0.5,\n    \"face_mangabig\": 0.0,\n    \"face_small\": 0.0,\n    \"foot_big\": 0.0,\n    \"hand_big\": 0.0,\n    \"limb_thick\": 0.0,\n    \"limb_thin\": 0.0,\n    \"neck_thick\": 0.0,\n    \"neck_thin\": 0.0,\n    \"shoulder_narrow\": 0.0,\n    \"shoulder_slope\": 0.0,\n    \"shoulder_wide\": 0.0,\n    \"waist_slim\": 0.0\n  }\n}"
+      ]
+    },
+    {
+      "id": 129,
+      "type": "MaskPreview+",
+      "pos": [
+        462.6169679746702,
+        -715.007809406517
+      ],
+      "size": [
+        155.071875,
+        246
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 437
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfyui_essentials",
+        "ver": "9d9f4bedfc9f0321c19faf71855e228c93bd0dc9",
+        "Node name for S&R": "MaskPreview+"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 124,
+      "type": "SAM3DBodyRenderFromJson",
+      "pos": [
+        863.5512918187882,
+        -750.2589637978243
+      ],
+      "size": [
+        462.15,
+        966
+      ],
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "model",
+          "type": "SAM3D_MODEL",
+          "link": 426
+        },
+        {
+          "name": "background_image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 427
+        },
+        {
+          "name": "pose_json",
+          "type": "STRING",
+          "widget": {
+            "name": "pose_json"
+          },
+          "link": 428
+        }
+      ],
+      "outputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "links": [
+            430,
+            432
+          ]
+        },
+        {
+          "name": "settings_json",
+          "type": "STRING",
+          "links": [
+            431
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfyui-sam3dbody_utills",
+        "ver": "0.2.1",
+        "Node name for S&R": "SAM3DBodyRenderFromJson"
+      },
+      "widgets_values": [
+        "{}",
+        "male",
+        0,
+        0,
+        1,
+        0.0,
+        0.0,
+        0,
+        0,
+        -1,
+        0,
+        0,
+        0,
+        0.5,
+        0,
+        0.5,
+        -0.5,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        0,
+        0,
+        0.5,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "id": 131,
+      "type": "ImageColorToMask",
+      "pos": [
+        126.79675137986652,
+        -632.9109031619548
+      ],
+      "size": [
+        270,
+        58
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 436
+        }
+      ],
+      "outputs": [
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": [
+            437,
+            438
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "ImageColorToMask"
+      },
+      "widgets_values": [
+        0
+      ]
+    },
+    {
+      "id": 132,
+      "type": "LoadImage",
+      "pos": [
+        -269.9426958271382,
+        -632.162692843569
+      ],
+      "size": [
+        344,
+        314
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            436
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.18.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "input_mask.png",
+        "image"
+      ]
+    }
+  ],
+  "links": [
+    [
+      92,
+      49,
+      0,
+      45,
+      1,
+      "IMAGE"
+    ],
+    [
+      94,
+      49,
+      0,
+      52,
+      0,
+      "IMAGE"
+    ],
+    [
+      95,
+      52,
+      0,
+      51,
+      0,
+      "INT"
+    ],
+    [
+      96,
+      52,
+      1,
+      51,
+      1,
+      "INT"
+    ],
+    [
+      266,
+      49,
+      0,
+      95,
+      0,
+      "IMAGE"
+    ],
+    [
+      267,
+      95,
+      0,
+      96,
+      0,
+      "IMAGE"
+    ],
+    [
+      424,
+      123,
+      0,
+      45,
+      0,
+      "SAM3D_MODEL"
+    ],
+    [
+      426,
+      123,
+      0,
+      124,
+      0,
+      "SAM3D_MODEL"
+    ],
+    [
+      427,
+      51,
+      0,
+      124,
+      1,
+      "IMAGE"
+    ],
+    [
+      428,
+      45,
+      0,
+      124,
+      2,
+      "STRING"
+    ],
+    [
+      430,
+      124,
+      0,
+      95,
+      1,
+      "IMAGE"
+    ],
+    [
+      431,
+      124,
+      1,
+      66,
+      0,
+      "STRING"
+    ],
+    [
+      432,
+      124,
+      0,
+      125,
+      0,
+      "IMAGE"
+    ],
+    [
+      436,
+      132,
+      0,
+      131,
+      0,
+      "IMAGE"
+    ],
+    [
+      437,
+      131,
+      0,
+      129,
+      0,
+      "MASK"
+    ],
+    [
+      438,
+      131,
+      0,
+      45,
+      2,
+      "MASK"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.6934334949441464,
+      "offset": [
+        956.6796146159463,
+        1525.2944184599148
+      ]
+    },
+    "frontendVersion": "1.42.8",
+    "workflowRendererVersion": "LG",
+    "VHS_latentpreview": false,
+    "VHS_latentpreviewrate": 0,
+    "VHS_MetadataImage": true,
+    "VHS_KeepIntermediate": true
+  },
+  "version": 0.4
+}

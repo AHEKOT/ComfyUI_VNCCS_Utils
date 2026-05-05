@@ -1,0 +1,24 @@
+proc_side: 256
+
+stride_train: 32
+stride_test: 32
+centered_stride: false
+legacy_centered_stride_bug: true
+
+# Model
+efficientnet_size: s
+backbone: efficientnetv2-s
+depth: 8
+box_size_mm: 2200
+
+weak_perspective: false
+mix_3d_inside_fov: 0.5
+
+affine_weights: null
+
+# Direct latent prediction
+transform_coords: false
+predict_all_and_latents: false
+
+# Paths
+model_dir: /work/sarandi/rwth-data/experiments/kerasreprod/effv2s_bn16ss_huge8_3e-4_sep_1gpu_simplerand_1600k_finetune_48lchirnozero_regul_duallr_aegt_16000k/pytorch_model

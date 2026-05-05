@@ -1,0 +1,22 @@
+load_path: null
+checkpoint_dir: null
+init_path: null
+proc_side: 256
+
+stride_train: 32
+stride_test: 32
+centered_stride: true
+
+# Model
+backbone: efficientnetv2-s
+depth: 8
+box_size_mm: 2200
+
+weak_perspective: false
+mix_3d_inside_fov: 0.5
+
+affine_weights: null
+
+# Direct latent prediction
+transform_coords: false
+predict_all_and_latents: false

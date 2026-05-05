@@ -80,7 +80,23 @@ const IK_CHAINS = {
         name: "Spine",
         bones: ['spine_01', 'spine_02', 'spine_03', 'neck_01'],
         effector: 'head',
-        iterations: 5,
+        iterations: 20,
+        threshold: 0.01
+    },
+    leftShoulder: {
+        name: "Left Shoulder",
+        isShoulder: true,
+        bones: ['clavicle_l'],
+        effector: 'upperarm_l',
+        iterations: 1,
+        threshold: 0.001
+    },
+    rightShoulder: {
+        name: "Right Shoulder",
+        isShoulder: true,
+        bones: ['clavicle_r'],
+        effector: 'upperarm_r',
+        iterations: 1,
         threshold: 0.01
     }
 };
@@ -546,6 +562,17 @@ class IKController {
             poleTarget = this.poleTargets[chainKey].position.clone();
         }
 
+        // Keep leg bend direction stable even when no explicit pole target is active.
+        if (!poleTarget && (chainKey === 'leftLeg' || chainKey === 'rightLeg')) {
+            const poleBoneName = chainDef.poleBone;
+            const poleBone = poleBoneName ? bones[poleBoneName] : null;
+            if (poleBone) {
+                const THREE = this.ccdSolver.THREE;
+                poleTarget = new THREE.Vector3();
+                poleBone.getWorldPosition(poleTarget);
+            }
+        }
+
         return this.ccdSolver.solve(chainDef, bones, effectorTarget, poleTarget);
     }
 
@@ -597,6 +624,10 @@ export class PoseViewerCore {
         this.canvas = canvas;
         this.width = canvas.width || 500;
         this.height = canvas.height || 500;
+        this.shoulderIKEnabled = true;
+        this._rtmwSavedCamera = null;
+        this._rtmwCameraParented = true;
+        this._mannequinVisible = true;
 
         // Default constraints based on standard UI Embedding requirements
         this.options = {
@@ -806,6 +837,7 @@ export class PoseViewerCore {
 
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
+        this.scene.add(this.camera);
 
         this.renderer = new THREE.WebGLRenderer({
             canvas: this.canvas,
@@ -818,10 +850,27 @@ export class PoseViewerCore {
         // Orbit Controls
         this.orbit = new this.OrbitControls(this.camera, this.canvas);
         this.orbit.target.set(0, 10, 0);
-        this.orbit.enableDamping = true;
-        this.orbit.dampingFactor = 0.12;
+        this.orbit.enableDamping = false;
         this.orbit.rotateSpeed = 0.95;
+        this.orbit.enableZoom = false;
+        this.orbit.mouseButtons = {
+            LEFT: this.THREE.MOUSE.NONE,
+            MIDDLE: this.THREE.MOUSE.PAN,
+            RIGHT: this.THREE.MOUSE.ROTATE,
+        };
         this.orbit.update();
+
+        this.canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY;
+            const absDelta = Math.abs(delta);
+            const scale = 1.0 + Math.sign(delta) * Math.min(0.004 * absDelta, 0.075);
+            this.camera.position.sub(this.orbit.target)
+                .multiplyScalar(scale)
+                .add(this.orbit.target);
+            this.orbit.update();
+            this.requestRender();
+        }, { passive: false });
 
         // Render on demand: orbit change triggers render
         this.orbit.addEventListener('change', () => this.requestRender());
@@ -1501,6 +1550,20 @@ export class PoseViewerCore {
                 // Solve IK for affected legs to keep feet in place
                 // Multiple passes for better accuracy
                 if (chainDef.affectedLegs && this.ikController.ccdSolver) {
+                    const rootBone = this.boneList.find(b => !b.userData.parentName || !this.bones[b.userData.parentName]);
+                    const rootY = rootBone ? (() => {
+                        const position = new this.THREE.Vector3();
+                        rootBone.getWorldPosition(position);
+                        return position.y;
+                    })() : 0;
+
+                    for (const legKey of chainDef.affectedLegs) {
+                        const footTarget = footPositions[legKey];
+                        if (footTarget) {
+                            footTarget.y = Math.max(rootY, footTarget.y);
+                        }
+                    }
+
                     for (let pass = 0; pass < 3; pass++) { // Multiple passes
                         for (const legKey of chainDef.affectedLegs) {
                             const legDef = IK_CHAINS[legKey];
@@ -1619,6 +1682,12 @@ export class PoseViewerCore {
         }
     }
 
+    setShoulderIKEnabled(enabled) {
+        this.shoulderIKEnabled = enabled;
+        this.updateIKEffectorVisibility();
+        this.requestRender();
+    }
+
     updateIKEffectorVisibility() {
         if (!this.ikController) return;
 
@@ -1626,7 +1695,8 @@ export class PoseViewerCore {
             // Only show effector if IK mode is on AND the chain is active
             const chainKey = this.ikController.getChainForEffector(name);
             const chainActive = chainKey && this.ikController.getMode(chainKey) === 'ik';
-            effector.visible = this.ikMode && chainActive;
+            const shoulderVisible = !chainKey || !IK_CHAINS[chainKey]?.isShoulder || this.shoulderIKEnabled;
+            effector.visible = this.ikMode && chainActive && shoulderVisible;
         }
     }
 
@@ -2761,6 +2831,382 @@ export class PoseViewerCore {
             this.renderer.render(this.scene, this.camera);
         }
         return dataURL;
+    }
+
+    _clearImportedFigureGroup(groupName) {
+        const group = this[groupName];
+        if (!group) return;
+        group.traverse((object) => {
+            if (object.geometry) object.geometry.dispose();
+            if (object.material) {
+                if (Array.isArray(object.material)) object.material.forEach((material) => material.dispose());
+                else object.material.dispose();
+            }
+        });
+        if (group.parent) group.parent.remove(group);
+        this[groupName] = null;
+    }
+
+    _estimateCurrentModelHeight() {
+        if (!this.skinnedMesh || !this.THREE) return 1.7;
+        const bounds = new this.THREE.Box3().setFromObject(this.skinnedMesh);
+        const size = new this.THREE.Vector3();
+        bounds.getSize(size);
+        return size.y > 0.5 ? size.y : 1.7;
+    }
+
+    _drawHMR2Figure(worldKps) {
+        if (!this.scene || !this.THREE || !worldKps) return;
+
+        this._clearImportedFigureGroup('_hmr2FigureGroup');
+        this._clearImportedFigureGroup('_rtmwFigureGroup');
+        this._clearImportedFigureGroup('_kpFigureGroup');
+
+        const bones = [
+            ['nose', 'neck', 0xff0000],
+            ['neck', 'right_shoulder', 0xff7700],
+            ['neck', 'left_shoulder', 0x00aa00],
+            ['neck', 'pelvis', 0xffff00],
+            ['pelvis', 'right_hip', 0xff7700],
+            ['pelvis', 'left_hip', 0x00aa00],
+            ['right_shoulder', 'right_elbow', 0xff7700],
+            ['right_elbow', 'right_wrist', 0xffaa00],
+            ['left_shoulder', 'left_elbow', 0x00aa00],
+            ['left_elbow', 'left_wrist', 0x00dd00],
+            ['right_hip', 'right_knee', 0xff00ff],
+            ['right_knee', 'right_ankle', 0xaa00ff],
+            ['left_hip', 'left_knee', 0x00ffff],
+            ['left_knee', 'left_ankle', 0x0088ff],
+        ];
+
+        const group = new this.THREE.Group();
+        group.name = 'hmr2v1_figure';
+
+        const jointGeo = new this.THREE.SphereGeometry(0.025, 8, 8);
+        const jointMat = new this.THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
+
+        for (const point of Object.values(worldKps)) {
+            if (!point) continue;
+            const mesh = new this.THREE.Mesh(jointGeo, jointMat.clone());
+            mesh.position.copy(point);
+            mesh.renderOrder = 999;
+            group.add(mesh);
+        }
+
+        for (const [fromName, toName, color] of bones) {
+            const from = worldKps[fromName];
+            const to = worldKps[toName];
+            if (!from || !to) continue;
+            const geometry = new this.THREE.BufferGeometry().setFromPoints([from, to]);
+            const material = new this.THREE.LineBasicMaterial({ color, depthTest: false });
+            const line = new this.THREE.Line(geometry, material);
+            line.renderOrder = 998;
+            group.add(line);
+        }
+
+        this.scene.add(group);
+        this._hmr2FigureGroup = group;
+    }
+
+    applyHMR2v1Import(data, smplRefHeight = 1.45, shoulderYOffset = 0) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
+
+        const people = data?.people || [];
+        const person = people[0];
+        const kp3d = person?.keypoints_3d;
+        if (!kp3d) return false;
+
+        let mannequinPelvis = new this.THREE.Vector3(0, 0, 0);
+        const pelvisBone = this.bones.pelvis || this.bones.spine_01;
+        if (pelvisBone) pelvisBone.getWorldPosition(mannequinPelvis);
+
+        const targetHeight = this._estimateCurrentModelHeight();
+        const smplScale = targetHeight / Math.max(0.1, smplRefHeight || 1.45);
+        const smplPelvis = kp3d.pelvis || [0, 0, 0];
+
+        const worldKps = {};
+        for (const [name, xyz] of Object.entries(kp3d)) {
+            if (!Array.isArray(xyz) || xyz.length < 3) continue;
+            worldKps[name] = new this.THREE.Vector3(
+                mannequinPelvis.x + (xyz[0] - smplPelvis[0]) * smplScale,
+                mannequinPelvis.y - (xyz[1] - smplPelvis[1]) * smplScale,
+                mannequinPelvis.z - (xyz[2] - smplPelvis[2]) * smplScale,
+            );
+        }
+
+        this._hmr2WorldKps = worldKps;
+        this._drawHMR2Figure(worldKps);
+        this.fitMannequinToHMR2(shoulderYOffset);
+        return true;
+    }
+
+    fitMannequinToHMR2(shoulderYOffset = 0) {
+        if (!this._hmr2WorldKps || !this.bones || !this.ikController || !this.skinnedMesh) return;
+
+        const THREE = this.THREE;
+        const worldKps = this._hmr2WorldKps;
+
+        this.recordState();
+        for (const bone of this.boneList) {
+            if (bone.name === 'Root') continue;
+            bone.quaternion.set(0, 0, 0, 1);
+            bone.rotation.set(0, 0, 0);
+            if (this.initialBoneStates && this.initialBoneStates[bone.name]) {
+                bone.position.copy(this.initialBoneStates[bone.name].position);
+            }
+        }
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        const pelvisBone = this.bones.pelvis || this.bones.spine_01;
+        if (pelvisBone && worldKps.pelvis) {
+            const localTarget = worldKps.pelvis.clone();
+            if (pelvisBone.parent) pelvisBone.parent.worldToLocal(localTarget);
+            pelvisBone.position.copy(localTarget);
+            this.skinnedMesh.updateMatrixWorld(true);
+
+            const rightHip = worldKps.right_hip;
+            const leftHip = worldKps.left_hip;
+            const neck = worldKps.neck;
+            if (rightHip && leftHip && neck) {
+                const pelvisRight = new THREE.Vector3().subVectors(leftHip, rightHip).normalize();
+                const pelvisUp = new THREE.Vector3().subVectors(neck, worldKps.pelvis);
+                if (pelvisUp.y < 0) pelvisUp.negate();
+                pelvisUp.sub(pelvisRight.clone().multiplyScalar(pelvisUp.dot(pelvisRight))).normalize();
+                const pelvisForward = new THREE.Vector3().crossVectors(pelvisRight, pelvisUp).normalize();
+                const rotationMatrix = new THREE.Matrix4().makeBasis(pelvisRight, pelvisUp, pelvisForward);
+                const worldQuat = new THREE.Quaternion().setFromRotationMatrix(rotationMatrix);
+                const parentWorldQuat = new THREE.Quaternion();
+                if (pelvisBone.parent) pelvisBone.parent.getWorldQuaternion(parentWorldQuat);
+                pelvisBone.quaternion.copy(parentWorldQuat.clone().invert().multiply(worldQuat));
+                pelvisBone.rotation.setFromQuaternion(pelvisBone.quaternion, pelvisBone.rotation.order);
+                this.skinnedMesh.updateMatrixWorld(true);
+            }
+        }
+
+        const childBoneMap = {
+            spine_01: 'spine_02',
+            spine_02: 'spine_03',
+            spine_03: 'neck_01',
+            neck_01: 'head',
+            clavicle_r: 'upperarm_r',
+            clavicle_l: 'upperarm_l',
+            upperarm_r: 'lowerarm_r',
+            lowerarm_r: 'hand_r',
+            upperarm_l: 'lowerarm_l',
+            lowerarm_l: 'hand_l',
+            thigh_r: 'calf_r',
+            calf_r: 'foot_r',
+            thigh_l: 'calf_l',
+            calf_l: 'foot_l',
+        };
+
+        const applyFK = (boneName, parentKpName, childKpName) => {
+            const parentPoint = worldKps[parentKpName];
+            const childPoint = worldKps[childKpName];
+            const bone = this.bones[boneName];
+            if (!parentPoint || !childPoint || !bone) return;
+
+            const targetDir = new THREE.Vector3().subVectors(childPoint, parentPoint).normalize();
+            if (targetDir.lengthSq() < 0.001) return;
+
+            const childBone = childBoneMap[boneName] ? this.bones[childBoneMap[boneName]] : null;
+            let currentDir = new THREE.Vector3();
+            if (childBone) {
+                const bonePos = new THREE.Vector3();
+                const childPos = new THREE.Vector3();
+                bone.getWorldPosition(bonePos);
+                childBone.getWorldPosition(childPos);
+                currentDir = childPos.clone().sub(bonePos).normalize();
+            } else {
+                bone.getWorldDirection(currentDir);
+            }
+            if (currentDir.lengthSq() < 0.001) return;
+
+            const boneWorldQuat = new THREE.Quaternion();
+            bone.getWorldQuaternion(boneWorldQuat);
+            const deltaQuat = new THREE.Quaternion().setFromUnitVectors(currentDir, targetDir);
+            const newWorldQuat = deltaQuat.multiply(boneWorldQuat);
+            const parentWorldQuat = new THREE.Quaternion();
+            if (bone.parent) bone.parent.getWorldQuaternion(parentWorldQuat);
+            bone.quaternion.copy(parentWorldQuat.clone().invert().multiply(newWorldQuat));
+            bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+            this.skinnedMesh.updateMatrixWorld(true);
+        };
+
+        if (worldKps.pelvis && worldKps.neck) {
+            worldKps._s1 = worldKps.pelvis.clone().lerp(worldKps.neck, 1 / 3);
+            worldKps._s2 = worldKps.pelvis.clone().lerp(worldKps.neck, 2 / 3);
+            applyFK('spine_01', 'pelvis', '_s1');
+            applyFK('spine_02', '_s1', '_s2');
+            applyFK('spine_03', '_s2', 'neck');
+        }
+
+        const rightEar = worldKps.right_ear;
+        const leftEar = worldKps.left_ear;
+        if (rightEar && leftEar) {
+            worldKps._earMid = new THREE.Vector3(
+                (rightEar.x + leftEar.x) / 2,
+                (rightEar.y + leftEar.y) / 2,
+                (rightEar.z + leftEar.z) / 2,
+            );
+        }
+        if (worldKps._earMid) {
+            applyFK('neck_01', 'neck', '_earMid');
+            if (worldKps.nose) applyFK('head', '_earMid', 'nose');
+        } else {
+            applyFK('neck_01', 'neck', 'nose');
+        }
+
+        if (shoulderYOffset !== 0) {
+            if (worldKps.right_shoulder) worldKps.right_shoulder = worldKps.right_shoulder.clone().setY(worldKps.right_shoulder.y + shoulderYOffset);
+            if (worldKps.left_shoulder) worldKps.left_shoulder = worldKps.left_shoulder.clone().setY(worldKps.left_shoulder.y + shoulderYOffset);
+        }
+
+        applyFK('clavicle_r', 'neck', 'right_shoulder');
+        applyFK('clavicle_l', 'neck', 'left_shoulder');
+        applyFK('upperarm_r', 'right_shoulder', 'right_elbow');
+        applyFK('lowerarm_r', 'right_elbow', 'right_wrist');
+        applyFK('upperarm_l', 'left_shoulder', 'left_elbow');
+        applyFK('lowerarm_l', 'left_elbow', 'left_wrist');
+        applyFK('thigh_r', 'right_hip', 'right_knee');
+        applyFK('calf_r', 'right_knee', 'right_ankle');
+        applyFK('thigh_l', 'left_hip', 'left_knee');
+        applyFK('calf_l', 'left_knee', 'left_ankle');
+
+        const ikFinishing = [
+            { chainKey: 'rightArm', target: worldKps.right_wrist },
+            { chainKey: 'leftArm', target: worldKps.left_wrist },
+            { chainKey: 'rightLeg', target: worldKps.right_ankle },
+            { chainKey: 'leftLeg', target: worldKps.left_ankle },
+        ];
+        for (const { chainKey, target } of ikFinishing) {
+            if (!target) continue;
+            const chainDef = IK_CHAINS[chainKey];
+            if (!chainDef) continue;
+            this.ikController.solveWithPole(chainDef, this.bones, target, chainKey);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.updateIKEffectorPositions();
+        this.requestRender();
+        this.dispatchPoseChange();
+    }
+
+    setMannequinVisible(visible) {
+        this._mannequinVisible = visible;
+        if (this.skinnedMesh) this.skinnedMesh.visible = visible;
+        if (this.skeletonHelper) this.skeletonHelper.visible = visible;
+        if (this.jointMarkers) this.jointMarkers.forEach(marker => { marker.visible = visible; });
+        this.requestRender();
+    }
+
+    saveRTMWCameraState() {
+        if (!this.camera || !this.orbit) return;
+        this._rtmwSavedCamera = {
+            position: this.camera.position.clone(),
+            quaternion: this.camera.quaternion.clone(),
+            target: this.orbit.target.clone(),
+            fov: this.camera.fov,
+        };
+    }
+
+    restoreRTMWCameraState() {
+        if (!this._rtmwSavedCamera) return false;
+        this.camera.position.copy(this._rtmwSavedCamera.position);
+        this.camera.quaternion.copy(this._rtmwSavedCamera.quaternion);
+        this.orbit.target.copy(this._rtmwSavedCamera.target);
+        this.camera.fov = this._rtmwSavedCamera.fov;
+        this.camera.updateProjectionMatrix();
+        this.orbit.update();
+        this.requestRender();
+        this.dispatchPoseChange();
+        return true;
+    }
+
+    setRTMWFigureCameraParented(parented) {
+        this._rtmwCameraParented = parented;
+        if (!this._rtmwFigureGroup) return;
+        if (parented) {
+            this.camera.attach(this._rtmwFigureGroup);
+        } else {
+            this.scene.attach(this._rtmwFigureGroup);
+        }
+        this.requestRender();
+    }
+
+    setKpFigureVisible(visible) {
+        if (this._kpFigureGroup) {
+            this._kpFigureGroup.visible = visible;
+            this.requestRender();
+        }
+        if (this._rtmwFigureGroup) {
+            this._rtmwFigureGroup.visible = visible;
+            this.requestRender();
+        }
+        if (this._hmr2FigureGroup) {
+            this._hmr2FigureGroup.visible = visible;
+            this.requestRender();
+        }
+        if (this._hmr2CanvasGroup) {
+            this._hmr2CanvasGroup.visible = visible;
+            this.requestRender();
+        }
+    }
+
+    moveBoneToPosition(boneName, x, y, z) {
+        const bone = this.boneList.find(item => item.name === boneName);
+        if (!bone) {
+            return false;
+        }
+
+        const worldPos = new this.THREE.Vector3(x, y, z);
+        if (bone.parent) {
+            const parentWorldInv = new this.THREE.Matrix4().copy(bone.parent.matrixWorld).invert();
+            worldPos.applyMatrix4(parentWorldInv);
+        }
+
+        bone.position.copy(worldPos);
+        bone.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        this.updateMarkers();
+        this.requestRender();
+        return true;
+    }
+
+    _findRTMWJointMesh(kpName) {
+        if (!this._rtmwFigureGroup) return null;
+        let found = null;
+        this._rtmwFigureGroup.traverse((obj) => {
+            if (!found && obj.userData.isRTMWJoint && typeof this._getRTMWKpName === 'function' && this._getRTMWKpName(obj.userData.rtmwKpIndex) === kpName) {
+                found = obj;
+            }
+        });
+        return found;
+    }
+
+    getRTMWJointWorldPos(kpName) {
+        const mesh = this._findRTMWJointMesh(kpName);
+        if (!mesh) return null;
+        const worldPos = new this.THREE.Vector3();
+        mesh.getWorldPosition(worldPos);
+        return worldPos;
+    }
+
+    moveRTMWJoint(kpName, x, y, z) {
+        const mesh = this._findRTMWJointMesh(kpName);
+        if (!mesh) return false;
+        const worldPos = new this.THREE.Vector3(x, y, z);
+        if (mesh.parent) {
+            const parentWorldInv = new this.THREE.Matrix4().copy(mesh.parent.matrixWorld).invert();
+            worldPos.applyMatrix4(parentWorldInv);
+        }
+        mesh.position.copy(worldPos);
+        this.requestRender();
+        return true;
     }
 }
 

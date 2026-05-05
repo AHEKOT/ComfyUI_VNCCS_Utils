@@ -1,0 +1,27 @@
+MODEL:
+  META_ARCHITECTURE: MultiDistillationMetaArch
+multidistillation:
+  enabled: true
+  global_batch_size: 256
+  students:
+  - name: vits
+    config_path: dinov3/configs/train/multidist_tests/vits_p16.yaml
+    ranks_range:
+    - 0
+    - 4
+  - name: vitb
+    config_path: dinov3/configs/train/multidist_tests/vitb_p16.yaml
+    ranks_range:
+    - 4
+    - 8
+distillation:  # teacher
+  enabled: true
+  full_cfg_path: dinov3/configs/train/vitl_im1k_lin834.yaml
+  checkpoint_path: ignore
+train:
+  dataset_path: ImageNet:split=TRAIN
+  cache_dataset: false
+  centering: "sinkhorn_knopp"
+  compile: true
+ibot:
+  separate_head: true

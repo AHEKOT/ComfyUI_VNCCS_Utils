@@ -1,0 +1,52 @@
+# run: conda env create --file environment.yml
+name: metrabs
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - cachetools
+  - cython
+  - ezc3d
+  - ffmpeg
+  - imageio
+  - matplotlib
+  - mkl
+  - numba
+  - numpy
+  - pandas
+  - Pillow
+  - scikit-image
+  - scikit-learn
+  - tqdm
+  - conda-forge::mayavi
+  - conda-forge::ffmpeg-python
+  - pip:
+    - attrdict
+    - tensorflow==2.12.0
+    - tensorflow-addons
+    - tensorflow-hub
+    - tensorflow-io
+    - tensorflow-probability
+    - tensorflow-graphics
+    - attrdict
+    - chumpy
+    - einops
+    - imageio-ffmpeg
+    - importlib_resources
+    - jpeg4py
+    - more_itertools
+    - numpy-quaternion
+    - opencv-python
+    - transforms3d
+    - yacs
+    - git+https://github.com/isarandi/fleras.git
+    - git+https://github.com/isarandi/cameralib.git
+    - git+https://github.com/isarandi/boxlib.git
+    - git+https://github.com/isarandi/poseviz.git
+    - git+https://github.com/isarandi/smpl.git
+    - git+https://github.com/isarandi/simplepyutils.git
+    - git+https://github.com/isarandi/tf-parallel-map.git
+    - git+https://github.com/isarandi/BareCat.git
+    - git+https://github.com/isarandi/rlemasklib.git
+    - git+https://github.com/isarandi/tensorflow-inputs.git

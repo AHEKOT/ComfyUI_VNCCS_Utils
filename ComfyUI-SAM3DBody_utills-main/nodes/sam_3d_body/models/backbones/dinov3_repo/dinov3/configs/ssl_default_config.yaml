@@ -1,0 +1,206 @@
+MODEL:
+  META_ARCHITECTURE: SSLMetaArch
+  DEVICE: cuda
+  WEIGHTS: ''
+  DTYPE: float32
+compute_precision:
+  param_dtype: bf16
+  reduce_dtype: fp32
+  sharding_strategy: SHARD_GRAD_OP
+dino:
+  loss_weight: 1.0
+  global_ignore_diagonal: true  # Whether to ignore A-A and B-B global pairs, default as in DINOv2, ignored by SSLMetaArch
+  head_n_prototypes: 65536
+  head_bottleneck_dim: 256
+  head_norm_last_layer: false
+  head_nlayers: 3
+  head_hidden_dim: 2048
+  koleo_loss_weight: 0.1
+  koleo_loss_distributed: false
+  koleo_topk: 1
+  koleo_distributed_replicas: 0
+  koleo_distributed_loss_group_size: null  # Size of the nearest neighbor set for distributed Koleo. If None, uses global batch size.
+  koleo_distributed_loss_group_data: true # group data from adjacent ranks to make sure koleo is applied on the same data distribution
+  force_weight_norm: false
+  reweight_dino_local_loss: false # If true, reweighting of DINO loss
+  local_loss_weight_schedule:  # Schedule for local loss weight, enabled if reweight_dino_local_loss is true
+    start: 0.5
+    peak: 0.5
+    end: 0.5
+    warmup_epochs: 0
+ibot:
+  loss_weight: 1.0
+  mask_sample_probability: 0.5
+  mask_ratio_min_max:
+  - 0.1
+  - 0.5
+  mask_random_circular_shift: false
+  force_masking_even_with_zero_weight: False
+  separate_head: true
+  head_n_prototypes: 65536
+  head_bottleneck_dim: 256
+  head_norm_last_layer: false
+  head_nlayers: 3
+  head_hidden_dim: 2048
+gram:
+  use_loss: false # (bool) if true gram is used, else not
+  compute_stats: false # (bool): if true compute auxilliary stats
+  loss_weight: 1.0 # (float): weight of the loss
+  ema_teacher: false # (bool): using the EMA teacher as GRAM teacher
+  ckpt: null  #(str): Checkpoint to the teacher
+  it_load_ema_teacher: -1 # (int): iteration at which the ema teacher is loaded into the gram teacher
+  rep_update: true # (bool): if true GRAM teacher updated every gram.update_frequency after iter gram.it_first_update steps
+  update_frequency: 50000 # (int): update frequency
+  it_first_update: 0 # (int): iteration of the first update
+  max_updates: null # (int): maximum number of updates to gram teacher. If None, it is unlimited
+  normalized: true # (bool): normalization of the features
+  img_level: false # (bool): if true GRAM computation at the image else, otherwise at the local batch level
+  remove_neg: false # (bool): if true remove the negative similarities before applying the loss
+  remove_only_teacher_neg: false # (bool): remove negative similarities of the teacher
+  tokens_used: all # (str): In [all, masked, unmasked]
+  global_teacher_resize_method: bicubic  # Method for resizing the outputs of the gram teacher
+  global_teacher_resize_antialias: false  # Whether to use antialiasing when resizing the outputs of the gram teacher
+  loss_weight_schedule: null  # (dict): If not None, use a schedule for the loss weight instead of `loss_weight`
+train:
+  batch_size_per_gpu: 64
+  dataset_path: ImageNet:split=TRAIN
+  data_config: null
+  output_dir: .
+  saveckp_freq: 20
+  seed: 0
+  num_workers: 10
+  OFFICIAL_EPOCH_LENGTH: 1250
+  monitor_gradient_norm: false
+  chunk_schedule: []
+  use_teacher_head: true
+  learn_from_teacher_tokens: false
+  centering: "sinkhorn_knopp" # or "sinkhorn_knopp"
+  checkpointing: false
+  checkpointing_full: false  # aggressive checkpointing
+  compile: true
+  cudagraphs: false
+  sharded_eval_checkpoint: false
+  cache_dataset: false
+student:
+  arch: vit_large
+  patch_size: 16
+  drop_path_rate: 0.3
+  layerscale: 1.0e-05
+  pretrained_weights: ''
+  ffn_layer: "mlp"
+  ffn_ratio: 4.0
+  resume_from_teacher_chkpt: ""
+  qkv_bias: true
+  proj_bias: true
+  ffn_bias: true
+  norm_layer: "layernorm"
+  n_storage_tokens: 0
+  mask_k_bias: false
+  untie_cls_and_patch_norms: false  # If true, use separate norms for CLS/reg and patch/mask tokens
+  untie_global_and_local_cls_norm: false  # If true, use separate norms for local and global crop CLS token during training
+  in_chans: 3
+  pos_embed_type: rope
+  pos_embed_rope_base: 100.0
+  pos_embed_rope_min_period: null
+  pos_embed_rope_max_period: null
+  pos_embed_rope_normalize_coords: separate  # min, max, separate
+  pos_embed_rope_shift_coords: null
+  pos_embed_rope_jitter_coords: null
+  pos_embed_rope_rescale_coords: null
+  pos_embed_rope_dtype: bf16
+  fp8_enabled: False  # Convert Linear layers to operate in fp8 precision
+  fp8_filter: "blocks"  # Regex that must appear in module path; empty means everything
+teacher:
+  momentum_teacher: 0.992
+  final_momentum_teacher: 1
+  warmup_teacher_temp: 0.04
+  teacher_temp: 0.07
+  warmup_teacher_temp_epochs: 30
+  in_chans: 3
+distillation:  # teacher
+  enabled: false
+  full_cfg_path: ""
+  checkpoint_path: ""
+multidistillation:
+  enabled: false
+hrft:  # non-hrft'd student
+  enabled: false
+  checkpoint_path: ""  # teacher_checkpoint path
+optim:
+  epochs: 100
+  optimizer: adamw
+  weight_decay: 0.04
+  weight_decay_end: 0.4
+  lr: 0.001
+  warmup_epochs: 10
+  min_lr: 1.0e-06
+  schedule_trunc_extra: 0.0  # Compute the schedule for (1 + schedule_trunc_extra) steps and truncate, .25 is a good choice
+  clip_grad: 3.0
+  freeze_last_layer_epochs: 1
+  scaling_rule: sqrt_wrt_1024
+  patch_embed_lr_mult: 0.2
+  dino_head_wd_multiplier: 1.0
+  layerwise_decay: 0.9
+  multi_tensor_optim: true
+  dump_fsdp_weights_path: ""
+  adamw_beta1: 0.9
+  adamw_beta2: 0.999
+crops:
+  global_crops_scale:
+  - 0.32
+  - 1.0
+  local_crops_number: 8
+  local_crops_scale:
+  - 0.05
+  - 0.32
+  global_crops_size: 224
+  local_crops_size: 96
+  global_local_crop_pairs_ratios: 1.0
+  gram_teacher_crops_size: null  # If not None, return crops for gram teacher
+  localcrops_subset_of_globalcrops: false
+  share_color_jitter: false
+  horizontal_flips: true
+  gram_teacher_no_distortions: false  # If True, no distortions are applied to gram teacher crops
+  rgb_mean:
+  - 0.485
+  - 0.456
+  - 0.406
+  rgb_std:
+  - 0.229
+  - 0.224
+  - 0.225
+  teacher_to_student_resolution_scale: 1.0
+evaluation:
+  eval_period_iterations: 12500
+  low_freq_every: 5
+  config_files:  # Must be in fairvit/eval/configs
+    high_freq: benchmark_high_frequency.yaml  # More often
+    low_freq: benchmark_low_frequency.yaml  # Less often
+checkpointing:
+  period: 3750
+  max_to_keep: 3
+  keep_every: 99999999999999999  # Save a checkpoint every N iterations, regardless of max_to_keep and period
+
+# Example of constant schedules with schedules v2
+# # schedules:
+# #   lr:
+# #     start: 0.0
+# #     peak: 1e-3
+# #     end: 1e-6
+# #     warmup_epochs: 10
+# #     freeze_last_layer_epochs: 1
+# #   weight_decay:
+# #     start: 0.04
+# #     peak: 0.04
+# #     end: 0.04
+# #     warmup_epochs: 0
+# #   momentum:
+# #     start: 0.992
+# #     peak: 0.992
+# #     end: 0.992
+# #     warmup_epochs: 0
+# #   teacher_temp:
+# #     start: 0.04
+# #     peak: 0.07
+# #     end: 0.07
+# #     warmup_epochs: 30

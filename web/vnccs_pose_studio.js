@@ -2962,7 +2962,27 @@ class PoseStudioWidget {
             try {
                 const data = JSON.parse(event.target.result);
 
-                // Try OpenPose JSON formats first
+                if (data?.version === 'hmr2_3d_v1') {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const ok = this.viewer.applyHMR2v1Import(
+                            data,
+                            this._smplRefHeight || 1.45,
+                            this._shoulderYOffset || 0
+                        );
+                        if (ok) {
+                            this.poses[this.activeTab] = this.viewer.getPose();
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("HMR2/pose3d JSON imported successfully.");
+                        } else {
+                            this.showMessage("Failed to apply HMR2/pose3d JSON.", true);
+                        }
+                    }
+                    e.target.value = '';
+                    return;
+                }
+
+                // Try pose JSON formats (HMR2 / OpenPose / VNCCS)
                 const openPoseKeypoints = detectAndParseJSON(data);
                 if (openPoseKeypoints) {
                     if (this.viewer && this.viewer.isInitialized()) {
@@ -2973,7 +2993,12 @@ class PoseStudioWidget {
                             this.updateRotationSliders();
                             this.syncToNode(false);
 
-                            this.showMessage("OpenPose JSON imported successfully.");
+                            let msg = "OpenPose JSON imported successfully.";
+                            if (openPoseKeypoints.source === 'hmr2') msg = "HMR2/pose3d JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'rtmw') msg = "RTMW JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'metrabs') msg = "MeTRAbs JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'vnccs') msg = "VNCCS skeleton JSON imported successfully.";
+                            this.showMessage(msg);
 
                             // Debug: round-trip angle test
                             roundTripTest(openPoseKeypoints, this.viewer, poseData);

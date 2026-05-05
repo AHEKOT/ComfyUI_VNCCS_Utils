@@ -1,0 +1,37 @@
+name: Promote dev results to main
+on: workflow_dispatch
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - run: pip install comfy-test
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+          fetch-depth: 1
+
+      - name: Copy dev results to main
+        run: |
+          rm -rf gh-pages/main
+          cp -r gh-pages/dev gh-pages/main
+
+      - name: Regenerate indexes
+        run: |
+          comfy-test generate-index gh-pages/main --repo-name "${{ github.repository }}"
+          comfy-test generate-root-index gh-pages --repo-name "${{ github.repository }}"
+
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: gh-pages
+          keep_files: true

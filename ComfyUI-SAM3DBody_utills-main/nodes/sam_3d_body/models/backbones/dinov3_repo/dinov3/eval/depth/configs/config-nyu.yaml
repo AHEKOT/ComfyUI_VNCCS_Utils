@@ -1,0 +1,46 @@
+bs: 2
+n_gpus: 8
+seed: 321
+scheduler:
+  total_iter: 38400
+  type: 'WarmupOneCycleLR'
+  constructor_kwargs:
+    final_div_factor: 1000.0
+    warmup_iters: 12800
+    base_momentum: 0.85
+    max_momentum: 0.95
+optimizer:
+  lr : 3e-4
+  beta1: 0.9
+  beta2: 0.99
+  weight_decay: 1e-4
+  gradient_clip: 35
+datasets:
+  train: 'NYU:split=TRAIN'
+  val: 'NYU:split=VAL'
+  test: 'NYU:split=VAL'
+decoder_head:
+  min_depth: 0.001
+  max_depth: 10.0
+  use_backbone_norm: True
+  use_batchnorm: True
+  backbone_out_layers: LAST
+  type: linear
+  use_cls_token: False
+  n_output_channels: 256
+losses:
+  SIGLOSS: 1.0
+transforms:
+  train:
+    random_crop: [416, 544]
+    brightness_range: [0.75, 1.25]
+    fixed_crop: 'NYU'
+    eval_mask: 'FULL'
+  eval:
+    fixed_crop: 'FULL'
+    eval_mask: 'NYU_EIGEN'
+eval:
+  min_depth: 0.001
+  max_depth: 10.0
+  use_tta: true
+  align_least_squares: false

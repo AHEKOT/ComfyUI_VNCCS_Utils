@@ -1,0 +1,21 @@
+proc_side: 384
+
+stride_train: 32
+stride_test: 32
+centered_stride: true
+legacy_centered_stride_bug: false
+
+# Model
+efficientnet_size: l
+backbone: efficientnetv2-l
+depth: 8
+box_size_mm: 2200
+
+weak_perspective: false
+mix_3d_inside_fov: 0.5
+
+affine_weights: null
+
+# Direct latent prediction
+transform_coords: false
+predict_all_and_latents: false

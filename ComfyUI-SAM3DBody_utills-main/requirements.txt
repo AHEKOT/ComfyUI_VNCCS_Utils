@@ -1,0 +1,16 @@
+# ComfyUI-SAM3DBody Requirements
+#
+# Heavy Python / native dependencies (bpy, trimesh, transformers,
+# huggingface-hub, torch, scipy's friends, etc.) are declared in
+# `nodes/comfy-env.toml` and installed into an isolated environment
+# by `comfy-env`. Only the lightweight bootstrap packages needed to
+# load THIS file and run the dispatcher sit in requirements.txt.
+
+comfy-env==0.1.91
+comfy-3d-viewers==0.2.15
+msvc-runtime; sys_platform == "win32"
+
+# Core (also redeclared in comfy-env.toml)
+numpy>=1.21.0,<2.0.0
+pillow>=9.0.0
+opencv-python-headless>=4.8.0
