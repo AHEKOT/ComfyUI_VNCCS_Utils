@@ -1497,7 +1497,10 @@ class PoseStudioWidget {
         this._hoveredHandSide = null;
         this._handPopover = null;
         this._handPopoverTitle = null;
+        this._pendingHandPopoverOutsideClick = null;
         this._boundHandleDocumentPointerDown = this._handleDocumentPointerDown.bind(this);
+        this._boundHandleDocumentPointerUp = this._handleDocumentPointerUp.bind(this);
+        this._boundHandleDocumentPointerCancel = this._handleDocumentPointerCancel.bind(this);
 
         this.createUI();
     }
@@ -2943,13 +2946,51 @@ class PoseStudioWidget {
         this._handPopoverTitle = title;
         (this.centerPanel || this.canvasContainer).appendChild(panel);
         document.addEventListener("pointerdown", this._boundHandleDocumentPointerDown);
+        document.addEventListener("pointerup", this._boundHandleDocumentPointerUp);
+        document.addEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
     }
 
     _handleDocumentPointerDown(event) {
         if (!this._handPopover || !this._handPopover.classList.contains("visible")) return;
+        if (event.button !== 0) {
+            this._pendingHandPopoverOutsideClick = null;
+            return;
+        }
+        if (this._handPopover.contains(event.target)) {
+            this._pendingHandPopoverOutsideClick = null;
+            return;
+        }
+
+        this._pendingHandPopoverOutsideClick = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            clickedCanvas: this.canvas ? event.target === this.canvas : false,
+            activeHandSide: this._activeHandSide,
+        };
+    }
+
+    _handleDocumentPointerUp(event) {
+        const pending = this._pendingHandPopoverOutsideClick;
+        this._pendingHandPopoverOutsideClick = null;
+
+        if (!pending || !this._handPopover || !this._handPopover.classList.contains("visible")) return;
+        if (event.button !== 0 || event.pointerId !== pending.pointerId) return;
         if (this._handPopover.contains(event.target)) return;
-        if (this.canvas && event.target === this.canvas) return;
+
+        const movedX = event.clientX - pending.startX;
+        const movedY = event.clientY - pending.startY;
+        if ((movedX * movedX + movedY * movedY) > 9) return;
+
+        if (pending.clickedCanvas && (this._hoveredHandSide || this._activeHandSide !== pending.activeHandSide)) {
+            return;
+        }
+
         this.hideHandControlPopover();
+    }
+
+    _handleDocumentPointerCancel() {
+        this._pendingHandPopoverOutsideClick = null;
     }
 
     applyActiveHandSliders() {
@@ -2990,6 +3031,7 @@ class PoseStudioWidget {
     hideHandControlPopover() {
         if (!this._handPopover) return;
         this._activeHandSide = null;
+        this._pendingHandPopoverOutsideClick = null;
         this._handPopover.classList.remove("visible");
     }
 
