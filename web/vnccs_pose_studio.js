@@ -2091,7 +2091,13 @@ class PoseStudioWidget {
                     this.persistActivePoseCameraParams();
                 }
                 if (isCamParam && this.viewer) {
-                    this.updateCaptureCameraPreview();
+                    this.viewer.snapToCaptureCamera(
+                        this.exportParams.view_width,
+                        this.exportParams.view_height,
+                        this.exportParams.cam_zoom,
+                        this.exportParams.cam_offset_x,
+                        this.exportParams.cam_offset_y
+                    );
                 }
             } else {
                 if (key === 'head_size') {
