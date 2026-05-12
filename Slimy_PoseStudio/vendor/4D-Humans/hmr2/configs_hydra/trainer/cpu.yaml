@@ -1,6 +1,0 @@
-defaults:
-  - default.yaml
-  - default_hmr.yaml
-
-accelerator: cpu
-devices: 1
