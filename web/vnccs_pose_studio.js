@@ -1967,6 +1967,8 @@ class PoseStudioWidget {
         if (this.lightParams) {
             this.viewer.updateLights(this.lightParams);
         }
+
+        this.startResizeObserver();
     }
 
     // === UI Helper Methods ===
@@ -2961,6 +2963,29 @@ class PoseStudioWidget {
         reader.onload = (event) => {
             try {
                 const data = JSON.parse(event.target.result);
+
+                const isSAM3DJson = Array.isArray(data?.body_pose_params)
+                    && (Array.isArray(data?.keypoints_3d) || Array.isArray(data?.joint_coords))
+                    && (Array.isArray(data?.global_rot) || Array.isArray(data?.joint_rotations));
+
+                if (isSAM3DJson) {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const ok = this.viewer.applySAM3DImport(
+                            data,
+                            this._shoulderYOffset || 0
+                        );
+                        if (ok) {
+                            this.poses[this.activeTab] = this.viewer.getPose();
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("SAM3D JSON imported successfully.");
+                        } else {
+                            this.showMessage("Failed to apply SAM3D JSON.", true);
+                        }
+                    }
+                    e.target.value = '';
+                    return;
+                }
 
                 if (data?.version === 'hmr2_3d_v1') {
                     if (this.viewer && this.viewer.isInitialized()) {
@@ -3962,6 +3987,17 @@ class PoseStudioWidget {
                 this.viewer.resize(targetW, targetH);
             }
         }
+    }
+
+    startResizeObserver() {
+        if (this._containerResizeObserver || !this.canvasContainer) return;
+
+        this._containerResizeObserver = new ResizeObserver(() => {
+            clearTimeout(this._resizeDebounce);
+            this._resizeDebounce = setTimeout(() => this.resize(), 80);
+        });
+
+        this._containerResizeObserver.observe(this.canvasContainer);
     }
 
     /**
