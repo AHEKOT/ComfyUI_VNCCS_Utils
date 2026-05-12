@@ -7,6 +7,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
@@ -85,6 +86,8 @@ const STYLES = `
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    position: relative;
+    z-index: 2;
     pointer-events: auto;
 }
 
@@ -100,6 +103,8 @@ const STYLES = `
     border-left: 1px solid var(--ps-border);
     pointer-events: auto;
     background: rgba(6, 5, 12, 0.7);
+    position: relative;
+    z-index: 1;
 }
 
 .vnccs-ps-right-sidebar::-webkit-scrollbar { width: 4px; }
@@ -989,6 +994,59 @@ const STYLES = `
     flex-direction: column;
 }
 
+.vnccs-ps-hand-popover {
+    position: absolute;
+    width: 240px;
+    max-width: calc(100% - 20px);
+    box-sizing: border-box;
+    padding: 12px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 214, 102, 0.4);
+    background: rgba(12, 10, 20, 0.94);
+    box-shadow: 0 18px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255, 214, 102, 0.06);
+    backdrop-filter: blur(12px);
+    z-index: 110;
+    display: none;
+    gap: 10px;
+}
+
+.vnccs-ps-hand-popover.visible {
+    display: flex;
+    flex-direction: column;
+}
+
+.vnccs-ps-hand-popover-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+
+.vnccs-ps-hand-popover-title {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #ffd666;
+}
+
+.vnccs-ps-hand-popover-close {
+    width: 24px;
+    height: 24px;
+    border: 1px solid var(--ps-border);
+    border-radius: 999px;
+    background: rgba(255,255,255,0.04);
+    color: var(--ps-text-muted);
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1;
+}
+
+.vnccs-ps-hand-popover-close:hover {
+    border-color: rgba(255, 214, 102, 0.45);
+    color: #ffd666;
+}
+
 .vnccs-ps-settings-header {
     display: flex;
     align-items: center;
@@ -1429,6 +1487,20 @@ class PoseStudioWidget {
         this.exportWidgets = {};
         this.tabsContainer = null;
         this.canvasContainer = null;
+        this._defaultHandPresets = HAND_PRESETS;
+        this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
+        this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
+        this._handSliderRefs = {};
+        this._handSliderValRefs = {};
+        this._handBiasValues = [1.0, 1.0, 1.0];
+        this._activeHandSide = null;
+        this._hoveredHandSide = null;
+        this._handPopover = null;
+        this._handPopoverTitle = null;
+        this._pendingHandPopoverOutsideClick = null;
+        this._boundHandleDocumentPointerDown = this._handleDocumentPointerDown.bind(this);
+        this._boundHandleDocumentPointerUp = this._handleDocumentPointerUp.bind(this);
+        this._boundHandleDocumentPointerCancel = this._handleDocumentPointerCancel.bind(this);
 
         this.createUI();
     }
@@ -1717,6 +1789,7 @@ class PoseStudioWidget {
 
         this.canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(this.canvas);
+        this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
 
         // Action Bar
@@ -1743,13 +1816,15 @@ class PoseStudioWidget {
         snapBtn.innerHTML = '<span class="vnccs-ps-btn-icon">👁</span> Preview';
         snapBtn.title = "Snap viewport camera to output camera";
         snapBtn.addEventListener("click", () => {
-            if (this.viewer) this.viewer.snapToCaptureCamera(
-                this.exportParams.view_width,
-                this.exportParams.view_height,
-                this.exportParams.cam_zoom || 1.0,
-                this.exportParams.cam_offset_x || 0,
-                this.exportParams.cam_offset_y || 0
-            );
+            if (this.viewer) {
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom || 1.0,
+                    this.exportParams.cam_offset_x || 0,
+                    this.exportParams.cam_offset_y || 0
+                );
+            }
         });
 
         const copyBtn = document.createElement("button");
@@ -1930,6 +2005,7 @@ class PoseStudioWidget {
         this.userPromptArea = promptArea;
         promptSection.content.appendChild(promptArea);
         rightSidebar.appendChild(promptSection.el);
+
     }
 
     _setupFinalUI() {
@@ -1952,6 +2028,15 @@ class PoseStudioWidget {
             showSkeletonHelper: true,
             showCaptureFrame: true,
             syncMode: 'end',
+            onHandHover: ({ side }) => {
+                this._hoveredHandSide = side;
+                if (!side && !this._activeHandSide) {
+                    this.hideHandControlPopover();
+                }
+            },
+            onHandActivate: ({ side }) => {
+                this.showHandControlPopover(side);
+            },
             onPoseChange: (pose) => {
                 // Return params request logic mapped into direct assignment beforehand 
                 this.viewer.setCameraParams({
@@ -1967,6 +2052,8 @@ class PoseStudioWidget {
         if (this.lightParams) {
             this.viewer.updateLights(this.lightParams);
         }
+
+        this.startResizeObserver();
     }
 
     // === UI Helper Methods ===
@@ -1992,6 +2079,30 @@ class PoseStudioWidget {
         section.appendChild(content);
 
         return { el: section, content };
+    }
+
+    persistActivePoseCameraParams() {
+        if (!this.poses || this.activeTab == null) return;
+
+        const currentPose = this.poses[this.activeTab] || {};
+        currentPose.cameraParams = {
+            offset_x: this.exportParams.cam_offset_x,
+            offset_y: this.exportParams.cam_offset_y,
+            zoom: this.exportParams.cam_zoom
+        };
+        this.poses[this.activeTab] = currentPose;
+    }
+
+    updateCaptureCameraPreview() {
+        if (!this.viewer) return;
+
+        this.viewer.updateCaptureCamera(
+            this.exportParams.view_width,
+            this.exportParams.view_height,
+            this.exportParams.cam_zoom || 1.0,
+            this.exportParams.cam_offset_x || 0,
+            this.exportParams.cam_offset_y || 0
+        );
     }
 
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
@@ -2059,6 +2170,9 @@ class PoseStudioWidget {
                 this.exportParams[key] = val;
                 // Live preview for camera params - sync viewport too
                 const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y'].includes(key);
+                if (isCamParam) {
+                    this.persistActivePoseCameraParams();
+                }
                 if (isCamParam && this.viewer) {
                     this.viewer.snapToCaptureCamera(
                         this.exportParams.view_width,
@@ -2390,13 +2504,15 @@ class PoseStudioWidget {
         recenterBtn.onclick = () => {
             this.exportParams.cam_offset_x = 0;
             this.exportParams.cam_offset_y = 0;
+            this.persistActivePoseCameraParams();
             draw();
             if (this.viewer) {
                 this.viewer.snapToCaptureCamera(
                     this.exportParams.view_width,
                     this.exportParams.view_height,
                     this.exportParams.cam_zoom,
-                    0, 0
+                    0,
+                    0
                 );
             }
             this.syncToNode(false);
@@ -2606,6 +2722,431 @@ class PoseStudioWidget {
         return field;
     }
 
+    resetHandSliders() {
+        if (!this._handSliderValues) return;
+
+        const defaults = this._handSliderDefaults || { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
+        for (const [key, value] of Object.entries(defaults)) {
+            this._handSliderValues[key] = value;
+            if (this._handSliderRefs[key]) this._handSliderRefs[key].value = String(value);
+            if (this._handSliderValRefs[key]) this._handSliderValRefs[key].textContent = value.toFixed(2);
+        }
+    }
+
+    _getPresetDataForSide(preset, side) {
+        return side === "r" ? preset?.preset_r : preset?.preset_l;
+    }
+
+    _lerpHandPresetData(poseA, poseB, t, side) {
+        const dataA = this._getPresetDataForSide(poseA, side);
+        const dataB = this._getPresetDataForSide(poseB, side);
+        const result = {};
+        if (!dataA || !dataB) return result;
+
+        for (const key of Object.keys(dataA)) {
+            const a = dataA[key];
+            const b = dataB[key];
+            if (!a || !b) continue;
+            const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+            const bFlip = dot < 0 ? [-b[0], -b[1], -b[2], -b[3]] : b;
+            const r = [
+                a[0] * (1 - t) + bFlip[0] * t,
+                a[1] * (1 - t) + bFlip[1] * t,
+                a[2] * (1 - t) + bFlip[2] * t,
+                a[3] * (1 - t) + bFlip[3] * t,
+            ];
+            const len = Math.hypot(r[0], r[1], r[2], r[3]) || 1;
+            result[key] = [r[0] / len, r[1] / len, r[2] / len, r[3] / len];
+        }
+
+        return result;
+    }
+
+    _sampleCurrentHandPose(side) {
+        if (!this.viewer?.bones || !this.viewer?.THREE) return null;
+        const result = {};
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            for (const segment of ["01", "02", "03"]) {
+                const bone = this.viewer.bones[`${prefix}_${segment}_${side}`];
+                if (!bone) continue;
+                result[`${prefix}_${segment}`] = [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w];
+            }
+        }
+        return result;
+    }
+
+    _quatAngularDistance(a, b) {
+        const dot = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        const clamped = Math.max(-1, Math.min(1, dot));
+        return 2 * Math.acos(clamped);
+    }
+
+    _estimateHandInterpolationValue(currentData, startData, endData, keys) {
+        let bestT = 0;
+        let bestScore = Number.POSITIVE_INFINITY;
+
+        for (let step = 0; step <= 100; step++) {
+            const t = step / 100;
+            const sampled = this._lerpHandPresetData({ preset_l: startData, preset_r: startData }, { preset_l: endData, preset_r: endData }, t, "l");
+            let score = 0;
+            for (const key of keys) {
+                const current = currentData[key];
+                const target = sampled[key];
+                if (!current || !target) continue;
+                score += this._quatAngularDistance(current, target);
+            }
+            if (score < bestScore) {
+                bestScore = score;
+                bestT = t;
+            }
+        }
+
+        return bestT;
+    }
+
+    calibrateHandSliderDefaults(side) {
+        if (!this.viewer || !this._defaultHandPresets || !side) return;
+        const { OPEN, CHOP, FIST } = this._defaultHandPresets;
+        if (!OPEN || !CHOP || !FIST) return;
+
+        const currentData = this._sampleCurrentHandPose(side);
+        if (!currentData) return;
+
+        const allKeys = Object.keys(currentData);
+        const spread = this._estimateHandInterpolationValue(
+            currentData,
+            this._getPresetDataForSide(CHOP, side),
+            this._getPresetDataForSide(OPEN, side),
+            allKeys,
+        );
+
+        const spreadBaseData = this._lerpHandPresetData(CHOP, OPEN, spread, side);
+        const fistData = this._getPresetDataForSide(FIST, side);
+        const perFinger = {};
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            const keys = ["01", "02", "03"].map((segment) => `${prefix}_${segment}`);
+            perFinger[prefix] = this._estimateHandInterpolationValue(currentData, spreadBaseData, fistData, keys);
+        }
+
+        const grasp = (perFinger.thumb + perFinger.index + perFinger.middle + perFinger.ring + perFinger.pinky) / 5;
+        this._handSliderDefaults = {
+            spread,
+            grasp,
+            thumb: perFinger.thumb,
+            index: perFinger.index,
+            middle: perFinger.middle,
+            ring: perFinger.ring,
+            pinky: perFinger.pinky,
+        };
+
+        this.resetHandSliders();
+    }
+
+    _createHandPopover() {
+        const panel = document.createElement("div");
+        panel.className = "vnccs-ps-hand-popover";
+
+        const header = document.createElement("div");
+        header.className = "vnccs-ps-hand-popover-header";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-ps-hand-popover-title";
+        title.textContent = "Hand Control";
+
+        const closeBtn = document.createElement("button");
+        closeBtn.className = "vnccs-ps-hand-popover-close";
+        closeBtn.type = "button";
+        closeBtn.textContent = "✕";
+        closeBtn.addEventListener("click", () => this.hideHandControlPopover());
+
+        header.append(title, closeBtn);
+        panel.appendChild(header);
+
+        const mkSliderRow = (label, onInput) => {
+            const row = document.createElement("div");
+            row.style.cssText = "display:grid;grid-template-columns:44px 1fr 34px;gap:6px;align-items:center;margin-bottom:6px;";
+
+            const lbl = document.createElement("span");
+            lbl.style.cssText = "font-size:10px;color:var(--ps-text-muted);";
+            lbl.textContent = label;
+
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.min = "0";
+            slider.max = "1";
+            slider.step = "0.01";
+            slider.value = "0";
+            slider.className = "vnccs-ps-slider";
+
+            const value = document.createElement("span");
+            value.style.cssText = "font-size:10px;color:var(--ps-accent);text-align:right;font-family:var(--ps-font-mono);";
+            value.textContent = "0.00";
+
+            slider.addEventListener("input", () => {
+                const numericValue = parseFloat(slider.value);
+                value.textContent = numericValue.toFixed(2);
+                onInput(numericValue);
+            });
+
+            row.append(lbl, slider, value);
+            return { row, slider, value };
+        };
+
+        const mkTrackedHandSlider = (label, key, initialValue) => {
+            const { row, slider, value } = mkSliderRow(label, (numericValue) => {
+                if (key === "grasp") {
+                    const oldGrasp = this._handSliderValues.grasp;
+                    this._handSliderValues.grasp = numericValue;
+                    const epsilon = 1e-9;
+                    for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+                        const current = this._handSliderValues[prefix];
+                        let nextValue;
+                        if (numericValue >= oldGrasp) {
+                            const denom = 1 - oldGrasp;
+                            nextValue = denom < epsilon ? 1 : current + (numericValue - oldGrasp) * (1 - current) / denom;
+                        } else {
+                            nextValue = oldGrasp < epsilon ? 0 : current * (numericValue / oldGrasp);
+                        }
+                        nextValue = Math.max(0, Math.min(1, nextValue));
+                        this._handSliderValues[prefix] = nextValue;
+                        if (this._handSliderRefs[prefix]) this._handSliderRefs[prefix].value = String(nextValue);
+                        if (this._handSliderValRefs[prefix]) this._handSliderValRefs[prefix].textContent = nextValue.toFixed(2);
+                    }
+                } else {
+                    this._handSliderValues[key] = numericValue;
+                }
+                this.applyActiveHandSliders();
+            });
+
+            slider.value = String(initialValue);
+            value.textContent = initialValue.toFixed(2);
+            this._handSliderRefs[key] = slider;
+            this._handSliderValRefs[key] = value;
+            return row;
+        };
+
+        panel.appendChild(mkTrackedHandSlider("Spread", "spread", 0));
+        panel.appendChild(mkTrackedHandSlider("Grasp", "grasp", 0));
+        for (const [label, key] of [["Thumb", "thumb"], ["Index", "index"], ["Middle", "middle"], ["Ring", "ring"], ["Pinky", "pinky"]]) {
+            panel.appendChild(mkTrackedHandSlider(label, key, 1));
+        }
+
+        const resetBtn = document.createElement("button");
+        resetBtn.className = "vnccs-ps-btn";
+        resetBtn.style.width = "100%";
+        resetBtn.textContent = "Reset Hand Sliders";
+        resetBtn.addEventListener("click", () => {
+            this.resetHandSliders();
+            this._handBiasValues = [1.0, 1.0, 1.0];
+            this.applyActiveHandSliders();
+        });
+        panel.appendChild(resetBtn);
+
+        this._handPopover = panel;
+        this._handPopoverTitle = title;
+        (this.centerPanel || this.canvasContainer).appendChild(panel);
+        document.addEventListener("pointerdown", this._boundHandleDocumentPointerDown);
+        document.addEventListener("pointerup", this._boundHandleDocumentPointerUp);
+        document.addEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
+    }
+
+    _handleDocumentPointerDown(event) {
+        if (!this._handPopover || !this._handPopover.classList.contains("visible")) return;
+        if (event.button !== 0) {
+            this._pendingHandPopoverOutsideClick = null;
+            return;
+        }
+        if (this._handPopover.contains(event.target)) {
+            this._pendingHandPopoverOutsideClick = null;
+            return;
+        }
+
+        this._pendingHandPopoverOutsideClick = {
+            pointerId: event.pointerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            clickedCanvas: this.canvas ? event.target === this.canvas : false,
+            activeHandSide: this._activeHandSide,
+        };
+    }
+
+    _handleDocumentPointerUp(event) {
+        const pending = this._pendingHandPopoverOutsideClick;
+        this._pendingHandPopoverOutsideClick = null;
+
+        if (!pending || !this._handPopover || !this._handPopover.classList.contains("visible")) return;
+        if (event.button !== 0 || event.pointerId !== pending.pointerId) return;
+        if (this._handPopover.contains(event.target)) return;
+
+        const movedX = event.clientX - pending.startX;
+        const movedY = event.clientY - pending.startY;
+        if ((movedX * movedX + movedY * movedY) > 9) return;
+
+        if (pending.clickedCanvas && (this._hoveredHandSide || this._activeHandSide !== pending.activeHandSide)) {
+            return;
+        }
+
+        this.hideHandControlPopover();
+    }
+
+    _handleDocumentPointerCancel() {
+        this._pendingHandPopoverOutsideClick = null;
+    }
+
+    applyActiveHandSliders() {
+        if (!this.viewer || !this._defaultHandPresets || !this._activeHandSide) return;
+        const { OPEN, CHOP, FIST } = this._defaultHandPresets;
+        if (!OPEN || !CHOP || !FIST) return;
+
+        const side = this._activeHandSide;
+
+        this.viewer.interpolateHandPose(CHOP, OPEN, this._handSliderValues.spread, side);
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            const spreadBaseData = this._lerpHandPresetData(CHOP, OPEN, this._handSliderValues.spread, side);
+            const fistData = side === "r" ? FIST.preset_r : FIST.preset_l;
+            const startPose = { preset_l: spreadBaseData, preset_r: spreadBaseData };
+            const endPose = { preset_l: fistData, preset_r: fistData };
+            this.viewer.interpolateFingerPose(startPose, endPose, this._handSliderValues[prefix], side, prefix, this._handBiasValues);
+        }
+
+        this.syncToNode(false);
+    }
+
+    showHandControlPopover(side) {
+        if (!side || !this._handPopover) return;
+        this._activeHandSide = side;
+        this.calibrateHandSliderDefaults(side);
+        if (this._handPopoverTitle) {
+            this._handPopoverTitle.textContent = side === "l" ? "Left Hand" : "Right Hand";
+        }
+        this._handPopover.classList.add("visible");
+        this.positionHandControlPopover(side);
+        requestAnimationFrame(() => {
+            if (this._activeHandSide === side) {
+                this.positionHandControlPopover(side, true);
+            }
+        });
+    }
+
+    hideHandControlPopover() {
+        if (!this._handPopover) return;
+        this._activeHandSide = null;
+        this._pendingHandPopoverOutsideClick = null;
+        this._handPopover.classList.remove("visible");
+    }
+
+    _projectWorldToCenterPanel(worldVector, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight) {
+        const projected = worldVector.clone().project(this.viewer.camera);
+        return {
+            x: canvasLeft + (projected.x * 0.5 + 0.5) * canvasWidth,
+            y: canvasTop + (-projected.y * 0.5 + 0.5) * canvasHeight,
+        };
+    }
+
+    _getHandScreenMetrics(side, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight) {
+        const handBone = this.viewer.bones?.[`hand_${side}`];
+        const centerBone = this.viewer.bones?.[`middle_01_${side}`] || handBone;
+        if (!handBone || !centerBone) return null;
+
+        const points = [];
+        const centerPos = new this.viewer.THREE.Vector3();
+        centerBone.getWorldPosition(centerPos);
+        const centerPoint = this._projectWorldToCenterPanel(centerPos, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight);
+        points.push(centerPoint);
+
+        const wristPos = new this.viewer.THREE.Vector3();
+        handBone.getWorldPosition(wristPos);
+        points.push(this._projectWorldToCenterPanel(wristPos, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight));
+
+        for (const name of ["thumb_03", "index_03", "middle_03", "ring_03", "pinky_03"]) {
+            const bone = this.viewer.bones?.[`${name}_${side}`];
+            if (!bone) continue;
+            const pos = new this.viewer.THREE.Vector3();
+            bone.getWorldPosition(pos);
+            points.push(this._projectWorldToCenterPanel(pos, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight));
+        }
+
+        let radius = 0;
+        for (const point of points) {
+            const dx = point.x - centerPoint.x;
+            const dy = point.y - centerPoint.y;
+            radius = Math.max(radius, Math.hypot(dx, dy));
+        }
+
+        return {
+            x: centerPoint.x,
+            y: centerPoint.y,
+            radius: Math.max(36, radius + 18),
+        };
+    }
+
+    positionHandControlPopover(side, useMeasuredBounds = false) {
+        if (!this.viewer || !this._handPopover || !this.canvasContainer || !this.centerPanel || !side) return;
+        if (!this.viewer.camera || !this.viewer.THREE) return;
+
+        const centerWidth = this.centerPanel.clientWidth;
+        const centerHeight = this.centerPanel.clientHeight;
+        const canvasLeft = this.canvasContainer.offsetLeft;
+        const canvasTop = this.canvasContainer.offsetTop;
+        const canvasWidth = this.canvasContainer.clientWidth;
+        const canvasHeight = this.canvasContainer.clientHeight;
+
+        const measuredRect = useMeasuredBounds ? this._handPopover.getBoundingClientRect() : null;
+        const panelWidth = Math.min(centerWidth - 20, measuredRect?.width || this._handPopover.offsetWidth || 240);
+        const panelHeight = Math.min(centerHeight - 20, measuredRect?.height || this._handPopover.offsetHeight || 280);
+        const minLeft = 10;
+        const minTop = 10;
+        const maxLeft = centerWidth - panelWidth - 10;
+        const maxTop = centerHeight - panelHeight - 10;
+        const gap = 18;
+
+        const handMetrics = this._getHandScreenMetrics(side, centerWidth, centerHeight, canvasLeft, canvasTop, canvasWidth, canvasHeight);
+        if (!handMetrics) return;
+
+        const candidates = [
+            { left: handMetrics.x + handMetrics.radius + gap, top: handMetrics.y - panelHeight * 0.5 },
+            { left: handMetrics.x - handMetrics.radius - gap - panelWidth, top: handMetrics.y - panelHeight * 0.5 },
+            { left: handMetrics.x - panelWidth * 0.5, top: handMetrics.y - handMetrics.radius - gap - panelHeight },
+            { left: handMetrics.x - panelWidth * 0.5, top: handMetrics.y + handMetrics.radius + gap },
+        ];
+
+        const preferredOrder = side === "l" ? [0, 1, 2, 3] : [1, 0, 2, 3];
+        let chosen = null;
+
+        for (const index of preferredOrder) {
+            const candidate = candidates[index];
+            const fitsHorizontally = candidate.left >= minLeft && candidate.left <= maxLeft;
+            const fitsVertically = candidate.top >= minTop && candidate.top <= maxTop;
+            if (fitsHorizontally && fitsVertically) {
+                chosen = candidate;
+                break;
+            }
+        }
+
+        if (!chosen) {
+            let bestScore = -Infinity;
+            for (const candidate of candidates) {
+                const clampedLeft = Math.max(minLeft, Math.min(maxLeft, candidate.left));
+                const clampedTop = Math.max(minTop, Math.min(maxTop, candidate.top));
+                const dx = Math.abs(clampedLeft - candidate.left);
+                const dy = Math.abs(clampedTop - candidate.top);
+                const overlapPenalty = dx + dy;
+                const distanceFromHand = Math.hypot((clampedLeft + panelWidth * 0.5) - handMetrics.x, (clampedTop + panelHeight * 0.5) - handMetrics.y);
+                const score = distanceFromHand - overlapPenalty * 4;
+                if (score > bestScore) {
+                    bestScore = score;
+                    chosen = { left: clampedLeft, top: clampedTop };
+                }
+            }
+        }
+
+        const left = Math.max(minLeft, Math.min(maxLeft, chosen.left));
+        const top = Math.max(minTop, Math.min(maxTop, chosen.top));
+
+        this._handPopover.style.left = `${left}px`;
+        this._handPopover.style.top = `${top}px`;
+    }
+
     updateTabs() {
         this.tabsContainer.innerHTML = "";
 
@@ -2693,13 +3234,7 @@ class PoseStudioWidget {
 
         // Force Camera Snap
         if (this.viewer) {
-            this.viewer.snapToCaptureCamera(
-                this.exportParams.view_width,
-                this.exportParams.view_height,
-                this.exportParams.cam_zoom,
-                this.exportParams.cam_offset_x,
-                this.exportParams.cam_offset_y
-            );
+            this.updateCaptureCameraPreview();
         }
 
         this.syncToNode(false);
@@ -2805,13 +3340,7 @@ class PoseStudioWidget {
             if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
             if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
             if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
-            if (this.viewer) this.viewer.snapToCaptureCamera(
-                this.exportParams.view_width,
-                this.exportParams.view_height,
-                this.exportParams.cam_zoom,
-                this.exportParams.cam_offset_x,
-                this.exportParams.cam_offset_y
-            );
+            this.updateCaptureCameraPreview();
         }
         this.syncToNode();
     }
@@ -2962,7 +3491,50 @@ class PoseStudioWidget {
             try {
                 const data = JSON.parse(event.target.result);
 
-                // Try OpenPose JSON formats first
+                const isSAM3DJson = Array.isArray(data?.body_pose_params)
+                    && (Array.isArray(data?.keypoints_3d) || Array.isArray(data?.joint_coords))
+                    && (Array.isArray(data?.global_rot) || Array.isArray(data?.joint_rotations));
+
+                if (isSAM3DJson) {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const ok = this.viewer.applySAM3DImport(
+                            data,
+                            this._shoulderYOffset || 0
+                        );
+                        if (ok) {
+                            this.poses[this.activeTab] = this.viewer.getPose();
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("SAM3D JSON imported successfully.");
+                        } else {
+                            this.showMessage("Failed to apply SAM3D JSON.", true);
+                        }
+                    }
+                    e.target.value = '';
+                    return;
+                }
+
+                if (data?.version === 'hmr2_3d_v1') {
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        const ok = this.viewer.applyHMR2v1Import(
+                            data,
+                            this._smplRefHeight || 1.45,
+                            this._shoulderYOffset || 0
+                        );
+                        if (ok) {
+                            this.poses[this.activeTab] = this.viewer.getPose();
+                            this.updateRotationSliders();
+                            this.syncToNode(false);
+                            this.showMessage("HMR2/pose3d JSON imported successfully.");
+                        } else {
+                            this.showMessage("Failed to apply HMR2/pose3d JSON.", true);
+                        }
+                    }
+                    e.target.value = '';
+                    return;
+                }
+
+                // Try pose JSON formats (HMR2 / OpenPose / VNCCS)
                 const openPoseKeypoints = detectAndParseJSON(data);
                 if (openPoseKeypoints) {
                     if (this.viewer && this.viewer.isInitialized()) {
@@ -2973,7 +3545,12 @@ class PoseStudioWidget {
                             this.updateRotationSliders();
                             this.syncToNode(false);
 
-                            this.showMessage("OpenPose JSON imported successfully.");
+                            let msg = "OpenPose JSON imported successfully.";
+                            if (openPoseKeypoints.source === 'hmr2') msg = "HMR2/pose3d JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'rtmw') msg = "RTMW JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'metrabs') msg = "MeTRAbs JSON imported successfully.";
+                            else if (openPoseKeypoints.source === 'vnccs') msg = "VNCCS skeleton JSON imported successfully.";
+                            this.showMessage(msg);
 
                             // Debug: round-trip angle test
                             roundTripTest(openPoseKeypoints, this.viewer, poseData);
@@ -3036,8 +3613,7 @@ class PoseStudioWidget {
                 this.exportParams.background_url = dataUrl;
                 this.syncToNode(false);
 
-                // Force model update (preview button effect) to fix camera shift
-                this.loadModel(false);
+                this.loadModel(false, false);
 
                 if (this.refBtn) {
                     this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
@@ -3552,7 +4128,7 @@ class PoseStudioWidget {
         }
     }
 
-    loadModel(showOverlay = true) {
+    loadModel(showOverlay = true, recenterViewport = true) {
         if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
 
         // Sync skin type to viewer before loading
@@ -3565,20 +4141,14 @@ class PoseStudioWidget {
             body: JSON.stringify(this.meshParams)
         }).then(r => r.json()).then(d => {
             if (this.viewer) {
-                // Keep camera during updates
+                // Reload mesh data without implicit camera math; if we need a reset,
+                // do the same explicit snap the Preview button uses.
                 this.viewer.loadData(d, true);
 
                 // Apply lighting configuration
                 this.viewer.updateLights(this.lightParams);
 
-                // FORCE camera sync on every model change (as requested)
-                this.viewer.snapToCaptureCamera(
-                    this.exportParams.view_width,
-                    this.exportParams.view_height,
-                    this.exportParams.cam_zoom || 1.0,
-                    this.exportParams.cam_offset_x || 0,
-                    this.exportParams.cam_offset_y || 0
-                );
+                this.updateCaptureCameraPreview();
 
                 // Strip absolute position data (hip, IK effectors, pole targets) from ALL poses
                 // since those were saved for the old mesh geometry and don't apply to the new one.
@@ -3592,8 +4162,19 @@ class PoseStudioWidget {
 
                 // Apply pose immediately (no timeout/flicker)
                 if (this.viewer.isInitialized()) {
-                    this.viewer.setPose(this.poses[this.activeTab] || {});
+                    this.viewer.setPose(this.poses[this.activeTab] || {}, true);
                     this.updateRotationSliders();
+
+                    if (recenterViewport) {
+                        this.viewer.snapToCaptureCamera(
+                            this.exportParams.view_width,
+                            this.exportParams.view_height,
+                            this.exportParams.cam_zoom || 1.0,
+                            this.exportParams.cam_offset_x || 0,
+                            this.exportParams.cam_offset_y || 0
+                        );
+                    }
+
                     // Full recapture needed because mesh changed
                     this.syncToNode(true);
                 }
@@ -3935,8 +4516,22 @@ class PoseStudioWidget {
                 this._lastResizeW = targetW;
                 this._lastResizeH = targetH;
                 this.viewer.resize(targetW, targetH);
+                if (this._activeHandSide) {
+                    this.positionHandControlPopover(this._activeHandSide);
+                }
             }
         }
+    }
+
+    startResizeObserver() {
+        if (this._containerResizeObserver || !this.canvasContainer) return;
+
+        this._containerResizeObserver = new ResizeObserver(() => {
+            clearTimeout(this._resizeDebounce);
+            this._resizeDebounce = setTimeout(() => this.resize(), 80);
+        });
+
+        this._containerResizeObserver.observe(this.canvasContainer);
     }
 
     /**
@@ -4337,11 +4932,11 @@ class PoseStudioWidget {
                             const randIdx = Math.floor(Math.random() * this.libraryPoses.length);
                             const poseItem = this.libraryPoses[randIdx];
                             if (poseItem.data) {
-                                this.viewer.setPose(poseItem.data);
+                                this.viewer.setPose(poseItem.data, true);
                                 randomPoseUsed = true;
                             }
                         }
-                        if (!randomPoseUsed) this.viewer.setPose(this.poses[i]);
+                        if (!randomPoseUsed) this.viewer.setPose(this.poses[i], true);
 
                         // Model Rotation
                         const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
@@ -4363,7 +4958,7 @@ class PoseStudioWidget {
                         this.lightingPrompts[i] = this.generatePromptFromLights(promptLights);
                     } else {
                         // Normal mode
-                        this.viewer.setPose(this.poses[i]);
+                        this.viewer.setPose(this.poses[i], true);
                         const poseCam = this.poses[i].cameraParams || {};
                         const z = poseCam.zoom || this.exportParams.cam_zoom || 1.0;
                         const oX = (poseCam.offset_x !== undefined ? poseCam.offset_x : this.exportParams.cam_offset_x) || 0;
@@ -4384,7 +4979,7 @@ class PoseStudioWidget {
                 // Restore original state and UI
                 this.viewer.updateLights(userLights);
                 this.activeTab = originalTab;
-                this.viewer.setPose(this.poses[this.activeTab]);
+                this.viewer.setPose(this.poses[this.activeTab], true);
                 this.updateTabs(); // Ensure UI reflects correct tab
                 this.updateRotationSliders();
 
@@ -4413,7 +5008,7 @@ class PoseStudioWidget {
                     this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights);
 
                     this.viewer.updateLights(userLights);
-                    this.viewer.setPose(this.poses[this.activeTab]);
+                    this.viewer.setPose(this.poses[this.activeTab], true);
 
                     const z = this.exportParams.cam_zoom || 1.0;
                     const oX = this.exportParams.cam_offset_x || 0;
@@ -4695,15 +5290,8 @@ app.registerExtension({
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
                 this.studioWidget.loadModel().then(() => {
-                    // Auto-center camera on initialization
                     if (this.studioWidget.viewer) {
-                        this.studioWidget.viewer.snapToCaptureCamera(
-                            this.studioWidget.exportParams.view_width,
-                            this.studioWidget.exportParams.view_height,
-                            this.studioWidget.exportParams.cam_zoom || 1.0,
-                            this.studioWidget.exportParams.cam_offset_x || 0,
-                            this.studioWidget.exportParams.cam_offset_y || 0
-                        );
+                        this.studioWidget.updateCaptureCameraPreview();
                         // Force resize again after model load to ensure Three.js matches container
                         this.studioWidget.resize();
                     }

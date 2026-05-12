@@ -1,3 +1,35 @@
+# Version 0.4.18
+## Pose Studio: Hand Interaction Pass, Camera Sync Cleanup, and Input Behavior Fixes
+
+### New Features
+
+*   **Contextual Hand Editing UI**: Hand editing was reworked from a permanent sidebar tool into an in-canvas interaction flow.
+    *   Hands can now be targeted directly from the model viewport.
+    *   The hand editor opens as a floating popover near the active hand instead of occupying the right sidebar.
+    *   Built-in hand presets were added in [web/vnccs_hand_presets.js](web/vnccs_hand_presets.js) to drive the hand shaping workflow without requiring an external hand-pose library.
+
+*   **Improved Hand Pose Controls**: The hand slider system was expanded and stabilized.
+    *   Added calibrated hand preset blending for `Spread`, `Grasp`, and per-finger controls.
+    *   Slider defaults are now derived from the actual current hand pose instead of hardcoded placeholder values, reducing the first-use snap/jump when editing a hand.
+
+### Fixes
+
+*   **Camera Preview / Capture Sync Cleanup**:
+    *   Refactored Pose Studio camera handling for clearer internal state flow.
+    *   Updated preview snapping logic to use `snapToCaptureCamera`, improving consistency between viewport framing and capture framing.
+
+*   **Direct Limb Dragging Stability**:
+    *   Added more explicit direct-drag state tracking for bone interactions.
+    *   Improved click-versus-drag handling around IK/direct manipulation so interaction state is more predictable.
+
+*   **Hand Popover Input Behavior**:
+    *   Added dedicated pointer-event handling for the floating hand popover.
+    *   Outside-click closing behavior is now safer and better isolated from other pointer interactions in the Pose Studio viewport.
+
+### Credits
+
+*   **Thanks and credits to [Slimy](https://github.com/Slimy-Comfy)** for providing a great fork that made this iteration of the Pose Studio possible!.
+
 # Version 0.4.17
 ## Pose Studio: Sakura Design System and Sync Tabs
 
