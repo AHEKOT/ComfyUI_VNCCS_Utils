@@ -1488,7 +1488,8 @@ class PoseStudioWidget {
         this.tabsContainer = null;
         this.canvasContainer = null;
         this._defaultHandPresets = HAND_PRESETS;
-        this._handSliderValues = { spread: 0, grasp: 0, thumb: 1, index: 1, middle: 1, ring: 1, pinky: 1 };
+        this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
+        this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderRefs = {};
         this._handSliderValRefs = {};
         this._handBiasValues = [1.0, 1.0, 1.0];
@@ -2721,12 +2722,121 @@ class PoseStudioWidget {
     resetHandSliders() {
         if (!this._handSliderValues) return;
 
-        const defaults = { spread: 0, grasp: 0, thumb: 1, index: 1, middle: 1, ring: 1, pinky: 1 };
+        const defaults = this._handSliderDefaults || { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         for (const [key, value] of Object.entries(defaults)) {
             this._handSliderValues[key] = value;
             if (this._handSliderRefs[key]) this._handSliderRefs[key].value = String(value);
             if (this._handSliderValRefs[key]) this._handSliderValRefs[key].textContent = value.toFixed(2);
         }
+    }
+
+    _getPresetDataForSide(preset, side) {
+        return side === "r" ? preset?.preset_r : preset?.preset_l;
+    }
+
+    _lerpHandPresetData(poseA, poseB, t, side) {
+        const dataA = this._getPresetDataForSide(poseA, side);
+        const dataB = this._getPresetDataForSide(poseB, side);
+        const result = {};
+        if (!dataA || !dataB) return result;
+
+        for (const key of Object.keys(dataA)) {
+            const a = dataA[key];
+            const b = dataB[key];
+            if (!a || !b) continue;
+            const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+            const bFlip = dot < 0 ? [-b[0], -b[1], -b[2], -b[3]] : b;
+            const r = [
+                a[0] * (1 - t) + bFlip[0] * t,
+                a[1] * (1 - t) + bFlip[1] * t,
+                a[2] * (1 - t) + bFlip[2] * t,
+                a[3] * (1 - t) + bFlip[3] * t,
+            ];
+            const len = Math.hypot(r[0], r[1], r[2], r[3]) || 1;
+            result[key] = [r[0] / len, r[1] / len, r[2] / len, r[3] / len];
+        }
+
+        return result;
+    }
+
+    _sampleCurrentHandPose(side) {
+        if (!this.viewer?.bones || !this.viewer?.THREE) return null;
+        const result = {};
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            for (const segment of ["01", "02", "03"]) {
+                const bone = this.viewer.bones[`${prefix}_${segment}_${side}`];
+                if (!bone) continue;
+                result[`${prefix}_${segment}`] = [bone.quaternion.x, bone.quaternion.y, bone.quaternion.z, bone.quaternion.w];
+            }
+        }
+        return result;
+    }
+
+    _quatAngularDistance(a, b) {
+        const dot = Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        const clamped = Math.max(-1, Math.min(1, dot));
+        return 2 * Math.acos(clamped);
+    }
+
+    _estimateHandInterpolationValue(currentData, startData, endData, keys) {
+        let bestT = 0;
+        let bestScore = Number.POSITIVE_INFINITY;
+
+        for (let step = 0; step <= 100; step++) {
+            const t = step / 100;
+            const sampled = this._lerpHandPresetData({ preset_l: startData, preset_r: startData }, { preset_l: endData, preset_r: endData }, t, "l");
+            let score = 0;
+            for (const key of keys) {
+                const current = currentData[key];
+                const target = sampled[key];
+                if (!current || !target) continue;
+                score += this._quatAngularDistance(current, target);
+            }
+            if (score < bestScore) {
+                bestScore = score;
+                bestT = t;
+            }
+        }
+
+        return bestT;
+    }
+
+    calibrateHandSliderDefaults(side) {
+        if (!this.viewer || !this._defaultHandPresets || !side) return;
+        const { OPEN, CHOP, FIST } = this._defaultHandPresets;
+        if (!OPEN || !CHOP || !FIST) return;
+
+        const currentData = this._sampleCurrentHandPose(side);
+        if (!currentData) return;
+
+        const allKeys = Object.keys(currentData);
+        const spread = this._estimateHandInterpolationValue(
+            currentData,
+            this._getPresetDataForSide(CHOP, side),
+            this._getPresetDataForSide(OPEN, side),
+            allKeys,
+        );
+
+        const spreadBaseData = this._lerpHandPresetData(CHOP, OPEN, spread, side);
+        const fistData = this._getPresetDataForSide(FIST, side);
+        const perFinger = {};
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            const keys = ["01", "02", "03"].map((segment) => `${prefix}_${segment}`);
+            perFinger[prefix] = this._estimateHandInterpolationValue(currentData, spreadBaseData, fistData, keys);
+        }
+
+        const grasp = (perFinger.thumb + perFinger.index + perFinger.middle + perFinger.ring + perFinger.pinky) / 5;
+        this._handSliderDefaults = {
+            spread,
+            grasp,
+            thumb: perFinger.thumb,
+            index: perFinger.index,
+            middle: perFinger.middle,
+            ring: perFinger.ring,
+            pinky: perFinger.pinky,
+        };
+
+        this.resetHandSliders();
     }
 
     _createHandPopover() {
@@ -2848,31 +2958,10 @@ class PoseStudioWidget {
         if (!OPEN || !CHOP || !FIST) return;
 
         const side = this._activeHandSide;
-        const lerpPresetData = (poseA, poseB, t) => {
-            const dataA = side === "r" ? poseA.preset_r : poseA.preset_l;
-            const dataB = side === "r" ? poseB.preset_r : poseB.preset_l;
-            const result = {};
-            for (const key of Object.keys(dataA || {})) {
-                const a = dataA[key];
-                const b = dataB[key];
-                if (!a || !b) continue;
-                const dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-                const bFlip = dot < 0 ? [-b[0], -b[1], -b[2], -b[3]] : b;
-                const r = [
-                    a[0] * (1 - t) + bFlip[0] * t,
-                    a[1] * (1 - t) + bFlip[1] * t,
-                    a[2] * (1 - t) + bFlip[2] * t,
-                    a[3] * (1 - t) + bFlip[3] * t,
-                ];
-                const len = Math.sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2] + r[3] * r[3]) || 1;
-                result[key] = [r[0] / len, r[1] / len, r[2] / len, r[3] / len];
-            }
-            return result;
-        };
 
         this.viewer.interpolateHandPose(CHOP, OPEN, this._handSliderValues.spread, side);
         for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
-            const spreadBaseData = lerpPresetData(CHOP, OPEN, this._handSliderValues.spread);
+            const spreadBaseData = this._lerpHandPresetData(CHOP, OPEN, this._handSliderValues.spread, side);
             const fistData = side === "r" ? FIST.preset_r : FIST.preset_l;
             const startPose = { preset_l: spreadBaseData, preset_r: spreadBaseData };
             const endPose = { preset_l: fistData, preset_r: fistData };
@@ -2885,6 +2974,7 @@ class PoseStudioWidget {
     showHandControlPopover(side) {
         if (!side || !this._handPopover) return;
         this._activeHandSide = side;
+        this.calibrateHandSliderDefaults(side);
         if (this._handPopoverTitle) {
             this._handPopoverTitle.textContent = side === "l" ? "Left Hand" : "Right Hand";
         }
