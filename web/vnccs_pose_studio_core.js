@@ -846,7 +846,7 @@ export class PoseViewerCore {
     _isFingerHandBoneName(name) {
         if (!name) return false;
         const lower = name.toLowerCase();
-        return /(thumb|index|middle|ring|pinky|finger|f_)/.test(lower);
+        return /^(thumb|index|middle|ring|pinky)(?:_|$)|\bfinger\b/.test(lower);
     }
 
     _shouldMarkerBeVisible(marker) {
@@ -1168,7 +1168,7 @@ export class PoseViewerCore {
         this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
 
         this.hoveredBoneName = null;
-        this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null };
+        this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
     }
 
     // === Light Management ===
@@ -1316,6 +1316,10 @@ export class PoseViewerCore {
                             this.directDrag.effector = effectorObj;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
+                            this.directDrag.hasDragged = false;
+                            this.directDrag.clickedBone = bone;
+                            this.directDrag.startClientX = e.clientX;
+                            this.directDrag.startClientY = e.clientY;
 
                             const isMidJoint = (bone.name === chainDef.poleBone);
                             this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
@@ -1344,7 +1348,8 @@ export class PoseViewerCore {
                             }
 
                             this.orbit.enabled = false; // Disable orbit while direct dragging
-                            this.selectBone(bone); // Show selection visually (and fallback to Rotate FK after release)
+                            this.hoveredBoneName = bone.name;
+                            this.updateMarkers();
 
                             // Detach transform immediately so the gizmo doesn't glitch during IK solve
                             this.transform.detach();
@@ -1410,6 +1415,10 @@ export class PoseViewerCore {
                             this.directDrag.effector = effectorObj;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
+                            this.directDrag.hasDragged = false;
+                            this.directDrag.clickedBone = nearest;
+                            this.directDrag.startClientX = e.clientX;
+                            this.directDrag.startClientY = e.clientY;
 
                             const isMidJoint = (nearest.name === chainDef.poleBone);
                             this.directDrag.targetType = isMidJoint ? 'midJoint' : 'effector';
@@ -1438,7 +1447,8 @@ export class PoseViewerCore {
                             }
 
                             this.orbit.enabled = false;
-                            this.selectBone(nearest);
+                            this.hoveredBoneName = nearest.name;
+                            this.updateMarkers();
 
                             // Detach transform immediately so the gizmo doesn't glitch during IK solve
                             this.transform.detach();
@@ -1467,6 +1477,14 @@ export class PoseViewerCore {
 
     handlePointerMove(e) {
         if (!this.initialized || !this.skinnedMesh) return;
+
+        if (this.directDrag?.active && !this.directDrag.hasDragged) {
+            const movedX = e.clientX - this.directDrag.startClientX;
+            const movedY = e.clientY - this.directDrag.startClientY;
+            if ((movedX * movedX + movedY * movedY) > 9) {
+                this.directDrag.hasDragged = true;
+            }
+        }
 
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -1588,9 +1606,15 @@ export class PoseViewerCore {
         if (!this.initialized || !this.skinnedMesh) return;
 
         if (this.directDrag && this.directDrag.active) {
+            const dragged = !!this.directDrag.hasDragged;
+            const clickedBone = this.directDrag.clickedBone || null;
             this.directDrag.active = false;
             this.directDrag.effector = null;
             this.directDrag.chainKey = null;
+            this.directDrag.clickedBone = null;
+            this.directDrag.hasDragged = false;
+            this.directDrag.startClientX = 0;
+            this.directDrag.startClientY = 0;
             this.orbit.enabled = true; // Restore orbit
 
             if (this.canvas.hasPointerCapture(e.pointerId)) {
@@ -1610,12 +1634,13 @@ export class PoseViewerCore {
             }
             this.dispatchPoseChange();
 
-            // Allow TransformControls back for the selected bone (FK) mode now that drag is done
-            if (this.selectedBone) {
-                // Completely detach and reattach to flush out any bad matrix internal states
-                this.transform.detach();
-                this.transform.setMode("rotate");
-                this.transform.attach(this.selectedBone);
+            this.transform.detach();
+            if (dragged) {
+                this.selectedBone = null;
+                this.hoveredBoneName = null;
+                this.updateMarkers();
+            } else if (clickedBone) {
+                this.selectBone(clickedBone);
             }
 
             return;
