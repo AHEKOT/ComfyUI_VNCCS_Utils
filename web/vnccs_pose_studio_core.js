@@ -764,6 +764,8 @@ export class PoseViewerCore {
             onError: console.error,
             onInteractionStart: null,
             onInteractionEnd: null,
+            onHandHover: null,
+            onHandActivate: null,
 
             syncMode: 'end',
             skinMode: 'flat_color',
@@ -830,6 +832,88 @@ export class PoseViewerCore {
         this.queuedSyncFrame = null;
         this.cameraParams = null; // Store widget camera params explicitly
         this.isInteractionActive = null;
+        this._hoveredHandSide = null;
+    }
+
+    _getHandSideFromBoneName(name) {
+        if (!name) return null;
+        const lower = name.toLowerCase();
+        if (!lower.endsWith('_l') && !lower.endsWith('_r')) return null;
+        if (!/(hand|thumb|index|middle|ring|pinky)/.test(lower)) return null;
+        return lower.endsWith('_l') ? 'l' : 'r';
+    }
+
+    _isFingerHandBoneName(name) {
+        if (!name) return false;
+        const lower = name.toLowerCase();
+        return /(thumb|index|middle|ring|pinky|finger|f_)/.test(lower);
+    }
+
+    _shouldMarkerBeVisible(marker) {
+        const bone = this.boneList?.[marker?.userData?.boneIndex];
+        if (!bone) return false;
+        return !this._isFingerHandBoneName(bone.name);
+    }
+
+    _getRaycastableJointMarkers() {
+        return (this.jointMarkers || []).filter((marker) => marker?.visible);
+    }
+
+    _resolveHandBone(bone) {
+        const side = this._getHandSideFromBoneName(bone?.name);
+        if (!side) return bone;
+        return this.bones?.[`hand_${side}`] || bone;
+    }
+
+    _isHandSurfaceActivation(side, point) {
+        if (!side || !point || !this.THREE) return false;
+
+        const wrist = this.bones?.[`hand_${side}`];
+        const middleBase = this.bones?.[`middle_01_${side}`];
+        const indexBase = this.bones?.[`index_01_${side}`] || middleBase;
+        const ringBase = this.bones?.[`ring_01_${side}`] || middleBase;
+        if (!wrist || !middleBase) return false;
+
+        const wristPos = new this.THREE.Vector3();
+        const middlePos = new this.THREE.Vector3();
+        const indexPos = new this.THREE.Vector3();
+        const ringPos = new this.THREE.Vector3();
+        wrist.getWorldPosition(wristPos);
+        middleBase.getWorldPosition(middlePos);
+        indexBase.getWorldPosition(indexPos);
+        ringBase.getWorldPosition(ringPos);
+
+        const palmCenter = new this.THREE.Vector3()
+            .add(middlePos)
+            .add(indexPos)
+            .add(ringPos)
+            .multiplyScalar(1 / 3);
+
+        const handDir = palmCenter.clone().sub(wristPos);
+        const handLength = handDir.length();
+        if (handLength < 1e-4) return false;
+
+        handDir.normalize();
+        const clickOffset = point.clone().sub(wristPos);
+        const alongHand = clickOffset.dot(handDir);
+        const wristDeadZone = Math.max(0.12, handLength * 0.32);
+
+        return alongHand > wristDeadZone;
+    }
+
+    _updateHoveredHand(side) {
+        if (this._hoveredHandSide === side) return;
+        this._hoveredHandSide = side;
+
+        if (side) {
+            this.showHandHighlightRing(side);
+        } else {
+            this.hideHandHighlightRing();
+        }
+
+        if (this.options.onHandHover) {
+            this.options.onHandHover({ side });
+        }
     }
 
     dispatchPoseChange() {
@@ -1206,13 +1290,13 @@ export class PoseViewerCore {
         // --- PASS 1: Raycast against Joint Markers directly ---
         // Markers are spheres, very reliable targets.
         // recursive=false because markers are direct children of the scene (or in a flat array)
-        const markerIntersects = raycaster.intersectObjects(this.jointMarkers, false);
+        const markerIntersects = raycaster.intersectObjects(this._getRaycastableJointMarkers(), false);
 
         if (markerIntersects.length > 0) {
             // Sort by distance and pick the closest one
             markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
-            const boneIdx = this.jointMarkers.indexOf(hitMarker);
+            const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
                 const bone = this.boneList[boneIdx];
 
@@ -1300,6 +1384,17 @@ export class PoseViewerCore {
 
             // Tighter threshold for mesh-based selection to avoid accidental jumps
             if (nearest && minD < 1.5) {
+                nearest = this._resolveHandBone(nearest);
+                const handSide = this._getHandSideFromBoneName(nearest?.name);
+                if (handSide) {
+                    if (this._isHandSurfaceActivation(handSide, point) && this.options.onHandActivate) {
+                        this.options.onHandActivate({ side: handSide, boneName: nearest.name, clientX: e.clientX, clientY: e.clientY });
+                    } else {
+                        this.selectBone(nearest);
+                    }
+                    return;
+                }
+
                 if (this.ikMode && this.ikController) {
                     const chainKey = this.ikController.getChainForBone(nearest.name);
                     if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
@@ -1435,20 +1530,22 @@ export class PoseViewerCore {
 
         // Skip hover if we are dragging via TransformControls
         if (this.transform.dragging) {
-            if (this.hoveredBoneName) {
+            if (this.hoveredBoneName || this._hoveredHandSide) {
                 this.hoveredBoneName = null;
+                this._updateHoveredHand(null);
                 this.updateMarkers();
             }
             return;
         }
 
         let hitBone = null;
+        let hoveredHandSide = null;
 
-        const markerIntersects = raycaster.intersectObjects(this.jointMarkers, false);
+        const markerIntersects = raycaster.intersectObjects(this._getRaycastableJointMarkers(), false);
         if (markerIntersects.length > 0) {
             markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
-            const boneIdx = this.jointMarkers.indexOf(hitMarker);
+            const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
                 hitBone = this.boneList[boneIdx];
             }
@@ -1467,14 +1564,21 @@ export class PoseViewerCore {
                 }
 
                 if (nearest && minD < 1.5) {
-                    hitBone = nearest;
+                    const resolvedBone = this._resolveHandBone(nearest);
+                    const handSide = this._getHandSideFromBoneName(resolvedBone?.name);
+                    if (handSide && this._isHandSurfaceActivation(handSide, point)) {
+                        hoveredHandSide = handSide;
+                    } else {
+                        hitBone = nearest;
+                    }
                 }
             }
         }
 
         const newHoveredName = hitBone ? hitBone.name : null;
-        if (this.hoveredBoneName !== newHoveredName) {
+        if (this.hoveredBoneName !== newHoveredName || this._hoveredHandSide !== hoveredHandSide) {
             this.hoveredBoneName = newHoveredName;
+            this._updateHoveredHand(hoveredHandSide);
             this.updateMarkers();
             this.requestRender();
         }
@@ -2043,7 +2147,7 @@ export class PoseViewerCore {
     }
 
     updateMarkers() {
-        if (!this.markerMatNormal || !this.markerMatSelected) return;
+        if (!this.markerMatNormal || !this.markerMatSelected || !this.markerMatHandHover) return;
 
         let highlightedBones = new Set();
 
@@ -2076,16 +2180,26 @@ export class PoseViewerCore {
 
         for (let i = 0; i < this.jointMarkers.length; i++) {
             const marker = this.jointMarkers[i];
-            const bone = this.boneList[i];
+            const bone = this.boneList[marker.userData?.boneIndex];
             const isSelected = bone && highlightedBones.has(bone.name);
             const isHovered = bone && hoveredBones.has(bone.name);
+            const isHandHovered = bone && this._getHandSideFromBoneName(bone.name) && this._hoveredHandSide === this._getHandSideFromBoneName(bone.name);
 
             // Give precedence to selected over hovered
-            marker.material = (isSelected || isHovered) ? this.markerMatSelected : this.markerMatNormal;
+            marker.material = isSelected
+                ? this.markerMatSelected
+                : isHandHovered
+                    ? this.markerMatHandHover
+                    : isHovered
+                        ? this.markerMatSelected
+                        : this.markerMatNormal;
 
             if (isSelected) {
                 marker.scale.setScalar(1.5);
                 marker.renderOrder = 999;
+            } else if (isHandHovered) {
+                marker.scale.setScalar(1.4);
+                marker.renderOrder = 700;
             } else if (isHovered) {
                 marker.scale.setScalar(1.25);
                 marker.renderOrder = 500;
@@ -2336,15 +2450,20 @@ export class PoseViewerCore {
                 color: 0x00ffff, transparent: true, opacity: 0.9, depthTest: false, depthWrite: false
             });
         }
+        if (!this.markerMatHandHover) {
+            this.markerMatHandHover = new THREE.MeshBasicMaterial({
+                color: 0xffd666, transparent: true, opacity: 0.95, depthTest: false, depthWrite: false
+            });
+        }
 
-        const fingerPatterns = ['finger', 'thumb', 'index', 'middle', 'ring', 'pinky', 'f_'];
         for (let i = 0; i < this.boneList.length; i++) {
             const bone = this.boneList[i];
-            const isFinger = fingerPatterns.some(p => bone.name.toLowerCase().includes(p));
+            const isFinger = this._isFingerHandBoneName(bone.name);
             const sphere = new THREE.Mesh(isFinger ? this.markerGeoFinger : this.markerGeoNormal, this.markerMatNormal);
             sphere.userData.boneIndex = i;
             sphere.userData.sharedMaterial = true;
             sphere.renderOrder = 999;
+            sphere.visible = this._shouldMarkerBeVisible(sphere);
             bone.add(sphere);
             sphere.position.set(0, 0, 0);
             this.jointMarkers.push(sphere);
@@ -2707,6 +2826,310 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
+    interpolateFingerPose(poseA, poseB, t, side, fingerPrefix, bias = [1, 1, 1]) {
+        if (!this.boneList) return;
+        const dataA = side === "r" ? poseA.preset_r : poseA.preset_l;
+        const dataB = side === "r" ? poseB.preset_r : poseB.preset_l;
+        if (!dataA || !dataB) return;
+
+        const THREE = this.THREE;
+        const qa = new THREE.Quaternion();
+        const qb = new THREE.Quaternion();
+
+        for (const [index, segment] of ["01", "02", "03"].entries()) {
+            const bone = this.bones[`${fingerPrefix}_${segment}_${side}`];
+            if (!bone) continue;
+            const a = dataA[`${fingerPrefix}_${segment}`];
+            const b = dataB[`${fingerPrefix}_${segment}`];
+            if (!a || !b) continue;
+            qa.set(a[0], a[1], a[2], a[3]);
+            qb.set(b[0], b[1], b[2], b[3]);
+            bone.quaternion.slerpQuaternions(qa, qb, Math.min(1.2, Math.max(-0.2, t * bias[index])));
+            bone.quaternion.normalize();
+            bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+            bone.updateMatrixWorld(true);
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.requestRender();
+    }
+
+    interpolateHandPose(poseA, poseB, t, side) {
+        if (!this.boneList) return;
+
+        const dataA = side === "r" ? poseA.preset_r : poseA.preset_l;
+        const dataB = side === "r" ? poseB.preset_r : poseB.preset_l;
+        if (!dataA || !dataB) return;
+
+        const THREE = this.THREE;
+        const qa = new THREE.Quaternion();
+        const qb = new THREE.Quaternion();
+
+        for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+            for (const segment of ["01", "02", "03"]) {
+                const bone = this.bones[`${prefix}_${segment}_${side}`];
+                if (!bone) continue;
+                const a = dataA[`${prefix}_${segment}`];
+                const b = dataB[`${prefix}_${segment}`];
+                if (!a || !b) continue;
+                qa.set(a[0], a[1], a[2], a[3]);
+                qb.set(b[0], b[1], b[2], b[3]);
+                bone.quaternion.slerpQuaternions(qa, qb, t);
+                bone.quaternion.normalize();
+                bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+                bone.updateMatrixWorld(true);
+            }
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.requestRender();
+    }
+
+    applyHandPresetPreview(presetData, side) {
+        if (!this.boneList || !presetData) return;
+
+        const applySide = (targetSide, data) => {
+            if (!data) return;
+            for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+                for (const segment of ["01", "02", "03"]) {
+                    const bone = this.bones[`${prefix}_${segment}_${targetSide}`];
+                    if (!bone) continue;
+                    const quaternion = data[`${prefix}_${segment}`];
+                    if (!quaternion) continue;
+                    bone.quaternion.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
+                    bone.quaternion.normalize();
+                    bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+                    bone.updateMatrixWorld(true);
+                }
+            }
+        };
+
+        if (presetData.preset_l || presetData.preset_r) {
+            if (side === "both") {
+                applySide("l", presetData.preset_l);
+                applySide("r", presetData.preset_r);
+            } else if (side === "l") {
+                applySide("l", presetData.preset_l);
+            } else if (side === "r") {
+                applySide("r", presetData.preset_r);
+            }
+        } else if (side === "both") {
+            applySide("l", presetData);
+            applySide("r", presetData);
+        } else {
+            applySide(side, presetData);
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.requestRender();
+    }
+
+    saveHandSnapshot() {
+        const snapshot = {};
+        for (const side of ["l", "r"]) {
+            for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+                for (const segment of ["01", "02", "03"]) {
+                    const bone = this.bones[`${prefix}_${segment}_${side}`];
+                    if (!bone) continue;
+                    snapshot[`${prefix}_${segment}_${side}`] = [bone.rotation.x, bone.rotation.y, bone.rotation.z];
+                }
+            }
+        }
+        this._handSnapshot = snapshot;
+    }
+
+    restoreHandSnapshot() {
+        if (!this._handSnapshot) return;
+        for (const [boneName, rotation] of Object.entries(this._handSnapshot)) {
+            const bone = this.bones[boneName];
+            if (!bone) continue;
+            bone.rotation.set(rotation[0], rotation[1], rotation[2]);
+            bone.quaternion.setFromEuler(bone.rotation);
+            bone.updateMatrixWorld(true);
+        }
+        this._handSnapshot = null;
+        if (this.skeleton) this.skeleton.update();
+        this.updateMarkers();
+        this.requestRender();
+    }
+
+    applyHandPreset(side, presetData) {
+        if (!this.boneList || !presetData) return;
+        this.recordState();
+
+        const applySide = (targetSide, data) => {
+            if (!data) return;
+            for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+                for (const segment of ["01", "02", "03"]) {
+                    const bone = this.bones[`${prefix}_${segment}_${targetSide}`];
+                    if (!bone) continue;
+                    const quaternion = data[`${prefix}_${segment}`];
+                    if (!quaternion) continue;
+                    bone.quaternion.set(quaternion[0], quaternion[1], quaternion[2], quaternion[3]);
+                    bone.quaternion.normalize();
+                    bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+                    bone.updateMatrixWorld(true);
+                }
+            }
+        };
+
+        if (presetData.preset_l || presetData.preset_r) {
+            if (side === "both") {
+                applySide("l", presetData.preset_l);
+                applySide("r", presetData.preset_r);
+            } else if (side === "l") {
+                applySide("l", presetData.preset_l);
+            } else if (side === "r") {
+                applySide("r", presetData.preset_r);
+            }
+        } else if (side === "both") {
+            applySide("l", presetData);
+            applySide("r", presetData);
+        } else {
+            applySide(side, presetData);
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.requestRender();
+        this.dispatchPoseChange();
+    }
+
+    captureHandPreset(side) {
+        const captureSide = (targetSide) => {
+            const data = {};
+            for (const prefix of ["thumb", "index", "middle", "ring", "pinky"]) {
+                for (const segment of ["01", "02", "03"]) {
+                    const bone = this.bones[`${prefix}_${segment}_${targetSide}`];
+                    if (!bone) continue;
+                    const quaternion = bone.quaternion;
+                    data[`${prefix}_${segment}`] = [quaternion.x, quaternion.y, quaternion.z, quaternion.w];
+                }
+            }
+            return data;
+        };
+
+        const canonical = captureSide(side);
+        const mirrored = {};
+        for (const [key, quaternion] of Object.entries(canonical)) {
+            mirrored[key] = [-quaternion[0], quaternion[1], quaternion[2], -quaternion[3]];
+        }
+
+        return {
+            source_side: side,
+            preset_l: side === "l" ? canonical : mirrored,
+            preset_r: side === "r" ? canonical : mirrored,
+        };
+    }
+
+    _getHandMarkers(side) {
+        const handBoneNames = new Set([
+            "hand_l", "thumb_01_l", "thumb_02_l", "thumb_03_l", "index_01_l", "index_02_l", "index_03_l",
+            "middle_01_l", "middle_02_l", "middle_03_l", "ring_01_l", "ring_02_l", "ring_03_l",
+            "pinky_01_l", "pinky_02_l", "pinky_03_l",
+            "hand_r", "thumb_01_r", "thumb_02_r", "thumb_03_r", "index_01_r", "index_02_r", "index_03_r",
+            "middle_01_r", "middle_02_r", "middle_03_r", "ring_01_r", "ring_02_r", "ring_03_r",
+            "pinky_01_r", "pinky_02_r", "pinky_03_r",
+        ]);
+
+        return this.jointMarkers.filter((marker) => {
+            const bone = this.boneList[marker.userData.boneIndex];
+            if (!bone || !handBoneNames.has(bone.name)) return false;
+            if (side === "both") return true;
+            return bone.name.endsWith(`_${side}`);
+        });
+    }
+
+    showHandHighlightRing(side) {
+        this.hideHandHighlightRing();
+        const THREE = this.THREE;
+        const sides = side === "both" ? ["l", "r"] : [side];
+        this._handRings = [];
+
+        for (const currentSide of sides) {
+            const handBone = this.bones[`hand_${currentSide}`];
+            if (!handBone) continue;
+
+            const centerBone = this.bones[`middle_01_${currentSide}`] || handBone;
+            const handPosition = new THREE.Vector3();
+            centerBone.getWorldPosition(handPosition);
+
+            let maxDistance = 0.1;
+            for (const tip of ["thumb_03", "index_03", "middle_03", "ring_03", "pinky_03"]) {
+                const bone = this.bones[`${tip}_${currentSide}`];
+                if (!bone) continue;
+                const position = new THREE.Vector3();
+                bone.getWorldPosition(position);
+                maxDistance = Math.max(maxDistance, handPosition.distanceTo(position));
+            }
+
+            const sphere = new THREE.Mesh(
+                new THREE.SphereGeometry(maxDistance * 1.3, 16, 12),
+                new THREE.MeshBasicMaterial({
+                    color: 0xffd666,
+                    transparent: true,
+                    opacity: 0.18,
+                    depthTest: false,
+                    side: THREE.FrontSide,
+                })
+            );
+            sphere.position.copy(handPosition);
+            sphere.renderOrder = 998;
+            sphere.onBeforeRender = () => {
+                centerBone.getWorldPosition(sphere.position);
+            };
+
+            this.scene.add(sphere);
+            this._handRings.push(sphere);
+        }
+
+        this.requestRender();
+    }
+
+    hideHandHighlightRing() {
+        if (!this._handRings) return;
+        for (const ring of this._handRings) {
+            ring.geometry.dispose();
+            ring.material.dispose();
+            this.scene.remove(ring);
+        }
+        this._handRings = null;
+        this.requestRender();
+    }
+
+    highlightHandMarkers(side) {
+        this.unhighlightHandMarkers();
+        this._highlightedMarkers = this._getHandMarkers(side);
+        this._highlightedMarkers.forEach((marker) => {
+            marker.material = marker.material.clone();
+            marker.material.color.setHex(0x00ffff);
+        });
+        this.requestRender();
+    }
+
+    unhighlightHandMarkers() {
+        if (!this._highlightedMarkers) return;
+        this._highlightedMarkers.forEach((marker) => {
+            marker.material.dispose();
+            marker.material = this.markerMatNormal;
+        });
+        this._highlightedMarkers = null;
+        this.updateMarkers();
+        this.requestRender();
+    }
+
+    flashHandMarkers(side) {
+        this.highlightHandMarkers(side);
+        setTimeout(() => this.unhighlightHandMarkers(), 400);
+    }
+
     setModelRotation(x, y, z) {
         this.modelRotation.x = x !== undefined ? x : this.modelRotation.x;
         this.modelRotation.y = y !== undefined ? y : this.modelRotation.y;
@@ -2940,7 +3363,7 @@ export class PoseViewerCore {
             if (this.renderer.getPixelRatio() !== oldPixelRatio) this.renderer.setPixelRatio(oldPixelRatio);
             this.scene.background = oldBg;
 
-            this.jointMarkers.forEach(m => m.visible = true);
+            this.jointMarkers.forEach(m => m.visible = markersVisible && this._shouldMarkerBeVisible(m));
             if (this.transform) this.transform.visible = transformVisible;
             if (this.skeletonHelper) this.skeletonHelper.visible = true;
             if (this.gridHelper) this.gridHelper.visible = true;
@@ -3734,7 +4157,7 @@ export class PoseViewerCore {
         this._mannequinVisible = visible;
         if (this.skinnedMesh) this.skinnedMesh.visible = visible;
         if (this.skeletonHelper) this.skeletonHelper.visible = visible;
-        if (this.jointMarkers) this.jointMarkers.forEach(marker => { marker.visible = visible; });
+        if (this.jointMarkers) this.jointMarkers.forEach(marker => { marker.visible = visible && this._shouldMarkerBeVisible(marker); });
         this.requestRender();
     }
 
