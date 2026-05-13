@@ -1,3 +1,5 @@
+import { IK_CHAINS } from "./vnccs_pose_studio_core.js";
+
 const THREE_VERSION = "0.160.0";
 
 const MIXAMO_TO_MH_BONE_MAP = {
@@ -325,10 +327,14 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         head: viewer._getBoneWorldPositionForImport('head'),
         leftShoulder: viewer._getBoneWorldPositionForImport('upperarm_l'),
         rightShoulder: viewer._getBoneWorldPositionForImport('upperarm_r'),
+        leftElbow: viewer._getBoneWorldPositionForImport('lowerarm_l'),
+        rightElbow: viewer._getBoneWorldPositionForImport('lowerarm_r'),
         leftWrist: viewer._getBoneWorldPositionForImport('hand_l'),
         rightWrist: viewer._getBoneWorldPositionForImport('hand_r'),
         leftHip: viewer._getBoneWorldPositionForImport('thigh_l'),
         rightHip: viewer._getBoneWorldPositionForImport('thigh_r'),
+        leftKnee: viewer._getBoneWorldPositionForImport('calf_l'),
+        rightKnee: viewer._getBoneWorldPositionForImport('calf_r'),
         leftAnkle: viewer._getBoneWorldPositionForImport('foot_l'),
         rightAnkle: viewer._getBoneWorldPositionForImport('foot_r'),
     };
@@ -345,6 +351,12 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         const vector = sourceVector(sourceAnchor, sourcePoint);
         if (!worldAnchor || !vector) return null;
         return worldAnchor.clone().add(transformedOffset(vector, scale));
+    };
+    const segmentWorldPoint = (worldAnchor, sourceAnchor, sourcePoint, targetLength) => {
+        const vector = sourceVector(sourceAnchor, sourcePoint);
+        const length = vectorLength(vector);
+        if (!worldAnchor || !vector || length <= 1e-5 || targetLength <= 1e-5) return null;
+        return worldAnchor.clone().add(transformedOffset(vector, targetLength / length));
     };
     const scaleBetween = (sourceAnchor, sourcePoint, worldAnchor, worldPoint, fallback) => {
         const sourceLen = vectorLength(sourceVector(sourceAnchor, sourcePoint));
@@ -370,14 +382,31 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         right_hip: scaledWorldPoint(rest.pelvis, source.pelvis, source.rightHip, torsoScale),
     };
 
-    worldKps.left_elbow = scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || source.pelvis, source.leftElbow, leftArmScale);
-    worldKps.right_elbow = scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || source.pelvis, source.rightElbow, rightArmScale);
-    worldKps.left_wrist = scaledWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || source.pelvis, source.leftWrist, leftArmScale);
-    worldKps.right_wrist = scaledWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || source.pelvis, source.rightWrist, rightArmScale);
-    worldKps.left_knee = scaledWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || source.pelvis, source.leftKnee, leftLegScale);
-    worldKps.right_knee = scaledWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || source.pelvis, source.rightKnee, rightLegScale);
-    worldKps.left_ankle = scaledWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || source.pelvis, source.leftAnkle, leftLegScale);
-    worldKps.right_ankle = scaledWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || source.pelvis, source.rightAnkle, rightLegScale);
+    const leftUpperArmLen = worldDistance(rest.leftShoulder, rest.leftElbow);
+    const rightUpperArmLen = worldDistance(rest.rightShoulder, rest.rightElbow);
+    const leftLowerArmLen = worldDistance(rest.leftElbow, rest.leftWrist);
+    const rightLowerArmLen = worldDistance(rest.rightElbow, rest.rightWrist);
+    const leftThighLen = worldDistance(rest.leftHip, rest.leftKnee);
+    const rightThighLen = worldDistance(rest.rightHip, rest.rightKnee);
+    const leftCalfLen = worldDistance(rest.leftKnee, rest.leftAnkle);
+    const rightCalfLen = worldDistance(rest.rightKnee, rest.rightAnkle);
+
+    worldKps.left_elbow = segmentWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || source.pelvis, source.leftElbow, leftUpperArmLen)
+        || scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || source.pelvis, source.leftElbow, leftArmScale);
+    worldKps.right_elbow = segmentWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || source.pelvis, source.rightElbow, rightUpperArmLen)
+        || scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || source.pelvis, source.rightElbow, rightArmScale);
+    worldKps.left_wrist = segmentWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || source.pelvis, source.leftWrist, leftLowerArmLen)
+        || scaledWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || source.pelvis, source.leftWrist, leftArmScale);
+    worldKps.right_wrist = segmentWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || source.pelvis, source.rightWrist, rightLowerArmLen)
+        || scaledWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || source.pelvis, source.rightWrist, rightArmScale);
+    worldKps.left_knee = segmentWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || source.pelvis, source.leftKnee, leftThighLen)
+        || scaledWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || source.pelvis, source.leftKnee, leftLegScale);
+    worldKps.right_knee = segmentWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || source.pelvis, source.rightKnee, rightThighLen)
+        || scaledWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || source.pelvis, source.rightKnee, rightLegScale);
+    worldKps.left_ankle = segmentWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || source.pelvis, source.leftAnkle, leftCalfLen)
+        || scaledWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || source.pelvis, source.leftAnkle, leftLegScale);
+    worldKps.right_ankle = segmentWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || source.pelvis, source.rightAnkle, rightCalfLen)
+        || scaledWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || source.pelvis, source.rightAnkle, rightLegScale);
 
     if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
         worldKps.neck = worldKps.left_shoulder.clone().add(worldKps.right_shoulder).multiplyScalar(0.5);
@@ -405,6 +434,38 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
             source,
         },
     };
+}
+
+function applyExplicitMixamoBendTargets(viewer, worldKps) {
+    if (!viewer?.ikController?.ccdSolver || !viewer?.bones || !viewer?.skinnedMesh || !worldKps) return false;
+
+    const targets = [
+        { chainKey: 'rightArm', effector: worldKps.right_wrist, pole: worldKps.right_elbow },
+        { chainKey: 'leftArm', effector: worldKps.left_wrist, pole: worldKps.left_elbow },
+        { chainKey: 'rightLeg', effector: worldKps.right_ankle, pole: worldKps.right_knee },
+        { chainKey: 'leftLeg', effector: worldKps.left_ankle, pole: worldKps.left_knee },
+    ];
+
+    let applied = false;
+    for (const { chainKey, effector, pole } of targets) {
+        const chainDef = IK_CHAINS[chainKey];
+        if (!chainDef || !effector || !pole) continue;
+
+        const poleHelper = viewer.ikController.poleTargets?.[chainKey];
+        if (poleHelper) poleHelper.position.copy(pole);
+
+        viewer.ikController.ccdSolver.solve(chainDef, viewer.bones, effector, pole);
+        viewer.skinnedMesh.updateMatrixWorld(true);
+        applied = true;
+    }
+
+    if (applied) {
+        if (viewer.skeleton) viewer.skeleton.update();
+        viewer.skinnedMesh.updateMatrixWorld(true);
+        if (viewer.updateIKEffectorPositions) viewer.updateIKEffectorPositions();
+    }
+
+    return applied;
 }
 
 function buildMixamoLegTargets(sourceBones, viewer) {
@@ -547,6 +608,7 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
                 viewer._hmr2WorldKps = mixamoKeypoints.worldKps;
                 if (viewer._drawHMR2Figure) viewer._drawHMR2Figure(mixamoKeypoints.worldKps);
                 viewer.fitMannequinToHMR2(0);
+                applyExplicitMixamoBendTargets(viewer, mixamoKeypoints.worldKps);
                 if (historySnapshot) viewer.history = historySnapshot;
                 if (futureSnapshot) viewer.future = futureSnapshot;
                 poses.push(viewer.getPose());
