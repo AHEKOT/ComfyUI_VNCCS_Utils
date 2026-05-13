@@ -468,6 +468,13 @@ function applyExplicitMixamoBendTargets(viewer, worldKps) {
     return applied;
 }
 
+function clearImportedDebugFigures(viewer) {
+    if (!viewer?._clearImportedFigureGroup) return;
+    viewer._clearImportedFigureGroup('_hmr2FigureGroup');
+    viewer._clearImportedFigureGroup('_rtmwFigureGroup');
+    viewer._clearImportedFigureGroup('_kpFigureGroup');
+}
+
 function buildMixamoLegTargets(sourceBones, viewer) {
     const pelvisSource = getSourceBonePoint(sourceBones, 'Hips');
     const leftHipSource = getSourceBonePoint(sourceBones, 'LeftUpLeg');
@@ -605,10 +612,11 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
             if (mixamoKeypoints?.worldKps && viewer.fitMannequinToHMR2) {
                 const historySnapshot = Array.isArray(viewer.history) ? viewer.history.slice() : null;
                 const futureSnapshot = Array.isArray(viewer.future) ? viewer.future.slice() : null;
+                clearImportedDebugFigures(viewer);
                 viewer._hmr2WorldKps = mixamoKeypoints.worldKps;
-                if (viewer._drawHMR2Figure) viewer._drawHMR2Figure(mixamoKeypoints.worldKps);
                 viewer.fitMannequinToHMR2(0);
                 applyExplicitMixamoBendTargets(viewer, mixamoKeypoints.worldKps);
+                clearImportedDebugFigures(viewer);
                 if (historySnapshot) viewer.history = historySnapshot;
                 if (futureSnapshot) viewer.future = futureSnapshot;
                 poses.push(viewer.getPose());
