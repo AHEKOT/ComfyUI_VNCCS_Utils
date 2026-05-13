@@ -8,6 +8,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
+import { importMixamoFBXAsPoses } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
@@ -1892,7 +1893,7 @@ class PoseStudioWidget {
 
         // Hidden file inputs
         const fileInput = document.createElement("input");
-        fileInput.type = "file"; fileInput.accept = ".json,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
+        fileInput.type = "file"; fileInput.accept = ".json,.fbx,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
         fileInput.addEventListener("change", (e) => this.handleFileImport(e));
         this.fileImportInput = fileInput;
         this.container.appendChild(fileInput);
@@ -3455,6 +3456,37 @@ class PoseStudioWidget {
     handleFileImport(e) {
         const file = e.target.files[0];
         if (!file) return;
+        const input = e.target;
+        const lowerName = (file.name || '').toLowerCase();
+
+        if (lowerName.endsWith('.fbx')) {
+            (async () => {
+                try {
+                    const result = await importMixamoFBXAsPoses(file, this.viewer, {
+                        fps: 12,
+                        maxFrames: 48,
+                    });
+
+                    this.poses = result.poses;
+                    this.activeTab = 0;
+                    this.updateTabs();
+
+                    if (this.viewer && this.viewer.isInitialized()) {
+                        this.viewer.setPose(this.poses[0], true);
+                        this.updateRotationSliders();
+                    }
+
+                    this.syncToNode(true);
+                    this.showMessage(`Mixamo FBX imported successfully: ${this.poses.length} poses from ${result.clipName}.`);
+                } catch (err) {
+                    console.error('Error importing Mixamo FBX:', err);
+                    this.showMessage(`Failed to import FBX animation: ${err?.message || err}`, true);
+                } finally {
+                    input.value = '';
+                }
+            })();
+            return;
+        }
 
         // Image files → parse as OpenPose image
         if (file.type.startsWith("image/")) {
@@ -3479,7 +3511,7 @@ class PoseStudioWidget {
                     }
                 };
                 img.src = event.target.result;
-                e.target.value = '';
+                input.value = '';
             };
             reader.readAsDataURL(file);
             return;
@@ -3510,7 +3542,7 @@ class PoseStudioWidget {
                             this.showMessage("Failed to apply SAM3D JSON.", true);
                         }
                     }
-                    e.target.value = '';
+                    input.value = '';
                     return;
                 }
 
@@ -3530,7 +3562,7 @@ class PoseStudioWidget {
                             this.showMessage("Failed to apply HMR2/pose3d JSON.", true);
                         }
                     }
-                    e.target.value = '';
+                    input.value = '';
                     return;
                 }
 
@@ -3590,7 +3622,7 @@ class PoseStudioWidget {
             }
 
             // Reset input so same file can be selected again
-            e.target.value = '';
+            input.value = '';
         };
         reader.readAsText(file);
     }

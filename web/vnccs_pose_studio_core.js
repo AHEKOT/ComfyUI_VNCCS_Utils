@@ -230,6 +230,10 @@ const SAM3D_ROTATION_ORDER = [
     'thigh_r', 'calf_r', 'foot_r',
 ];
 
+const DEFAULT_WORLD_ROTATION_PARENT_MAP = SAM3D_ROTATION_PARENTS;
+
+const DEFAULT_WORLD_ROTATION_ORDER = SAM3D_ROTATION_ORDER;
+
 // === Analytic 2-Bone IK Solver ===
 class AnalyticIKSolver {
     constructor(THREE) {
@@ -3572,45 +3576,176 @@ export class PoseViewerCore {
         return Object.keys(worldRotations).length ? worldRotations : null;
     }
 
-    _applySAM3DRotationImport(data) {
-        if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
+    applyWorldRotationImport(sourceWorldRotations, parentMap = DEFAULT_WORLD_ROTATION_PARENT_MAP, rotationOrder = DEFAULT_WORLD_ROTATION_ORDER, options = {}) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !sourceWorldRotations) return false;
 
-        const sourceWorldRotations = this._buildSAM3DWorldRotationMap(data);
-        if (!sourceWorldRotations?.pelvis) return false;
+        const sourceRestWorldRotations = options?.sourceRestWorldRotations || null;
+        const debugBones = new Set(options?.debugBones || []);
+        const debugFrame = options?.debugFrame ?? null;
+        const debugCollector = options?.debugCollector || null;
+
+        const quatToArray = (quat) => quat ? [quat.x, quat.y, quat.z, quat.w] : null;
+        const quatToEulerDegrees = (quat) => {
+            if (!quat) return null;
+            const euler = new this.THREE.Euler().setFromQuaternion(quat, 'XYZ');
+            return [
+                euler.x * 180 / Math.PI,
+                euler.y * 180 / Math.PI,
+                euler.z * 180 / Math.PI,
+            ];
+        };
 
         const targetRestWorldRotations = {};
-        for (const boneName of SAM3D_ROTATION_ORDER) {
+        for (const boneName of rotationOrder) {
             const quaternion = this._getBoneWorldQuaternionForImport(boneName);
             if (quaternion) targetRestWorldRotations[boneName] = quaternion;
         }
 
-        const THREE = this.THREE;
-        for (const boneName of SAM3D_ROTATION_ORDER) {
+        const appliedTargetWorldRotations = {};
+
+        for (const boneName of rotationOrder) {
             const bone = this.bones[boneName];
             const sourceWorld = sourceWorldRotations[boneName];
             const targetRest = targetRestWorldRotations[boneName];
             if (!bone || !sourceWorld || !targetRest) continue;
 
-            const parentName = SAM3D_ROTATION_PARENTS[boneName];
-            let deltaQuat;
-            if (!parentName || !sourceWorldRotations[parentName] || !targetRestWorldRotations[parentName]) {
-                deltaQuat = targetRest.clone().invert().multiply(sourceWorld.clone());
+            const parentName = parentMap[boneName];
+            const targetAppliedParentWorld = parentName
+                ? (appliedTargetWorldRotations[parentName] || targetRestWorldRotations[parentName] || null)
+                : null;
+            let desiredTargetWorld;
+            let sourceAnimatedLocal = null;
+            let sourceRestLocal = null;
+            let sourceLocalDelta = null;
+            let targetRestLocal = null;
+            let basisDelta = null;
+            let retargetedLocalDelta = null;
+            let desiredTargetLocal = null;
+            if (sourceRestWorldRotations?.[boneName]) {
+                const sourceRest = sourceRestWorldRotations[boneName];
+                const sourceParentWorld = parentName ? sourceWorldRotations[parentName] : null;
+                const sourceRestParentWorld = parentName ? sourceRestWorldRotations[parentName] : null;
+
+                sourceAnimatedLocal = sourceParentWorld
+                    ? sourceParentWorld.clone().invert().multiply(sourceWorld.clone()).normalize()
+                    : sourceWorld.clone().normalize();
+                sourceRestLocal = sourceRestParentWorld
+                    ? sourceRestParentWorld.clone().invert().multiply(sourceRest.clone()).normalize()
+                    : sourceRest.clone().normalize();
+
+                sourceLocalDelta = sourceRestLocal.clone().invert().multiply(sourceAnimatedLocal).normalize();
+
+                const targetRestParentWorld = parentName ? (targetRestWorldRotations[parentName] || null) : null;
+                targetRestLocal = targetRestParentWorld
+                    ? targetRestParentWorld.clone().invert().multiply(targetRest.clone()).normalize()
+                    : targetRest.clone().normalize();
+
+                // Re-express the source local delta in the target local basis.
+                basisDelta = targetRestLocal.clone().invert().multiply(sourceRestLocal.clone()).normalize();
+                retargetedLocalDelta = basisDelta.clone()
+                    .multiply(sourceLocalDelta)
+                    .multiply(basisDelta.clone().invert())
+                    .normalize();
+
+                desiredTargetLocal = targetRestLocal.clone().multiply(retargetedLocalDelta).normalize();
+                desiredTargetWorld = parentName
+                    ? targetAppliedParentWorld.clone().multiply(desiredTargetLocal).normalize()
+                    : desiredTargetLocal;
             } else {
-                const sourceParent = sourceWorldRotations[parentName];
-                const targetRestParent = targetRestWorldRotations[parentName];
-                const sourceLocal = sourceParent.clone().invert().multiply(sourceWorld.clone());
-                deltaQuat = targetRest.clone().invert().multiply(targetRestParent.clone()).multiply(sourceLocal);
+                desiredTargetWorld = sourceWorld.clone();
             }
 
-            bone.quaternion.copy(deltaQuat.normalize());
+            let parentTargetWorld = null;
+            if (parentName) {
+                parentTargetWorld = targetAppliedParentWorld;
+            }
+
+            const localQuat = parentTargetWorld
+                ? parentTargetWorld.clone().invert().multiply(desiredTargetWorld.clone()).normalize()
+                : desiredTargetWorld.clone().normalize();
+
+            bone.quaternion.copy(localQuat);
             bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
             bone.updateMatrixWorld(true);
+
+            const appliedWorld = new this.THREE.Quaternion();
+            bone.getWorldQuaternion(appliedWorld);
+            appliedTargetWorldRotations[boneName] = appliedWorld;
+
+            if (debugCollector && debugBones.has(boneName)) {
+                debugCollector[boneName] = {
+                    frame: debugFrame,
+                    parentName,
+                    sourceWorld: quatToArray(sourceWorld),
+                    sourceWorldEuler: quatToEulerDegrees(sourceWorld),
+                    sourceRestWorld: quatToArray(sourceRestWorldRotations?.[boneName] || null),
+                    sourceRestWorldEuler: quatToEulerDegrees(sourceRestWorldRotations?.[boneName] || null),
+                    sourceAnimatedLocal: quatToArray(sourceAnimatedLocal),
+                    sourceAnimatedLocalEuler: quatToEulerDegrees(sourceAnimatedLocal),
+                    sourceRestLocal: quatToArray(sourceRestLocal),
+                    sourceRestLocalEuler: quatToEulerDegrees(sourceRestLocal),
+                    sourceLocalDelta: quatToArray(sourceLocalDelta),
+                    sourceLocalDeltaEuler: quatToEulerDegrees(sourceLocalDelta),
+                    targetRestWorld: quatToArray(targetRest),
+                    targetRestWorldEuler: quatToEulerDegrees(targetRest),
+                    targetRestLocal: quatToArray(targetRestLocal),
+                    targetRestLocalEuler: quatToEulerDegrees(targetRestLocal),
+                    basisDelta: quatToArray(basisDelta),
+                    basisDeltaEuler: quatToEulerDegrees(basisDelta),
+                    retargetedLocalDelta: quatToArray(retargetedLocalDelta),
+                    retargetedLocalDeltaEuler: quatToEulerDegrees(retargetedLocalDelta),
+                    desiredTargetLocal: quatToArray(desiredTargetLocal),
+                    desiredTargetLocalEuler: quatToEulerDegrees(desiredTargetLocal),
+                    appliedLocal: quatToArray(localQuat),
+                    appliedLocalEuler: quatToEulerDegrees(localQuat),
+                    appliedWorld: quatToArray(appliedWorld),
+                    appliedWorldEuler: quatToEulerDegrees(appliedWorld),
+                };
+            }
         }
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);
         this.updateIKEffectorPositions();
         return true;
+    }
+
+    applyImportedLegTargets(legTargets = {}) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !this.ikController?.ccdSolver) return false;
+
+        const applyChain = (chainKey, targetDef) => {
+            if (!targetDef?.ankleTarget) return false;
+            const chainDef = IK_CHAINS[chainKey];
+            if (!chainDef) return false;
+
+            const poleHelper = this.ikController?.poleTargets?.[chainKey] || null;
+            if (poleHelper && targetDef.kneeTarget) {
+                poleHelper.position.copy(targetDef.kneeTarget);
+            }
+
+            this.ikController.solveWithPole(chainDef, this.bones, targetDef.ankleTarget, chainKey);
+            this.skinnedMesh.updateMatrixWorld(true);
+            return true;
+        };
+
+        let applied = false;
+        for (let pass = 0; pass < 3; pass++) {
+            const leftApplied = applyChain('leftLeg', legTargets.leftLeg);
+            const rightApplied = applyChain('rightLeg', legTargets.rightLeg);
+            applied = leftApplied || rightApplied || applied;
+        }
+
+        if (!applied) return false;
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateIKEffectorPositions();
+        return true;
+    }
+
+    _applySAM3DRotationImport(data) {
+        const sourceWorldRotations = this._buildSAM3DWorldRotationMap(data);
+        return this.applyWorldRotationImport(sourceWorldRotations);
     }
 
     _buildSAM3DImportTargets(data) {
