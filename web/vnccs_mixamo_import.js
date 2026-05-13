@@ -140,6 +140,24 @@ const MIXAMO_DEBUG_BONES = [
     'thigh_r', 'calf_r', 'foot_r',
 ];
 
+const MIXAMO_KEYPOINT_ROTATION_LAYER_BONES = [
+    'neck_01', 'head',
+    'hand_l',
+    'thumb_01_l', 'thumb_02_l', 'thumb_03_l',
+    'index_01_l', 'index_02_l', 'index_03_l',
+    'middle_01_l', 'middle_02_l', 'middle_03_l',
+    'ring_01_l', 'ring_02_l', 'ring_03_l',
+    'pinky_01_l', 'pinky_02_l', 'pinky_03_l',
+    'hand_r',
+    'thumb_01_r', 'thumb_02_r', 'thumb_03_r',
+    'index_01_r', 'index_02_r', 'index_03_r',
+    'middle_01_r', 'middle_02_r', 'middle_03_r',
+    'ring_01_r', 'ring_02_r', 'ring_03_r',
+    'pinky_01_r', 'pinky_02_r', 'pinky_03_r',
+    'foot_l', 'ball_l',
+    'foot_r', 'ball_r',
+];
+
 let loaderPromise = null;
 
 function normalizeBoneName(name) {
@@ -468,6 +486,50 @@ function applyExplicitMixamoBendTargets(viewer, worldKps) {
     return applied;
 }
 
+function applyMixamoRotationLayer(viewer, sourceWorldRotations, sourceRestWorldRotations, boneNames = MIXAMO_KEYPOINT_ROTATION_LAYER_BONES) {
+    if (!viewer?.THREE || !viewer?.bones || !sourceWorldRotations || !sourceRestWorldRotations) return false;
+
+    let applied = false;
+    for (const boneName of boneNames) {
+        const bone = viewer.bones[boneName];
+        const sourceWorld = sourceWorldRotations[boneName];
+        const sourceRest = sourceRestWorldRotations[boneName];
+        if (!bone || !sourceWorld || !sourceRest) continue;
+
+        const parentName = MIXAMO_RETARGET_PARENTS[boneName];
+        const sourceParentWorld = parentName ? sourceWorldRotations[parentName] : null;
+        const sourceRestParentWorld = parentName ? sourceRestWorldRotations[parentName] : null;
+
+        const sourceAnimatedLocal = sourceParentWorld
+            ? sourceParentWorld.clone().invert().multiply(sourceWorld.clone()).normalize()
+            : sourceWorld.clone().normalize();
+        const sourceRestLocal = sourceRestParentWorld
+            ? sourceRestParentWorld.clone().invert().multiply(sourceRest.clone()).normalize()
+            : sourceRest.clone().normalize();
+
+        const sourceLocalDelta = sourceRestLocal.clone().invert().multiply(sourceAnimatedLocal).normalize();
+        const targetRestLocal = bone.quaternion.clone().normalize();
+        const basisDelta = targetRestLocal.clone().invert().multiply(sourceRestLocal.clone()).normalize();
+        const retargetedLocalDelta = basisDelta.clone()
+            .multiply(sourceLocalDelta)
+            .multiply(basisDelta.clone().invert())
+            .normalize();
+
+        bone.quaternion.copy(targetRestLocal.multiply(retargetedLocalDelta).normalize());
+        bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+        bone.updateMatrixWorld(true);
+        applied = true;
+    }
+
+    if (applied) {
+        if (viewer.skeleton) viewer.skeleton.update();
+        if (viewer.skinnedMesh) viewer.skinnedMesh.updateMatrixWorld(true);
+        if (viewer.updateIKEffectorPositions) viewer.updateIKEffectorPositions();
+    }
+
+    return applied;
+}
+
 function clearImportedDebugFigures(viewer) {
     if (!viewer?._clearImportedFigureGroup) return;
     viewer._clearImportedFigureGroup('_hmr2FigureGroup');
@@ -612,10 +674,12 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
             if (mixamoKeypoints?.worldKps && viewer.fitMannequinToHMR2) {
                 const historySnapshot = Array.isArray(viewer.history) ? viewer.history.slice() : null;
                 const futureSnapshot = Array.isArray(viewer.future) ? viewer.future.slice() : null;
+                const sourceWorldRotations = buildFrameRotationMap(sourceBones, viewer.THREE);
                 clearImportedDebugFigures(viewer);
                 viewer._hmr2WorldKps = mixamoKeypoints.worldKps;
                 viewer.fitMannequinToHMR2(0);
                 applyExplicitMixamoBendTargets(viewer, mixamoKeypoints.worldKps);
+                applyMixamoRotationLayer(viewer, sourceWorldRotations, sourceRestWorldRotations);
                 clearImportedDebugFigures(viewer);
                 if (historySnapshot) viewer.history = historySnapshot;
                 if (futureSnapshot) viewer.future = futureSnapshot;
