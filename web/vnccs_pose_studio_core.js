@@ -111,8 +111,6 @@ const SAM3D_KEYPOINT_NAMES = [
     'right_shoulder',
     'left_elbow',
     'right_elbow',
-    'left_wrist',
-    'right_wrist',
     'left_hip',
     'right_hip',
     'left_knee',
@@ -125,53 +123,55 @@ const SAM3D_KEYPOINT_NAMES = [
     'right_big_toe',
     'right_small_toe',
     'right_heel',
-    'left_thumb4',
-    'left_thumb3',
-    'left_thumb2',
-    'left_thumb_third_joint',
-    'left_forefinger4',
-    'left_forefinger3',
-    'left_forefinger2',
-    'left_forefinger_third_joint',
-    'left_middle_finger4',
-    'left_middle_finger3',
-    'left_middle_finger2',
-    'left_middle_finger_third_joint',
-    'left_ring_finger4',
-    'left_ring_finger3',
-    'left_ring_finger2',
-    'left_ring_finger_third_joint',
-    'left_pinky_finger4',
-    'left_pinky_finger3',
-    'left_pinky_finger2',
-    'left_pinky_finger_third_joint',
-    'right_thumb4',
-    'right_thumb3',
-    'right_thumb2',
+    'right_thumb_tip',
+    'right_thumb_first_joint',
+    'right_thumb_second_joint',
     'right_thumb_third_joint',
-    'right_forefinger4',
-    'right_forefinger3',
-    'right_forefinger2',
-    'right_forefinger_third_joint',
-    'right_middle_finger4',
-    'right_middle_finger3',
-    'right_middle_finger2',
-    'right_middle_finger_third_joint',
-    'right_ring_finger4',
-    'right_ring_finger3',
-    'right_ring_finger2',
-    'right_ring_finger_third_joint',
-    'right_pinky_finger4',
-    'right_pinky_finger3',
-    'right_pinky_finger2',
-    'right_pinky_finger_third_joint',
-    'neck',
+    'right_index_tip',
+    'right_index_first_joint',
+    'right_index_second_joint',
+    'right_index_third_joint',
+    'right_middle_tip',
+    'right_middle_first_joint',
+    'right_middle_second_joint',
+    'right_middle_third_joint',
+    'right_ring_tip',
+    'right_ring_first_joint',
+    'right_ring_second_joint',
+    'right_ring_third_joint',
+    'right_pinky_tip',
+    'right_pinky_first_joint',
+    'right_pinky_second_joint',
+    'right_pinky_third_joint',
+    'right_wrist',
+    'left_thumb_tip',
+    'left_thumb_first_joint',
+    'left_thumb_second_joint',
+    'left_thumb_third_joint',
+    'left_index_tip',
+    'left_index_first_joint',
+    'left_index_second_joint',
+    'left_index_third_joint',
+    'left_middle_tip',
+    'left_middle_first_joint',
+    'left_middle_second_joint',
+    'left_middle_third_joint',
+    'left_ring_tip',
+    'left_ring_first_joint',
+    'left_ring_second_joint',
+    'left_ring_third_joint',
+    'left_pinky_tip',
+    'left_pinky_first_joint',
+    'left_pinky_second_joint',
+    'left_pinky_third_joint',
+    'left_wrist',
     'left_olecranon',
     'right_olecranon',
     'left_cubital_fossa',
     'right_cubital_fossa',
     'left_acromion',
     'right_acromion',
+    'neck',
 ];
 
 const SAM3D_JOINT_COORD_NAMES = {
@@ -238,6 +238,11 @@ const SAM3D_FINGER_POINT_NAMES = [
     'middle_01_r', 'middle_02_r', 'middle_03_r',
     'ring_01_r', 'ring_02_r', 'ring_03_r',
     'pinky_01_r', 'pinky_02_r', 'pinky_03_r',
+];
+
+const SAM3D_FOOT_POINT_NAMES = [
+    'left_big_toe', 'left_small_toe', 'left_heel',
+    'right_big_toe', 'right_small_toe', 'right_heel',
 ];
 
 const SAM3D_ROTATION_PARENTS = {
@@ -3643,8 +3648,16 @@ export class PoseViewerCore {
             ['left_elbow', 'left_wrist', 0x00dd00],
             ['right_hip', 'right_knee', 0xff00ff],
             ['right_knee', 'right_ankle', 0xaa00ff],
+            ['right_ankle', 'right_big_toe', 0xaa66ff],
+            ['right_ankle', 'right_small_toe', 0xaa66ff],
+            ['right_ankle', 'right_heel', 0xaa66ff],
+            ['right_big_toe', 'right_small_toe', 0xaa66ff],
             ['left_hip', 'left_knee', 0x00ffff],
             ['left_knee', 'left_ankle', 0x0088ff],
+            ['left_ankle', 'left_big_toe', 0x66ccff],
+            ['left_ankle', 'left_small_toe', 0x66ccff],
+            ['left_ankle', 'left_heel', 0x66ccff],
+            ['left_big_toe', 'left_small_toe', 0x66ccff],
             ['left_wrist', 'thumb_01_l', 0x00ccff],
             ['thumb_01_l', 'thumb_02_l', 0x00ccff],
             ['thumb_02_l', 'thumb_03_l', 0x00ccff],
@@ -4037,6 +4050,53 @@ export class PoseViewerCore {
                     this.skinnedMesh.updateMatrixWorld(true);
                 }
             }
+        };
+
+        applySide('l');
+        applySide('r');
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+    }
+
+    _applySAM3DFootPointRetarget(worldKps) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !worldKps) return;
+
+        const applySide = (side) => {
+            const footName = `foot_${side}`;
+            const foot = this.bones?.[footName];
+            if (!foot) return;
+
+            const ankle = worldKps[side === 'l' ? 'left_ankle' : 'right_ankle'];
+            const bigToe = worldKps[side === 'l' ? 'left_big_toe' : 'right_big_toe'];
+            const smallToe = worldKps[side === 'l' ? 'left_small_toe' : 'right_small_toe'];
+            const heel = worldKps[side === 'l' ? 'left_heel' : 'right_heel'];
+            const toe = bigToe && smallToe ? bigToe.clone().add(smallToe).multiplyScalar(0.5) : (bigToe || smallToe);
+            if (!ankle || !toe) return;
+
+            const targetForward = toe.clone().sub(ankle);
+            if (targetForward.lengthSq() < 1e-8) return;
+
+            const ball = this.bones?.[`ball_${side}`] || foot.children?.find((item) => item?.isBone) || null;
+            const getPos = (bone) => {
+                const position = new this.THREE.Vector3();
+                bone.getWorldPosition(position);
+                return position;
+            };
+            const footPos = getPos(foot);
+
+            const footWorld = foot.getWorldQuaternion(new this.THREE.Quaternion());
+            const currentToe = ball
+                ? getPos(ball)
+                : footPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(footWorld));
+            const currentForward = currentToe.clone().sub(footPos);
+            if (currentForward.lengthSq() < 1e-8) return;
+
+            const delta = new this.THREE.Quaternion().setFromUnitVectors(
+                currentForward.normalize(),
+                targetForward.clone().normalize(),
+            ).normalize();
+            this._applyBoneWorldDelta(foot, delta);
+            this.skinnedMesh.updateMatrixWorld(true);
         };
 
         applySide('l');
@@ -4688,6 +4748,8 @@ export class PoseViewerCore {
             rightKnee: this._getBoneWorldPositionForImport('calf_r'),
             leftFoot: this._getBoneWorldPositionForImport('foot_l'),
             rightFoot: this._getBoneWorldPositionForImport('foot_r'),
+            leftToe: this._getBoneWorldPositionForImport('ball_l'),
+            rightToe: this._getBoneWorldPositionForImport('ball_r'),
         };
 
         const neckChildIndex = this._pickSAM3DChainChildIndex(data, 110);
@@ -4709,6 +4771,12 @@ export class PoseViewerCore {
             rightKnee: namedPoints.calf_r || namedPoints.right_knee,
             leftFoot: namedPoints.left_ankle || namedPoints.foot_l,
             rightFoot: namedPoints.right_ankle || namedPoints.foot_r,
+            leftBigToe: namedPoints.left_big_toe,
+            leftSmallToe: namedPoints.left_small_toe,
+            leftHeel: namedPoints.left_heel,
+            rightBigToe: namedPoints.right_big_toe,
+            rightSmallToe: namedPoints.right_small_toe,
+            rightHeel: namedPoints.right_heel,
             leftEar: namedPoints.left_ear,
             rightEar: namedPoints.right_ear,
             nose: namedPoints.canonical_nose || namedPoints.nose,
@@ -4843,6 +4911,15 @@ export class PoseViewerCore {
             || scaledWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || pelvisSource, source.leftFoot, leftLegScale);
         worldKps.right_ankle = segmentWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || pelvisSource, source.rightFoot, rightCalfLen)
             || scaledWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || pelvisSource, source.rightFoot, rightLegScale);
+
+        const leftFootScale = scaleBetween(source.leftFoot, source.leftBigToe || source.leftSmallToe, rest.leftFoot, rest.leftToe, leftLegScale);
+        const rightFootScale = scaleBetween(source.rightFoot, source.rightBigToe || source.rightSmallToe, rest.rightFoot, rest.rightToe, rightLegScale);
+        worldKps.left_big_toe = scaledWorldPoint(worldKps.left_ankle || rest.leftFoot, source.leftFoot, source.leftBigToe, leftFootScale);
+        worldKps.left_small_toe = scaledWorldPoint(worldKps.left_ankle || rest.leftFoot, source.leftFoot, source.leftSmallToe, leftFootScale);
+        worldKps.left_heel = scaledWorldPoint(worldKps.left_ankle || rest.leftFoot, source.leftFoot, source.leftHeel, leftFootScale);
+        worldKps.right_big_toe = scaledWorldPoint(worldKps.right_ankle || rest.rightFoot, source.rightFoot, source.rightBigToe, rightFootScale);
+        worldKps.right_small_toe = scaledWorldPoint(worldKps.right_ankle || rest.rightFoot, source.rightFoot, source.rightSmallToe, rightFootScale);
+        worldKps.right_heel = scaledWorldPoint(worldKps.right_ankle || rest.rightFoot, source.rightFoot, source.rightHeel, rightFootScale);
 
         if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
             worldKps.neck = new THREE.Vector3(
@@ -5199,6 +5276,7 @@ export class PoseViewerCore {
                 midKp: 'right_knee',
                 endKp: 'right_ankle',
                 effectorName: 'foot_r',
+                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('right_')),
             });
             normalizeChain({
                 chainKey: 'leftLeg',
@@ -5209,6 +5287,7 @@ export class PoseViewerCore {
                 midKp: 'left_knee',
                 endKp: 'left_ankle',
                 effectorName: 'foot_l',
+                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('left_')),
             });
             if (normalizedTargets.worldKps) {
                 importTargets.worldKps = normalizedTargets.worldKps;
@@ -5267,6 +5346,7 @@ export class PoseViewerCore {
             this._applySAM3DTargetIK(importTargets, { includeSpine: false });
             this._applySAM3DHeadLineRetarget(importTargets.worldKps || worldKps);
             this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
+            this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
             if (this.skeleton) this.skeleton.update();
             this.skinnedMesh.updateMatrixWorld(true);
             this.updateMarkers();
@@ -5281,6 +5361,7 @@ export class PoseViewerCore {
         this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
 
         this._applySAM3DTargetIK(importTargets);
+        this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);
