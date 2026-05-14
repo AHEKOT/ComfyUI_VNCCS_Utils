@@ -189,13 +189,56 @@ const SAM3D_JOINT_COORD_NAMES = {
     39: 'upperarm_r',
     40: 'lowerarm_r',
     42: 'hand_r',
+    44: 'pinky_01_r',
+    45: 'pinky_02_r',
+    46: 'pinky_03_r',
+    48: 'ring_01_r',
+    49: 'ring_02_r',
+    50: 'ring_03_r',
+    52: 'middle_01_r',
+    53: 'middle_02_r',
+    54: 'middle_03_r',
+    56: 'index_01_r',
+    57: 'index_02_r',
+    58: 'index_03_r',
+    60: 'thumb_01_r',
+    61: 'thumb_02_r',
+    62: 'thumb_03_r',
     74: 'clavicle_l',
     75: 'upperarm_l',
     76: 'lowerarm_l',
     78: 'hand_l',
+    80: 'pinky_01_l',
+    81: 'pinky_02_l',
+    82: 'pinky_03_l',
+    84: 'ring_01_l',
+    85: 'ring_02_l',
+    86: 'ring_03_l',
+    88: 'middle_01_l',
+    89: 'middle_02_l',
+    90: 'middle_03_l',
+    92: 'index_01_l',
+    93: 'index_02_l',
+    94: 'index_03_l',
+    96: 'thumb_01_l',
+    97: 'thumb_02_l',
+    98: 'thumb_03_l',
     110: 'neck_01',
     113: 'head',
 };
+
+const SAM3D_FINGER_POINT_NAMES = [
+    'thumb_01_l', 'thumb_02_l', 'thumb_03_l',
+    'index_01_l', 'index_02_l', 'index_03_l',
+    'middle_01_l', 'middle_02_l', 'middle_03_l',
+    'ring_01_l', 'ring_02_l', 'ring_03_l',
+    'pinky_01_l', 'pinky_02_l', 'pinky_03_l',
+    'thumb_01_r', 'thumb_02_r', 'thumb_03_r',
+    'index_01_r', 'index_02_r', 'index_03_r',
+    'middle_01_r', 'middle_02_r', 'middle_03_r',
+    'ring_01_r', 'ring_02_r', 'ring_03_r',
+    'pinky_01_r', 'pinky_02_r', 'pinky_03_r',
+];
 
 const SAM3D_ROTATION_PARENTS = {
     pelvis: null,
@@ -233,6 +276,89 @@ const SAM3D_ROTATION_ORDER = [
 const DEFAULT_WORLD_ROTATION_PARENT_MAP = SAM3D_ROTATION_PARENTS;
 
 const DEFAULT_WORLD_ROTATION_ORDER = SAM3D_ROTATION_ORDER;
+
+const SAM3D_TO_MH_BONE_MAP = {
+    pelvis: 'pelvis',
+    spine_01: 'spine_01',
+    spine_02: 'spine_02',
+    spine_03: 'spine_03',
+    neck_01: 'neck_01',
+    head: 'head',
+    clavicle_l: 'clavicle_l',
+    upperarm_l: 'upperarm_l',
+    lowerarm_l: 'lowerarm_l',
+    hand_l: 'hand_l',
+    clavicle_r: 'clavicle_r',
+    upperarm_r: 'upperarm_r',
+    lowerarm_r: 'lowerarm_r',
+    hand_r: 'hand_r',
+    thigh_l: 'thigh_l',
+    calf_l: 'calf_l',
+    foot_l: 'foot_l',
+    thigh_r: 'thigh_r',
+    calf_r: 'calf_r',
+    foot_r: 'foot_r',
+    joint_096: 'thumb_01_l',
+    joint_097: 'thumb_02_l',
+    joint_098: 'thumb_03_l',
+    joint_092: 'index_01_l',
+    joint_093: 'index_02_l',
+    joint_094: 'index_03_l',
+    joint_088: 'middle_01_l',
+    joint_089: 'middle_02_l',
+    joint_090: 'middle_03_l',
+    joint_084: 'ring_01_l',
+    joint_085: 'ring_02_l',
+    joint_086: 'ring_03_l',
+    joint_080: 'pinky_01_l',
+    joint_081: 'pinky_02_l',
+    joint_082: 'pinky_03_l',
+    joint_060: 'thumb_01_r',
+    joint_061: 'thumb_02_r',
+    joint_062: 'thumb_03_r',
+    joint_056: 'index_01_r',
+    joint_057: 'index_02_r',
+    joint_058: 'index_03_r',
+    joint_052: 'middle_01_r',
+    joint_053: 'middle_02_r',
+    joint_054: 'middle_03_r',
+    joint_048: 'ring_01_r',
+    joint_049: 'ring_02_r',
+    joint_050: 'ring_03_r',
+    joint_044: 'pinky_01_r',
+    joint_045: 'pinky_02_r',
+    joint_046: 'pinky_03_r',
+    thumb_01_l: 'thumb_01_l',
+    thumb_02_l: 'thumb_02_l',
+    thumb_03_l: 'thumb_03_l',
+    index_01_l: 'index_01_l',
+    index_02_l: 'index_02_l',
+    index_03_l: 'index_03_l',
+    middle_01_l: 'middle_01_l',
+    middle_02_l: 'middle_02_l',
+    middle_03_l: 'middle_03_l',
+    ring_01_l: 'ring_01_l',
+    ring_02_l: 'ring_02_l',
+    ring_03_l: 'ring_03_l',
+    pinky_01_l: 'pinky_01_l',
+    pinky_02_l: 'pinky_02_l',
+    pinky_03_l: 'pinky_03_l',
+    thumb_01_r: 'thumb_01_r',
+    thumb_02_r: 'thumb_02_r',
+    thumb_03_r: 'thumb_03_r',
+    index_01_r: 'index_01_r',
+    index_02_r: 'index_02_r',
+    index_03_r: 'index_03_r',
+    middle_01_r: 'middle_01_r',
+    middle_02_r: 'middle_02_r',
+    middle_03_r: 'middle_03_r',
+    ring_01_r: 'ring_01_r',
+    ring_02_r: 'ring_02_r',
+    ring_03_r: 'ring_03_r',
+    pinky_01_r: 'pinky_01_r',
+    pinky_02_r: 'pinky_02_r',
+    pinky_03_r: 'pinky_03_r',
+};
 
 // === Analytic 2-Bone IK Solver ===
 class AnalyticIKSolver {
@@ -3327,6 +3453,61 @@ export class PoseViewerCore {
         this.orbit.enableDamping = prevDamping;
     }
 
+    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024) {
+        if (!this.THREE || !this.skinnedMesh || !this.captureCamera || !data?.bbox) return null;
+
+        const rawBox = Array.isArray(data.bbox?.[0]) ? data.bbox[0] : data.bbox;
+        if (!Array.isArray(rawBox) || rawBox.length < 4) return null;
+
+        const imageW = Number(data?.image_size?.width) || Number(width) || 1024;
+        const imageH = Number(data?.image_size?.height) || Number(height) || 1024;
+        if (imageW <= 0 || imageH <= 0) return null;
+
+        const x1 = Number(rawBox[0]);
+        const y1 = Number(rawBox[1]);
+        const x2 = Number(rawBox[2]);
+        const y2 = Number(rawBox[3]);
+        if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
+
+        const bboxW = Math.max(1, Math.abs(x2 - x1));
+        const bboxH = Math.max(1, Math.abs(y2 - y1));
+        const desiredW = Math.min(0.98, Math.max(0.08, bboxW / imageW));
+        const desiredH = Math.min(0.98, Math.max(0.08, bboxH / imageH));
+        const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
+        const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        const box = new this.THREE.Box3().setFromObject(this.skinnedMesh);
+        if (box.isEmpty()) return null;
+
+        const size = new this.THREE.Vector3();
+        const center = new this.THREE.Vector3();
+        box.getSize(size);
+        box.getCenter(center);
+        if (size.x <= 1e-5 || size.y <= 1e-5) return null;
+
+        const dist = 45;
+        const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
+        const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+        const visibleHAtZoom1 = 2 * dist * Math.tan(vFOV / 2);
+        const visibleWAtZoom1 = visibleHAtZoom1 * aspect;
+        const zoomForH = desiredH * visibleHAtZoom1 / size.y;
+        const zoomForW = desiredW * visibleWAtZoom1 / size.x;
+        const zoom = Math.min(7, Math.max(0.1, Math.min(zoomForH, zoomForW) * 0.96));
+
+        const visibleH = visibleHAtZoom1 / zoom;
+        const visibleW = visibleWAtZoom1 / zoom;
+        const targetX = center.x - desiredCenterX * visibleW * 0.5;
+        const targetY = center.y - desiredCenterY * visibleH * 0.5;
+        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+
+        return {
+            zoom,
+            offset_x: baseTarget.x - targetX,
+            offset_y: baseTarget.y - targetY,
+        };
+    }
+
     capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0) {
         if (!this.initialized) return null;
 
@@ -3458,6 +3639,37 @@ export class PoseViewerCore {
             ['right_knee', 'right_ankle', 0xaa00ff],
             ['left_hip', 'left_knee', 0x00ffff],
             ['left_knee', 'left_ankle', 0x0088ff],
+            ['head', 'head_forward', 0xff3333],
+            ['left_wrist', 'thumb_01_l', 0x00ccff],
+            ['thumb_01_l', 'thumb_02_l', 0x00ccff],
+            ['thumb_02_l', 'thumb_03_l', 0x00ccff],
+            ['left_wrist', 'index_01_l', 0x00ccff],
+            ['index_01_l', 'index_02_l', 0x00ccff],
+            ['index_02_l', 'index_03_l', 0x00ccff],
+            ['left_wrist', 'middle_01_l', 0x00ccff],
+            ['middle_01_l', 'middle_02_l', 0x00ccff],
+            ['middle_02_l', 'middle_03_l', 0x00ccff],
+            ['left_wrist', 'ring_01_l', 0x00ccff],
+            ['ring_01_l', 'ring_02_l', 0x00ccff],
+            ['ring_02_l', 'ring_03_l', 0x00ccff],
+            ['left_wrist', 'pinky_01_l', 0x00ccff],
+            ['pinky_01_l', 'pinky_02_l', 0x00ccff],
+            ['pinky_02_l', 'pinky_03_l', 0x00ccff],
+            ['right_wrist', 'thumb_01_r', 0x5599ff],
+            ['thumb_01_r', 'thumb_02_r', 0x5599ff],
+            ['thumb_02_r', 'thumb_03_r', 0x5599ff],
+            ['right_wrist', 'index_01_r', 0x5599ff],
+            ['index_01_r', 'index_02_r', 0x5599ff],
+            ['index_02_r', 'index_03_r', 0x5599ff],
+            ['right_wrist', 'middle_01_r', 0x5599ff],
+            ['middle_01_r', 'middle_02_r', 0x5599ff],
+            ['middle_02_r', 'middle_03_r', 0x5599ff],
+            ['right_wrist', 'ring_01_r', 0x5599ff],
+            ['ring_01_r', 'ring_02_r', 0x5599ff],
+            ['ring_02_r', 'ring_03_r', 0x5599ff],
+            ['right_wrist', 'pinky_01_r', 0x5599ff],
+            ['pinky_01_r', 'pinky_02_r', 0x5599ff],
+            ['pinky_02_r', 'pinky_03_r', 0x5599ff],
         ];
 
         const group = new this.THREE.Group();
@@ -3510,6 +3722,47 @@ export class PoseViewerCore {
             }
         }
 
+        // SAM3DBody Render/Export uses dense MHR joint_coords, not the 70
+        // image keypoints. Mirror those coordinates onto the generic names
+        // consumed by the debug skeleton so we never mix two different pose
+        // spaces in one figure.
+        const mhrAliases = {
+            neck: 'neck_01',
+            left_shoulder: 'upperarm_l',
+            right_shoulder: 'upperarm_r',
+            left_elbow: 'lowerarm_l',
+            right_elbow: 'lowerarm_r',
+            left_wrist: 'hand_l',
+            right_wrist: 'hand_r',
+            left_hip: 'thigh_l',
+            right_hip: 'thigh_r',
+            left_knee: 'calf_l',
+            right_knee: 'calf_r',
+            left_ankle: 'foot_l',
+            right_ankle: 'foot_r',
+        };
+        for (const [alias, sourceName] of Object.entries(mhrAliases)) {
+            if (namedPoints[sourceName]) namedPoints[alias] = namedPoints[sourceName];
+        }
+
+        const fingerAliases = {
+            left_thumb: ['thumb_01_l', 'thumb_02_l', 'thumb_03_l'],
+            left_index: ['index_01_l', 'index_02_l', 'index_03_l'],
+            left_middle: ['middle_01_l', 'middle_02_l', 'middle_03_l'],
+            left_ring: ['ring_01_l', 'ring_02_l', 'ring_03_l'],
+            left_pinky: ['pinky_01_l', 'pinky_02_l', 'pinky_03_l'],
+            right_thumb: ['thumb_01_r', 'thumb_02_r', 'thumb_03_r'],
+            right_index: ['index_01_r', 'index_02_r', 'index_03_r'],
+            right_middle: ['middle_01_r', 'middle_02_r', 'middle_03_r'],
+            right_ring: ['ring_01_r', 'ring_02_r', 'ring_03_r'],
+            right_pinky: ['pinky_01_r', 'pinky_02_r', 'pinky_03_r'],
+        };
+        for (const [prefix, names] of Object.entries(fingerAliases)) {
+            for (let index = 0; index < names.length; index++) {
+                if (namedPoints[names[index]]) namedPoints[`${prefix}_${index + 1}`] = namedPoints[names[index]];
+            }
+        }
+
         return namedPoints;
     }
 
@@ -3541,6 +3794,165 @@ export class PoseViewerCore {
         return quaternion;
     }
 
+    _captureBoneLocalRotations(boneNames) {
+        if (!this.bones || !Array.isArray(boneNames)) return {};
+        const rotations = {};
+        for (const boneName of boneNames) {
+            const bone = this.bones[boneName];
+            if (bone) rotations[boneName] = bone.quaternion.clone();
+        }
+        return rotations;
+    }
+
+    _restoreBoneLocalRotations(rotations) {
+        if (!this.bones || !rotations) return;
+        for (const [boneName, quaternion] of Object.entries(rotations)) {
+            const bone = this.bones[boneName];
+            if (!bone || !quaternion) continue;
+            bone.quaternion.copy(quaternion);
+            bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+            bone.updateMatrixWorld(true);
+        }
+    }
+
+    _captureBoneWorldRotations(boneNames) {
+        if (!this.THREE || !this.bones || !Array.isArray(boneNames)) return {};
+        const rotations = {};
+        for (const boneName of boneNames) {
+            const quaternion = this._getBoneWorldQuaternionForImport(boneName);
+            if (quaternion) rotations[boneName] = quaternion;
+        }
+        return rotations;
+    }
+
+    _restoreBoneWorldRotations(rotations, order = null) {
+        if (!this.THREE || !this.bones || !rotations) return;
+        const boneNames = Array.isArray(order) ? order : Object.keys(rotations);
+        for (const boneName of boneNames) {
+            const bone = this.bones[boneName];
+            const worldQuaternion = rotations[boneName];
+            if (!bone || !worldQuaternion) continue;
+            const parentWorld = new this.THREE.Quaternion();
+            if (bone.parent) bone.parent.getWorldQuaternion(parentWorld);
+            bone.quaternion.copy(parentWorld.invert().multiply(worldQuaternion.clone()).normalize());
+            bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+            bone.updateMatrixWorld(true);
+        }
+    }
+
+    _alignBoneWorldDirection(boneName, targetDirection) {
+        const bone = this.bones?.[boneName];
+        if (!this.THREE || !bone || !targetDirection || targetDirection.lengthSq() < 1e-8) return false;
+
+        const child = bone.children?.find((item) => item?.isBone) || null;
+        if (!child) return false;
+
+        const bonePosition = new this.THREE.Vector3();
+        const childPosition = new this.THREE.Vector3();
+        bone.getWorldPosition(bonePosition);
+        child.getWorldPosition(childPosition);
+
+        const currentDirection = childPosition.sub(bonePosition);
+        if (currentDirection.lengthSq() < 1e-8) return false;
+        currentDirection.normalize();
+
+        const target = targetDirection.clone().normalize();
+        const delta = new this.THREE.Quaternion().setFromUnitVectors(currentDirection, target);
+        const boneWorld = new this.THREE.Quaternion();
+        bone.getWorldQuaternion(boneWorld);
+
+        const parentWorld = new this.THREE.Quaternion();
+        if (bone.parent) bone.parent.getWorldQuaternion(parentWorld);
+        bone.quaternion.copy(parentWorld.invert().multiply(delta.multiply(boneWorld)).normalize());
+        bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+        bone.updateMatrixWorld(true);
+        return true;
+    }
+
+    _alignHandWorldBasis(side, worldKps) {
+        if (!this.THREE || !worldKps) return false;
+
+        const hand = this.bones?.[`hand_${side}`];
+        const index = this.bones?.[`index_01_${side}`];
+        const middle = this.bones?.[`middle_01_${side}`];
+        const ring = this.bones?.[`ring_01_${side}`];
+        if (!hand || !index || !middle || !ring) return false;
+
+        const targetIndex = worldKps[`index_01_${side}`];
+        const targetMiddle = worldKps[`middle_01_${side}`];
+        const targetRing = worldKps[`ring_01_${side}`];
+        const targetWrist = worldKps[side === 'l' ? 'left_wrist' : 'right_wrist'];
+        if (!targetIndex || !targetMiddle || !targetRing || !targetWrist) return false;
+
+        const getBonePosition = (bone) => {
+            const position = new this.THREE.Vector3();
+            bone.getWorldPosition(position);
+            return position;
+        };
+        const handPos = getBonePosition(hand);
+        const currentIndex = getBonePosition(index);
+        const currentMiddle = getBonePosition(middle);
+        const currentRing = getBonePosition(ring);
+
+        const makeBasis = (wrist, indexPoint, middlePoint, ringPoint) => {
+            const forward = middlePoint.clone().sub(wrist);
+            const across = indexPoint.clone().sub(ringPoint);
+            if (forward.lengthSq() < 1e-8 || across.lengthSq() < 1e-8) return null;
+            forward.normalize();
+            across.sub(forward.clone().multiplyScalar(across.dot(forward)));
+            if (across.lengthSq() < 1e-8) return null;
+            across.normalize();
+            const normal = new this.THREE.Vector3().crossVectors(across, forward).normalize();
+            if (normal.lengthSq() < 1e-8) return null;
+            return new this.THREE.Matrix4().makeBasis(across, forward, normal);
+        };
+
+        const currentBasis = makeBasis(handPos, currentIndex, currentMiddle, currentRing);
+        const targetBasis = makeBasis(targetWrist, targetIndex, targetMiddle, targetRing);
+        if (!currentBasis || !targetBasis) return false;
+
+        const deltaMatrix = targetBasis.clone().multiply(currentBasis.clone().transpose());
+        const delta = new this.THREE.Quaternion().setFromRotationMatrix(deltaMatrix).normalize();
+        const handWorld = new this.THREE.Quaternion();
+        hand.getWorldQuaternion(handWorld);
+
+        const parentWorld = new this.THREE.Quaternion();
+        if (hand.parent) hand.parent.getWorldQuaternion(parentWorld);
+        hand.quaternion.copy(parentWorld.invert().multiply(delta.multiply(handWorld)).normalize());
+        hand.rotation.setFromQuaternion(hand.quaternion, hand.rotation.order);
+        hand.updateMatrixWorld(true);
+        return true;
+    }
+
+    _applySAM3DHandPointRetarget(worldKps) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !worldKps) return;
+
+        const applySide = (side) => {
+            this._alignHandWorldBasis(side, worldKps);
+            this.skinnedMesh.updateMatrixWorld(true);
+
+            for (const prefix of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+                const p1 = worldKps[`${prefix}_01_${side}`];
+                const p2 = worldKps[`${prefix}_02_${side}`];
+                const p3 = worldKps[`${prefix}_03_${side}`];
+
+                if (p1 && p2) {
+                    this._alignBoneWorldDirection(`${prefix}_01_${side}`, p2.clone().sub(p1));
+                    this.skinnedMesh.updateMatrixWorld(true);
+                }
+                if (p2 && p3) {
+                    this._alignBoneWorldDirection(`${prefix}_02_${side}`, p3.clone().sub(p2));
+                    this.skinnedMesh.updateMatrixWorld(true);
+                }
+            }
+        };
+
+        applySide('l');
+        applySide('r');
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+    }
+
     _convertSAM3DRotationMatrix(matrixRows) {
         if (!this.THREE || !Array.isArray(matrixRows) || matrixRows.length < 3) return null;
 
@@ -3554,26 +3966,53 @@ export class PoseViewerCore {
             Number(rows[2][0]), Number(rows[2][1]), Number(rows[2][2]), 0,
             0, 0, 0, 1,
         );
-        const axisFlip = new THREE.Matrix4().set(
+        // Mirror SAM3DBody's Blender exporter:
+        // MHR native (X right, Y up, Z forward) -> Blender/MH scene basis
+        // (X right, Y back, Z up), then conjugate rotations by that basis.
+        const axisSwap = new THREE.Matrix4().set(
             1, 0, 0, 0,
-            0, -1, 0, 0,
             0, 0, -1, 0,
+            0, 1, 0, 0,
             0, 0, 0, 1,
         );
-        return axisFlip.clone().multiply(source).multiply(axisFlip);
+        const axisSwapT = axisSwap.clone().transpose();
+        return axisSwap.clone().multiply(source).multiply(axisSwapT);
+    }
+
+    _getSAM3DJointName(data, index) {
+        if (Array.isArray(data?.joint_names) && data.joint_names[index]) {
+            return String(data.joint_names[index]);
+        }
+        return SAM3D_JOINT_COORD_NAMES[index] || `joint_${String(index).padStart(3, '0')}`;
     }
 
     _buildSAM3DWorldRotationMap(data) {
         if (!Array.isArray(data?.joint_rotations)) return null;
 
         const worldRotations = {};
-        for (const [indexString, boneName] of Object.entries(SAM3D_JOINT_COORD_NAMES)) {
-            const matrixRows = data.joint_rotations[Number(indexString)];
+        for (let index = 0; index < data.joint_rotations.length; index++) {
+            const boneName = this._getSAM3DJointName(data, index);
+            if (!boneName) continue;
+            const matrixRows = data.joint_rotations[index];
             const matrix = this._convertSAM3DRotationMatrix(matrixRows);
-            if (!matrix || !boneName) continue;
+            if (!matrix) continue;
             worldRotations[boneName] = new this.THREE.Quaternion().setFromRotationMatrix(matrix);
         }
         return Object.keys(worldRotations).length ? worldRotations : null;
+    }
+
+    _addSAM3DHeadDirectionGuide(data, worldKps) {
+        if (!this.THREE || !worldKps) return;
+        const rotations = this._buildSAM3DWorldRotationMap(data);
+        const headRotation = rotations?.head || rotations?.neck_01;
+        const headPoint = worldKps.head || worldKps.nose;
+        if (!headRotation || !headPoint) return;
+
+        const neckPoint = worldKps.neck || headPoint;
+        const guideLength = Math.max(0.08, headPoint.distanceTo(neckPoint) * 1.4);
+        const forward = new this.THREE.Vector3(0, 0, -1).applyQuaternion(headRotation).normalize();
+        if (forward.lengthSq() < 1e-6) return;
+        worldKps.head_forward = headPoint.clone().add(forward.multiplyScalar(guideLength));
     }
 
     applyWorldRotationImport(sourceWorldRotations, parentMap = DEFAULT_WORLD_ROTATION_PARENT_MAP, rotationOrder = DEFAULT_WORLD_ROTATION_ORDER, options = {}) {
@@ -3745,7 +4184,103 @@ export class PoseViewerCore {
 
     _applySAM3DRotationImport(data) {
         const sourceWorldRotations = this._buildSAM3DWorldRotationMap(data);
-        return this.applyWorldRotationImport(sourceWorldRotations);
+        const restJointRotations = data?.rest_joint_rotations || data?.rest_joint_rots || null;
+        const sourceRestWorldRotations = restJointRotations
+            ? this._buildSAM3DWorldRotationMap({ joint_rotations: restJointRotations, joint_names: data?.joint_names })
+            : null;
+        if (sourceWorldRotations && sourceRestWorldRotations) {
+            return this._applySAM3DHumanoidDeltaImport(sourceWorldRotations, sourceRestWorldRotations);
+        }
+        return this.applyWorldRotationImport(
+            sourceWorldRotations,
+            DEFAULT_WORLD_ROTATION_PARENT_MAP,
+            DEFAULT_WORLD_ROTATION_ORDER,
+            { sourceRestWorldRotations }
+        );
+    }
+
+    _buildTargetRestMatrix(boneName) {
+        if (!this.THREE || !this.bones?.[boneName]) return null;
+
+        const THREE = this.THREE;
+        const bone = this.bones[boneName];
+        bone.updateMatrixWorld(true);
+        return new THREE.Matrix4().extractRotation(bone.matrixWorld);
+    }
+
+    _applySAM3DHumanoidDeltaImport(sourceWorldRotations, sourceRestWorldRotations) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !sourceWorldRotations || !sourceRestWorldRotations) return false;
+
+        const THREE = this.THREE;
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        const mappedEntries = Object.entries(SAM3D_TO_MH_BONE_MAP)
+            .filter(([sourceName, targetName]) => (
+                sourceWorldRotations[sourceName]
+                && sourceRestWorldRotations[sourceName]
+                && this.bones[targetName]
+            ));
+        if (!mappedEntries.length) return false;
+
+        const sourceByTarget = {};
+        for (const [sourceName, targetName] of mappedEntries) {
+            sourceByTarget[targetName] = sourceName;
+        }
+
+        const boneDepth = (bone) => {
+            let depth = 0;
+            let cursor = bone?.parent || null;
+            while (cursor) {
+                depth += 1;
+                cursor = cursor.parent || null;
+            }
+            return depth;
+        };
+        mappedEntries.sort((a, b) => boneDepth(this.bones[a[1]]) - boneDepth(this.bones[b[1]]));
+
+        const targetRestMatrices = {};
+        for (const [sourceName, targetName] of mappedEntries) {
+            if (!targetName || !this.bones[targetName]) continue;
+            const matrix = this._buildTargetRestMatrix(targetName);
+            if (matrix) targetRestMatrices[sourceName] = matrix;
+        }
+
+        for (const [sourceName, targetName] of mappedEntries) {
+            const bone = targetName ? this.bones[targetName] : null;
+            const M_rj = targetRestMatrices[sourceName];
+            const R_rj = sourceRestWorldRotations[sourceName];
+            const R_pj = sourceWorldRotations[sourceName];
+            if (!bone || !M_rj || !R_rj || !R_pj) continue;
+
+            const parentSourceName = bone.parent ? sourceByTarget[bone.parent.name] : null;
+            const M_rj_T = M_rj.clone().transpose();
+            const R_rj_T = new THREE.Matrix4().makeRotationFromQuaternion(R_rj).transpose();
+            const post_j = R_rj_T.clone().multiply(M_rj);
+            const R_pj_M = new THREE.Matrix4().makeRotationFromQuaternion(R_pj);
+            let delta;
+            if (parentSourceName && sourceRestWorldRotations[parentSourceName] && sourceWorldRotations[parentSourceName]) {
+                const pre_j = M_rj_T.clone().multiply(new THREE.Matrix4().makeRotationFromQuaternion(sourceRestWorldRotations[parentSourceName]));
+                const R_pp_T = new THREE.Matrix4().makeRotationFromQuaternion(sourceWorldRotations[parentSourceName]).transpose();
+                delta = pre_j
+                    .multiply(R_pp_T)
+                    .multiply(R_pj_M)
+                    .multiply(post_j);
+            } else {
+                delta = M_rj_T
+                    .multiply(R_pj_M)
+                    .multiply(post_j);
+            }
+
+            const localQuat = new THREE.Quaternion().setFromRotationMatrix(delta).normalize();
+            bone.quaternion.copy(localQuat);
+            bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+            bone.updateMatrixWorld(true);
+        }
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateIKEffectorPositions();
+        return true;
     }
 
     _buildSAM3DImportTargets(data) {
@@ -3765,32 +4300,36 @@ export class PoseViewerCore {
             head: this._getBoneWorldPositionForImport('head'),
             leftShoulder: this._getBoneWorldPositionForImport('upperarm_l'),
             rightShoulder: this._getBoneWorldPositionForImport('upperarm_r'),
+            leftElbow: this._getBoneWorldPositionForImport('lowerarm_l'),
+            rightElbow: this._getBoneWorldPositionForImport('lowerarm_r'),
             leftHand: this._getBoneWorldPositionForImport('hand_l'),
             rightHand: this._getBoneWorldPositionForImport('hand_r'),
             leftHip: this._getBoneWorldPositionForImport('thigh_l'),
             rightHip: this._getBoneWorldPositionForImport('thigh_r'),
+            leftKnee: this._getBoneWorldPositionForImport('calf_l'),
+            rightKnee: this._getBoneWorldPositionForImport('calf_r'),
             leftFoot: this._getBoneWorldPositionForImport('foot_l'),
             rightFoot: this._getBoneWorldPositionForImport('foot_r'),
         };
 
         const source = {
             neck: namedPoints.neck || namedPoints.neck_01 || this._averageSAM3DPoint(namedPoints, ['left_shoulder', 'right_shoulder']),
-            head: this._averageSAM3DPoint(namedPoints, ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear']) || namedPoints.nose,
-            leftShoulder: namedPoints.left_acromion || namedPoints.left_shoulder,
-            rightShoulder: namedPoints.right_acromion || namedPoints.right_shoulder,
-            leftElbow: namedPoints.left_elbow || namedPoints.left_olecranon || namedPoints.left_cubital_fossa,
-            rightElbow: namedPoints.right_elbow || namedPoints.right_olecranon || namedPoints.right_cubital_fossa,
+            head: namedPoints.head || this._averageSAM3DPoint(namedPoints, ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear']) || namedPoints.nose,
+            leftShoulder: namedPoints.upperarm_l || namedPoints.left_acromion || namedPoints.left_shoulder,
+            rightShoulder: namedPoints.upperarm_r || namedPoints.right_acromion || namedPoints.right_shoulder,
+            leftElbow: namedPoints.lowerarm_l || namedPoints.left_elbow || namedPoints.left_olecranon || namedPoints.left_cubital_fossa,
+            rightElbow: namedPoints.lowerarm_r || namedPoints.right_elbow || namedPoints.right_olecranon || namedPoints.right_cubital_fossa,
             leftHand: namedPoints.left_wrist || namedPoints.hand_l,
             rightHand: namedPoints.right_wrist || namedPoints.hand_r,
             leftHip: namedPoints.left_hip || namedPoints.thigh_l,
             rightHip: namedPoints.right_hip || namedPoints.thigh_r,
-            leftKnee: namedPoints.left_knee || namedPoints.calf_l,
-            rightKnee: namedPoints.right_knee || namedPoints.calf_r,
+            leftKnee: namedPoints.calf_l || namedPoints.left_knee,
+            rightKnee: namedPoints.calf_r || namedPoints.right_knee,
             leftFoot: namedPoints.left_ankle || namedPoints.foot_l,
             rightFoot: namedPoints.right_ankle || namedPoints.foot_r,
             leftEar: namedPoints.left_ear,
             rightEar: namedPoints.right_ear,
-            nose: namedPoints.nose,
+            nose: namedPoints.head || namedPoints.nose,
         };
 
         const sourceVector = (from, to) => {
@@ -3802,10 +4341,16 @@ export class PoseViewerCore {
             return Math.hypot(vector[0], vector[1], vector[2]);
         };
         const worldDistance = (from, to) => (from && to ? from.distanceTo(to) : 0);
-        const transformedOffset = (vector, scale) => new THREE.Vector3(vector[0] * scale, -vector[1] * scale, -vector[2] * scale);
+        const transformedOffset = (vector, scale) => new THREE.Vector3(vector[0] * scale, vector[1] * scale, vector[2] * scale);
         const scaledWorldPoint = (worldAnchor, sourceAnchor, sourcePoint, scale) => {
             if (!worldAnchor || !sourceAnchor || !sourcePoint) return null;
             return worldAnchor.clone().add(transformedOffset(sourceVector(sourceAnchor, sourcePoint), scale));
+        };
+        const segmentWorldPoint = (worldAnchor, sourceAnchor, sourcePoint, targetLength) => {
+            const vector = sourceVector(sourceAnchor, sourcePoint);
+            const length = vectorLength(vector);
+            if (!worldAnchor || !vector || length <= 1e-5 || targetLength <= 1e-5) return null;
+            return worldAnchor.clone().add(transformedOffset(vector, targetLength / length));
         };
         const scaleBetween = (sourceAnchor, sourcePoint, worldAnchor, worldPoint, fallback) => {
             const sourceLen = vectorLength(sourceVector(sourceAnchor, sourcePoint));
@@ -3834,14 +4379,31 @@ export class PoseViewerCore {
         };
 
         worldKps.head = scaledWorldPoint(rest.neck || rest.pelvis, source.neck || pelvisSource, source.head, headScale);
-        worldKps.left_elbow = scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || pelvisSource, source.leftElbow, leftArmScale);
-        worldKps.right_elbow = scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightElbow, rightArmScale);
-        worldKps.left_wrist = scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || pelvisSource, source.leftHand, leftArmScale);
-        worldKps.right_wrist = scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightHand, rightArmScale);
-        worldKps.left_knee = scaledWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || pelvisSource, source.leftKnee, leftLegScale);
-        worldKps.right_knee = scaledWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || pelvisSource, source.rightKnee, rightLegScale);
-        worldKps.left_ankle = scaledWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || pelvisSource, source.leftFoot, leftLegScale);
-        worldKps.right_ankle = scaledWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || pelvisSource, source.rightFoot, rightLegScale);
+        const leftUpperArmLen = worldDistance(rest.leftShoulder, rest.leftElbow);
+        const rightUpperArmLen = worldDistance(rest.rightShoulder, rest.rightElbow);
+        const leftLowerArmLen = worldDistance(rest.leftElbow, rest.leftHand);
+        const rightLowerArmLen = worldDistance(rest.rightElbow, rest.rightHand);
+        const leftThighLen = worldDistance(rest.leftHip, rest.leftKnee);
+        const rightThighLen = worldDistance(rest.rightHip, rest.rightKnee);
+        const leftCalfLen = worldDistance(rest.leftKnee, rest.leftFoot);
+        const rightCalfLen = worldDistance(rest.rightKnee, rest.rightFoot);
+
+        worldKps.left_elbow = segmentWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || pelvisSource, source.leftElbow, leftUpperArmLen)
+            || scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || pelvisSource, source.leftElbow, leftArmScale);
+        worldKps.right_elbow = segmentWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightElbow, rightUpperArmLen)
+            || scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightElbow, rightArmScale);
+        worldKps.left_wrist = segmentWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || pelvisSource, source.leftHand, leftLowerArmLen)
+            || scaledWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || pelvisSource, source.leftHand, leftArmScale);
+        worldKps.right_wrist = segmentWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || pelvisSource, source.rightHand, rightLowerArmLen)
+            || scaledWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || pelvisSource, source.rightHand, rightArmScale);
+        worldKps.left_knee = segmentWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || pelvisSource, source.leftKnee, leftThighLen)
+            || scaledWorldPoint(worldKps.left_hip || rest.leftHip, source.leftHip || pelvisSource, source.leftKnee, leftLegScale);
+        worldKps.right_knee = segmentWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || pelvisSource, source.rightKnee, rightThighLen)
+            || scaledWorldPoint(worldKps.right_hip || rest.rightHip, source.rightHip || pelvisSource, source.rightKnee, rightLegScale);
+        worldKps.left_ankle = segmentWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || pelvisSource, source.leftFoot, leftCalfLen)
+            || scaledWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || pelvisSource, source.leftFoot, leftLegScale);
+        worldKps.right_ankle = segmentWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || pelvisSource, source.rightFoot, rightCalfLen)
+            || scaledWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || pelvisSource, source.rightFoot, rightLegScale);
 
         if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
             worldKps.neck = new THREE.Vector3(
@@ -3853,6 +4415,34 @@ export class PoseViewerCore {
         if (!worldKps.head && worldKps.neck && worldKps.nose) {
             worldKps.head = worldKps.nose.clone();
         }
+
+        const addFingerPoints = (side) => {
+            const wristKey = side === 'l' ? 'left_wrist' : 'right_wrist';
+            const sourceWrist = side === 'l' ? source.leftHand : source.rightHand;
+            const restWrist = side === 'l' ? rest.leftHand : rest.rightHand;
+            const scale = side === 'l' ? leftArmScale : rightArmScale;
+            const wristWorld = worldKps[wristKey] || restWrist;
+            if (!wristWorld || !sourceWrist) return;
+
+            for (const prefix of ['thumb', 'index', 'middle', 'ring', 'pinky']) {
+                let previousWorld = wristWorld;
+                let previousSource = sourceWrist;
+                for (let index = 1; index <= 3; index++) {
+                    const name = `${prefix}_0${index}_${side}`;
+                    const point = namedPoints[name];
+                    if (!point) continue;
+                    const nextWorld = scaledWorldPoint(previousWorld, previousSource, point, scale);
+                    if (!nextWorld) continue;
+                    worldKps[name] = nextWorld;
+                    previousWorld = nextWorld;
+                    previousSource = point;
+                }
+            }
+        };
+
+        addFingerPoints('l');
+        addFingerPoints('r');
+        this._addSAM3DHeadDirectionGuide(data, worldKps);
 
         return {
             worldKps,
@@ -3983,10 +4573,9 @@ export class PoseViewerCore {
         if (pelvisBone) pelvisBone.getWorldPosition(mannequinPelvis);
 
         const sourceHeightKeys = [
-            'nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear', 'neck',
-            'left_shoulder', 'right_shoulder', 'left_hip', 'right_hip',
-            'left_knee', 'right_knee', 'left_ankle', 'right_ankle',
-            'left_big_toe', 'right_big_toe', 'left_heel', 'right_heel',
+            'head', 'neck', 'left_shoulder', 'right_shoulder',
+            'left_hip', 'right_hip', 'left_knee', 'right_knee',
+            'left_ankle', 'right_ankle',
         ];
         const sourceHeights = sourceHeightKeys
             .map((name) => namedPoints[name])
@@ -4003,19 +4592,19 @@ export class PoseViewerCore {
             if (!Array.isArray(point) || point.length < 3) return null;
             return new this.THREE.Vector3(
                 mannequinPelvis.x + (point[0] - pelvisSource[0]) * scale,
-                mannequinPelvis.y - (point[1] - pelvisSource[1]) * scale,
-                mannequinPelvis.z - (point[2] - pelvisSource[2]) * scale,
+                mannequinPelvis.y + (point[1] - pelvisSource[1]) * scale,
+                mannequinPelvis.z + (point[2] - pelvisSource[2]) * scale,
             );
         };
 
         const worldKps = {
             pelvis: toWorld(pelvisSource),
-            nose: toWorld(namedPoints.nose),
+            nose: toWorld(namedPoints.head || namedPoints.nose),
             neck: toWorld(namedPoints.neck || (namedPoints.neck_01 || null)),
-            left_shoulder: toWorld(namedPoints.left_acromion || namedPoints.left_shoulder),
-            right_shoulder: toWorld(namedPoints.right_acromion || namedPoints.right_shoulder),
-            left_elbow: toWorld(namedPoints.left_elbow || namedPoints.left_olecranon || namedPoints.left_cubital_fossa),
-            right_elbow: toWorld(namedPoints.right_elbow || namedPoints.right_olecranon || namedPoints.right_cubital_fossa),
+            left_shoulder: toWorld(namedPoints.left_shoulder),
+            right_shoulder: toWorld(namedPoints.right_shoulder),
+            left_elbow: toWorld(namedPoints.left_elbow),
+            right_elbow: toWorld(namedPoints.right_elbow),
             left_wrist: toWorld(namedPoints.left_wrist || namedPoints.hand_l),
             right_wrist: toWorld(namedPoints.right_wrist || namedPoints.hand_r),
             left_hip: toWorld(namedPoints.left_hip || namedPoints.thigh_l),
@@ -4030,6 +4619,12 @@ export class PoseViewerCore {
             right_eye: toWorld(namedPoints.right_eye),
         };
 
+        for (const name of SAM3D_FINGER_POINT_NAMES) {
+            const point = toWorld(namedPoints[name]);
+            if (point) worldKps[name] = point;
+        }
+        this._addSAM3DHeadDirectionGuide(data, worldKps);
+
         if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
             worldKps.neck = new this.THREE.Vector3(
                 (worldKps.left_shoulder.x + worldKps.right_shoulder.x) / 2,
@@ -4041,10 +4636,174 @@ export class PoseViewerCore {
         return worldKps;
     }
 
+    _applySAM3DTargetIK(importTargets, options = {}) {
+        if (!this.ikController || !this.bones || !this.skinnedMesh || !importTargets) return;
+
+        const includeSpine = options.includeSpine !== false;
+        const normalizeLimbs = options.normalizeLimbs !== false;
+        const setEffectorTarget = (name, target) => {
+            const effector = this.ikController?.effectors?.[name];
+            if (effector && target) effector.position.copy(target);
+        };
+        const getBonePos = (name) => this._getBoneWorldPositionForImport(name);
+        const dist = (a, b) => (a && b ? a.distanceTo(b) : 0);
+        const sourceDir = (from, to, fallback) => {
+            if (from && to) {
+                const dir = to.clone().sub(from);
+                if (dir.lengthSq() > 1e-8) return dir.normalize();
+            }
+            if (fallback && fallback.lengthSq() > 1e-8) return fallback.clone().normalize();
+            return null;
+        };
+        const normalizedTargets = {
+            effectorTargets: { ...(importTargets.effectorTargets || {}) },
+            poleTargets: { ...(importTargets.poleTargets || {}) },
+            worldKps: importTargets.worldKps ? { ...importTargets.worldKps } : null,
+        };
+
+        const normalizeChain = (def) => {
+            const worldKps = importTargets.worldKps;
+            if (!worldKps) return;
+            const root = getBonePos(def.rootBone);
+            const midRest = getBonePos(def.midBone);
+            const endRest = getBonePos(def.endBone);
+            if (!root || !midRest || !endRest || !worldKps[def.rootKp] || !worldKps[def.midKp] || !worldKps[def.endKp]) return;
+
+            const upperLen = dist(root, midRest);
+            const lowerLen = dist(midRest, endRest);
+            if (upperLen <= 1e-5 || lowerLen <= 1e-5) return;
+
+            const currentRootToMid = midRest.clone().sub(root);
+            const dirA = sourceDir(worldKps[def.rootKp], worldKps[def.midKp], currentRootToMid);
+            if (!dirA) return;
+            const mid = root.clone().add(dirA.multiplyScalar(upperLen));
+            const currentMidToEnd = endRest.clone().sub(midRest);
+            const dirB = sourceDir(worldKps[def.midKp], worldKps[def.endKp], currentMidToEnd);
+            if (!dirB) return;
+            const end = mid.clone().add(dirB.multiplyScalar(lowerLen));
+
+            normalizedTargets.poleTargets[def.chainKey] = mid;
+            normalizedTargets.effectorTargets[def.effectorName] = end;
+            if (normalizedTargets.worldKps) {
+                const oldMid = normalizedTargets.worldKps[def.midKp] || null;
+                const oldEnd = normalizedTargets.worldKps[def.endKp] || null;
+                normalizedTargets.worldKps[def.midKp] = mid;
+                normalizedTargets.worldKps[def.endKp] = end;
+                if (oldMid && oldEnd && Array.isArray(def.attachedPoints)) {
+                    const oldDir = oldEnd.clone().sub(oldMid);
+                    const newDir = end.clone().sub(mid);
+                    const rotateAttached = oldDir.lengthSq() > 1e-8 && newDir.lengthSq() > 1e-8
+                        ? new this.THREE.Quaternion().setFromUnitVectors(oldDir.clone().normalize(), newDir.clone().normalize())
+                        : null;
+                    const attachedScale = oldDir.lengthSq() > 1e-8
+                        ? Math.sqrt(newDir.lengthSq() / oldDir.lengthSq())
+                        : 1;
+                    for (const name of def.attachedPoints) {
+                        const point = normalizedTargets.worldKps[name];
+                        if (!point) continue;
+                        const offset = point.clone().sub(oldEnd).multiplyScalar(attachedScale);
+                        if (rotateAttached) offset.applyQuaternion(rotateAttached);
+                        normalizedTargets.worldKps[name] = end.clone().add(offset);
+                    }
+                }
+            }
+        };
+
+        for (const [name, target] of Object.entries(importTargets.effectorTargets || {})) {
+            setEffectorTarget(name, target);
+        }
+        for (const [chainKey, poleTarget] of Object.entries(importTargets.poleTargets || {})) {
+            const helper = this.ikController?.poleTargets?.[chainKey];
+            if (helper && poleTarget) helper.position.copy(poleTarget);
+        }
+
+        if (importTargets.effectorTargets?.upperarm_r) {
+            this.ikController.ccdSolver.solve(IK_CHAINS.rightShoulder, this.bones, importTargets.effectorTargets.upperarm_r);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+        if (importTargets.effectorTargets?.upperarm_l) {
+            this.ikController.ccdSolver.solve(IK_CHAINS.leftShoulder, this.bones, importTargets.effectorTargets.upperarm_l);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+        if (includeSpine && importTargets.effectorTargets?.head) {
+            this.ikController.ccdSolver.solve(IK_CHAINS.spine, this.bones, importTargets.effectorTargets.head);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+
+        if (normalizeLimbs) {
+            normalizeChain({
+                chainKey: 'rightArm',
+                rootBone: 'upperarm_r',
+                midBone: 'lowerarm_r',
+                endBone: 'hand_r',
+                rootKp: 'right_shoulder',
+                midKp: 'right_elbow',
+                endKp: 'right_wrist',
+                effectorName: 'hand_r',
+                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_r')),
+            });
+            normalizeChain({
+                chainKey: 'leftArm',
+                rootBone: 'upperarm_l',
+                midBone: 'lowerarm_l',
+                endBone: 'hand_l',
+                rootKp: 'left_shoulder',
+                midKp: 'left_elbow',
+                endKp: 'left_wrist',
+                effectorName: 'hand_l',
+                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_l')),
+            });
+            normalizeChain({
+                chainKey: 'rightLeg',
+                rootBone: 'thigh_r',
+                midBone: 'calf_r',
+                endBone: 'foot_r',
+                rootKp: 'right_hip',
+                midKp: 'right_knee',
+                endKp: 'right_ankle',
+                effectorName: 'foot_r',
+            });
+            normalizeChain({
+                chainKey: 'leftLeg',
+                rootBone: 'thigh_l',
+                midBone: 'calf_l',
+                endBone: 'foot_l',
+                rootKp: 'left_hip',
+                midKp: 'left_knee',
+                endKp: 'left_ankle',
+                effectorName: 'foot_l',
+            });
+            if (normalizedTargets.worldKps) {
+                importTargets.worldKps = normalizedTargets.worldKps;
+                this._hmr2WorldKps = normalizedTargets.worldKps;
+                this._drawHMR2Figure(normalizedTargets.worldKps);
+            }
+        }
+
+        const ikFinishing = [
+            { chainKey: 'rightArm', effectorName: 'hand_r' },
+            { chainKey: 'leftArm', effectorName: 'hand_l' },
+            { chainKey: 'rightLeg', effectorName: 'foot_r' },
+            { chainKey: 'leftLeg', effectorName: 'foot_l' },
+        ];
+        for (const { chainKey, effectorName } of ikFinishing) {
+            const chainDef = IK_CHAINS[chainKey];
+            const target = normalizedTargets.effectorTargets?.[effectorName];
+            const poleTarget = normalizedTargets.poleTargets?.[chainKey] || null;
+            if (!chainDef || !target) continue;
+            this.ikController.ccdSolver.solve(chainDef, this.bones, target, poleTarget);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+    }
+
     applySAM3DImport(data, shoulderYOffset = 0) {
         if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
 
         this.recordState();
+        this.modelRotation = { x: 0, y: 0, z: 0 };
+        if (this.skinnedMesh) {
+            this.skinnedMesh.rotation.set(0, 0, 0);
+        }
         for (const bone of this.boneList) {
             if (bone.name === 'Root') continue;
             bone.quaternion.set(0, 0, 0, 1);
@@ -4056,16 +4815,22 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 
-        const usedRotationImport = this._applySAM3DRotationImport(data);
-
         const importTargets = this._buildSAM3DImportTargets(data);
         const worldKps = importTargets?.worldKps;
+
+        const usedRotationImport = this._applySAM3DRotationImport(data);
+
         if (worldKps?.pelvis) {
             this._hmr2WorldKps = worldKps;
             this._drawHMR2Figure(worldKps);
         }
 
         if (usedRotationImport) {
+            this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
+            this._applySAM3DTargetIK(importTargets, { includeSpine: false });
+            this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
+            if (this.skeleton) this.skeleton.update();
+            this.skinnedMesh.updateMatrixWorld(true);
             this.updateMarkers();
             this.requestRender();
             this.dispatchPoseChange();
@@ -4077,45 +4842,7 @@ export class PoseViewerCore {
         this._drawHMR2Figure(worldKps);
         this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
 
-        const setEffectorTarget = (name, target) => {
-            const effector = this.ikController?.effectors?.[name];
-            if (effector && target) effector.position.copy(target);
-        };
-        for (const [name, target] of Object.entries(importTargets.effectorTargets || {})) {
-            setEffectorTarget(name, target);
-        }
-        for (const [chainKey, poleTarget] of Object.entries(importTargets.poleTargets || {})) {
-            const helper = this.ikController?.poleTargets?.[chainKey];
-            if (helper && poleTarget) helper.position.copy(poleTarget);
-        }
-
-        if (importTargets.effectorTargets.upperarm_r) {
-            this.ikController.ccdSolver.solve(IK_CHAINS.rightShoulder, this.bones, importTargets.effectorTargets.upperarm_r);
-            this.skinnedMesh.updateMatrixWorld(true);
-        }
-        if (importTargets.effectorTargets.upperarm_l) {
-            this.ikController.ccdSolver.solve(IK_CHAINS.leftShoulder, this.bones, importTargets.effectorTargets.upperarm_l);
-            this.skinnedMesh.updateMatrixWorld(true);
-        }
-        if (importTargets.effectorTargets.head) {
-            this.ikController.ccdSolver.solve(IK_CHAINS.spine, this.bones, importTargets.effectorTargets.head);
-            this.skinnedMesh.updateMatrixWorld(true);
-        }
-
-        const ikFinishing = [
-            { chainKey: 'rightArm', effectorName: 'hand_r' },
-            { chainKey: 'leftArm', effectorName: 'hand_l' },
-            { chainKey: 'rightLeg', effectorName: 'foot_r' },
-            { chainKey: 'leftLeg', effectorName: 'foot_l' },
-        ];
-        for (const { chainKey, effectorName } of ikFinishing) {
-            const chainDef = IK_CHAINS[chainKey];
-            const target = importTargets.effectorTargets[effectorName];
-            const poleTarget = importTargets.poleTargets[chainKey] || null;
-            if (!chainDef || !target) continue;
-            this.ikController.ccdSolver.solve(chainDef, this.bones, target, poleTarget);
-            this.skinnedMesh.updateMatrixWorld(true);
-        }
+        this._applySAM3DTargetIK(importTargets);
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);

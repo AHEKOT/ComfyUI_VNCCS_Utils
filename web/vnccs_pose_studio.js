@@ -3453,6 +3453,119 @@ class PoseStudioWidget {
         }
     }
 
+    showImportProgressModal(titleText = "SAM 3D Body") {
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.style.maxWidth = "360px";
+        modal.style.alignItems = "center";
+
+        const title = document.createElement('div');
+        title.className = 'vnccs-ps-modal-title';
+        title.textContent = titleText;
+
+        const spinner = document.createElement('div');
+        spinner.className = 'vnccs-ps-loading-spinner';
+        spinner.style.position = 'relative';
+        spinner.style.margin = '8px auto 14px';
+
+        const content = document.createElement('div');
+        content.className = 'vnccs-ps-modal-content';
+        content.style.textAlign = 'center';
+        content.textContent = 'Preparing image...';
+
+        modal.appendChild(title);
+        modal.appendChild(spinner);
+        modal.appendChild(content);
+        overlay.appendChild(modal);
+        this.canvasContainer.appendChild(overlay);
+
+        return {
+            setText: (text) => { content.textContent = text; },
+            close: () => overlay.remove(),
+        };
+    }
+
+    async importSAM3DImageAsPose(file) {
+        if (!this.viewer || !this.viewer.isInitialized()) {
+            throw new Error("Pose viewer is not ready.");
+        }
+
+        const progress = this.showImportProgressModal("SAM 3D Body Import");
+        try {
+            progress.setText("Uploading image to SAM 3D Body...");
+            const form = new FormData();
+            form.append("image", file, file.name || "pose_image.png");
+
+            progress.setText("Detecting body and reconstructing 3D pose...");
+            const response = await api.fetchApi("/vnccs/sam3d/process_image_to_pose_json", {
+                method: "POST",
+                body: form,
+            });
+
+            const result = await response.json();
+            if (!response.ok) {
+                throw new Error(result?.error || `HTTP ${response.status}`);
+            }
+
+            progress.setText("Applying pose to MakeHuman skeleton...");
+            const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
+            if (!poseData) {
+                throw new Error("SAM 3D Body returned empty pose JSON.");
+            }
+
+            const ok = this.viewer.applySAM3DImport(
+                poseData,
+                this._shoulderYOffset || 0
+            );
+            if (!ok) {
+                throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
+            }
+
+            const frameParams = this.viewer.computeSAM3DFrameCameraParams?.(
+                poseData,
+                this.exportParams.view_width || 1024,
+                this.exportParams.view_height || 1024
+            );
+            if (frameParams) {
+                this.exportParams.cam_zoom = frameParams.zoom;
+                this.exportParams.cam_offset_x = frameParams.offset_x;
+                this.exportParams.cam_offset_y = frameParams.offset_y;
+                if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+                if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+                if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+                this.viewer.snapToCaptureCamera(
+                    this.exportParams.view_width || 1024,
+                    this.exportParams.view_height || 1024,
+                    this.exportParams.cam_zoom,
+                    this.exportParams.cam_offset_x,
+                    this.exportParams.cam_offset_y
+                );
+                this.viewer.setCameraParams({
+                    offset_x: this.exportParams.cam_offset_x,
+                    offset_y: this.exportParams.cam_offset_y,
+                    zoom: this.exportParams.cam_zoom
+                });
+            }
+
+            this.poses[this.activeTab] = this.viewer.getPose();
+            this.updateRotationSliders();
+            this.syncToNode(false);
+            this.showMessage("SAM 3D Body image imported successfully.");
+        } finally {
+            progress.close();
+        }
+    }
+
+    clearImportedDebugFigures() {
+        if (!this.viewer?._clearImportedFigureGroup) return;
+        this.viewer._clearImportedFigureGroup('_hmr2FigureGroup');
+        this.viewer._clearImportedFigureGroup('_rtmwFigureGroup');
+        this.viewer._clearImportedFigureGroup('_kpFigureGroup');
+    }
+
     handleFileImport(e) {
         const file = e.target.files[0];
         if (!file) return;
@@ -3488,32 +3601,18 @@ class PoseStudioWidget {
             return;
         }
 
-        // Image files → parse as OpenPose image
+        // Image files → run SAM 3D Body and import the resulting pose JSON
         if (file.type.startsWith("image/")) {
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const img = new Image();
-                img.onload = () => {
-                    const keypoints = extractKeypointsFromImage(img);
-                    if (keypoints && this.viewer && this.viewer.isInitialized()) {
-                        const poseData = convertOpenPoseToPose(keypoints, this.viewer);
-                        if (poseData) {
-                            this.poses[this.activeTab] = poseData;
-                            this.viewer.setPose(poseData);
-                            this.updateRotationSliders();
-                            this.syncToNode(false);
-                            this.showMessage("OpenPose image imported successfully.");
-                        } else {
-                            this.showMessage("Failed to convert OpenPose keypoints to pose.", true);
-                        }
-                    } else {
-                        this.showMessage("Could not detect OpenPose keypoints in image.", true);
-                    }
-                };
-                img.src = event.target.result;
-                input.value = '';
-            };
-            reader.readAsDataURL(file);
+            (async () => {
+                try {
+                    await this.importSAM3DImageAsPose(file);
+                } catch (err) {
+                    console.error("Error importing SAM 3D Body image:", err);
+                    this.showMessage(`Failed to import image with SAM 3D Body: ${err?.message || err}`, true);
+                } finally {
+                    input.value = '';
+                }
+            })();
             return;
         }
 
