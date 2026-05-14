@@ -2584,7 +2584,6 @@ export class PoseViewerCore {
         rootBones.forEach(b => this.skinnedMesh.add(b));
         this.skinnedMesh.bind(this.skeleton);
         this.scene.add(this.skinnedMesh);
-
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
     }
@@ -3639,7 +3638,6 @@ export class PoseViewerCore {
             ['right_knee', 'right_ankle', 0xaa00ff],
             ['left_hip', 'left_knee', 0x00ffff],
             ['left_knee', 'left_ankle', 0x0088ff],
-            ['head', 'head_forward', 0xff3333],
             ['left_wrist', 'thumb_01_l', 0x00ccff],
             ['thumb_01_l', 'thumb_02_l', 0x00ccff],
             ['thumb_02_l', 'thumb_03_l', 0x00ccff],
@@ -3953,6 +3951,28 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
     }
 
+    _applySAM3DHeadLineRetarget(worldKps) {
+        if (!this.THREE || !this.bones?.neck_01 || !this.bones?.head || !worldKps?.neck) return;
+
+        const headTarget = worldKps.head || worldKps.nose;
+        if (!headTarget) return;
+
+        const targetDirection = headTarget.clone().sub(worldKps.neck);
+        if (targetDirection.lengthSq() < 1e-8) return;
+
+        // SAM3DBody's dense head joint line is more reliable than the local
+        // head rotation for this rig. Keep the skull in the neck basis instead
+        // of applying the opposite local tilt on top of the correct line.
+        this.bones.head.quaternion.set(0, 0, 0, 1);
+        this.bones.head.rotation.set(0, 0, 0);
+        this.bones.head.updateMatrixWorld(true);
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        this._alignBoneWorldDirection('neck_01', targetDirection);
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+    }
+
     _convertSAM3DRotationMatrix(matrixRows) {
         if (!this.THREE || !Array.isArray(matrixRows) || matrixRows.length < 3) return null;
 
@@ -3999,20 +4019,6 @@ export class PoseViewerCore {
             worldRotations[boneName] = new this.THREE.Quaternion().setFromRotationMatrix(matrix);
         }
         return Object.keys(worldRotations).length ? worldRotations : null;
-    }
-
-    _addSAM3DHeadDirectionGuide(data, worldKps) {
-        if (!this.THREE || !worldKps) return;
-        const rotations = this._buildSAM3DWorldRotationMap(data);
-        const headRotation = rotations?.head || rotations?.neck_01;
-        const headPoint = worldKps.head || worldKps.nose;
-        if (!headRotation || !headPoint) return;
-
-        const neckPoint = worldKps.neck || headPoint;
-        const guideLength = Math.max(0.08, headPoint.distanceTo(neckPoint) * 1.4);
-        const forward = new this.THREE.Vector3(0, 0, -1).applyQuaternion(headRotation).normalize();
-        if (forward.lengthSq() < 1e-6) return;
-        worldKps.head_forward = headPoint.clone().add(forward.multiplyScalar(guideLength));
     }
 
     applyWorldRotationImport(sourceWorldRotations, parentMap = DEFAULT_WORLD_ROTATION_PARENT_MAP, rotationOrder = DEFAULT_WORLD_ROTATION_ORDER, options = {}) {
@@ -4442,7 +4448,6 @@ export class PoseViewerCore {
 
         addFingerPoints('l');
         addFingerPoints('r');
-        this._addSAM3DHeadDirectionGuide(data, worldKps);
 
         return {
             worldKps,
@@ -4465,10 +4470,11 @@ export class PoseViewerCore {
         };
     }
 
-    _applyImportPelvisAndTorso(worldKps, shoulderYOffset = 0) {
+    _applyImportPelvisAndTorso(worldKps, shoulderYOffset = 0, options = {}) {
         if (!worldKps || !this.THREE || !this.bones || !this.skinnedMesh) return;
 
         const THREE = this.THREE;
+        const includeHead = options.includeHead !== false;
         const pelvisBone = this.bones.pelvis || this.bones.spine_01;
         if (pelvisBone && worldKps.pelvis) {
             const localTarget = worldKps.pelvis.clone();
@@ -4623,7 +4629,6 @@ export class PoseViewerCore {
             const point = toWorld(namedPoints[name]);
             if (point) worldKps[name] = point;
         }
-        this._addSAM3DHeadDirectionGuide(data, worldKps);
 
         if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
             worldKps.neck = new this.THREE.Vector3(
@@ -4826,8 +4831,9 @@ export class PoseViewerCore {
         }
 
         if (usedRotationImport) {
-            this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
+            this._applyImportPelvisAndTorso(worldKps, shoulderYOffset, { includeHead: false });
             this._applySAM3DTargetIK(importTargets, { includeSpine: false });
+            this._applySAM3DHeadLineRetarget(importTargets.worldKps || worldKps);
             this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
             if (this.skeleton) this.skeleton.update();
             this.skinnedMesh.updateMatrixWorld(true);
@@ -4986,20 +4992,22 @@ export class PoseViewerCore {
             applyFK('spine_03', '_s2', 'neck');
         }
 
-        const rightEar = worldKps.right_ear;
-        const leftEar = worldKps.left_ear;
-        if (rightEar && leftEar) {
-            worldKps._earMid = new THREE.Vector3(
-                (rightEar.x + leftEar.x) / 2,
-                (rightEar.y + leftEar.y) / 2,
-                (rightEar.z + leftEar.z) / 2,
-            );
-        }
-        if (worldKps._earMid) {
-            applyFK('neck_01', 'neck', '_earMid');
-            if (worldKps.nose) applyFK('head', '_earMid', 'nose');
-        } else {
-            applyFK('neck_01', 'neck', 'nose');
+        if (includeHead) {
+            const rightEar = worldKps.right_ear;
+            const leftEar = worldKps.left_ear;
+            if (rightEar && leftEar) {
+                worldKps._earMid = new THREE.Vector3(
+                    (rightEar.x + leftEar.x) / 2,
+                    (rightEar.y + leftEar.y) / 2,
+                    (rightEar.z + leftEar.z) / 2,
+                );
+            }
+            if (worldKps._earMid) {
+                applyFK('neck_01', 'neck', '_earMid');
+                if (worldKps.nose) applyFK('head', '_earMid', 'nose');
+            } else {
+                applyFK('neck_01', 'neck', 'nose');
+            }
         }
 
         if (shoulderYOffset !== 0) {
