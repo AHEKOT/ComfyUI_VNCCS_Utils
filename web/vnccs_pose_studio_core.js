@@ -3629,6 +3629,8 @@ export class PoseViewerCore {
         this._clearImportedFigureGroup('_hmr2FigureGroup');
         this._clearImportedFigureGroup('_rtmwFigureGroup');
         this._clearImportedFigureGroup('_kpFigureGroup');
+        this._hmr2FigureGroup = null;
+        return;
 
         const bones = [
             ['canonical_nose', 'canonical_left_eye', 0xff66ff],
