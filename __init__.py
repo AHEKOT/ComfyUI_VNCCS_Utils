@@ -30,6 +30,7 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 
 # === API Endpoint Registration for Pose Studio ===
 import os
+import json
 import numpy as np
 
 def _vnccs_register_endpoint():
@@ -113,6 +114,112 @@ def _vnccs_register_endpoint():
             # Extract Bones Data
             bones_data = []
             weights_for_frontend = {}
+            landmarks_for_frontend = {}
+
+            def average_vertices(indices):
+                valid = [int(index) for index in indices if 0 <= int(index) < len(new_verts)]
+                if not valid:
+                    return None
+                point = new_verts[valid].mean(axis=0)
+                return point.tolist() if hasattr(point, "tolist") else list(point)
+
+            def group_vertex_indices(group_names):
+                names = set(group_names if isinstance(group_names, (list, tuple, set)) else [group_names])
+                result = set()
+                if not base_mesh.face_groups:
+                    return result
+                for face, group in zip(base_mesh.faces, base_mesh.face_groups):
+                    if str(group).strip() not in names:
+                        continue
+                    for item in face:
+                        result.add(int(item[0] if isinstance(item, (list, tuple)) else item))
+                return result
+
+            def average_group(group_names):
+                return average_vertices(group_vertex_indices(group_names))
+
+            def surface_nose_point():
+                body_indices = sorted(group_vertex_indices("body"))
+                if not body_indices:
+                    return None
+                points = new_verts[body_indices]
+                if points.size == 0:
+                    return None
+
+                left_eye = landmarks_for_frontend.get("left_eye")
+                right_eye = landmarks_for_frontend.get("right_eye")
+                if left_eye and right_eye:
+                    eye_mid = (np.asarray(left_eye, dtype=np.float32) + np.asarray(right_eye, dtype=np.float32)) * 0.5
+                    eye_span = float(abs(left_eye[0] - right_eye[0]))
+                    x_limit = max(0.18, eye_span * 0.45)
+                    mask = (
+                        (np.abs(points[:, 0] - eye_mid[0]) <= x_limit)
+                        & (points[:, 1] >= eye_mid[1] - 0.65)
+                        & (points[:, 1] <= eye_mid[1] - 0.03)
+                    )
+                else:
+                    mask = (
+                        (np.abs(points[:, 0]) <= 0.25)
+                        & (points[:, 1] >= 6.4)
+                        & (points[:, 1] <= 7.4)
+                    )
+
+                candidates = points[mask]
+                if len(candidates) == 0:
+                    candidates = points[
+                        (np.abs(points[:, 0]) <= 0.35)
+                        & (points[:, 1] >= 6.4)
+                        & (points[:, 1] <= 7.4)
+                    ]
+                if len(candidates) == 0:
+                    return None
+                point = candidates[np.argmax(candidates[:, 2])]
+                return point.tolist() if hasattr(point, "tolist") else list(point)
+
+            def average_joint(joints_data, name):
+                indices = joints_data.get(name) if isinstance(joints_data, dict) else None
+                if not indices:
+                    return None
+                valid = [int(index) for index in indices if 0 <= int(index) < len(new_verts)]
+                if not valid:
+                    return None
+                point = new_verts[valid].mean(axis=0)
+                return point.tolist() if hasattr(point, "tolist") else list(point)
+
+            try:
+                left_eye = average_group("helper-l-eye")
+                right_eye = average_group("helper-r-eye")
+                if left_eye is not None:
+                    landmarks_for_frontend["left_eye"] = left_eye
+                if right_eye is not None:
+                    landmarks_for_frontend["right_eye"] = right_eye
+                nose = surface_nose_point()
+                if nose is not None:
+                    landmarks_for_frontend["nose"] = nose
+
+                default_skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
+                if os.path.exists(default_skel_path):
+                    with open(default_skel_path, "r", encoding="utf-8") as f:
+                        default_skel_data = json.load(f)
+                    default_joints = default_skel_data.get("joints", {})
+                    landmark_sources = {
+                        "left_eye": "eye.L____head",
+                        "left_eye_front": "eye.L____tail",
+                        "right_eye": "eye.R____head",
+                        "right_eye_front": "eye.R____tail",
+                        "nose": "special01____tail",
+                        "mouth": "oris05____head",
+                        "jaw": "jaw____head",
+                        "head": "head____tail",
+                    }
+                    for landmark_name, joint_name in landmark_sources.items():
+                        if landmark_name in landmarks_for_frontend:
+                            continue
+                        point = average_joint(default_joints, joint_name)
+                        if point is not None:
+                            landmarks_for_frontend[landmark_name] = point
+            except Exception as exc:
+                print(f"[VNCCS] Failed to build MH face landmarks: {exc}")
             
             if skel:
                 class MeshWrapper:
@@ -153,7 +260,8 @@ def _vnccs_register_endpoint():
                 "indices": tri_indices,
                 "normals": [],
                 "bones": bones_data,
-                "weights": weights_for_frontend
+                "weights": weights_for_frontend,
+                "landmarks": landmarks_for_frontend
             })
         except Exception as e:
             import traceback
@@ -360,6 +468,7 @@ def _vnccs_register_sam3d_pose_import():
                             scale_params=scale_params,
                             shape_params=shape_params,
                             expr_params=expr_params,
+                            return_keypoints=True,
                             return_joint_rotations=True,
                             return_joint_coords=True,
                         )
@@ -377,9 +486,12 @@ def _vnccs_register_sam3d_pose_import():
 
                     posed_rots = None
                     posed_coords = None
+                    posed_keypoints = None
                     for tensor in posed_out[1:]:
                         if tensor.ndim == 4 and tensor.shape[-1] == 3 and tensor.shape[-2] == 3:
                             posed_rots = tensor.detach().cpu().numpy()
+                        elif tensor.ndim == 3 and tensor.shape[-1] == 3 and tensor.shape[-2] > 127:
+                            posed_keypoints = tensor.detach().cpu().numpy()
                         elif tensor.ndim == 3 and tensor.shape[-1] == 3 and tensor.shape[-2] != 3:
                             posed_coords = tensor.detach().cpu().numpy()
                     if posed_rots is not None:
@@ -390,6 +502,36 @@ def _vnccs_register_sam3d_pose_import():
                         if posed_coords.ndim == 3:
                             posed_coords = posed_coords[0]
                         pose_data["joint_coords"] = posed_coords.tolist()
+                    if posed_keypoints is not None:
+                        if posed_keypoints.ndim == 3:
+                            posed_keypoints = posed_keypoints[0]
+                        pose_data["canonical_keypoints_3d"] = posed_keypoints[:70].tolist()
+
+                    try:
+                        get_rest_verts = getattr(process_module, "_get_mhr_rest_verts", None)
+                        face_cache = getattr(process_module, "_FACE_BS_CACHE", None)
+                        apply_lean_rig = getattr(process_module, "apply_pose_lean_correction_rig", None)
+                        if (
+                            get_rest_verts is not None
+                            and isinstance(face_cache, dict)
+                            and apply_lean_rig is not None
+                            and posed_rots is not None
+                            and posed_coords is not None
+                        ):
+                            get_rest_verts(mhr_head, device)
+                            parents = face_cache.get("joint_parents")
+                            if parents is not None:
+                                corrected_rots, corrected_coords = apply_lean_rig(
+                                    np.asarray(posed_rots, dtype=np.float32),
+                                    np.asarray(posed_coords, dtype=np.float32),
+                                    np.asarray(parents, dtype=np.int32),
+                                    0.5,
+                                )
+                                pose_data["joint_rotations"] = corrected_rots.tolist()
+                                pose_data["joint_coords"] = corrected_coords.tolist()
+                                pose_data["sam3d_pose_postprocess"] = "apply_pose_lean_correction_rig:0.5"
+                    except Exception as exc:
+                        print(f"[VNCCS] SAM3D lean-corrected rig export failed: {exc}")
 
                     rest_rots = None
                     rest_coords = None

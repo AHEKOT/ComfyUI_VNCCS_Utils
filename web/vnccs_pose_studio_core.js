@@ -927,6 +927,7 @@ export class PoseViewerCore {
         this.skeleton = null;
         this.boneList = [];
         this.bones = {};
+        this.modelLandmarks = {};
         this.selectedBone = null;
 
         this.jointMarkers = [];
@@ -2405,6 +2406,7 @@ export class PoseViewerCore {
         }
 
         this._initSkeleton(data, geometry, vertices);
+        this.modelLandmarks = data.landmarks || {};
         this._createJointMarkers();
 
         // Apply cached bone scales
@@ -3624,7 +3626,12 @@ export class PoseViewerCore {
         this._clearImportedFigureGroup('_kpFigureGroup');
 
         const bones = [
-            ['nose', 'neck', 0xff0000],
+            ['canonical_nose', 'canonical_left_eye', 0xff66ff],
+            ['canonical_nose', 'canonical_right_eye', 0xff66ff],
+            ['canonical_left_eye', 'canonical_right_eye', 0xff66ff],
+            ['canonical_left_eye', 'canonical_left_ear', 0xff66ff],
+            ['canonical_right_eye', 'canonical_right_ear', 0xff66ff],
+            ['neck', 'neck_tail', 0x00ffff],
             ['neck', 'right_shoulder', 0xff7700],
             ['neck', 'left_shoulder', 0x00aa00],
             ['neck', 'pelvis', 0xffff00],
@@ -3676,9 +3683,15 @@ export class PoseViewerCore {
         const jointGeo = new this.THREE.SphereGeometry(0.025, 8, 8);
         const jointMat = new this.THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false });
 
-        for (const point of Object.values(worldKps)) {
+        for (const [name, point] of Object.entries(worldKps)) {
             if (!point) continue;
-            const mesh = new this.THREE.Mesh(jointGeo, jointMat.clone());
+            const material = jointMat.clone();
+            if (name === 'head' || name === 'neck') {
+                material.color.setHex(0x00ffff);
+            } else if (name.startsWith('canonical_')) {
+                material.color.setHex(0xff66ff);
+            }
+            const mesh = new this.THREE.Mesh(jointGeo, material);
             mesh.position.copy(point);
             mesh.renderOrder = 999;
             group.add(mesh);
@@ -3702,16 +3715,30 @@ export class PoseViewerCore {
     _buildSAM3DNamedPoints(data) {
         const namedPoints = {};
 
-        if (Array.isArray(data?.keypoints_3d)) {
-            for (let index = 0; index < Math.min(data.keypoints_3d.length, SAM3D_KEYPOINT_NAMES.length); index++) {
-                const point = data.keypoints_3d[index];
+        const keypointSources = [
+            { prefix: 'canonical', points: data?.canonical_keypoints_3d },
+            { prefix: 'raw', points: data?.keypoints_3d },
+        ];
+        for (const { prefix, points } of keypointSources) {
+            if (!Array.isArray(points)) continue;
+            for (let index = 0; index < Math.min(points.length, SAM3D_KEYPOINT_NAMES.length); index++) {
+                const point = points[index];
                 const name = SAM3D_KEYPOINT_NAMES[index];
                 if (!Array.isArray(point) || point.length < 3 || !name) continue;
-                namedPoints[name] = point;
+                if (prefix === 'canonical') namedPoints[name] = point;
+                namedPoints[`${prefix}_${name}`] = point;
             }
         }
 
         if (Array.isArray(data?.joint_coords)) {
+            for (let index = 0; index < data.joint_coords.length; index++) {
+                const point = data.joint_coords[index];
+                if (!Array.isArray(point) || point.length < 3) continue;
+                const genericName = `joint_${String(index).padStart(3, '0')}`;
+                const namedJoint = this._getSAM3DJointName(data, index);
+                namedPoints[genericName] = point;
+                if (namedJoint && !namedPoints[namedJoint]) namedPoints[namedJoint] = point;
+            }
             for (const [indexString, name] of Object.entries(SAM3D_JOINT_COORD_NAMES)) {
                 const index = Number(indexString);
                 const point = data.joint_coords[index];
@@ -3762,6 +3789,73 @@ export class PoseViewerCore {
         }
 
         return namedPoints;
+    }
+
+    _getSAM3DPointByIndex(points, index) {
+        if (!Array.isArray(points) || index < 0 || index >= points.length) return null;
+        const point = points[index];
+        return Array.isArray(point) && point.length >= 3 ? point : null;
+    }
+
+    _pickSAM3DChainChildIndex(data, jointIndex) {
+        const parents = Array.isArray(data?.joint_parents) ? data.joint_parents : null;
+        if (!parents) return null;
+
+        const children = [];
+        for (let index = 0; index < parents.length; index++) {
+            if (Number(parents[index]) === jointIndex) children.push(index);
+        }
+        if (!children.length) return null;
+        if (children.length === 1) return children[0];
+
+        const rest = Array.isArray(data?.rest_joint_coords) ? data.rest_joint_coords : data?.joint_coords;
+        const parentIndex = Number(parents[jointIndex]);
+        const jointPoint = this._getSAM3DPointByIndex(rest, jointIndex);
+        const parentPoint = this._getSAM3DPointByIndex(rest, parentIndex);
+        if (!jointPoint || !parentPoint) return children[0];
+
+        const axis = [
+            jointPoint[0] - parentPoint[0],
+            jointPoint[1] - parentPoint[1],
+            jointPoint[2] - parentPoint[2],
+        ];
+        const axisLen = Math.hypot(axis[0], axis[1], axis[2]);
+        if (axisLen <= 1e-6) return children[0];
+        axis[0] /= axisLen;
+        axis[1] /= axisLen;
+        axis[2] /= axisLen;
+
+        let best = children[0];
+        let bestScore = -Infinity;
+        for (const childIndex of children) {
+            const childPoint = this._getSAM3DPointByIndex(rest, childIndex);
+            if (!childPoint) continue;
+            const direction = [
+                childPoint[0] - jointPoint[0],
+                childPoint[1] - jointPoint[1],
+                childPoint[2] - jointPoint[2],
+            ];
+            const length = Math.hypot(direction[0], direction[1], direction[2]);
+            if (length <= 1e-6) continue;
+            const score = (
+                direction[0] / length * axis[0]
+                + direction[1] / length * axis[1]
+                + direction[2] / length * axis[2]
+            );
+            if (score > bestScore) {
+                bestScore = score;
+                best = childIndex;
+            }
+        }
+        return best;
+    }
+
+    _pickSAM3DChainChildPoint(data, namedPoints, jointIndex) {
+        const childIndex = this._pickSAM3DChainChildIndex(data, jointIndex);
+        if (childIndex == null) return null;
+        const genericName = `joint_${String(childIndex).padStart(3, '0')}`;
+        const namedJoint = this._getSAM3DJointName(data, childIndex);
+        return namedPoints[genericName] || namedPoints[namedJoint] || this._getSAM3DPointByIndex(data?.joint_coords, childIndex);
     }
 
     _averageSAM3DPoint(namedPoints, names) {
@@ -3952,25 +4046,303 @@ export class PoseViewerCore {
     }
 
     _applySAM3DHeadLineRetarget(worldKps) {
-        if (!this.THREE || !this.bones?.neck_01 || !this.bones?.head || !worldKps?.neck) return;
+        if (!this.THREE || !this.bones?.head || !worldKps) return;
 
-        const headTarget = worldKps.head || worldKps.nose;
-        if (!headTarget) return;
+        if (worldKps.canonical_left_eye && worldKps.canonical_right_eye && worldKps.canonical_nose) {
+            this.bones.head.quaternion.identity();
+            this.bones.head.rotation.set(0, 0, 0);
+            this.bones.head.updateMatrixWorld(true);
+            this.skinnedMesh.updateMatrixWorld(true);
+            for (let pass = 0; pass < 10; pass++) {
+                if (!this._applySAM3DNeckFaceRetarget(worldKps)) break;
+                this.bones.head.quaternion.identity();
+                this.bones.head.rotation.set(0, 0, 0);
+                this.bones.head.updateMatrixWorld(true);
+                this.skinnedMesh.updateMatrixWorld(true);
+            }
+            if (this._applySAM3DEyeMidRetarget(worldKps)) {
+                if (this.skeleton) this.skeleton.update();
+                this.skinnedMesh.updateMatrixWorld(true);
+                return;
+            }
+        }
+    }
 
-        const targetDirection = headTarget.clone().sub(worldKps.neck);
-        if (targetDirection.lengthSq() < 1e-8) return;
+    _transformRestPointByBone(boneName, restPoint) {
+        const bone = this.bones?.[boneName];
+        if (!this.THREE || !this.skeleton || !bone || !Array.isArray(restPoint) || restPoint.length < 3) return null;
+        const boneIndex = this.boneList.indexOf(bone);
+        const inverseBind = this.skeleton.boneInverses?.[boneIndex];
+        if (boneIndex < 0 || !inverseBind) return null;
+        return new this.THREE.Vector3(restPoint[0], restPoint[1], restPoint[2])
+            .applyMatrix4(inverseBind)
+            .applyMatrix4(bone.matrixWorld);
+    }
 
-        // SAM3DBody's dense head joint line is more reliable than the local
-        // head rotation for this rig. Keep the skull in the neck basis instead
-        // of applying the opposite local tilt on top of the correct line.
-        this.bones.head.quaternion.set(0, 0, 0, 1);
-        this.bones.head.rotation.set(0, 0, 0);
-        this.bones.head.updateMatrixWorld(true);
-        this.skinnedMesh.updateMatrixWorld(true);
+    _buildFaceBasis(leftEye, rightEye, nose) {
+        if (!this.THREE || !leftEye || !rightEye || !nose) return null;
+        const THREE = this.THREE;
+        const center = leftEye.clone().add(rightEye).multiplyScalar(0.5);
+        const xAxis = rightEye.clone().sub(leftEye);
+        if (xAxis.lengthSq() < 1e-8) return null;
+        xAxis.normalize();
 
-        this._alignBoneWorldDirection('neck_01', targetDirection);
-        if (this.skeleton) this.skeleton.update();
-        this.skinnedMesh.updateMatrixWorld(true);
+        const forward = nose.clone().sub(center);
+        forward.sub(xAxis.clone().multiplyScalar(forward.dot(xAxis)));
+        if (forward.lengthSq() < 1e-8) return null;
+        forward.normalize();
+
+        const yAxis = new THREE.Vector3().crossVectors(forward, xAxis);
+        if (yAxis.lengthSq() < 1e-8) return null;
+        yAxis.normalize();
+        const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+        return new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+    }
+
+    _getCurrentMHFaceLandmarkPoints() {
+        if (!this.THREE || !this.modelLandmarks) return null;
+        const left = this._transformRestPointByBone('head', this.modelLandmarks.left_eye);
+        const right = this._transformRestPointByBone('head', this.modelLandmarks.right_eye);
+        const nose = this._transformRestPointByBone('head', this.modelLandmarks.nose);
+        if (!left || !right || !nose) return null;
+        return { left, right, nose };
+    }
+
+    _setBoneWorldQuaternion(bone, worldQuaternion) {
+        if (!this.THREE || !bone || !worldQuaternion) return false;
+        const parentWorld = new this.THREE.Quaternion();
+        if (bone.parent) bone.parent.getWorldQuaternion(parentWorld);
+        bone.quaternion.copy(parentWorld.invert().multiply(worldQuaternion.clone()).normalize());
+        bone.rotation.setFromQuaternion(bone.quaternion, bone.rotation.order);
+        bone.updateMatrixWorld(true);
+        return true;
+    }
+
+    _applyBoneWorldDelta(bone, deltaQuaternion) {
+        if (!this.THREE || !bone || !deltaQuaternion) return false;
+        const currentWorld = new this.THREE.Quaternion();
+        bone.getWorldQuaternion(currentWorld);
+        return this._setBoneWorldQuaternion(bone, deltaQuaternion.clone().multiply(currentWorld).normalize());
+    }
+
+    _applyBoneVectorAlignment(bone, sourceA, sourceB, targetA, targetB, strength = 1) {
+        if (!this.THREE || !bone || !sourceA || !sourceB || !targetA || !targetB) return false;
+        const sourceDir = sourceB.clone().sub(sourceA);
+        const targetDir = targetB.clone().sub(targetA);
+        if (sourceDir.lengthSq() < 1e-8 || targetDir.lengthSq() < 1e-8) return false;
+        sourceDir.normalize();
+        targetDir.normalize();
+
+        const delta = new this.THREE.Quaternion().setFromUnitVectors(sourceDir, targetDir).normalize();
+        if (strength < 1) {
+            const partial = new this.THREE.Quaternion();
+            partial.slerp(delta, Math.max(0, Math.min(1, strength)));
+            delta.copy(partial);
+        }
+        return this._applyBoneWorldDelta(bone, delta);
+    }
+
+    _applyFaceVectorAlignment(sourceA, sourceB, targetA, targetB, strength = 1) {
+        return this._applyBoneVectorAlignment(this.bones.head, sourceA, sourceB, targetA, targetB, strength);
+    }
+
+    _applySAM3DEyeMidRetarget(worldKps) {
+        if (!this.THREE || !this.bones?.head || !worldKps?.canonical_left_eye || !worldKps?.canonical_right_eye) return false;
+        const targetEyeMid = worldKps.canonical_left_eye.clone().add(worldKps.canonical_right_eye).multiplyScalar(0.5);
+        let applied = false;
+
+        for (let pass = 0; pass < 12; pass++) {
+            const current = this._getCurrentMHFaceLandmarkPoints();
+            if (!current) return applied;
+            const currentEyeMid = current.left.clone().add(current.right).multiplyScalar(0.5);
+            const headPivot = new this.THREE.Vector3();
+            this.bones.head.getWorldPosition(headPivot);
+            applied = this._applyFaceVectorAlignment(headPivot, currentEyeMid, headPivot, targetEyeMid, 1.0) || applied;
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+
+        for (let pass = 0; pass < 4; pass++) {
+            const current = this._getCurrentMHFaceLandmarkPoints();
+            if (!current) break;
+            applied = this._applyFaceVectorAlignment(current.left, current.right, worldKps.canonical_left_eye, worldKps.canonical_right_eye, 1.0) || applied;
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+        return applied;
+    }
+
+    _alignNeckWorldBasis(worldKps, strength = 0.75) {
+        const neck = this.bones?.neck_01;
+        if (!this.THREE || !neck || !worldKps?.neck || !worldKps?.canonical_left_eye || !worldKps?.canonical_right_eye || !worldKps?.canonical_nose) return false;
+
+        const current = this._getCurrentMHFaceLandmarkPoints();
+        if (!current) return false;
+
+        const neckPosition = new this.THREE.Vector3();
+        neck.getWorldPosition(neckPosition);
+        const currentEyeMid = current.left.clone().add(current.right).multiplyScalar(0.5);
+        const targetEyeMid = worldKps.canonical_left_eye.clone().add(worldKps.canonical_right_eye).multiplyScalar(0.5);
+
+        const eyeApplied = this._applyBoneVectorAlignment(
+            neck,
+            neckPosition,
+            currentEyeMid,
+            worldKps.neck,
+            targetEyeMid,
+            1.0,
+        );
+        if (eyeApplied) {
+            if (this.skeleton) this.skeleton.update();
+            this.skinnedMesh.updateMatrixWorld(true);
+            return true;
+        }
+
+        const basisCurrent = eyeApplied ? this._getCurrentMHFaceLandmarkPoints() : current;
+        if (eyeApplied) neck.getWorldPosition(neckPosition);
+
+        const makeBasis = (origin, leftEye, rightEye, nose) => {
+            const eyeMid = leftEye.clone().add(rightEye).multiplyScalar(0.5);
+            const up = eyeMid.clone().sub(origin);
+            const across = rightEye.clone().sub(leftEye);
+            if (up.lengthSq() < 1e-8 || across.lengthSq() < 1e-8) return null;
+            up.normalize();
+            across.sub(up.clone().multiplyScalar(across.dot(up)));
+            if (across.lengthSq() < 1e-8) return null;
+            across.normalize();
+
+            const faceForward = nose.clone().sub(eyeMid);
+            faceForward.sub(up.clone().multiplyScalar(faceForward.dot(up)));
+            faceForward.sub(across.clone().multiplyScalar(faceForward.dot(across)));
+            if (faceForward.lengthSq() < 1e-8) {
+                faceForward.crossVectors(across, up);
+            }
+            if (faceForward.lengthSq() < 1e-8) return null;
+            faceForward.normalize();
+
+            return new this.THREE.Matrix4().makeBasis(across, up, faceForward);
+        };
+
+        const currentBasis = makeBasis(neckPosition, basisCurrent.left, basisCurrent.right, basisCurrent.nose);
+        const targetBasis = makeBasis(
+            worldKps.neck,
+            worldKps.canonical_left_eye,
+            worldKps.canonical_right_eye,
+            worldKps.canonical_nose,
+        );
+        if (!currentBasis || !targetBasis) return eyeApplied;
+
+        const deltaMatrix = targetBasis.clone().multiply(currentBasis.clone().transpose());
+        const delta = new this.THREE.Quaternion().setFromRotationMatrix(deltaMatrix).normalize();
+        const basisStrength = eyeApplied ? strength * 0.35 : strength;
+        if (basisStrength < 1) {
+            const partial = new this.THREE.Quaternion();
+            partial.slerp(delta, Math.max(0, Math.min(1, basisStrength)));
+            delta.copy(partial);
+        }
+
+        const neckWorld = new this.THREE.Quaternion();
+        neck.getWorldQuaternion(neckWorld);
+
+        const parentWorld = new this.THREE.Quaternion();
+        if (neck.parent) neck.parent.getWorldQuaternion(parentWorld);
+        neck.quaternion.copy(parentWorld.invert().multiply(delta.multiply(neckWorld)).normalize());
+        neck.rotation.setFromQuaternion(neck.quaternion, neck.rotation.order);
+        neck.updateMatrixWorld(true);
+        return true;
+    }
+
+    _applySAM3DNeckFaceRetarget(worldKps) {
+        const neck = this.bones?.neck_01;
+        const head = this.bones?.head;
+        if (!this.THREE || !neck || !head || !worldKps?.neck || !worldKps?.neck_tail) return false;
+
+        const neckPosition = new this.THREE.Vector3();
+        const headPosition = new this.THREE.Vector3();
+        neck.getWorldPosition(neckPosition);
+        head.getWorldPosition(headPosition);
+
+        const appliedByBasis = this._alignNeckWorldBasis(worldKps, 0.82);
+        if (appliedByBasis) {
+            if (this.skeleton) this.skeleton.update();
+            this.skinnedMesh.updateMatrixWorld(true);
+            return true;
+        }
+
+        const applied = this._applyBoneVectorAlignment(
+            neck,
+            neckPosition,
+            headPosition,
+            worldKps.neck,
+            worldKps.neck_tail,
+            1.0,
+        );
+        if (applied) {
+            if (this.skeleton) this.skeleton.update();
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+        return applied;
+    }
+
+    _faceLandmarkDirectionError(source, target) {
+        if (!this.THREE || !source || !target) return Number.POSITIVE_INFINITY;
+        const sourceEyeMid = source.left.clone().add(source.right).multiplyScalar(0.5);
+        const targetEyeMid = target.left.clone().add(target.right).multiplyScalar(0.5);
+        const pairs = [
+            [source.left.clone().sub(source.right), target.left.clone().sub(target.right)],
+            [source.nose.clone().sub(sourceEyeMid), target.nose.clone().sub(targetEyeMid)],
+        ];
+        let error = 0;
+        for (const [sourceVec, targetVec] of pairs) {
+            if (sourceVec.lengthSq() < 1e-8 || targetVec.lengthSq() < 1e-8) return Number.POSITIVE_INFINITY;
+            sourceVec.normalize();
+            targetVec.normalize();
+            error += 1 - Math.max(-1, Math.min(1, sourceVec.dot(targetVec)));
+        }
+        return error;
+    }
+
+    _applySAM3DFaceLandmarkRetarget(worldKps, options = {}) {
+        if (!this.THREE || !this.bones?.head || !this.modelLandmarks) return false;
+        const target = {
+            left: worldKps.canonical_left_eye,
+            right: worldKps.canonical_right_eye,
+            nose: worldKps.canonical_nose,
+        };
+        if (!target.left || !target.right || !target.nose) return false;
+
+        const source = this._getCurrentMHFaceLandmarkPoints();
+        if (!source) return false;
+        const swappedTarget = { left: target.right, right: target.left, nose: target.nose };
+        const selectedTarget = this._faceLandmarkDirectionError(source, swappedTarget) < this._faceLandmarkDirectionError(source, target)
+            ? swappedTarget
+            : target;
+
+        const passes = Number.isFinite(options?.passes) ? Math.max(1, Math.floor(options.passes)) : 5;
+        const strength = Number.isFinite(options?.strength) ? Math.max(0, Math.min(1, options.strength)) : 1;
+
+        for (let pass = 0; pass < passes; pass++) {
+            const currentA = this._getCurrentMHFaceLandmarkPoints();
+            if (!currentA) return false;
+            const sourceEyeMidA = currentA.left.clone().add(currentA.right).multiplyScalar(0.5);
+            const targetEyeMid = selectedTarget.left.clone().add(selectedTarget.right).multiplyScalar(0.5);
+
+            const headPivot = new this.THREE.Vector3();
+            this.bones.head.getWorldPosition(headPivot);
+            this._applyFaceVectorAlignment(headPivot, sourceEyeMidA, headPivot, targetEyeMid, 0.9 * strength);
+            this.skinnedMesh.updateMatrixWorld(true);
+
+            const currentB = this._getCurrentMHFaceLandmarkPoints();
+            if (!currentB) return false;
+            const currentBEyeMid = currentB.left.clone().add(currentB.right).multiplyScalar(0.5);
+            this._applyFaceVectorAlignment(currentBEyeMid, currentB.nose, targetEyeMid, selectedTarget.nose, 0.85 * strength);
+            this.skinnedMesh.updateMatrixWorld(true);
+
+            const currentC = this._getCurrentMHFaceLandmarkPoints();
+            if (!currentC) return false;
+            this._applyFaceVectorAlignment(currentC.left, currentC.right, selectedTarget.left, selectedTarget.right, 0.85 * strength);
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+
+        return true;
     }
 
     _convertSAM3DRotationMatrix(matrixRows) {
@@ -4318,8 +4690,12 @@ export class PoseViewerCore {
             rightFoot: this._getBoneWorldPositionForImport('foot_r'),
         };
 
+        const neckChildIndex = this._pickSAM3DChainChildIndex(data, 110);
         const source = {
-            neck: namedPoints.neck || namedPoints.neck_01 || this._averageSAM3DPoint(namedPoints, ['left_shoulder', 'right_shoulder']),
+            neck: namedPoints.neck_01 || namedPoints.neck || this._averageSAM3DPoint(namedPoints, ['left_shoulder', 'right_shoulder']),
+            neckTail: this._pickSAM3DChainChildPoint(data, namedPoints, 110),
+            restNeck: this._getSAM3DPointByIndex(data?.rest_joint_coords, 110),
+            restNeckTail: this._getSAM3DPointByIndex(data?.rest_joint_coords, neckChildIndex),
             head: namedPoints.head || this._averageSAM3DPoint(namedPoints, ['nose', 'left_eye', 'right_eye', 'left_ear', 'right_ear']) || namedPoints.nose,
             leftShoulder: namedPoints.upperarm_l || namedPoints.left_acromion || namedPoints.left_shoulder,
             rightShoulder: namedPoints.upperarm_r || namedPoints.right_acromion || namedPoints.right_shoulder,
@@ -4335,7 +4711,12 @@ export class PoseViewerCore {
             rightFoot: namedPoints.right_ankle || namedPoints.foot_r,
             leftEar: namedPoints.left_ear,
             rightEar: namedPoints.right_ear,
-            nose: namedPoints.head || namedPoints.nose,
+            nose: namedPoints.canonical_nose || namedPoints.nose,
+            canonicalNeck: namedPoints.canonical_neck,
+            canonicalLeftEye: namedPoints.canonical_left_eye,
+            canonicalRightEye: namedPoints.canonical_right_eye,
+            canonicalLeftEar: namedPoints.canonical_left_ear,
+            canonicalRightEar: namedPoints.canonical_right_ear,
         };
 
         const sourceVector = (from, to) => {
@@ -4351,6 +4732,19 @@ export class PoseViewerCore {
         const scaledWorldPoint = (worldAnchor, sourceAnchor, sourcePoint, scale) => {
             if (!worldAnchor || !sourceAnchor || !sourcePoint) return null;
             return worldAnchor.clone().add(transformedOffset(sourceVector(sourceAnchor, sourcePoint), scale));
+        };
+        const vectorFromArray = (vector) => vector ? new THREE.Vector3(vector[0], vector[1], vector[2]) : null;
+        const deltaRetargetedWorldPoint = (worldAnchor, targetRestAnchor, targetRestPoint, sourceRestAnchor, sourceRestPoint, sourcePoseAnchor, sourcePosePoint) => {
+            if (!worldAnchor || !targetRestAnchor || !targetRestPoint) return null;
+            const targetRestVector = targetRestPoint.clone().sub(targetRestAnchor);
+            const sourceRestVector = vectorFromArray(sourceVector(sourceRestAnchor, sourceRestPoint));
+            const sourcePoseVector = vectorFromArray(sourceVector(sourcePoseAnchor, sourcePosePoint));
+            if (!targetRestVector || !sourceRestVector || !sourcePoseVector) return null;
+            if (targetRestVector.lengthSq() < 1e-8 || sourceRestVector.lengthSq() < 1e-8 || sourcePoseVector.lengthSq() < 1e-8) return null;
+            sourceRestVector.normalize();
+            sourcePoseVector.normalize();
+            const delta = new THREE.Quaternion().setFromUnitVectors(sourceRestVector, sourcePoseVector).normalize();
+            return worldAnchor.clone().add(targetRestVector.applyQuaternion(delta));
         };
         const segmentWorldPoint = (worldAnchor, sourceAnchor, sourcePoint, targetLength) => {
             const vector = sourceVector(sourceAnchor, sourcePoint);
@@ -4385,6 +4779,45 @@ export class PoseViewerCore {
         };
 
         worldKps.head = scaledWorldPoint(rest.neck || rest.pelvis, source.neck || pelvisSource, source.head, headScale);
+        worldKps.neck_tail = deltaRetargetedWorldPoint(
+            worldKps.neck || rest.neck || rest.pelvis,
+            rest.neck,
+            rest.head,
+            source.restNeck,
+            source.restNeckTail,
+            source.neck || pelvisSource,
+            source.neckTail,
+        ) || segmentWorldPoint(
+            worldKps.neck || rest.neck || rest.pelvis,
+            source.neck || pelvisSource,
+            source.neckTail,
+            worldDistance(rest.neck, rest.head),
+        ) || scaledWorldPoint(
+            worldKps.neck || rest.neck || rest.pelvis,
+            source.neck || pelvisSource,
+            source.neckTail,
+            headScale,
+        );
+        const faceAnchor = source.canonicalNeck || source.neck || pelvisSource;
+        const faceWorldAnchor = source.canonicalNeck
+            ? scaledWorldPoint(rest.pelvis, pelvisSource, source.canonicalNeck, torsoScale)
+            : (worldKps.neck || rest.neck || rest.pelvis);
+        const faceScale = scaleBetween(
+            faceAnchor,
+            source.nose || source.canonicalLeftEye || source.canonicalRightEye,
+            faceWorldAnchor,
+            rest.head || worldKps.head,
+            headScale,
+        );
+        const addFacePoint = (worldName, sourcePoint) => {
+            const point = scaledWorldPoint(faceWorldAnchor, faceAnchor, sourcePoint, faceScale);
+            if (point) worldKps[worldName] = point;
+        };
+        addFacePoint('canonical_nose', source.nose);
+        addFacePoint('canonical_left_eye', source.canonicalLeftEye);
+        addFacePoint('canonical_right_eye', source.canonicalRightEye);
+        addFacePoint('canonical_left_ear', source.canonicalLeftEar);
+        addFacePoint('canonical_right_ear', source.canonicalRightEar);
         const leftUpperArmLen = worldDistance(rest.leftShoulder, rest.leftElbow);
         const rightUpperArmLen = worldDistance(rest.rightShoulder, rest.rightElbow);
         const leftLowerArmLen = worldDistance(rest.leftElbow, rest.leftHand);
@@ -4453,7 +4886,6 @@ export class PoseViewerCore {
             worldKps,
             effectorTargets: {
                 pelvis: rest.pelvis.clone(),
-                head: worldKps.head || worldKps.nose || rest.head,
                 hand_l: worldKps.left_wrist || rest.leftHand,
                 hand_r: worldKps.right_wrist || rest.rightHand,
                 foot_l: worldKps.left_ankle || rest.leftFoot,
