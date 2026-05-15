@@ -4902,6 +4902,41 @@ export class PoseViewerCore {
             if (midError < 0.02 && axisError < 0.002) break;
         }
 
+        if (applied) {
+            this._applySAM3DEyeLinePitchTrim(7);
+        }
+
+        return applied;
+    }
+
+    _applySAM3DEyeLinePitchTrim(degrees = 0) {
+        const head = this.bones?.head;
+        if (!this.THREE || !head || !Number.isFinite(degrees) || Math.abs(degrees) < 1e-6) return false;
+
+        const face = this._getCurrentMHFaceLandmarkPoints();
+        if (!face?.left || !face?.right) return false;
+
+        const eyeAxis = face.right.clone().sub(face.left);
+        if (eyeAxis.lengthSq() <= 1e-8) return false;
+        eyeAxis.normalize();
+
+        const angle = Math.abs(degrees) * Math.PI / 180;
+        const plus = new this.THREE.Quaternion().setFromAxisAngle(eyeAxis, angle).normalize();
+        const minus = new this.THREE.Quaternion().setFromAxisAngle(eyeAxis, -angle).normalize();
+
+        const sample = face.nose || this._getBoneWorldPositionForImport('head');
+        if (!sample) return false;
+        const headPivot = new this.THREE.Vector3();
+        head.getWorldPosition(headPivot);
+        const plusSample = sample.clone().sub(headPivot).applyQuaternion(plus).add(headPivot);
+        const minusSample = sample.clone().sub(headPivot).applyQuaternion(minus).add(headPivot);
+        const delta = plusSample.y >= minusSample.y ? plus : minus;
+
+        const applied = this._applyBoneWorldDelta(head, delta);
+        if (applied) {
+            this.skinnedMesh.updateMatrixWorld(true);
+            if (this.skeleton) this.skeleton.update();
+        }
         return applied;
     }
 
