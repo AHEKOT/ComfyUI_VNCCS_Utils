@@ -1,0 +1,21 @@
+# Config for ade20k, M2F inference
+
+metric_to_save: 'mIoU'
+datasets:
+  root: ""  # Path to the ADE20K dataset
+  val: "ADE20K:split=VAL"
+decoder_head:
+  type: "m2f"
+  backbone_out_layers: FOUR_EVEN_INTERVALS
+  num_classes: 150
+transforms:
+  eval:
+    img_size: 896
+    tta_ratios: [0.9, 0.95, 1.0, 1.05, 1.1]
+eval:
+  compute_metric_per_image: False
+  reduce_zero_label: True
+  mode: "slide"
+  crop_size: 896
+  stride: 596
+  use_tta: True

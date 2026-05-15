@@ -1,0 +1,112 @@
+Third-Party Notices and Attributions
+=====================================
+
+This project incorporates code and resources from the following third-party
+projects:
+
+---
+
+1. SAM 3D Body
+   https://github.com/facebookresearch/sam-3d-body
+
+   Copyright (c) Meta Platforms, Inc. and affiliates
+   License: SAM License (see LICENSE-SAM)
+
+   SAM 3D Body: Robust Full-Body Human Mesh Recovery
+   By: Xitong Yang, Devansh Kukreja, Don Pinkus, and others
+   Meta Superintelligence Labs
+
+   Paper: https://ai.meta.com/research/publications/sam-3d-body-robust-full-body-human-mesh-recovery/
+
+   The sam_3d_body/ directory contains the vendored SAM 3D Body library,
+   which is the core model and inference code for 3D human mesh recovery.
+
+   Usage Requirements:
+   - Must include SAM License with any distribution
+   - Must acknowledge use in publications
+   - Must comply with Trade Controls
+   - See LICENSE-SAM for full terms
+
+---
+
+2. UniRig (Blender Installation Code)
+   https://github.com/VAST-AI-Research/UniRig
+   https://github.com/PozzettiAndrea/ComfyUI-UniRig
+
+   Copyright (c) 2025 Tsinghua University and Tripo AI
+   License: MIT License
+
+   Automatic Skinning and Rigging from Single-View Images
+
+   We adapted the Blender auto-installation code from ComfyUI-UniRig
+   for use in this project. The following files contain code derived
+   from UniRig:
+   - install.py (Blender installation functions)
+   - nodes/base.py (Blender auto-detection logic)
+
+   Permission is hereby granted, free of charge, to any person obtaining
+   a copy of this software and associated documentation files (the "Software"),
+   to deal in the Software without restriction, including without limitation
+   the rights to use, copy, modify, merge, publish, distribute, sublicense,
+   and/or sell copies of the Software, subject to the MIT License terms.
+
+---
+
+3. Momentum Human Rig (MHR)
+   https://github.com/facebookresearch/MHR
+
+   Copyright (c) Meta Platforms, Inc. and affiliates
+   License: Apache License 2.0 (see LICENSE-MHR and NOTICE-MHR)
+
+   SAM 3D Body uses the MHR parametric mesh representation for modeling
+   the human body, feet, and hands. This project additionally uses MHR as
+   the topology reference for authoring custom blend shapes on
+   `tools/bone_backup/all_parts_bs.fbx`.
+
+   The MHR TorchScript asset (`mhr_model.pt`) is downloaded from the
+   official MHR v1.0.0 release. Derivative works authored against the MHR
+   mesh topology (e.g. custom blend-shape deltas in
+   `presets/face_blendshapes.npz`, per-object vertex JSONs in `presets/`)
+   are licensed under Apache 2.0 for consistency with upstream MHR.
+
+   Usage Requirements:
+   - Must retain the Apache 2.0 license text (LICENSE-MHR)
+   - Must retain the attribution notice (NOTICE-MHR)
+   - Must state any significant changes made to MHR-derived files
+   - See LICENSE-MHR for full terms
+
+---
+
+4. Blender
+   https://www.blender.org
+
+   License: GNU GPL v3
+
+   This package automatically downloads and uses Blender for mesh processing
+   and FBX export. Blender is distributed separately under the GPL v3 license.
+   The auto-installer downloads Blender 4.2.3 LTS from official Blender
+   release servers.
+
+---
+
+5. Python Dependencies
+
+   This project depends on numerous Python packages distributed under their
+   own respective licenses (MIT, Apache 2.0, BSD, etc.). See requirements.txt
+   for the full list of dependencies. Key dependencies include:
+
+   - PyTorch (BSD-3-Clause)
+   - NumPy (BSD-3-Clause)
+   - Pillow (HPND)
+   - OpenCV (Apache 2.0)
+   - Detectron2 (Apache 2.0)
+   - Transformers (Apache 2.0)
+   - And many others (see requirements.txt)
+
+---
+
+For the complete license texts:
+- SAM License: See LICENSE-SAM
+- Apache License 2.0 (MHR): See LICENSE-MHR and NOTICE-MHR
+- MIT License: See LICENSE-MIT
+- Main License: See LICENSE

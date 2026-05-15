@@ -3,3 +3,16 @@ huggingface_hub
 aiohttp
 kornia
 requests
+torch
+torchvision
+numpy
+Pillow
+transformers
+safetensors
+pytorch-lightning
+omegaconf
+yacs
+timm
+einops
+roma
+braceexpand

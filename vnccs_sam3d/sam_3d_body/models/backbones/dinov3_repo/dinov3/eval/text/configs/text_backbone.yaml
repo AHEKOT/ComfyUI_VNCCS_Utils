@@ -1,0 +1,10 @@
+model_name: 1280d20h24l
+context_length: 77
+vocab_size: 49408
+dim: 1280
+num_heads: 20
+num_layers: 24
+ffn_ratio: 4.0
+is_causal: true
+dropout_prob: 0
+ls_init_value: null

@@ -4,7 +4,26 @@ description = "VNCCS - Collection of utility nodes. VNCCS Visual Camera Control 
 version = "0.4.19"
 license = {file = "LICENSE"} 
 
-dependencies = ["opencv-python", "huggingface_hub", "aiohttp", "kornia", "requests", "torch", "numpy", "Pillow"]
+dependencies = [
+    "opencv-python",
+    "huggingface_hub",
+    "aiohttp",
+    "kornia",
+    "requests",
+    "torch",
+    "torchvision",
+    "numpy",
+    "Pillow",
+    "transformers",
+    "safetensors",
+    "pytorch-lightning",
+    "omegaconf",
+    "yacs",
+    "timm",
+    "einops",
+    "roma",
+    "braceexpand",
+]
 
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -32,4 +51,3 @@ NodeIds = [
     "VNCCS_ModelSelector",
     "VNCCS_PoseStudio"
 ]
-

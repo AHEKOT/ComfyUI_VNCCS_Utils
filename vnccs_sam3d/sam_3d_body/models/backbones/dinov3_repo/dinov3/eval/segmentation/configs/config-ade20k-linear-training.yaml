@@ -1,0 +1,53 @@
+# Config for ade20k, linear training
+
+bs: 2
+n_gpus: 8
+metric_to_save: 'mIoU'
+model_dtype: FLOAT32
+scheduler:
+  total_iter: 40000
+  type: 'WarmupOneCycleLR'
+  constructor_kwargs:
+    warmup_iters: 1500
+    warmup_ratio: 1e-6
+    final_div_factor: .inf
+    pct_start: 0
+    anneal_strategy: 'cos'
+    use_beta1: False
+    update_momentum: False
+optimizer:
+  lr : 1e-3
+  beta1: 0.9
+  beta2: 0.999
+  weight_decay: 1e-3
+  gradient_clip: 'inf'
+datasets:
+  root: ""  # Path to the ADE20K dataset
+  train: "ADE20K:split=TRAIN"
+  val: "ADE20K:split=VAL"
+train:
+  diceloss_weight: 0.0
+  celoss_weight: 1.0
+decoder_head:
+  type: "linear"
+  backbone_out_layers: LAST
+  use_cls_token: False
+  use_batchnorm: True
+  use_backbone_norm: True
+  num_classes: 150
+transforms:
+  train:
+    img_size: 512
+    random_img_size_ratio_range: [0.5, 2.0]
+    crop_size: [512, 512]
+    flip_prob: 0.5
+  eval:
+    img_size: 512
+eval:
+  compute_metric_per_image: False
+  reduce_zero_label: True
+  mode: "slide"
+  crop_size: 512
+  stride: 341
+  eval_interval: 5000
+  use_tta: False

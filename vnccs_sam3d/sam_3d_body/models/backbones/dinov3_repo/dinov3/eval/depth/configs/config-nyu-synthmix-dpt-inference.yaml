@@ -1,0 +1,12 @@
+datasets:
+  test: 'NYU:split=VAL'
+transforms:
+  eval:
+    img_size: 768
+    fixed_crop: 'FULL'
+    eval_mask: 'NYU_EIGEN'
+eval:
+  min_depth: 0.001
+  max_depth: 10.0
+  use_tta: true
+  align_least_squares: true

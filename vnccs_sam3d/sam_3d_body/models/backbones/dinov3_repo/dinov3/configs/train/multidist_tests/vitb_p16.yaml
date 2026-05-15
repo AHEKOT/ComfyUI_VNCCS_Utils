@@ -1,0 +1,7 @@
+# this corresponds to the default config
+train:
+  dataset_path: ImageNet:split=TRAIN
+  checkpointing: true
+student:
+  drop_path_rate: 0.1
+  arch: vit_base
