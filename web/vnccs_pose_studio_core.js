@@ -950,10 +950,14 @@ export class PoseViewerCore {
         this.armScale = 1.0;
         this.handScale = 1.0;
         this.boneLengthParams = {
-            upper_arm: 0.5,
-            forearm: 0.5,
-            thigh: 0.5,
-            shin: 0.5,
+            upper_arm_l: 0.5,
+            upper_arm_r: 0.5,
+            forearm_l: 0.5,
+            forearm_r: 0.5,
+            thigh_l: 0.5,
+            thigh_r: 0.5,
+            shin_l: 0.5,
+            shin_r: 0.5,
             spine: 0.5,
         };
 
@@ -2692,14 +2696,38 @@ export class PoseViewerCore {
         if (group === 'upper_arm') {
             return ['lowerarm_l', 'lowerarm_r'];
         }
+        if (group === 'upper_arm_l') {
+            return ['lowerarm_l'];
+        }
+        if (group === 'upper_arm_r') {
+            return ['lowerarm_r'];
+        }
         if (group === 'forearm') {
             return ['hand_l', 'hand_r'];
+        }
+        if (group === 'forearm_l') {
+            return ['hand_l'];
+        }
+        if (group === 'forearm_r') {
+            return ['hand_r'];
         }
         if (group === 'thigh') {
             return ['calf_l', 'calf_r'];
         }
+        if (group === 'thigh_l') {
+            return ['calf_l'];
+        }
+        if (group === 'thigh_r') {
+            return ['calf_r'];
+        }
         if (group === 'shin') {
             return ['foot_l', 'foot_r'];
+        }
+        if (group === 'shin_l') {
+            return ['foot_l'];
+        }
+        if (group === 'shin_r') {
+            return ['foot_r'];
         }
         if (group === 'spine') {
             return ['spine_02', 'spine_03'];
@@ -2709,11 +2737,24 @@ export class PoseViewerCore {
 
     updateBoneLengthScale(group, value) {
         if (!this.boneLengthParams) {
-            this.boneLengthParams = { upper_arm: 0.5, forearm: 0.5, thigh: 0.5, shin: 0.5, spine: 0.5 };
+            this.boneLengthParams = {
+                upper_arm_l: 0.5, upper_arm_r: 0.5,
+                forearm_l: 0.5, forearm_r: 0.5,
+                thigh_l: 0.5, thigh_r: 0.5,
+                shin_l: 0.5, shin_r: 0.5,
+                spine: 0.5,
+            };
         }
         if (group === 'arm') group = 'upper_arm';
         if (group === 'leg') group = 'thigh';
-        if (!['upper_arm', 'forearm', 'thigh', 'shin', 'spine'].includes(group)) return;
+        const validGroups = [
+            'upper_arm', 'upper_arm_l', 'upper_arm_r',
+            'forearm', 'forearm_l', 'forearm_r',
+            'thigh', 'thigh_l', 'thigh_r',
+            'shin', 'shin_l', 'shin_r',
+            'spine',
+        ];
+        if (!validGroups.includes(group)) return;
         this.boneLengthParams[group] = Number.isFinite(Number(value)) ? Number(value) : 0.5;
         const scale = this._lengthSliderToScale(this.boneLengthParams[group]);
         for (const childName of this._boneLengthChildrenForGroup(group)) {
@@ -2727,10 +2768,14 @@ export class PoseViewerCore {
 
     applyBoneLengthScales() {
         if (!this.boneLengthParams) return;
-        this.updateBoneLengthScale('upper_arm', this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
-        this.updateBoneLengthScale('forearm', this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
-        this.updateBoneLengthScale('thigh', this.boneLengthParams.thigh ?? this.boneLengthParams.leg ?? 0.5);
-        this.updateBoneLengthScale('shin', this.boneLengthParams.shin ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('upper_arm_l', this.boneLengthParams.upper_arm_l ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('upper_arm_r', this.boneLengthParams.upper_arm_r ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('forearm_l', this.boneLengthParams.forearm_l ?? this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('forearm_r', this.boneLengthParams.forearm_r ?? this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('thigh_l', this.boneLengthParams.thigh_l ?? this.boneLengthParams.thigh ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('thigh_r', this.boneLengthParams.thigh_r ?? this.boneLengthParams.thigh ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('shin_l', this.boneLengthParams.shin_l ?? this.boneLengthParams.shin ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('shin_r', this.boneLengthParams.shin_r ?? this.boneLengthParams.shin ?? this.boneLengthParams.leg ?? 0.5);
         this.updateBoneLengthScale('spine', this.boneLengthParams.spine ?? 0.5);
     }
 
@@ -3551,11 +3596,26 @@ export class PoseViewerCore {
             }
             return points;
         };
+        const sourceCamera = flattenNumbers(data?.camera).slice(0, 3);
+        const focalRaw = flattenNumbers(data?.focal_length)[0] ?? Number(data?.focal_length);
+        const sourceFocal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
+        const projectSourcePoint = (point) => {
+            if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
+            const x = Number(point[0]);
+            const y = Number(point[1]);
+            const zValue = Number(point[2]) + sourceCamera[2];
+            if (![x, y, zValue].every(Number.isFinite) || Math.abs(zValue) < 1e-5) return null;
+            const px = (x + sourceCamera[0]) * sourceFocal / zValue + imageW * 0.5;
+            const py = (y + sourceCamera[1]) * sourceFocal / zValue + imageH * 0.5;
+            return {
+                px,
+                py,
+                ndcX: (px / imageW - 0.5) * 2,
+                ndcY: (0.5 - py / imageH) * 2,
+            };
+        };
 
         const projectedSourceBounds = (() => {
-            const camera = flattenNumbers(data?.camera).slice(0, 3);
-            const focalRaw = flattenNumbers(data?.focal_length)[0] ?? Number(data?.focal_length);
-            const focal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
             const points = [];
 
             points.push(...pointTriplets(data?.keypoints_3d));
@@ -3579,15 +3639,15 @@ export class PoseViewerCore {
                 }
             }
 
-            if (!camera || camera.length < 3 || points.length < 2) return null;
+            if (!sourceCamera || sourceCamera.length < 3 || points.length < 2) return null;
             const xs = [];
             const ys = [];
             for (const point of points) {
                 if (!point.every(Number.isFinite)) continue;
-                const z = point[2] + camera[2];
+                const z = point[2] + sourceCamera[2];
                 if (!Number.isFinite(z) || Math.abs(z) < 1e-5) continue;
-                xs.push((point[0] + camera[0]) * focal / z + imageW * 0.5);
-                ys.push((point[1] + camera[1]) * focal / z + imageH * 0.5);
+                xs.push((point[0] + sourceCamera[0]) * sourceFocal / z + imageW * 0.5);
+                ys.push((point[1] + sourceCamera[1]) * sourceFocal / z + imageH * 0.5);
             }
             if (xs.length < 2 || ys.length < 2) return null;
             xs.sort((a, b) => a - b);
@@ -3600,7 +3660,6 @@ export class PoseViewerCore {
                 y2: pick(ys, 0.99),
             };
         })();
-
         let x1;
         let y1;
         let x2;
@@ -3631,6 +3690,26 @@ export class PoseViewerCore {
         const desiredH = Math.min(12.0, Math.max(0.08, bboxH / imageH));
         const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
         const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
+        const sourceShoulderFrame = (() => {
+            if (typeof this._buildSAM3DNamedPoints !== 'function') return null;
+            const named = this._buildSAM3DNamedPoints(data);
+            const projected = [
+                projectSourcePoint(named.raw_left_shoulder || named.canonical_left_shoulder),
+                projectSourcePoint(named.raw_right_shoulder || named.canonical_right_shoulder),
+            ].filter(Boolean);
+            if (!projected.length) return null;
+            const py = projected.reduce((sum, point) => sum + point.py, 0) / projected.length;
+            const ndcY = projected.reduce((sum, point) => sum + point.ndcY, 0) / projected.length;
+            const shoulderToBottomNdc = ((Math.max(y1, y2) - py) / imageH) * 2;
+            if (!Number.isFinite(py) || !Number.isFinite(ndcY) || !Number.isFinite(shoulderToBottomNdc)) return null;
+            if (py < Math.min(y1, y2) - imageH || py > Math.max(y1, y2) + imageH) return null;
+            if (shoulderToBottomNdc < 0.15 || shoulderToBottomNdc > 8.0) return null;
+            return {
+                py,
+                ndcY,
+                shoulderToBottomNdc,
+            };
+        })();
 
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
@@ -3677,6 +3756,21 @@ export class PoseViewerCore {
                 centerY: (min.y + max.y) * 0.5,
             };
         };
+        const projectedBoneCenterY = (camera, boneNames) => {
+            camera.updateMatrixWorld(true);
+            camera.updateProjectionMatrix();
+            const values = [];
+            for (const boneName of boneNames) {
+                const bone = this.bones?.[boneName];
+                if (!bone) continue;
+                const point = new this.THREE.Vector3();
+                bone.getWorldPosition(point);
+                point.project(camera);
+                if (Number.isFinite(point.y)) values.push(point.y);
+            }
+            if (!values.length) return null;
+            return values.reduce((sum, value) => sum + value, 0) / values.length;
+        };
 
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         const dist = 45;
@@ -3691,15 +3785,24 @@ export class PoseViewerCore {
             const desiredNdcW = desiredW * 2;
             const desiredNdcH = desiredH * 2;
             const zoomForW = desiredNdcW / baseBounds.width;
-            const zoomForH = desiredNdcH / baseBounds.height;
+            const baseShoulderY = projectedBoneCenterY(this.captureCamera, ['upperarm_l', 'upperarm_r']);
+            const baseShoulderToBottom = Number.isFinite(baseShoulderY) ? Math.max(1e-5, baseShoulderY - baseBounds.min.y) : null;
+            const zoomForH = (sourceShoulderFrame && baseShoulderToBottom)
+                ? sourceShoulderFrame.shoulderToBottomNdc / baseShoulderToBottom
+                : desiredNdcH / baseBounds.height;
             const zoom = Math.min(16, Math.max(0.1, Math.min(zoomForW, zoomForH) * 0.98));
 
             this.updateCaptureCamera(width, height, zoom, 0, 0);
             const zoomedBounds = projectedBounds(this.captureCamera) || baseBounds;
+            const zoomedShoulderY = projectedBoneCenterY(this.captureCamera, ['upperarm_l', 'upperarm_r']);
             const visibleW = visibleWAtZoom1 / zoom;
             const visibleH = visibleHAtZoom1 / zoom;
-            const offset_x = -(zoomedBounds.centerX - desiredCenterX) * visibleW * 0.5;
-            const offset_y = -(zoomedBounds.centerY - desiredCenterY) * visibleH * 0.5;
+            let offset_x = -(zoomedBounds.centerX - desiredCenterX) * visibleW * 0.5;
+            let offset_y = (sourceShoulderFrame && Number.isFinite(zoomedShoulderY))
+                ? -(zoomedShoulderY - sourceShoulderFrame.ndcY) * visibleH * 0.5
+                : -(zoomedBounds.centerY - desiredCenterY) * visibleH * 0.5;
+            offset_x = Math.max(-visibleW * 4, Math.min(visibleW * 4, offset_x));
+            offset_y = Math.max(-visibleH * 4, Math.min(visibleH * 4, offset_y));
 
             this.updateCaptureCamera(width, height, zoom, offset_x, offset_y);
             return { zoom, offset_x, offset_y };
