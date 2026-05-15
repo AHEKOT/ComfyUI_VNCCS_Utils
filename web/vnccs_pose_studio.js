@@ -6283,6 +6283,24 @@ app.registerExtension({
     name: "VNCCS.PoseStudio",
 
     setup() {
+        const uploadPoseStudioSync = async (node, nodeId) => {
+            const poseWidget = node.widgets.find(w => w.name === "pose_data");
+            if (!poseWidget) return;
+            const widgetData = JSON.parse(poseWidget.value);
+            const payload = {
+                ...widgetData,
+                node_id: nodeId,
+                captured_images: node.studioWidget.poseCaptures || [],
+                lighting_prompts: node.studioWidget.lightingPrompts || []
+            };
+
+            await fetch('/vnccs/pose_sync/upload_capture', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+        };
+
         api.addEventListener("vnccs_req_pose_sync", async (event) => {
             const nodeId = event.detail.node_id;
             const node = app.graph.getNodeById(nodeId);
@@ -6301,26 +6319,60 @@ app.registerExtension({
 
                     // Build payload from widget metadata + in-memory captures
                     // (captured_images are no longer stored in the widget to keep workflow size small)
-                    const poseWidget = node.widgets.find(w => w.name === "pose_data");
-                    if (poseWidget) {
-                        const widgetData = JSON.parse(poseWidget.value);
-                        const payload = {
-                            ...widgetData,
-                            node_id: nodeId,
-                            // Inject captured_images from JS memory (not stored in widget to avoid size overflow)
-                            captured_images: node.studioWidget.poseCaptures || [],
-                            lighting_prompts: node.studioWidget.lightingPrompts || []
-                        };
-
-                        await fetch('/vnccs/pose_sync/upload_capture', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                    }
+                    await uploadPoseStudioSync(node, nodeId);
                 } catch (e) {
                     console.error("[VNCCS] Batch Sync Error:", e);
                 }
+            }
+        });
+
+        api.addEventListener("vnccs_apply_sam3d_pose", async (event) => {
+            const nodeId = event.detail.node_id;
+            const poseData = event.detail.pose_data;
+            const node = app.graph.getNodeById(nodeId);
+            if (!node?.studioWidget || !poseData) return;
+
+            try {
+                const widget = node.studioWidget;
+                if (!widget.viewer || !widget.viewer.isInitialized()) {
+                    await widget.loadModel();
+                }
+
+                const ok = widget.viewer.applySAM3DImport(
+                    poseData,
+                    widget._shoulderYOffset || 0
+                );
+                if (!ok) {
+                    throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
+                }
+
+                const frameParams = widget.viewer.computeSAM3DFrameCameraParams?.(
+                    poseData,
+                    widget.exportParams.view_width || 1024,
+                    widget.exportParams.view_height || 1024
+                );
+                if (frameParams) {
+                    widget.exportParams.cam_zoom = frameParams.zoom;
+                    widget.exportParams.cam_offset_x = frameParams.offset_x;
+                    widget.exportParams.cam_offset_y = frameParams.offset_y;
+                    if (widget.exportWidgets.cam_zoom) widget.exportWidgets.cam_zoom.value = widget.exportParams.cam_zoom;
+                    if (widget.exportWidgets.cam_offset_x) widget.exportWidgets.cam_offset_x.value = widget.exportParams.cam_offset_x;
+                    if (widget.exportWidgets.cam_offset_y) widget.exportWidgets.cam_offset_y.value = widget.exportParams.cam_offset_y;
+                    widget.viewer.snapToCaptureCamera(
+                        widget.exportParams.view_width || 1024,
+                        widget.exportParams.view_height || 1024,
+                        widget.exportParams.cam_zoom,
+                        widget.exportParams.cam_offset_x,
+                        widget.exportParams.cam_offset_y
+                    );
+                }
+
+                widget.poses[widget.activeTab] = widget.viewer.getPose();
+                widget.updateTabs();
+                widget.syncToNode(true);
+                await uploadPoseStudioSync(node, nodeId);
+            } catch (e) {
+                console.error("[VNCCS] SAM3D pose_image apply error:", e);
             }
         });
     },

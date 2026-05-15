@@ -11,6 +11,7 @@ import json
 import os
 import base64
 from io import BytesIO
+import hashlib
 import torch
 import numpy as np
 from PIL import Image, ImageDraw
@@ -102,13 +103,16 @@ class VNCCS_PoseStudio:
                 # ALL settings come from widget via pose_data
                 "pose_data": ("STRING", {"multiline": True, "default": "{}"}),
             },
+            "optional": {
+                "pose_image": ("IMAGE",),
+            },
             "hidden": {
                 "unique_id": "UNIQUE_ID"
             }
         }
 
     @classmethod
-    def IS_CHANGED(cls, pose_data: str = "{}", unique_id: str = None):
+    def IS_CHANGED(cls, pose_data: str = "{}", pose_image=None, unique_id: str = None):
         # Force re-execution if Debug Mode is enabled
         try:
             data = json.loads(pose_data)
@@ -117,11 +121,77 @@ class VNCCS_PoseStudio:
                 return float("NaN")
         except:
             pass
-        return pose_data
+        if pose_image is None:
+            return pose_data
+        try:
+            tensor = pose_image.detach().cpu()
+            digest = hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+            return f"{pose_data}|pose_image:{digest}"
+        except Exception:
+            return f"{pose_data}|pose_image:{id(pose_image)}"
+
+    def _wait_for_frontend_sync(self, unique_id, start_time, timeout=15.0):
+        import time
+        import folder_paths
+
+        temp_dir = folder_paths.get_temp_directory()
+        filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}.json")
+
+        while time.time() - start_time < timeout:
+            if os.path.exists(filepath) and os.path.getmtime(filepath) > start_time - 1.0:
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        sync_data = json.load(f)
+                    try:
+                        os.remove(filepath)
+                    except Exception:
+                        pass
+                    return sync_data
+                except Exception:
+                    pass
+            time.sleep(0.1)
+        return None
+
+    def _apply_pose_image_via_frontend(self, pose_image, unique_id):
+        if pose_image is None or not unique_id:
+            return None
+
+        try:
+            from server import PromptServer
+            import time
+            from ..vnccs_sam3d import process_image_to_pose_json, progress
+
+            task_id = f"node-{unique_id}-pose-image"
+            progress.start_task(task_id)
+            with progress.task_context(task_id):
+                progress.update("Step 1/6: Pose image input received. Preparing SAM 3D Body import...", 2)
+                pose_json = process_image_to_pose_json(pose_image[:1])
+            try:
+                pose_payload = json.loads(pose_json)
+            except Exception:
+                pose_payload = None
+            if not pose_payload:
+                print("[VNCCS Pose Studio] pose_image SAM import returned empty pose data.")
+                return None
+
+            start_time = time.time()
+            PromptServer.instance.send_sync("vnccs_apply_sam3d_pose", {
+                "node_id": unique_id,
+                "pose_data": pose_payload,
+            })
+            synced = self._wait_for_frontend_sync(unique_id, start_time, timeout=20.0)
+            if synced:
+                print("[VNCCS Pose Studio] Applied pose_image SAM pose through frontend sync.")
+                return synced
+            print("[VNCCS Pose Studio] pose_image was analyzed, but frontend sync timed out. Using existing pose_data.")
+        except Exception as e:
+            print(f"[VNCCS Pose Studio] pose_image SAM import failed: {e}")
+        return None
     
     def generate(
         self,
         pose_data: str = "{}",
+        pose_image=None,
         unique_id: str = None
     ):
         """Generate rendered mesh images for all poses."""
@@ -129,47 +199,27 @@ class VNCCS_PoseStudio:
         # Parse pose data
         try:
             data = json.loads(pose_data) if pose_data else {}
+            pose_image_synced = False
+
+            if pose_image is not None:
+                synced = self._apply_pose_image_via_frontend(pose_image, unique_id)
+                if isinstance(synced, dict):
+                    data = synced
+                    pose_image_synced = True
             
             # --- LIVE SYNC with Frontend ---
             # We request a fresh capture/sync from the frontend on every run
             # to ensure the backend uses EXACTLY what the user sees in the widget.
-            if unique_id:
+            if unique_id and not pose_image_synced:
                 try:
                     from server import PromptServer
                     import time
-                    import folder_paths
                     
                     # 1. Request capture
                     PromptServer.instance.send_sync("vnccs_req_pose_sync", {"node_id": unique_id})
-                    
-                    # 2. Wait for file response
-                    temp_dir = folder_paths.get_temp_directory()
-                    filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}.json")
-                    
-                    # Remove old if exists (only if it's very old, but here we just want fresh)
-                    # We don't remove it BEFORE sending the request because the frontend 
-                    # write is async and we might hit a race condition.
-                    
-                    # Wait loop (up to 3s)
-                    start_time = time.time()
-                    while time.time() - start_time < 15.0:
-                            if os.path.exists(filepath):
-                                # Ensure the file is fresh (modified recently)
-                                if os.path.getmtime(filepath) > start_time - 1.0:
-                                    try:
-                                        with open(filepath, "r") as f:
-                                            sync_data = json.load(f)
-                                        # Override data with fresh sync from client
-                                        data = sync_data
-                                        # Cleanup
-                                        try:
-                                            os.remove(filepath)
-                                        except:
-                                            pass
-                                        break
-                                    except:
-                                        pass
-                            time.sleep(0.1)
+                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=15.0)
+                    if synced:
+                        data = synced
                 except Exception as e:
                     print(f"VNCCS Pose Studio Sync Error: {e}")
             # ---------------------------------------------
