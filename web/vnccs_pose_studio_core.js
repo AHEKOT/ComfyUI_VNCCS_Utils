@@ -3498,9 +3498,9 @@ export class PoseViewerCore {
         return this.refPlane !== null && this.refPlane !== undefined;
     }
 
-    updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+    updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
         if (!this.THREE || !this.captureCamera) return; // Not initialized yet
-        if (this._applySAMProjectionCaptureCamera(width, height, zoom, offsetX, offsetY)) return;
+        if (this._applySAMProjectionCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg)) return;
 
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
@@ -3512,11 +3512,15 @@ export class PoseViewerCore {
         const dist = 45;
 
         // Positioning relative to offset target
+        const yawRad = this.THREE.MathUtils.degToRad(Number(yawDeg) || 0);
+        const pitchRad = this.THREE.MathUtils.degToRad(Number(pitchDeg) || 0);
+        const cameraOffset = new this.THREE.Vector3(0, 0, dist);
+        cameraOffset.applyEuler(new this.THREE.Euler(pitchRad, yawRad, 0, 'YXZ'));
         this.captureCamera.aspect = width / height;
         this.captureCamera.fov = 30;
         this.captureCamera.zoom = zoom;
         this.captureCamera.updateProjectionMatrix();
-        this.captureCamera.position.set(target.x, target.y, target.z + dist);
+        this.captureCamera.position.copy(target).add(cameraOffset);
         this.captureCamera.lookAt(target);
 
         // Update Reference Plane
@@ -3558,8 +3562,8 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
-    snapToCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
-        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY);
+    snapToCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
+        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
 
         // Disable damping for hard reset
         const prevDamping = this.orbit.enableDamping;
@@ -3567,10 +3571,7 @@ export class PoseViewerCore {
 
         // Copy capture camera to viewport camera
         this.camera.position.copy(this.captureCamera.position);
-        this.camera.quaternion.copy(this.captureCamera.quaternion);
-        this.camera.fov = this.captureCamera.fov;
-        this.camera.aspect = this.captureCamera.aspect;
-        this.camera.zoom = this.captureCamera.zoom;
+        this.camera.zoom = zoom;
         this.camera.updateProjectionMatrix();
 
         const target = this._samProjectionCameraFrame
@@ -3643,6 +3644,8 @@ export class PoseViewerCore {
                 zoom: 1.0,
                 offset_x: 0,
                 offset_y: 0,
+                yaw_deg: 0,
+                pitch_deg: 0,
                 sam_projection: samProjectionFrame,
             };
         }
@@ -3904,11 +3907,11 @@ export class PoseViewerCore {
         };
     }
 
-    capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0) {
+    capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
         if (!this.initialized) return null;
 
         // Ensure camera is setup
-        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY);
+        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
 
         // Hide UI elements
         const markersVisible = this.jointMarkers[0]?.visible ?? true;
@@ -4067,7 +4070,7 @@ export class PoseViewerCore {
         return camera.position.clone().addScaledVector(forward, depth);
     }
 
-    _applySAMProjectionCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+    _applySAMProjectionCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
         const frame = this._samProjectionCameraFrame;
         if (!frame || !this.THREE || !this.captureCamera) return false;
         const cameraPosition = frame.cameraPosition;
@@ -4095,6 +4098,20 @@ export class PoseViewerCore {
             this.captureCamera.position.z - 1
         );
         this.captureCamera.lookAt(target);
+        const yaw = Number(yawDeg) || 0;
+        const pitch = Number(pitchDeg) || 0;
+        if (Math.abs(yaw) > 1e-6 || Math.abs(pitch) > 1e-6) {
+            const orbitTarget = this._getSAMProjectionViewTarget(this.captureCamera);
+            const offset = this.captureCamera.position.clone().sub(orbitTarget);
+            offset.applyEuler(new this.THREE.Euler(
+                this.THREE.MathUtils.degToRad(pitch),
+                this.THREE.MathUtils.degToRad(yaw),
+                0,
+                'YXZ'
+            ));
+            this.captureCamera.position.copy(orbitTarget).add(offset);
+            this.captureCamera.lookAt(orbitTarget);
+        }
         this.captureCamera.updateProjectionMatrix();
 
         if (this.refPlane) {
