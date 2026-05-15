@@ -940,6 +940,8 @@ export class PoseViewerCore {
         // Pose state
         this.modelRotation = { x: 0, y: 0, z: 0 };
         this.importedFigureVisible = true;
+        this.samMeshOverlayVisible = false;
+        this._samMeshOverlayGroup = null;
 
         this.initialized = false;
 
@@ -3849,6 +3851,7 @@ export class PoseViewerCore {
             rtmw: this._rtmwFigureGroup?.visible,
             hmr2: this._hmr2FigureGroup?.visible,
             hmr2Canvas: this._hmr2CanvasGroup?.visible,
+            samMesh: this._samMeshOverlayGroup?.visible,
         };
         if (this.transform) this.transform.visible = false;
         if (this.skeletonHelper) this.skeletonHelper.visible = false;
@@ -3858,6 +3861,7 @@ export class PoseViewerCore {
         if (this._rtmwFigureGroup) this._rtmwFigureGroup.visible = false;
         if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = false;
         if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = false;
+        if (this._samMeshOverlayGroup) this._samMeshOverlayGroup.visible = false;
         this.jointMarkers.forEach(m => m.visible = false);
 
         // Hide IK effectors and pole targets
@@ -3917,6 +3921,7 @@ export class PoseViewerCore {
             if (this._rtmwFigureGroup) this._rtmwFigureGroup.visible = importedFigureVisibility.rtmw ?? this.importedFigureVisible;
             if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = importedFigureVisibility.hmr2 ?? this.importedFigureVisible;
             if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = importedFigureVisibility.hmr2Canvas ?? this.importedFigureVisible;
+            if (this._samMeshOverlayGroup) this._samMeshOverlayGroup.visible = importedFigureVisibility.samMesh ?? this.samMeshOverlayVisible;
 
             // Restore IK effectors and pole targets visibility
             if (this.ikController) {
@@ -3946,6 +3951,153 @@ export class PoseViewerCore {
         });
         if (group.parent) group.parent.remove(group);
         this[groupName] = null;
+    }
+
+    clearSAMMeshOverlay() {
+        this._clearImportedFigureGroup('_samMeshOverlayGroup');
+        this.requestRender();
+    }
+
+    setSAMMeshOverlayVisible(visible) {
+        this.samMeshOverlayVisible = !!visible;
+        if (this._samMeshOverlayGroup) {
+            this._samMeshOverlayGroup.visible = this.samMeshOverlayVisible;
+            this.requestRender();
+        }
+    }
+
+    setSAMMeshOverlayData(meshData, poseData) {
+        if (!this.THREE || !this.scene || !meshData || !Array.isArray(meshData.vertices)) return false;
+
+        this.clearSAMMeshOverlay();
+
+        const named = this._buildSAM3DNamedPoints(poseData || {});
+        const leftHip = named.left_hip || named.thigh_l;
+        const rightHip = named.right_hip || named.thigh_r;
+        const pelvisSource = (leftHip && rightHip)
+            ? [
+                (leftHip[0] + rightHip[0]) * 0.5,
+                (leftHip[1] + rightHip[1]) * 0.5,
+                (leftHip[2] + rightHip[2]) * 0.5,
+            ]
+            : (named.pelvis || null);
+        const neckSource = named.neck || named.neck_01 || null;
+        const pelvisWorld = this._getBoneWorldPositionForImport('pelvis') || this._getBoneWorldPositionForImport('spine_01');
+        const neckWorld = this._getBoneWorldPositionForImport('neck_01') || this._getBoneWorldPositionForImport('head');
+        if (!pelvisSource || !pelvisWorld) return false;
+
+        let scale = 1.0;
+        if (neckSource && neckWorld) {
+            const sourceLen = Math.hypot(
+                neckSource[0] - pelvisSource[0],
+                neckSource[1] - pelvisSource[1],
+                neckSource[2] - pelvisSource[2],
+            );
+            const worldLen = neckWorld.distanceTo(pelvisWorld);
+            if (sourceLen > 1e-5 && worldLen > 1e-5) scale = worldLen / sourceLen;
+        }
+
+        const sourceToWorldPoint = (point) => {
+            if (!Array.isArray(point) || point.length < 3) return null;
+            return new this.THREE.Vector3(
+                pelvisWorld.x + (Number(point[0]) - pelvisSource[0]) * scale,
+                pelvisWorld.y + (Number(point[1]) - pelvisSource[1]) * scale,
+                pelvisWorld.z + (Number(point[2]) - pelvisSource[2]) * scale,
+            );
+        };
+
+        const vertices = meshData.vertices;
+        const positions = new Float32Array(vertices.length * 3);
+        for (let i = 0; i < vertices.length; i++) {
+            const point = sourceToWorldPoint(vertices[i]);
+            if (!point) continue;
+            positions[i * 3] = point.x;
+            positions[i * 3 + 1] = point.y;
+            positions[i * 3 + 2] = point.z;
+        }
+
+        const geometry = new this.THREE.BufferGeometry();
+        geometry.setAttribute('position', new this.THREE.BufferAttribute(positions, 3));
+        const faces = Array.isArray(meshData.faces) ? meshData.faces : [];
+        const indices = [];
+        for (const face of faces) {
+            if (!Array.isArray(face) || face.length < 3) continue;
+            indices.push(Number(face[0]), Number(face[1]), Number(face[2]));
+        }
+        if (indices.length) geometry.setIndex(indices);
+        geometry.computeVertexNormals();
+
+        const material = new this.THREE.MeshPhongMaterial({
+            color: 0xd8ccb0,
+            transparent: true,
+            opacity: 0.34,
+            depthWrite: false,
+            side: this.THREE.DoubleSide,
+        });
+        const mesh = new this.THREE.Mesh(geometry, material);
+        mesh.name = 'sam3d_render_mesh_overlay';
+        mesh.renderOrder = 40;
+
+        const group = new this.THREE.Group();
+        group.name = 'sam3d_render_mesh_overlay_group';
+        group.add(mesh);
+        group.visible = this.samMeshOverlayVisible;
+        this.scene.add(group);
+        this._samMeshOverlayGroup = group;
+
+        const fittedWorldKps = this._buildSAM3DOverlayWorldKps(meshData, poseData, sourceToWorldPoint);
+        if (fittedWorldKps) {
+            this._hmr2WorldKps = fittedWorldKps;
+            this._drawHMR2Figure(fittedWorldKps);
+        }
+
+        this.requestRender();
+        return true;
+    }
+
+    _buildSAM3DOverlayWorldKps(meshData, poseData, sourceToWorldPoint) {
+        if (!meshData || !poseData || typeof sourceToWorldPoint !== 'function') return null;
+        const jointCoords = Array.isArray(meshData.fitted_joint_coords)
+            ? meshData.fitted_joint_coords
+            : (Array.isArray(meshData.joint_coords) ? meshData.joint_coords : null);
+        if (!jointCoords) return null;
+
+        const overlayPose = {
+            ...poseData,
+            joint_coords: jointCoords,
+        };
+        const named = this._buildSAM3DNamedPoints(overlayPose);
+        const pointNames = new Set([
+            'pelvis', 'neck', 'neck_01', 'neck_tail', 'head',
+            'canonical_nose', 'canonical_left_eye', 'canonical_right_eye',
+            'canonical_left_ear', 'canonical_right_ear',
+            'left_shoulder', 'right_shoulder',
+            'left_elbow', 'right_elbow',
+            'left_wrist', 'right_wrist',
+            'left_hip', 'right_hip',
+            'left_knee', 'right_knee',
+            'left_ankle', 'right_ankle',
+            'left_big_toe', 'left_small_toe', 'left_heel',
+            'right_big_toe', 'right_small_toe', 'right_heel',
+        ]);
+        for (const name of SAM3D_FINGER_POINT_NAMES) pointNames.add(name);
+
+        const worldKps = {};
+        for (const name of pointNames) {
+            const point = named[name];
+            const worldPoint = sourceToWorldPoint(point);
+            if (worldPoint) worldKps[name] = worldPoint;
+        }
+
+        if (!worldKps.neck && named.neck_01) {
+            const point = sourceToWorldPoint(named.neck_01);
+            if (point) worldKps.neck = point;
+        }
+        if (!worldKps.neck_tail && named.head) {
+            const point = sourceToWorldPoint(named.head);
+            if (point) worldKps.neck_tail = point;
+        }
+        return Object.keys(worldKps).length ? worldKps : null;
     }
 
     _estimateCurrentModelHeight() {
@@ -4463,7 +4615,7 @@ export class PoseViewerCore {
         }
     }
 
-    _applySAM3DHeadPitchBias(degrees = 20) {
+    _applySAM3DHeadPitchBias(degrees = 0) {
         const head = this.bones?.head;
         if (!this.THREE || !head || !this.modelLandmarks) return false;
 
@@ -5808,8 +5960,10 @@ export class PoseViewerCore {
             });
             if (normalizedTargets.worldKps) {
                 importTargets.worldKps = normalizedTargets.worldKps;
-                this._hmr2WorldKps = normalizedTargets.worldKps;
-                this._drawHMR2Figure(normalizedTargets.worldKps);
+                if (options.drawNormalizedFigure !== false) {
+                    this._hmr2WorldKps = normalizedTargets.worldKps;
+                    this._drawHMR2Figure(normalizedTargets.worldKps);
+                }
             }
         }
 
@@ -5848,10 +6002,6 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 
-        this.autoFitSAM3DBoneLengths(data);
-        this.skinnedMesh.updateMatrixWorld(true);
-        if (this.skeleton) this.skeleton.update();
-
         const importTargets = this._buildSAM3DImportTargets(data);
         const worldKps = importTargets?.worldKps;
 
@@ -5864,7 +6014,10 @@ export class PoseViewerCore {
 
         if (usedRotationImport) {
             this._applyImportPelvisAndTorso(worldKps, shoulderYOffset, { includeHead: false });
-            this._applySAM3DTargetIK(importTargets, { includeSpine: false });
+            this._applySAM3DTargetIK(importTargets, {
+                includeSpine: false,
+                normalizeLimbs: true,
+            });
             this._applySAM3DHeadLineRetarget(importTargets.worldKps || worldKps);
             this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
             this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
@@ -5881,7 +6034,10 @@ export class PoseViewerCore {
         this._drawHMR2Figure(worldKps);
         this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
 
-        this._applySAM3DTargetIK(importTargets);
+        this._applySAM3DTargetIK(importTargets, {
+            normalizeLimbs: true,
+        });
+        this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
         this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
 
         if (this.skeleton) this.skeleton.update();

@@ -1824,6 +1824,7 @@ class PoseStudioWidget {
             debugPortraitMode: false, // Focus on upper body in debug mode
             debugKeepLighting: false, // Use manual lighting in debug mode
             debugShowSAMHelper: true, // Show imported SAM skeleton overlay in the viewer
+            debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
@@ -1848,6 +1849,7 @@ class PoseStudioWidget {
         this._handSliderValRefs = {};
         this._handBiasValues = [1.0, 1.0, 1.0];
         this._activeHandSide = null;
+        this._lastSAM3DPoseData = null;
         this._hoveredHandSide = null;
         this._handPopover = null;
         this._handPopoverTitle = null;
@@ -3979,6 +3981,8 @@ class PoseStudioWidget {
                 });
             }
 
+            this._lastSAM3DPoseData = poseData;
+            await this.refreshSAMMeshOverlay(poseData);
             this.poses[this.activeTab] = this.viewer.getPose();
             this.updateRotationSliders();
             this.syncToNode(true);
@@ -3988,6 +3992,37 @@ class PoseStudioWidget {
         } finally {
             if (pollTimer) clearInterval(pollTimer);
             progress.close();
+        }
+    }
+
+    async refreshSAMMeshOverlay(poseData = null) {
+        const activePose = poseData || this._lastSAM3DPoseData;
+        if (!this.viewer?.setSAMMeshOverlayData || !activePose) return false;
+        const showMeshOverlay = !!this.exportParams.debugShowSAMMeshOverlay;
+        const showHelperSkeleton = this.exportParams.debugShowSAMHelper !== false;
+        if (!showMeshOverlay && !showHelperSkeleton) {
+            this.viewer.setSAMMeshOverlayVisible?.(false);
+            return false;
+        }
+        try {
+            const response = await api.fetchApi("/vnccs/sam3d/render_mesh_overlay", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    pose_data: activePose,
+                    body_preset: {},
+                    pose_adjust: 0.0,
+                }),
+            });
+            const result = await response.json();
+            if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+            const ok = this.viewer.setSAMMeshOverlayData(result.mesh, activePose);
+            this.viewer.setSAMMeshOverlayVisible?.(showMeshOverlay);
+            return ok;
+        } catch (err) {
+            console.error("[VNCCS] Failed to build SAM mesh overlay:", err);
+            this.showMessage?.(`Failed to build SAM mesh overlay: ${err?.message || err}`, true);
+            return false;
         }
     }
 
@@ -4065,6 +4100,8 @@ class PoseStudioWidget {
                             this._shoulderYOffset || 0
                         );
                         if (ok) {
+                            this._lastSAM3DPoseData = data;
+                            this.refreshSAMMeshOverlay(data);
                             this.syncMeshProportionSlidersFromViewer();
                             this.poses[this.activeTab] = this.viewer.getPose();
                             this.updateRotationSliders();
@@ -5105,6 +5142,9 @@ class PoseStudioWidget {
             if (this.viewer?.setKpFigureVisible) {
                 this.viewer.setKpFigureVisible(samHelperCheckbox.checked);
             }
+            if (samHelperCheckbox.checked) {
+                this.refreshSAMMeshOverlay();
+            }
             this.syncToNode(false);
         };
 
@@ -5115,6 +5155,38 @@ class PoseStudioWidget {
         samHelperLabel.appendChild(samHelperText);
         samHelperRow.appendChild(samHelperLabel);
         content.appendChild(samHelperRow);
+
+        const samMeshRow = document.createElement("div");
+        samMeshRow.className = "vnccs-ps-field";
+        samMeshRow.style.marginTop = "10px";
+
+        const samMeshLabel = document.createElement("label");
+        samMeshLabel.style.display = "flex";
+        samMeshLabel.style.alignItems = "center";
+        samMeshLabel.style.gap = "10px";
+        samMeshLabel.style.cursor = "pointer";
+
+        const samMeshCheckbox = document.createElement("input");
+        samMeshCheckbox.type = "checkbox";
+        samMeshCheckbox.checked = !!this.exportParams.debugShowSAMMeshOverlay;
+        samMeshCheckbox.onchange = () => {
+            this.exportParams.debugShowSAMMeshOverlay = samMeshCheckbox.checked;
+            if (this.viewer?.setSAMMeshOverlayVisible) {
+                this.viewer.setSAMMeshOverlayVisible(samMeshCheckbox.checked);
+            }
+            if (samMeshCheckbox.checked) {
+                this.refreshSAMMeshOverlay();
+            }
+            this.syncToNode(false);
+        };
+
+        const samMeshText = document.createElement("div");
+        samMeshText.innerHTML = "<strong>Show SAM Render Mesh Overlay</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Displays the postprocessed SAM3D Body render mesh as a translucent overlay for direct skeleton/model comparison. It is hidden during final capture.</div>";
+
+        samMeshLabel.appendChild(samMeshCheckbox);
+        samMeshLabel.appendChild(samMeshText);
+        samMeshRow.appendChild(samMeshLabel);
+        content.appendChild(samMeshRow);
 
         // Skin Texture Section
         const skinHeader = document.createElement("div");
@@ -6534,6 +6606,8 @@ app.registerExtension({
                 if (!ok) {
                     throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
                 }
+                widget._lastSAM3DPoseData = poseData;
+                await widget.refreshSAMMeshOverlay(poseData);
                 widget.syncMeshProportionSlidersFromViewer();
 
                 const frameParams = widget.viewer.computeSAM3DFrameCameraParams?.(

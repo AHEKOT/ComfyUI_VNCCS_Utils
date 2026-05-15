@@ -34,7 +34,6 @@ def process_image_to_pose_json(image_tensor):
             _get_mhr_rest_verts,
             _load_sam3d_model,
             _to_batched_tensor,
-            apply_pose_lean_correction_rig,
         )
     except Exception as exc:
         raise _dependency_error(exc) from exc
@@ -118,23 +117,6 @@ def process_image_to_pose_json(image_tensor):
                 posed_keypoints = posed_keypoints[0]
             pose_data["canonical_keypoints_3d"] = posed_keypoints[:70].tolist()
 
-        try:
-            if posed_rots is not None and posed_coords is not None:
-                _get_mhr_rest_verts(mhr_head, device)
-                parents = _FACE_BS_CACHE.get("joint_parents")
-                if parents is not None:
-                    corrected_rots, corrected_coords = apply_pose_lean_correction_rig(
-                        np.asarray(posed_rots, dtype=np.float32),
-                        np.asarray(posed_coords, dtype=np.float32),
-                        np.asarray(parents, dtype=np.int32),
-                        0.5,
-                    )
-                    pose_data["joint_rotations"] = corrected_rots.tolist()
-                    pose_data["joint_coords"] = corrected_coords.tolist()
-                    pose_data["sam3d_pose_postprocess"] = "apply_pose_lean_correction_rig:0.5"
-        except Exception as exc:
-            print(f"[VNCCS] SAM3D lean-corrected rig export failed: {exc}")
-
         rest_rots = None
         rest_coords = None
         for tensor in rest_out[1:]:
@@ -187,3 +169,172 @@ def process_image_to_pose_json(image_tensor):
         print(f"[VNCCS] SAM3D rest skeleton export failed: {exc}")
         progress.finish("Step 6/6: SAM 3D Body pose reconstructed.")
         return pose_json
+
+
+def process_pose_json_to_overlay_mesh(pose_data, body_preset=None, pose_adjust=0.0):
+    """Build the same postprocessed MHR mesh used by the SAM render node.
+
+    This returns geometry only, so Pose Studio can overlay it in Three.js
+    without relying on a 2D render screenshot.
+    """
+    try:
+        import os
+        import torch
+
+        from .processing.load_model import LoadSAM3DBodyModel
+        from .processing.process import (
+            _FACE_BS_CACHE,
+            _apply_bone_length_scales,
+            _apply_face_blendshapes,
+            _get_mhr_rest_verts,
+            _load_sam3d_model,
+            _normalize_bone_lengths,
+            _to_batched_tensor,
+            apply_pose_lean_correction_mesh,
+        )
+    except Exception as exc:
+        raise _dependency_error(exc) from exc
+
+    payload = pose_data if isinstance(pose_data, dict) else {}
+    preset = body_preset if isinstance(body_preset, dict) else {}
+    body_params = preset.get("body_params") or {}
+    bone_lengths = preset.get("bone_lengths") or {}
+    blendshape_sliders = {
+        str(k): float(v) for k, v in (preset.get("blendshapes") or {}).items()
+    }
+
+    model = LoadSAM3DBodyModel().load_model("Auto")[0]
+    loaded = _load_sam3d_model(model)
+    sam_3d_model = loaded["model"]
+    device = torch.device(loaded["device"])
+    mhr_head = sam_3d_model.head_pose
+
+    global_rot = _to_batched_tensor(payload.get("global_rot"), device, width=3)
+    body_pose = _to_batched_tensor(payload.get("body_pose_params"), device, width=133)
+    hand_pose = _to_batched_tensor(payload.get("hand_pose_params"), device, width=108)
+    expr_params = torch.zeros((1, mhr_head.num_face_comps), dtype=torch.float32, device=device)
+    global_trans = torch.zeros((1, 3), dtype=torch.float32, device=device)
+
+    shape_axes = [
+        float(body_params.get("fat", 0.0)),
+        float(body_params.get("muscle", 0.0)),
+        float(body_params.get("fat_muscle", 0.0)),
+        float(body_params.get("limb_girth", 0.0)),
+        float(body_params.get("limb_muscle", 0.0)),
+        float(body_params.get("limb_fat", 0.0)),
+        float(body_params.get("chest_shoulder", 0.0)),
+        float(body_params.get("waist_hip", 0.0)),
+        float(body_params.get("thigh_calf", 0.0)),
+    ]
+    shape_norm = (1.00, 2.78, 4.42, 8.74, 10.82, 11.70, 13.39, 13.83, 16.62)
+    shape_sign = (+1, -1, -1, +1, -1, +1, -1, +1, +1)
+    shape_params = torch.zeros((1, mhr_head.num_shape_comps), dtype=torch.float32, device=device)
+    for i in range(min(len(shape_axes), mhr_head.num_shape_comps)):
+        shape_params[0, i] = shape_axes[i] * shape_norm[i] * shape_sign[i]
+    scale_params = torch.zeros((1, mhr_head.num_scale_comps), dtype=torch.float32, device=device)
+
+    with torch.no_grad():
+        mhr_out = mhr_head.mhr_forward(
+            global_trans=global_trans,
+            global_rot=global_rot,
+            body_pose_params=body_pose,
+            hand_pose_params=hand_pose,
+            scale_params=scale_params,
+            shape_params=shape_params,
+            expr_params=expr_params,
+            return_joint_rotations=True,
+            return_joint_coords=True,
+        )
+
+    verts = mhr_out[0]
+    joint_rots = None
+    joint_coords = None
+    for tensor in mhr_out[1:]:
+        if tensor.ndim == 4 and tensor.shape[-1] == 3 and tensor.shape[-2] == 3:
+            joint_rots = tensor
+        elif tensor.ndim == 3 and tensor.shape[-1] == 3 and tensor.shape[-2] != 3:
+            joint_coords = tensor
+
+    vertices = verts.detach().cpu().numpy()
+    if vertices.ndim == 3:
+        vertices = vertices[0]
+    rots_np = joint_rots.detach().cpu().numpy() if joint_rots is not None else None
+    if rots_np is not None and rots_np.ndim == 4:
+        rots_np = rots_np[0]
+    coords_np = joint_coords.detach().cpu().numpy() if joint_coords is not None else None
+    if coords_np is not None and coords_np.ndim == 3:
+        coords_np = coords_np[0]
+
+    vertices_before_post = vertices.astype(np.float32, copy=True)
+    if coords_np is not None:
+        _get_mhr_rest_verts(mhr_head, device)
+        vertices = _normalize_bone_lengths(vertices, coords_np)
+
+    if blendshape_sliders and any(v != 0.0 for v in blendshape_sliders.values()):
+        from .preset_pack import active_pack_dir
+
+        presets_dir = str(active_pack_dir())
+        rest_verts = _get_mhr_rest_verts(mhr_head, device)
+        vertices = _apply_face_blendshapes(
+            vertices,
+            rest_verts,
+            blendshape_sliders,
+            rots_np,
+            presets_dir,
+            os.path.join(presets_dir, "face_blendshapes.npz"),
+        )
+
+    bone_torso = float(bone_lengths.get("torso", 1.0))
+    bone_neck = float(bone_lengths.get("neck", 1.0))
+    bone_arm = float(bone_lengths.get("arm", 1.0))
+    bone_leg = float(bone_lengths.get("leg", 1.0))
+    if rots_np is not None and (
+        bone_arm != 1.0 or bone_leg != 1.0 or bone_torso != 1.0 or bone_neck != 1.0
+    ):
+        _get_mhr_rest_verts(mhr_head, device)
+        vertices = _apply_bone_length_scales(
+            vertices,
+            arm_scale=bone_arm,
+            leg_scale=bone_leg,
+            torso_scale=bone_torso,
+            neck_scale=bone_neck,
+            joint_rots_posed=rots_np,
+        )
+
+    try:
+        lean_strength = float(pose_adjust)
+    except (TypeError, ValueError):
+        lean_strength = 0.0
+    if coords_np is not None and lean_strength > 1e-6:
+        vertices = apply_pose_lean_correction_mesh(vertices, coords_np, lean_strength)
+
+    fitted_coords = None
+    if coords_np is not None:
+        fitted_coords = coords_np.astype(np.float32, copy=True)
+        weights = _FACE_BS_CACHE.get("lbs_weights")
+        if weights is not None:
+            delta = vertices.astype(np.float32) - vertices_before_post.astype(np.float32)
+            normalize_strength = _FACE_BS_CACHE.get("normalize_mask")
+            num_joints = min(fitted_coords.shape[0], weights.shape[1])
+            for joint_index in range(num_joints):
+                w = weights[:, joint_index].astype(np.float32)
+                if normalize_strength is not None:
+                    effective = w * normalize_strength.astype(np.float32)
+                    strong = effective > 1e-5
+                    ww = effective[strong]
+                else:
+                    strong = w > 0.08
+                    ww = w[strong]
+                if not np.any(strong):
+                    continue
+                denom = float(ww.sum())
+                if denom > 1e-6:
+                    fitted_coords[joint_index] += (delta[strong] * ww[:, None]).sum(axis=0) / denom
+
+    faces = sam_3d_model.head_pose.faces.detach().cpu().numpy().astype(np.int32)
+    return {
+        "vertices": vertices.astype(np.float32).reshape(-1, 3).tolist(),
+        "faces": faces.reshape(-1, 3).tolist(),
+        "joint_coords": coords_np.astype(np.float32).tolist() if coords_np is not None else None,
+        "fitted_joint_coords": fitted_coords.astype(np.float32).tolist() if fitted_coords is not None else None,
+    }

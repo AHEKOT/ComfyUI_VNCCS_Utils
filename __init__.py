@@ -397,5 +397,33 @@ def _vnccs_register_sam3d_pose_import():
             traceback.print_exc()
             return web.json_response({"error": str(e)}, status=500)
 
+    @PromptServer.instance.routes.post("/vnccs/sam3d/render_mesh_overlay")
+    async def vnccs_sam3d_render_mesh_overlay(request):
+        try:
+            import asyncio
+
+            data = await request.json()
+            pose_data = data.get("pose_data")
+            if not isinstance(pose_data, dict):
+                return web.json_response({"error": "missing pose_data"}, status=400)
+            body_preset = data.get("body_preset") if isinstance(data.get("body_preset"), dict) else {}
+            pose_adjust = float(data.get("pose_adjust") or 0.0)
+
+            def build_overlay():
+                from .vnccs_sam3d.pose_import import process_pose_json_to_overlay_mesh
+
+                return process_pose_json_to_overlay_mesh(
+                    pose_data,
+                    body_preset=body_preset,
+                    pose_adjust=pose_adjust,
+                )
+
+            mesh_data = await asyncio.to_thread(build_overlay)
+            return web.json_response({"status": "success", "mesh": mesh_data})
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return web.json_response({"error": str(e)}, status=500)
+
 
 _vnccs_register_sam3d_pose_import()
