@@ -1157,10 +1157,10 @@ const STYLES = `
 }
 
 .vnccs-ps-library-modal {
-    width: 95%;
-    max-width: 1200px;
-    height: 90%;
-    max-height: 900px;
+    width: calc(100% - 24px);
+    max-width: none;
+    height: calc(100% - 24px);
+    max-height: none;
     background: rgba(14, 11, 22, 0.96);
     border: 1px solid var(--ps-accent-border);
     border-radius: var(--ps-radius-lg);
@@ -1183,8 +1183,8 @@ const STYLES = `
 
 .vnccs-ps-library-modal-header {
     display: flex;
-    justify-content: space-between;
     align-items: center;
+    gap: 12px;
     padding: 16px 22px;
     background: rgba(0, 0, 0, 0.3);
     border-bottom: 1px solid var(--ps-border);
@@ -1199,6 +1199,104 @@ const STYLES = `
     gap: 10px;
     font-family: var(--ps-font);
     letter-spacing: 0.5px;
+    margin-right: auto;
+}
+
+.vnccs-ps-library-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 0;
+}
+
+.vnccs-ps-library-save-current {
+    width: auto;
+    min-width: 150px;
+    padding: 9px 14px;
+    justify-content: center;
+}
+
+.vnccs-ps-library-menu-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid var(--ps-border);
+    background: var(--ps-input-bg);
+    color: var(--ps-text);
+    cursor: pointer;
+    font-size: 16px;
+    transition: all var(--ps-transition);
+}
+
+.vnccs-ps-library-menu-btn:hover {
+    border-color: var(--ps-accent-border);
+    color: var(--ps-accent);
+}
+
+.vnccs-ps-library-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 22px 8px;
+    background: rgba(0, 0, 0, 0.16);
+}
+
+.vnccs-ps-library-search {
+    width: 100%;
+    height: 38px;
+    border-radius: 8px;
+    border: 1px solid var(--ps-border);
+    background: rgba(255,255,255,0.055);
+    color: var(--ps-text);
+    padding: 0 14px;
+    font-family: var(--ps-font);
+    font-size: 13px;
+    outline: none;
+}
+
+.vnccs-ps-library-search:focus {
+    border-color: var(--ps-accent-border);
+    box-shadow: 0 0 0 2px rgba(255,143,163,0.12);
+}
+
+.vnccs-ps-library-categories {
+    display: flex;
+    gap: 8px;
+    padding: 4px 22px 12px;
+    overflow-x: auto;
+    border-bottom: 1px solid var(--ps-border);
+}
+
+.vnccs-ps-library-category-chip {
+    height: 30px;
+    padding: 0 12px;
+    border-radius: 999px;
+    border: 1px solid var(--ps-border);
+    background: rgba(255,255,255,0.04);
+    color: var(--ps-text-muted);
+    font-family: var(--ps-font);
+    font-size: 11px;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.vnccs-ps-library-category-chip.active,
+.vnccs-ps-library-category-chip:hover {
+    color: var(--ps-accent);
+    border-color: var(--ps-accent-border);
+    background: var(--ps-accent-subtle);
+}
+
+.vnccs-ps-library-workspace {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+}
+
+.vnccs-ps-library-workspace.has-inspector {
+    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
 }
 
 .vnccs-ps-modal-close {
@@ -1214,11 +1312,11 @@ const STYLES = `
 .vnccs-ps-modal-close:hover { color: var(--ps-accent); }
 
 .vnccs-ps-library-modal-grid {
-    flex: 1;
-    overflow-y: scroll;
+    min-height: 0;
+    overflow-y: auto;
     padding: 20px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 16px;
     align-content: start;
 }
@@ -1226,14 +1324,6 @@ const STYLES = `
 .vnccs-ps-library-modal-grid::-webkit-scrollbar-track { background: rgba(0,0,0,0.2); }
 .vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 3px; }
 .vnccs-ps-library-modal-grid::-webkit-scrollbar-thumb:hover { background: var(--ps-accent); }
-
-.vnccs-ps-library-modal-footer {
-    padding: 14px 20px;
-    border-top: 1px solid var(--ps-border);
-    background: rgba(0, 0, 0, 0.3);
-    display: flex;
-    justify-content: flex-end;
-}
 
 .vnccs-ps-library-header {
     display: flex;
@@ -1281,14 +1371,19 @@ const STYLES = `
 .vnccs-ps-library-item {
     background: rgba(255, 255, 255, 0.03);
     border: 1px solid var(--ps-border);
-    border-radius: var(--ps-radius-sm);
+    border-radius: 9px;
     overflow: hidden;
     cursor: pointer;
     transition: all var(--ps-transition);
     position: relative;
-    min-height: 220px;
+    min-height: 210px;
     display: flex;
     flex-direction: column;
+}
+
+.vnccs-ps-library-item.selected {
+    border-color: var(--ps-accent);
+    box-shadow: 0 0 0 1px var(--ps-accent-border), 0 10px 28px rgba(0,0,0,0.35);
 }
 
 .vnccs-ps-library-item-delete {
@@ -1327,6 +1422,7 @@ const STYLES = `
 .vnccs-ps-library-item-preview {
     width: 100%;
     flex: 1;
+    min-height: 0;
     background: rgba(8, 6, 16, 0.8);
     display: flex;
     align-items: center;
@@ -1334,22 +1430,26 @@ const STYLES = `
     color: var(--ps-text-muted);
     font-size: 28px;
     overflow: hidden;
+    border-radius: inherit;
 }
 
 .vnccs-ps-library-item-preview img {
     width: 100%;
     height: 100%;
     object-fit: cover;
+    display: block;
+    border-radius: inherit;
 }
 
 .vnccs-ps-library-item-name {
     position: absolute;
-    bottom: 0; left: 0;
+    bottom: 0; left: 0; right: 0;
     width: 100%;
-    padding: 7px 6px;
+    box-sizing: border-box;
+    padding: 9px 8px 10px;
     background: rgba(0, 0, 0, 0.82);
     backdrop-filter: blur(4px);
-    font-size: 10px;
+    font-size: 11px;
     text-align: center;
     color: var(--ps-text);
     overflow: hidden;
@@ -1357,6 +1457,86 @@ const STYLES = `
     white-space: nowrap;
     z-index: 5;
     font-family: var(--ps-font);
+    border-radius: 0 0 8px 8px;
+}
+
+.vnccs-ps-library-item-meta {
+    display: none;
+}
+
+.vnccs-ps-library-inspector {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 18px;
+    border-left: 1px solid var(--ps-border);
+    background: rgba(0,0,0,0.2);
+    display: none;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.vnccs-ps-library-inspector.visible {
+    display: flex;
+}
+
+.vnccs-ps-library-inspector-empty {
+    color: var(--ps-text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    padding: 24px 4px;
+}
+
+.vnccs-ps-library-inspector-preview {
+    width: 100%;
+    aspect-ratio: 1 / 1.25;
+    border-radius: var(--ps-radius-sm);
+    border: 1px solid var(--ps-border);
+    overflow: hidden;
+    background: rgba(8, 6, 16, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ps-text-muted);
+    font-size: 34px;
+}
+
+.vnccs-ps-library-inspector-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.vnccs-ps-library-inspector-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.vnccs-ps-library-field {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    color: var(--ps-text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+}
+
+.vnccs-ps-library-field input[type="text"],
+.vnccs-ps-library-field input[type="file"] {
+    width: 100%;
+    box-sizing: border-box;
+}
+
+.vnccs-ps-library-image-input {
+    color: var(--ps-text-muted);
+    font-size: 11px;
+}
+
+.vnccs-ps-library-save-edit {
+    justify-content: center;
+    margin-top: 4px;
 }
 
 .vnccs-ps-library-footer {
@@ -3848,96 +4028,286 @@ class PoseStudioWidget {
 
     showLibraryModal() {
         const overlay = document.createElement('div');
-        overlay.className = 'vnccs-ps-modal-overlay';
+        overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-library-overlay';
 
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-library-modal';
         modal.innerHTML = `
             <div class="vnccs-ps-library-modal-header">
                 <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
+                <div class="vnccs-ps-library-header-actions">
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-save-current">
+                        <span class="vnccs-ps-btn-icon">💾</span> Save Current Pose
+                    </button>
+                </div>
                 <button class="vnccs-ps-modal-close">✕</button>
             </div>
-            <div class="vnccs-ps-library-modal-grid"></div>
-            <div class="vnccs-ps-library-modal-footer">
-                 <button class="vnccs-ps-btn primary" style="width: auto; padding: 10px 20px;">
-                    <span class="vnccs-ps-btn-icon">💾</span> Save Current Pose
-                </button>
+            <div class="vnccs-ps-library-toolbar">
+                <input class="vnccs-ps-library-search" type="search" placeholder="Search poses and tags...">
+                <button class="vnccs-ps-library-menu-btn" title="More library tools">☰</button>
+            </div>
+            <div class="vnccs-ps-library-categories"></div>
+            <div class="vnccs-ps-library-workspace">
+                <div class="vnccs-ps-library-modal-grid"></div>
+                <aside class="vnccs-ps-library-inspector"></aside>
             </div>
         `;
 
         this.libraryGrid = modal.querySelector('.vnccs-ps-library-modal-grid');
+        this.libraryInspector = modal.querySelector('.vnccs-ps-library-inspector');
+        this.libraryWorkspace = modal.querySelector('.vnccs-ps-library-workspace');
+        this.librarySearchInput = modal.querySelector('.vnccs-ps-library-search');
+        this.libraryCategoriesEl = modal.querySelector('.vnccs-ps-library-categories');
+        this.librarySelectedName = null;
+        this.libraryActiveCategory = "All";
 
         modal.querySelector('.vnccs-ps-modal-close').onclick = () => overlay.remove();
-        modal.querySelector('.vnccs-ps-library-modal-footer button').onclick = () => this.showSaveToLibraryModal();
+        modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
+        modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.showMessage("Library tools menu is coming next.");
+        this.librarySearchInput.addEventListener('input', () => this.renderLibrary());
         overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
         overlay.appendChild(modal);
         this.container.appendChild(overlay);
 
-        this.refreshLibrary();
+        this.refreshLibrary(true);
     }
 
     async refreshLibrary(forceFull = false) {
         try {
-            const res = await fetch('/vnccs/pose_library/list' + (forceFull ? '?full=true' : ''));
+            const res = await fetch('/vnccs/pose_library/list?full=true');
             const data = await res.json();
             this.libraryPoses = data.poses || []; // Cache for random selection
-
-            if (!this.libraryGrid) {
-                this.libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
-            }
-            if (!this.libraryGrid) return; // Still not found (modal closed)
-
-            this.libraryGrid.innerHTML = '';
-
-            if (!data.poses || data.poses.length === 0) {
-                this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses.<br>Click "Save Current" to add one.</div>';
-                return;
-            }
-
-            for (const pose of data.poses) {
-                const item = document.createElement('div');
-                item.className = 'vnccs-ps-library-item';
-
-                const preview = document.createElement('div');
-                preview.className = 'vnccs-ps-library-item-preview';
-                if (pose.has_preview) {
-                    preview.innerHTML = `<img src="/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}" alt="${pose.name}">`;
-                } else {
-                    preview.innerHTML = '🦴';
-                }
-
-                const name = document.createElement('div');
-                name.className = 'vnccs-ps-library-item-name';
-                name.innerText = pose.name;
-
-                item.onclick = () => {
-                    this.loadFromLibrary(pose.name);
-                    const overlay = item.closest('.vnccs-ps-modal-overlay');
-                    if (overlay) overlay.remove();
-                };
-
-                // Delete button
-                const delBtn = document.createElement('div');
-                delBtn.className = 'vnccs-ps-library-item-delete';
-                delBtn.innerHTML = '✕';
-                delBtn.onclick = (e) => {
-                    e.stopPropagation(); // Prevent loading pose
-                    this.showDeleteConfirmModal(pose.name);
-                };
-
-                item.appendChild(preview);
-                item.appendChild(name);
-                item.appendChild(delBtn);
-
-                this.libraryGrid.appendChild(item);
-            }
+            this.renderLibrary();
         } catch (err) {
             console.error("Failed to load library:", err);
             if (this.libraryGrid) {
                 this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
             }
         }
+    }
+
+    getLibraryPoseMeta(pose) {
+        const dataMeta = pose?.data?._library || {};
+        const category = (pose?.category || dataMeta.category || "Uncategorized").trim() || "Uncategorized";
+        const tags = Array.isArray(pose?.tags) ? pose.tags : (Array.isArray(dataMeta.tags) ? dataMeta.tags : []);
+        return {
+            category,
+            tags: tags.map(tag => String(tag).trim()).filter(Boolean),
+        };
+    }
+
+    getFilteredLibraryPoses() {
+        const poses = this.libraryPoses || [];
+        const query = (this.librarySearchInput?.value || "").trim().toLowerCase();
+        return poses.filter((pose) => {
+            const meta = this.getLibraryPoseMeta(pose);
+            if (this.libraryActiveCategory && this.libraryActiveCategory !== "All" && meta.category !== this.libraryActiveCategory) {
+                return false;
+            }
+            if (!query) return true;
+            const haystack = [
+                pose.name,
+                meta.category,
+                ...meta.tags,
+            ].join(" ").toLowerCase();
+            return haystack.includes(query);
+        });
+    }
+
+    renderLibraryCategories() {
+        if (!this.libraryCategoriesEl) return;
+        const categories = Array.from(new Set((this.libraryPoses || []).map((pose) => this.getLibraryPoseMeta(pose).category))).sort();
+        const all = ["All", ...categories];
+        if (!all.includes(this.libraryActiveCategory)) this.libraryActiveCategory = "All";
+        this.libraryCategoriesEl.innerHTML = '';
+        for (const category of all) {
+            const btn = document.createElement('button');
+            btn.className = 'vnccs-ps-library-category-chip';
+            if (category === this.libraryActiveCategory) btn.classList.add('active');
+            btn.textContent = category;
+            btn.onclick = () => {
+                this.libraryActiveCategory = category;
+                this.renderLibrary();
+            };
+            this.libraryCategoriesEl.appendChild(btn);
+        }
+    }
+
+    renderLibrary() {
+        if (!this.libraryGrid) {
+            this.libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
+        }
+        if (!this.libraryGrid) return;
+
+        this.renderLibraryCategories();
+        this.libraryGrid.innerHTML = '';
+        const filtered = this.getFilteredLibraryPoses();
+
+        if ((this.libraryPoses || []).length === 0) {
+            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses.<br>Use Save Current Pose to add one.</div>';
+            this.renderLibraryInspector(null);
+            return;
+        }
+        if (filtered.length === 0) {
+            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No poses match this search.</div>';
+            this.renderLibraryInspector(null);
+            return;
+        }
+
+        if (this.librarySelectedName && !filtered.some(pose => pose.name === this.librarySelectedName)) {
+            this.librarySelectedName = null;
+        }
+
+        for (const pose of filtered) {
+            const item = document.createElement('div');
+            item.className = 'vnccs-ps-library-item';
+            if (pose.name === this.librarySelectedName) item.classList.add('selected');
+
+            const preview = document.createElement('div');
+            preview.className = 'vnccs-ps-library-item-preview';
+            if (pose.has_preview) {
+                preview.innerHTML = `<img src="/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?v=${Date.now()}" alt="${pose.name}">`;
+            } else {
+                preview.innerHTML = '<span>🦴</span>';
+            }
+
+            const name = document.createElement('div');
+            name.className = 'vnccs-ps-library-item-name';
+            name.innerText = pose.name;
+
+            item.onclick = () => this.selectLibraryPose(pose.name);
+
+            item.appendChild(preview);
+            item.appendChild(name);
+            this.libraryGrid.appendChild(item);
+        }
+
+        const selected = (this.libraryPoses || []).find(pose => pose.name === this.librarySelectedName) || null;
+        this.renderLibraryInspector(selected);
+    }
+
+    selectLibraryPose(name) {
+        this.librarySelectedName = name;
+        this.renderLibrary();
+    }
+
+    renderLibraryInspector(pose) {
+        if (!this.libraryInspector) return;
+        if (!pose) {
+            this.libraryInspector.classList.remove('visible');
+            if (this.libraryWorkspace) this.libraryWorkspace.classList.remove('has-inspector');
+            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select a pose to preview and edit it.</div>';
+            return;
+        }
+        this.libraryInspector.classList.add('visible');
+        if (this.libraryWorkspace) this.libraryWorkspace.classList.add('has-inspector');
+        const meta = this.getLibraryPoseMeta(pose);
+        const previewSrc = pose.has_preview
+            ? `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?v=${Date.now()}`
+            : "";
+        this.libraryInspector.innerHTML = `
+            <div class="vnccs-ps-library-inspector-preview">
+                ${previewSrc ? `<img src="${previewSrc}" alt="${pose.name}">` : '<span>🦴</span>'}
+            </div>
+            <div class="vnccs-ps-library-inspector-actions">
+                <button class="vnccs-ps-btn primary vnccs-ps-library-apply">Apply Pose</button>
+                <button class="vnccs-ps-btn danger vnccs-ps-library-delete">Delete</button>
+            </div>
+            <label class="vnccs-ps-library-field">
+                <span>Name</span>
+                <input class="vnccs-ps-input vnccs-ps-library-edit-name" type="text" value="${this.escapeHtml(pose.name)}">
+            </label>
+            <label class="vnccs-ps-library-field">
+                <span>Category</span>
+                <input class="vnccs-ps-input vnccs-ps-library-edit-category" type="text" value="${this.escapeHtml(meta.category)}">
+            </label>
+            <label class="vnccs-ps-library-field">
+                <span>Tags</span>
+                <input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${this.escapeHtml(meta.tags.join(', '))}" placeholder="standing, hands, portrait">
+            </label>
+            <label class="vnccs-ps-library-field">
+                <span>Custom Image</span>
+                <input class="vnccs-ps-library-image-input" type="file" accept="image/*">
+            </label>
+            <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
+        `;
+
+        let pendingPreview = null;
+        const previewBox = this.libraryInspector.querySelector('.vnccs-ps-library-inspector-preview');
+        this.libraryInspector.querySelector('.vnccs-ps-library-apply').onclick = async () => {
+            await this.loadFromLibrary(pose.name);
+            this.libraryInspector.closest('.vnccs-ps-modal-overlay')?.remove();
+        };
+        this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose.name);
+        this.libraryInspector.querySelector('.vnccs-ps-library-image-input').onchange = async (event) => {
+            const file = event.target.files?.[0];
+            if (!file) return;
+            pendingPreview = await this.compressLibraryImage(file);
+            previewBox.innerHTML = `<img src="${pendingPreview}" alt="${pose.name}">`;
+        };
+        this.libraryInspector.querySelector('.vnccs-ps-library-save-edit').onclick = async () => {
+            const newName = this.libraryInspector.querySelector('.vnccs-ps-library-edit-name').value.trim();
+            const category = this.libraryInspector.querySelector('.vnccs-ps-library-edit-category').value.trim() || "Uncategorized";
+            const tags = this.libraryInspector.querySelector('.vnccs-ps-library-edit-tags').value
+                .split(',')
+                .map(tag => tag.trim())
+                .filter(Boolean);
+            if (!newName) {
+                this.showMessage("Pose name is required.", true);
+                return;
+            }
+            await this.saveLibraryPoseRecord({
+                oldName: pose.name,
+                name: newName,
+                pose: pose.data || {},
+                category,
+                tags,
+                preview: pendingPreview,
+            });
+            this.librarySelectedName = newName;
+            await this.refreshLibrary(true);
+        };
+    }
+
+    escapeHtml(value) {
+        return String(value ?? "")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+    }
+
+    compressLibraryImage(fileOrDataUrl) {
+        return new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => {
+                const maxSide = 768;
+                const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+                const canvas = document.createElement('canvas');
+                canvas.width = Math.max(1, Math.round(img.width * scale));
+                canvas.height = Math.max(1, Math.round(img.height * scale));
+                const ctx = canvas.getContext('2d');
+                ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+                let dataUrl;
+                try {
+                    dataUrl = canvas.toDataURL('image/webp', 0.76);
+                } catch (_err) {
+                    dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+                }
+                if (!dataUrl || dataUrl === 'data:,') dataUrl = canvas.toDataURL('image/jpeg', 0.78);
+                resolve(dataUrl);
+            };
+            img.onerror = reject;
+            if (typeof fileOrDataUrl === 'string') {
+                img.src = fileOrDataUrl;
+            } else {
+                const reader = new FileReader();
+                reader.onload = () => { img.src = reader.result; };
+                reader.onerror = reject;
+                reader.readAsDataURL(fileOrDataUrl);
+            }
+        });
     }
 
     showSaveToLibraryModal() {
@@ -3950,6 +4320,8 @@ class PoseStudioWidget {
             <div class="vnccs-ps-modal-title">Save to Library</div>
             <div class="vnccs-ps-modal-content">
                 <input type="text" placeholder="Pose name..." class="vnccs-ps-input" style="width:100%;padding:8px;">
+                <input type="text" placeholder="Category..." class="vnccs-ps-input" style="width:100%;padding:8px;" value="Uncategorized">
+                <input type="text" placeholder="Tags, comma separated..." class="vnccs-ps-input" style="width:100%;padding:8px;">
                 <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:11px;">
                     <input type="checkbox" checked> Include preview image
                 </label>
@@ -3958,13 +4330,19 @@ class PoseStudioWidget {
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
         `;
 
-        const nameInput = modal.querySelector('input[type="text"]');
+        const textInputs = modal.querySelectorAll('input[type="text"]');
+        const nameInput = textInputs[0];
+        const categoryInput = textInputs[1];
+        const tagsInput = textInputs[2];
         const previewCheck = modal.querySelector('input[type="checkbox"]');
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = () => {
             const name = nameInput.value.trim();
             if (name) {
-                this.saveToLibrary(name, previewCheck.checked);
+                this.saveToLibrary(name, previewCheck.checked, {
+                    category: categoryInput.value.trim() || "Uncategorized",
+                    tags: tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean),
+                });
                 overlay.remove();
                 // Refresh modal if open
                 const libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
@@ -3980,7 +4358,27 @@ class PoseStudioWidget {
         nameInput.focus();
     }
 
-    async saveToLibrary(name, includePreview = true) {
+    async saveLibraryPoseRecord({ oldName = "", name, pose, category = "Uncategorized", tags = [], preview = null }) {
+        const response = await fetch('/vnccs/pose_library/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                old_name: oldName,
+                name,
+                pose,
+                preview,
+                category,
+                tags,
+            })
+        });
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(result?.error || `HTTP ${response.status}`);
+        }
+        return result;
+    }
+
+    async saveToLibrary(name, includePreview = true, metadata = {}) {
         if (!this.viewer) return;
 
         const pose = this.viewer.getPose();
@@ -3995,17 +4393,22 @@ class PoseStudioWidget {
                 this.exportParams.cam_offset_x || 0,
                 this.exportParams.cam_offset_y || 0
             );
+            preview = await this.compressLibraryImage(preview);
         }
 
         try {
-            await fetch('/vnccs/pose_library/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, pose, preview })
+            await this.saveLibraryPoseRecord({
+                name,
+                pose,
+                preview,
+                category: metadata.category || "Uncategorized",
+                tags: metadata.tags || [],
             });
-            this.refreshLibrary(false);
+            this.librarySelectedName = name;
+            this.refreshLibrary(true);
         } catch (err) {
             console.error("Failed to save pose:", err);
+            this.showMessage(`Failed to save pose: ${err?.message || err}`, true);
         }
     }
 
@@ -4341,7 +4744,8 @@ class PoseStudioWidget {
     async deleteFromLibrary(name) {
         try {
             await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}`, { method: 'DELETE' });
-            this.refreshLibrary(false);
+            if (this.librarySelectedName === name) this.librarySelectedName = null;
+            this.refreshLibrary(true);
         } catch (err) {
             console.error("Failed to delete pose:", err);
         }
