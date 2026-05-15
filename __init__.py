@@ -115,6 +115,7 @@ def _vnccs_register_endpoint():
             bones_data = []
             weights_for_frontend = {}
             landmarks_for_frontend = {}
+            landmark_indices_for_frontend = {}
 
             def average_vertices(indices):
                 valid = [int(index) for index in indices if 0 <= int(index) < len(new_verts)]
@@ -122,6 +123,15 @@ def _vnccs_register_endpoint():
                     return None
                 point = new_verts[valid].mean(axis=0)
                 return point.tolist() if hasattr(point, "tolist") else list(point)
+
+            def set_landmark_from_indices(name, indices):
+                valid = sorted({int(index) for index in indices if 0 <= int(index) < len(new_verts)})
+                point = average_vertices(valid)
+                if point is None:
+                    return None
+                landmarks_for_frontend[name] = point
+                landmark_indices_for_frontend[name] = valid
+                return point
 
             def group_vertex_indices(group_names):
                 names = set(group_names if isinstance(group_names, (list, tuple, set)) else [group_names])
@@ -137,6 +147,9 @@ def _vnccs_register_endpoint():
 
             def average_group(group_names):
                 return average_vertices(group_vertex_indices(group_names))
+
+            def set_landmark_from_group(name, group_names):
+                return set_landmark_from_indices(name, group_vertex_indices(group_names))
 
             def surface_nose_point():
                 body_indices = sorted(group_vertex_indices("body"))
@@ -173,8 +186,11 @@ def _vnccs_register_endpoint():
                     ]
                 if len(candidates) == 0:
                     return None
-                point = candidates[np.argmax(candidates[:, 2])]
-                return point.tolist() if hasattr(point, "tolist") else list(point)
+                selected = candidates[np.argmax(candidates[:, 2])]
+                distances = np.linalg.norm(points - selected, axis=1)
+                nearest_order = np.argsort(distances)[:12]
+                selected_indices = [body_indices[int(i)] for i in nearest_order]
+                return set_landmark_from_indices("nose", selected_indices)
 
             def average_joint(joints_data, name):
                 indices = joints_data.get(name) if isinstance(joints_data, dict) else None
@@ -187,15 +203,9 @@ def _vnccs_register_endpoint():
                 return point.tolist() if hasattr(point, "tolist") else list(point)
 
             try:
-                left_eye = average_group("helper-l-eye")
-                right_eye = average_group("helper-r-eye")
-                if left_eye is not None:
-                    landmarks_for_frontend["left_eye"] = left_eye
-                if right_eye is not None:
-                    landmarks_for_frontend["right_eye"] = right_eye
-                nose = surface_nose_point()
-                if nose is not None:
-                    landmarks_for_frontend["nose"] = nose
+                set_landmark_from_group("left_eye", "helper-l-eye")
+                set_landmark_from_group("right_eye", "helper-r-eye")
+                surface_nose_point()
 
                 default_skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
                 if os.path.exists(default_skel_path):
@@ -261,7 +271,8 @@ def _vnccs_register_endpoint():
                 "normals": [],
                 "bones": bones_data,
                 "weights": weights_for_frontend,
-                "landmarks": landmarks_for_frontend
+                "landmarks": landmarks_for_frontend,
+                "landmark_indices": landmark_indices_for_frontend
             })
         except Exception as e:
             import traceback

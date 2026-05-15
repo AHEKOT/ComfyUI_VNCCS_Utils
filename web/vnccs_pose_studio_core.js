@@ -933,6 +933,7 @@ export class PoseViewerCore {
         this.boneList = [];
         this.bones = {};
         this.modelLandmarks = {};
+        this.modelLandmarkIndices = {};
         this.selectedBone = null;
 
         this.jointMarkers = [];
@@ -2427,6 +2428,7 @@ export class PoseViewerCore {
 
         this._initSkeleton(data, geometry, vertices);
         this.modelLandmarks = data.landmarks || {};
+        this.modelLandmarkIndices = data.landmark_indices || {};
         this._createJointMarkers();
 
         // Apply cached bone scales
@@ -4169,6 +4171,7 @@ export class PoseViewerCore {
             normalizeLimbs: false,
             drawNormalizedFigure: false,
         });
+        this._applySAM3DHeadLineRetarget(worldKps);
         this._applySAM3DHandPointRetarget(worldKps);
         this._applySAM3DFootPointRetarget(worldKps);
 
@@ -4674,24 +4677,9 @@ export class PoseViewerCore {
     _applySAM3DHeadLineRetarget(worldKps) {
         if (!this.THREE || !this.bones?.head || !worldKps) return;
 
-        if (worldKps.canonical_left_eye && worldKps.canonical_right_eye && worldKps.canonical_nose) {
-            this.bones.head.quaternion.identity();
-            this.bones.head.rotation.set(0, 0, 0);
-            this.bones.head.updateMatrixWorld(true);
+        if (this._applySAM3DEyePairRetarget(worldKps)) {
+            if (this.skeleton) this.skeleton.update();
             this.skinnedMesh.updateMatrixWorld(true);
-            for (let pass = 0; pass < 10; pass++) {
-                if (!this._applySAM3DNeckFaceRetarget(worldKps)) break;
-                this.bones.head.quaternion.identity();
-                this.bones.head.rotation.set(0, 0, 0);
-                this.bones.head.updateMatrixWorld(true);
-                this.skinnedMesh.updateMatrixWorld(true);
-            }
-            if (this._applySAM3DEyeMidRetarget(worldKps)) {
-                this._applySAM3DHeadPitchBias(20);
-                if (this.skeleton) this.skeleton.update();
-                this.skinnedMesh.updateMatrixWorld(true);
-                return;
-            }
         }
     }
 
@@ -4734,6 +4722,33 @@ export class PoseViewerCore {
             .applyMatrix4(bone.matrixWorld);
     }
 
+    _transformLandmarkVertices(name) {
+        const indices = this.modelLandmarkIndices?.[name];
+        const geometry = this.skinnedMesh?.geometry;
+        const position = geometry?.attributes?.position;
+        if (!this.THREE || !this.skinnedMesh || !position || !Array.isArray(indices) || !indices.length) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        const sum = new this.THREE.Vector3();
+        const point = new this.THREE.Vector3();
+        let count = 0;
+        for (const rawIndex of indices) {
+            const index = Number(rawIndex);
+            if (!Number.isInteger(index) || index < 0 || index >= position.count) continue;
+            point.fromBufferAttribute(position, index);
+            if (typeof this.skinnedMesh.boneTransform === 'function') {
+                this.skinnedMesh.boneTransform(index, point);
+            }
+            point.applyMatrix4(this.skinnedMesh.matrixWorld);
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+            sum.add(point);
+            count += 1;
+        }
+        return count ? sum.multiplyScalar(1 / count) : null;
+    }
+
     _buildFaceBasis(leftEye, rightEye, nose) {
         if (!this.THREE || !leftEye || !rightEye || !nose) return null;
         const THREE = this.THREE;
@@ -4742,23 +4757,162 @@ export class PoseViewerCore {
         if (xAxis.lengthSq() < 1e-8) return null;
         xAxis.normalize();
 
-        const forward = nose.clone().sub(center);
-        forward.sub(xAxis.clone().multiplyScalar(forward.dot(xAxis)));
-        if (forward.lengthSq() < 1e-8) return null;
-        forward.normalize();
+        const downAxis = nose.clone().sub(center);
+        downAxis.sub(xAxis.clone().multiplyScalar(downAxis.dot(xAxis)));
+        if (downAxis.lengthSq() < 1e-8) return null;
+        downAxis.normalize();
 
-        const yAxis = new THREE.Vector3().crossVectors(forward, xAxis);
-        if (yAxis.lengthSq() < 1e-8) return null;
-        yAxis.normalize();
-        const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis).normalize();
+        const yAxis = downAxis.clone().negate();
+        const zAxis = new THREE.Vector3().crossVectors(xAxis, yAxis);
+        if (zAxis.lengthSq() < 1e-8) return null;
+        zAxis.normalize();
         return new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+    }
+
+    _getSAM3DFaceLandmarkTargets(worldKps) {
+        if (!worldKps) return null;
+        const left = worldKps.canonical_left_eye || worldKps.left_eye;
+        const right = worldKps.canonical_right_eye || worldKps.right_eye;
+        const nose = worldKps.canonical_nose || worldKps.nose;
+        if (!left || !right || !nose) return null;
+        return { left, right, nose };
+    }
+
+    _getSAM3DEyeTargets(worldKps) {
+        if (!worldKps) return null;
+        const left = worldKps.canonical_left_eye || worldKps.left_eye;
+        const right = worldKps.canonical_right_eye || worldKps.right_eye;
+        if (!left || !right) return null;
+        return { left, right };
+    }
+
+    _faceBasisQuaternion(points) {
+        if (!this.THREE || !points?.left || !points?.right || !points?.nose) return null;
+        const basis = this._buildFaceBasis(points.left, points.right, points.nose);
+        if (!basis) return null;
+        return new this.THREE.Quaternion().setFromRotationMatrix(basis).normalize();
+    }
+
+    _faceUpBasisQuaternion(points, upAnchor) {
+        if (!this.THREE || !points?.left || !points?.right || !upAnchor) return null;
+        const eyeMid = points.left.clone().add(points.right).multiplyScalar(0.5);
+        const yAxis = eyeMid.clone().sub(upAnchor);
+        const xAxis = points.right.clone().sub(points.left);
+        if (xAxis.lengthSq() < 1e-8 || yAxis.lengthSq() < 1e-8) return null;
+
+        yAxis.normalize();
+        xAxis.sub(yAxis.clone().multiplyScalar(xAxis.dot(yAxis)));
+        if (xAxis.lengthSq() < 1e-8) return null;
+        xAxis.normalize();
+
+        const zAxis = new this.THREE.Vector3().crossVectors(xAxis, yAxis);
+        if (zAxis.lengthSq() < 1e-8) return null;
+        zAxis.normalize();
+
+        return new this.THREE.Quaternion()
+            .setFromRotationMatrix(new this.THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis))
+            .normalize();
+    }
+
+    _applySAM3DFaceBasisRetarget(worldKps) {
+        const head = this.bones?.head;
+        if (!this.THREE || !head || !this.modelLandmarks) return false;
+
+        const target = this._getSAM3DFaceLandmarkTargets(worldKps);
+        const current = this._getCurrentMHFaceLandmarkPoints();
+        if (!target || !current) return false;
+
+        const targetSwapped = { left: target.right, right: target.left, nose: target.nose };
+        const selectedTarget = this._faceLandmarkDirectionError(current, targetSwapped) < this._faceLandmarkDirectionError(current, target)
+            ? targetSwapped
+            : target;
+
+        let applied = false;
+        for (let pass = 0; pass < 3; pass++) {
+            const sourceNow = this._getCurrentMHFaceLandmarkPoints();
+            if (!sourceNow) break;
+
+            const sourceQuat = this._faceBasisQuaternion(sourceNow);
+            const targetQuat = this._faceBasisQuaternion(selectedTarget);
+            if (!sourceQuat || !targetQuat) break;
+
+            const delta = targetQuat.clone().multiply(sourceQuat.clone().invert()).normalize();
+            const angle = 2 * Math.acos(Math.max(-1, Math.min(1, Math.abs(delta.w))));
+            if (!Number.isFinite(angle) || angle < 1e-4) break;
+
+            applied = this._applyBoneWorldDelta(head, delta) || applied;
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+
+        return applied;
+    }
+
+    _applySAM3DEyePairRetarget(worldKps) {
+        const head = this.bones?.head;
+        if (!this.THREE || !head || !this.modelLandmarks) return false;
+
+        const target = this._getSAM3DEyeTargets(worldKps);
+        if (!target) return false;
+
+        let applied = false;
+        for (let pass = 0; pass < 6; pass++) {
+            const current = this._getCurrentMHFaceLandmarkPoints();
+            if (!current?.left || !current?.right) break;
+
+            const targetMid = target.left.clone().add(target.right).multiplyScalar(0.5);
+            const currentMid = current.left.clone().add(current.right).multiplyScalar(0.5);
+            const headPivot = new this.THREE.Vector3();
+            head.getWorldPosition(headPivot);
+
+            const currentLook = currentMid.clone().sub(headPivot);
+            const targetLook = targetMid.clone().sub(headPivot);
+            if (currentLook.lengthSq() > 1e-8 && targetLook.lengthSq() > 1e-8) {
+                const deltaLook = new this.THREE.Quaternion().setFromUnitVectors(
+                    currentLook.normalize(),
+                    targetLook.normalize(),
+                ).normalize();
+                applied = this._applyBoneWorldDelta(head, deltaLook) || applied;
+                this.skinnedMesh.updateMatrixWorld(true);
+            }
+
+            const afterLook = this._getCurrentMHFaceLandmarkPoints();
+            if (!afterLook?.left || !afterLook?.right) break;
+            const afterMid = afterLook.left.clone().add(afterLook.right).multiplyScalar(0.5);
+            const rollAxis = targetMid.clone().sub(headPivot);
+            if (rollAxis.lengthSq() <= 1e-8) continue;
+            rollAxis.normalize();
+
+            const currentEyeAxis = afterLook.right.clone().sub(afterLook.left);
+            const targetEyeAxis = target.right.clone().sub(target.left);
+            currentEyeAxis.sub(rollAxis.clone().multiplyScalar(currentEyeAxis.dot(rollAxis)));
+            targetEyeAxis.sub(rollAxis.clone().multiplyScalar(targetEyeAxis.dot(rollAxis)));
+            if (currentEyeAxis.lengthSq() <= 1e-8 || targetEyeAxis.lengthSq() <= 1e-8) continue;
+            currentEyeAxis.normalize();
+            targetEyeAxis.normalize();
+
+            const deltaRoll = new this.THREE.Quaternion().setFromUnitVectors(currentEyeAxis, targetEyeAxis).normalize();
+            applied = this._applyBoneWorldDelta(head, deltaRoll) || applied;
+            this.skinnedMesh.updateMatrixWorld(true);
+
+            const check = this._getCurrentMHFaceLandmarkPoints();
+            if (!check?.left || !check?.right) continue;
+            const checkMid = check.left.clone().add(check.right).multiplyScalar(0.5);
+            const midError = checkMid.distanceTo(targetMid);
+            const axisError = 1 - Math.max(-1, Math.min(1, check.right.clone().sub(check.left).normalize().dot(targetEyeAxis)));
+            if (midError < 0.02 && axisError < 0.002) break;
+        }
+
+        return applied;
     }
 
     _getCurrentMHFaceLandmarkPoints() {
         if (!this.THREE || !this.modelLandmarks) return null;
-        const left = this._transformRestPointByBone('head', this.modelLandmarks.left_eye);
-        const right = this._transformRestPointByBone('head', this.modelLandmarks.right_eye);
-        const nose = this._transformRestPointByBone('head', this.modelLandmarks.nose);
+        const left = this._transformLandmarkVertices('left_eye')
+            || this._transformRestPointByBone('head', this.modelLandmarks.left_eye);
+        const right = this._transformLandmarkVertices('right_eye')
+            || this._transformRestPointByBone('head', this.modelLandmarks.right_eye);
+        const nose = this._transformLandmarkVertices('nose')
+            || this._transformRestPointByBone('head', this.modelLandmarks.nose);
         if (!left || !right || !nose) return null;
         return { left, right, nose };
     }
