@@ -4060,7 +4060,11 @@ class PoseStudioWidget {
             this.exportParams.view_height || 1024,
             meshData
         );
-        if (!frameParams) return false;
+        if (!frameParams) {
+            this.viewer?.setSAMProjectionCameraFrame?.(null);
+            return false;
+        }
+        this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection || null);
 
         this.exportParams.cam_zoom = frameParams.zoom;
         this.exportParams.cam_offset_x = frameParams.offset_x;

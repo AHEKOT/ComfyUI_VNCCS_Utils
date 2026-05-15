@@ -944,6 +944,8 @@ export class PoseViewerCore {
         this.samMeshOverlayVisible = false;
         this._samMeshOverlayGroup = null;
         this._samMeshOverlayWorldKps = null;
+        this._samMeshOverlaySourceFrame = null;
+        this._samProjectionCameraFrame = null;
 
         this.initialized = false;
 
@@ -3498,6 +3500,8 @@ export class PoseViewerCore {
 
     updateCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
         if (!this.THREE || !this.captureCamera) return; // Not initialized yet
+        if (this._applySAMProjectionCaptureCamera(width, height, zoom, offsetX, offsetY)) return;
+
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
@@ -3509,6 +3513,7 @@ export class PoseViewerCore {
 
         // Positioning relative to offset target
         this.captureCamera.aspect = width / height;
+        this.captureCamera.fov = 30;
         this.captureCamera.zoom = zoom;
         this.captureCamera.updateProjectionMatrix();
         this.captureCamera.position.set(target.x, target.y, target.z + dist);
@@ -3562,15 +3567,22 @@ export class PoseViewerCore {
 
         // Copy capture camera to viewport camera
         this.camera.position.copy(this.captureCamera.position);
-        this.camera.zoom = zoom;
+        this.camera.quaternion.copy(this.captureCamera.quaternion);
+        this.camera.fov = this.captureCamera.fov;
+        this.camera.aspect = this.captureCamera.aspect;
+        this.camera.zoom = this.captureCamera.zoom;
         this.camera.updateProjectionMatrix();
 
-        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
-        const target = new this.THREE.Vector3(
-            baseTarget.x - offsetX,
-            baseTarget.y - offsetY,
-            baseTarget.z
-        );
+        const target = this._samProjectionCameraFrame
+            ? (this.meshCenter || new this.THREE.Vector3(0, 10, 0)).clone()
+            : (() => {
+                const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+                return new this.THREE.Vector3(
+                    baseTarget.x - offsetX,
+                    baseTarget.y - offsetY,
+                    baseTarget.z
+                );
+            })();
         this.orbit.target.copy(target);
         this.orbit.update();
 
@@ -3606,6 +3618,34 @@ export class PoseViewerCore {
         const sourceCamera = flattenNumbers(frame?.camera || data?.camera).slice(0, 3);
         const focalRaw = flattenNumbers(frame?.focal_length ?? data?.focal_length)[0] ?? Number(data?.focal_length);
         const sourceFocal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
+        const sourceFrame = this._samMeshOverlaySourceFrame;
+        const samProjectionFrame = (() => {
+            if (!sourceFrame?.pelvisWorld || !Array.isArray(sourceFrame?.pelvisSource)) return null;
+            if (!sourceCamera || sourceCamera.length < 3) return null;
+            const scale = Number(sourceFrame.scale);
+            if (!Number.isFinite(scale) || Math.abs(scale) < 1e-8) return null;
+            const fov = (2 * Math.atan(imageH / (2 * sourceFocal)) * 180) / Math.PI;
+            if (!Number.isFinite(fov) || fov <= 0) return null;
+            const ps = sourceFrame.pelvisSource;
+            const pw = sourceFrame.pelvisWorld;
+            const cam = sourceCamera;
+            return {
+                fov,
+                cameraPosition: {
+                    x: pw.x - scale * (Number(ps[0]) + Number(cam[0])),
+                    y: pw.y + scale * (Number(cam[1]) - Number(ps[1])),
+                    z: pw.z + scale * (Number(cam[2]) - Number(ps[2])),
+                },
+            };
+        })();
+        if (samProjectionFrame) {
+            return {
+                zoom: 1.0,
+                offset_x: 0,
+                offset_y: 0,
+                sam_projection: samProjectionFrame,
+            };
+        }
         const projectSourcePoint = (point) => {
             if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
             const x = Number(point[0]);
@@ -3985,6 +4025,8 @@ export class PoseViewerCore {
     clearSAMMeshOverlay() {
         this._clearImportedFigureGroup('_samMeshOverlayGroup');
         this._samMeshOverlayWorldKps = null;
+        this._samMeshOverlaySourceFrame = null;
+        this._samProjectionCameraFrame = null;
         this.requestRender();
     }
 
@@ -3994,6 +4036,68 @@ export class PoseViewerCore {
             this._samMeshOverlayGroup.visible = this.samMeshOverlayVisible;
             this.requestRender();
         }
+    }
+
+    setSAMProjectionCameraFrame(frame) {
+        this._samProjectionCameraFrame = frame || null;
+    }
+
+    _applySAMProjectionCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
+        const frame = this._samProjectionCameraFrame;
+        if (!frame || !this.THREE || !this.captureCamera) return false;
+        const cameraPosition = frame.cameraPosition;
+        const fov = Number(frame.fov);
+        if (!cameraPosition || !Number.isFinite(fov) || fov <= 0) return false;
+
+        this.captureCamera.aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
+        this.captureCamera.fov = fov;
+        this.captureCamera.zoom = Number(zoom) || 1.0;
+        this.captureCamera.up.set(0, 1, 0);
+        this.captureCamera.position.set(
+            Number(cameraPosition.x) || 0,
+            Number(cameraPosition.y) || 0,
+            Number(cameraPosition.z) || 0
+        );
+        const pan = new this.THREE.Vector3();
+        const right = new this.THREE.Vector3(1, 0, 0);
+        const up = new this.THREE.Vector3(0, 1, 0);
+        pan.addScaledVector(right, -Number(offsetX || 0));
+        pan.addScaledVector(up, -Number(offsetY || 0));
+        this.captureCamera.position.add(pan);
+        const target = new this.THREE.Vector3(
+            this.captureCamera.position.x,
+            this.captureCamera.position.y,
+            this.captureCamera.position.z - 1
+        );
+        this.captureCamera.lookAt(target);
+        this.captureCamera.updateProjectionMatrix();
+
+        if (this.refPlane) {
+            const planeDist = 95;
+            const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+            const h = 2 * planeDist * Math.tan(vFOV / 2) / this.captureCamera.zoom;
+            const w = h * this.captureCamera.aspect;
+            this.refPlane.position.set(0, 0, -planeDist);
+            this.refPlane.scale.set(w, h, 1);
+            this.refPlane.rotation.set(0, 0, 0);
+        }
+        if (this.captureFrame) {
+            const frameCenter = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+            const planeDist = Math.max(1e-5, this.captureCamera.position.distanceTo(frameCenter));
+            const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+            const h = 2 * planeDist * Math.tan(vFOV / 2) / this.captureCamera.zoom;
+            const w = h * this.captureCamera.aspect;
+            this.captureFrame.position.copy(frameCenter);
+            this.captureFrame.scale.set(w / 2, h / 2, 1);
+            this.captureFrame.lookAt(this.captureCamera.position);
+            this.captureFrame.visible = true;
+        }
+        if (this.captureHelper) {
+            this.captureHelper.update();
+            this.captureHelper.visible = false;
+        }
+        this.requestRender();
+        return true;
     }
 
     setSAMMeshOverlayData(meshData, poseData) {
@@ -4037,6 +4141,12 @@ export class PoseViewerCore {
                 pelvisWorld.y + (Number(point[1]) - pelvisSource[1]) * scale,
                 pelvisWorld.z + (Number(point[2]) - pelvisSource[2]) * scale,
             );
+        };
+        this._samMeshOverlaySourceFrame = {
+            pelvisSource: [...pelvisSource],
+            pelvisWorld: pelvisWorld.clone(),
+            scale,
+            renderFrame: meshData.render_frame || null,
         };
 
         const vertices = meshData.vertices;
@@ -4934,7 +5044,7 @@ export class PoseViewerCore {
         }
 
         if (applied) {
-            this._applySAM3DEyeLinePitchTrim(4);
+            this._applySAM3DEyeLinePitchTrim(3);
         }
 
         return applied;
