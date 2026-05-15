@@ -3575,11 +3575,12 @@ export class PoseViewerCore {
         this.orbit.enableDamping = prevDamping;
     }
 
-    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024) {
+    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 
-        const imageW = Number(data?.image_size?.width) || Number(width) || 1024;
-        const imageH = Number(data?.image_size?.height) || Number(height) || 1024;
+        const frame = meshData?.render_frame || null;
+        const imageW = Number(frame?.image_size?.width) || Number(data?.image_size?.width) || Number(width) || 1024;
+        const imageH = Number(frame?.image_size?.height) || Number(data?.image_size?.height) || Number(height) || 1024;
         if (imageW <= 0 || imageH <= 0) return null;
 
         const flattenNumbers = (value, out = []) => {
@@ -3600,8 +3601,8 @@ export class PoseViewerCore {
             }
             return points;
         };
-        const sourceCamera = flattenNumbers(data?.camera).slice(0, 3);
-        const focalRaw = flattenNumbers(data?.focal_length)[0] ?? Number(data?.focal_length);
+        const sourceCamera = flattenNumbers(frame?.camera || data?.camera).slice(0, 3);
+        const focalRaw = flattenNumbers(frame?.focal_length ?? data?.focal_length)[0] ?? Number(data?.focal_length);
         const sourceFocal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
         const projectSourcePoint = (point) => {
             if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
@@ -3619,7 +3620,20 @@ export class PoseViewerCore {
             };
         };
 
+        let hasRenderFrameBounds = false;
         const projectedSourceBounds = (() => {
+            const frameBounds = frame?.projected_bounds;
+            if (frameBounds) {
+                const fx1 = Number(frameBounds.x1);
+                const fy1 = Number(frameBounds.y1);
+                const fx2 = Number(frameBounds.x2);
+                const fy2 = Number(frameBounds.y2);
+                if ([fx1, fy1, fx2, fy2].every(Number.isFinite)) {
+                    hasRenderFrameBounds = true;
+                    return { x1: fx1, y1: fy1, x2: fx2, y2: fy2 };
+                }
+            }
+
             const points = [];
 
             points.push(...pointTriplets(data?.keypoints_3d));
@@ -3695,6 +3709,7 @@ export class PoseViewerCore {
         const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
         const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
         const sourceShoulderFrame = (() => {
+            if (hasRenderFrameBounds) return null;
             if (typeof this._buildSAM3DNamedPoints !== 'function') return null;
             const named = this._buildSAM3DNamedPoints(data);
             const projected = [
@@ -3719,29 +3734,40 @@ export class PoseViewerCore {
         if (this.skeleton) this.skeleton.update();
 
         const projectedBounds = (camera) => {
-            const mesh = this.skinnedMesh;
-            const geometry = mesh.geometry;
-            const position = geometry?.attributes?.position;
-            if (!mesh || !position || !camera) return null;
-
-            mesh.updateMatrixWorld(true);
+            if (!camera) return null;
             camera.updateMatrixWorld(true);
             camera.updateProjectionMatrix();
 
-            const point = new this.THREE.Vector3();
             const xs = [];
             const ys = [];
-            const step = Math.max(1, Math.ceil(position.count / 8000));
 
-            for (let index = 0; index < position.count; index += step) {
-                point.fromBufferAttribute(position, index);
-                if (typeof mesh.boneTransform === 'function') {
-                    mesh.boneTransform(index, point);
+            const collectMesh = (mesh) => {
+                const geometry = mesh?.geometry;
+                const position = geometry?.attributes?.position;
+                if (!mesh || !position) return;
+
+                mesh.updateMatrixWorld(true);
+                const point = new this.THREE.Vector3();
+                const step = Math.max(1, Math.ceil(position.count / 8000));
+                for (let index = 0; index < position.count; index += step) {
+                    point.fromBufferAttribute(position, index);
+                    if (typeof mesh.boneTransform === 'function') {
+                        mesh.boneTransform(index, point);
+                    }
+                    point.applyMatrix4(mesh.matrixWorld).project(camera);
+                    if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+                    xs.push(point.x);
+                    ys.push(point.y);
                 }
-                point.applyMatrix4(mesh.matrixWorld).project(camera);
-                if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
-                xs.push(point.x);
-                ys.push(point.y);
+            };
+
+            if (this._samMeshOverlayGroup) {
+                this._samMeshOverlayGroup.traverse((object) => {
+                    if (object?.isMesh) collectMesh(object);
+                });
+            }
+            if (xs.length < 16 && this.skinnedMesh) {
+                collectMesh(this.skinnedMesh);
             }
 
             if (xs.length < 16 || ys.length < 16) return null;

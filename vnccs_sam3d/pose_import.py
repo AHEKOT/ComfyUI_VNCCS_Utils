@@ -332,9 +332,97 @@ def process_pose_json_to_overlay_mesh(pose_data, body_preset=None, pose_adjust=0
                     fitted_coords[joint_index] += (delta[strong] * ww[:, None]).sum(axis=0) / denom
 
     faces = sam_3d_model.head_pose.faces.detach().cpu().numpy().astype(np.int32)
+    render_frame = None
+    try:
+        render_h = int((payload.get("image_size") or {}).get("height") or 1024)
+        render_w = int((payload.get("image_size") or {}).get("width") or 1024)
+        fval = payload.get("focal_length")
+        if isinstance(fval, list):
+            focal_length = float(fval[0]) if fval else None
+        elif fval is not None:
+            focal_length = float(np.asarray(fval, dtype=np.float32).reshape(-1)[0])
+        else:
+            focal_length = None
+        if not focal_length or focal_length <= 0:
+            focal_length = max(render_w, render_h) * 1.2
+
+        camera = None
+        orig_cam = payload.get("camera")
+        pred_vertices_bounds = payload.get("pred_vertices_bounds") or {}
+        if orig_cam is not None:
+            try:
+                orig_center = pred_vertices_bounds.get("center")
+                orig_extent = pred_vertices_bounds.get("extent")
+                if orig_center is None or orig_extent is None:
+                    kpts = np.asarray(payload.get("keypoints_3d"), dtype=np.float32).reshape(-1, 3)
+                    if kpts.shape[0] >= 2:
+                        kmin = kpts.min(axis=0)
+                        kmax = kpts.max(axis=0)
+                        orig_center = ((kmin + kmax) * 0.5).tolist()
+                        orig_extent = (kmax - kmin).tolist()
+                orig_center = np.asarray(orig_center, dtype=np.float32).reshape(3)
+                orig_extent = np.asarray(orig_extent, dtype=np.float32).reshape(3)
+                orig_h = float(orig_extent[1])
+                mhr_mins = vertices.min(axis=0)
+                mhr_maxs = vertices.max(axis=0)
+                mhr_center = (mhr_mins + mhr_maxs) * 0.5
+                mhr_h = float(mhr_maxs[1] - mhr_mins[1])
+                if orig_h > 1e-4 and mhr_h > 1e-4:
+                    ratio = mhr_h / orig_h
+                    c = np.asarray(orig_cam, dtype=np.float32).reshape(3)
+                    camera = np.array([
+                        ratio * (float(orig_center[0]) + float(c[0])) - float(mhr_center[0]),
+                        ratio * (float(orig_center[1]) + float(c[1])) + float(mhr_center[1]),
+                        ratio * (float(orig_center[2]) + float(c[2])) + float(mhr_center[2]),
+                    ], dtype=np.float32)
+            except Exception:
+                camera = None
+
+        if camera is None:
+            mins = vertices.min(axis=0)
+            maxs = vertices.max(axis=0)
+            center = (mins + maxs) * 0.5
+            w_extent = float(maxs[0] - mins[0])
+            h_extent = float(maxs[1] - mins[1])
+            margin = 0.9
+            cam_z_v = float(center[2]) + h_extent * focal_length / (margin * render_h)
+            cam_z_h = float(center[2]) + w_extent * focal_length / (margin * render_w)
+            camera = np.array([
+                -float(center[0]),
+                float(center[1]),
+                float(max(cam_z_v, cam_z_h, 0.5)),
+            ], dtype=np.float32)
+
+        projected = vertices.astype(np.float32, copy=True)
+        projected[:, 1] *= -1.0
+        projected[:, 2] *= -1.0
+        projected += camera.reshape(1, 3)
+        z = np.maximum(projected[:, 2], 1e-4)
+        px = projected[:, 0] * focal_length / z + render_w * 0.5
+        py = projected[:, 1] * focal_length / z + render_h * 0.5
+        finite = np.isfinite(px) & np.isfinite(py)
+        if np.count_nonzero(finite) >= 16:
+            xs = np.sort(px[finite])
+            ys = np.sort(py[finite])
+            pick = lambda values, q: float(values[int(np.clip(np.floor((len(values) - 1) * q), 0, len(values) - 1))])
+            render_frame = {
+                "image_size": {"width": render_w, "height": render_h},
+                "focal_length": float(focal_length),
+                "camera": camera.astype(np.float32).tolist(),
+                "projected_bounds": {
+                    "x1": pick(xs, 0.01),
+                    "y1": pick(ys, 0.01),
+                    "x2": pick(xs, 0.99),
+                    "y2": pick(ys, 0.99),
+                },
+            }
+    except Exception as exc:
+        print(f"[VNCCS] SAM3D overlay render frame export failed: {exc}")
+
     return {
         "vertices": vertices.astype(np.float32).reshape(-1, 3).tolist(),
         "faces": faces.reshape(-1, 3).tolist(),
         "joint_coords": coords_np.astype(np.float32).tolist() if coords_np is not None else None,
         "fitted_joint_coords": fitted_coords.astype(np.float32).tolist() if fitted_coords is not None else None,
+        "render_frame": render_frame,
     }

@@ -3961,32 +3961,6 @@ class PoseStudioWidget {
             }
             this.syncMeshProportionSlidersFromViewer();
 
-            const frameParams = this.viewer.computeSAM3DFrameCameraParams?.(
-                poseForImport,
-                this.exportParams.view_width || 1024,
-                this.exportParams.view_height || 1024
-            );
-            if (frameParams) {
-                this.exportParams.cam_zoom = frameParams.zoom;
-                this.exportParams.cam_offset_x = frameParams.offset_x;
-                this.exportParams.cam_offset_y = frameParams.offset_y;
-                if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
-                if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
-                if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
-                this.viewer.snapToCaptureCamera(
-                    this.exportParams.view_width || 1024,
-                    this.exportParams.view_height || 1024,
-                    this.exportParams.cam_zoom,
-                    this.exportParams.cam_offset_x,
-                    this.exportParams.cam_offset_y
-                );
-                this.viewer.setCameraParams({
-                    offset_x: this.exportParams.cam_offset_x,
-                    offset_y: this.exportParams.cam_offset_y,
-                    zoom: this.exportParams.cam_zoom
-                });
-            }
-
             this._lastSAM3DPoseData = poseForImport;
             this._lastSAM3DMeshData = fitData?.meshData || null;
             if (fitData?.meshData) {
@@ -3995,6 +3969,7 @@ class PoseStudioWidget {
                 await this.refreshSAMMeshOverlay(poseForImport);
             }
             this.syncMeshProportionSlidersFromViewer();
+            this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
             this.poses[this.activeTab] = this.viewer.getPose();
             this.updateRotationSliders();
             this.syncToNode(true);
@@ -4076,6 +4051,36 @@ class PoseStudioWidget {
             return this.viewer.fitCurrentPoseToSAMMeshOverlay();
         }
         return ok;
+    }
+
+    applySAM3DFrameCameraParams(poseData, meshData = null) {
+        const frameParams = this.viewer?.computeSAM3DFrameCameraParams?.(
+            poseData,
+            this.exportParams.view_width || 1024,
+            this.exportParams.view_height || 1024,
+            meshData
+        );
+        if (!frameParams) return false;
+
+        this.exportParams.cam_zoom = frameParams.zoom;
+        this.exportParams.cam_offset_x = frameParams.offset_x;
+        this.exportParams.cam_offset_y = frameParams.offset_y;
+        if (this.exportWidgets.cam_zoom) this.exportWidgets.cam_zoom.value = this.exportParams.cam_zoom;
+        if (this.exportWidgets.cam_offset_x) this.exportWidgets.cam_offset_x.value = this.exportParams.cam_offset_x;
+        if (this.exportWidgets.cam_offset_y) this.exportWidgets.cam_offset_y.value = this.exportParams.cam_offset_y;
+        this.viewer.snapToCaptureCamera(
+            this.exportParams.view_width || 1024,
+            this.exportParams.view_height || 1024,
+            this.exportParams.cam_zoom,
+            this.exportParams.cam_offset_x,
+            this.exportParams.cam_offset_y
+        );
+        this.viewer.setCameraParams({
+            offset_x: this.exportParams.cam_offset_x,
+            offset_y: this.exportParams.cam_offset_y,
+            zoom: this.exportParams.cam_zoom
+        });
+        return true;
     }
 
     clearImportedDebugFigures() {
@@ -4162,6 +4167,7 @@ class PoseStudioWidget {
                                 this.refreshSAMMeshOverlay(poseForImport);
                             }
                             this.syncMeshProportionSlidersFromViewer();
+                            this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
                             this.poses[this.activeTab] = this.viewer.getPose();
                             this.updateRotationSliders();
                             this.syncToNode(false);
@@ -6676,32 +6682,7 @@ app.registerExtension({
                     await widget.refreshSAMMeshOverlay(poseForImport);
                 }
                 widget.syncMeshProportionSlidersFromViewer();
-
-                const frameParams = widget.viewer.computeSAM3DFrameCameraParams?.(
-                    poseForImport,
-                    widget.exportParams.view_width || 1024,
-                    widget.exportParams.view_height || 1024
-                );
-                if (frameParams) {
-                    widget.exportParams.cam_zoom = frameParams.zoom;
-                    widget.exportParams.cam_offset_x = frameParams.offset_x;
-                    widget.exportParams.cam_offset_y = frameParams.offset_y;
-                    if (widget.exportWidgets.cam_zoom) widget.exportWidgets.cam_zoom.value = widget.exportParams.cam_zoom;
-                    if (widget.exportWidgets.cam_offset_x) widget.exportWidgets.cam_offset_x.value = widget.exportParams.cam_offset_x;
-                    if (widget.exportWidgets.cam_offset_y) widget.exportWidgets.cam_offset_y.value = widget.exportParams.cam_offset_y;
-                    widget.viewer.snapToCaptureCamera(
-                        widget.exportParams.view_width || 1024,
-                        widget.exportParams.view_height || 1024,
-                        widget.exportParams.cam_zoom,
-                        widget.exportParams.cam_offset_x,
-                        widget.exportParams.cam_offset_y
-                    );
-                    widget.viewer.setCameraParams({
-                        offset_x: widget.exportParams.cam_offset_x,
-                        offset_y: widget.exportParams.cam_offset_y,
-                        zoom: widget.exportParams.cam_zoom
-                    });
-                }
+                widget.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
 
                 widget.poses[widget.activeTab] = widget.viewer.getPose();
                 widget.updateTabs();
