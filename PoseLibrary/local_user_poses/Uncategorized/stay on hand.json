@@ -83,5 +83,10 @@
     "offset_x": 0.822547116980409,
     "offset_y": -2.775320857188089,
     "zoom": 2.3
+  },
+  "_library": {
+    "repository": "local_user_poses",
+    "category": "Uncategorized",
+    "tags": []
   }
 }

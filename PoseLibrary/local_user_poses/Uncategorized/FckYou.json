@@ -55,5 +55,10 @@
     0,
     69,
     0
-  ]
+  ],
+  "_library": {
+    "repository": "local_user_poses",
+    "category": "Uncategorized",
+    "tags": []
+  }
 }

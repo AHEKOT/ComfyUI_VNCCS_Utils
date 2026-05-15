@@ -164,5 +164,10 @@
       7.361975371837616,
       0.39708317816257477
     ]
+  },
+  "_library": {
+    "repository": "local_user_poses",
+    "category": "Uncategorized",
+    "tags": []
   }
 }

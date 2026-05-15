@@ -1299,6 +1299,133 @@ const STYLES = `
     grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
 }
 
+.vnccs-ps-library-workspace.settings-mode {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.vnccs-ps-library-workspace.settings-mode .vnccs-ps-library-modal-grid,
+.vnccs-ps-library-workspace.settings-mode .vnccs-ps-library-inspector {
+    display: none;
+}
+
+.vnccs-ps-library-settings {
+    min-height: 0;
+    overflow-y: auto;
+    padding: 20px 22px;
+    display: none;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.vnccs-ps-library-workspace.settings-mode .vnccs-ps-library-settings {
+    display: flex;
+}
+
+.vnccs-ps-library-settings-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.vnccs-ps-library-settings-title {
+    color: var(--ps-text);
+    font-size: 15px;
+    font-weight: 700;
+    font-family: var(--ps-font);
+}
+
+.vnccs-ps-library-settings-subtitle {
+    color: var(--ps-text-muted);
+    font-size: 11px;
+    margin-top: 4px;
+}
+
+.vnccs-ps-library-repo-add {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+}
+
+.vnccs-ps-library-repo-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.vnccs-ps-library-local-repo {
+    margin-bottom: 10px;
+}
+
+.vnccs-ps-library-repo-card {
+    border: 1px solid var(--ps-border);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.035);
+    padding: 12px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 12px;
+    align-items: center;
+}
+
+.vnccs-ps-library-repo-title {
+    color: var(--ps-text);
+    font-weight: 700;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-library-repo-id,
+.vnccs-ps-library-repo-meta {
+    color: var(--ps-text-muted);
+    font-size: 10px;
+    margin-top: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-library-repo-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+
+.vnccs-ps-library-repo-action {
+    height: 30px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid var(--ps-border);
+    background: var(--ps-input-bg);
+    color: var(--ps-text-muted);
+    font-size: 11px;
+    cursor: pointer;
+}
+
+.vnccs-ps-library-repo-action:hover {
+    color: var(--ps-accent);
+    border-color: var(--ps-accent-border);
+}
+
+.vnccs-ps-library-repo-action.primary {
+    background: var(--ps-accent);
+    color: var(--ps-bg);
+    border-color: var(--ps-accent-border);
+    font-weight: 700;
+}
+
+.vnccs-ps-library-repo-action.primary:hover {
+    color: var(--ps-bg);
+    filter: brightness(1.05);
+}
+
+.vnccs-ps-library-repo-action.danger:hover {
+    color: var(--ps-danger);
+    border-color: rgba(255,71,87,0.45);
+}
+
 .vnccs-ps-modal-close {
     background: transparent;
     border: none;
@@ -4044,12 +4171,13 @@ class PoseStudioWidget {
             </div>
             <div class="vnccs-ps-library-toolbar">
                 <input class="vnccs-ps-library-search" type="search" placeholder="Search poses and tags...">
-                <button class="vnccs-ps-library-menu-btn" title="More library tools">☰</button>
+                <button class="vnccs-ps-library-menu-btn" title="Pose library settings">⚙️</button>
             </div>
             <div class="vnccs-ps-library-categories"></div>
             <div class="vnccs-ps-library-workspace">
                 <div class="vnccs-ps-library-modal-grid"></div>
                 <aside class="vnccs-ps-library-inspector"></aside>
+                <section class="vnccs-ps-library-settings"></section>
             </div>
         `;
 
@@ -4058,12 +4186,14 @@ class PoseStudioWidget {
         this.libraryWorkspace = modal.querySelector('.vnccs-ps-library-workspace');
         this.librarySearchInput = modal.querySelector('.vnccs-ps-library-search');
         this.libraryCategoriesEl = modal.querySelector('.vnccs-ps-library-categories');
+        this.librarySettingsEl = modal.querySelector('.vnccs-ps-library-settings');
+        this.librarySettingsMode = false;
         this.librarySelectedName = null;
         this.libraryActiveCategory = "All";
 
         modal.querySelector('.vnccs-ps-modal-close').onclick = () => overlay.remove();
         modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
-        modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.showMessage("Library tools menu is coming next.");
+        modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.toggleLibrarySettings();
         this.librarySearchInput.addEventListener('input', () => this.renderLibrary());
         overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
 
@@ -4087,14 +4217,324 @@ class PoseStudioWidget {
         }
     }
 
+    async toggleLibrarySettings(force = null) {
+        this.librarySettingsMode = force === null ? !this.librarySettingsMode : !!force;
+        if (this.libraryWorkspace) {
+            this.libraryWorkspace.classList.toggle('settings-mode', this.librarySettingsMode);
+            if (this.librarySettingsMode) this.libraryWorkspace.classList.remove('has-inspector');
+        }
+        if (this.libraryCategoriesEl) this.libraryCategoriesEl.style.display = this.librarySettingsMode ? 'none' : '';
+        if (this.librarySearchInput) {
+            this.librarySearchInput.disabled = this.librarySettingsMode;
+            this.librarySearchInput.placeholder = this.librarySettingsMode ? "Repository settings" : "Search poses and tags...";
+        }
+        if (this.librarySettingsMode) {
+            await this.refreshPoseRepositories();
+        } else {
+            this.renderLibrary();
+        }
+    }
+
+    async refreshPoseRepositories(forceRepoId = "") {
+        if (!this.librarySettingsEl) return;
+        this.librarySettingsEl.innerHTML = '<div class="vnccs-ps-library-empty">Loading repositories...</div>';
+        try {
+            const url = '/vnccs/pose_library/repositories';
+            const res = await fetch(url);
+            const data = await res.json();
+            this.localPoseRepository = data.local_repository || null;
+            this.poseRepositories = data.repositories || [];
+            this.renderPoseRepositorySettings();
+            if (forceRepoId) await this.refreshSinglePoseRepository(forceRepoId);
+        } catch (err) {
+            this.librarySettingsEl.innerHTML = `<div class="vnccs-ps-library-empty">Failed to load repositories.<br>${this.escapeHtml(err?.message || err)}</div>`;
+        }
+    }
+
+    renderPoseRepositorySettings() {
+        if (!this.librarySettingsEl) return;
+        const repos = this.poseRepositories || [];
+        this.librarySettingsEl.innerHTML = `
+            <div class="vnccs-ps-library-settings-head">
+                <div>
+                    <div class="vnccs-ps-library-settings-title">Pose Repositories</div>
+                    <div class="vnccs-ps-library-settings-subtitle">Hugging Face libraries can be enabled, disabled, refreshed, or removed.</div>
+                </div>
+                <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to poses</button>
+            </div>
+            <div class="vnccs-ps-library-local-repo"></div>
+            <div class="vnccs-ps-library-repo-add">
+                <input class="vnccs-ps-input vnccs-ps-library-repo-input" type="text" placeholder="owner/repository">
+                <button class="vnccs-ps-btn primary vnccs-ps-library-repo-add-btn">Add Repository</button>
+            </div>
+            <div class="vnccs-ps-library-repo-list"></div>
+        `;
+        this.librarySettingsEl.querySelector('.vnccs-ps-library-settings-back').onclick = () => this.toggleLibrarySettings(false);
+        this.librarySettingsEl.querySelector('.vnccs-ps-library-repo-add-btn').onclick = () => this.addPoseRepository();
+        const input = this.librarySettingsEl.querySelector('.vnccs-ps-library-repo-input');
+        input.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') this.addPoseRepository();
+        });
+        this.renderLocalPoseRepositorySettings();
+
+        const list = this.librarySettingsEl.querySelector('.vnccs-ps-library-repo-list');
+        if (repos.length === 0) {
+            list.innerHTML = '<div class="vnccs-ps-library-empty">No repositories configured.</div>';
+            return;
+        }
+        for (const repo of repos) {
+            const card = document.createElement('div');
+            card.className = 'vnccs-ps-library-repo-card';
+            const status = repo.status === 'error' ? `Error: ${repo.last_error || 'refresh failed'}` : (repo.status || 'not checked');
+            const checked = repo.last_checked ? new Date(repo.last_checked * 1000).toLocaleString() : 'never';
+            card.innerHTML = `
+                <div>
+                    <div class="vnccs-ps-library-repo-title">${this.escapeHtml(repo.title || repo.repo_id)}</div>
+                    <div class="vnccs-ps-library-repo-id">${this.escapeHtml(repo.repo_id)}</div>
+                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}</div>
+                </div>
+                <div class="vnccs-ps-library-repo-actions">
+                    <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? 'Disable' : 'Enable'}</button>
+                    <button class="vnccs-ps-library-repo-action refresh">Refresh</button>
+                    <button class="vnccs-ps-library-repo-action danger remove" ${repo.builtin ? 'disabled title="Default repositories can be disabled, not deleted"' : ''}>Remove</button>
+                </div>
+            `;
+            card.querySelector('.toggle').onclick = () => this.togglePoseRepository(repo.repo_id, !repo.enabled);
+            card.querySelector('.refresh').onclick = () => this.refreshSinglePoseRepository(repo.repo_id);
+            card.querySelector('.remove').onclick = () => this.removePoseRepository(repo.repo_id);
+            list.appendChild(card);
+        }
+    }
+
+    renderLocalPoseRepositorySettings() {
+        const holder = this.librarySettingsEl?.querySelector('.vnccs-ps-library-local-repo');
+        if (!holder) return;
+        const repo = this.localPoseRepository || {};
+        const publishRepo = repo.publish_repo_id || "Not linked";
+        const lastPublish = repo.last_publish ? new Date(repo.last_publish * 1000).toLocaleString() : "never";
+        const lastResult = repo.last_publish_result
+            ? `${Number(repo.last_publish_result.uploaded_count || 0)} uploaded · ${Number(repo.last_publish_result.skipped_count || 0)} unchanged`
+            : "not published yet";
+        holder.innerHTML = `
+            <div class="vnccs-ps-library-repo-card">
+                <div>
+                    <div class="vnccs-ps-library-repo-title">Local User Poses</div>
+                    <div class="vnccs-ps-library-repo-id">local_user_poses → ${this.escapeHtml(publishRepo)}</div>
+                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · last publish ${this.escapeHtml(lastPublish)} · ${this.escapeHtml(lastResult)}</div>
+                </div>
+                <div class="vnccs-ps-library-repo-actions">
+                    <button class="vnccs-ps-library-repo-action primary publish">Publish</button>
+                    ${repo.publish_repo_id ? '<button class="vnccs-ps-library-repo-action relink">Change target</button>' : ''}
+                </div>
+            </div>
+        `;
+        holder.querySelector('.publish').onclick = () => this.publishLocalPoseRepository(false);
+        holder.querySelector('.relink')?.addEventListener('click', () => this.showPublishLocalRepositoryModal(true));
+    }
+
+    async publishLocalPoseRepository(forceConfigure = false) {
+        const repo = this.localPoseRepository || {};
+        if (forceConfigure || !repo.publish_repo_id || !repo.has_hf_token) {
+            this.showPublishLocalRepositoryModal(forceConfigure);
+            return;
+        }
+        await this.runLocalPoseRepositoryPublish({
+            repo_id: repo.publish_repo_id,
+            create: false,
+        });
+    }
+
+    showPublishLocalRepositoryModal(forceConfigure = false) {
+        const current = this.localPoseRepository || {};
+        const overlay = document.createElement('div');
+        overlay.className = 'vnccs-ps-modal-overlay';
+
+        const modal = document.createElement('div');
+        modal.className = 'vnccs-ps-modal';
+        modal.style.maxWidth = "420px";
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">Publish Local Pose Repository</div>
+            <div class="vnccs-ps-modal-content">
+                <label class="vnccs-ps-library-field">
+                    <span>Target</span>
+                    <select class="vnccs-ps-input vnccs-ps-publish-mode">
+                        <option value="create">Create new repository</option>
+                        <option value="existing">Use existing repository</option>
+                    </select>
+                </label>
+                <label class="vnccs-ps-library-field">
+                    <span>Hugging Face repo</span>
+                    <input class="vnccs-ps-input vnccs-ps-publish-repo" type="text" placeholder="owner/repository" value="${this.escapeHtml(current.publish_repo_id || "")}">
+                </label>
+                <label class="vnccs-ps-library-field vnccs-ps-publish-private-row">
+                    <span>Visibility</span>
+                    <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:12px;">
+                        <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
+                    </label>
+                </label>
+                <label class="vnccs-ps-library-field">
+                    <span>HF token ${current.has_hf_token ? '(saved)' : ''}</span>
+                    <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" placeholder="${current.has_hf_token ? 'Leave empty to use saved token' : 'hf_...'}">
+                </label>
+            </div>
+            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
+            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+        `;
+
+        const modeEl = modal.querySelector('.vnccs-ps-publish-mode');
+        const privateRow = modal.querySelector('.vnccs-ps-publish-private-row');
+        const syncMode = () => {
+            privateRow.style.display = modeEl.value === "create" ? "" : "none";
+        };
+        modeEl.value = current.publish_repo_id ? "existing" : "create";
+        modeEl.onchange = syncMode;
+        syncMode();
+
+        modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
+            const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
+            const token = modal.querySelector('.vnccs-ps-publish-token').value.trim();
+            if (!repoId) {
+                this.showMessage("Hugging Face repository id is required.", true);
+                return;
+            }
+            overlay.remove();
+            await this.runLocalPoseRepositoryPublish({
+                repo_id: repoId,
+                hf_token: token,
+                create: modeEl.value === "create",
+                private: modal.querySelector('.vnccs-ps-publish-private').checked,
+            });
+        };
+        modal.querySelector('.vnccs-ps-modal-btn.cancel').onclick = () => overlay.remove();
+        overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        modal.querySelector('.vnccs-ps-publish-repo').focus();
+    }
+
+    async runLocalPoseRepositoryPublish(payload) {
+        if (this.librarySettingsEl) {
+            const holder = this.librarySettingsEl.querySelector('.vnccs-ps-library-local-repo');
+            if (holder) holder.innerHTML = '<div class="vnccs-ps-library-empty">Publishing local poses to Hugging Face...</div>';
+        }
+        try {
+            const res = await fetch('/vnccs/pose_library/repositories/local/publish', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+            this.localPoseRepository = data.local_repository || this.localPoseRepository;
+            this.renderPoseRepositorySettings();
+            const result = data.result || {};
+            this.showMessage(`Published ${Number(result.uploaded_count || 0)} files. ${Number(result.skipped_count || 0)} poses unchanged.`);
+        } catch (err) {
+            await this.refreshPoseRepositories();
+            this.showMessage(`Failed to publish local poses: ${err?.message || err}`, true);
+        }
+    }
+
+    async addPoseRepository() {
+        const input = this.librarySettingsEl?.querySelector('.vnccs-ps-library-repo-input');
+        const repoId = input?.value.trim();
+        if (!repoId) return;
+        try {
+            const res = await fetch('/vnccs/pose_library/repositories/add', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repo_id: repoId }),
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+            input.value = '';
+            this.poseRepositories = data.repositories || [];
+            this.renderPoseRepositorySettings();
+        } catch (err) {
+            this.showMessage(`Failed to add repository: ${err?.message || err}`, true);
+        }
+    }
+
+    async togglePoseRepository(repoId, enabled) {
+        const res = await fetch('/vnccs/pose_library/repositories/toggle', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_id: repoId, enabled }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            this.showMessage(data?.error || `Failed to update ${repoId}`, true);
+            return;
+        }
+        this.poseRepositories = data.repositories || [];
+        this.renderPoseRepositorySettings();
+    }
+
+    async refreshSinglePoseRepository(repoId) {
+        const res = await fetch('/vnccs/pose_library/repositories/refresh', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ repo_id: repoId }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            this.showMessage(data?.error || `Failed to refresh ${repoId}`, true);
+            return;
+        }
+        this.poseRepositories = data.repositories || [];
+        this.renderPoseRepositorySettings();
+    }
+
+    async removePoseRepository(repoId) {
+        const res = await fetch(`/vnccs/pose_library/repositories/delete/${encodeURIComponent(repoId)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+            this.showMessage(data?.error || `Failed to remove ${repoId}`, true);
+            return;
+        }
+        this.poseRepositories = data.repositories || [];
+        this.renderPoseRepositorySettings();
+    }
+
     getLibraryPoseMeta(pose) {
         const dataMeta = pose?.data?._library || {};
         const category = (pose?.category || dataMeta.category || "Uncategorized").trim() || "Uncategorized";
         const tags = Array.isArray(pose?.tags) ? pose.tags : (Array.isArray(dataMeta.tags) ? dataMeta.tags : []);
+        const repository = (pose?.repository || dataMeta.repository || "local_user_poses").trim() || "local_user_poses";
         return {
+            repository,
             category,
             tags: tags.map(tag => String(tag).trim()).filter(Boolean),
         };
+    }
+
+    getLibraryPoseName(poseOrName) {
+        return typeof poseOrName === 'string' ? poseOrName : (poseOrName?.name || "");
+    }
+
+    getLibraryPoseId(pose) {
+        if (!pose) return "";
+        const meta = this.getLibraryPoseMeta(pose);
+        return pose.id || `${meta.repository}/${meta.category}/${pose.name}`;
+    }
+
+    getLibraryPoseQuery(poseOrName) {
+        if (!poseOrName || typeof poseOrName === 'string') return "";
+        const meta = this.getLibraryPoseMeta(poseOrName);
+        const params = new URLSearchParams();
+        params.set("repository", meta.repository);
+        params.set("category", meta.category);
+        return `?${params.toString()}`;
+    }
+
+    getLibraryPreviewUrl(pose) {
+        if (!pose?.has_preview) return "";
+        const meta = this.getLibraryPoseMeta(pose);
+        const params = new URLSearchParams();
+        params.set("repository", meta.repository);
+        params.set("category", meta.category);
+        params.set("v", String(Date.now()));
+        return `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?${params.toString()}`;
     }
 
     getFilteredLibraryPoses() {
@@ -4108,6 +4548,7 @@ class PoseStudioWidget {
             if (!query) return true;
             const haystack = [
                 pose.name,
+                meta.repository,
                 meta.category,
                 ...meta.tags,
             ].join(" ").toLowerCase();
@@ -4155,19 +4596,19 @@ class PoseStudioWidget {
             return;
         }
 
-        if (this.librarySelectedName && !filtered.some(pose => pose.name === this.librarySelectedName)) {
+        if (this.librarySelectedName && !filtered.some(pose => this.getLibraryPoseId(pose) === this.librarySelectedName)) {
             this.librarySelectedName = null;
         }
 
         for (const pose of filtered) {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
-            if (pose.name === this.librarySelectedName) item.classList.add('selected');
+            if (this.getLibraryPoseId(pose) === this.librarySelectedName) item.classList.add('selected');
 
             const preview = document.createElement('div');
             preview.className = 'vnccs-ps-library-item-preview';
             if (pose.has_preview) {
-                preview.innerHTML = `<img src="/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?v=${Date.now()}" alt="${pose.name}">`;
+                preview.innerHTML = `<img src="${this.getLibraryPreviewUrl(pose)}" alt="${pose.name}">`;
             } else {
                 preview.innerHTML = '<span>🦴</span>';
             }
@@ -4176,19 +4617,19 @@ class PoseStudioWidget {
             name.className = 'vnccs-ps-library-item-name';
             name.innerText = pose.name;
 
-            item.onclick = () => this.selectLibraryPose(pose.name);
+            item.onclick = () => this.selectLibraryPose(pose);
 
             item.appendChild(preview);
             item.appendChild(name);
             this.libraryGrid.appendChild(item);
         }
 
-        const selected = (this.libraryPoses || []).find(pose => pose.name === this.librarySelectedName) || null;
+        const selected = (this.libraryPoses || []).find(pose => this.getLibraryPoseId(pose) === this.librarySelectedName) || null;
         this.renderLibraryInspector(selected);
     }
 
-    selectLibraryPose(name) {
-        this.librarySelectedName = name;
+    selectLibraryPose(pose) {
+        this.librarySelectedName = this.getLibraryPoseId(pose);
         this.renderLibrary();
     }
 
@@ -4203,9 +4644,7 @@ class PoseStudioWidget {
         this.libraryInspector.classList.add('visible');
         if (this.libraryWorkspace) this.libraryWorkspace.classList.add('has-inspector');
         const meta = this.getLibraryPoseMeta(pose);
-        const previewSrc = pose.has_preview
-            ? `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?v=${Date.now()}`
-            : "";
+        const previewSrc = this.getLibraryPreviewUrl(pose);
         this.libraryInspector.innerHTML = `
             <div class="vnccs-ps-library-inspector-preview">
                 ${previewSrc ? `<img src="${previewSrc}" alt="${pose.name}">` : '<span>🦴</span>'}
@@ -4223,6 +4662,10 @@ class PoseStudioWidget {
                 <input class="vnccs-ps-input vnccs-ps-library-edit-category" type="text" value="${this.escapeHtml(meta.category)}">
             </label>
             <label class="vnccs-ps-library-field">
+                <span>Repository</span>
+                <input class="vnccs-ps-input" type="text" value="${this.escapeHtml(meta.repository)}" disabled>
+            </label>
+            <label class="vnccs-ps-library-field">
                 <span>Tags</span>
                 <input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${this.escapeHtml(meta.tags.join(', '))}" placeholder="standing, hands, portrait">
             </label>
@@ -4236,10 +4679,10 @@ class PoseStudioWidget {
         let pendingPreview = null;
         const previewBox = this.libraryInspector.querySelector('.vnccs-ps-library-inspector-preview');
         this.libraryInspector.querySelector('.vnccs-ps-library-apply').onclick = async () => {
-            await this.loadFromLibrary(pose.name);
+            await this.loadFromLibrary(pose);
             this.libraryInspector.closest('.vnccs-ps-modal-overlay')?.remove();
         };
-        this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose.name);
+        this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose);
         this.libraryInspector.querySelector('.vnccs-ps-library-image-input').onchange = async (event) => {
             const file = event.target.files?.[0];
             if (!file) return;
@@ -4257,15 +4700,18 @@ class PoseStudioWidget {
                 this.showMessage("Pose name is required.", true);
                 return;
             }
-            await this.saveLibraryPoseRecord({
+            const result = await this.saveLibraryPoseRecord({
                 oldName: pose.name,
+                oldRepository: meta.repository,
+                oldCategory: meta.category,
                 name: newName,
                 pose: pose.data || {},
+                repository: meta.repository,
                 category,
                 tags,
                 preview: pendingPreview,
             });
-            this.librarySelectedName = newName;
+            this.librarySelectedName = result.id || `${meta.repository}/${category}/${newName}`;
             await this.refreshLibrary(true);
         };
     }
@@ -4336,17 +4782,14 @@ class PoseStudioWidget {
         const tagsInput = textInputs[2];
         const previewCheck = modal.querySelector('input[type="checkbox"]');
 
-        modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = () => {
+        modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
             const name = nameInput.value.trim();
             if (name) {
-                this.saveToLibrary(name, previewCheck.checked, {
+                await this.saveToLibrary(name, previewCheck.checked, {
                     category: categoryInput.value.trim() || "Uncategorized",
                     tags: tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean),
                 });
                 overlay.remove();
-                // Refresh modal if open
-                const libraryGrid = document.querySelector('.vnccs-ps-library-modal-grid');
-                if (libraryGrid) this.refreshLibrary(false);
             }
         };
 
@@ -4358,14 +4801,17 @@ class PoseStudioWidget {
         nameInput.focus();
     }
 
-    async saveLibraryPoseRecord({ oldName = "", name, pose, category = "Uncategorized", tags = [], preview = null }) {
+    async saveLibraryPoseRecord({ oldName = "", oldRepository = "", oldCategory = "", name, pose, repository = "local_user_poses", category = "Uncategorized", tags = [], preview = null }) {
         const response = await fetch('/vnccs/pose_library/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 old_name: oldName,
+                old_repository: oldRepository,
+                old_category: oldCategory,
                 name,
                 pose,
+                repository,
                 preview,
                 category,
                 tags,
@@ -4397,14 +4843,15 @@ class PoseStudioWidget {
         }
 
         try {
-            await this.saveLibraryPoseRecord({
+            const result = await this.saveLibraryPoseRecord({
                 name,
                 pose,
                 preview,
+                repository: "local_user_poses",
                 category: metadata.category || "Uncategorized",
                 tags: metadata.tags || [],
             });
-            this.librarySelectedName = name;
+            this.librarySelectedName = result.id || `local_user_poses/${metadata.category || "Uncategorized"}/${name}`;
             this.refreshLibrary(true);
         } catch (err) {
             console.error("Failed to save pose:", err);
@@ -4412,10 +4859,11 @@ class PoseStudioWidget {
         }
     }
 
-    async loadFromLibrary(name) {
+    async loadFromLibrary(poseOrName) {
+        const name = this.getLibraryPoseName(poseOrName);
         console.log("[VNCCS PoseStudio] loadFromLibrary triggered for:", name);
         try {
-            const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}`);
+            const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
 
             if (data.pose && this.viewer) {
@@ -4696,7 +5144,8 @@ class PoseStudioWidget {
         this.canvasContainer.appendChild(overlay);
     }
 
-    showDeleteConfirmModal(poseName) {
+    showDeleteConfirmModal(poseOrName) {
+        const poseName = this.getLibraryPoseName(poseOrName);
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
 
@@ -4730,7 +5179,7 @@ class PoseStudioWidget {
         modal.appendChild(cancelBtn);
 
         deleteBtn.onclick = () => {
-            this.deleteFromLibrary(poseName);
+            this.deleteFromLibrary(poseOrName);
             overlay.remove();
         };
 
@@ -4741,10 +5190,12 @@ class PoseStudioWidget {
         this.container.appendChild(overlay);
     }
 
-    async deleteFromLibrary(name) {
+    async deleteFromLibrary(poseOrName) {
+        const name = this.getLibraryPoseName(poseOrName);
         try {
-            await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}`, { method: 'DELETE' });
-            if (this.librarySelectedName === name) this.librarySelectedName = null;
+            await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`, { method: 'DELETE' });
+            if (typeof poseOrName === 'string' && this.librarySelectedName === name) this.librarySelectedName = null;
+            if (typeof poseOrName !== 'string' && this.librarySelectedName === this.getLibraryPoseId(poseOrName)) this.librarySelectedName = null;
             this.refreshLibrary(true);
         } catch (err) {
             console.error("Failed to delete pose:", err);

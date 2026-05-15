@@ -73,5 +73,10 @@
     "targetX": 0,
     "targetY": 0.9482184886932372,
     "targetZ": 0.8783139884471892
+  },
+  "_library": {
+    "repository": "local_user_poses",
+    "category": "Uncategorized",
+    "tags": []
   }
 }
