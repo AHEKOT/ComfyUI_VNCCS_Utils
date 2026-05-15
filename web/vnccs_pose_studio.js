@@ -3851,7 +3851,7 @@ class PoseStudioWidget {
                 if (!status) return;
                 if (status.message) content.textContent = status.message;
                 if (status.progress !== undefined) setProgress(status.progress);
-                if (status.message && /download/i.test(status.message)) {
+                if (status.message && /download/i.test(status.message) && !/repository/i.test(titleText)) {
                     title.textContent = "Downloading SAM 3D Body Models";
                 } else {
                     title.textContent = titleText;
@@ -3944,7 +3944,7 @@ class PoseStudioWidget {
 
             this.poses[this.activeTab] = this.viewer.getPose();
             this.updateRotationSliders();
-            this.syncToNode(false);
+            this.syncToNode(true);
             progress.setProgress(100);
             progress.setText("Step 6/6: Pose applied to Pose Studio.");
             this.showMessage("SAM 3D Body image imported successfully.");
@@ -4287,11 +4287,14 @@ class PoseStudioWidget {
             card.className = 'vnccs-ps-library-repo-card';
             const status = repo.status === 'error' ? `Error: ${repo.last_error || 'refresh failed'}` : (repo.status || 'not checked');
             const checked = repo.last_checked ? new Date(repo.last_checked * 1000).toLocaleString() : 'never';
+            const syncMeta = repo.downloaded_count !== undefined
+                ? ` · ${Number(repo.downloaded_count || 0)} downloaded · ${Number(repo.skipped_count || 0)} unchanged`
+                : '';
             card.innerHTML = `
                 <div>
                     <div class="vnccs-ps-library-repo-title">${this.escapeHtml(repo.title || repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-id">${this.escapeHtml(repo.repo_id)}</div>
-                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}</div>
+                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}${this.escapeHtml(syncMeta)}</div>
                 </div>
                 <div class="vnccs-ps-library-repo-actions">
                     <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? 'Disable' : 'Enable'}</button>
@@ -4455,34 +4458,85 @@ class PoseStudioWidget {
         }
     }
 
-    async togglePoseRepository(repoId, enabled) {
-        const res = await fetch('/vnccs/pose_library/repositories/toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_id: repoId, enabled }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            this.showMessage(data?.error || `Failed to update ${repoId}`, true);
-            return;
+    createRepositoryTaskId(prefix = "repo") {
+        return (
+            globalThis.crypto?.randomUUID?.()
+            || `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        );
+    }
+
+    async pollRepositoryProgress(taskId, progress, titleText) {
+        if (!taskId || !progress) return;
+        try {
+            const res = await fetch(`/vnccs/pose_library/repositories/progress/${encodeURIComponent(taskId)}`);
+            if (!res.ok) return;
+            const status = await res.json();
+            if (status.current_file && status.file_index && status.total_files) {
+                status.message = `${status.message || status.current_file} · file ${status.file_index}/${status.total_files}`;
+            }
+            progress.update(status);
+            if (status.status === "success" || status.status === "error") {
+                progress.setProgress(status.progress ?? 100);
+            }
+        } catch (_err) {
+            // Progress polling is best-effort; the POST response remains authoritative.
         }
-        this.poseRepositories = data.repositories || [];
-        this.renderPoseRepositorySettings();
+    }
+
+    async togglePoseRepository(repoId, enabled) {
+        const taskId = this.createRepositoryTaskId("repo-toggle");
+        const progress = this.showImportProgressModal(`${enabled ? "Enabling" : "Disabling"} Pose Repository`);
+        let pollTimer = null;
+        try {
+            progress.setText(`${enabled ? "Enabling" : "Disabling"} ${repoId}...`);
+            progress.setProgress(1);
+            pollTimer = setInterval(() => this.pollRepositoryProgress(taskId, progress), 350);
+            const res = await fetch('/vnccs/pose_library/repositories/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repo_id: repoId, enabled, task_id: taskId }),
+            });
+            await this.pollRepositoryProgress(taskId, progress);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.showMessage(data?.error || `Failed to update ${repoId}`, true);
+                return;
+            }
+            this.poseRepositories = data.repositories || [];
+            this.renderPoseRepositorySettings();
+            await this.refreshLibrary(true);
+        } finally {
+            if (pollTimer) clearInterval(pollTimer);
+            setTimeout(() => progress.close(), 450);
+        }
     }
 
     async refreshSinglePoseRepository(repoId) {
-        const res = await fetch('/vnccs/pose_library/repositories/refresh', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ repo_id: repoId }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok) {
-            this.showMessage(data?.error || `Failed to refresh ${repoId}`, true);
-            return;
+        const taskId = this.createRepositoryTaskId("repo-refresh");
+        const progress = this.showImportProgressModal("Refreshing Pose Repository");
+        let pollTimer = null;
+        try {
+            progress.setText(`Checking ${repoId}...`);
+            progress.setProgress(1);
+            pollTimer = setInterval(() => this.pollRepositoryProgress(taskId, progress), 350);
+            const res = await fetch('/vnccs/pose_library/repositories/refresh', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ repo_id: repoId, task_id: taskId }),
+            });
+            await this.pollRepositoryProgress(taskId, progress);
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                this.showMessage(data?.error || `Failed to refresh ${repoId}`, true);
+                return;
+            }
+            this.poseRepositories = data.repositories || [];
+            this.renderPoseRepositorySettings();
+            await this.refreshLibrary(true);
+        } finally {
+            if (pollTimer) clearInterval(pollTimer);
+            setTimeout(() => progress.close(), 650);
         }
-        this.poseRepositories = data.repositories || [];
-        this.renderPoseRepositorySettings();
     }
 
     async removePoseRepository(repoId) {
@@ -4494,6 +4548,7 @@ class PoseStudioWidget {
         }
         this.poseRepositories = data.repositories || [];
         this.renderPoseRepositorySettings();
+        await this.refreshLibrary(true);
     }
 
     getLibraryPoseMeta(pose) {
@@ -6365,6 +6420,11 @@ app.registerExtension({
                         widget.exportParams.cam_offset_x,
                         widget.exportParams.cam_offset_y
                     );
+                    widget.viewer.setCameraParams({
+                        offset_x: widget.exportParams.cam_offset_x,
+                        offset_y: widget.exportParams.cam_offset_y,
+                        zoom: widget.exportParams.cam_zoom
+                    });
                 }
 
                 widget.poses[widget.activeTab] = widget.viewer.getPose();

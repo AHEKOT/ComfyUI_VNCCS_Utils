@@ -6,6 +6,7 @@ import shutil
 import time
 import hashlib
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from aiohttp import web
 from PIL import Image
@@ -14,6 +15,49 @@ DEFAULT_REPO_ID = "MIUProject/VNCCS_PoseLibrary_Main"
 LOCAL_USER_REPOSITORY = "local_user_poses"
 DEFAULT_CATEGORY = "Uncategorized"
 RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
+_REPOSITORY_PROGRESS = {}
+
+def repository_progress_start(task_id, message="Starting repository operation..."):
+    if not task_id:
+        return
+    _REPOSITORY_PROGRESS[task_id] = {
+        "status": "running",
+        "message": message,
+        "progress": 0,
+        "current_file": "",
+        "file_index": 0,
+        "total_files": 0,
+        "bytes_done": 0,
+        "bytes_total": 0,
+        "updated_at": time.time(),
+    }
+
+def repository_progress_update(task_id, **kwargs):
+    if not task_id:
+        return
+    state = _REPOSITORY_PROGRESS.setdefault(task_id, {"status": "running", "progress": 0})
+    state.update(kwargs)
+    state["updated_at"] = time.time()
+
+def repository_progress_finish(task_id, message="Done."):
+    if not task_id:
+        return
+    repository_progress_update(task_id, status="success", message=message, progress=100)
+
+def repository_progress_fail(task_id, message):
+    if not task_id:
+        return
+    repository_progress_update(task_id, status="error", message=str(message), progress=100)
+
+def get_repository_progress(task_id):
+    state = _REPOSITORY_PROGRESS.get(task_id)
+    if not state:
+        return {
+            "status": "unknown",
+            "message": "Waiting for repository operation...",
+            "progress": 0,
+        }
+    return dict(state)
 
 # Base path for PoseLibrary
 def get_library_path():
@@ -156,9 +200,10 @@ def get_hf_token():
         pass
     return token
 
-def refresh_pose_repository(repo):
+def refresh_pose_repository(repo, task_id=None):
     repo_id = repo["repo_id"]
     manifest_path = repo.get("manifest_path") or "pose_library.json"
+    repository_progress_start(task_id, f"Checking {repo_id}...")
     result = {
         **repo,
         "status": "unknown",
@@ -167,36 +212,50 @@ def refresh_pose_repository(repo):
         "last_error": "",
     }
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import HfApi
         token = get_hf_token()
         api = HfApi()
+        repository_progress_update(task_id, message=f"Reading repository info for {repo_id}...", progress=2)
         info = api.repo_info(repo_id=repo_id, repo_type="model", token=token)
         result["sha"] = getattr(info, "sha", "") or ""
         try:
-            manifest_file = hf_hub_download(
+            manifest_file = download_hf_file_with_progress(
                 repo_id=repo_id,
-                filename=manifest_path,
+                path_in_repo=manifest_path,
                 token=token,
-                local_files_only=False,
+                task_id=task_id,
+                file_index=0,
+                total_files=1,
             )
             with open(manifest_file, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
+            try:
+                os.remove(manifest_file)
+            except Exception:
+                pass
             poses = manifest.get("poses") or []
+            sync_result = sync_pose_repository_files(repo, manifest, token, task_id=task_id)
             result["pose_count"] = len(poses)
+            result["downloaded_count"] = sync_result["downloaded_count"]
+            result["skipped_count"] = sync_result["skipped_count"]
             result["title"] = manifest.get("title") or result.get("title") or repo_id
             result["description"] = manifest.get("description") or result.get("description") or ""
             result["updated_at"] = manifest.get("updated_at") or ""
             result["status"] = "ok"
+            repository_progress_finish(task_id, f"Repository sync complete: {sync_result['downloaded_count']} downloaded, {sync_result['skipped_count']} unchanged.")
         except Exception:
+            repository_progress_update(task_id, message=f"Manifest not found. Counting files in {repo_id}...", progress=50)
             files = api.list_repo_files(repo_id=repo_id, repo_type="model", token=token)
             result["pose_count"] = len([
                 file for file in files
                 if file.lower().endswith(".json") and os.path.basename(file) != manifest_path
             ])
             result["status"] = "ok"
+            repository_progress_finish(task_id, f"Repository checked: {result['pose_count']} JSON files found, no pose manifest to sync.")
     except Exception as exc:
         result["status"] = "error"
         result["last_error"] = str(exc)
+        repository_progress_fail(task_id, exc)
     return result
 
 def sha256_file(path):
@@ -208,6 +267,66 @@ def sha256_file(path):
 
 def json_bytes(data):
     return json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8")
+
+def human_bytes(value):
+    value = float(value or 0)
+    for unit in ("B", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
+        value /= 1024
+
+def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=None, file_index=0, total_files=1):
+    from huggingface_hub import hf_hub_url
+    import requests
+
+    url = hf_hub_url(repo_id=repo_id, filename=path_in_repo, repo_type="model")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    fd, tmp_path = tempfile.mkstemp(prefix="vnccs_pose_repo_", suffix=os.path.splitext(path_in_repo)[1] or ".tmp")
+    os.close(fd)
+    bytes_done = 0
+    total_bytes = 0
+    try:
+        with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
+            response.raise_for_status()
+            total_bytes = int(response.headers.get("content-length") or 0)
+            repository_progress_update(
+                task_id,
+                message=f"Downloading {path_in_repo}...",
+                current_file=path_in_repo,
+                file_index=file_index + 1,
+                total_files=total_files,
+                bytes_done=0,
+                bytes_total=total_bytes,
+                progress=(file_index / max(total_files, 1)) * 100,
+            )
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    bytes_done += len(chunk)
+                    file_fraction = (bytes_done / total_bytes) if total_bytes else 0
+                    overall = ((file_index + file_fraction) / max(total_files, 1)) * 100
+                    byte_msg = human_bytes(bytes_done)
+                    if total_bytes:
+                        byte_msg = f"{byte_msg}/{human_bytes(total_bytes)}"
+                    repository_progress_update(
+                        task_id,
+                        message=f"Downloading {path_in_repo} ({byte_msg})",
+                        current_file=path_in_repo,
+                        file_index=file_index + 1,
+                        total_files=total_files,
+                        bytes_done=bytes_done,
+                        bytes_total=total_bytes,
+                        progress=overall,
+                    )
+        return tmp_path
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
 
 def collect_local_pose_files():
     lib_path = get_library_path()
@@ -293,6 +412,142 @@ def remote_file_sha256(repo_id, path_in_repo, token):
         return sha256_file(path)
     except Exception:
         return ""
+
+def infer_category_from_hub_path(path_in_repo):
+    parts = [part for part in str(path_in_repo or "").replace("\\", "/").split("/") if part]
+    if len(parts) >= 3 and parts[0] in {"poses", "previews"}:
+        return parts[1]
+    if len(parts) >= 2:
+        return parts[-2]
+    return DEFAULT_CATEGORY
+
+def copy_if_changed(src_path, dst_path, expected_sha=""):
+    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    if os.path.exists(dst_path):
+        try:
+            current_sha = sha256_file(dst_path)
+            source_sha = expected_sha or sha256_file(src_path)
+            if current_sha == source_sha:
+                return False
+        except Exception:
+            pass
+    shutil.copy2(src_path, dst_path)
+    return True
+
+def local_file_matches(path, expected_sha):
+    if not expected_sha or not os.path.exists(path):
+        return False
+    try:
+        return sha256_file(path) == expected_sha
+    except Exception:
+        return False
+
+def sync_pose_repository_files(repo, manifest, token, task_id=None):
+    """Download new/changed pose files from a Hugging Face pose repository."""
+    repo_id = repo["repo_id"]
+    poses = manifest.get("poses") or []
+    downloaded = []
+    skipped = []
+    errors = []
+    total_files = 1 + sum(
+        1 + (1 if isinstance(pose, dict) and pose.get("preview_path") else 0)
+        for pose in poses
+        if isinstance(pose, dict) and (pose.get("json_path") or pose.get("path"))
+    )
+    file_index = 1
+
+    for pose in poses:
+        if not isinstance(pose, dict):
+            continue
+        hub_json_path = pose.get("json_path") or pose.get("path")
+        if not hub_json_path:
+            continue
+        name = sanitize_pose_name(pose.get("name") or os.path.splitext(os.path.basename(hub_json_path))[0])
+        if not name:
+            continue
+        category = str(pose.get("category") or infer_category_from_hub_path(hub_json_path) or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
+        pose_dir = get_pose_dir(repo_id, category)
+        target_json = os.path.join(pose_dir, f"{name}.json")
+
+        try:
+            if local_file_matches(target_json, pose.get("json_sha256") or ""):
+                json_changed = False
+                repository_progress_update(
+                    task_id,
+                    message=f"Already up to date: {hub_json_path}",
+                    current_file=hub_json_path,
+                    file_index=file_index + 1,
+                    total_files=total_files,
+                    bytes_done=0,
+                    bytes_total=0,
+                    progress=((file_index + 1) / max(total_files, 1)) * 100,
+                )
+            else:
+                cached_json = download_hf_file_with_progress(
+                    repo_id=repo_id,
+                    path_in_repo=hub_json_path,
+                    token=token,
+                    task_id=task_id,
+                    file_index=file_index,
+                    total_files=total_files,
+                )
+                json_changed = copy_if_changed(cached_json, target_json, pose.get("json_sha256") or "")
+                try:
+                    os.remove(cached_json)
+                except Exception:
+                    pass
+            file_index += 1
+
+            preview_changed = False
+            hub_preview_path = pose.get("preview_path") or ""
+            if hub_preview_path:
+                try:
+                    ext = os.path.splitext(hub_preview_path)[1].lower() or ".webp"
+                    target_preview = os.path.join(pose_dir, f"{name}{ext}")
+                    if local_file_matches(target_preview, pose.get("preview_sha256") or ""):
+                        repository_progress_update(
+                            task_id,
+                            message=f"Already up to date: {hub_preview_path}",
+                            current_file=hub_preview_path,
+                            file_index=file_index + 1,
+                            total_files=total_files,
+                            bytes_done=0,
+                            bytes_total=0,
+                            progress=((file_index + 1) / max(total_files, 1)) * 100,
+                        )
+                    else:
+                        cached_preview = download_hf_file_with_progress(
+                            repo_id=repo_id,
+                            path_in_repo=hub_preview_path,
+                            token=token,
+                            task_id=task_id,
+                            file_index=file_index,
+                            total_files=total_files,
+                        )
+                        preview_changed = copy_if_changed(cached_preview, target_preview, pose.get("preview_sha256") or "")
+                        try:
+                            os.remove(cached_preview)
+                        except Exception:
+                            pass
+                    file_index += 1
+                except Exception as exc:
+                    errors.append(f"{hub_preview_path}: {exc}")
+                    file_index += 1
+
+            if json_changed or preview_changed:
+                downloaded.append(hub_json_path)
+            else:
+                skipped.append(hub_json_path)
+        except Exception as exc:
+            errors.append(f"{hub_json_path}: {exc}")
+
+    return {
+        "downloaded_count": len(downloaded),
+        "skipped_count": len(skipped),
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "errors": errors,
+    }
 
 def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
     remote_poses = remote_manifest.get("poses") if isinstance(remote_manifest, dict) else []
@@ -451,6 +706,9 @@ async def list_pose_repositories(request):
         "repositories": load_pose_repositories(),
     })
 
+async def repository_progress_status(request):
+    return web.json_response(get_repository_progress(request.match_info.get("task_id")))
+
 async def add_pose_repository(request):
     try:
         data = await request.json()
@@ -482,9 +740,13 @@ async def toggle_pose_repository(request):
         return web.json_response({"error": "Invalid JSON"}, status=400)
     repo_id = normalize_repo_id(data.get("repo_id"))
     enabled = bool(data.get("enabled"))
+    task_id = str(data.get("task_id") or "")
+    repository_progress_start(task_id, f"{'Enabling' if enabled else 'Disabling'} {repo_id}...")
+    repository_progress_update(task_id, progress=20, message="Loading repository settings...")
     default_repos = load_default_repositories()
     user_repos = load_user_repositories()
     if any(repo["repo_id"] == repo_id for repo in default_repos):
+        repository_progress_update(task_id, progress=45, message="Updating default repository override...")
         existing = next((repo for repo in user_repos if repo["repo_id"] == repo_id), None)
         if existing is None:
             base = next(repo for repo in default_repos if repo["repo_id"] == repo_id)
@@ -492,13 +754,17 @@ async def toggle_pose_repository(request):
             user_repos.append(existing)
         existing["enabled"] = enabled
     else:
+        repository_progress_update(task_id, progress=45, message="Updating user repository...")
         for repo in user_repos:
             if repo["repo_id"] == repo_id:
                 repo["enabled"] = enabled
                 break
         else:
+            repository_progress_fail(task_id, "Repository not found")
             return web.json_response({"error": "Repository not found"}, status=404)
+    repository_progress_update(task_id, progress=75, message="Saving repository settings...")
     save_user_repositories(user_repos)
+    repository_progress_finish(task_id, f"{repo_id} {'enabled' if enabled else 'disabled'}.")
     return web.json_response({"success": True, "repositories": load_pose_repositories()})
 
 async def delete_pose_repository(request):
@@ -517,19 +783,20 @@ async def refresh_pose_repositories(request):
     except Exception:
         data = {}
     repo_id = normalize_repo_id(data.get("repo_id"))
+    task_id = str(data.get("task_id") or uuid.uuid4())
     repos = load_pose_repositories()
     targets = [repo for repo in repos if (not repo_id or repo["repo_id"] == repo_id)]
-    refreshed = [refresh_pose_repository(repo) for repo in targets]
+    refreshed = [refresh_pose_repository(repo, task_id=task_id if len(targets) == 1 else f"{task_id}-{index}") for index, repo in enumerate(targets)]
     user_repos = load_user_repositories()
     by_id = {repo["repo_id"]: repo for repo in user_repos}
     for repo in refreshed:
         if repo.get("builtin"):
             override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
-            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at")})
+            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count")})
         elif repo["repo_id"] in by_id:
             by_id[repo["repo_id"]].update(repo)
     save_user_repositories(list(by_id.values()))
-    return web.json_response({"success": True, "repositories": load_pose_repositories(), "refreshed": refreshed})
+    return web.json_response({"success": True, "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
 
 async def publish_local_pose_repository(request):
     try:
@@ -721,7 +988,7 @@ def find_pose_file(name, repository=None, category=None):
         except Exception:
             pass
         raw_meta = get_raw_library_meta(pose_data)
-        found_repo = raw_meta.get("repository") or (repo_map.get(parts[0]) if parts else LOCAL_USER_REPOSITORY)
+        found_repo = repo_map.get(parts[0], parts[0]) if parts else (raw_meta.get("repository") or LOCAL_USER_REPOSITORY)
         found_category = raw_meta.get("category") or (parts[1] if len(parts) > 1 else DEFAULT_CATEGORY)
         if repository and found_repo != repository:
             continue
@@ -737,6 +1004,11 @@ async def list_poses(request):
     poses = []
 
     repo_map = repository_dir_map()
+    repository_states = {
+        repo["repo_id"]: bool(repo.get("enabled", True))
+        for repo in load_pose_repositories()
+    }
+    repository_states[LOCAL_USER_REPOSITORY] = True
     try:
         walker = os.walk(lib_path)
     except FileNotFoundError:
@@ -757,10 +1029,12 @@ async def list_poses(request):
             except Exception:
                 pose_data = {}
             raw_meta = get_raw_library_meta(pose_data)
-            repository = raw_meta.get("repository")
+            repository = repo_map.get(parts[0], parts[0]) if parts else raw_meta.get("repository")
             category = raw_meta.get("category")
             if not repository:
                 repository = repo_map.get(parts[0], parts[0]) if parts else LOCAL_USER_REPOSITORY
+            if repository != LOCAL_USER_REPOSITORY and not repository_states.get(repository, True):
+                continue
             if not category:
                 category = parts[1] if len(parts) > 1 else DEFAULT_CATEGORY
             poses.append(build_pose_record(
@@ -939,6 +1213,7 @@ def register_routes(app):
     app.router.add_delete("/vnccs/pose_library/delete/{name}", delete_pose)
     app.router.add_get("/vnccs/pose_library/preview/{name}", get_preview)
     app.router.add_get("/vnccs/pose_library/repositories", list_pose_repositories)
+    app.router.add_get("/vnccs/pose_library/repositories/progress/{task_id}", repository_progress_status)
     app.router.add_post("/vnccs/pose_library/repositories/add", add_pose_repository)
     app.router.add_post("/vnccs/pose_library/repositories/toggle", toggle_pose_repository)
     app.router.add_delete("/vnccs/pose_library/repositories/delete/{repo_id:.+}", delete_pose_repository)

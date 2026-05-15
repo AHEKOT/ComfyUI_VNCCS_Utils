@@ -3460,29 +3460,184 @@ export class PoseViewerCore {
     }
 
     computeSAM3DFrameCameraParams(data, width = 1024, height = 1024) {
-        if (!this.THREE || !this.skinnedMesh || !this.captureCamera || !data?.bbox) return null;
-
-        const rawBox = Array.isArray(data.bbox?.[0]) ? data.bbox[0] : data.bbox;
-        if (!Array.isArray(rawBox) || rawBox.length < 4) return null;
+        if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 
         const imageW = Number(data?.image_size?.width) || Number(width) || 1024;
         const imageH = Number(data?.image_size?.height) || Number(height) || 1024;
         if (imageW <= 0 || imageH <= 0) return null;
 
-        const x1 = Number(rawBox[0]);
-        const y1 = Number(rawBox[1]);
-        const x2 = Number(rawBox[2]);
-        const y2 = Number(rawBox[3]);
+        const flattenNumbers = (value, out = []) => {
+            if (Array.isArray(value)) {
+                for (const item of value) flattenNumbers(item, out);
+            } else {
+                const n = Number(value);
+                if (Number.isFinite(n)) out.push(n);
+            }
+            return out;
+        };
+
+        const pointTriplets = (value) => {
+            const flat = flattenNumbers(value);
+            const points = [];
+            for (let i = 0; i + 2 < flat.length; i += 3) {
+                points.push([flat[i], flat[i + 1], flat[i + 2]]);
+            }
+            return points;
+        };
+
+        const projectedSourceBounds = (() => {
+            const camera = flattenNumbers(data?.camera).slice(0, 3);
+            const focalRaw = flattenNumbers(data?.focal_length)[0] ?? Number(data?.focal_length);
+            const focal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
+            const points = [];
+
+            points.push(...pointTriplets(data?.keypoints_3d));
+
+            const bounds = data?.pred_vertices_bounds;
+            if (bounds?.center && bounds?.extent) {
+                const center = flattenNumbers(bounds.center).slice(0, 3);
+                const extent = flattenNumbers(bounds.extent).slice(0, 3);
+                if (center.length >= 3 && extent.length >= 3) {
+                    for (const sx of [-0.5, 0.5]) {
+                        for (const sy of [-0.5, 0.5]) {
+                            for (const sz of [-0.5, 0.5]) {
+                                points.push([
+                                    center[0] + extent[0] * sx,
+                                    center[1] + extent[1] * sy,
+                                    center[2] + extent[2] * sz,
+                                ]);
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (!camera || camera.length < 3 || points.length < 2) return null;
+            const xs = [];
+            const ys = [];
+            for (const point of points) {
+                if (!point.every(Number.isFinite)) continue;
+                const z = point[2] + camera[2];
+                if (!Number.isFinite(z) || Math.abs(z) < 1e-5) continue;
+                xs.push((point[0] + camera[0]) * focal / z + imageW * 0.5);
+                ys.push((point[1] + camera[1]) * focal / z + imageH * 0.5);
+            }
+            if (xs.length < 2 || ys.length < 2) return null;
+            xs.sort((a, b) => a - b);
+            ys.sort((a, b) => a - b);
+            const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
+            return {
+                x1: pick(xs, 0.01),
+                y1: pick(ys, 0.01),
+                x2: pick(xs, 0.99),
+                y2: pick(ys, 0.99),
+            };
+        })();
+
+        let x1;
+        let y1;
+        let x2;
+        let y2;
+        if (projectedSourceBounds) {
+            const projectedW = Math.abs(projectedSourceBounds.x2 - projectedSourceBounds.x1);
+            const projectedH = Math.abs(projectedSourceBounds.y2 - projectedSourceBounds.y1);
+            if (projectedW > 1 && projectedH > 1) {
+                x1 = projectedSourceBounds.x1;
+                y1 = projectedSourceBounds.y1;
+                x2 = projectedSourceBounds.x2;
+                y2 = projectedSourceBounds.y2;
+            }
+        }
+        if (![x1, y1, x2, y2].every(Number.isFinite)) {
+            const rawBox = Array.isArray(data?.bbox?.[0]) ? data.bbox[0] : data?.bbox;
+            if (!Array.isArray(rawBox) || rawBox.length < 4) return null;
+            x1 = Number(rawBox[0]);
+            y1 = Number(rawBox[1]);
+            x2 = Number(rawBox[2]);
+            y2 = Number(rawBox[3]);
+        }
         if (![x1, y1, x2, y2].every(Number.isFinite)) return null;
 
         const bboxW = Math.max(1, Math.abs(x2 - x1));
         const bboxH = Math.max(1, Math.abs(y2 - y1));
-        const desiredW = Math.min(0.98, Math.max(0.08, bboxW / imageW));
-        const desiredH = Math.min(0.98, Math.max(0.08, bboxH / imageH));
+        const desiredW = Math.min(12.0, Math.max(0.08, bboxW / imageW));
+        const desiredH = Math.min(12.0, Math.max(0.08, bboxH / imageH));
         const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
         const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
 
         this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        const projectedBounds = (camera) => {
+            const mesh = this.skinnedMesh;
+            const geometry = mesh.geometry;
+            const position = geometry?.attributes?.position;
+            if (!mesh || !position || !camera) return null;
+
+            mesh.updateMatrixWorld(true);
+            camera.updateMatrixWorld(true);
+            camera.updateProjectionMatrix();
+
+            const point = new this.THREE.Vector3();
+            const xs = [];
+            const ys = [];
+            const step = Math.max(1, Math.ceil(position.count / 8000));
+
+            for (let index = 0; index < position.count; index += step) {
+                point.fromBufferAttribute(position, index);
+                if (typeof mesh.boneTransform === 'function') {
+                    mesh.boneTransform(index, point);
+                }
+                point.applyMatrix4(mesh.matrixWorld).project(camera);
+                if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+                xs.push(point.x);
+                ys.push(point.y);
+            }
+
+            if (xs.length < 16 || ys.length < 16) return null;
+            xs.sort((a, b) => a - b);
+            ys.sort((a, b) => a - b);
+            const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
+            const min = new this.THREE.Vector2(pick(xs, 0.01), pick(ys, 0.01));
+            const max = new this.THREE.Vector2(pick(xs, 0.99), pick(ys, 0.99));
+            if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) return null;
+            return {
+                min,
+                max,
+                width: Math.max(1e-5, max.x - min.x),
+                height: Math.max(1e-5, max.y - min.y),
+                centerX: (min.x + max.x) * 0.5,
+                centerY: (min.y + max.y) * 0.5,
+            };
+        };
+
+        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        const dist = 45;
+        const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
+        const vFOV = (this.captureCamera.fov * Math.PI) / 180;
+        const visibleHAtZoom1 = 2 * dist * Math.tan(vFOV / 2);
+        const visibleWAtZoom1 = visibleHAtZoom1 * aspect;
+
+        this.updateCaptureCamera(width, height, 1.0, 0, 0);
+        const baseBounds = projectedBounds(this.captureCamera);
+        if (baseBounds) {
+            const desiredNdcW = desiredW * 2;
+            const desiredNdcH = desiredH * 2;
+            const zoomForW = desiredNdcW / baseBounds.width;
+            const zoomForH = desiredNdcH / baseBounds.height;
+            const zoom = Math.min(16, Math.max(0.1, Math.min(zoomForW, zoomForH) * 0.98));
+
+            this.updateCaptureCamera(width, height, zoom, 0, 0);
+            const zoomedBounds = projectedBounds(this.captureCamera) || baseBounds;
+            const visibleW = visibleWAtZoom1 / zoom;
+            const visibleH = visibleHAtZoom1 / zoom;
+            const offset_x = -(zoomedBounds.centerX - desiredCenterX) * visibleW * 0.5;
+            const offset_y = -(zoomedBounds.centerY - desiredCenterY) * visibleH * 0.5;
+
+            this.updateCaptureCamera(width, height, zoom, offset_x, offset_y);
+            return { zoom, offset_x, offset_y };
+        }
+
         const box = new this.THREE.Box3().setFromObject(this.skinnedMesh);
         if (box.isEmpty()) return null;
 
@@ -3492,21 +3647,14 @@ export class PoseViewerCore {
         box.getCenter(center);
         if (size.x <= 1e-5 || size.y <= 1e-5) return null;
 
-        const dist = 45;
-        const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
-        const vFOV = (this.captureCamera.fov * Math.PI) / 180;
-        const visibleHAtZoom1 = 2 * dist * Math.tan(vFOV / 2);
-        const visibleWAtZoom1 = visibleHAtZoom1 * aspect;
         const zoomForH = desiredH * visibleHAtZoom1 / size.y;
         const zoomForW = desiredW * visibleWAtZoom1 / size.x;
-        const zoom = Math.min(7, Math.max(0.1, Math.min(zoomForH, zoomForW) * 0.96));
+        const zoom = Math.min(16, Math.max(0.1, Math.min(zoomForH, zoomForW) * 0.96));
 
         const visibleH = visibleHAtZoom1 / zoom;
         const visibleW = visibleWAtZoom1 / zoom;
         const targetX = center.x - desiredCenterX * visibleW * 0.5;
         const targetY = center.y - desiredCenterY * visibleH * 0.5;
-        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
-
         return {
             zoom,
             offset_x: baseTarget.x - targetX,
@@ -4123,11 +4271,40 @@ export class PoseViewerCore {
                 this.skinnedMesh.updateMatrixWorld(true);
             }
             if (this._applySAM3DEyeMidRetarget(worldKps)) {
+                this._applySAM3DHeadPitchBias(15);
                 if (this.skeleton) this.skeleton.update();
                 this.skinnedMesh.updateMatrixWorld(true);
                 return;
             }
         }
+    }
+
+    _applySAM3DHeadPitchBias(degrees = 15) {
+        const head = this.bones?.head;
+        if (!this.THREE || !head || !this.modelLandmarks) return false;
+
+        const face = this._getCurrentMHFaceLandmarkPoints();
+        if (!face) return false;
+
+        const eyeAxis = face.right.clone().sub(face.left);
+        const eyeMid = face.left.clone().add(face.right).multiplyScalar(0.5);
+        const faceForward = face.nose.clone().sub(eyeMid);
+        if (eyeAxis.lengthSq() < 1e-8 || faceForward.lengthSq() < 1e-8) return false;
+
+        eyeAxis.normalize();
+        const angle = Math.abs(degrees) * Math.PI / 180;
+        const plus = new this.THREE.Quaternion().setFromAxisAngle(eyeAxis, angle).normalize();
+        const minus = new this.THREE.Quaternion().setFromAxisAngle(eyeAxis, -angle).normalize();
+        const plusForward = faceForward.clone().applyQuaternion(plus);
+        const minusForward = faceForward.clone().applyQuaternion(minus);
+        const delta = plusForward.y >= minusForward.y ? plus : minus;
+
+        const applied = this._applyBoneWorldDelta(head, delta);
+        if (applied) {
+            if (this.skeleton) this.skeleton.update();
+            this.skinnedMesh.updateMatrixWorld(true);
+        }
+        return applied;
     }
 
     _transformRestPointByBone(boneName, restPoint) {
