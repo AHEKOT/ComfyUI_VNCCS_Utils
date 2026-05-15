@@ -565,28 +565,34 @@ const STYLES = `
 /* Controls Grid */
 .vnccs-ps-light-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 6px;
+    grid-template-columns: minmax(116px, 1.35fr) minmax(72px, 0.75fr);
+    gap: 8px;
     align-items: center;
+    min-width: 0;
 }
 
 /* Input Styles */
 .vnccs-ps-light-select {
     width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     background: var(--ps-input-bg);
     border: 1px solid var(--ps-border);
     border-radius: 6px;
     color: var(--ps-text);
     font-size: 10px;
-    padding: 4px 7px;
+    padding: 4px 22px 4px 7px;
     font-family: var(--ps-font);
     cursor: pointer;
     transition: border-color var(--ps-transition);
+    text-overflow: ellipsis;
 }
 .vnccs-ps-light-select:focus { border-color: var(--ps-accent-border); outline: none; }
 
 .vnccs-ps-light-color {
     width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     height: 22px;
     border: 1px solid var(--ps-border);
     border-radius: 6px;
@@ -600,12 +606,15 @@ const STYLES = `
 
 /* Sliders */
 .vnccs-ps-light-slider-row {
-    display: flex;
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) 42px;
     align-items: center;
-    gap: 6px;
+    gap: 8px;
+    min-width: 0;
 }
 .vnccs-ps-light-slider {
-    flex: 1;
+    width: 100%;
+    min-width: 0;
     height: 3px;
     background: rgba(255,255,255,0.1);
     border-radius: 2px;
@@ -638,8 +647,9 @@ const STYLES = `
     width: 10px;
 }
 .vnccs-ps-light-value {
-    width: 30px;
-    flex-shrink: 0;
+    width: 42px;
+    min-width: 42px;
+    box-sizing: border-box;
     text-align: right;
     font-size: 9px;
     color: var(--ps-accent);
