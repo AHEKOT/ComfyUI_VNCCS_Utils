@@ -5145,6 +5145,7 @@ export class PoseViewerCore {
             || scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || pelvisSource, source.leftElbow, leftArmScale);
         worldKps.right_elbow = segmentWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightElbow, rightUpperArmLen)
             || scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || pelvisSource, source.rightElbow, rightArmScale);
+        this._relaxSAM3DShoulderTargets(worldKps, rest);
         worldKps.left_wrist = segmentWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || pelvisSource, source.leftHand, leftLowerArmLen)
             || scaledWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || pelvisSource, source.leftHand, leftArmScale);
         worldKps.right_wrist = segmentWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || pelvisSource, source.rightHand, rightLowerArmLen)
@@ -5223,6 +5224,138 @@ export class PoseViewerCore {
                 rightLeg: worldKps.right_knee || null,
             },
         };
+    }
+
+    _relaxSAM3DShoulderTargets(worldKps, rest) {
+        if (!worldKps || !rest?.neck) return;
+        const neck = worldKps.neck || rest.neck;
+        if (!neck) return;
+
+        const applySide = (side) => {
+            const shoulderKey = side === 'l' ? 'left_shoulder' : 'right_shoulder';
+            const elbowKey = side === 'l' ? 'left_elbow' : 'right_elbow';
+            const handKey = side === 'l' ? 'left_wrist' : 'right_wrist';
+            const restShoulder = side === 'l' ? rest.leftShoulder : rest.rightShoulder;
+            const shoulder = worldKps[shoulderKey];
+            if (!shoulder || !restShoulder) return;
+
+            const restDrop = Math.max(0.05, rest.neck.y - restShoulder.y);
+            const elbow = worldKps[elbowKey];
+            const hand = worldKps[handKey];
+            const armRaised = (
+                (elbow && elbow.y > shoulder.y + restDrop * 0.25)
+                || (hand && hand.y > shoulder.y + restDrop * 0.5)
+            );
+            const maxShoulderY = neck.y - restDrop * (armRaised ? 0.30 : 0.55);
+            if (shoulder.y > maxShoulderY) {
+                const deltaY = maxShoulderY - shoulder.y;
+                shoulder.y = maxShoulderY;
+                if (elbow) elbow.y += deltaY;
+            }
+        };
+
+        applySide('l');
+        applySide('r');
+    }
+
+    autoFitSAM3DBoneLengths(data) {
+        if (!this.THREE || !this.bones || !this.skinnedMesh || !data) return null;
+
+        const namedPoints = this._buildSAM3DNamedPoints(data);
+        const distArray = (a, b) => {
+            if (!Array.isArray(a) || !Array.isArray(b) || a.length < 3 || b.length < 3) return 0;
+            return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+        };
+        const distWorld = (a, b) => (a && b ? a.distanceTo(b) : 0);
+        const avg = (...values) => {
+            const valid = values.filter((value) => Number.isFinite(value) && value > 1e-5);
+            if (!valid.length) return 0;
+            return valid.reduce((sum, value) => sum + value, 0) / valid.length;
+        };
+        const sliderFromScale = (scale, minScale = 0.75, maxScale = 1.25) => {
+            if (!Number.isFinite(scale)) return 0.5;
+            const clamped = Math.max(minScale, Math.min(maxScale, scale));
+            return Math.max(0, Math.min(1, clamped - 0.5));
+        };
+        const boundsExtent = Array.isArray(data?.pred_vertices_bounds?.extent)
+            ? data.pred_vertices_bounds.extent.map(Number)
+            : null;
+        const sourceHeightKeys = [
+            'head', 'neck', 'left_shoulder', 'right_shoulder',
+            'left_hip', 'right_hip', 'left_knee', 'right_knee',
+            'left_ankle', 'right_ankle', 'left_big_toe', 'right_big_toe',
+        ];
+        const heights = sourceHeightKeys
+            .map((name) => namedPoints[name])
+            .filter((point) => Array.isArray(point) && point.length >= 2)
+            .map((point) => point[1]);
+        const keypointSourceHeight = heights.length >= 2 ? Math.max(...heights) - Math.min(...heights) : 0;
+        const sourceHeight = (
+            boundsExtent
+            && boundsExtent.length >= 2
+            && Number.isFinite(boundsExtent[1])
+            && boundsExtent[1] > 1e-5
+        ) ? boundsExtent[1] : keypointSourceHeight;
+        const targetHeight = this._estimateCurrentModelHeight();
+        const worldScale = sourceHeight > 1e-5 && targetHeight > 1e-5 ? targetHeight / sourceHeight : 1.0;
+
+        const rest = {
+            leftShoulder: this._getBoneWorldPositionForImport('upperarm_l'),
+            rightShoulder: this._getBoneWorldPositionForImport('upperarm_r'),
+            leftElbow: this._getBoneWorldPositionForImport('lowerarm_l'),
+            rightElbow: this._getBoneWorldPositionForImport('lowerarm_r'),
+            leftHand: this._getBoneWorldPositionForImport('hand_l'),
+            rightHand: this._getBoneWorldPositionForImport('hand_r'),
+            leftHip: this._getBoneWorldPositionForImport('thigh_l'),
+            rightHip: this._getBoneWorldPositionForImport('thigh_r'),
+            leftKnee: this._getBoneWorldPositionForImport('calf_l'),
+            rightKnee: this._getBoneWorldPositionForImport('calf_r'),
+            leftFoot: this._getBoneWorldPositionForImport('foot_l'),
+            rightFoot: this._getBoneWorldPositionForImport('foot_r'),
+            pelvis: this._getBoneWorldPositionForImport('pelvis') || this._getBoneWorldPositionForImport('spine_01'),
+            spine2: this._getBoneWorldPositionForImport('spine_02'),
+            spine3: this._getBoneWorldPositionForImport('spine_03'),
+        };
+
+        const fitSegment = (sourceLen, restLen) => {
+            if (sourceLen <= 1e-5 || restLen <= 1e-5) return 0.5;
+            return sliderFromScale((sourceLen * worldScale) / restLen);
+        };
+
+        const upperArmSource = avg(
+            distArray(namedPoints.left_shoulder || namedPoints.upperarm_l, namedPoints.left_elbow || namedPoints.lowerarm_l),
+            distArray(namedPoints.right_shoulder || namedPoints.upperarm_r, namedPoints.right_elbow || namedPoints.lowerarm_r),
+        );
+        const forearmSource = avg(
+            distArray(namedPoints.left_elbow || namedPoints.lowerarm_l, namedPoints.left_wrist || namedPoints.hand_l),
+            distArray(namedPoints.right_elbow || namedPoints.lowerarm_r, namedPoints.right_wrist || namedPoints.hand_r),
+        );
+        const thighSource = avg(
+            distArray(namedPoints.left_hip || namedPoints.thigh_l, namedPoints.left_knee || namedPoints.calf_l),
+            distArray(namedPoints.right_hip || namedPoints.thigh_r, namedPoints.right_knee || namedPoints.calf_r),
+        );
+        const shinSource = avg(
+            distArray(namedPoints.left_knee || namedPoints.calf_l, namedPoints.left_ankle || namedPoints.foot_l),
+            distArray(namedPoints.right_knee || namedPoints.calf_r, namedPoints.right_ankle || namedPoints.foot_r),
+        );
+        const upperArmRest = avg(distWorld(rest.leftShoulder, rest.leftElbow), distWorld(rest.rightShoulder, rest.rightElbow));
+        const forearmRest = avg(distWorld(rest.leftElbow, rest.leftHand), distWorld(rest.rightElbow, rest.rightHand));
+        const thighRest = avg(distWorld(rest.leftHip, rest.leftKnee), distWorld(rest.rightHip, rest.rightKnee));
+        const shinRest = avg(distWorld(rest.leftKnee, rest.leftFoot), distWorld(rest.rightKnee, rest.rightFoot));
+
+        const fitted = {
+            upper_arm: fitSegment(upperArmSource, upperArmRest),
+            forearm: fitSegment(forearmSource, forearmRest),
+            thigh: fitSegment(thighSource, thighRest),
+            shin: fitSegment(shinSource, shinRest),
+            spine: 0.5,
+        };
+
+        for (const [group, value] of Object.entries(fitted)) {
+            this.updateBoneLengthScale(group, value);
+        }
+        this.lastAutoBoneLengthParams = { ...fitted };
+        return fitted;
     }
 
     _applyImportPelvisAndTorso(worldKps, shoulderYOffset = 0, options = {}) {
@@ -5574,6 +5707,10 @@ export class PoseViewerCore {
                 bone.position.copy(this.initialBoneStates[bone.name].position);
             }
         }
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        this.autoFitSAM3DBoneLengths(data);
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 

@@ -3942,6 +3942,7 @@ class PoseStudioWidget {
             if (!ok) {
                 throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
             }
+            this.syncMeshProportionSlidersFromViewer();
 
             const frameParams = this.viewer.computeSAM3DFrameCameraParams?.(
                 poseData,
@@ -4055,6 +4056,7 @@ class PoseStudioWidget {
                             this._shoulderYOffset || 0
                         );
                         if (ok) {
+                            this.syncMeshProportionSlidersFromViewer();
                             this.poses[this.activeTab] = this.viewer.getPose();
                             this.updateRotationSliders();
                             this.syncToNode(false);
@@ -6031,6 +6033,25 @@ class PoseStudioWidget {
         };
     }
 
+    syncMeshProportionSlidersFromViewer() {
+        if (!this.viewer?.boneLengthParams) return;
+        const mapping = {
+            upper_arm_length: 'upper_arm',
+            forearm_length: 'forearm',
+            thigh_length: 'thigh',
+            shin_length: 'shin',
+            spine_length: 'spine',
+        };
+        for (const [sliderKey, groupKey] of Object.entries(mapping)) {
+            const value = this.viewer.boneLengthParams[groupKey];
+            if (!Number.isFinite(Number(value))) continue;
+            this.meshParams[sliderKey] = Number(value);
+            const info = this.sliders?.[sliderKey];
+            if (info?.slider) info.slider.value = value;
+            if (info?.label) info.label.innerText = Number(value).toFixed(2);
+        }
+    }
+
     syncToNode(fullCapture = false) {
         if (this._isSyncing) return;
         this._isSyncing = true;
@@ -6450,6 +6471,7 @@ app.registerExtension({
                 if (!ok) {
                     throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
                 }
+                widget.syncMeshProportionSlidersFromViewer();
 
                 const frameParams = widget.viewer.computeSAM3DFrameCameraParams?.(
                     poseData,
