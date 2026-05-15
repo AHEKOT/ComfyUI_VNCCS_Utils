@@ -1403,6 +1403,32 @@ const STYLES = `
     box-shadow: 0 0 18px var(--ps-accent-glow);
 }
 
+.vnccs-ps-import-progress {
+    width: 100%;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.1);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    margin: 8px 0 2px;
+}
+
+.vnccs-ps-import-progress-fill {
+    height: 100%;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--ps-accent), #8fe3ff);
+    box-shadow: 0 0 14px rgba(255, 143, 163, 0.45);
+    transition: width 0.25s ease;
+}
+
+.vnccs-ps-import-progress-percent {
+    min-height: 16px;
+    font-size: 11px;
+    color: var(--ps-text-muted);
+    text-align: center;
+}
+
 .vnccs-ps-loading-spinner::after {
     inset: 8px;
     border-bottom-color: var(--ps-accent-lavender);
@@ -3459,7 +3485,7 @@ class PoseStudioWidget {
 
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-modal';
-        modal.style.maxWidth = "360px";
+        modal.style.maxWidth = "420px";
         modal.style.alignItems = "center";
 
         const title = document.createElement('div');
@@ -3476,14 +3502,44 @@ class PoseStudioWidget {
         content.style.textAlign = 'center';
         content.textContent = 'Preparing image...';
 
+        const progressTrack = document.createElement('div');
+        progressTrack.className = 'vnccs-ps-import-progress';
+
+        const progressFill = document.createElement('div');
+        progressFill.className = 'vnccs-ps-import-progress-fill';
+        progressTrack.appendChild(progressFill);
+
+        const progressPercent = document.createElement('div');
+        progressPercent.className = 'vnccs-ps-import-progress-percent';
+        progressPercent.textContent = '0%';
+
         modal.appendChild(title);
         modal.appendChild(spinner);
         modal.appendChild(content);
+        modal.appendChild(progressTrack);
+        modal.appendChild(progressPercent);
         overlay.appendChild(modal);
         this.canvasContainer.appendChild(overlay);
 
+        const setProgress = (value) => {
+            const percent = Math.max(0, Math.min(100, Number(value) || 0));
+            progressFill.style.width = `${percent}%`;
+            progressPercent.textContent = `${Math.round(percent)}%`;
+        };
+
         return {
             setText: (text) => { content.textContent = text; },
+            setProgress,
+            update: (status) => {
+                if (!status) return;
+                if (status.message) content.textContent = status.message;
+                if (status.progress !== undefined) setProgress(status.progress);
+                if (status.message && /download/i.test(status.message)) {
+                    title.textContent = "Downloading SAM 3D Body Models";
+                } else {
+                    title.textContent = titleText;
+                }
+            },
             close: () => overlay.remove(),
         };
     }
@@ -3494,23 +3550,42 @@ class PoseStudioWidget {
         }
 
         const progress = this.showImportProgressModal("SAM 3D Body Import");
+        const taskId = (
+            globalThis.crypto?.randomUUID?.()
+            || `sam3d-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        );
+        let pollTimer = null;
+        const pollStatus = async () => {
+            try {
+                const statusResponse = await api.fetchApi(`/vnccs/sam3d/import_status/${encodeURIComponent(taskId)}`);
+                if (!statusResponse.ok) return;
+                progress.update(await statusResponse.json());
+            } catch (_err) {
+                // The long-running POST is the source of truth; status polling is best-effort UI.
+            }
+        };
         try {
-            progress.setText("Uploading image to SAM 3D Body...");
+            progress.setProgress(1);
+            progress.setText("Step 1/6: Uploading image to SAM 3D Body...");
             const form = new FormData();
+            form.append("task_id", taskId);
             form.append("image", file, file.name || "pose_image.png");
 
-            progress.setText("Detecting body and reconstructing 3D pose...");
+            progress.setText("Step 1/6: Waiting for SAM 3D Body to start processing...");
+            pollTimer = setInterval(pollStatus, 700);
             const response = await api.fetchApi("/vnccs/sam3d/process_image_to_pose_json", {
                 method: "POST",
                 body: form,
             });
+            await pollStatus();
 
             const result = await response.json();
             if (!response.ok) {
                 throw new Error(result?.error || `HTTP ${response.status}`);
             }
 
-            progress.setText("Applying pose to MakeHuman skeleton...");
+            progress.setProgress(92);
+            progress.setText("Step 6/6: Applying pose to MakeHuman skeleton...");
             const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
             if (!poseData) {
                 throw new Error("SAM 3D Body returned empty pose JSON.");
@@ -3553,8 +3628,11 @@ class PoseStudioWidget {
             this.poses[this.activeTab] = this.viewer.getPose();
             this.updateRotationSliders();
             this.syncToNode(false);
+            progress.setProgress(100);
+            progress.setText("Step 6/6: Pose applied to Pose Studio.");
             this.showMessage("SAM 3D Body image imported successfully.");
         } finally {
+            if (pollTimer) clearInterval(pollTimer);
             progress.close();
         }
     }

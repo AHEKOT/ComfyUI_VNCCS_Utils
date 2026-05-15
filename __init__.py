@@ -333,6 +333,19 @@ def _vnccs_register_sam3d_pose_import():
     except Exception:
         return
 
+    @PromptServer.instance.routes.get("/vnccs/sam3d/import_status/{task_id}")
+    async def vnccs_sam3d_import_status(request):
+        try:
+            from .vnccs_sam3d import progress
+
+            return web.json_response(progress.get_task(request.match_info["task_id"]))
+        except Exception as e:
+            return web.json_response({
+                "status": "unknown",
+                "message": str(e),
+                "progress": 0,
+            })
+
     @PromptServer.instance.routes.post("/vnccs/sam3d/process_image_to_pose_json")
     async def vnccs_sam3d_process_image_to_pose_json(request):
         try:
@@ -346,6 +359,7 @@ def _vnccs_register_sam3d_pose_import():
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
                 return web.json_response({"error": "missing image"}, status=400)
+            task_id = str(post.get("task_id") or "")
 
             image_bytes = image_field.file.read()
             pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
@@ -353,9 +367,12 @@ def _vnccs_register_sam3d_pose_import():
             image_tensor = torch.from_numpy(image_np).unsqueeze(0)
 
             def run_sam3d_process():
-                from .vnccs_sam3d import process_image_to_pose_json
+                from .vnccs_sam3d import process_image_to_pose_json, progress
 
-                return process_image_to_pose_json(image_tensor)
+                progress.start_task(task_id)
+                with progress.task_context(task_id):
+                    progress.update("Step 1/6: Image uploaded. Preparing SAM 3D Body import...", 2)
+                    return process_image_to_pose_json(image_tensor)
 
             pose_json = await asyncio.to_thread(run_sam3d_process)
 
@@ -370,6 +387,12 @@ def _vnccs_register_sam3d_pose_import():
                 "pose_data": pose_data,
             })
         except Exception as e:
+            try:
+                from .vnccs_sam3d import progress
+                with progress.task_context(task_id if "task_id" in locals() else ""):
+                    progress.fail(str(e))
+            except Exception:
+                pass
             import traceback
             traceback.print_exc()
             return web.json_response({"error": str(e)}, status=500)

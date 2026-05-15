@@ -13,6 +13,8 @@ from PIL import Image
 
 import folder_paths
 
+from .. import progress
+
 _MODEL_REPO = "ZhengPeng7/BiRefNet_lite"
 _MODEL_DIR = os.path.join(folder_paths.models_dir, "birefnet", "BiRefNet_lite")
 _MODEL_LOCK = threading.Lock()
@@ -28,10 +30,24 @@ def _ensure_snapshot():
     from huggingface_hub import snapshot_download
 
     print(f"[SAM3DBody] BiRefNet lite not found. Downloading to {_MODEL_DIR} ...")
-    snapshot_download(repo_id=_MODEL_REPO, local_dir=_MODEL_DIR)
+    progress.update("Step 3/6: Downloading BiRefNet mask model. This is only needed once.", 38)
+    with progress.download_phase("Step 3/6: Downloading BiRefNet mask model files...", 38, 12):
+        try:
+            snapshot_download(
+                repo_id=_MODEL_REPO,
+                local_dir=_MODEL_DIR,
+                tqdm_class=progress.SnapshotDownloadTqdm,
+            )
+        except Exception as progress_exc:
+            print(
+                "[SAM3DBody] Progress-aware BiRefNet download failed; "
+                f"retrying with the default downloader. Error: {progress_exc}"
+            )
+            snapshot_download(repo_id=_MODEL_REPO, local_dir=_MODEL_DIR)
     if not os.path.isfile(os.path.join(_MODEL_DIR, "config.json")):
         raise RuntimeError(f"[SAM3DBody] BiRefNet download completed but config.json is missing under {_MODEL_DIR}")
     print("[SAM3DBody] BiRefNet lite download complete.")
+    progress.update("Step 3/6: BiRefNet mask model download complete.", 50)
     return _MODEL_DIR
 
 
@@ -48,6 +64,7 @@ def _load_model():
         model_dir = _ensure_snapshot()
         device = "cuda" if torch.cuda.is_available() else "cpu"
         print(f"[SAM3DBody] Loading BiRefNet lite from {model_dir} on {device}")
+        progress.update(f"Step 3/6: Loading BiRefNet mask model on {device.upper()}...", 52)
         model = AutoModelForImageSegmentation.from_pretrained(
             model_dir,
             trust_remote_code=True,
@@ -88,6 +105,7 @@ def auto_mask_bgr(img_bgr, confidence_threshold=0.5):
     if img_bgr is None or img_bgr.size == 0:
         raise RuntimeError("[SAM3DBody] BiRefNet received an empty image")
 
+    progress.update("Step 3/6: Segmenting the person and finding the body bounds...", 40)
     model, device = _load_model()
     rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
     pil_image = Image.fromarray(rgb)
@@ -114,4 +132,5 @@ def auto_mask_bgr(img_bgr, confidence_threshold=0.5):
     bbox = _bbox_from_mask(mask)
     if bbox is None:
         raise RuntimeError("[SAM3DBody] BiRefNet mask bbox is empty")
+    progress.update("Step 3/6: Segmentation complete. Body bounds detected.", 54)
     return mask.astype(np.uint8), bbox

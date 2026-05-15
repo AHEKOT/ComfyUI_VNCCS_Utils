@@ -7,6 +7,7 @@ import numpy as np
 import cv2
 
 from .birefnet_mask import auto_mask_bgr
+from .. import progress
 
 # =============================================================================
 # Helper functions (inlined to avoid relative import issues in worker)
@@ -1150,6 +1151,7 @@ def _load_sam3d_model(model_config):
     cache_key = model_config["ckpt_path"]
 
     if cache_key in _MODEL_CACHE:
+        progress.update("Step 2/6: SAM 3D Body model is already loaded.", 36)
         return _MODEL_CACHE[cache_key]
 
     # Import heavy dependencies only inside worker
@@ -1161,6 +1163,7 @@ def _load_sam3d_model(model_config):
 
     # Load model using the library's built-in function
     print(f"[SAM3DBody] Loading model from {ckpt_path}...")
+    progress.update(f"Step 2/6: Loading SAM 3D Body model on {str(device).upper()}...", 24)
     sam_3d_model, model_cfg, _ = load_sam_3d_body(
         checkpoint_path=ckpt_path,
         device=device,
@@ -1168,6 +1171,7 @@ def _load_sam3d_model(model_config):
     )
 
     print(f"[SAM3DBody] Model loaded successfully on {device}")
+    progress.update("Step 2/6: SAM 3D Body model loaded.", 36)
 
     # Cache for reuse
     result = {
@@ -1471,6 +1475,7 @@ class SAM3DBodyProcessToJson:
                         Left_hand_image=None, Right_hand_image=None):
         from ..sam_3d_body import SAM3DBodyEstimator
 
+        progress.update("Step 2/6: Initializing SAM 3D Body estimator...", 18)
         loaded = _load_sam3d_model(model)
         estimator = SAM3DBodyEstimator(
             sam_3d_body_model=loaded["model"],
@@ -1485,12 +1490,15 @@ class SAM3DBodyProcessToJson:
         bboxes = None
         bbox_source = None
         if mask is not None:
+            progress.update("Step 3/6: Reading provided body mask...", 40)
             mask_np = comfy_mask_to_numpy(mask)
             if mask_np.ndim == 3:
                 mask_np = mask_np[0]
             bboxes = self._bbox_from_mask(mask_np)
             bbox_source = "input_mask"
+            progress.update("Step 3/6: Body bounds extracted from mask.", 54)
         else:
+            progress.update("Step 3/6: Segmenting the person before pose reconstruction...", 38)
             mask_np, bboxes = auto_mask_bgr(img_bgr)
             bbox_source = "auto_mask"
 
@@ -1512,6 +1520,7 @@ class SAM3DBodyProcessToJson:
             cv2.imwrite(tmp.name, img_bgr)
             tmp_path = tmp.name
         try:
+            progress.update("Step 4/6: Running SAM 3D Body pose reconstruction...", 60)
             outputs = estimator.process_one_image(
                 tmp_path,
                 bboxes=bboxes,
@@ -1526,6 +1535,7 @@ class SAM3DBodyProcessToJson:
 
         if not outputs:
             raise RuntimeError("No people detected in image")
+        progress.update("Step 4/6: 3D body pose reconstructed.", 76)
 
         # Optional hand overrides — run the hand-only decoder on each
         # provided image and splice the 54-dim result into hand_pose_params.

@@ -1,6 +1,8 @@
 import os
 import folder_paths
 
+from .. import progress
+
 # Model files are always stored under ComfyUI's models/sam3dbody folder.
 # The path is derived from folder_paths.models_dir so it tracks whatever
 # the user's ComfyUI install has configured as the models root, without
@@ -66,12 +68,26 @@ class LoadSAM3DBodyModel:
                 from huggingface_hub import snapshot_download
 
                 print(f"[SAM3DBody] Model not found locally. Downloading from HuggingFace to {model_path} ...")
+                progress.update("Step 2/6: Downloading SAM 3D Body model. This is only needed once.", 8)
                 os.makedirs(model_path, exist_ok=True)
-                snapshot_download(
-                    repo_id="jetjodh/sam-3d-body-dinov3",
-                    local_dir=model_path
-                )
+                with progress.download_phase("Step 2/6: Downloading SAM 3D Body model files...", 8, 28):
+                    try:
+                        snapshot_download(
+                            repo_id="jetjodh/sam-3d-body-dinov3",
+                            local_dir=model_path,
+                            tqdm_class=progress.SnapshotDownloadTqdm,
+                        )
+                    except Exception as progress_exc:
+                        print(
+                            "[SAM3DBody] Progress-aware HuggingFace download failed; "
+                            f"retrying with the default downloader. Error: {progress_exc}"
+                        )
+                        snapshot_download(
+                            repo_id="jetjodh/sam-3d-body-dinov3",
+                            local_dir=model_path,
+                        )
                 print(f"[SAM3DBody] Download complete.")
+                progress.update("Step 2/6: SAM 3D Body model download complete.", 36)
 
             except Exception as e:
                 raise RuntimeError(
