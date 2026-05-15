@@ -3574,7 +3574,7 @@ export class PoseViewerCore {
         this.camera.updateProjectionMatrix();
 
         const target = this._samProjectionCameraFrame
-            ? (this.meshCenter || new this.THREE.Vector3(0, 10, 0)).clone()
+            ? this._getSAMProjectionViewTarget(this.captureCamera)
             : (() => {
                 const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
                 return new this.THREE.Vector3(
@@ -3922,6 +3922,9 @@ export class PoseViewerCore {
             hmr2Canvas: this._hmr2CanvasGroup?.visible,
             samMesh: this._samMeshOverlayGroup?.visible,
         };
+        const handRingVisibility = Array.isArray(this._handRings)
+            ? this._handRings.map((ring) => ring?.visible ?? false)
+            : null;
         if (this.transform) this.transform.visible = false;
         if (this.skeletonHelper) this.skeletonHelper.visible = false;
         if (this.gridHelper) this.gridHelper.visible = false;
@@ -3931,6 +3934,11 @@ export class PoseViewerCore {
         if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = false;
         if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = false;
         if (this._samMeshOverlayGroup) this._samMeshOverlayGroup.visible = false;
+        if (Array.isArray(this._handRings)) {
+            this._handRings.forEach((ring) => {
+                if (ring) ring.visible = false;
+            });
+        }
         this.jointMarkers.forEach(m => m.visible = false);
 
         // Hide IK effectors and pole targets
@@ -3991,6 +3999,11 @@ export class PoseViewerCore {
             if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = importedFigureVisibility.hmr2 ?? this.importedFigureVisible;
             if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = importedFigureVisibility.hmr2Canvas ?? this.importedFigureVisible;
             if (this._samMeshOverlayGroup) this._samMeshOverlayGroup.visible = importedFigureVisibility.samMesh ?? this.samMeshOverlayVisible;
+            if (Array.isArray(this._handRings)) {
+                this._handRings.forEach((ring, index) => {
+                    if (ring) ring.visible = handRingVisibility?.[index] ?? true;
+                });
+            }
 
             // Restore IK effectors and pole targets visibility
             if (this.ikController) {
@@ -4042,6 +4055,18 @@ export class PoseViewerCore {
         this._samProjectionCameraFrame = frame || null;
     }
 
+    _getSAMProjectionViewTarget(camera = this.captureCamera) {
+        const center = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        if (!camera || !this.THREE) return center.clone();
+        const forward = new this.THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion).normalize();
+        const toCenter = center.clone().sub(camera.position);
+        let depth = toCenter.dot(forward);
+        if (!Number.isFinite(depth) || depth < 1e-5) {
+            depth = Math.max(1.0, camera.position.distanceTo(center));
+        }
+        return camera.position.clone().addScaledVector(forward, depth);
+    }
+
     _applySAMProjectionCaptureCamera(width, height, zoom = 1.0, offsetX = 0, offsetY = 0) {
         const frame = this._samProjectionCameraFrame;
         if (!frame || !this.THREE || !this.captureCamera) return false;
@@ -4082,7 +4107,7 @@ export class PoseViewerCore {
             this.refPlane.rotation.set(0, 0, 0);
         }
         if (this.captureFrame) {
-            const frameCenter = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+            const frameCenter = this._getSAMProjectionViewTarget(this.captureCamera);
             const planeDist = Math.max(1e-5, this.captureCamera.position.distanceTo(frameCenter));
             const vFOV = (this.captureCamera.fov * Math.PI) / 180;
             const h = 2 * planeDist * Math.tan(vFOV / 2) / this.captureCamera.zoom;
@@ -5044,7 +5069,7 @@ export class PoseViewerCore {
         }
 
         if (applied) {
-            this._applySAM3DEyeLinePitchTrim(3);
+            this._applySAM3DEyeLinePitchTrim(1);
         }
 
         return applied;
