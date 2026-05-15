@@ -4666,6 +4666,37 @@ export class PoseViewerCore {
             ).normalize();
             this._applyBoneWorldDelta(foot, delta);
             this.skinnedMesh.updateMatrixWorld(true);
+
+            if (heel) {
+                const parentPos = foot.parent ? getPos(foot.parent) : null;
+                const alignedFootPos = getPos(foot);
+                const alignedToe = ball
+                    ? getPos(ball)
+                    : alignedFootPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(foot.getWorldQuaternion(new this.THREE.Quaternion())));
+                const rollAxis = toe.clone().sub(ankle);
+                const currentPlaneRef = parentPos ? parentPos.clone().sub(alignedFootPos) : null;
+                const targetPlaneRef = heel.clone().sub(ankle);
+                if (rollAxis.lengthSq() > 1e-8 && currentPlaneRef?.lengthSq() > 1e-8 && targetPlaneRef.lengthSq() > 1e-8) {
+                    rollAxis.normalize();
+                    const currentNormal = new this.THREE.Vector3().crossVectors(
+                        alignedToe.clone().sub(alignedFootPos),
+                        currentPlaneRef,
+                    );
+                    const targetNormal = new this.THREE.Vector3().crossVectors(
+                        toe.clone().sub(ankle),
+                        targetPlaneRef,
+                    );
+                    currentNormal.sub(rollAxis.clone().multiplyScalar(currentNormal.dot(rollAxis)));
+                    targetNormal.sub(rollAxis.clone().multiplyScalar(targetNormal.dot(rollAxis)));
+                    if (currentNormal.lengthSq() > 1e-8 && targetNormal.lengthSq() > 1e-8) {
+                        currentNormal.normalize();
+                        targetNormal.normalize();
+                        const rollDelta = new this.THREE.Quaternion().setFromUnitVectors(currentNormal, targetNormal).normalize();
+                        this._applyBoneWorldDelta(foot, rollDelta);
+                        this.skinnedMesh.updateMatrixWorld(true);
+                    }
+                }
+            }
         };
 
         applySide('l');
@@ -4903,7 +4934,7 @@ export class PoseViewerCore {
         }
 
         if (applied) {
-            this._applySAM3DEyeLinePitchTrim(7);
+            this._applySAM3DEyeLinePitchTrim(4);
         }
 
         return applied;
