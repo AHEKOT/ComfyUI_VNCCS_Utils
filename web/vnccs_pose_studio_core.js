@@ -942,6 +942,7 @@ export class PoseViewerCore {
         this.importedFigureVisible = true;
         this.samMeshOverlayVisible = false;
         this._samMeshOverlayGroup = null;
+        this._samMeshOverlayWorldKps = null;
 
         this.initialized = false;
 
@@ -3955,6 +3956,7 @@ export class PoseViewerCore {
 
     clearSAMMeshOverlay() {
         this._clearImportedFigureGroup('_samMeshOverlayGroup');
+        this._samMeshOverlayWorldKps = null;
         this.requestRender();
     }
 
@@ -3971,7 +3973,10 @@ export class PoseViewerCore {
 
         this.clearSAMMeshOverlay();
 
-        const named = this._buildSAM3DNamedPoints(poseData || {});
+        const overlayPose = (Array.isArray(meshData.fitted_joint_coords) && poseData)
+            ? { ...poseData, joint_coords: meshData.fitted_joint_coords }
+            : (poseData || {});
+        const named = this._buildSAM3DNamedPoints(overlayPose);
         const leftHip = named.left_hip || named.thigh_l;
         const rightHip = named.right_hip || named.thigh_r;
         const pelvisSource = (leftHip && rightHip)
@@ -4045,8 +4050,9 @@ export class PoseViewerCore {
         this.scene.add(group);
         this._samMeshOverlayGroup = group;
 
-        const fittedWorldKps = this._buildSAM3DOverlayWorldKps(meshData, poseData, sourceToWorldPoint);
+        const fittedWorldKps = this._buildSAM3DOverlayWorldKps(meshData, overlayPose, sourceToWorldPoint);
         if (fittedWorldKps) {
+            this._samMeshOverlayWorldKps = fittedWorldKps;
             this._hmr2WorldKps = fittedWorldKps;
             this._drawHMR2Figure(fittedWorldKps);
         }
@@ -4098,6 +4104,54 @@ export class PoseViewerCore {
             if (point) worldKps.neck_tail = point;
         }
         return Object.keys(worldKps).length ? worldKps : null;
+    }
+
+    _buildSAM3DImportTargetsFromWorldKps(worldKps) {
+        if (!worldKps) return null;
+        return {
+            worldKps,
+            effectorTargets: {
+                pelvis: worldKps.pelvis || null,
+                head: worldKps.head || worldKps.neck_tail || null,
+                hand_l: worldKps.left_wrist || null,
+                hand_r: worldKps.right_wrist || null,
+                foot_l: worldKps.left_ankle || null,
+                foot_r: worldKps.right_ankle || null,
+                upperarm_l: worldKps.left_shoulder || null,
+                upperarm_r: worldKps.right_shoulder || null,
+            },
+            poleTargets: {
+                leftArm: worldKps.left_elbow || null,
+                rightArm: worldKps.right_elbow || null,
+                leftLeg: worldKps.left_knee || null,
+                rightLeg: worldKps.right_knee || null,
+            },
+        };
+    }
+
+    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
+        const worldKps = this._samMeshOverlayWorldKps;
+        if (!worldKps?.pelvis || !this.bones || !this.skinnedMesh) return false;
+
+        const importTargets = this._buildSAM3DImportTargetsFromWorldKps(worldKps);
+        if (!importTargets) return false;
+
+        this._hmr2WorldKps = worldKps;
+        this._drawHMR2Figure(worldKps);
+        this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
+        this._applySAM3DTargetIK(importTargets, {
+            normalizeLimbs: false,
+            drawNormalizedFigure: false,
+        });
+        this._applySAM3DHandPointRetarget(worldKps);
+        this._applySAM3DFootPointRetarget(worldKps);
+
+        if (this.skeleton) this.skeleton.update();
+        this.skinnedMesh.updateMatrixWorld(true);
+        this.updateMarkers();
+        this.requestRender();
+        this.dispatchPoseChange();
+        return true;
     }
 
     _estimateCurrentModelHeight() {

@@ -1850,6 +1850,7 @@ class PoseStudioWidget {
         this._handBiasValues = [1.0, 1.0, 1.0];
         this._activeHandSide = null;
         this._lastSAM3DPoseData = null;
+        this._lastSAM3DMeshData = null;
         this._hoveredHandSide = null;
         this._handPopover = null;
         this._handPopoverTitle = null;
@@ -3940,14 +3941,19 @@ class PoseStudioWidget {
             }
 
             progress.setProgress(92);
-            progress.setText("Step 6/6: Applying pose to MakeHuman skeleton...");
+            progress.setText("Step 6/6: Building SAM render fit...");
             const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
             if (!poseData) {
                 throw new Error("SAM 3D Body returned empty pose JSON.");
             }
 
+            const fitData = await this.prepareSAM3DRenderFit(poseData);
+            const poseForImport = fitData?.poseData || poseData;
+
+            progress.setProgress(96);
+            progress.setText("Step 6/6: Applying fitted pose to MakeHuman skeleton...");
             const ok = this.viewer.applySAM3DImport(
-                poseData,
+                poseForImport,
                 this._shoulderYOffset || 0
             );
             if (!ok) {
@@ -3956,7 +3962,7 @@ class PoseStudioWidget {
             this.syncMeshProportionSlidersFromViewer();
 
             const frameParams = this.viewer.computeSAM3DFrameCameraParams?.(
-                poseData,
+                poseForImport,
                 this.exportParams.view_width || 1024,
                 this.exportParams.view_height || 1024
             );
@@ -3981,8 +3987,14 @@ class PoseStudioWidget {
                 });
             }
 
-            this._lastSAM3DPoseData = poseData;
-            await this.refreshSAMMeshOverlay(poseData);
+            this._lastSAM3DPoseData = poseForImport;
+            this._lastSAM3DMeshData = fitData?.meshData || null;
+            if (fitData?.meshData) {
+                this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+            } else {
+                await this.refreshSAMMeshOverlay(poseForImport);
+            }
+            this.syncMeshProportionSlidersFromViewer();
             this.poses[this.activeTab] = this.viewer.getPose();
             this.updateRotationSliders();
             this.syncToNode(true);
@@ -4005,18 +4017,9 @@ class PoseStudioWidget {
             return false;
         }
         try {
-            const response = await api.fetchApi("/vnccs/sam3d/render_mesh_overlay", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    pose_data: activePose,
-                    body_preset: {},
-                    pose_adjust: 0.0,
-                }),
-            });
-            const result = await response.json();
-            if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
-            const ok = this.viewer.setSAMMeshOverlayData(result.mesh, activePose);
+            const meshData = await this.fetchSAM3DRenderMesh(activePose);
+            this._lastSAM3DMeshData = meshData;
+            const ok = this.viewer.setSAMMeshOverlayData(meshData, activePose);
             this.viewer.setSAMMeshOverlayVisible?.(showMeshOverlay);
             return ok;
         } catch (err) {
@@ -4024,6 +4027,55 @@ class PoseStudioWidget {
             this.showMessage?.(`Failed to build SAM mesh overlay: ${err?.message || err}`, true);
             return false;
         }
+    }
+
+    async fetchSAM3DRenderMesh(poseData) {
+        const response = await api.fetchApi("/vnccs/sam3d/render_mesh_overlay", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                pose_data: poseData,
+                body_preset: {},
+                pose_adjust: 0.0,
+            }),
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+        return result.mesh;
+    }
+
+    buildSAM3DFittedPoseData(poseData, meshData) {
+        const fittedJointCoords = meshData?.fitted_joint_coords;
+        if (!poseData || !Array.isArray(fittedJointCoords)) return poseData;
+        return {
+            ...poseData,
+            joint_coords: fittedJointCoords,
+            sam3d_pose_fit_source: "render_mesh_overlay",
+        };
+    }
+
+    async prepareSAM3DRenderFit(poseData) {
+        try {
+            const meshData = await this.fetchSAM3DRenderMesh(poseData);
+            return {
+                meshData,
+                poseData: this.buildSAM3DFittedPoseData(poseData, meshData),
+            };
+        } catch (err) {
+            console.error("[VNCCS] Failed to build SAM render fit:", err);
+            this.showMessage?.(`Failed to build SAM render fit: ${err?.message || err}`, true);
+            return null;
+        }
+    }
+
+    applySAM3DMeshOverlayFit(meshData, poseData) {
+        if (!meshData || !this.viewer?.setSAMMeshOverlayData) return false;
+        const ok = this.viewer.setSAMMeshOverlayData(meshData, poseData);
+        this.viewer.setSAMMeshOverlayVisible?.(!!this.exportParams.debugShowSAMMeshOverlay);
+        if (ok && this.viewer.fitCurrentPoseToSAMMeshOverlay) {
+            return this.viewer.fitCurrentPoseToSAMMeshOverlay();
+        }
+        return ok;
     }
 
     clearImportedDebugFigures() {
@@ -4085,7 +4137,7 @@ class PoseStudioWidget {
 
         // JSON files
         const reader = new FileReader();
-        reader.onload = (event) => {
+        reader.onload = async (event) => {
             try {
                 const data = JSON.parse(event.target.result);
 
@@ -4095,13 +4147,20 @@ class PoseStudioWidget {
 
                 if (isSAM3DJson) {
                     if (this.viewer && this.viewer.isInitialized()) {
+                        const fitData = await this.prepareSAM3DRenderFit(data);
+                        const poseForImport = fitData?.poseData || data;
                         const ok = this.viewer.applySAM3DImport(
-                            data,
+                            poseForImport,
                             this._shoulderYOffset || 0
                         );
                         if (ok) {
-                            this._lastSAM3DPoseData = data;
-                            this.refreshSAMMeshOverlay(data);
+                            this._lastSAM3DPoseData = poseForImport;
+                            this._lastSAM3DMeshData = fitData?.meshData || null;
+                            if (fitData?.meshData) {
+                                this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+                            } else {
+                                this.refreshSAMMeshOverlay(poseForImport);
+                            }
                             this.syncMeshProportionSlidersFromViewer();
                             this.poses[this.activeTab] = this.viewer.getPose();
                             this.updateRotationSliders();
@@ -6599,19 +6658,27 @@ app.registerExtension({
                     await widget.loadModel();
                 }
 
+                const fitData = await widget.prepareSAM3DRenderFit(poseData);
+                const poseForImport = fitData?.poseData || poseData;
+
                 const ok = widget.viewer.applySAM3DImport(
-                    poseData,
+                    poseForImport,
                     widget._shoulderYOffset || 0
                 );
                 if (!ok) {
                     throw new Error("Failed to apply SAM 3D Body pose to Pose Studio.");
                 }
-                widget._lastSAM3DPoseData = poseData;
-                await widget.refreshSAMMeshOverlay(poseData);
+                widget._lastSAM3DPoseData = poseForImport;
+                widget._lastSAM3DMeshData = fitData?.meshData || null;
+                if (fitData?.meshData) {
+                    widget.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+                } else {
+                    await widget.refreshSAMMeshOverlay(poseForImport);
+                }
                 widget.syncMeshProportionSlidersFromViewer();
 
                 const frameParams = widget.viewer.computeSAM3DFrameCameraParams?.(
-                    poseData,
+                    poseForImport,
                     widget.exportParams.view_width || 1024,
                     widget.exportParams.view_height || 1024
                 );
