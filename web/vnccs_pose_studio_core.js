@@ -939,6 +939,7 @@ export class PoseViewerCore {
 
         // Pose state
         this.modelRotation = { x: 0, y: 0, z: 0 };
+        this.importedFigureVisible = true;
 
         this.initialized = false;
 
@@ -3843,10 +3844,20 @@ export class PoseViewerCore {
         const transformVisible = this.transform ? this.transform.visible : true;
 
         // Hide Helpers
+        const importedFigureVisibility = {
+            kp: this._kpFigureGroup?.visible,
+            rtmw: this._rtmwFigureGroup?.visible,
+            hmr2: this._hmr2FigureGroup?.visible,
+            hmr2Canvas: this._hmr2CanvasGroup?.visible,
+        };
         if (this.transform) this.transform.visible = false;
         if (this.skeletonHelper) this.skeletonHelper.visible = false;
         if (this.gridHelper) this.gridHelper.visible = false;
         if (this.captureFrame) this.captureFrame.visible = false;
+        if (this._kpFigureGroup) this._kpFigureGroup.visible = false;
+        if (this._rtmwFigureGroup) this._rtmwFigureGroup.visible = false;
+        if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = false;
+        if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = false;
         this.jointMarkers.forEach(m => m.visible = false);
 
         // Hide IK effectors and pole targets
@@ -3902,6 +3913,10 @@ export class PoseViewerCore {
             if (this.skeletonHelper) this.skeletonHelper.visible = true;
             if (this.gridHelper) this.gridHelper.visible = true;
             if (this.captureFrame) this.captureFrame.visible = true;
+            if (this._kpFigureGroup) this._kpFigureGroup.visible = importedFigureVisibility.kp ?? this.importedFigureVisible;
+            if (this._rtmwFigureGroup) this._rtmwFigureGroup.visible = importedFigureVisibility.rtmw ?? this.importedFigureVisible;
+            if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = importedFigureVisibility.hmr2 ?? this.importedFigureVisible;
+            if (this._hmr2CanvasGroup) this._hmr2CanvasGroup.visible = importedFigureVisibility.hmr2Canvas ?? this.importedFigureVisible;
 
             // Restore IK effectors and pole targets visibility
             if (this.ikController) {
@@ -3947,8 +3962,6 @@ export class PoseViewerCore {
         this._clearImportedFigureGroup('_hmr2FigureGroup');
         this._clearImportedFigureGroup('_rtmwFigureGroup');
         this._clearImportedFigureGroup('_kpFigureGroup');
-        this._hmr2FigureGroup = null;
-        return;
 
         const bones = [
             ['canonical_nose', 'canonical_left_eye', 0xff66ff],
@@ -4042,6 +4055,7 @@ export class PoseViewerCore {
         }
 
         this.scene.add(group);
+        group.visible = this.importedFigureVisible !== false;
         this._hmr2FigureGroup = group;
     }
 
@@ -5380,27 +5394,6 @@ export class PoseViewerCore {
             const clamped = Math.max(minScale, Math.min(maxScale, scale));
             return Math.max(0, Math.min(1, clamped - 0.5));
         };
-        const boundsExtent = Array.isArray(data?.pred_vertices_bounds?.extent)
-            ? data.pred_vertices_bounds.extent.map(Number)
-            : null;
-        const sourceHeightKeys = [
-            'head', 'neck', 'left_shoulder', 'right_shoulder',
-            'left_hip', 'right_hip', 'left_knee', 'right_knee',
-            'left_ankle', 'right_ankle', 'left_big_toe', 'right_big_toe',
-        ];
-        const heights = sourceHeightKeys
-            .map((name) => namedPoints[name])
-            .filter((point) => Array.isArray(point) && point.length >= 2)
-            .map((point) => point[1]);
-        const keypointSourceHeight = heights.length >= 2 ? Math.max(...heights) - Math.min(...heights) : 0;
-        const sourceHeight = (
-            boundsExtent
-            && boundsExtent.length >= 2
-            && Number.isFinite(boundsExtent[1])
-            && boundsExtent[1] > 1e-5
-        ) ? boundsExtent[1] : keypointSourceHeight;
-        const targetHeight = this._estimateCurrentModelHeight();
-        const worldScale = sourceHeight > 1e-5 && targetHeight > 1e-5 ? targetHeight / sourceHeight : 1.0;
 
         const rest = {
             leftShoulder: this._getBoneWorldPositionForImport('upperarm_l'),
@@ -5420,37 +5413,79 @@ export class PoseViewerCore {
             spine3: this._getBoneWorldPositionForImport('spine_03'),
         };
 
-        const fitSegment = (sourceLen, restLen) => {
-            if (sourceLen <= 1e-5 || restLen <= 1e-5) return 0.5;
-            return sliderFromScale((sourceLen * worldScale) / restLen);
+        const sourceShoulderWidth = distArray(namedPoints.left_shoulder || namedPoints.upperarm_l, namedPoints.right_shoulder || namedPoints.upperarm_r);
+        const sourceHipWidth = distArray(namedPoints.left_hip || namedPoints.thigh_l, namedPoints.right_hip || namedPoints.thigh_r);
+        const restShoulderWidth = distWorld(rest.leftShoulder, rest.rightShoulder);
+        const restHipWidth = distWorld(rest.leftHip, rest.rightHip);
+        const torsoScales = [];
+        if (sourceShoulderWidth > 1e-5 && restShoulderWidth > 1e-5) torsoScales.push(restShoulderWidth / sourceShoulderWidth);
+        if (sourceHipWidth > 1e-5 && restHipWidth > 1e-5) torsoScales.push(restHipWidth / sourceHipWidth);
+        const worldScale = torsoScales.length
+            ? torsoScales.reduce((sum, value) => sum + value, 0) / torsoScales.length
+            : 1.0;
+
+        const fitChain = (sourceRoot, sourceMid, sourceEnd, restRoot, restMid, restEnd) => {
+            const sourceUpper = distArray(sourceRoot, sourceMid);
+            const sourceLower = distArray(sourceMid, sourceEnd);
+            const restUpper = distWorld(restRoot, restMid);
+            const restLower = distWorld(restMid, restEnd);
+            const sourceTotal = sourceUpper + sourceLower;
+            const restTotal = restUpper + restLower;
+            if (sourceTotal <= 1e-5 || restTotal <= 1e-5 || restUpper <= 1e-5 || restLower <= 1e-5) {
+                return [0.5, 0.5];
+            }
+            const targetTotal = Math.max(restTotal * 0.55, Math.min(restTotal * 1.35, sourceTotal * worldScale));
+            const upperRatio = Math.max(0.30, Math.min(0.70, sourceUpper / sourceTotal));
+            const targetUpper = targetTotal * upperRatio;
+            const targetLower = targetTotal - targetUpper;
+            return [
+                sliderFromScale(targetUpper / restUpper, 0.55, 1.35),
+                sliderFromScale(targetLower / restLower, 0.55, 1.35),
+            ];
         };
 
-        const upperArmSource = avg(
-            distArray(namedPoints.left_shoulder || namedPoints.upperarm_l, namedPoints.left_elbow || namedPoints.lowerarm_l),
-            distArray(namedPoints.right_shoulder || namedPoints.upperarm_r, namedPoints.right_elbow || namedPoints.lowerarm_r),
+        const [leftUpperArm, leftForearm] = fitChain(
+            namedPoints.left_shoulder || namedPoints.upperarm_l,
+            namedPoints.left_elbow || namedPoints.lowerarm_l,
+            namedPoints.left_wrist || namedPoints.hand_l,
+            rest.leftShoulder,
+            rest.leftElbow,
+            rest.leftHand,
         );
-        const forearmSource = avg(
-            distArray(namedPoints.left_elbow || namedPoints.lowerarm_l, namedPoints.left_wrist || namedPoints.hand_l),
-            distArray(namedPoints.right_elbow || namedPoints.lowerarm_r, namedPoints.right_wrist || namedPoints.hand_r),
+        const [rightUpperArm, rightForearm] = fitChain(
+            namedPoints.right_shoulder || namedPoints.upperarm_r,
+            namedPoints.right_elbow || namedPoints.lowerarm_r,
+            namedPoints.right_wrist || namedPoints.hand_r,
+            rest.rightShoulder,
+            rest.rightElbow,
+            rest.rightHand,
         );
-        const thighSource = avg(
-            distArray(namedPoints.left_hip || namedPoints.thigh_l, namedPoints.left_knee || namedPoints.calf_l),
-            distArray(namedPoints.right_hip || namedPoints.thigh_r, namedPoints.right_knee || namedPoints.calf_r),
+        const [leftThigh, leftShin] = fitChain(
+            namedPoints.left_hip || namedPoints.thigh_l,
+            namedPoints.left_knee || namedPoints.calf_l,
+            namedPoints.left_ankle || namedPoints.foot_l,
+            rest.leftHip,
+            rest.leftKnee,
+            rest.leftFoot,
         );
-        const shinSource = avg(
-            distArray(namedPoints.left_knee || namedPoints.calf_l, namedPoints.left_ankle || namedPoints.foot_l),
-            distArray(namedPoints.right_knee || namedPoints.calf_r, namedPoints.right_ankle || namedPoints.foot_r),
+        const [rightThigh, rightShin] = fitChain(
+            namedPoints.right_hip || namedPoints.thigh_r,
+            namedPoints.right_knee || namedPoints.calf_r,
+            namedPoints.right_ankle || namedPoints.foot_r,
+            rest.rightHip,
+            rest.rightKnee,
+            rest.rightFoot,
         );
-        const upperArmRest = avg(distWorld(rest.leftShoulder, rest.leftElbow), distWorld(rest.rightShoulder, rest.rightElbow));
-        const forearmRest = avg(distWorld(rest.leftElbow, rest.leftHand), distWorld(rest.rightElbow, rest.rightHand));
-        const thighRest = avg(distWorld(rest.leftHip, rest.leftKnee), distWorld(rest.rightHip, rest.rightKnee));
-        const shinRest = avg(distWorld(rest.leftKnee, rest.leftFoot), distWorld(rest.rightKnee, rest.rightFoot));
 
         const fitted = {
-            upper_arm: fitSegment(upperArmSource, upperArmRest),
-            forearm: fitSegment(forearmSource, forearmRest),
-            thigh: fitSegment(thighSource, thighRest),
-            shin: fitSegment(shinSource, shinRest),
+            upper_arm_l: leftUpperArm,
+            upper_arm_r: rightUpperArm,
+            forearm_l: leftForearm,
+            forearm_r: rightForearm,
+            thigh_l: leftThigh,
+            thigh_r: rightThigh,
+            shin_l: leftShin,
+            shin_r: rightShin,
             spine: 0.5,
         };
 
@@ -6090,6 +6125,7 @@ export class PoseViewerCore {
     }
 
     setKpFigureVisible(visible) {
+        this.importedFigureVisible = !!visible;
         if (this._kpFigureGroup) {
             this._kpFigureGroup.visible = visible;
             this.requestRender();

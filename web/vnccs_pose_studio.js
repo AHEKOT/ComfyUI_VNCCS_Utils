@@ -1799,10 +1799,14 @@ class PoseStudioWidget {
             head_size: 1.0,
             arm_size: 1.0,
             hand_size: 1.0,
-            upper_arm_length: 0.5,
-            forearm_length: 0.5,
-            thigh_length: 0.5,
-            shin_length: 0.5,
+            upper_arm_l_length: 0.5,
+            upper_arm_r_length: 0.5,
+            forearm_l_length: 0.5,
+            forearm_r_length: 0.5,
+            thigh_l_length: 0.5,
+            thigh_r_length: 0.5,
+            shin_l_length: 0.5,
+            shin_r_length: 0.5,
             spine_length: 0.5
         };
 
@@ -1819,6 +1823,7 @@ class PoseStudioWidget {
             debugMode: false,
             debugPortraitMode: false, // Focus on upper body in debug mode
             debugKeepLighting: false, // Use manual lighting in debug mode
+            debugShowSAMHelper: true, // Show imported SAM skeleton overlay in the viewer
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
@@ -1949,10 +1954,14 @@ class PoseStudioWidget {
             { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
-            { key: "upper_arm_length", label: "Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
-            { key: "forearm_length", label: "Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
-            { key: "thigh_length", label: "Thigh Length", min: 0, max: 1, step: 0.01, def: 0.5 },
-            { key: "shin_length", label: "Shin Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "upper_arm_l_length", label: "Left Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "upper_arm_r_length", label: "Right Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "forearm_l_length", label: "Left Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "forearm_r_length", label: "Right Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "thigh_l_length", label: "Left Thigh Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "thigh_r_length", label: "Right Thigh Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "shin_l_length", label: "Left Shin Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "shin_r_length", label: "Right Shin Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "spine_length", label: "Spine Length", min: 0, max: 1, step: 0.01, def: 0.5 }
         ];
 
@@ -2561,7 +2570,7 @@ class PoseStudioWidget {
                     if (this.viewer) this.viewer.updateHandScale(val);
                     this.meshParams[key] = val;
                     this.syncToNode(false);
-                } else if (key === 'upper_arm_length' || key === 'forearm_length' || key === 'thigh_length' || key === 'shin_length' || key === 'spine_length') {
+                } else if (key.endsWith('_length')) {
                     const group = key.replace('_length', '');
                     if (this.viewer) this.viewer.updateBoneLengthScale(group, val);
                     this.meshParams[key] = val;
@@ -5077,6 +5086,36 @@ class PoseStudioWidget {
         keepLightRow.appendChild(keepLightLabel);
         content.appendChild(keepLightRow);
 
+        // SAM Helper Skeleton Toggle
+        const samHelperRow = document.createElement("div");
+        samHelperRow.className = "vnccs-ps-field";
+        samHelperRow.style.marginTop = "10px";
+
+        const samHelperLabel = document.createElement("label");
+        samHelperLabel.style.display = "flex";
+        samHelperLabel.style.alignItems = "center";
+        samHelperLabel.style.gap = "10px";
+        samHelperLabel.style.cursor = "pointer";
+
+        const samHelperCheckbox = document.createElement("input");
+        samHelperCheckbox.type = "checkbox";
+        samHelperCheckbox.checked = this.exportParams.debugShowSAMHelper !== false;
+        samHelperCheckbox.onchange = () => {
+            this.exportParams.debugShowSAMHelper = samHelperCheckbox.checked;
+            if (this.viewer?.setKpFigureVisible) {
+                this.viewer.setKpFigureVisible(samHelperCheckbox.checked);
+            }
+            this.syncToNode(false);
+        };
+
+        const samHelperText = document.createElement("div");
+        samHelperText.innerHTML = "<strong>Show SAM Helper Skeleton</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Displays the imported SAM3D reference skeleton in the viewer for alignment debugging. It is hidden during final capture.</div>";
+
+        samHelperLabel.appendChild(samHelperCheckbox);
+        samHelperLabel.appendChild(samHelperText);
+        samHelperRow.appendChild(samHelperLabel);
+        content.appendChild(samHelperRow);
+
         // Skin Texture Section
         const skinHeader = document.createElement("div");
         skinHeader.className = "vnccs-ps-settings-title";
@@ -6036,10 +6075,14 @@ class PoseStudioWidget {
     syncMeshProportionSlidersFromViewer() {
         if (!this.viewer?.boneLengthParams) return;
         const mapping = {
-            upper_arm_length: 'upper_arm',
-            forearm_length: 'forearm',
-            thigh_length: 'thigh',
-            shin_length: 'shin',
+            upper_arm_l_length: 'upper_arm_l',
+            upper_arm_r_length: 'upper_arm_r',
+            forearm_l_length: 'forearm_l',
+            forearm_r_length: 'forearm_r',
+            thigh_l_length: 'thigh_l',
+            thigh_r_length: 'thigh_r',
+            shin_l_length: 'shin_l',
+            shin_r_length: 'shin_r',
             spine_length: 'spine',
         };
         for (const [sliderKey, groupKey] of Object.entries(mapping)) {
@@ -6304,27 +6347,44 @@ class PoseStudioWidget {
                     this.viewer.updateHandScale(this.meshParams.hand_size);
                 }
                 if (data.mesh.arm_length !== undefined) {
-                    if (data.mesh.upper_arm_length === undefined) this.meshParams.upper_arm_length = data.mesh.arm_length;
-                    if (data.mesh.forearm_length === undefined) this.meshParams.forearm_length = data.mesh.arm_length;
+                    if (data.mesh.upper_arm_l_length === undefined) this.meshParams.upper_arm_l_length = data.mesh.arm_length;
+                    if (data.mesh.upper_arm_r_length === undefined) this.meshParams.upper_arm_r_length = data.mesh.arm_length;
+                    if (data.mesh.forearm_l_length === undefined) this.meshParams.forearm_l_length = data.mesh.arm_length;
+                    if (data.mesh.forearm_r_length === undefined) this.meshParams.forearm_r_length = data.mesh.arm_length;
+                }
+                if (data.mesh.upper_arm_length !== undefined) {
+                    if (data.mesh.upper_arm_l_length === undefined) this.meshParams.upper_arm_l_length = data.mesh.upper_arm_length;
+                    if (data.mesh.upper_arm_r_length === undefined) this.meshParams.upper_arm_r_length = data.mesh.upper_arm_length;
+                }
+                if (data.mesh.forearm_length !== undefined) {
+                    if (data.mesh.forearm_l_length === undefined) this.meshParams.forearm_l_length = data.mesh.forearm_length;
+                    if (data.mesh.forearm_r_length === undefined) this.meshParams.forearm_r_length = data.mesh.forearm_length;
                 }
                 if (data.mesh.leg_length !== undefined) {
-                    if (data.mesh.thigh_length === undefined) this.meshParams.thigh_length = data.mesh.leg_length;
-                    if (data.mesh.shin_length === undefined) this.meshParams.shin_length = data.mesh.leg_length;
+                    if (data.mesh.thigh_l_length === undefined) this.meshParams.thigh_l_length = data.mesh.leg_length;
+                    if (data.mesh.thigh_r_length === undefined) this.meshParams.thigh_r_length = data.mesh.leg_length;
+                    if (data.mesh.shin_l_length === undefined) this.meshParams.shin_l_length = data.mesh.leg_length;
+                    if (data.mesh.shin_r_length === undefined) this.meshParams.shin_r_length = data.mesh.leg_length;
                 }
-                if (this.viewer && this.meshParams.upper_arm_length !== undefined) {
-                    this.viewer.updateBoneLengthScale('upper_arm', this.meshParams.upper_arm_length);
+                if (data.mesh.thigh_length !== undefined) {
+                    if (data.mesh.thigh_l_length === undefined) this.meshParams.thigh_l_length = data.mesh.thigh_length;
+                    if (data.mesh.thigh_r_length === undefined) this.meshParams.thigh_r_length = data.mesh.thigh_length;
                 }
-                if (this.viewer && this.meshParams.forearm_length !== undefined) {
-                    this.viewer.updateBoneLengthScale('forearm', this.meshParams.forearm_length);
+                if (data.mesh.shin_length !== undefined) {
+                    if (data.mesh.shin_l_length === undefined) this.meshParams.shin_l_length = data.mesh.shin_length;
+                    if (data.mesh.shin_r_length === undefined) this.meshParams.shin_r_length = data.mesh.shin_length;
                 }
-                if (this.viewer && this.meshParams.thigh_length !== undefined) {
-                    this.viewer.updateBoneLengthScale('thigh', this.meshParams.thigh_length);
-                }
-                if (this.viewer && this.meshParams.shin_length !== undefined) {
-                    this.viewer.updateBoneLengthScale('shin', this.meshParams.shin_length);
-                }
-                if (this.viewer && this.meshParams.spine_length !== undefined) {
-                    this.viewer.updateBoneLengthScale('spine', this.meshParams.spine_length);
+                const lengthKeys = [
+                    'upper_arm_l_length', 'upper_arm_r_length',
+                    'forearm_l_length', 'forearm_r_length',
+                    'thigh_l_length', 'thigh_r_length',
+                    'shin_l_length', 'shin_r_length',
+                    'spine_length',
+                ];
+                for (const key of lengthKeys) {
+                    if (this.viewer && this.meshParams[key] !== undefined) {
+                        this.viewer.updateBoneLengthScale(key.replace('_length', ''), this.meshParams[key]);
+                    }
                 }
             }
 
@@ -6352,6 +6412,9 @@ class PoseStudioWidget {
                         }
                     }
                 }
+            }
+            if (this.viewer?.setKpFigureVisible) {
+                this.viewer.setKpFigureVisible(this.exportParams.debugShowSAMHelper !== false);
             }
             if (this.updateOverrideBtn) this.updateOverrideBtn();
 
