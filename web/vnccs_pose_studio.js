@@ -1798,7 +1798,12 @@ class PoseStudioWidget {
             // Visual modifiers (client-side bone scaling)
             head_size: 1.0,
             arm_size: 1.0,
-            hand_size: 1.0
+            hand_size: 1.0,
+            upper_arm_length: 0.5,
+            forearm_length: 0.5,
+            thigh_length: 0.5,
+            shin_length: 0.5,
+            spine_length: 0.5
         };
 
         // Export settings
@@ -1928,10 +1933,7 @@ class PoseStudioWidget {
             { key: "age", label: "Age", min: 1, max: 90, step: 1, def: 25 },
             { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01, def: 0.5 },
-            { key: "height", label: "Height", min: 0, max: 2, step: 0.01, def: 0.5 },
-            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
-            { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
-            { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 }
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01, def: 0.5 }
         ];
 
         for (const s of baseSliderDefs) {
@@ -1940,6 +1942,26 @@ class PoseStudioWidget {
         }
 
         leftPanel.appendChild(meshSection.el);
+
+        // --- MESH PROPORTIONS SECTION ---
+        const proportionsSection = this.createSection("Mesh Proportions", false);
+        const proportionSliderDefs = [
+            { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "upper_arm_length", label: "Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "forearm_length", label: "Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "thigh_length", label: "Thigh Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "shin_length", label: "Shin Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "spine_length", label: "Spine Length", min: 0, max: 1, step: 0.01, def: 0.5 }
+        ];
+
+        for (const s of proportionSliderDefs) {
+            const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
+            proportionsSection.content.appendChild(field);
+        }
+
+        leftPanel.appendChild(proportionsSection.el);
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
@@ -2537,6 +2559,11 @@ class PoseStudioWidget {
                     this.syncToNode(false);
                 } else if (key === 'hand_size') {
                     if (this.viewer) this.viewer.updateHandScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'upper_arm_length' || key === 'forearm_length' || key === 'thigh_length' || key === 'shin_length' || key === 'spine_length') {
+                    const group = key.replace('_length', '');
+                    if (this.viewer) this.viewer.updateBoneLengthScale(group, val);
                     this.meshParams[key] = val;
                     this.syncToNode(false);
                 } else {
@@ -6254,6 +6281,29 @@ class PoseStudioWidget {
                 }
                 if (this.viewer && this.meshParams.hand_size !== undefined) {
                     this.viewer.updateHandScale(this.meshParams.hand_size);
+                }
+                if (data.mesh.arm_length !== undefined) {
+                    if (data.mesh.upper_arm_length === undefined) this.meshParams.upper_arm_length = data.mesh.arm_length;
+                    if (data.mesh.forearm_length === undefined) this.meshParams.forearm_length = data.mesh.arm_length;
+                }
+                if (data.mesh.leg_length !== undefined) {
+                    if (data.mesh.thigh_length === undefined) this.meshParams.thigh_length = data.mesh.leg_length;
+                    if (data.mesh.shin_length === undefined) this.meshParams.shin_length = data.mesh.leg_length;
+                }
+                if (this.viewer && this.meshParams.upper_arm_length !== undefined) {
+                    this.viewer.updateBoneLengthScale('upper_arm', this.meshParams.upper_arm_length);
+                }
+                if (this.viewer && this.meshParams.forearm_length !== undefined) {
+                    this.viewer.updateBoneLengthScale('forearm', this.meshParams.forearm_length);
+                }
+                if (this.viewer && this.meshParams.thigh_length !== undefined) {
+                    this.viewer.updateBoneLengthScale('thigh', this.meshParams.thigh_length);
+                }
+                if (this.viewer && this.meshParams.shin_length !== undefined) {
+                    this.viewer.updateBoneLengthScale('shin', this.meshParams.shin_length);
+                }
+                if (this.viewer && this.meshParams.spine_length !== undefined) {
+                    this.viewer.updateBoneLengthScale('spine', this.meshParams.spine_length);
                 }
             }
 

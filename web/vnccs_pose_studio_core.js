@@ -949,6 +949,13 @@ export class PoseViewerCore {
         this.headScale = 1.0;
         this.armScale = 1.0;
         this.handScale = 1.0;
+        this.boneLengthParams = {
+            upper_arm: 0.5,
+            forearm: 0.5,
+            thigh: 0.5,
+            shin: 0.5,
+            spine: 0.5,
+        };
 
         // Managed lights array
         this.lights = [];
@@ -2424,6 +2431,7 @@ export class PoseViewerCore {
         if (this.handScale !== 1.0) {
             this.updateHandScale(this.handScale);
         }
+        this.applyBoneLengthScales();
 
         this._initIKHelpers();
         this.requestRender();
@@ -2666,6 +2674,64 @@ export class PoseViewerCore {
             }
         }
         this.requestRender();
+    }
+
+    _lengthSliderToScale(value) {
+        const v = Number.isFinite(Number(value)) ? Number(value) : 0.5;
+        return Math.max(0.25, Math.min(2.0, 0.5 + v));
+    }
+
+    _setBoneOffsetScale(childName, scale) {
+        const bone = this.bones?.[childName];
+        const initial = this.initialBoneStates?.[childName]?.position;
+        if (!bone || !initial) return;
+        bone.position.copy(initial).multiplyScalar(scale);
+    }
+
+    _boneLengthChildrenForGroup(group) {
+        if (group === 'upper_arm') {
+            return ['lowerarm_l', 'lowerarm_r'];
+        }
+        if (group === 'forearm') {
+            return ['hand_l', 'hand_r'];
+        }
+        if (group === 'thigh') {
+            return ['calf_l', 'calf_r'];
+        }
+        if (group === 'shin') {
+            return ['foot_l', 'foot_r'];
+        }
+        if (group === 'spine') {
+            return ['spine_02', 'spine_03'];
+        }
+        return [];
+    }
+
+    updateBoneLengthScale(group, value) {
+        if (!this.boneLengthParams) {
+            this.boneLengthParams = { upper_arm: 0.5, forearm: 0.5, thigh: 0.5, shin: 0.5, spine: 0.5 };
+        }
+        if (group === 'arm') group = 'upper_arm';
+        if (group === 'leg') group = 'thigh';
+        if (!['upper_arm', 'forearm', 'thigh', 'shin', 'spine'].includes(group)) return;
+        this.boneLengthParams[group] = Number.isFinite(Number(value)) ? Number(value) : 0.5;
+        const scale = this._lengthSliderToScale(this.boneLengthParams[group]);
+        for (const childName of this._boneLengthChildrenForGroup(group)) {
+            this._setBoneOffsetScale(childName, scale);
+        }
+        for (const bone of this.boneList) bone.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        this.updateIKEffectorPositions();
+        this.requestRender();
+    }
+
+    applyBoneLengthScales() {
+        if (!this.boneLengthParams) return;
+        this.updateBoneLengthScale('upper_arm', this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('forearm', this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
+        this.updateBoneLengthScale('thigh', this.boneLengthParams.thigh ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('shin', this.boneLengthParams.shin ?? this.boneLengthParams.leg ?? 0.5);
+        this.updateBoneLengthScale('spine', this.boneLengthParams.spine ?? 0.5);
     }
 
     setSkinTexture(skinType) {
@@ -2943,6 +3009,7 @@ export class PoseViewerCore {
         for (const b of this.boneList) {
             b.updateMatrixWorld(true);
         }
+        this.applyBoneLengthScales();
 
         this.modelRotation = { x: 0, y: 0, z: 0 };
         if (this.skinnedMesh) {
@@ -4271,7 +4338,7 @@ export class PoseViewerCore {
                 this.skinnedMesh.updateMatrixWorld(true);
             }
             if (this._applySAM3DEyeMidRetarget(worldKps)) {
-                this._applySAM3DHeadPitchBias(15);
+                this._applySAM3DHeadPitchBias(20);
                 if (this.skeleton) this.skeleton.update();
                 this.skinnedMesh.updateMatrixWorld(true);
                 return;
@@ -4279,7 +4346,7 @@ export class PoseViewerCore {
         }
     }
 
-    _applySAM3DHeadPitchBias(degrees = 15) {
+    _applySAM3DHeadPitchBias(degrees = 20) {
         const head = this.bones?.head;
         if (!this.THREE || !head || !this.modelLandmarks) return false;
 
