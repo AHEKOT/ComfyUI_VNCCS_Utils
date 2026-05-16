@@ -1211,7 +1211,7 @@ export class PoseViewerCore {
             antialias: true,
             preserveDrawingBuffer: true
         });
-        this.renderer.setSize(this.width, this.height);
+        this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
         this.renderer.setPixelRatio(window.devicePixelRatio);
 
         // Orbit Controls
@@ -1229,6 +1229,7 @@ export class PoseViewerCore {
 
         this.canvas.addEventListener('wheel', (e) => {
             e.preventDefault();
+            e.stopPropagation(); // capture before ComfyUI graph zoom/pan
             const delta = e.deltaY;
             const absDelta = Math.abs(delta);
             const scale = 1.0 + Math.sign(delta) * Math.min(0.004 * absDelta, 0.075);

@@ -83,7 +83,8 @@ const STYLES = `
 /* === Center Panel (Canvas) === */
 .vnccs-ps-center {
     flex: 1;
-    min-width: 400px;
+    min-width: 0;      /* prevent flex auto-expansion beyond node width */
+    min-height: 0;     /* allow shrinking in nested flex column */
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -6088,8 +6089,8 @@ class PoseStudioWidget {
         if (this._containerResizeObserver || !this.canvasContainer) return;
 
         this._containerResizeObserver = new ResizeObserver(() => {
-            clearTimeout(this._resizeDebounce);
-            this._resizeDebounce = setTimeout(() => this.resize(), 80);
+            if (this._resizeRaf) cancelAnimationFrame(this._resizeRaf);
+            this._resizeRaf = requestAnimationFrame(() => this.resize());
         });
 
         this._containerResizeObserver.observe(this.canvasContainer);
@@ -7014,6 +7015,23 @@ app.registerExtension({
             if (onExecutionStart) onExecutionStart.apply(this, arguments);
 
             // Removed redundant syncToNode(true) to avoid race conditions with vnccs_req_pose_sync
+        };
+
+        const onRemoved = nodeType.prototype.onRemoved;
+        nodeType.prototype.onRemoved = function () {
+            if (onRemoved) onRemoved.apply(this, arguments);
+            if (this.studioWidget) {
+                if (this.studioWidget._containerResizeObserver) {
+                    this.studioWidget._containerResizeObserver.disconnect();
+                    this.studioWidget._containerResizeObserver = null;
+                }
+                if (this.studioWidget._resizeRaf) {
+                    cancelAnimationFrame(this.studioWidget._resizeRaf);
+                }
+                if (this.studioWidget.viewer) {
+                    this.studioWidget.viewer.dispose();
+                }
+            }
         };
     }
 });
