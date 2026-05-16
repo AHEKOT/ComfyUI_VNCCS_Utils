@@ -3570,6 +3570,8 @@ export class PoseViewerCore {
         this.orbit.enableDamping = false;
 
         // Copy capture camera to viewport camera
+        // NOTE: do NOT copy fov/aspect — viewport camera keeps its own frustum
+        // so the capture frame appears as a box in 3D space, not filling the whole view.
         this.camera.position.copy(this.captureCamera.position);
         this.camera.zoom = zoom;
         this.camera.updateProjectionMatrix();
@@ -4042,6 +4044,11 @@ export class PoseViewerCore {
         this._clearImportedFigureGroup('_samMeshOverlayGroup');
         this._samMeshOverlayWorldKps = null;
         this._samMeshOverlaySourceFrame = null;
+        this._samProjectionCameraFrame = null;
+        this.requestRender();
+    }
+
+    clearSAMProjectionCameraFrame() {
         this._samProjectionCameraFrame = null;
         this.requestRender();
     }

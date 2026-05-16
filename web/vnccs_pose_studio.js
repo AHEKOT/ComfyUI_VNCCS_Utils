@@ -791,6 +791,7 @@ const STYLES = `
     flex: 1;
     position: relative;
     overflow: hidden;
+    /* NOTE: no flex centering here — canvas must fill 100% of container, not be letterboxed */
     background:
         radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px),
         linear-gradient(180deg, #080810 0%, #0d0b18 100%);
@@ -798,6 +799,7 @@ const STYLES = `
 }
 
 .vnccs-ps-canvas-wrap canvas {
+    /* NOTE: must be 100% not max-width/max-height — viewer fills full container */
     width: 100% !important;
     height: 100% !important;
     display: block;
@@ -1783,6 +1785,7 @@ class PoseStudioWidget {
         this.viewer = null;
 
         this.poses = [{}];  // Array of pose data
+        this.posePrompts = [""]; // User prompt per pose tab
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
         this.ikMode = true; // IK mode toggle (false = FK, true = IK)
@@ -1825,7 +1828,7 @@ class PoseStudioWidget {
             debugMode: false,
             debugPortraitMode: false, // Focus on upper body in debug mode
             debugKeepLighting: false, // Use manual lighting in debug mode
-            debugShowSAMHelper: true, // Show imported SAM skeleton overlay in the viewer
+            debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
@@ -1853,6 +1856,7 @@ class PoseStudioWidget {
         this._activeHandSide = null;
         this._lastSAM3DPoseData = null;
         this._lastSAM3DMeshData = null;
+        this._samCameraModeActive = false;
         this._hoveredHandSide = null;
         this._handPopover = null;
         this._handPopoverTitle = null;
@@ -2366,7 +2370,7 @@ class PoseStudioWidget {
         const promptArea = document.createElement("textarea");
         promptArea.className = "vnccs-ps-textarea";
         promptArea.placeholder = "Describe your scene/character details...";
-        promptArea.value = this.exportParams.user_prompt || "";
+        promptArea.value = this.getPosePrompt(this.activeTab);
 
         const autoExpand = () => {
             promptArea.style.height = 'auto';
@@ -2374,7 +2378,7 @@ class PoseStudioWidget {
         };
 
         promptArea.addEventListener('input', () => {
-            this.exportParams.user_prompt = promptArea.value;
+            this.setPosePrompt(this.activeTab, promptArea.value);
             autoExpand();
             this.syncToNode(false);
         });
@@ -2475,6 +2479,38 @@ class PoseStudioWidget {
         };
     }
 
+    ensurePosePrompts() {
+        if (!Array.isArray(this.posePrompts)) this.posePrompts = [];
+        while (this.posePrompts.length < this.poses.length) {
+            const pose = this.poses[this.posePrompts.length] || {};
+            this.posePrompts.push(String(pose.prompt ?? pose._library?.prompt ?? this.exportParams.user_prompt ?? ""));
+        }
+        while (this.posePrompts.length > this.poses.length) this.posePrompts.pop();
+    }
+
+    getPosePrompt(index = this.activeTab) {
+        this.ensurePosePrompts();
+        return String(this.posePrompts[index] ?? this.poses[index]?.prompt ?? "");
+    }
+
+    setPosePrompt(index, value) {
+        this.ensurePosePrompts();
+        const prompt = String(value ?? "");
+        this.posePrompts[index] = prompt;
+        if (this.poses[index]) this.poses[index].prompt = prompt;
+        if (index === this.activeTab) this.exportParams.user_prompt = prompt;
+    }
+
+    syncPromptFieldToActiveTab() {
+        const prompt = this.getPosePrompt(this.activeTab);
+        this.exportParams.user_prompt = prompt;
+        if (this.userPromptArea) {
+            this.userPromptArea.value = prompt;
+            this.userPromptArea.style.height = 'auto';
+            this.userPromptArea.style.height = `${this.userPromptArea.scrollHeight}px`;
+        }
+    }
+
     applyCameraToViewer(snap = true) {
         if (!this.viewer) return;
         const args = [
@@ -2501,6 +2537,25 @@ class PoseStudioWidget {
             }
         }
         if (this.radarRedraw) this.radarRedraw();
+    }
+
+    clearSAMCameraMode() {
+        this.viewer?.clearSAMProjectionCameraFrame?.();
+        this.viewer?.clearSAMMeshOverlay?.();
+        this._lastSAM3DMeshData = null;
+        this._lastSAM3DPoseData = null;
+        this._samCameraModeActive = false;
+    }
+
+    resetCameraParams({ keepAngles = false } = {}) {
+        this.exportParams.cam_zoom = 1.0;
+        this.exportParams.cam_offset_x = 0;
+        this.exportParams.cam_offset_y = 0;
+        if (!keepAngles) {
+            this.exportParams.cam_yaw_deg = 0;
+            this.exportParams.cam_pitch_deg = 0;
+        }
+        this.syncCameraWidgets();
     }
 
     updateCaptureCameraPreview() {
@@ -2902,10 +2957,11 @@ class PoseStudioWidget {
         recenterBtn.style.width = "100%";
         recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
         recenterBtn.onclick = () => {
+            this.clearSAMCameraMode();
             this.exportParams.cam_offset_x = 0;
             this.exportParams.cam_offset_y = 0;
             this.persistActivePoseCameraParams();
-            draw();
+            this.syncCameraWidgets();
             this.applyCameraToViewer(true);
             this.syncToNode(false);
         };
@@ -3580,16 +3636,24 @@ class PoseStudioWidget {
     switchTab(index) {
         if (index === this.activeTab) return;
 
+        const wasSAMCameraMode = this._samCameraModeActive;
         // Save current pose & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.viewer.getPose();
-            savedPose.cameraParams = this.currentCameraParams();
+            if (!wasSAMCameraMode) {
+                savedPose.cameraParams = this.currentCameraParams();
+            } else {
+                delete savedPose.cameraParams;
+            }
+            savedPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
         }
 
         this.activeTab = index;
         this.updateTabs();
+        this.clearSAMCameraMode();
+        this.syncPromptFieldToActiveTab();
 
         // Load new pose
         const newPose = this.poses[this.activeTab] || {};
@@ -3632,18 +3696,28 @@ class PoseStudioWidget {
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.viewer.getPose();
-            savedPose.cameraParams = this.currentCameraParams();
+            if (!this._samCameraModeActive) {
+                savedPose.cameraParams = this.currentCameraParams();
+            } else {
+                delete savedPose.cameraParams;
+            }
+            savedPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
         }
 
         this.poses.push({});
+        this.posePrompts.push("");
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
+        this.clearSAMCameraMode();
+        this.resetCameraParams();
+        this.syncPromptFieldToActiveTab();
 
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.resetPose();
         }
+        this.updateCaptureCameraPreview();
 
         this.syncToNode(false);
     }
@@ -3658,6 +3732,9 @@ class PoseStudioWidget {
         }
 
         this.poses.splice(idx, 1);
+        if (this.posePrompts && this.posePrompts.length > idx) {
+            this.posePrompts.splice(idx, 1);
+        }
 
         // Adjust active tab logic
         if (idx < this.activeTab) {
@@ -3674,18 +3751,23 @@ class PoseStudioWidget {
         }
 
         this.updateTabs();
+        this.syncPromptFieldToActiveTab();
         this.syncToNode(false);
     }
 
 
 
     resetCurrentPose() {
+        this.clearSAMCameraMode();
+        this.resetCameraParams();
         if (this.viewer) {
             this.viewer.recordState(); // Undo support
             this.viewer.resetPose();
             this.updateRotationSliders();
+            this.applyCameraToViewer(true);
         }
         this.poses[this.activeTab] = {};
+        this.setPosePrompt(this.activeTab, "");
         this.syncToNode(false);
     }
 
@@ -3699,7 +3781,12 @@ class PoseStudioWidget {
     copyPose() {
         if (this.viewer && this.viewer.isInitialized()) {
             const pose = this.viewer.getPose();
-            pose.cameraParams = this.currentCameraParams();
+            if (!this._samCameraModeActive) {
+                pose.cameraParams = this.currentCameraParams();
+            } else {
+                delete pose.cameraParams;
+            }
+            pose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = pose;
         }
         this._clipboard = JSON.parse(JSON.stringify(this.poses[this.activeTab]));
@@ -3707,7 +3794,9 @@ class PoseStudioWidget {
 
     pastePose() {
         if (!this._clipboard) return;
+        this.clearSAMCameraMode();
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(this._clipboard));
+        this.setPosePrompt(this.activeTab, this.poses[this.activeTab].prompt || "");
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.setPose(this.poses[this.activeTab]);
         }
@@ -3718,6 +3807,9 @@ class PoseStudioWidget {
             this.exportParams.cam_yaw_deg = this._clipboard.cameraParams.yaw_deg || 0;
             this.exportParams.cam_pitch_deg = this._clipboard.cameraParams.pitch_deg || 0;
             this.syncCameraWidgets();
+            this.updateCaptureCameraPreview();
+        } else {
+            this.resetCameraParams();
             this.updateCaptureCameraPreview();
         }
         this.syncToNode();
@@ -4057,9 +4149,11 @@ class PoseStudioWidget {
         );
         if (!frameParams) {
             this.viewer?.setSAMProjectionCameraFrame?.(null);
+            this._samCameraModeActive = false;
             return false;
         }
         this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection || null);
+        this._samCameraModeActive = !!frameParams.sam_projection;
 
         this.exportParams.cam_zoom = frameParams.zoom;
         this.exportParams.cam_offset_x = frameParams.offset_x;
@@ -4088,6 +4182,8 @@ class PoseStudioWidget {
         if (lowerName.endsWith('.fbx')) {
             (async () => {
                 try {
+                    this.clearSAMCameraMode();
+                    this.resetCameraParams();
                     const result = await importMixamoFBXAsPoses(file, this.viewer, {
                         fps: 12,
                         maxFrames: 48,
@@ -4101,6 +4197,7 @@ class PoseStudioWidget {
                         this.viewer.setPose(this.poses[0], true);
                         this.updateRotationSliders();
                     }
+                    this.updateCaptureCameraPreview();
 
                     this.syncToNode(true);
                     this.showMessage(`Mixamo FBX imported successfully: ${this.poses.length} poses from ${result.clipName}.`);
@@ -4171,6 +4268,8 @@ class PoseStudioWidget {
 
                 if (data?.version === 'hmr2_3d_v1') {
                     if (this.viewer && this.viewer.isInitialized()) {
+                        this.clearSAMCameraMode();
+                        this.resetCameraParams();
                         const ok = this.viewer.applyHMR2v1Import(
                             data,
                             this._smplRefHeight || 1.45,
@@ -4179,6 +4278,7 @@ class PoseStudioWidget {
                         if (ok) {
                             this.poses[this.activeTab] = this.viewer.getPose();
                             this.updateRotationSliders();
+                            this.applyCameraToViewer(true);
                             this.syncToNode(false);
                             this.showMessage("HMR2/pose3d JSON imported successfully.");
                         } else {
@@ -4193,11 +4293,14 @@ class PoseStudioWidget {
                 const openPoseKeypoints = detectAndParseJSON(data);
                 if (openPoseKeypoints) {
                     if (this.viewer && this.viewer.isInitialized()) {
+                        this.clearSAMCameraMode();
+                        this.resetCameraParams();
                         const poseData = convertOpenPoseToPose(openPoseKeypoints, this.viewer);
                         if (poseData) {
                             this.poses[this.activeTab] = poseData;
                             this.viewer.setPose(poseData);
                             this.updateRotationSliders();
+                            this.applyCameraToViewer(true);
                             this.syncToNode(false);
 
                             let msg = "OpenPose JSON imported successfully.";
@@ -4217,6 +4320,8 @@ class PoseStudioWidget {
                     // Import Set
                     const newPoses = data.poses || (Array.isArray(data) ? data : null);
                     if (newPoses && Array.isArray(newPoses)) {
+                        this.clearSAMCameraMode();
+                        this.resetCameraParams();
                         this.poses = newPoses;
                         this.activeTab = 0;
                         this.updateTabs();
@@ -4225,10 +4330,13 @@ class PoseStudioWidget {
                             this.viewer.setPose(this.poses[0]);
                             this.updateRotationSliders();
                         }
+                        this.updateCaptureCameraPreview();
                     }
                     this.syncToNode(true);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
+                    this.clearSAMCameraMode();
+                    this.resetCameraParams();
                     const poseData = data.bones ? data : data;
 
                     this.poses[this.activeTab] = poseData;
@@ -4236,6 +4344,7 @@ class PoseStudioWidget {
                         this.viewer.setPose(poseData);
                         this.updateRotationSliders();
                     }
+                    this.updateCaptureCameraPreview();
                     this.syncToNode(false);
                 }
 
@@ -4343,6 +4452,51 @@ class PoseStudioWidget {
             if (this.libraryGrid) {
                 this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Failed to load library.</div>';
             }
+        }
+    }
+
+    async autoRefreshEnabledPoseRepositories() {
+        if (this._autoRepoRefreshStarted) return;
+        this._autoRepoRefreshStarted = true;
+        try {
+            const res = await fetch('/vnccs/pose_library/repositories/auto_refresh', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ reason: 'pose_studio_initial_load' }),
+            });
+            const data = await res.json().catch(() => ({}));
+            const taskId = data.task_id;
+            if (!taskId || (!data.started && !data.running)) return;
+
+            const startedAt = Date.now();
+            const poll = async () => {
+                try {
+                    const statusRes = await fetch(`/vnccs/pose_library/repositories/progress/${encodeURIComponent(taskId)}`);
+                    if (!statusRes.ok) return false;
+                    const status = await statusRes.json();
+                    if (status.status === 'success') {
+                        await this.refreshLibrary(true);
+                        if (this.librarySettingsMode) await this.refreshPoseRepositories();
+                        return true;
+                    }
+                    if (status.status === 'error') {
+                        console.warn("[VNCCS PoseStudio] Background pose repository refresh failed:", status.message);
+                        return true;
+                    }
+                    return false;
+                } catch (err) {
+                    console.warn("[VNCCS PoseStudio] Background pose repository refresh poll failed:", err);
+                    return true;
+                }
+            };
+
+            const timer = setInterval(async () => {
+                if (Date.now() - startedAt > 10 * 60 * 1000 || await poll()) {
+                    clearInterval(timer);
+                }
+            }, 2500);
+        } catch (err) {
+            console.warn("[VNCCS PoseStudio] Failed to start background pose repository refresh:", err);
         }
     }
 
@@ -4854,6 +5008,10 @@ class PoseStudioWidget {
                 <input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${this.escapeHtml(meta.tags.join(', '))}" placeholder="standing, hands, portrait">
             </label>
             <label class="vnccs-ps-library-field">
+                <span>Prompt</span>
+                <textarea class="vnccs-ps-textarea vnccs-ps-library-edit-prompt" placeholder="Pose prompt..." style="width:100%;min-height:60px;resize:vertical;">${this.escapeHtml(pose.data?.prompt ?? "")}</textarea>
+            </label>
+            <label class="vnccs-ps-library-field">
                 <span>Custom Image</span>
                 <input class="vnccs-ps-library-image-input" type="file" accept="image/*">
             </label>
@@ -4884,12 +5042,14 @@ class PoseStudioWidget {
                 this.showMessage("Pose name is required.", true);
                 return;
             }
+            const posePromptValue = this.libraryInspector.querySelector('.vnccs-ps-library-edit-prompt').value;
+            const updatedPoseData = Object.assign({}, pose.data || {}, { prompt: posePromptValue });
             const result = await this.saveLibraryPoseRecord({
                 oldName: pose.name,
                 oldRepository: meta.repository,
                 oldCategory: meta.category,
                 name: newName,
-                pose: pose.data || {},
+                pose: updatedPoseData,
                 repository: meta.repository,
                 category,
                 tags,
@@ -4944,6 +5104,8 @@ class PoseStudioWidget {
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
 
+        const currentPrompt = this.getPosePrompt(this.activeTab);
+
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-modal';
         modal.innerHTML = `
@@ -4952,6 +5114,8 @@ class PoseStudioWidget {
                 <input type="text" placeholder="Pose name..." class="vnccs-ps-input" style="width:100%;padding:8px;">
                 <input type="text" placeholder="Category..." class="vnccs-ps-input" style="width:100%;padding:8px;" value="Uncategorized">
                 <input type="text" placeholder="Tags, comma separated..." class="vnccs-ps-input" style="width:100%;padding:8px;">
+                <label style="display:block;color:var(--ps-text-muted);font-size:11px;margin-top:4px;">Prompt</label>
+                <textarea class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Pose prompt..." style="width:100%;min-height:60px;resize:vertical;">${this.escapeHtml(currentPrompt)}</textarea>
                 <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:11px;">
                     <input type="checkbox" checked> Include preview image
                 </label>
@@ -4964,6 +5128,7 @@ class PoseStudioWidget {
         const nameInput = textInputs[0];
         const categoryInput = textInputs[1];
         const tagsInput = textInputs[2];
+        const promptInput = modal.querySelector('.vnccs-ps-save-prompt');
         const previewCheck = modal.querySelector('input[type="checkbox"]');
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
@@ -4972,6 +5137,7 @@ class PoseStudioWidget {
                 await this.saveToLibrary(name, previewCheck.checked, {
                     category: categoryInput.value.trim() || "Uncategorized",
                     tags: tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean),
+                    prompt: promptInput.value,
                 });
                 overlay.remove();
             }
@@ -5012,6 +5178,12 @@ class PoseStudioWidget {
         if (!this.viewer) return;
 
         const pose = this.viewer.getPose();
+        if (this._samCameraModeActive) {
+            delete pose.cameraParams;
+        } else {
+            pose.cameraParams = this.currentCameraParams();
+        }
+        pose.prompt = metadata.prompt ?? this.getPosePrompt(this.activeTab);
         let preview = null;
 
         if (includePreview) {
@@ -5045,22 +5217,35 @@ class PoseStudioWidget {
         }
     }
 
+    restorePoseCameraParams(pose) {
+        const params = pose?.cameraParams;
+        if (!params) return false;
+
+        this.exportParams.cam_offset_x = Number(params.offset_x ?? 0);
+        this.exportParams.cam_offset_y = Number(params.offset_y ?? 0);
+        this.exportParams.cam_zoom = Number(params.zoom ?? 1.0);
+        this.exportParams.cam_yaw_deg = Number(params.yaw_deg ?? 0);
+        this.exportParams.cam_pitch_deg = Number(params.pitch_deg ?? 0);
+        this.syncCameraWidgets();
+        this.applyCameraToViewer(true);
+        this.viewer?.setCameraParams?.(this.currentCameraParams());
+        return true;
+    }
+
     async loadFromLibrary(poseOrName) {
         const name = this.getLibraryPoseName(poseOrName);
         console.log("[VNCCS PoseStudio] loadFromLibrary triggered for:", name);
         try {
+            this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
 
             if (data.pose && this.viewer) {
-                // Only apply bones and modelRotation from library - NOT camera settings
-                // Library poses should not override user's export camera framing
-                const poseWithoutCamera = {
-                    bones: data.pose.bones,
-                    modelRotation: data.pose.modelRotation
-                    // Intentionally omit: camera
-                };
-                this.viewer.setPose(poseWithoutCamera, true); // preserveCamera = true
+                this.viewer.setPose(data.pose, false);
+                this.restorePoseCameraParams(data.pose);
+                this.poses[this.activeTab] = this.viewer.getPose();
+                this.setPosePrompt(this.activeTab, data.pose.prompt ?? "");
+                this.syncPromptFieldToActiveTab();
                 this.updateRotationSliders();
                 this.syncToNode();
             }
@@ -5817,12 +6002,24 @@ class PoseStudioWidget {
 
     resize() {
         if (this.viewer && this.canvasContainer) {
-            // Always measure the actual canvas container to ensure perfect aspect ratio.
-            // rect.width is in screen pixels, divide by zoom factor to get logical CSS pixels for Three.js.
+            // Keep the interactive WebGL canvas at the same aspect ratio as the exported frame.
             const rect = this.canvasContainer.getBoundingClientRect();
             const zoomFactor = 1.0;
-            const targetW = Math.round(rect.width / zoomFactor);
-            const targetH = Math.round(rect.height / zoomFactor);
+            const availableW = Math.round(rect.width / zoomFactor);
+            const availableH = Math.round(rect.height / zoomFactor);
+            const frameW = Math.max(1, Number(this.exportParams.view_width) || 1024);
+            const frameH = Math.max(1, Number(this.exportParams.view_height) || 1024);
+            const frameAspect = frameW / frameH;
+            const availableAspect = availableW / Math.max(1, availableH);
+            let targetW = availableW;
+            let targetH = availableH;
+            if (availableAspect > frameAspect) {
+                targetH = availableH;
+                targetW = Math.round(targetH * frameAspect);
+            } else {
+                targetW = availableW;
+                targetH = Math.round(targetW / frameAspect);
+            }
 
             // Guard against feedback loops: skip if size hasn't materially changed.
             // Without this, getBoundingClientRect → setSize → style change → rect grows → infinite loop
@@ -5834,6 +6031,10 @@ class PoseStudioWidget {
 
                 this._lastResizeW = targetW;
                 this._lastResizeH = targetH;
+                if (this.canvas) {
+                    this.canvas.style.width = `${targetW}px`;
+                    this.canvas.style.height = `${targetH}px`;
+                }
                 this.viewer.resize(targetW, targetH);
                 if (this._activeHandSide) {
                     this.positionHandControlPopover(this._activeHandSide);
@@ -5857,7 +6058,7 @@ class PoseStudioWidget {
      * Generate a natural language prompt from light parameters.
      * Maps RGB colors to basic names and describes position/intensity.
      */
-    generatePromptFromLights(lights) {
+    generatePromptFromLights(lights, userPromptOverride = null) {
         let finalPrompt = "";
 
         if (this.exportParams.keepOriginalLighting) {
@@ -6034,7 +6235,7 @@ class PoseStudioWidget {
         const lightingString = finalPrompt.trim();
 
         // User Prompt string
-        const userPromptString = (this.exportParams.user_prompt || "").trim();
+        const userPromptString = String(userPromptOverride ?? this.getPosePrompt(this.activeTab) ?? "").trim();
 
         // Perform Replacements (Robust Global Replace)
         let result = template
@@ -6226,13 +6427,19 @@ class PoseStudioWidget {
         // Save current pose before syncing (only if we are NOT in a sub-sync loop)
         if (!fullCapture && this.viewer && this.viewer.isInitialized()) {
             const syncPose = this.viewer.getPose();
-            syncPose.cameraParams = this.currentCameraParams();
+            if (!this._samCameraModeActive) {
+                syncPose.cameraParams = this.currentCameraParams();
+            } else {
+                delete syncPose.cameraParams;
+            }
+            syncPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = syncPose;
         }
 
         // Cache Handling
         if (!this.poseCaptures) this.poseCaptures = [];
         if (!this.lightingPrompts) this.lightingPrompts = [];
+        this.ensurePosePrompts();
 
         // Ensure size
         while (this.poseCaptures.length < this.poses.length) this.poseCaptures.push(null);
@@ -6293,7 +6500,7 @@ class PoseStudioWidget {
 
                         // Prompt
                         const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || originalLights);
-                        this.lightingPrompts[i] = this.generatePromptFromLights(promptLights);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(promptLights, this.getPosePrompt(i));
                     } else {
                         // Normal mode
                         this.viewer.setPose(this.poses[i], true);
@@ -6312,7 +6519,7 @@ class PoseStudioWidget {
                         }
 
                         this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
-                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
+                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, this.getPosePrompt(i));
                     }
                 }
 
@@ -6347,7 +6554,7 @@ class PoseStudioWidget {
                     this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY, 0, 0);
 
                     const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || userLights);
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights, this.getPosePrompt(this.activeTab));
 
                     this.viewer.updateLights(userLights);
                     this.viewer.setPose(this.poses[this.activeTab], true);
@@ -6372,7 +6579,7 @@ class PoseStudioWidget {
                     }
 
                     this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams);
+                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, this.getPosePrompt(this.activeTab));
 
                     if (isOriginalLighting) {
                         this.viewer.updateLights(userLights);
@@ -6436,6 +6643,7 @@ class PoseStudioWidget {
 
     loadFromNode() {
         console.log("[VNCCS PoseStudio] loadFromNode started");
+        this.clearSAMCameraMode();
         // Load from pose_data widget
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (!widget || !widget.value) {
@@ -6517,13 +6725,7 @@ class PoseStudioWidget {
             if (data.export) {
                 this.exportParams = { ...this.exportParams, ...data.export };
 
-                // Sync user_prompt to sidebar if it exists
-                if (data.export.user_prompt !== undefined && this.userPromptArea) {
-                    this.userPromptArea.value = data.export.user_prompt;
-                    // Trigger auto-expand
-                    this.userPromptArea.style.height = 'auto';
-                    this.userPromptArea.style.height = (this.userPromptArea.scrollHeight) + 'px';
-                }
+                // user_prompt in export is the legacy global prompt; per-tab prompts are in pose.prompt
                 // Update export widgets
                 for (const [key, widget] of Object.entries(this.exportWidgets)) {
                     if (key === 'bg_color') {
@@ -6547,6 +6749,7 @@ class PoseStudioWidget {
 
             if (data.poses && Array.isArray(data.poses)) {
                 this.poses = data.poses;
+                this.posePrompts = []; // rebuild from pose.prompt on next ensurePosePrompts() call
             }
 
             // Restore background image if present
@@ -6576,6 +6779,7 @@ class PoseStudioWidget {
             // poseCaptures will be regenerated on the next syncToNode(true) call.
 
             this.updateTabs();
+            this.syncPromptFieldToActiveTab();
 
             // Auto-load model
             // Restore skin type on the viewer before loading model
@@ -6703,7 +6907,10 @@ app.registerExtension({
 
             // Pre-load library for random functionality
             setTimeout(() => {
-                if (this.studioWidget) this.studioWidget.refreshLibrary(false);
+                if (this.studioWidget) {
+                    this.studioWidget.refreshLibrary(false);
+                    this.studioWidget.autoRefreshEnabledPoseRepositories();
+                }
             }, 1000);
 
             // Hide pose_data widget (must work in both legacy LiteGraph and node2.0 Vue modes)

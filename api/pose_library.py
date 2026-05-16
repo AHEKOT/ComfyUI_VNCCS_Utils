@@ -7,6 +7,7 @@ import time
 import hashlib
 import tempfile
 import uuid
+import threading
 from datetime import datetime, timezone
 from aiohttp import web
 from PIL import Image
@@ -16,6 +17,13 @@ LOCAL_USER_REPOSITORY = "local_user_poses"
 DEFAULT_CATEGORY = "Uncategorized"
 RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
 _REPOSITORY_PROGRESS = {}
+_BACKGROUND_REFRESH_STATE = {
+    "running": False,
+    "task_id": "",
+    "last_started": 0,
+    "last_finished": 0,
+}
+_BACKGROUND_REFRESH_LOCK = threading.Lock()
 
 def repository_progress_start(task_id, message="Starting repository operation..."):
     if not task_id:
@@ -777,6 +785,78 @@ async def delete_pose_repository(request):
     save_user_repositories(user_repos)
     return web.json_response({"success": True, "repositories": load_pose_repositories()})
 
+def persist_refreshed_repositories(refreshed):
+    user_repos = load_user_repositories()
+    by_id = {repo["repo_id"]: repo for repo in user_repos}
+    for repo in refreshed:
+        if repo.get("builtin"):
+            override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
+            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count")})
+        elif repo["repo_id"] in by_id:
+            by_id[repo["repo_id"]].update(repo)
+    save_user_repositories(list(by_id.values()))
+
+def run_background_enabled_repository_refresh(task_id):
+    try:
+        repos = [repo for repo in load_pose_repositories() if repo.get("enabled", True)]
+        if not repos:
+            repository_progress_finish(task_id, "No enabled pose repositories to refresh.")
+            return
+        refreshed = []
+        for index, repo in enumerate(repos):
+            repository_progress_update(
+                task_id,
+                status="running",
+                message=f"Refreshing {repo['repo_id']} ({index + 1}/{len(repos)})...",
+                progress=(index / max(len(repos), 1)) * 100,
+            )
+            refreshed.append(refresh_pose_repository(repo, task_id=task_id))
+        persist_refreshed_repositories(refreshed)
+        repository_progress_finish(task_id, "Enabled pose repositories are up to date.")
+    except Exception as exc:
+        repository_progress_fail(task_id, exc)
+    finally:
+        with _BACKGROUND_REFRESH_LOCK:
+            _BACKGROUND_REFRESH_STATE["running"] = False
+            _BACKGROUND_REFRESH_STATE["last_finished"] = time.time()
+
+async def auto_refresh_enabled_pose_repositories(request):
+    now = time.time()
+    with _BACKGROUND_REFRESH_LOCK:
+        if _BACKGROUND_REFRESH_STATE["running"]:
+            return web.json_response({
+                "success": True,
+                "started": False,
+                "running": True,
+                "task_id": _BACKGROUND_REFRESH_STATE["task_id"],
+            })
+        if now - float(_BACKGROUND_REFRESH_STATE.get("last_started") or 0) < 300:
+            return web.json_response({
+                "success": True,
+                "started": False,
+                "running": False,
+                "task_id": _BACKGROUND_REFRESH_STATE["task_id"],
+            })
+        task_id = f"repo-auto-{uuid.uuid4()}"
+        _BACKGROUND_REFRESH_STATE.update({
+            "running": True,
+            "task_id": task_id,
+            "last_started": now,
+        })
+    repository_progress_start(task_id, "Refreshing enabled pose repositories in background...")
+    thread = threading.Thread(
+        target=run_background_enabled_repository_refresh,
+        args=(task_id,),
+        daemon=True,
+    )
+    thread.start()
+    return web.json_response({
+        "success": True,
+        "started": True,
+        "running": True,
+        "task_id": task_id,
+    })
+
 async def refresh_pose_repositories(request):
     try:
         data = await request.json()
@@ -787,15 +867,7 @@ async def refresh_pose_repositories(request):
     repos = load_pose_repositories()
     targets = [repo for repo in repos if (not repo_id or repo["repo_id"] == repo_id)]
     refreshed = [refresh_pose_repository(repo, task_id=task_id if len(targets) == 1 else f"{task_id}-{index}") for index, repo in enumerate(targets)]
-    user_repos = load_user_repositories()
-    by_id = {repo["repo_id"]: repo for repo in user_repos}
-    for repo in refreshed:
-        if repo.get("builtin"):
-            override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
-            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count")})
-        elif repo["repo_id"] in by_id:
-            by_id[repo["repo_id"]].update(repo)
-    save_user_repositories(list(by_id.values()))
+    persist_refreshed_repositories(refreshed)
     return web.json_response({"success": True, "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
 
 async def publish_local_pose_repository(request):
@@ -1218,6 +1290,7 @@ def register_routes(app):
     app.router.add_post("/vnccs/pose_library/repositories/toggle", toggle_pose_repository)
     app.router.add_delete("/vnccs/pose_library/repositories/delete/{repo_id:.+}", delete_pose_repository)
     app.router.add_post("/vnccs/pose_library/repositories/refresh", refresh_pose_repositories)
+    app.router.add_post("/vnccs/pose_library/repositories/auto_refresh", auto_refresh_enabled_pose_repositories)
     app.router.add_post("/vnccs/pose_library/repositories/local/publish", publish_local_pose_repository)
     app.router.add_post("/vnccs/pose_sync/upload_capture", upload_pose_sync)
     app.router.add_post("/vnccs/debug/upload_capture", upload_pose_sync)  # Aliased for backward compatibility
