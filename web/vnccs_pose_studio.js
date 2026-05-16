@@ -4154,8 +4154,8 @@ class PoseStudioWidget {
             return false;
         }
         // When SAM camera override is disabled: use forceFallback to get proper bbox-based
-        // zoom/offset (instead of the sam_projection path that returns zoom=1.0).
-        // The SAM projection camera frame is not set, so the viewing angle is unchanged.
+        // zoom/offset. Also apply inverse SAM camera angles to the model rotation so the
+        // pose looks correct from the standard front-facing camera without moving the camera.
         if (!this.exportParams.samApplyCamera) {
             this.viewer?.setSAMProjectionCameraFrame?.(null);
             this._samCameraModeActive = false;
@@ -4164,12 +4164,24 @@ class PoseStudioWidget {
                 this.exportParams.view_width || 1024,
                 this.exportParams.view_height || 1024,
                 meshData,
-                true // forceFallback: skip sam_projection, compute bbox zoom/offset
+                true // forceFallback: skip sam_projection, compute bbox zoom/offset + camera angles
             );
             if (fallbackParams) {
                 this.exportParams.cam_zoom = fallbackParams.zoom;
                 this.exportParams.cam_offset_x = fallbackParams.offset_x;
                 this.exportParams.cam_offset_y = fallbackParams.offset_y;
+                // Apply inverse SAM camera angles as model rotation
+                const yaw = fallbackParams.yaw_deg || 0;
+                const pitch = fallbackParams.pitch_deg || 0;
+                if (Math.abs(yaw) > 0.5 || Math.abs(pitch) > 0.5) {
+                    const curRot = this.viewer.getPose?.()?.modelRotation || [0, 0, 0];
+                    this.viewer.setModelRotation(
+                        curRot[0] - pitch,
+                        curRot[1] - yaw,
+                        curRot[2]
+                    );
+                    this.updateRotationSliders();
+                }
             }
             this.syncCameraWidgets();
             this.applyCameraToViewer(true);

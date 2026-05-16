@@ -3641,6 +3641,21 @@ export class PoseViewerCore {
                 },
             };
         })();
+        // Compute equivalent yaw/pitch angles from SAM camera position so the caller can
+        // apply inverse rotation to the model (used when samApplyCamera=false).
+        const samCameraAngles = (() => {
+            if (!samProjectionFrame) return { yaw_deg: 0, pitch_deg: 0 };
+            const tgt = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+            const cp = samProjectionFrame.cameraPosition;
+            const dx = (cp.x || 0) - tgt.x;
+            const dy = (cp.y || 0) - tgt.y;
+            const dz = (cp.z || 0) - tgt.z;
+            const yaw = Math.atan2(dx, dz) * 180 / Math.PI;
+            const horiz = Math.sqrt(dx * dx + dz * dz);
+            const pitch = Math.atan2(-dy, horiz) * 180 / Math.PI;
+            return { yaw_deg: yaw, pitch_deg: pitch };
+        })();
+
         // NOTE: forceFallback=true skips the SAM projection path and forces bbox-based zoom/offset
         // computation. Used when the user has disabled the SAM camera override (samApplyCamera=false).
         if (samProjectionFrame && !forceFallback) {
@@ -3884,7 +3899,7 @@ export class PoseViewerCore {
             offset_y = Math.max(-visibleH * 4, Math.min(visibleH * 4, offset_y));
 
             this.updateCaptureCamera(width, height, zoom, offset_x, offset_y);
-            return { zoom, offset_x, offset_y };
+            return { zoom, offset_x, offset_y, ...samCameraAngles };
         }
 
         const box = new this.THREE.Box3().setFromObject(this.skinnedMesh);
@@ -3908,6 +3923,7 @@ export class PoseViewerCore {
             zoom,
             offset_x: baseTarget.x - targetX,
             offset_y: baseTarget.y - targetY,
+            ...samCameraAngles,
         };
     }
 
