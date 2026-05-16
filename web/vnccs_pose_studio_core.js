@@ -3816,8 +3816,8 @@ export class PoseViewerCore {
                 const step = Math.max(1, Math.ceil(position.count / 8000));
                 for (let index = 0; index < position.count; index += step) {
                     point.fromBufferAttribute(position, index);
-                    if (typeof mesh.boneTransform === 'function') {
-                        mesh.boneTransform(index, point);
+                    if (typeof mesh.applyBoneTransform === 'function') {
+                        mesh.applyBoneTransform(index, point);
                     }
                     point.applyMatrix4(mesh.matrixWorld).project(camera);
                     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
@@ -4947,8 +4947,8 @@ export class PoseViewerCore {
             const index = Number(rawIndex);
             if (!Number.isInteger(index) || index < 0 || index >= position.count) continue;
             point.fromBufferAttribute(position, index);
-            if (typeof this.skinnedMesh.boneTransform === 'function') {
-                this.skinnedMesh.boneTransform(index, point);
+            if (typeof this.skinnedMesh.applyBoneTransform === 'function') {
+                this.skinnedMesh.applyBoneTransform(index, point);
             }
             point.applyMatrix4(this.skinnedMesh.matrixWorld);
             if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
