@@ -787,6 +787,50 @@ const STYLES = `
     color: var(--ps-accent);
 }
 
+/* === SAM Camera Banner === */
+.vnccs-ps-sam-cam-banner {
+    display: none;
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 50;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 6px 18px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    user-select: none;
+    background: rgba(20, 16, 30, 0.92);
+    color: #ffaa33;
+    border: 1px solid rgba(255, 150, 40, 0.55);
+    border-radius: 6px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.55);
+    backdrop-filter: blur(6px);
+    transition: color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+    pointer-events: auto;
+}
+.vnccs-ps-sam-cam-banner.vnccs-sam-visible { display: flex; }
+.vnccs-ps-sam-cam-banner.vnccs-sam-paused {
+    color: rgba(160, 140, 120, 0.6);
+    border-color: rgba(120, 100, 80, 0.35);
+}
+.vnccs-ps-sam-cam-banner .vnccs-sam-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: #ffaa33;
+    flex-shrink: 0;
+    box-shadow: 0 0 6px #ffaa33;
+}
+.vnccs-ps-sam-cam-banner.vnccs-sam-paused .vnccs-sam-dot {
+    background: #555;
+    box-shadow: none;
+}
+
 /* === 3D Canvas === */
 .vnccs-ps-canvas-wrap {
     flex: 1;
@@ -1859,6 +1903,11 @@ class PoseStudioWidget {
         this._lastSAM3DPoseData = null;
         this._lastSAM3DMeshData = null;
         this._samCameraModeActive = false;
+        this._samCamBannerVisible = false;
+        this._samCamDisplayActive = true;
+        this._samCamPreParams = null;
+        this._samCamStoredParams = null;
+        this._samCamStoredProjectionFrame = null;
         this._hoveredHandSide = null;
         this._handPopover = null;
         this._handPopoverTitle = null;
@@ -2178,6 +2227,16 @@ class PoseStudioWidget {
         // Canvas Container
         this.canvasContainer = document.createElement("div");
         this.canvasContainer.className = "vnccs-ps-canvas-wrap";
+
+        // SAM camera banner (top of viewport, toggle on click)
+        this._samCamBanner = document.createElement('div');
+        this._samCamBanner.className = 'vnccs-ps-sam-cam-banner';
+        this._samCamBanner.innerHTML =
+            '<span class="vnccs-sam-dot"></span>' +
+            '<span class="vnccs-sam-label">SAM Camera Applied</span>' +
+            '<small style="opacity:0.65;font-weight:400">· click to toggle</small>';
+        this._samCamBanner.addEventListener('click', () => this._toggleSAMCameraDisplay());
+        this.canvasContainer.appendChild(this._samCamBanner);
 
         this.canvas = document.createElement("canvas");
         this.canvasContainer.appendChild(this.canvas);
@@ -2547,6 +2606,55 @@ class PoseStudioWidget {
         this._lastSAM3DMeshData = null;
         this._lastSAM3DPoseData = null;
         this._samCameraModeActive = false;
+        this._samCamBannerVisible = false;
+        this._samCamDisplayActive = true;
+        this._samCamPreParams = null;
+        this._samCamStoredParams = null;
+        this._samCamStoredProjectionFrame = null;
+        this._updateSAMCameraBanner();
+    }
+
+    _updateSAMCameraBanner() {
+        if (!this._samCamBanner) return;
+        const show = this.exportParams.samApplyCamera && this._samCamBannerVisible;
+        if (!show) {
+            this._samCamBanner.classList.remove('vnccs-sam-visible', 'vnccs-sam-paused');
+            return;
+        }
+        this._samCamBanner.classList.add('vnccs-sam-visible');
+        const label = this._samCamBanner.querySelector('.vnccs-sam-label');
+        if (this._samCamDisplayActive) {
+            this._samCamBanner.classList.remove('vnccs-sam-paused');
+            if (label) label.textContent = 'SAM Camera Applied';
+        } else {
+            this._samCamBanner.classList.add('vnccs-sam-paused');
+            if (label) label.textContent = 'SAM Camera (paused)';
+        }
+    }
+
+    _toggleSAMCameraDisplay() {
+        if (!this._samCamBannerVisible) return;
+        this._samCamDisplayActive = !this._samCamDisplayActive;
+        if (this._samCamDisplayActive) {
+            this.viewer?.setSAMProjectionCameraFrame?.(this._samCamStoredProjectionFrame || null);
+            this._samCameraModeActive = !!this._samCamStoredProjectionFrame;
+            if (this._samCamStoredParams) {
+                Object.assign(this.exportParams, this._samCamStoredParams);
+                this.syncCameraWidgets();
+                this.applyCameraToViewer(true);
+                this.viewer?.setCameraParams(this.currentCameraParams());
+            }
+        } else {
+            this.viewer?.setSAMProjectionCameraFrame?.(null);
+            this._samCameraModeActive = false;
+            if (this._samCamPreParams) {
+                Object.assign(this.exportParams, this._samCamPreParams);
+                this.syncCameraWidgets();
+                this.applyCameraToViewer(true);
+                this.viewer?.setCameraParams(this.currentCameraParams());
+            }
+        }
+        this._updateSAMCameraBanner();
     }
 
     resetCameraParams({ keepAngles = false } = {}) {
@@ -4192,6 +4300,17 @@ class PoseStudioWidget {
         this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection || null);
         this._samCameraModeActive = !!frameParams.sam_projection;
 
+        // Save pre-SAM params for toggle (first application only)
+        if (!this._samCamBannerVisible) {
+            this._samCamPreParams = {
+                cam_zoom: this.exportParams.cam_zoom,
+                cam_offset_x: this.exportParams.cam_offset_x,
+                cam_offset_y: this.exportParams.cam_offset_y,
+                cam_yaw_deg: this.exportParams.cam_yaw_deg,
+                cam_pitch_deg: this.exportParams.cam_pitch_deg,
+            };
+        }
+
         this.exportParams.cam_zoom = frameParams.zoom;
         this.exportParams.cam_offset_x = frameParams.offset_x;
         this.exportParams.cam_offset_y = frameParams.offset_y;
@@ -4200,6 +4319,18 @@ class PoseStudioWidget {
         this.syncCameraWidgets();
         this.applyCameraToViewer(true);
         this.viewer.setCameraParams(this.currentCameraParams());
+
+        this._samCamStoredParams = {
+            cam_zoom: this.exportParams.cam_zoom,
+            cam_offset_x: this.exportParams.cam_offset_x,
+            cam_offset_y: this.exportParams.cam_offset_y,
+            cam_yaw_deg: this.exportParams.cam_yaw_deg,
+            cam_pitch_deg: this.exportParams.cam_pitch_deg,
+        };
+        this._samCamStoredProjectionFrame = frameParams.sam_projection || null;
+        this._samCamBannerVisible = true;
+        this._samCamDisplayActive = true;
+        this._updateSAMCameraBanner();
         return true;
     }
 
@@ -5482,6 +5613,7 @@ class PoseStudioWidget {
         samCamCheckbox.checked = !!this.exportParams.samApplyCamera;
         samCamCheckbox.onchange = () => {
             this.exportParams.samApplyCamera = samCamCheckbox.checked;
+            this._updateSAMCameraBanner();
             this.syncToNode(false);
         };
 
