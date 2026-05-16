@@ -6065,39 +6065,17 @@ class PoseStudioWidget {
 
     resize() {
         if (this.viewer && this.canvasContainer) {
-            // Keep the interactive WebGL canvas at the same aspect ratio as the exported frame.
             const rect = this.canvasContainer.getBoundingClientRect();
-            const zoomFactor = 1.0;
-            const availableW = Math.round(rect.width / zoomFactor);
-            const availableH = Math.round(rect.height / zoomFactor);
-            const frameW = Math.max(1, Number(this.exportParams.view_width) || 1024);
-            const frameH = Math.max(1, Number(this.exportParams.view_height) || 1024);
-            const frameAspect = frameW / frameH;
-            const availableAspect = availableW / Math.max(1, availableH);
-            let targetW = availableW;
-            let targetH = availableH;
-            if (availableAspect > frameAspect) {
-                targetH = availableH;
-                targetW = Math.round(targetH * frameAspect);
-            } else {
-                targetW = availableW;
-                targetH = Math.round(targetW / frameAspect);
-            }
+            const targetW = Math.round(rect.width);
+            const targetH = Math.round(rect.height);
 
-            // Guard against feedback loops: skip if size hasn't materially changed.
-            // Without this, getBoundingClientRect → setSize → style change → rect grows → infinite loop
-            // on some systems with non-integer DPI or zoom scaling.
             if (targetW > 1 && targetH > 1) {
                 const dw = Math.abs(targetW - (this._lastResizeW || 0));
                 const dh = Math.abs(targetH - (this._lastResizeH || 0));
-                if (dw < 2 && dh < 2) return; // No meaningful change
+                if (dw < 2 && dh < 2) return;
 
                 this._lastResizeW = targetW;
                 this._lastResizeH = targetH;
-                if (this.canvas) {
-                    this.canvas.style.width = `${targetW}px`;
-                    this.canvas.style.height = `${targetH}px`;
-                }
                 this.viewer.resize(targetW, targetH);
                 if (this._activeHandSide) {
                     this.positionHandControlPopover(this._activeHandSide);
