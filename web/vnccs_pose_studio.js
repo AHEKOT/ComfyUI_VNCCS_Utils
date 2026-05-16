@@ -1830,6 +1830,7 @@ class PoseStudioWidget {
             debugKeepLighting: false, // Use manual lighting in debug mode
             debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
+            samApplyCamera: false, // Allow SAM import to override camera yaw/pitch
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
@@ -4152,6 +4153,29 @@ class PoseStudioWidget {
             this._samCameraModeActive = false;
             return false;
         }
+        // When SAM camera override is disabled: use forceFallback to get proper bbox-based
+        // zoom/offset (instead of the sam_projection path that returns zoom=1.0).
+        // The SAM projection camera frame is not set, so the viewing angle is unchanged.
+        if (!this.exportParams.samApplyCamera) {
+            this.viewer?.setSAMProjectionCameraFrame?.(null);
+            this._samCameraModeActive = false;
+            const fallbackParams = this.viewer?.computeSAM3DFrameCameraParams?.(
+                poseData,
+                this.exportParams.view_width || 1024,
+                this.exportParams.view_height || 1024,
+                meshData,
+                true // forceFallback: skip sam_projection, compute bbox zoom/offset
+            );
+            if (fallbackParams) {
+                this.exportParams.cam_zoom = fallbackParams.zoom;
+                this.exportParams.cam_offset_x = fallbackParams.offset_x;
+                this.exportParams.cam_offset_y = fallbackParams.offset_y;
+            }
+            this.syncCameraWidgets();
+            this.applyCameraToViewer(true);
+            this.viewer.setCameraParams(this.currentCameraParams());
+            return true;
+        }
         this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection || null);
         this._samCameraModeActive = !!frameParams.sam_projection;
 
@@ -5428,6 +5452,33 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
         content.appendChild(samMeshRow);
+
+        // SAM Camera Override Toggle
+        const samCamRow = document.createElement("div");
+        samCamRow.className = "vnccs-ps-field";
+        samCamRow.style.marginTop = "10px";
+
+        const samCamLabel = document.createElement("label");
+        samCamLabel.style.display = "flex";
+        samCamLabel.style.alignItems = "center";
+        samCamLabel.style.gap = "10px";
+        samCamLabel.style.cursor = "pointer";
+
+        const samCamCheckbox = document.createElement("input");
+        samCamCheckbox.type = "checkbox";
+        samCamCheckbox.checked = !!this.exportParams.samApplyCamera;
+        samCamCheckbox.onchange = () => {
+            this.exportParams.samApplyCamera = samCamCheckbox.checked;
+            this.syncToNode(false);
+        };
+
+        const samCamText = document.createElement("div");
+        samCamText.innerHTML = "<strong>SAM Import: Apply Camera Angle</strong><div style='font-size:11px; color:#888; margin-top:4px;'>When enabled, importing a SAM3D pose will override the camera yaw/pitch to match the detected angle. Disable to keep your current camera settings after import.</div>";
+
+        samCamLabel.appendChild(samCamCheckbox);
+        samCamLabel.appendChild(samCamText);
+        samCamRow.appendChild(samCamLabel);
+        content.appendChild(samCamRow);
 
         // Skin Texture Section
         const skinHeader = document.createElement("div");

@@ -3592,7 +3592,7 @@ export class PoseViewerCore {
         this.orbit.enableDamping = prevDamping;
     }
 
-    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null) {
+    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null, forceFallback = false) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 
         const frame = meshData?.render_frame || null;
@@ -3641,7 +3641,9 @@ export class PoseViewerCore {
                 },
             };
         })();
-        if (samProjectionFrame) {
+        // NOTE: forceFallback=true skips the SAM projection path and forces bbox-based zoom/offset
+        // computation. Used when the user has disabled the SAM camera override (samApplyCamera=false).
+        if (samProjectionFrame && !forceFallback) {
             return {
                 zoom: 1.0,
                 offset_x: 0,
