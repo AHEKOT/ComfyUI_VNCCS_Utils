@@ -1,3 +1,56 @@
+# Version 0.4.19
+## Pose Studio: SAM 3D Body Import, Proportion Controls, and Showcase Refresh
+
+### New Features
+
+*   **Pose Image input for Pose Studio**: Added an optional `pose_image` input to the `VNCCS_PoseStudio` node.
+    *   When an image is connected, Pose Studio can run the SAM 3D Body pipeline and use the detected body pose as the source for the active Pose Studio rig.
+    *   The backend sends the detected SAM pose to the frontend and waits for the widget to apply and sync the resulting Pose Studio state before execution continues.
+    *   Pose image changes now participate in `IS_CHANGED`, so ComfyUI correctly re-executes when the connected pose reference image changes.
+
+*   **SAM 3D Body pose import and retargeting**: Expanded Pose Studio's import pipeline to handle SAM3D-style body data.
+    *   Added SAM keypoint, joint, face, hand, foot, and dense MHR joint mapping into the Pose Studio core.
+    *   Added conversion from SAM3D body data into MakeHuman/Pose Studio bone targets.
+    *   Added IK-based fitting for pelvis, torso, arms, legs, head, hands, and feet using imported SAM targets.
+    *   Added support for SAM3D JSON/image import from the Pose Studio UI path.
+
+*   **SAM debug and fitting tools**: Added dedicated controls for inspecting and tuning SAM imports.
+    *   **Show SAM Helper Skeleton** displays the imported SAM3D reference skeleton in the viewport for alignment debugging.
+    *   **Show SAM Render Mesh Overlay** displays the postprocessed SAM3D body render mesh as a translucent overlay against the Pose Studio mannequin.
+    *   SAM helper overlays are hidden during final capture so they do not leak into output images.
+
+*   **SAM-aware camera matching**: Added camera fitting logic for imported SAM poses.
+    *   Pose Studio can compute framing from SAM3D projection data, render-frame bounds, projected vertices, or fallback bbox data.
+    *   Added `cam_yaw_deg` and `cam_pitch_deg` capture parameters so imported camera angles can be represented in Pose Studio state.
+    *   Added **SAM Import: Apply Camera Angle** setting to either match the detected SAM camera angle or keep the user's current camera view and compensate via model rotation.
+
+*   **Detailed body proportion controls**: Expanded the mesh/proportion system beyond the previous broad arm/hand controls.
+    *   Added per-side upper arm length controls.
+    *   Added per-side forearm length controls.
+    *   Added per-side thigh length controls.
+    *   Added per-side shin length controls.
+    *   Added spine length control.
+    *   Preserved compatibility with older saved data that used broader `arm_length`, `upper_arm_length`, `forearm_length`, `leg_length`, `thigh_length`, or `shin_length` fields.
+
+### Improvements
+
+*   **Capture and sync reliability**: Pose Studio now stores only a lightweight `capture_id` in widget state while captured images are kept in memory and uploaded to the server-side capture cache.
+    *   This keeps workflow JSON lighter while still allowing the Python backend to recover captured images from the LRU cache during execution.
+    *   Full-capture mode now carries yaw/pitch camera parameters through pose capture, preview, and queue-time output.
+
+*   **Keep Original Lighting behavior**: The updated capture path more consistently respects `keepOriginalLighting`.
+    *   Final captures can use clean flat ambient lighting while prompt generation avoids adding synthetic lighting text.
+    *   Debug/full-capture paths restore the user's lighting state after temporary capture changes.
+
+*   **Pose Studio example workflow refresh**: Updated the bundled Pose Studio showcase workflow for the new pose-image/SAM import flow.
+    *   Added a dedicated pose-reference image input feeding Pose Studio's `pose_image`.
+    *   Updated the character image and generation path around the Pose Studio output.
+    *   Updated the workflow to newer ComfyUI frontend/core node metadata.
+
+### Credits
+
+*   **Thanks and credits to [Slimy](https://github.com/Slimy-Comfy)** for providing a great fork that made this iteration of the Pose Studio possible!.
+
 # Version 0.4.18
 ## Pose Studio: Hand Interaction Pass, Camera Sync Cleanup, and Input Behavior Fixes
 
