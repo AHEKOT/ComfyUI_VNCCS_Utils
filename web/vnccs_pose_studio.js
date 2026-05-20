@@ -426,19 +426,77 @@ const STYLES = `
 }
 
 /* === Tab Bar === */
+.vnccs-ps-tabs-shell {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    background: rgba(0, 0, 0, 0.35);
+    border-bottom: 1px solid var(--ps-border);
+    flex-shrink: 0;
+    min-width: 0;
+}
+
 .vnccs-ps-tabs {
     display: flex;
     align-items: flex-end;
     padding: 8px 10px 0;
-    background: rgba(0, 0, 0, 0.35);
     gap: 3px;
-    border-bottom: 1px solid var(--ps-border);
     overflow-x: auto;
-    flex-shrink: 0;
+    overflow-y: hidden;
+    flex: 1;
+    min-width: 0;
+    scroll-behavior: smooth;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
 }
 
-.vnccs-ps-tabs::-webkit-scrollbar { height: 2px; }
-.vnccs-ps-tabs::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 1px; }
+.vnccs-ps-tabs::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+}
+
+.vnccs-ps-tab-scroll {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 30px;
+    border: none;
+    background: transparent;
+    color: var(--ps-accent);
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    transition: all var(--ps-transition);
+    z-index: 4;
+    box-shadow: none;
+}
+
+.vnccs-ps-tab-scroll.left {
+    left: 0;
+}
+
+.vnccs-ps-tab-scroll.right {
+    right: 0;
+}
+
+.vnccs-ps-tab-scroll.visible {
+    display: flex;
+}
+
+.vnccs-ps-tab-scroll:disabled {
+    opacity: 0.28;
+    cursor: default;
+    pointer-events: none;
+}
+
+.vnccs-ps-tab-scroll:hover {
+    color: var(--ps-accent);
+    background: transparent;
+}
 
 .vnccs-ps-tab {
     display: flex;
@@ -2022,6 +2080,10 @@ class PoseStudioWidget {
         this.sliders = {};
         this.exportWidgets = {};
         this.tabsContainer = null;
+        this.tabsShell = null;
+        this.tabScrollLeft = null;
+        this.tabScrollRight = null;
+        this._tabResizeObserver = null;
         this.canvasContainer = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -2352,10 +2414,36 @@ class PoseStudioWidget {
         const centerPanel = this.centerPanel;
 
         // Tab Bar
+        this.tabsShell = document.createElement("div");
+        this.tabsShell.className = "vnccs-ps-tabs-shell";
+
+        this.tabScrollLeft = document.createElement("button");
+        this.tabScrollLeft.className = "vnccs-ps-tab-scroll left";
+        this.tabScrollLeft.type = "button";
+        this.tabScrollLeft.title = "Scroll tabs left";
+        this.tabScrollLeft.textContent = "<";
+        this.tabScrollLeft.addEventListener("click", () => this.scrollTabs(-1));
+
         this.tabsContainer = document.createElement("div");
         this.tabsContainer.className = "vnccs-ps-tabs";
+        this.tabsContainer.addEventListener("scroll", () => this.updateTabScrollButtons());
+
+        this.tabScrollRight = document.createElement("button");
+        this.tabScrollRight.className = "vnccs-ps-tab-scroll right";
+        this.tabScrollRight.type = "button";
+        this.tabScrollRight.title = "Scroll tabs right";
+        this.tabScrollRight.textContent = ">";
+        this.tabScrollRight.addEventListener("click", () => this.scrollTabs(1));
+
+        this.tabsShell.appendChild(this.tabScrollLeft);
+        this.tabsShell.appendChild(this.tabsContainer);
+        this.tabsShell.appendChild(this.tabScrollRight);
+        centerPanel.appendChild(this.tabsShell);
+        if (typeof ResizeObserver !== "undefined") {
+            this._tabResizeObserver = new ResizeObserver(() => this.updateTabScrollButtons());
+            this._tabResizeObserver.observe(this.tabsContainer);
+        }
         this.updateTabs();
-        centerPanel.appendChild(this.tabsContainer);
 
         // Canvas Container
         this.canvasContainer = document.createElement("div");
@@ -3866,14 +3954,49 @@ class PoseStudioWidget {
             this.tabsContainer.appendChild(tab);
         }
 
-        // Add button (max 12)
-        if (this.poses.length < 12) {
-            const addBtn = document.createElement("button");
-            addBtn.className = "vnccs-ps-tab-add";
-            addBtn.innerText = "+";
-            addBtn.addEventListener("click", () => this.addTab());
-            this.tabsContainer.appendChild(addBtn);
-        }
+        const addBtn = document.createElement("button");
+        addBtn.className = "vnccs-ps-tab-add";
+        addBtn.innerText = "+";
+        addBtn.addEventListener("click", () => this.addTab());
+        this.tabsContainer.appendChild(addBtn);
+
+        requestAnimationFrame(() => {
+            this.updateTabScrollButtons();
+            this.scrollActiveTabIntoView();
+        });
+    }
+
+    updateTabScrollButtons() {
+        if (!this.tabsContainer || !this.tabScrollLeft || !this.tabScrollRight) return;
+        const tabsRect = this.tabsContainer.getBoundingClientRect();
+        const viewportRight = tabsRect.right;
+        const children = Array.from(this.tabsContainer.children);
+        const lastChild = children[children.length - 1];
+        const lastRight = lastChild?.getBoundingClientRect().right || viewportRight;
+        const maxScroll = Math.max(0, lastRight - viewportRight + this.tabsContainer.scrollLeft);
+        const overflow = maxScroll > 1;
+        const atStart = this.tabsContainer.scrollLeft <= 1;
+        const atEnd = this.tabsContainer.scrollLeft >= maxScroll - 1;
+        this.tabScrollLeft.classList.toggle("visible", overflow);
+        this.tabScrollRight.classList.toggle("visible", overflow);
+        this.tabScrollLeft.disabled = !overflow || atStart;
+        this.tabScrollRight.disabled = !overflow || atEnd;
+    }
+
+    scrollTabs(direction) {
+        if (!this.tabsContainer) return;
+        const amount = Math.max(120, Math.round(this.tabsContainer.clientWidth * 0.72));
+        this.tabsContainer.scrollBy({ left: amount * direction, behavior: "smooth" });
+        requestAnimationFrame(() => this.updateTabScrollButtons());
+        setTimeout(() => this.updateTabScrollButtons(), 260);
+        setTimeout(() => this.updateTabScrollButtons(), 520);
+    }
+
+    scrollActiveTabIntoView() {
+        if (!this.tabsContainer) return;
+        const active = this.tabsContainer.querySelector('.vnccs-ps-tab.active');
+        if (!active) return;
+        active.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
     }
 
     switchTab(index) {
@@ -3934,8 +4057,6 @@ class PoseStudioWidget {
     }
 
     addTab() {
-        if (this.poses.length >= 12) return;
-
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.viewer.getPose();
