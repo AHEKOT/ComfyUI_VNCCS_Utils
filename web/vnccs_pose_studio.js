@@ -1306,6 +1306,32 @@ const STYLES = `
     box-shadow: 0 0 0 2px rgba(255,143,163,0.12);
 }
 
+.vnccs-ps-library-size-control {
+    width: 190px;
+    flex: 0 0 190px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 8px;
+    color: var(--ps-text-muted);
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.7px;
+    font-family: var(--ps-font);
+}
+
+.vnccs-ps-library-size-control input {
+    width: 100%;
+    accent-color: var(--ps-accent);
+}
+
+.vnccs-ps-library-size-value {
+    width: 34px;
+    text-align: right;
+    color: var(--ps-accent);
+}
+
 .vnccs-ps-library-categories {
     display: flex;
     gap: 8px;
@@ -1343,7 +1369,7 @@ const STYLES = `
 }
 
 .vnccs-ps-library-workspace.has-inspector {
-    grid-template-columns: minmax(0, 1fr) minmax(280px, 340px);
+    grid-template-columns: minmax(0, 1fr) minmax(420px, 510px);
 }
 
 .vnccs-ps-library-workspace.settings-mode {
@@ -1490,7 +1516,7 @@ const STYLES = `
     overflow-y: auto;
     padding: 20px;
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(var(--vnccs-ps-library-thumb-size, 320px), 1fr));
     gap: 16px;
     align-content: start;
 }
@@ -1550,7 +1576,7 @@ const STYLES = `
     cursor: pointer;
     transition: all var(--ps-transition);
     position: relative;
-    min-height: 210px;
+    min-height: var(--vnccs-ps-library-thumb-height, 420px);
     display: flex;
     flex-direction: column;
 }
@@ -1915,6 +1941,8 @@ class PoseStudioWidget {
         this._boundHandleDocumentPointerDown = this._handleDocumentPointerDown.bind(this);
         this._boundHandleDocumentPointerUp = this._handleDocumentPointerUp.bind(this);
         this._boundHandleDocumentPointerCancel = this._handleDocumentPointerCancel.bind(this);
+        this.libraryThumbSizeStorageKey = "vnccsPoseLibraryPreviewSize";
+        this.libraryThumbSize = this.loadLibraryThumbnailSize();
 
         this.createUI();
     }
@@ -4559,6 +4587,43 @@ class PoseStudioWidget {
 
     // === Pose Library Methods ===
 
+    getLibraryThumbnailBounds() {
+        return { min: 160, max: 520, defaultSize: 320 };
+    }
+
+    loadLibraryThumbnailSize() {
+        const bounds = this.getLibraryThumbnailBounds();
+        try {
+            const stored = Number(localStorage.getItem(this.libraryThumbSizeStorageKey));
+            if (Number.isFinite(stored)) {
+                return Math.max(bounds.min, Math.min(bounds.max, stored));
+            }
+        } catch (_err) {
+            // localStorage can be unavailable in restricted browser contexts.
+        }
+        return bounds.defaultSize;
+    }
+
+    saveLibraryThumbnailSize(size) {
+        const bounds = this.getLibraryThumbnailBounds();
+        const value = Math.max(bounds.min, Math.min(bounds.max, Number(size) || bounds.defaultSize));
+        this.libraryThumbSize = value;
+        try {
+            localStorage.setItem(this.libraryThumbSizeStorageKey, String(value));
+        } catch (_err) {}
+        this.applyLibraryThumbnailSize();
+        return value;
+    }
+
+    applyLibraryThumbnailSize(root = null) {
+        const target = root || this.libraryWorkspace || this.libraryGrid;
+        if (!target) return;
+        const size = this.libraryThumbSize || this.getLibraryThumbnailBounds().defaultSize;
+        target.style.setProperty("--vnccs-ps-library-thumb-size", `${size}px`);
+        target.style.setProperty("--vnccs-ps-library-thumb-height", `${Math.round(size * 1.3125)}px`);
+        if (this.librarySizeValue) this.librarySizeValue.textContent = `${Math.round(size)}`;
+    }
+
     showLibraryModal() {
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-library-overlay';
@@ -4577,6 +4642,11 @@ class PoseStudioWidget {
             </div>
             <div class="vnccs-ps-library-toolbar">
                 <input class="vnccs-ps-library-search" type="search" placeholder="Search poses and tags...">
+                <label class="vnccs-ps-library-size-control" title="Preview size">
+                    <span>Preview</span>
+                    <input class="vnccs-ps-library-size-slider" type="range" min="160" max="520" step="10">
+                    <span class="vnccs-ps-library-size-value"></span>
+                </label>
                 <button class="vnccs-ps-library-menu-btn" title="Pose library settings">⚙️</button>
             </div>
             <div class="vnccs-ps-library-categories"></div>
@@ -4591,11 +4661,18 @@ class PoseStudioWidget {
         this.libraryInspector = modal.querySelector('.vnccs-ps-library-inspector');
         this.libraryWorkspace = modal.querySelector('.vnccs-ps-library-workspace');
         this.librarySearchInput = modal.querySelector('.vnccs-ps-library-search');
+        this.librarySizeInput = modal.querySelector('.vnccs-ps-library-size-slider');
+        this.librarySizeValue = modal.querySelector('.vnccs-ps-library-size-value');
         this.libraryCategoriesEl = modal.querySelector('.vnccs-ps-library-categories');
         this.librarySettingsEl = modal.querySelector('.vnccs-ps-library-settings');
         this.librarySettingsMode = false;
         this.librarySelectedName = null;
         this.libraryActiveCategory = "All";
+        if (this.librarySizeInput) {
+            this.librarySizeInput.value = String(this.libraryThumbSize);
+            this.librarySizeInput.addEventListener('input', () => this.saveLibraryThumbnailSize(this.librarySizeInput.value));
+        }
+        this.applyLibraryThumbnailSize(this.libraryWorkspace);
 
         modal.querySelector('.vnccs-ps-modal-close').onclick = () => overlay.remove();
         modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
@@ -5039,7 +5116,7 @@ class PoseStudioWidget {
         const params = new URLSearchParams();
         params.set("repository", meta.repository);
         params.set("category", meta.category);
-        params.set("v", String(Date.now()));
+        if (pose.preview_mtime) params.set("v", String(pose.preview_mtime));
         return `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?${params.toString()}`;
     }
 
@@ -5109,6 +5186,7 @@ class PoseStudioWidget {
         for (const pose of filtered) {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
+            item.dataset.poseId = this.getLibraryPoseId(pose);
             if (this.getLibraryPoseId(pose) === this.librarySelectedName) item.classList.add('selected');
 
             const preview = document.createElement('div');
@@ -5136,7 +5214,10 @@ class PoseStudioWidget {
 
     selectLibraryPose(pose) {
         this.librarySelectedName = this.getLibraryPoseId(pose);
-        this.renderLibrary();
+        this.libraryGrid?.querySelectorAll('.vnccs-ps-library-item').forEach((item) => {
+            item.classList.toggle('selected', item.dataset.poseId === this.librarySelectedName);
+        });
+        this.renderLibraryInspector(pose);
     }
 
     renderLibraryInspector(pose) {

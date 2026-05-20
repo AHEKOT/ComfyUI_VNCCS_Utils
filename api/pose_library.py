@@ -1015,6 +1015,7 @@ def build_pose_record(name, path, pose_data, full_details=False, repository=None
     repository = repository or meta.get("repository") or LOCAL_USER_REPOSITORY
     category = category or meta.get("category") or DEFAULT_CATEGORY
     preview_path, preview_type = find_preview(folder_path, name)
+    preview_mtime = int(os.path.getmtime(preview_path)) if preview_path and os.path.exists(preview_path) else 0
     return {
         "id": f"{repository_to_dir(repository)}/{category_to_dir(category)}/{name}",
         "name": name,
@@ -1025,6 +1026,7 @@ def build_pose_record(name, path, pose_data, full_details=False, repository=None
         "tags": meta["tags"],
         "has_preview": preview_path is not None,
         "preview_type": preview_type,
+        "preview_mtime": preview_mtime,
         "data": pose_data if full_details else None,
     }
 
