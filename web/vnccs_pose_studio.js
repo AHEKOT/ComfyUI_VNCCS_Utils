@@ -5095,7 +5095,7 @@ class PoseStudioWidget {
             const status = repo.status === 'error' ? `Error: ${repo.last_error || 'refresh failed'}` : (repo.status || 'not checked');
             const checked = repo.last_checked ? new Date(repo.last_checked * 1000).toLocaleString() : 'never';
             const syncMeta = repo.downloaded_count !== undefined
-                ? ` · ${Number(repo.downloaded_count || 0)} downloaded · ${Number(repo.skipped_count || 0)} unchanged`
+                ? ` · ${Number(repo.downloaded_count || 0)} downloaded · ${Number(repo.skipped_count || 0)} unchanged · ${Number(repo.removed_count || 0)} removed`
                 : '';
             card.innerHTML = `
                 <div>
@@ -5125,7 +5125,7 @@ class PoseStudioWidget {
         const publishRepo = repo.publish_repo_id || "Not linked";
         const lastPublish = repo.last_publish ? new Date(repo.last_publish * 1000).toLocaleString() : "never";
         const lastResult = repo.last_publish_result
-            ? `${Number(repo.last_publish_result.uploaded_count || 0)} uploaded · ${Number(repo.last_publish_result.skipped_count || 0)} unchanged`
+            ? `${Number(repo.last_publish_result.uploaded_count || 0)} uploaded · ${Number(repo.last_publish_result.deleted_count || 0)} deleted · ${Number(repo.last_publish_result.skipped_count || 0)} unchanged`
             : "not published yet";
         holder.innerHTML = `
             <div class="vnccs-ps-library-repo-card" data-repo-progress-key="local:publish">
@@ -5265,7 +5265,7 @@ class PoseStudioWidget {
             progress.update({
                 status: "success",
                 progress: 100,
-                message: `Published ${Number(result.uploaded_count || 0)} files. ${Number(result.skipped_count || 0)} poses unchanged.`,
+                message: `Published ${Number(result.uploaded_count || 0)} files. Deleted ${Number(result.deleted_count || 0)} stale files. ${Number(result.skipped_count || 0)} poses unchanged.`,
             });
         } catch (err) {
             progress.update({
@@ -5426,7 +5426,13 @@ class PoseStudioWidget {
             }
             this.poseRepositories = data.repositories || [];
             this.renderPoseRepositorySettings();
-            progress.update({ status: "success", progress: 100, message: `${repoId} ${enabled ? "enabled" : "disabled"}.` });
+            progress.update({
+                status: "success",
+                progress: 100,
+                message: enabled
+                    ? `${repoId} enabled.`
+                    : `${repoId} disabled. Removed ${Number(data.removed_count || 0)} cached files.`,
+            });
             await this.refreshLibrary(true);
             if (enabled) {
                 if (pollTimer) {
@@ -5469,7 +5475,7 @@ class PoseStudioWidget {
                 progress: 100,
                 message: refreshed.status === "error"
                     ? `Error: ${refreshed.last_error || "refresh failed"}`
-                    : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
+                    : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged, ${Number(refreshed.removed_count || 0)} removed.`,
             });
             await this.refreshLibrary(true);
         } finally {
@@ -5486,8 +5492,9 @@ class PoseStudioWidget {
             return;
         }
         this.poseRepositories = data.repositories || [];
-        this.clearRepositoryNotice();
         this.renderPoseRepositorySettings();
+        this.clearRepositoryNotice();
+        this.showRepositoryNotice(`Removed ${repoId}. Deleted ${Number(data.removed_count || 0)} cached files.`);
         await this.refreshLibrary(true);
     }
 

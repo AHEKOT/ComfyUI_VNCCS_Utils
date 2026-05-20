@@ -207,6 +207,8 @@ def _vnccs_register_endpoint():
                 set_landmark_from_group("right_eye", "helper-r-eye")
                 surface_nose_point()
 
+                char_data_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "CharacterData"))
+                mh_path = os.path.join(char_data_path, "makehuman")
                 default_skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
                 if os.path.exists(default_skel_path):
                     with open(default_skel_path, "r", encoding="utf-8") as f:

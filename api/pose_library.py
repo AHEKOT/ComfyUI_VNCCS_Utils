@@ -247,11 +247,12 @@ def refresh_pose_repository(repo, task_id=None):
             result["pose_count"] = len(poses)
             result["downloaded_count"] = sync_result["downloaded_count"]
             result["skipped_count"] = sync_result["skipped_count"]
+            result["removed_count"] = sync_result["removed_count"]
             result["title"] = manifest.get("title") or result.get("title") or repo_id
             result["description"] = manifest.get("description") or result.get("description") or ""
             result["updated_at"] = manifest.get("updated_at") or ""
             result["status"] = "ok"
-            repository_progress_finish(task_id, f"Repository sync complete: {sync_result['downloaded_count']} downloaded, {sync_result['skipped_count']} unchanged.")
+            repository_progress_finish(task_id, f"Repository sync complete: {sync_result['downloaded_count']} downloaded, {sync_result['skipped_count']} unchanged, {sync_result['removed_count']} removed.")
         except Exception:
             repository_progress_update(task_id, message=f"Manifest not found. Counting files in {repo_id}...", progress=50)
             files = api.list_repo_files(repo_id=repo_id, repo_type="model", token=token)
@@ -451,12 +452,79 @@ def local_file_matches(path, expected_sha):
     except Exception:
         return False
 
+def cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=None):
+    repo_root = os.path.join(get_library_path(), repository_to_dir(repo_id))
+    if not os.path.exists(repo_root):
+        return []
+
+    expected_json_paths = {os.path.abspath(path) for path in expected_json_paths}
+    expected_preview_paths = {os.path.abspath(path) for path in expected_preview_paths if path}
+    removed = []
+    preview_exts = {".webp", ".jpg", ".jpeg", ".png"}
+
+    for root, _dirs, files in os.walk(repo_root):
+        for filename in files:
+            path = os.path.join(root, filename)
+            abs_path = os.path.abspath(path)
+            ext = os.path.splitext(filename)[1].lower()
+            should_remove = False
+            if ext == ".json" and filename not in RESERVED_LIBRARY_JSON:
+                should_remove = abs_path not in expected_json_paths
+            elif ext in preview_exts:
+                should_remove = abs_path not in expected_preview_paths
+            if not should_remove:
+                continue
+            try:
+                os.remove(path)
+                removed.append(os.path.relpath(path, repo_root))
+            except Exception:
+                pass
+
+    for root, _dirs, _files in os.walk(repo_root, topdown=False):
+        if root == repo_root:
+            continue
+        try:
+            is_empty = not os.listdir(root)
+        except Exception:
+            is_empty = False
+        if is_empty:
+            try:
+                os.rmdir(root)
+            except Exception:
+                pass
+
+    if removed:
+        repository_progress_update(
+            task_id,
+            message=f"Removed {len(removed)} stale local pose files.",
+            progress=98,
+        )
+    return removed
+
+def remove_local_repository_cache(repo_id):
+    if repo_id == LOCAL_USER_REPOSITORY:
+        return 0
+    lib_root = os.path.abspath(get_library_path())
+    repo_root = os.path.abspath(os.path.join(lib_root, repository_to_dir(repo_id)))
+    if repo_root == lib_root or not repo_root.startswith(lib_root + os.sep):
+        return 0
+    if not os.path.exists(repo_root):
+        return 0
+
+    removed_count = 0
+    for _root, _dirs, files in os.walk(repo_root):
+        removed_count += len(files)
+    shutil.rmtree(repo_root, ignore_errors=True)
+    return removed_count
+
 def sync_pose_repository_files(repo, manifest, token, task_id=None):
     """Download new/changed pose files from a Hugging Face pose repository."""
     repo_id = repo["repo_id"]
     poses = manifest.get("poses") or []
     downloaded = []
     skipped = []
+    expected_json_paths = set()
+    expected_preview_paths = set()
     errors = []
     total_files = 1 + sum(
         1 + (1 if isinstance(pose, dict) and pose.get("preview_path") else 0)
@@ -477,6 +545,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         category = str(pose.get("category") or infer_category_from_hub_path(hub_json_path) or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
         pose_dir = get_pose_dir(repo_id, category)
         target_json = os.path.join(pose_dir, f"{name}.json")
+        expected_json_paths.add(target_json)
 
         try:
             if local_file_matches(target_json, pose.get("json_sha256") or ""):
@@ -513,6 +582,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                 try:
                     ext = os.path.splitext(hub_preview_path)[1].lower() or ".webp"
                     target_preview = os.path.join(pose_dir, f"{name}{ext}")
+                    expected_preview_paths.add(target_preview)
                     if local_file_matches(target_preview, pose.get("preview_sha256") or ""):
                         repository_progress_update(
                             task_id,
@@ -550,22 +620,27 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         except Exception as exc:
             errors.append(f"{hub_json_path}: {exc}")
 
+    removed = cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=task_id)
+
     return {
         "downloaded_count": len(downloaded),
         "skipped_count": len(skipped),
+        "removed_count": len(removed),
         "downloaded": downloaded,
         "skipped": skipped,
+        "removed": removed,
         "errors": errors,
     }
 
 def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
     remote_poses = remote_manifest.get("poses") if isinstance(remote_manifest, dict) else []
-    merged = {}
+    remote_by_json = {}
     for pose in remote_poses or []:
         if isinstance(pose, dict) and pose.get("json_path"):
-            merged[pose["json_path"]] = pose
+            remote_by_json[pose["json_path"]] = pose
 
     now = datetime.now(timezone.utc).isoformat()
+    manifest_poses = []
     for pose in local_poses:
         entry = {
             "name": pose["name"],
@@ -578,10 +653,10 @@ def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
             "preview_sha256": pose["preview_sha256"],
             "updated_at": now,
         }
-        previous = merged.get(pose["hub_json_path"])
+        previous = remote_by_json.get(pose["hub_json_path"])
         if previous and pose["hub_json_path"] not in changed_paths and pose["hub_preview_path"] not in changed_paths:
             entry["updated_at"] = previous.get("updated_at") or now
-        merged[pose["hub_json_path"]] = entry
+        manifest_poses.append(entry)
 
     title = remote_manifest.get("title") if isinstance(remote_manifest, dict) else ""
     return {
@@ -589,8 +664,72 @@ def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
         "title": title or "VNCCS Pose Library",
         "repo_id": repo_id,
         "updated_at": now,
-        "poses": sorted(merged.values(), key=lambda item: (item.get("category") or "", item.get("name") or "")),
+        "poses": sorted(manifest_poses, key=lambda item: (item.get("category") or "", item.get("name") or "")),
     }
+
+def collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_files):
+    local_paths = set()
+    for pose in local_poses:
+        local_paths.add(pose["hub_json_path"])
+        if pose.get("hub_preview_path"):
+            local_paths.add(pose["hub_preview_path"])
+
+    delete_paths = set()
+    remote_poses = remote_manifest.get("poses") if isinstance(remote_manifest, dict) else []
+    for pose in remote_poses or []:
+        if not isinstance(pose, dict):
+            continue
+        for key in ("json_path", "path", "preview_path"):
+            path = str(pose.get(key) or "").strip()
+            if path and path not in local_paths:
+                delete_paths.add(path)
+
+    if remote_manifest and remote_files:
+        for path in remote_files:
+            normalized = str(path or "").replace("\\", "/")
+            if normalized.startswith(("poses/", "previews/")) and normalized not in local_paths:
+                delete_paths.add(normalized)
+
+    return sorted(path for path in delete_paths if path and path != "pose_library.json")
+
+def delete_remote_pose_files(api, repo_id, token, paths, task_id=None):
+    deleted = []
+    errors = []
+    for index, path in enumerate(paths):
+        repository_progress_update(
+            task_id,
+            progress=min(86 + (index / max(len(paths), 1)) * 6, 92),
+            message=f"Deleting {path}...",
+            current_file=path,
+            file_index=index + 1,
+            total_files=len(paths),
+        )
+        try:
+            delete_file = getattr(api, "delete_file", None)
+            if callable(delete_file):
+                delete_file(
+                    path_in_repo=path,
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=token,
+                    commit_message=f"Delete stale pose file {path}",
+                )
+            else:
+                from huggingface_hub import CommitOperationDelete
+                api.create_commit(
+                    repo_id=repo_id,
+                    repo_type="model",
+                    operations=[CommitOperationDelete(path_in_repo=path)],
+                    token=token,
+                    commit_message=f"Delete stale pose file {path}",
+                )
+            deleted.append(path)
+        except Exception as exc:
+            if "404" in str(exc) or "not found" in str(exc).lower():
+                deleted.append(path)
+            else:
+                errors.append(f"{path}: {exc}")
+    return deleted, errors
 
 def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
     repo_id = normalize_repo_id(repo_id)
@@ -629,6 +768,8 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
 
         changed_paths = set()
         uploaded = []
+        deleted = []
+        delete_errors = []
         skipped = []
         manifest_changed = not bool(remote_manifest)
         total_poses = max(len(local_poses), 1)
@@ -689,6 +830,15 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
             ):
                 manifest_changed = True
 
+        stale_paths = collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_files)
+        if stale_paths:
+            repository_progress_update(task_id, progress=86, message=f"Deleting {len(stale_paths)} stale remote files...")
+            deleted, delete_errors = delete_remote_pose_files(api, repo_id, token, stale_paths, task_id=task_id)
+            manifest_changed = True
+            changed_paths.update(deleted)
+            if delete_errors:
+                raise RuntimeError("Failed to delete stale remote pose files: " + "; ".join(delete_errors))
+
         repository_progress_update(task_id, progress=92, message="Building pose manifest...")
         manifest = build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths)
         with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as f:
@@ -719,8 +869,10 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         "repo_id": repo_id,
         "pose_count": len(local_poses),
         "uploaded_count": len(uploaded),
+        "deleted_count": len(deleted),
         "skipped_count": len(skipped),
         "uploaded": uploaded,
+        "deleted": deleted,
         "skipped": skipped,
         "changed": sorted(changed_paths),
         "manifest_pose_count": len(manifest.get("poses") or []),
@@ -731,7 +883,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         "pose_library_last_publish": time.time(),
         "pose_library_last_publish_result": result,
     })
-    repository_progress_finish(task_id, f"Published {len(uploaded)} files. {len(skipped)} poses unchanged.")
+    repository_progress_finish(task_id, f"Published {len(uploaded)} files. Deleted {len(deleted)} stale files. {len(skipped)} poses unchanged.")
     return result
 
 async def list_pose_repositories(request):
@@ -796,10 +948,17 @@ async def toggle_pose_repository(request):
         else:
             repository_progress_fail(task_id, "Repository not found")
             return web.json_response({"error": "Repository not found"}, status=404)
+    removed_count = 0
+    if not enabled:
+        repository_progress_update(task_id, progress=65, message="Removing local repository cache...")
+        removed_count = remove_local_repository_cache(repo_id)
     repository_progress_update(task_id, progress=75, message="Saving repository settings...")
     save_user_repositories(user_repos)
-    repository_progress_finish(task_id, f"{repo_id} {'enabled' if enabled else 'disabled'}.")
-    return web.json_response({"success": True, "repositories": load_pose_repositories()})
+    message = f"{repo_id} {'enabled' if enabled else 'disabled'}."
+    if not enabled:
+        message = f"{message} Removed {removed_count} cached files."
+    repository_progress_finish(task_id, message)
+    return web.json_response({"success": True, "repositories": load_pose_repositories(), "removed_count": removed_count})
 
 async def delete_pose_repository(request):
     repo_id = normalize_repo_id(request.match_info.get("repo_id"))
@@ -808,8 +967,9 @@ async def delete_pose_repository(request):
     if any(repo["repo_id"] == repo_id for repo in load_default_repositories()):
         return web.json_response({"error": "Default repositories can be disabled, not deleted"}, status=400)
     user_repos = [repo for repo in load_user_repositories() if repo["repo_id"] != repo_id]
+    removed_count = remove_local_repository_cache(repo_id)
     save_user_repositories(user_repos)
-    return web.json_response({"success": True, "repositories": load_pose_repositories()})
+    return web.json_response({"success": True, "repositories": load_pose_repositories(), "removed_count": removed_count})
 
 def persist_refreshed_repositories(refreshed):
     user_repos = load_user_repositories()
@@ -817,7 +977,7 @@ def persist_refreshed_repositories(refreshed):
     for repo in refreshed:
         if repo.get("builtin"):
             override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
-            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count")})
+            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count", "removed_count")})
         elif repo["repo_id"] in by_id:
             by_id[repo["repo_id"]].update(repo)
     save_user_repositories(list(by_id.values()))
@@ -1149,7 +1309,7 @@ async def list_poses(request):
             category = raw_meta.get("category")
             if not repository:
                 repository = repo_map.get(parts[0], parts[0]) if parts else LOCAL_USER_REPOSITORY
-            if repository != LOCAL_USER_REPOSITORY and not repository_states.get(repository, True):
+            if repository != LOCAL_USER_REPOSITORY and not repository_states.get(repository, False):
                 continue
             if not category:
                 category = parts[1] if len(parts) > 1 else DEFAULT_CATEGORY

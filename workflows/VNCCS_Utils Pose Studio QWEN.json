@@ -2,13 +2,154 @@
   "id": "42229f29-f008-4062-83f2-7b07431afdd3",
   "revision": 0,
   "last_node_id": 629,
-  "last_link_id": 1907,
+  "last_link_id": 1908,
   "nodes": [
+    {
+      "id": 67,
+      "type": "PreviewAny",
+      "pos": [
+        6850,
+        2590
+      ],
+      "size": [
+        500,
+        170
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "*",
+          "link": 290
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.9.2",
+        "Node name for S&R": "PreviewAny"
+      },
+      "widgets_values": [
+        null,
+        null,
+        null
+      ]
+    },
+    {
+      "id": 2,
+      "type": "095f6223-0e52-4a45-bc5e-275bfd1d3d18",
+      "pos": [
+        6410,
+        1900
+      ],
+      "size": [
+        430,
+        180
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "patched_model",
+          "type": "MODEL",
+          "links": [
+            1903
+          ]
+        },
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "links": [
+            31
+          ]
+        },
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "links": [
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "proxyWidgets": [
+          [
+            "617",
+            "unet_name"
+          ],
+          [
+            "619",
+            "lora_name"
+          ],
+          [
+            "624",
+            "clip_name"
+          ],
+          [
+            "625",
+            "vae_name"
+          ]
+        ],
+        "cnr_id": "comfy-core",
+        "ver": "0.5.1"
+      },
+      "widgets_values": []
+    },
+    {
+      "id": 629,
+      "type": "LoadImage",
+      "pos": [
+        4190,
+        2910
+      ],
+      "size": [
+        990,
+        860
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 4,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            1907
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "title": "Pose Capture",
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.6.0",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ModernDancer.png",
+        "image"
+      ]
+    },
     {
       "id": 20,
       "type": "4497bca1-1e1f-4227-9bfb-cccb5d11b7b4",
       "pos": [
-        8040,
+        6850,
         2230
       ],
       "size": [
@@ -100,10 +241,75 @@
       "widgets_values": []
     },
     {
+      "id": 83,
+      "type": "SaveImage",
+      "pos": [
+        7370,
+        1570
+      ],
+      "size": [
+        1520,
+        2230
+      ],
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 313
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.10.0",
+        "Node name for S&R": "SaveImage"
+      },
+      "widgets_values": [
+        "ComfyUI"
+      ]
+    },
+    {
+      "id": 16,
+      "type": "VNCCS_ModelManager",
+      "pos": [
+        5210,
+        1800
+      ],
+      "size": [
+        570,
+        280
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "repo_id",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "aux_id": "AHEKOT/ComfyUI_VNCCS_Utils",
+        "Node name for S&R": "VNCCS_ModelManager",
+        "cnr_id": "vnccs-utils",
+        "ver": "6dd35c423d5fdc4f3044a842dbf760066154b652"
+      },
+      "widgets_values": [
+        "MIUProject/VNCCS_PoseStudio",
+        null,
+        ""
+      ]
+    },
+    {
       "id": 628,
       "type": "LoraLoaderModelOnly",
       "pos": [
-        8040,
+        6850,
         2110
       ],
       "size": [
@@ -111,7 +317,7 @@
         90
       ],
       "flags": {},
-      "order": 5,
+      "order": 6,
       "mode": 0,
       "inputs": [
         {
@@ -125,7 +331,7 @@
           "widget": {
             "name": "lora_name"
           },
-          "link": 1905
+          "link": 1908
         }
       ],
       "outputs": [
@@ -143,54 +349,15 @@
         "Node name for S&R": "LoraLoaderModelOnly"
       },
       "widgets_values": [
-        "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+        "qwen\\VNCCS\\VNCCS_QIE2511_PoseStudio_ART_V5.9.safetensors",
         1
-      ]
-    },
-    {
-      "id": 67,
-      "type": "PreviewAny",
-      "pos": [
-        8040,
-        2590
-      ],
-      "size": [
-        500,
-        170
-      ],
-      "flags": {},
-      "order": 7,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "source",
-          "type": "*",
-          "link": 290
-        }
-      ],
-      "outputs": [
-        {
-          "name": "STRING",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.9.2",
-        "Node name for S&R": "PreviewAny"
-      },
-      "widgets_values": [
-        null,
-        null,
-        null
       ]
     },
     {
       "id": 31,
       "type": "VNCCS_ModelSelector",
       "pos": [
-        8030,
+        6840,
         1900
       ],
       "size": [
@@ -198,7 +365,7 @@
         180
       ],
       "flags": {},
-      "order": 0,
+      "order": 3,
       "mode": 0,
       "inputs": [],
       "outputs": [
@@ -206,7 +373,7 @@
           "name": "model_path",
           "type": "*",
           "links": [
-            1905
+            1908
           ]
         }
       ],
@@ -219,85 +386,63 @@
       "widgets_values": [
         "MIUProject/VNCCS_PoseStudio",
         "VNCCS Pose Studio QIE2511",
-        "2.0.0",
+        "5.9.0",
         ""
       ]
     },
     {
-      "id": 2,
-      "type": "095f6223-0e52-4a45-bc5e-275bfd1d3d18",
+      "id": 54,
+      "type": "LoadImage",
       "pos": [
-        7600,
-        1900
+        4190,
+        1790
       ],
       "size": [
-        430,
-        180
+        990,
+        1080
       ],
       "flags": {},
-      "order": 1,
+      "order": 4,
       "mode": 0,
       "inputs": [],
       "outputs": [
         {
-          "name": "patched_model",
-          "type": "MODEL",
+          "name": "IMAGE",
+          "type": "IMAGE",
           "links": [
-            1903
+            302
           ]
         },
         {
-          "name": "CLIP",
-          "type": "CLIP",
-          "links": [
-            31
-          ]
-        },
-        {
-          "name": "VAE",
-          "type": "VAE",
-          "links": [
-            32
-          ]
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
         }
       ],
+      "title": "Character",
       "properties": {
-        "proxyWidgets": [
-          [
-            "617",
-            "unet_name"
-          ],
-          [
-            "619",
-            "lora_name"
-          ],
-          [
-            "624",
-            "clip_name"
-          ],
-          [
-            "625",
-            "vae_name"
-          ]
-        ],
         "cnr_id": "comfy-core",
-        "ver": "0.5.1"
+        "ver": "0.6.0",
+        "Node name for S&R": "LoadImage"
       },
-      "widgets_values": []
+      "widgets_values": [
+        "ComfyUI_temp_umxmt_00022_.png",
+        "image"
+      ]
     },
     {
       "id": 78,
       "type": "VNCCS_PoseStudio",
       "pos": [
-        6400,
-        2110
+        5210,
+        2130
       ],
       "size": [
         1640,
-        1670
+        1650
       ],
       "flags": {},
-      "order": 6,
+      "order": 5,
       "mode": 0,
       "inputs": [
         {
@@ -332,153 +477,8 @@
         "ver": "94b34c4888fc24c526d43cec21b04c0253fbe599"
       },
       "widgets_values": [
-        "{\"mesh\":{\"age\":27,\"gender\":0,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0,\"firmness\":1,\"penis_len\":0.49,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":1,\"cam_offset_x\":0,\"cam_offset_y\":0,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"prompt_prefix\":\"Draw character from image2\",\"prompt_suffix\":\"\",\"debugNoLight\":false},\"poses\":[{\"bones\":{},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":0,\"posY\":-1.4169967174530003,\"posZ\":45.94488561153412,\"targetX\":0,\"targetY\":-1.416996717453003,\"targetZ\":0.9448856115341187},\"cameraParams\":{\"offset_x\":0,\"offset_y\":0,\"zoom\":1,\"yaw_deg\":0,\"pitch_deg\":0},\"ikEffectorPositions\":{\"pelvis\":[0,-0.6951284408569336,0.1402188241481781],\"hand_l\":[3.580289125442505,0.08309942483901978,1.409393072128296],\"hand_r\":[-3.580289125442505,0.08309942483901978,1.409393072128296],\"foot_l\":[1.3440889120101929,-7.592504978179932,0.005200848914682865],\"foot_r\":[-1.3440889120101929,-7.592504978179932,0.005200848914682865],\"head\":[0,4.210751056671143,0.3189266324043274],\"upperarm_l\":[1.2680633068084717,2.54083251953125,0.14868326485157013],\"upperarm_r\":[-1.2680633068084717,2.54083251953125,0.14868326485157013]},\"poleTargetPositions\":{\"leftArm\":[2.6259928907044516,1.0554412603378296,0.3038254626470853],\"rightArm\":[-2.6259928907044516,1.0554412603378296,0.3038254626470853],\"leftLeg\":[0.9691313858485675,-4.250202655792236,1.1691258818995764],\"rightLeg\":[-0.9691313858485675,-4.250202655792236,1.1691258818995764]},\"hipBonePosition\":{\"hips\":[0,7.473081588745117,0.4029252827167511]},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#404040\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":1,\"y\":2,\"z\":3}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_78\",\"lighting_prompts\":[\"Draw character from image2\"],\"background_url\":null}",
+        "{\"mesh\":{\"age\":27,\"gender\":0,\"weight\":0.5,\"muscle\":0.5,\"height\":0.5,\"breast_size\":0,\"firmness\":1,\"penis_len\":0.49,\"penis_circ\":0.5,\"penis_test\":0.5,\"head_size\":1,\"arm_size\":1,\"hand_size\":1,\"upper_arm_l_length\":0.5,\"upper_arm_r_length\":0.5,\"forearm_l_length\":0.5,\"forearm_r_length\":0.5,\"thigh_l_length\":0.5,\"thigh_r_length\":0.5,\"shin_l_length\":0.5,\"shin_r_length\":0.5,\"spine_length\":0.5},\"export\":{\"view_width\":1024,\"view_height\":1024,\"cam_zoom\":3.53,\"cam_offset_x\":0.048507324820827195,\"cam_offset_y\":-4.138575323650056,\"cam_yaw_deg\":0,\"cam_pitch_deg\":0,\"output_mode\":\"LIST\",\"grid_columns\":2,\"bg_color\":[255,255,255],\"debugMode\":false,\"debugPortraitMode\":false,\"debugKeepLighting\":false,\"debugShowSAMHelper\":false,\"debugShowSAMMeshOverlay\":false,\"samApplyCamera\":false,\"keepOriginalLighting\":true,\"user_prompt\":\"\",\"prompt_template\":\"Draw character from image2\\n<lighting>\\n<user_prompt>\",\"skin_type\":\"naked\",\"prompt_prefix\":\"Draw character from image2\",\"prompt_suffix\":\"\",\"debugNoLight\":false},\"poses\":[{\"bones\":{\"pelvis\":[-5.738497561847892,-3.7118684505661816,0.06269663766587869],\"spine_01\":[-10.107999683546684,-2.2171243746061244,0.5022972844784377],\"spine_02\":[6.447096080445542,1.193162247333478,0.07687634116918363],\"spine_03\":[0.9813235912926527,0.26898332432782296,0.012706848797670834],\"thigh_l\":[-8.270481645236451,6.041826934445996,-3.4536621532301375],\"thigh_r\":[14.918845300961541,-5.499939918766841,2.9758534224599997],\"calf_l\":[20.529228677179933,0.9974337714598037,-2.176504055930408],\"calf_r\":[6.430068069547311,-0.36562151637142787,3.889417699269189],\"clavicle_l\":[0.33676621047918576,17.29985722133687,19.50224986665422],\"clavicle_r\":[3.337094419526023,-5.10913346433258,-20.414483043690698],\"foot_l\":[-20.12019868754666,-3.853784831551968,10.553058851112302],\"foot_r\":[-24.33277294868274,-1.4989723478527615,-9.391701029482943],\"neck_01\":[30.30276846546789,5.3873318960957715,-2.3093372399046093],\"upperarm_l\":[-24.36890910186349,-21.194137226877494,-8.175515954129162],\"upperarm_r\":[-14.427383551388402,33.09204478358318,-38.13238435399275],\"head\":[-12.452132719115005,-0.2049659272983082,-14.073209516861544],\"lowerarm_l\":[-78.27276676968329,-12.621381151279635,-63.55329258647918],\"lowerarm_r\":[-78.63460769881061,-10.319428603317558,60.76070869854664],\"hand_l\":[49.118795798572535,-20.527858281069697,90.32456612797637],\"hand_r\":[54.887246705824225,17.865187128686415,-86.59741194476594],\"index_01_l\":[-3.642958609587761,5.784870716618528,-1.8554103308026333],\"index_01_r\":[-11.288927848019922,-5.708028248218931,2.1205894638724514],\"index_02_l\":[-12.494889225213274,-2.5292874374225627,28.36091872962674],\"index_02_r\":[-12.104394673502943,2.7395309049420753,-26.825372596577274],\"index_03_l\":[-3.1683195825868387,-9.425609408329507,2.363819838215843],\"index_03_r\":[-2.4100906811745046,7.064878289685189,-1.8199461561533095],\"middle_01_l\":[6.1857248679325165,0.7242337796041161,-2.441080809765344],\"middle_01_r\":[3.5331437268050903,0.22629736724096008,-10.923453856231246],\"middle_02_l\":[2.998239035922892,-6.582196337764782,25.768853584792065],\"middle_02_r\":[4.794250827324301,5.768740736285983,-28.746899086458093],\"middle_03_l\":[-1.3282932884907284,-11.443549233300532,3.663669558719005],\"middle_03_r\":[-0.9832199699987848,7.8026941335552955,-2.519990277479179],\"pinky_01_l\":[52.17756108898464,13.36506249580827,-92.10933931896042],\"pinky_01_r\":[45.80875142391017,-15.257101646935373,89.73870885253079],\"pinky_02_l\":[76.96965192209817,56.68152182787861,-32.25734184133462],\"pinky_02_r\":[62.80026817843094,-44.35352041834229,24.887123246721462],\"pinky_03_l\":[-4.029718508933082,24.107664408190452,-6.959605760277904],\"pinky_03_r\":[-3.8534571800192325,-22.588744113624866,6.548105733287756],\"ring_01_l\":[38.70194429235262,10.932280228978728,-70.48958332925407],\"ring_01_r\":[31.142762817877355,-10.977414297948211,60.71496257187969],\"ring_02_l\":[105.64603798199319,35.53849591830688,-63.64370296944696],\"ring_02_r\":[103.4555499762941,-24.981757109105448,66.1275330455474],\"ring_03_l\":[0.8329083917199507,8.058130942747901,-3.0131472211825505],\"ring_03_r\":[1.3277312788193698,-11.49670911634837,4.3620266555102924],\"thumb_01_l\":[21.125189966961145,9.959573416509004,-2.9783566820604452],\"thumb_01_r\":[22.202448982658442,-13.939498184648029,-1.158849479741638],\"thumb_02_l\":[6.0124147389136375,4.220218048113653,-3.8929778743509997],\"thumb_02_r\":[6.640223813398182,-1.9307368103248825,6.421069819281244],\"thumb_03_l\":[33.63543427919597,10.535228640062495,7.336755252250426],\"thumb_03_r\":[26.565479884357977,-7.975435866356836,-6.313583192479348]},\"modelRotation\":[0,0,0],\"camera\":{\"posX\":-0.048507324820827195,\"posY\":2.7215786061970557,\"posZ\":45.94488561153412,\"targetX\":-0.048507324820827195,\"targetY\":2.721578606197053,\"targetZ\":0.9448856115341187},\"cameraParams\":{\"offset_x\":0.048507324820827195,\"offset_y\":-4.138575323650056,\"zoom\":3.53,\"yaw_deg\":0,\"pitch_deg\":0},\"ikEffectorPositions\":{\"pelvis\":[-4.656612873077393e-10,-0.7325234413146973,0.09424576163291931],\"hand_l\":[1.5188538248030161,3.50944665298539,0.9720908507613463],\"hand_r\":[-1.4304929672475684,4.263311373967488,1.0510301477618138],\"foot_l\":[0.8729243530892645,-7.389202719590997,0.543982852789728],\"foot_r\":[-0.7318624080992121,-7.4215856186485105,-1.4272954028049216],\"head\":[-0.041337962534782266,4.237203146218203,-0.011429565701389643],\"upperarm_l\":[1.253481315647947,3.1363539833875334,-0.7314550667625157],\"upperarm_r\":[-1.375929369878938,3.136127240496581,-0.6854432319332122]},\"poleTargetPositions\":{\"leftArm\":[2.7435616566732555,1.2848752737045288,0.3158991367552455],\"rightArm\":[-2.7435616566732555,1.2848752737045288,0.3158991367552455],\"leftLeg\":[0.9052219334473398,-4.198694229125977,1.0799989978397984],\"rightLeg\":[-0.9052219334473398,-4.198694229125977,1.0799989978397984]},\"hipBonePosition\":{\"hips\":[-4.656612873077393e-10,7.445617198944092,0.35189288854599]},\"prompt\":\"\"}],\"lights\":[{\"type\":\"ambient\",\"color\":\"#404040\",\"intensity\":0.5},{\"type\":\"directional\",\"color\":\"#ffffff\",\"intensity\":1,\"x\":1,\"y\":2,\"z\":3}],\"activeTab\":0,\"capture_id\":\"vnccs_capture_78\",\"lighting_prompts\":[\"Draw character from image2\"],\"background_url\":null}",
         ""
-      ]
-    },
-    {
-      "id": 54,
-      "type": "LoadImage",
-      "pos": [
-        4190,
-        1670
-      ],
-      "size": [
-        1100,
-        2110
-      ],
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            302
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "title": "Character",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.6.0",
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        "Belle (Zenless Zone Zero).jpg",
-        "image"
-      ]
-    },
-    {
-      "id": 629,
-      "type": "LoadImage",
-      "pos": [
-        5290,
-        1670
-      ],
-      "size": [
-        1100,
-        2110
-      ],
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "IMAGE",
-          "type": "IMAGE",
-          "links": [
-            1907
-          ]
-        },
-        {
-          "name": "MASK",
-          "type": "MASK",
-          "links": null
-        }
-      ],
-      "title": "Pose Capture",
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.6.0",
-        "Node name for S&R": "LoadImage"
-      },
-      "widgets_values": [
-        " .jpg",
-        "image"
-      ]
-    },
-    {
-      "id": 16,
-      "type": "VNCCS_ModelManager",
-      "pos": [
-        6790,
-        1680
-      ],
-      "size": [
-        550,
-        360
-      ],
-      "flags": {},
-      "order": 4,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [
-        {
-          "name": "repo_id",
-          "type": "STRING",
-          "links": null
-        }
-      ],
-      "properties": {
-        "aux_id": "AHEKOT/ComfyUI_VNCCS_Utils",
-        "Node name for S&R": "VNCCS_ModelManager",
-        "cnr_id": "vnccs-utils",
-        "ver": "6dd35c423d5fdc4f3044a842dbf760066154b652"
-      },
-      "widgets_values": [
-        "MIUProject/VNCCS_PoseStudio",
-        null,
-        ""
-      ]
-    },
-    {
-      "id": 83,
-      "type": "SaveImage",
-      "pos": [
-        8590,
-        1590
-      ],
-      "size": [
-        1520,
-        2230
-      ],
-      "flags": {},
-      "order": 9,
-      "mode": 0,
-      "inputs": [
-        {
-          "name": "images",
-          "type": "IMAGE",
-          "link": 313
-        }
-      ],
-      "outputs": [],
-      "properties": {
-        "cnr_id": "comfy-core",
-        "ver": "0.10.0",
-        "Node name for S&R": "SaveImage"
-      },
-      "widgets_values": [
-        "ComfyUI"
       ]
     }
   ],
@@ -556,20 +556,20 @@
       "MODEL"
     ],
     [
-      1905,
-      31,
-      0,
-      628,
-      1,
-      "COMBO"
-    ],
-    [
       1907,
       629,
       0,
       78,
       0,
       "IMAGE"
+    ],
+    [
+      1908,
+      31,
+      0,
+      628,
+      1,
+      "COMBO"
     ]
   ],
   "groups": [
@@ -579,8 +579,8 @@
       "bounding": [
         4160,
         1560,
-        4420,
-        2250
+        3200,
+        2240
       ],
       "color": "#3f789e",
       "font_size": 24,
@@ -595,7 +595,7 @@
         "state": {
           "lastGroupId": 2,
           "lastNodeId": 629,
-          "lastLinkId": 1907,
+          "lastLinkId": 1908,
           "lastRerouteId": 0
         },
         "revision": 0,
@@ -1133,7 +1133,7 @@
         "state": {
           "lastGroupId": 2,
           "lastNodeId": 629,
-          "lastLinkId": 1907,
+          "lastLinkId": 1908,
           "lastRerouteId": 0
         },
         "revision": 0,
@@ -1569,7 +1569,7 @@
               }
             },
             "widgets_values": [
-              643726749022344,
+              486024120063758,
               "randomize",
               4,
               1,
@@ -1864,10 +1864,10 @@
   "config": {},
   "extra": {
     "ds": {
-      "scale": 0.5208170902853589,
+      "scale": 0.5208170902853619,
       "offset": [
-        -4398.00485707004,
-        -1375.501192870368
+        -2950.2148753870088,
+        -1305.6988047001214
       ]
     },
     "workflowRendererVersion": "LG",
