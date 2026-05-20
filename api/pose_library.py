@@ -8,6 +8,7 @@ import hashlib
 import tempfile
 import uuid
 import threading
+import asyncio
 from datetime import datetime, timezone
 from aiohttp import web
 from PIL import Image
@@ -591,104 +592,128 @@ def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
         "poses": sorted(merged.values(), key=lambda item: (item.get("category") or "", item.get("name") or "")),
     }
 
-def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False):
+def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
     repo_id = normalize_repo_id(repo_id)
     if not repo_id:
         raise ValueError("Invalid Hugging Face repo id")
 
+    repository_progress_start(task_id, f"Publishing local poses to {repo_id}...")
     token = token or get_hf_token()
     if not token:
+        repository_progress_fail(task_id, "Hugging Face token is required")
         raise ValueError("Hugging Face token is required")
 
-    from huggingface_hub import HfApi
-    api = HfApi(token=token)
-    if create:
-        api.create_repo(repo_id=repo_id, repo_type="model", private=bool(private), exist_ok=True)
-    else:
-        api.repo_info(repo_id=repo_id, repo_type="model", token=token)
-
-    local_poses = collect_local_pose_files()
-    remote_manifest = load_remote_pose_manifest(repo_id, token)
-    remote_by_json = {
-        pose.get("json_path"): pose
-        for pose in (remote_manifest.get("poses") or [])
-        if isinstance(pose, dict) and pose.get("json_path")
-    }
     try:
-        remote_files = set(api.list_repo_files(repo_id=repo_id, repo_type="model", token=token))
-    except Exception:
-        remote_files = set()
+        from huggingface_hub import HfApi
+        api = HfApi(token=token)
+        repository_progress_update(task_id, progress=2, message=f"Checking {repo_id}...")
+        if create:
+            api.create_repo(repo_id=repo_id, repo_type="model", private=bool(private), exist_ok=True)
+        else:
+            api.repo_info(repo_id=repo_id, repo_type="model", token=token)
 
-    changed_paths = set()
-    uploaded = []
-    skipped = []
-    manifest_changed = not bool(remote_manifest)
-    for pose in local_poses:
-        remote_pose = remote_by_json.get(pose["hub_json_path"]) or {}
-        remote_json_sha = remote_pose.get("json_sha256")
-        remote_preview_sha = remote_pose.get("preview_sha256")
-        if not remote_json_sha and pose["hub_json_path"] in remote_files:
-            remote_json_sha = remote_file_sha256(repo_id, pose["hub_json_path"], token)
-        if not remote_preview_sha and pose["hub_preview_path"] in remote_files:
-            remote_preview_sha = remote_file_sha256(repo_id, pose["hub_preview_path"], token)
-
-        json_changed = remote_json_sha != pose["json_sha256"]
-        preview_changed = bool(pose["hub_preview_path"]) and remote_preview_sha != pose["preview_sha256"]
-
-        if json_changed:
-            api.upload_file(
-                path_or_fileobj=pose["json_path"],
-                path_in_repo=pose["hub_json_path"],
-                repo_id=repo_id,
-                repo_type="model",
-                token=token,
-                commit_message=f"Update pose {pose['name']}",
-            )
-            changed_paths.add(pose["hub_json_path"])
-            uploaded.append(pose["hub_json_path"])
-        if preview_changed:
-            api.upload_file(
-                path_or_fileobj=pose["preview_path"],
-                path_in_repo=pose["hub_preview_path"],
-                repo_id=repo_id,
-                repo_type="model",
-                token=token,
-                commit_message=f"Update pose preview {pose['name']}",
-            )
-            changed_paths.add(pose["hub_preview_path"])
-            uploaded.append(pose["hub_preview_path"])
-        if not json_changed and not preview_changed:
-            skipped.append(pose["hub_json_path"])
-        if (
-            remote_pose.get("name") != pose["name"]
-            or remote_pose.get("category") != pose["category"]
-            or remote_pose.get("tags") != pose["tags"]
-            or remote_pose.get("preview_path", "") != pose["hub_preview_path"]
-            or remote_pose.get("preview_sha256", "") != pose["preview_sha256"]
-            or remote_pose.get("json_sha256") != pose["json_sha256"]
-        ):
-            manifest_changed = True
-
-    manifest = build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths)
-    with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as f:
-        f.write(json_bytes(manifest))
-        manifest_tmp = f.name
-    try:
-        if changed_paths or manifest_changed:
-            api.upload_file(
-                path_or_fileobj=manifest_tmp,
-                path_in_repo="pose_library.json",
-                repo_id=repo_id,
-                repo_type="model",
-                token=token,
-                commit_message="Update VNCCS pose library manifest",
-            )
-            uploaded.append("pose_library.json")
-    finally:
+        repository_progress_update(task_id, progress=8, message="Reading local poses...")
+        local_poses = collect_local_pose_files()
+        repository_progress_update(task_id, progress=12, message="Reading remote manifest...")
+        remote_manifest = load_remote_pose_manifest(repo_id, token)
+        remote_by_json = {
+            pose.get("json_path"): pose
+            for pose in (remote_manifest.get("poses") or [])
+            if isinstance(pose, dict) and pose.get("json_path")
+        }
         try:
-            os.remove(manifest_tmp)
+            repository_progress_update(task_id, progress=16, message="Listing remote files...")
+            remote_files = set(api.list_repo_files(repo_id=repo_id, repo_type="model", token=token))
         except Exception:
-            pass
+            remote_files = set()
+
+        changed_paths = set()
+        uploaded = []
+        skipped = []
+        manifest_changed = not bool(remote_manifest)
+        total_poses = max(len(local_poses), 1)
+        for index, pose in enumerate(local_poses):
+            base_progress = 18 + (index / total_poses) * 72
+            repository_progress_update(
+                task_id,
+                progress=base_progress,
+                message=f"Checking {pose['name']} ({index + 1}/{len(local_poses)})...",
+                current_file=pose["hub_json_path"],
+                file_index=index + 1,
+                total_files=len(local_poses),
+            )
+            remote_pose = remote_by_json.get(pose["hub_json_path"]) or {}
+            remote_json_sha = remote_pose.get("json_sha256")
+            remote_preview_sha = remote_pose.get("preview_sha256")
+            if not remote_json_sha and pose["hub_json_path"] in remote_files:
+                remote_json_sha = remote_file_sha256(repo_id, pose["hub_json_path"], token)
+            if not remote_preview_sha and pose["hub_preview_path"] in remote_files:
+                remote_preview_sha = remote_file_sha256(repo_id, pose["hub_preview_path"], token)
+
+            json_changed = remote_json_sha != pose["json_sha256"]
+            preview_changed = bool(pose["hub_preview_path"]) and remote_preview_sha != pose["preview_sha256"]
+
+            if json_changed:
+                repository_progress_update(task_id, progress=min(base_progress + 2, 94), message=f"Uploading {pose['hub_json_path']}...")
+                api.upload_file(
+                    path_or_fileobj=pose["json_path"],
+                    path_in_repo=pose["hub_json_path"],
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=token,
+                    commit_message=f"Update pose {pose['name']}",
+                )
+                changed_paths.add(pose["hub_json_path"])
+                uploaded.append(pose["hub_json_path"])
+            if preview_changed:
+                repository_progress_update(task_id, progress=min(base_progress + 5, 96), message=f"Uploading {pose['hub_preview_path']}...")
+                api.upload_file(
+                    path_or_fileobj=pose["preview_path"],
+                    path_in_repo=pose["hub_preview_path"],
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=token,
+                    commit_message=f"Update pose preview {pose['name']}",
+                )
+                changed_paths.add(pose["hub_preview_path"])
+                uploaded.append(pose["hub_preview_path"])
+            if not json_changed and not preview_changed:
+                skipped.append(pose["hub_json_path"])
+            if (
+                remote_pose.get("name") != pose["name"]
+                or remote_pose.get("category") != pose["category"]
+                or remote_pose.get("tags") != pose["tags"]
+                or remote_pose.get("preview_path", "") != pose["hub_preview_path"]
+                or remote_pose.get("preview_sha256", "") != pose["preview_sha256"]
+                or remote_pose.get("json_sha256") != pose["json_sha256"]
+            ):
+                manifest_changed = True
+
+        repository_progress_update(task_id, progress=92, message="Building pose manifest...")
+        manifest = build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths)
+        with tempfile.NamedTemporaryFile("wb", suffix=".json", delete=False) as f:
+            f.write(json_bytes(manifest))
+            manifest_tmp = f.name
+        try:
+            if changed_paths or manifest_changed:
+                repository_progress_update(task_id, progress=96, message="Uploading pose_library.json...")
+                api.upload_file(
+                    path_or_fileobj=manifest_tmp,
+                    path_in_repo="pose_library.json",
+                    repo_id=repo_id,
+                    repo_type="model",
+                    token=token,
+                    commit_message="Update VNCCS pose library manifest",
+                )
+                uploaded.append("pose_library.json")
+        finally:
+            try:
+                os.remove(manifest_tmp)
+            except Exception:
+                pass
+    except Exception as exc:
+        repository_progress_fail(task_id, exc)
+        raise
 
     result = {
         "repo_id": repo_id,
@@ -706,6 +731,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         "pose_library_last_publish": time.time(),
         "pose_library_last_publish_result": result,
     })
+    repository_progress_finish(task_id, f"Published {len(uploaded)} files. {len(skipped)} poses unchanged.")
     return result
 
 async def list_pose_repositories(request):
@@ -822,6 +848,11 @@ def run_background_enabled_repository_refresh(task_id):
 
 async def auto_refresh_enabled_pose_repositories(request):
     now = time.time()
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    force = bool(data.get("force"))
     with _BACKGROUND_REFRESH_LOCK:
         if _BACKGROUND_REFRESH_STATE["running"]:
             return web.json_response({
@@ -830,7 +861,7 @@ async def auto_refresh_enabled_pose_repositories(request):
                 "running": True,
                 "task_id": _BACKGROUND_REFRESH_STATE["task_id"],
             })
-        if now - float(_BACKGROUND_REFRESH_STATE.get("last_started") or 0) < 300:
+        if not force and now - float(_BACKGROUND_REFRESH_STATE.get("last_started") or 0) < 300:
             return web.json_response({
                 "success": True,
                 "started": False,
@@ -866,7 +897,9 @@ async def refresh_pose_repositories(request):
     task_id = str(data.get("task_id") or uuid.uuid4())
     repos = load_pose_repositories()
     targets = [repo for repo in repos if (not repo_id or repo["repo_id"] == repo_id)]
-    refreshed = [refresh_pose_repository(repo, task_id=task_id if len(targets) == 1 else f"{task_id}-{index}") for index, repo in enumerate(targets)]
+    refreshed = await asyncio.to_thread(
+        lambda: [refresh_pose_repository(repo, task_id=task_id if len(targets) == 1 else f"{task_id}-{index}") for index, repo in enumerate(targets)]
+    )
     persist_refreshed_repositories(refreshed)
     return web.json_response({"success": True, "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
 
@@ -880,15 +913,24 @@ async def publish_local_pose_repository(request):
     token = data.get("hf_token") or get_hf_token()
     create = bool(data.get("create"))
     private = bool(data.get("private", False))
+    task_id = str(data.get("task_id") or uuid.uuid4())
     if not repo_id:
         return web.json_response({"error": "Repository id is required"}, status=400)
     if not token:
         return web.json_response({"error": "Hugging Face token is required"}, status=401)
 
     try:
-        result = publish_local_repository_to_hf(repo_id, token=token, create=create, private=private)
+        result = await asyncio.to_thread(
+            publish_local_repository_to_hf,
+            repo_id,
+            token=token,
+            create=create,
+            private=private,
+            task_id=task_id,
+        )
         return web.json_response({
             "success": True,
+            "task_id": task_id,
             "local_repository": get_local_repository_info(),
             "result": result,
         })

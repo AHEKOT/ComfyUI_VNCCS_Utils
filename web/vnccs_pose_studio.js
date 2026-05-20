@@ -1231,47 +1231,59 @@ const STYLES = `
 .vnccs-ps-library-modal-header {
     display: flex;
     align-items: center;
-    gap: 12px;
-    padding: 16px 22px;
+    gap: 24px;
+    padding: 32px 44px;
     background: rgba(0, 0, 0, 0.3);
     border-bottom: 1px solid var(--ps-border);
 }
 
 .vnccs-ps-library-modal-title {
-    font-size: 16px;
+    font-size: 32px;
     font-weight: 700;
     color: var(--ps-accent);
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 20px;
     font-family: var(--ps-font);
-    letter-spacing: 0.5px;
+    letter-spacing: 1px;
     margin-right: auto;
 }
 
 .vnccs-ps-library-header-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 20px;
     min-width: 0;
 }
 
 .vnccs-ps-library-save-current {
     width: auto;
-    min-width: 150px;
-    padding: 9px 14px;
+    min-width: 300px;
+    padding: 18px 28px;
     justify-content: center;
 }
 
+.vnccs-ps-library-modal-header .vnccs-ps-btn,
+.vnccs-ps-library-settings .vnccs-ps-btn {
+    gap: 10px;
+    padding: 12px 24px;
+    font-size: 20px;
+}
+
+.vnccs-ps-library-modal-header .vnccs-ps-btn-icon,
+.vnccs-ps-library-settings .vnccs-ps-btn-icon {
+    font-size: 28px;
+}
+
 .vnccs-ps-library-menu-btn {
-    width: 38px;
-    height: 38px;
+    width: 76px;
+    height: 76px;
     border-radius: 8px;
     border: 1px solid var(--ps-border);
     background: var(--ps-input-bg);
     color: var(--ps-text);
     cursor: pointer;
-    font-size: 16px;
+    font-size: 32px;
     transition: all var(--ps-transition);
 }
 
@@ -1283,21 +1295,23 @@ const STYLES = `
 .vnccs-ps-library-toolbar {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 14px 22px 8px;
+    flex-wrap: wrap;
+    gap: 20px;
+    padding: 28px 44px 16px;
     background: rgba(0, 0, 0, 0.16);
 }
 
 .vnccs-ps-library-search {
-    width: 100%;
-    height: 38px;
+    flex: 1 1 420px;
+    min-width: 260px;
+    height: 76px;
     border-radius: 8px;
     border: 1px solid var(--ps-border);
     background: rgba(255,255,255,0.055);
     color: var(--ps-text);
-    padding: 0 14px;
+    padding: 0 28px;
     font-family: var(--ps-font);
-    font-size: 13px;
+    font-size: 26px;
     outline: none;
 }
 
@@ -1307,48 +1321,49 @@ const STYLES = `
 }
 
 .vnccs-ps-library-size-control {
-    width: 190px;
-    flex: 0 0 190px;
+    width: 380px;
+    flex: 0 0 380px;
     display: grid;
     grid-template-columns: auto 1fr auto;
     align-items: center;
-    gap: 8px;
+    gap: 16px;
     color: var(--ps-text-muted);
-    font-size: 10px;
+    font-size: 20px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.7px;
+    letter-spacing: 1.4px;
     font-family: var(--ps-font);
 }
 
 .vnccs-ps-library-size-control input {
     width: 100%;
+    height: 28px;
     accent-color: var(--ps-accent);
 }
 
 .vnccs-ps-library-size-value {
-    width: 34px;
+    width: 68px;
     text-align: right;
     color: var(--ps-accent);
 }
 
 .vnccs-ps-library-categories {
     display: flex;
-    gap: 8px;
-    padding: 4px 22px 12px;
+    gap: 16px;
+    padding: 8px 44px 24px;
     overflow-x: auto;
     border-bottom: 1px solid var(--ps-border);
 }
 
 .vnccs-ps-library-category-chip {
-    height: 30px;
-    padding: 0 12px;
+    height: 60px;
+    padding: 0 24px;
     border-radius: 999px;
     border: 1px solid var(--ps-border);
     background: rgba(255,255,255,0.04);
     color: var(--ps-text-muted);
     font-family: var(--ps-font);
-    font-size: 11px;
+    font-size: 22px;
     white-space: nowrap;
     cursor: pointer;
 }
@@ -1384,10 +1399,10 @@ const STYLES = `
 .vnccs-ps-library-settings {
     min-height: 0;
     overflow-y: auto;
-    padding: 20px 22px;
+    padding: 40px 44px;
     display: none;
     flex-direction: column;
-    gap: 14px;
+    gap: 28px;
 }
 
 .vnccs-ps-library-workspace.settings-mode .vnccs-ps-library-settings {
@@ -1398,53 +1413,79 @@ const STYLES = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    gap: 24px;
 }
 
 .vnccs-ps-library-settings-title {
     color: var(--ps-text);
-    font-size: 15px;
+    font-size: 30px;
     font-weight: 700;
     font-family: var(--ps-font);
 }
 
 .vnccs-ps-library-settings-subtitle {
     color: var(--ps-text-muted);
-    font-size: 11px;
-    margin-top: 4px;
+    font-size: 22px;
+    margin-top: 8px;
 }
 
 .vnccs-ps-library-repo-add {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 8px;
+    gap: 16px;
+}
+
+.vnccs-ps-library-repo-notice {
+    display: none;
+    padding: 14px 18px;
+    border: 1px solid var(--ps-accent-border);
+    border-radius: 8px;
+    background: var(--ps-accent-subtle);
+    color: var(--ps-accent);
+    font-size: 20px;
+    line-height: 1.35;
+}
+
+.vnccs-ps-library-repo-notice.visible {
+    display: block;
+}
+
+.vnccs-ps-library-repo-notice.error {
+    border-color: rgba(255,71,87,0.45);
+    background: rgba(255,71,87,0.1);
+    color: var(--ps-danger);
+}
+
+.vnccs-ps-library-settings .vnccs-ps-input {
+    padding: 10px 16px;
+    font-size: 20px;
 }
 
 .vnccs-ps-library-repo-list {
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 20px;
 }
 
 .vnccs-ps-library-local-repo {
-    margin-bottom: 10px;
+    margin-bottom: 20px;
 }
 
 .vnccs-ps-library-repo-card {
     border: 1px solid var(--ps-border);
     border-radius: 8px;
     background: rgba(255,255,255,0.035);
-    padding: 12px;
+    padding: 24px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    gap: 12px;
+    gap: 24px;
     align-items: center;
 }
 
 .vnccs-ps-library-repo-title {
     color: var(--ps-text);
     font-weight: 700;
-    font-size: 12px;
+    font-size: 24px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1453,8 +1494,8 @@ const STYLES = `
 .vnccs-ps-library-repo-id,
 .vnccs-ps-library-repo-meta {
     color: var(--ps-text-muted);
-    font-size: 10px;
-    margin-top: 4px;
+    font-size: 20px;
+    margin-top: 8px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1462,18 +1503,18 @@ const STYLES = `
 
 .vnccs-ps-library-repo-actions {
     display: flex;
-    gap: 6px;
+    gap: 12px;
     align-items: center;
 }
 
 .vnccs-ps-library-repo-action {
-    height: 30px;
-    padding: 0 10px;
+    height: 60px;
+    padding: 0 20px;
     border-radius: 7px;
     border: 1px solid var(--ps-border);
     background: var(--ps-input-bg);
     color: var(--ps-text-muted);
-    font-size: 11px;
+    font-size: 22px;
     cursor: pointer;
 }
 
@@ -1499,14 +1540,77 @@ const STYLES = `
     border-color: rgba(255,71,87,0.45);
 }
 
+.vnccs-ps-library-repo-card.is-running .vnccs-ps-library-repo-action {
+    opacity: 0.55;
+    pointer-events: none;
+}
+
+.vnccs-ps-library-repo-progress {
+    grid-column: 1 / -1;
+    display: none;
+    margin-top: 4px;
+}
+
+.vnccs-ps-library-repo-progress.visible {
+    display: block;
+}
+
+.vnccs-ps-library-repo-progress-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 20px;
+    color: var(--ps-text-muted);
+    font-size: 20px;
+    line-height: 1.35;
+    margin-bottom: 12px;
+}
+
+.vnccs-ps-library-repo-progress-message {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-library-repo-progress-percent {
+    flex: 0 0 auto;
+    color: var(--ps-accent);
+    font-weight: 700;
+}
+
+.vnccs-ps-library-repo-progress-track {
+    height: 16px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.1);
+}
+
+.vnccs-ps-library-repo-progress-fill {
+    width: 0%;
+    height: 100%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, var(--ps-accent), #8fe3ff);
+    box-shadow: 0 0 14px rgba(255, 143, 163, 0.35);
+    transition: width 0.25s ease;
+}
+
+.vnccs-ps-library-repo-progress.error .vnccs-ps-library-repo-progress-fill {
+    background: var(--ps-danger);
+}
+
+.vnccs-ps-library-repo-progress.success .vnccs-ps-library-repo-progress-fill {
+    background: linear-gradient(90deg, #64d8cb, #8fe3ff);
+}
+
 .vnccs-ps-modal-close {
     background: transparent;
     border: none;
     color: var(--ps-text-muted);
-    font-size: 22px;
+    font-size: 44px;
     cursor: pointer;
     transition: color var(--ps-transition);
-    padding: 2px 6px;
+    padding: 4px 12px;
 }
 
 .vnccs-ps-modal-close:hover { color: var(--ps-accent); }
@@ -1943,6 +2047,7 @@ class PoseStudioWidget {
         this._boundHandleDocumentPointerCancel = this._handleDocumentPointerCancel.bind(this);
         this.libraryThumbSizeStorageKey = "vnccsPoseLibraryPreviewSize";
         this.libraryThumbSize = this.loadLibraryThumbnailSize();
+        this.repositoryProgressStates = {};
 
         this.createUI();
     }
@@ -4707,7 +4812,7 @@ class PoseStudioWidget {
             const res = await fetch('/vnccs/pose_library/repositories/auto_refresh', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ reason: 'pose_studio_initial_load' }),
+                body: JSON.stringify({ reason: 'pose_studio_initial_load', force: true }),
             });
             const data = await res.json().catch(() => ({}));
             const taskId = data.task_id;
@@ -4791,6 +4896,7 @@ class PoseStudioWidget {
                 <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to poses</button>
             </div>
             <div class="vnccs-ps-library-local-repo"></div>
+            <div class="vnccs-ps-library-repo-notice"></div>
             <div class="vnccs-ps-library-repo-add">
                 <input class="vnccs-ps-input vnccs-ps-library-repo-input" type="text" placeholder="owner/repository">
                 <button class="vnccs-ps-btn primary vnccs-ps-library-repo-add-btn">Add Repository</button>
@@ -4813,6 +4919,8 @@ class PoseStudioWidget {
         for (const repo of repos) {
             const card = document.createElement('div');
             card.className = 'vnccs-ps-library-repo-card';
+            const progressKey = `repo:${repo.repo_id}`;
+            card.dataset.repoProgressKey = progressKey;
             const status = repo.status === 'error' ? `Error: ${repo.last_error || 'refresh failed'}` : (repo.status || 'not checked');
             const checked = repo.last_checked ? new Date(repo.last_checked * 1000).toLocaleString() : 'never';
             const syncMeta = repo.downloaded_count !== undefined
@@ -4829,11 +4937,13 @@ class PoseStudioWidget {
                     <button class="vnccs-ps-library-repo-action refresh">Refresh</button>
                     <button class="vnccs-ps-library-repo-action danger remove" ${repo.builtin ? 'disabled title="Default repositories can be disabled, not deleted"' : ''}>Remove</button>
                 </div>
+                ${this.repositoryProgressMarkup()}
             `;
             card.querySelector('.toggle').onclick = () => this.togglePoseRepository(repo.repo_id, !repo.enabled);
             card.querySelector('.refresh').onclick = () => this.refreshSinglePoseRepository(repo.repo_id);
             card.querySelector('.remove').onclick = () => this.removePoseRepository(repo.repo_id);
             list.appendChild(card);
+            this.updateRepositoryProgressUi(progressKey);
         }
     }
 
@@ -4847,7 +4957,7 @@ class PoseStudioWidget {
             ? `${Number(repo.last_publish_result.uploaded_count || 0)} uploaded · ${Number(repo.last_publish_result.skipped_count || 0)} unchanged`
             : "not published yet";
         holder.innerHTML = `
-            <div class="vnccs-ps-library-repo-card">
+            <div class="vnccs-ps-library-repo-card" data-repo-progress-key="local:publish">
                 <div>
                     <div class="vnccs-ps-library-repo-title">Local User Poses</div>
                     <div class="vnccs-ps-library-repo-id">local_user_poses → ${this.escapeHtml(publishRepo)}</div>
@@ -4857,10 +4967,27 @@ class PoseStudioWidget {
                     <button class="vnccs-ps-library-repo-action primary publish">Publish</button>
                     ${repo.publish_repo_id ? '<button class="vnccs-ps-library-repo-action relink">Change target</button>' : ''}
                 </div>
+                ${this.repositoryProgressMarkup()}
             </div>
         `;
         holder.querySelector('.publish').onclick = () => this.publishLocalPoseRepository(false);
         holder.querySelector('.relink')?.addEventListener('click', () => this.showPublishLocalRepositoryModal(true));
+        this.updateRepositoryProgressUi("local:publish");
+    }
+
+    showRepositoryNotice(message, isError = false) {
+        const notice = this.librarySettingsEl?.querySelector('.vnccs-ps-library-repo-notice');
+        if (!notice) return;
+        notice.textContent = message;
+        notice.classList.toggle('error', !!isError);
+        notice.classList.add('visible');
+    }
+
+    clearRepositoryNotice() {
+        const notice = this.librarySettingsEl?.querySelector('.vnccs-ps-library-repo-notice');
+        if (!notice) return;
+        notice.textContent = "";
+        notice.classList.remove('visible', 'error');
     }
 
     async publishLocalPoseRepository(forceConfigure = false) {
@@ -4925,7 +5052,10 @@ class PoseStudioWidget {
             const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
             const token = modal.querySelector('.vnccs-ps-publish-token').value.trim();
             if (!repoId) {
-                this.showMessage("Hugging Face repository id is required.", true);
+                const repoInput = modal.querySelector('.vnccs-ps-publish-repo');
+                repoInput.style.borderColor = "rgba(255,71,87,0.7)";
+                repoInput.placeholder = "Repository id is required";
+                repoInput.focus();
                 return;
             }
             overlay.remove();
@@ -4944,25 +5074,38 @@ class PoseStudioWidget {
     }
 
     async runLocalPoseRepositoryPublish(payload) {
-        if (this.librarySettingsEl) {
-            const holder = this.librarySettingsEl.querySelector('.vnccs-ps-library-local-repo');
-            if (holder) holder.innerHTML = '<div class="vnccs-ps-library-empty">Publishing local poses to Hugging Face...</div>';
-        }
+        const progressKey = "local:publish";
+        const taskId = this.createRepositoryTaskId("repo-publish");
+        const progress = this.createInlineRepositoryProgress(progressKey, "Publishing local poses to Hugging Face...");
+        let pollTimer = null;
         try {
+            pollTimer = setInterval(() => this.pollRepositoryProgress(taskId, progress), 350);
             const res = await fetch('/vnccs/pose_library/repositories/local/publish', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload),
+                body: JSON.stringify({ ...payload, task_id: taskId }),
             });
+            await this.pollRepositoryProgress(taskId, progress);
             const data = await res.json().catch(() => ({}));
             if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
             this.localPoseRepository = data.local_repository || this.localPoseRepository;
             this.renderPoseRepositorySettings();
             const result = data.result || {};
-            this.showMessage(`Published ${Number(result.uploaded_count || 0)} files. ${Number(result.skipped_count || 0)} poses unchanged.`);
+            progress.update({
+                status: "success",
+                progress: 100,
+                message: `Published ${Number(result.uploaded_count || 0)} files. ${Number(result.skipped_count || 0)} poses unchanged.`,
+            });
         } catch (err) {
-            await this.refreshPoseRepositories();
-            this.showMessage(`Failed to publish local poses: ${err?.message || err}`, true);
+            progress.update({
+                status: "error",
+                progress: 100,
+                message: `Failed to publish local poses: ${err?.message || err}`,
+            });
+            this.renderPoseRepositorySettings();
+        } finally {
+            if (pollTimer) clearInterval(pollTimer);
+            progress.close();
         }
     }
 
@@ -4982,7 +5125,7 @@ class PoseStudioWidget {
             this.poseRepositories = data.repositories || [];
             this.renderPoseRepositorySettings();
         } catch (err) {
-            this.showMessage(`Failed to add repository: ${err?.message || err}`, true);
+            this.showRepositoryNotice(`Failed to add repository: ${err?.message || err}`, true);
         }
     }
 
@@ -4991,6 +5134,85 @@ class PoseStudioWidget {
             globalThis.crypto?.randomUUID?.()
             || `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
         );
+    }
+
+    repositoryProgressMarkup() {
+        return `
+            <div class="vnccs-ps-library-repo-progress">
+                <div class="vnccs-ps-library-repo-progress-head">
+                    <span class="vnccs-ps-library-repo-progress-message"></span>
+                    <span class="vnccs-ps-library-repo-progress-percent">0%</span>
+                </div>
+                <div class="vnccs-ps-library-repo-progress-track">
+                    <div class="vnccs-ps-library-repo-progress-fill"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    findRepositoryProgressCard(key) {
+        const cards = this.librarySettingsEl?.querySelectorAll('[data-repo-progress-key]') || [];
+        return Array.from(cards).find((card) => card.dataset.repoProgressKey === key) || null;
+    }
+
+    setRepositoryProgressState(key, patch) {
+        this.repositoryProgressStates[key] = {
+            ...(this.repositoryProgressStates[key] || {}),
+            ...patch,
+        };
+        this.updateRepositoryProgressUi(key);
+    }
+
+    updateRepositoryProgressUi(key) {
+        const card = this.findRepositoryProgressCard(key);
+        if (!card) return;
+        const state = this.repositoryProgressStates[key];
+        const progress = card.querySelector('.vnccs-ps-library-repo-progress');
+        if (!progress || !state) {
+            card.classList.remove('is-running');
+            progress?.classList.remove('visible', 'error', 'success');
+            return;
+        }
+        const percent = Math.max(0, Math.min(100, Number(state.progress) || 0));
+        progress.classList.add('visible');
+        progress.classList.toggle('error', state.status === 'error');
+        progress.classList.toggle('success', state.status === 'success');
+        card.classList.toggle('is-running', state.status === 'running');
+        const messageEl = progress.querySelector('.vnccs-ps-library-repo-progress-message');
+        const percentEl = progress.querySelector('.vnccs-ps-library-repo-progress-percent');
+        const fillEl = progress.querySelector('.vnccs-ps-library-repo-progress-fill');
+        if (messageEl) messageEl.textContent = state.message || "Working...";
+        if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
+        if (fillEl) fillEl.style.width = `${percent}%`;
+    }
+
+    createInlineRepositoryProgress(key, initialText = "Starting...") {
+        const token = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        this.setRepositoryProgressState(key, {
+            token,
+            status: "running",
+            message: initialText,
+            progress: 1,
+        });
+        return {
+            setText: (message) => this.setRepositoryProgressState(key, { message }),
+            setProgress: (progress) => this.setRepositoryProgressState(key, { progress }),
+            update: (status) => {
+                if (!status) return;
+                const patch = {};
+                if (status.status) patch.status = status.status;
+                if (status.message) patch.message = status.message;
+                if (status.progress !== undefined) patch.progress = status.progress;
+                this.setRepositoryProgressState(key, patch);
+            },
+            close: (delay = 1600) => {
+                setTimeout(() => {
+                    if (this.repositoryProgressStates[key]?.token !== token) return;
+                    delete this.repositoryProgressStates[key];
+                    this.updateRepositoryProgressUi(key);
+                }, delay);
+            },
+        };
     }
 
     async pollRepositoryProgress(taskId, progress, titleText) {
@@ -5013,7 +5235,8 @@ class PoseStudioWidget {
 
     async togglePoseRepository(repoId, enabled) {
         const taskId = this.createRepositoryTaskId("repo-toggle");
-        const progress = this.showImportProgressModal(`${enabled ? "Enabling" : "Disabling"} Pose Repository`);
+        const progressKey = `repo:${repoId}`;
+        const progress = this.createInlineRepositoryProgress(progressKey, `${enabled ? "Enabling" : "Disabling"} ${repoId}...`);
         let pollTimer = null;
         try {
             progress.setText(`${enabled ? "Enabling" : "Disabling"} ${repoId}...`);
@@ -5027,21 +5250,30 @@ class PoseStudioWidget {
             await this.pollRepositoryProgress(taskId, progress);
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                this.showMessage(data?.error || `Failed to update ${repoId}`, true);
+                progress.update({ status: "error", progress: 100, message: data?.error || `Failed to update ${repoId}` });
                 return;
             }
             this.poseRepositories = data.repositories || [];
             this.renderPoseRepositorySettings();
+            progress.update({ status: "success", progress: 100, message: `${repoId} ${enabled ? "enabled" : "disabled"}.` });
             await this.refreshLibrary(true);
+            if (enabled) {
+                if (pollTimer) {
+                    clearInterval(pollTimer);
+                    pollTimer = null;
+                }
+                await this.refreshSinglePoseRepository(repoId);
+            }
         } finally {
             if (pollTimer) clearInterval(pollTimer);
-            setTimeout(() => progress.close(), 450);
+            progress.close();
         }
     }
 
     async refreshSinglePoseRepository(repoId) {
         const taskId = this.createRepositoryTaskId("repo-refresh");
-        const progress = this.showImportProgressModal("Refreshing Pose Repository");
+        const progressKey = `repo:${repoId}`;
+        const progress = this.createInlineRepositoryProgress(progressKey, `Checking ${repoId}...`);
         let pollTimer = null;
         try {
             progress.setText(`Checking ${repoId}...`);
@@ -5055,15 +5287,23 @@ class PoseStudioWidget {
             await this.pollRepositoryProgress(taskId, progress);
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                this.showMessage(data?.error || `Failed to refresh ${repoId}`, true);
+                progress.update({ status: "error", progress: 100, message: data?.error || `Failed to refresh ${repoId}` });
                 return;
             }
             this.poseRepositories = data.repositories || [];
             this.renderPoseRepositorySettings();
+            const refreshed = data.refreshed?.[0] || {};
+            progress.update({
+                status: refreshed.status === "error" ? "error" : "success",
+                progress: 100,
+                message: refreshed.status === "error"
+                    ? `Error: ${refreshed.last_error || "refresh failed"}`
+                    : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
+            });
             await this.refreshLibrary(true);
         } finally {
             if (pollTimer) clearInterval(pollTimer);
-            setTimeout(() => progress.close(), 650);
+            progress.close();
         }
     }
 
@@ -5071,10 +5311,11 @@ class PoseStudioWidget {
         const res = await fetch(`/vnccs/pose_library/repositories/delete/${encodeURIComponent(repoId)}`, { method: 'DELETE' });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-            this.showMessage(data?.error || `Failed to remove ${repoId}`, true);
+            this.showRepositoryNotice(data?.error || `Failed to remove ${repoId}`, true);
             return;
         }
         this.poseRepositories = data.repositories || [];
+        this.clearRepositoryNotice();
         this.renderPoseRepositorySettings();
         await this.refreshLibrary(true);
     }
@@ -7217,6 +7458,7 @@ app.registerExtension({
                     this.studioWidget.loadFromNode();
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
+                    this.studioWidget.autoRefreshEnabledPoseRepositories();
                     this.onResize(this.size); // Force correct aspect ratio on config
                 }, 500);
             }
