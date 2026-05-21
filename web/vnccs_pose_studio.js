@@ -5429,9 +5429,7 @@ class PoseStudioWidget {
             progress.update({
                 status: "success",
                 progress: 100,
-                message: enabled
-                    ? `${repoId} enabled.`
-                    : `${repoId} disabled. Removed ${Number(data.removed_count || 0)} cached files.`,
+                message: `${repoId} ${enabled ? "enabled" : "disabled"}.`,
             });
             await this.refreshLibrary(true);
             if (enabled) {

@@ -9,6 +9,7 @@ import tempfile
 import uuid
 import threading
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from aiohttp import web
 from PIL import Image
@@ -338,6 +339,29 @@ def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=No
             pass
         raise
 
+def download_hf_file(repo_id, path_in_repo, token=None):
+    from huggingface_hub import hf_hub_url
+    import requests
+
+    url = hf_hub_url(repo_id=repo_id, filename=path_in_repo, repo_type="model")
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    fd, tmp_path = tempfile.mkstemp(prefix="vnccs_pose_repo_", suffix=os.path.splitext(path_in_repo)[1] or ".tmp")
+    os.close(fd)
+    try:
+        with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
+            response.raise_for_status()
+            with open(tmp_path, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024 * 256):
+                    if chunk:
+                        f.write(chunk)
+        return tmp_path
+    except Exception:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        raise
+
 def collect_local_pose_files():
     lib_path = get_library_path()
     local_root = os.path.join(lib_path, LOCAL_USER_REPOSITORY)
@@ -517,21 +541,26 @@ def remove_local_repository_cache(repo_id):
     shutil.rmtree(repo_root, ignore_errors=True)
     return removed_count
 
+def download_pose_repository_file_job(repo_id, token, job):
+    tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+    try:
+        changed = copy_if_changed(tmp_path, job["target_path"], job.get("expected_sha") or "")
+        return {**job, "changed": changed}
+    finally:
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
 def sync_pose_repository_files(repo, manifest, token, task_id=None):
     """Download new/changed pose files from a Hugging Face pose repository."""
     repo_id = repo["repo_id"]
     poses = manifest.get("poses") or []
-    downloaded = []
-    skipped = []
+    pose_states = {}
+    download_jobs = []
     expected_json_paths = set()
     expected_preview_paths = set()
     errors = []
-    total_files = 1 + sum(
-        1 + (1 if isinstance(pose, dict) and pose.get("preview_path") else 0)
-        for pose in poses
-        if isinstance(pose, dict) and (pose.get("json_path") or pose.get("path"))
-    )
-    file_index = 1
 
     for pose in poses:
         if not isinstance(pose, dict):
@@ -546,37 +575,19 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         pose_dir = get_pose_dir(repo_id, category)
         target_json = os.path.join(pose_dir, f"{name}.json")
         expected_json_paths.add(target_json)
+        pose_states[hub_json_path] = {"changed": False, "error": False}
 
         try:
             if local_file_matches(target_json, pose.get("json_sha256") or ""):
-                json_changed = False
-                repository_progress_update(
-                    task_id,
-                    message=f"Already up to date: {hub_json_path}",
-                    current_file=hub_json_path,
-                    file_index=file_index + 1,
-                    total_files=total_files,
-                    bytes_done=0,
-                    bytes_total=0,
-                    progress=((file_index + 1) / max(total_files, 1)) * 100,
-                )
+                pass
             else:
-                cached_json = download_hf_file_with_progress(
-                    repo_id=repo_id,
-                    path_in_repo=hub_json_path,
-                    token=token,
-                    task_id=task_id,
-                    file_index=file_index,
-                    total_files=total_files,
-                )
-                json_changed = copy_if_changed(cached_json, target_json, pose.get("json_sha256") or "")
-                try:
-                    os.remove(cached_json)
-                except Exception:
-                    pass
-            file_index += 1
+                download_jobs.append({
+                    "pose_key": hub_json_path,
+                    "hub_path": hub_json_path,
+                    "target_path": target_json,
+                    "expected_sha": pose.get("json_sha256") or "",
+                })
 
-            preview_changed = False
             hub_preview_path = pose.get("preview_path") or ""
             if hub_preview_path:
                 try:
@@ -584,41 +595,66 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                     target_preview = os.path.join(pose_dir, f"{name}{ext}")
                     expected_preview_paths.add(target_preview)
                     if local_file_matches(target_preview, pose.get("preview_sha256") or ""):
-                        repository_progress_update(
-                            task_id,
-                            message=f"Already up to date: {hub_preview_path}",
-                            current_file=hub_preview_path,
-                            file_index=file_index + 1,
-                            total_files=total_files,
-                            bytes_done=0,
-                            bytes_total=0,
-                            progress=((file_index + 1) / max(total_files, 1)) * 100,
-                        )
+                        pass
                     else:
-                        cached_preview = download_hf_file_with_progress(
-                            repo_id=repo_id,
-                            path_in_repo=hub_preview_path,
-                            token=token,
-                            task_id=task_id,
-                            file_index=file_index,
-                            total_files=total_files,
-                        )
-                        preview_changed = copy_if_changed(cached_preview, target_preview, pose.get("preview_sha256") or "")
-                        try:
-                            os.remove(cached_preview)
-                        except Exception:
-                            pass
-                    file_index += 1
+                        download_jobs.append({
+                            "pose_key": hub_json_path,
+                            "hub_path": hub_preview_path,
+                            "target_path": target_preview,
+                            "expected_sha": pose.get("preview_sha256") or "",
+                        })
                 except Exception as exc:
                     errors.append(f"{hub_preview_path}: {exc}")
-                    file_index += 1
-
-            if json_changed or preview_changed:
-                downloaded.append(hub_json_path)
-            else:
-                skipped.append(hub_json_path)
+                    pose_states[hub_json_path]["error"] = True
         except Exception as exc:
             errors.append(f"{hub_json_path}: {exc}")
+            pose_states[hub_json_path]["error"] = True
+
+    if download_jobs:
+        max_workers = min(8, max(2, len(download_jobs)))
+        repository_progress_update(
+            task_id,
+            message=f"Downloading {len(download_jobs)} changed files with {max_workers} workers...",
+            current_file="",
+            file_index=0,
+            total_files=len(download_jobs),
+            progress=2,
+        )
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(download_pose_repository_file_job, repo_id, token, job): job
+                for job in download_jobs
+            }
+            for completed, future in enumerate(as_completed(futures), start=1):
+                job = futures[future]
+                try:
+                    result = future.result()
+                    if result.get("changed"):
+                        pose_states[job["pose_key"]]["changed"] = True
+                except Exception as exc:
+                    errors.append(f"{job['hub_path']}: {exc}")
+                    pose_states[job["pose_key"]]["error"] = True
+                repository_progress_update(
+                    task_id,
+                    message=f"Downloaded {completed}/{len(download_jobs)} changed files...",
+                    current_file=job["hub_path"],
+                    file_index=completed,
+                    total_files=len(download_jobs),
+                    progress=2 + (completed / max(len(download_jobs), 1)) * 94,
+                )
+    else:
+        repository_progress_update(task_id, message="All repository files are already up to date.", progress=96)
+
+    downloaded = [
+        pose_key
+        for pose_key, state in pose_states.items()
+        if state.get("changed") and not state.get("error")
+    ]
+    skipped = [
+        pose_key
+        for pose_key, state in pose_states.items()
+        if not state.get("changed") and not state.get("error")
+    ]
 
     removed = cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=task_id)
 
@@ -948,17 +984,10 @@ async def toggle_pose_repository(request):
         else:
             repository_progress_fail(task_id, "Repository not found")
             return web.json_response({"error": "Repository not found"}, status=404)
-    removed_count = 0
-    if not enabled:
-        repository_progress_update(task_id, progress=65, message="Removing local repository cache...")
-        removed_count = remove_local_repository_cache(repo_id)
     repository_progress_update(task_id, progress=75, message="Saving repository settings...")
     save_user_repositories(user_repos)
-    message = f"{repo_id} {'enabled' if enabled else 'disabled'}."
-    if not enabled:
-        message = f"{message} Removed {removed_count} cached files."
-    repository_progress_finish(task_id, message)
-    return web.json_response({"success": True, "repositories": load_pose_repositories(), "removed_count": removed_count})
+    repository_progress_finish(task_id, f"{repo_id} {'enabled' if enabled else 'disabled'}.")
+    return web.json_response({"success": True, "repositories": load_pose_repositories()})
 
 async def delete_pose_repository(request):
     repo_id = normalize_repo_id(request.match_info.get("repo_id"))
