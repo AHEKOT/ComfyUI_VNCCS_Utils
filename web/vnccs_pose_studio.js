@@ -1100,6 +1100,63 @@ const STYLES = `
     color: var(--ps-accent-hover);
 }
 
+.vnccs-ps-save-library-modal {
+    width: min(680px, calc(100% - 32px));
+    border-radius: 32px;
+}
+
+.vnccs-ps-save-library-modal .vnccs-ps-modal-title {
+    padding: 24px 32px;
+    font-size: 26px;
+}
+
+.vnccs-ps-save-library-modal .vnccs-ps-modal-content {
+    gap: 16px;
+    padding: 28px;
+}
+
+.vnccs-ps-save-library-modal .vnccs-ps-input,
+.vnccs-ps-save-library-modal .vnccs-ps-textarea {
+    width: 100%;
+    min-height: 56px;
+    padding: 16px 20px;
+    font-size: 22px;
+    border-radius: 16px;
+}
+
+.vnccs-ps-save-library-modal .vnccs-ps-save-prompt {
+    min-height: 120px;
+    resize: vertical;
+}
+
+.vnccs-ps-save-library-label {
+    display: block;
+    color: var(--ps-text-muted);
+    font-size: 22px;
+    margin-top: 8px;
+}
+
+.vnccs-ps-save-library-check {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    color: var(--ps-text-muted);
+    font-size: 22px;
+}
+
+.vnccs-ps-save-library-check input[type="checkbox"] {
+    width: 26px;
+    height: 26px;
+}
+
+.vnccs-ps-save-library-modal .vnccs-ps-modal-btn {
+    min-height: 72px;
+    padding: 20px 24px;
+    font-size: 22px;
+    border-radius: 16px;
+    justify-content: center;
+}
+
 .vnccs-ps-settings-panel {
     position: absolute;
     top: 0; left: 0; right: 0; bottom: 0;
@@ -5777,20 +5834,20 @@ class PoseStudioWidget {
         const currentPrompt = this.getPosePrompt(this.activeTab);
 
         const modal = document.createElement('div');
-        modal.className = 'vnccs-ps-modal';
+        modal.className = 'vnccs-ps-modal vnccs-ps-save-library-modal';
         modal.innerHTML = `
             <div class="vnccs-ps-modal-title">Save to Library</div>
             <div class="vnccs-ps-modal-content">
-                <input type="text" placeholder="Pose name..." class="vnccs-ps-input" style="width:100%;padding:8px;">
-                <input type="text" placeholder="Category..." class="vnccs-ps-input" style="width:100%;padding:8px;" value="Uncategorized">
-                <input type="text" placeholder="Tags, comma separated..." class="vnccs-ps-input" style="width:100%;padding:8px;">
-                <label style="display:block;color:var(--ps-text-muted);font-size:11px;margin-top:4px;">Prompt</label>
-                <textarea class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Pose prompt..." style="width:100%;min-height:60px;resize:vertical;">${this.escapeHtml(currentPrompt)}</textarea>
-                <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:11px;">
+                <input type="text" placeholder="Pose name..." class="vnccs-ps-input">
+                <input type="text" placeholder="Category..." class="vnccs-ps-input" value="Uncategorized">
+                <input type="text" placeholder="Tags, comma separated..." class="vnccs-ps-input">
+                <label class="vnccs-ps-save-library-label">Prompt</label>
+                <textarea class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Pose prompt...">${this.escapeHtml(currentPrompt)}</textarea>
+                <label class="vnccs-ps-save-library-check">
                     <input type="checkbox" checked> Include preview image
                 </label>
             </div>
-            <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">💾 Save</button>
+            <button class="vnccs-ps-modal-btn primary">💾 Save</button>
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
         `;
 

@@ -767,6 +767,20 @@ def delete_remote_pose_files(api, repo_id, token, paths, task_id=None):
                 errors.append(f"{path}: {exc}")
     return deleted, errors
 
+def upload_pose_repository_file_job(repo_id, token, job):
+    from huggingface_hub import HfApi
+
+    api = HfApi(token=token)
+    api.upload_file(
+        path_or_fileobj=job["local_path"],
+        path_in_repo=job["hub_path"],
+        repo_id=repo_id,
+        repo_type="model",
+        token=token,
+        commit_message=job["commit_message"],
+    )
+    return job["hub_path"]
+
 def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
     repo_id = normalize_repo_id(repo_id)
     if not repo_id:
@@ -804,6 +818,8 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
 
         changed_paths = set()
         uploaded = []
+        upload_jobs = []
+        upload_errors = []
         deleted = []
         delete_errors = []
         skipped = []
@@ -831,29 +847,17 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
             preview_changed = bool(pose["hub_preview_path"]) and remote_preview_sha != pose["preview_sha256"]
 
             if json_changed:
-                repository_progress_update(task_id, progress=min(base_progress + 2, 94), message=f"Uploading {pose['hub_json_path']}...")
-                api.upload_file(
-                    path_or_fileobj=pose["json_path"],
-                    path_in_repo=pose["hub_json_path"],
-                    repo_id=repo_id,
-                    repo_type="model",
-                    token=token,
-                    commit_message=f"Update pose {pose['name']}",
-                )
-                changed_paths.add(pose["hub_json_path"])
-                uploaded.append(pose["hub_json_path"])
+                upload_jobs.append({
+                    "local_path": pose["json_path"],
+                    "hub_path": pose["hub_json_path"],
+                    "commit_message": f"Update pose {pose['name']}",
+                })
             if preview_changed:
-                repository_progress_update(task_id, progress=min(base_progress + 5, 96), message=f"Uploading {pose['hub_preview_path']}...")
-                api.upload_file(
-                    path_or_fileobj=pose["preview_path"],
-                    path_in_repo=pose["hub_preview_path"],
-                    repo_id=repo_id,
-                    repo_type="model",
-                    token=token,
-                    commit_message=f"Update pose preview {pose['name']}",
-                )
-                changed_paths.add(pose["hub_preview_path"])
-                uploaded.append(pose["hub_preview_path"])
+                upload_jobs.append({
+                    "local_path": pose["preview_path"],
+                    "hub_path": pose["hub_preview_path"],
+                    "commit_message": f"Update pose preview {pose['name']}",
+                })
             if not json_changed and not preview_changed:
                 skipped.append(pose["hub_json_path"])
             if (
@@ -865,6 +869,40 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                 or remote_pose.get("json_sha256") != pose["json_sha256"]
             ):
                 manifest_changed = True
+
+        if upload_jobs:
+            max_workers = min(8, max(2, len(upload_jobs)))
+            repository_progress_update(
+                task_id,
+                progress=18,
+                message=f"Uploading {len(upload_jobs)} changed files with {max_workers} workers...",
+                current_file="",
+                file_index=0,
+                total_files=len(upload_jobs),
+            )
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = {
+                    executor.submit(upload_pose_repository_file_job, repo_id, token, job): job
+                    for job in upload_jobs
+                }
+                for completed, future in enumerate(as_completed(futures), start=1):
+                    job = futures[future]
+                    try:
+                        hub_path = future.result()
+                        changed_paths.add(hub_path)
+                        uploaded.append(hub_path)
+                    except Exception as exc:
+                        upload_errors.append(f"{job['hub_path']}: {exc}")
+                    repository_progress_update(
+                        task_id,
+                        progress=18 + (completed / max(len(upload_jobs), 1)) * 64,
+                        message=f"Uploaded {completed}/{len(upload_jobs)} changed files...",
+                        current_file=job["hub_path"],
+                        file_index=completed,
+                        total_files=len(upload_jobs),
+                    )
+            if upload_errors:
+                raise RuntimeError("Failed to upload changed pose files: " + "; ".join(upload_errors))
 
         stale_paths = collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_files)
         if stale_paths:
