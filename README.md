@@ -11,7 +11,7 @@ A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI
 
 <a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
-## Main Node: VNCCS Pose Studio
+## VNCCS Pose Studio
 
 <p align="center">
   <img src="images/pose-studio-logo.png" alt="VNCCS Pose Studio logo" width="360">
@@ -97,3 +97,13 @@ A helper node for extracting and visualizing crops when you need detected boundi
 
 1. Copy the ComfyUI_VNCCS_Utils folder into your ComfyUI custom_nodes directory.
 2. Restart ComfyUI.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=AHEKOT%2FComfyUI_VNCCS_Utils%2CAHEKOT%2FComfyUI_VNCCS%2CAHEKOT%2FComfyUI_HYWorld2&type=timeline&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=AHEKOT/ComfyUI_VNCCS_Utils%2CAHEKOT/ComfyUI_VNCCS%2CAHEKOT/ComfyUI_HYWorld2&type=timeline&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=AHEKOT/ComfyUI_VNCCS_Utils%2CAHEKOT/ComfyUI_VNCCS%2CAHEKOT/ComfyUI_HYWorld2&type=timeline&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=AHEKOT/ComfyUI_VNCCS_Utils%2CAHEKOT/ComfyUI_VNCCS%2CAHEKOT/ComfyUI_HYWorld2&type=timeline&legend=top-left" />
+ </picture>
+</a>
