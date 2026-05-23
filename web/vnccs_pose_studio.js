@@ -45,6 +45,7 @@ const STYLES = `
     --ps-radius-md:  12px;
     --ps-radius-lg:  16px;
     --ps-transition: 0.2s ease;
+    --vnccs-ps-ui-scale: 1;
 }
 
 /* Main Container */
@@ -66,6 +67,7 @@ const STYLES = `
 /* === Left Panel === */
 .vnccs-ps-left {
     width: 220px;
+    zoom: var(--vnccs-ps-ui-scale);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -96,6 +98,7 @@ const STYLES = `
 /* === Right Sidebar (Lighting) === */
 .vnccs-ps-right-sidebar {
     width: 220px;
+    zoom: var(--vnccs-ps-ui-scale);
     flex-shrink: 0;
     display: flex;
     flex-direction: column;
@@ -430,6 +433,7 @@ const STYLES = `
     position: relative;
     display: flex;
     align-items: stretch;
+    zoom: var(--vnccs-ps-ui-scale);
     background: rgba(0, 0, 0, 0.35);
     border-bottom: 1px solid var(--ps-border);
     flex-shrink: 0;
@@ -912,6 +916,7 @@ const STYLES = `
 .vnccs-ps-actions {
     display: flex;
     flex-wrap: wrap;
+    zoom: var(--vnccs-ps-ui-scale);
     gap: 5px;
     padding: 7px 8px;
     background: rgba(0, 0, 0, 0.3);
@@ -6777,6 +6782,7 @@ class PoseStudioWidget {
     }
 
     resize() {
+        this.updateMainUIScale();
         if (this.viewer && this.canvasContainer) {
             const rect = this.canvasContainer.getBoundingClientRect();
             const targetW = Math.round(rect.width);
@@ -6797,6 +6803,14 @@ class PoseStudioWidget {
         }
     }
 
+    updateMainUIScale() {
+        if (!this.container) return;
+        const width = this.container.clientWidth || this.node?.size?.[0] || 900;
+        const height = this.container.clientHeight || this.node?.size?.[1] || 740;
+        const scale = Math.max(0.85, Math.min(1.55, Math.min(width / 900, height / 740)));
+        this.container.style.setProperty("--vnccs-ps-ui-scale", scale.toFixed(3));
+    }
+
     startResizeObserver() {
         if (this._containerResizeObserver || !this.canvasContainer) return;
 
@@ -6805,6 +6819,8 @@ class PoseStudioWidget {
             this._resizeRaf = requestAnimationFrame(() => this.resize());
         });
 
+        this.updateMainUIScale();
+        if (this.container) this._containerResizeObserver.observe(this.container);
         this._containerResizeObserver.observe(this.canvasContainer);
     }
 
