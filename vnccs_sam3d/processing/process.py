@@ -684,11 +684,6 @@ def _load_face_blendshapes(mhr_rest_verts: np.ndarray,
 
     object_names = [str(x) for x in np.asarray(npz["meta_objects"])]
 
-    try:
-        from scipy.spatial import cKDTree
-    except Exception:
-        cKDTree = None
-
     region_ids = {}
     region_deltas = {}
     for obj_name in object_names:
@@ -710,14 +705,10 @@ def _load_face_blendshapes(mhr_rest_verts: np.ndarray,
             mhr_ids = np.asarray(json.load(f), dtype=np.int64)
         mhr_pos = mhr_rest_verts[mhr_ids].astype(np.float32)
 
-        if cKDTree is not None:
-            tree = cKDTree(fbx_base_mhr)
-            _, fbx_for_mhr = tree.query(mhr_pos, k=1)
-        else:
-            fbx_for_mhr = np.empty(len(mhr_pos), dtype=np.int64)
-            for i, p in enumerate(mhr_pos):
-                d2 = ((fbx_base_mhr - p) ** 2).sum(axis=1)
-                fbx_for_mhr[i] = int(d2.argmin())
+        fbx_for_mhr = np.empty(len(mhr_pos), dtype=np.int64)
+        for i, p in enumerate(mhr_pos):
+            d2 = ((fbx_base_mhr - p) ** 2).sum(axis=1)
+            fbx_for_mhr[i] = int(d2.argmin())
 
         region_ids[obj_name] = mhr_ids
         region_deltas[obj_name] = {}

@@ -105,10 +105,7 @@ def get_task(task_id: str) -> dict:
     }
 
 
-try:
-    from tqdm.auto import tqdm as _TqdmBase
-except Exception:
-    _TqdmBase = object
+_TqdmBase = object
 
 
 class SnapshotDownloadTqdm(_TqdmBase):

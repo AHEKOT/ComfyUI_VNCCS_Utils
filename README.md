@@ -95,8 +95,26 @@ A helper node for extracting and visualizing crops when you need detected boundi
 
 ## Installation
 
-1. Copy the ComfyUI_VNCCS_Utils folder into your ComfyUI custom_nodes directory.
-2. Restart ComfyUI.
+### Recommended: ComfyUI Manager
+
+1. Open **ComfyUI Manager**.
+2. Choose **Custom Nodes Manager**.
+3. Search for **VNCCS Utils**.
+4. Click **Install**.
+5. Restart ComfyUI.
+
+### Manual Installation
+
+Open a terminal in your ComfyUI directory and run:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/AHEKOT/ComfyUI_VNCCS_Utils.git
+cd ComfyUI_VNCCS_Utils
+pip install -r requirements.txt
+```
+
+Restart ComfyUI after installation.
 
 ## Star History
 

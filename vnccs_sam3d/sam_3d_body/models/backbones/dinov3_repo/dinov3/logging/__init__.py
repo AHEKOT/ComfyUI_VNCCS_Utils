@@ -9,7 +9,8 @@ import os
 import sys
 from typing import Optional
 
-from termcolor import colored
+def colored(text, *args, **kwargs):
+    return text
 
 from dinov3.distributed import TorchDistributedEnvironment
 
