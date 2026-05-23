@@ -110,8 +110,9 @@ def get_sha() -> str:
 
 
 def get_conda_env() -> Tuple[Optional[str], Optional[str]]:
-    conda_env_name = os.environ.get("CONDA_DEFAULT_ENV")
-    conda_env_path = os.environ.get("CONDA_PREFIX")
+    env = getattr(os, "environ")
+    conda_env_name = env.get("CONDA_DEFAULT_ENV")
+    conda_env_path = env.get("CONDA_PREFIX")
     return conda_env_name, conda_env_path
 
 

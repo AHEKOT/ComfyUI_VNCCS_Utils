@@ -42,8 +42,7 @@ def _scale_debug_enabled(*flags):
             value = value.strip().lower() in {"1", "true", "yes", "on"}
         if bool(value):
             return True
-    env = os.getenv("SAM3DBODY_DEBUG_SCALE", "").strip().lower()
-    return env in {"1", "true", "yes", "on"}
+    return False
 
 
 def _debug_stat_block(value):

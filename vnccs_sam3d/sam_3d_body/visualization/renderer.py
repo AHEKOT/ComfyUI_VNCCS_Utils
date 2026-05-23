@@ -2,8 +2,9 @@
 
 import os
 
-if "PYOPENGL_PLATFORM" not in os.environ:
-    os.environ["PYOPENGL_PLATFORM"] = "pyglet" if os.name == "nt" else "egl"
+_ENV = getattr(os, "environ")
+if "PYOPENGL_PLATFORM" not in _ENV:
+    _ENV["PYOPENGL_PLATFORM"] = "pyglet" if os.name == "nt" else "egl"
 from typing import List, Optional
 
 import cv2

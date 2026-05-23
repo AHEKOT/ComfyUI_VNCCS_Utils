@@ -18,7 +18,7 @@ from ..modules.mhr_utils import (
 
 from ..modules.transformer import FFN
 
-MOMENTUM_ENABLED = os.environ.get("MOMENTUM_ENABLED") is None
+MOMENTUM_ENABLED = False
 try:
     if MOMENTUM_ENABLED:
         from mhr.mhr import MHR

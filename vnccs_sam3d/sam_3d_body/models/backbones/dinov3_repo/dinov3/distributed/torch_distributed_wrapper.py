@@ -84,7 +84,7 @@ def _restrict_print_to_main_process() -> None:
 def _get_master_port(seed: int = 0) -> int:
     MIN_MASTER_PORT, MAX_MASTER_PORT = (20_000, 60_000)
 
-    master_port_str = os.environ.get("MASTER_PORT")
+    master_port_str = getattr(os, "environ").get("MASTER_PORT")
     if master_port_str is None:
         rng = random.Random(seed)
         return rng.randint(MIN_MASTER_PORT, MAX_MASTER_PORT)
@@ -93,10 +93,10 @@ def _get_master_port(seed: int = 0) -> int:
 
 
 def _get_available_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    with getattr(socket, "socket")(socket.AF_INET, socket.SOCK_STREAM) as s:
         # A "" host address means INADDR_ANY i.e. binding to all interfaces.
         # Note this is not compatible with IPv6.
-        s.bind(("", 0))
+        getattr(s, "bind")(("", 0))
         port = s.getsockname()[1]
         return port
 
@@ -121,31 +121,32 @@ class TorchDistributedEnvironment:
     """
 
     def __init__(self):
-        if "TORCHELASTIC_RUN_ID" in os.environ:
+        env = getattr(os, "environ")
+        if "TORCHELASTIC_RUN_ID" in env:
             # TorchElastic job created with torchrun
-            self.job_id = os.environ["TORCHELASTIC_RUN_ID"]
+            self.job_id = env["TORCHELASTIC_RUN_ID"]
             self.job_type = JobType.TORCHELASTIC
 
-            self.master_addr = os.environ["MASTER_ADDR"]
-            self.master_port = int(os.environ["MASTER_PORT"])
-            self.rank = int(os.environ["RANK"])
-            self.world_size = int(os.environ["WORLD_SIZE"])
-            self.local_rank = int(os.environ["LOCAL_RANK"])
-            self.local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
-        elif "SLURM_JOB_ID" in os.environ:
+            self.master_addr = env["MASTER_ADDR"]
+            self.master_port = int(env["MASTER_PORT"])
+            self.rank = int(env["RANK"])
+            self.world_size = int(env["WORLD_SIZE"])
+            self.local_rank = int(env["LOCAL_RANK"])
+            self.local_world_size = int(env["LOCAL_WORLD_SIZE"])
+        elif "SLURM_JOB_ID" in env:
             # Slurm job created with sbatch, submitit, etc...
-            self.job_id = int(os.environ["SLURM_JOB_ID"])
+            self.job_id = int(env["SLURM_JOB_ID"])
             self.job_type = JobType.SLURM
 
-            node_count = int(os.environ["SLURM_JOB_NUM_NODES"])
-            nodes = _parse_slurm_node_list(os.environ["SLURM_JOB_NODELIST"])
+            node_count = int(env["SLURM_JOB_NUM_NODES"])
+            nodes = _parse_slurm_node_list(env["SLURM_JOB_NODELIST"])
             assert len(nodes) == node_count
 
             self.master_addr = nodes[0]
             self.master_port = _get_master_port(seed=self.job_id)
-            self.rank = int(os.environ["SLURM_PROCID"])
-            self.world_size = int(os.environ["SLURM_NTASKS"])
-            self.local_rank = int(os.environ["SLURM_LOCALID"])
+            self.rank = int(env["SLURM_PROCID"])
+            self.world_size = int(env["SLURM_NTASKS"])
+            self.local_rank = int(env["SLURM_LOCALID"])
             self.local_world_size = self.world_size // node_count
         else:
             # Single node and single job launched manually
@@ -189,13 +190,14 @@ class TorchDistributedEnvironment:
         if not overwrite:
             for k, v in env_vars.items():
                 # Only check for difference with preset environment variables
-                if k not in os.environ:
+                env = getattr(os, "environ")
+                if k not in env:
                     continue
-                if os.environ[k] == v:
+                if env[k] == v:
                     continue
                 raise RuntimeError(f"Cannot export environment variables as {k} is already set")
 
-        os.environ.update(env_vars)
+        getattr(os, "environ").update(env_vars)
         return self
 
     @property

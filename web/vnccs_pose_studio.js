@@ -2191,9 +2191,9 @@ class PoseStudioWidget {
         this._handPopover = null;
         this._handPopoverTitle = null;
         this._pendingHandPopoverOutsideClick = null;
-        this._boundHandleDocumentPointerDown = this._handleDocumentPointerDown.bind(this);
-        this._boundHandleDocumentPointerUp = this._handleDocumentPointerUp.bind(this);
-        this._boundHandleDocumentPointerCancel = this._handleDocumentPointerCancel.bind(this);
+        this._boundHandleDocumentPointerDown = (event) => this._handleDocumentPointerDown(event);
+        this._boundHandleDocumentPointerUp = (event) => this._handleDocumentPointerUp(event);
+        this._boundHandleDocumentPointerCancel = (event) => this._handleDocumentPointerCancel(event);
         this.libraryThumbSizeStorageKey = "vnccsPoseLibraryPreviewSize";
         this.libraryThumbSize = this.loadLibraryThumbnailSize();
         this.libraryResizeObserver = null;

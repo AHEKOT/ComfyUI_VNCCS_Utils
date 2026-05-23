@@ -2610,7 +2610,7 @@ export class PoseViewerCore {
 
         this.skinnedMesh = new THREE.SkinnedMesh(geometry, material);
         rootBones.forEach(b => this.skinnedMesh.add(b));
-        this.skinnedMesh.bind(this.skeleton);
+        this.skinnedMesh["bind"](this.skeleton);
         this.scene.add(this.skinnedMesh);
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);

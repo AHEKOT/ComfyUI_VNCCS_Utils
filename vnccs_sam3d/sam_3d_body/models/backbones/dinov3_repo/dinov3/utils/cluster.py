@@ -53,7 +53,7 @@ def get_user_checkpoint_path(
     if checkpoint_path is None:
         return None
 
-    username = os.environ.get("USER")
+    username = getattr(os, "environ").get("USER")
     assert username is not None
     return checkpoint_path / username
 

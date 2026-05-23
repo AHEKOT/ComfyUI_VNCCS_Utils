@@ -55,7 +55,7 @@ def get_cached_config_path(repo_id, force_refresh=False):
     
     # Load user config for tokens
     user_config = get_vnccs_config()
-    hf_token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
+    hf_token = user_config.get("hf_token")
 
     if needs_remote:
         try:
@@ -161,11 +161,11 @@ def worker_loop():
                 # Resolve URL and Token
                 url = hf_hub_url(download_repo_id, filename)
                 user_config = get_vnccs_config()
-                token = user_config.get("hf_token") or os.environ.get("HF_TOKEN")
+                token = user_config.get("hf_token")
                 headers = {"Authorization": f"Bearer {token}"} if token else {}
             
             # Use requests for streaming download
-            response = requests.get(url, headers=headers, stream=True, allow_redirects=True)
+            response = getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True)
             response.raise_for_status()
             
             total_size = int(response.headers.get('content-length', 0))

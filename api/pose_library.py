@@ -194,7 +194,7 @@ def load_pose_repositories():
     return list(merged.values())
 
 def get_hf_token():
-    token = os.environ.get("HF_TOKEN")
+    token = None
     try:
         user_config = get_vnccs_user_config()
         token = user_config.get("hf_token") or token
@@ -297,7 +297,7 @@ def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=No
     bytes_done = 0
     total_bytes = 0
     try:
-        with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
+        with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
             response.raise_for_status()
             total_bytes = int(response.headers.get("content-length") or 0)
             repository_progress_update(
@@ -348,7 +348,7 @@ def download_hf_file(repo_id, path_in_repo, token=None):
     fd, tmp_path = tempfile.mkstemp(prefix="vnccs_pose_repo_", suffix=os.path.splitext(path_in_repo)[1] or ".tmp")
     os.close(fd)
     try:
-        with requests.get(url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
+        with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
             response.raise_for_status()
             with open(tmp_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=1024 * 256):

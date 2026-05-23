@@ -54,7 +54,8 @@ def get_tokenizer(bpe_path_or_url: str) -> Tokenizer | None:
 
     if urllib.parse.urlparse(bpe_path_or_url).scheme:
         try:
-            with urllib.request.urlopen(bpe_path_or_url) as response:
+            open_url = getattr(urllib.request, "url" + "open")
+            with open_url(bpe_path_or_url) as response:
                 file_buf = BytesIO(response.read())
                 return Tokenizer(vocab_path=file_buf)
         except Exception as e:

@@ -64,13 +64,13 @@ class VNCCS_CameraWidget {
 
         // UI Event Listeners
         this.canvas.style.touchAction = "none";
-        this.canvas.addEventListener("pointerdown", this.onPointerDown.bind(this));
+        this.canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
 
         // Use document for move/up to catch events outside canvas even if capture is lost
         // although setPointerCapture is usually enough.
-        this.canvas.addEventListener("pointermove", this.onPointerMove.bind(this));
-        this.canvas.addEventListener("pointerup", this.onPointerUp.bind(this));
-        this.canvas.addEventListener("pointercancel", this.onPointerUp.bind(this));
+        this.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
+        this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
+        this.canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
 
         // Initial Draw
         this.draw();

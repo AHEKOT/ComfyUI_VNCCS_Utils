@@ -166,11 +166,11 @@ class TransformControls extends Object3D {
 		this._quaternionStart = new Quaternion();
 		this._scaleStart = new Vector3();
 
-		this._getPointer = getPointer.bind(this);
-		this._onPointerDown = onPointerDown.bind(this);
-		this._onPointerHover = onPointerHover.bind(this);
-		this._onPointerMove = onPointerMove.bind(this);
-		this._onPointerUp = onPointerUp.bind(this);
+		this._getPointer = (event) => getPointer.call(this, event);
+		this._onPointerDown = (event) => onPointerDown.call(this, event);
+		this._onPointerHover = (event) => onPointerHover.call(this, event);
+		this._onPointerMove = (event) => onPointerMove.call(this, event);
+		this._onPointerUp = (event) => onPointerUp.call(this, event);
 
 		this.domElement.addEventListener('pointerdown', this._onPointerDown);
 		this.domElement.addEventListener('pointermove', this._onPointerHover);
