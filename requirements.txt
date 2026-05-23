@@ -15,4 +15,3 @@ yacs
 timm
 einops
 roma
-braceexpand

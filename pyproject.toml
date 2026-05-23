@@ -22,7 +22,6 @@ dependencies = [
     "timm",
     "einops",
     "roma",
-    "braceexpand",
 ]
 
 classifiers = [
