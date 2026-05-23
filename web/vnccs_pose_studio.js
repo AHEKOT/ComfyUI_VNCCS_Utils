@@ -6003,6 +6003,35 @@ class PoseStudioWidget {
         const content = document.createElement('div');
         content.className = 'vnccs-ps-settings-content';
 
+        const debugSection = this.createSection("Debug", false);
+
+        // SAM Camera Override Toggle
+        const samCamRow = document.createElement("div");
+        samCamRow.className = "vnccs-ps-field";
+
+        const samCamLabel = document.createElement("label");
+        samCamLabel.style.display = "flex";
+        samCamLabel.style.alignItems = "center";
+        samCamLabel.style.gap = "10px";
+        samCamLabel.style.cursor = "pointer";
+
+        const samCamCheckbox = document.createElement("input");
+        samCamCheckbox.type = "checkbox";
+        samCamCheckbox.checked = !!this.exportParams.samApplyCamera;
+        samCamCheckbox.onchange = () => {
+            this.exportParams.samApplyCamera = samCamCheckbox.checked;
+            this._updateSAMCameraBanner();
+            this.syncToNode(false);
+        };
+
+        const samCamText = document.createElement("div");
+        samCamText.innerHTML = "<strong>SAM Import: Apply Camera Angle</strong><div style='font-size:11px; color:#888; margin-top:4px;'>When enabled, importing a SAM3D pose will override the camera yaw/pitch to match the detected angle. Disable to keep your current camera settings after import.</div>";
+
+        samCamLabel.appendChild(samCamCheckbox);
+        samCamLabel.appendChild(samCamText);
+        samCamRow.appendChild(samCamLabel);
+        content.appendChild(samCamRow);
+
         // Debug Toggle
         const debugRow = document.createElement("div");
         debugRow.className = "vnccs-ps-field";
@@ -6034,7 +6063,7 @@ class PoseStudioWidget {
         debugLabel.appendChild(debugCheckbox);
         debugLabel.appendChild(debugText);
         debugRow.appendChild(debugLabel);
-        content.appendChild(debugRow);
+        debugSection.content.appendChild(debugRow);
 
         // Portrait Mode Toggle
         const portraitRow = document.createElement("div");
@@ -6061,7 +6090,7 @@ class PoseStudioWidget {
         portraitLabel.appendChild(portraitCheckbox);
         portraitLabel.appendChild(portraitText);
         portraitRow.appendChild(portraitLabel);
-        content.appendChild(portraitRow);
+        debugSection.content.appendChild(portraitRow);
 
         // Keep Lighting Toggle
         const keepLightRow = document.createElement("div");
@@ -6088,7 +6117,7 @@ class PoseStudioWidget {
         keepLightLabel.appendChild(keepLightCheckbox);
         keepLightLabel.appendChild(keepLightText);
         keepLightRow.appendChild(keepLightLabel);
-        content.appendChild(keepLightRow);
+        debugSection.content.appendChild(keepLightRow);
 
         // SAM Helper Skeleton Toggle
         const samHelperRow = document.createElement("div");
@@ -6121,7 +6150,7 @@ class PoseStudioWidget {
         samHelperLabel.appendChild(samHelperCheckbox);
         samHelperLabel.appendChild(samHelperText);
         samHelperRow.appendChild(samHelperLabel);
-        content.appendChild(samHelperRow);
+        debugSection.content.appendChild(samHelperRow);
 
         const samMeshRow = document.createElement("div");
         samMeshRow.className = "vnccs-ps-field";
@@ -6153,35 +6182,8 @@ class PoseStudioWidget {
         samMeshLabel.appendChild(samMeshCheckbox);
         samMeshLabel.appendChild(samMeshText);
         samMeshRow.appendChild(samMeshLabel);
-        content.appendChild(samMeshRow);
-
-        // SAM Camera Override Toggle
-        const samCamRow = document.createElement("div");
-        samCamRow.className = "vnccs-ps-field";
-        samCamRow.style.marginTop = "10px";
-
-        const samCamLabel = document.createElement("label");
-        samCamLabel.style.display = "flex";
-        samCamLabel.style.alignItems = "center";
-        samCamLabel.style.gap = "10px";
-        samCamLabel.style.cursor = "pointer";
-
-        const samCamCheckbox = document.createElement("input");
-        samCamCheckbox.type = "checkbox";
-        samCamCheckbox.checked = !!this.exportParams.samApplyCamera;
-        samCamCheckbox.onchange = () => {
-            this.exportParams.samApplyCamera = samCamCheckbox.checked;
-            this._updateSAMCameraBanner();
-            this.syncToNode(false);
-        };
-
-        const samCamText = document.createElement("div");
-        samCamText.innerHTML = "<strong>SAM Import: Apply Camera Angle</strong><div style='font-size:11px; color:#888; margin-top:4px;'>When enabled, importing a SAM3D pose will override the camera yaw/pitch to match the detected angle. Disable to keep your current camera settings after import.</div>";
-
-        samCamLabel.appendChild(samCamCheckbox);
-        samCamLabel.appendChild(samCamText);
-        samCamRow.appendChild(samCamLabel);
-        content.appendChild(samCamRow);
+        debugSection.content.appendChild(samMeshRow);
+        content.appendChild(debugSection.el);
 
         // Skin Texture Section
         const skinHeader = document.createElement("div");
