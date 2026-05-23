@@ -5961,7 +5961,6 @@ class PoseStudioWidget {
 
     async loadFromLibrary(poseOrName) {
         const name = this.getLibraryPoseName(poseOrName);
-        console.log("[VNCCS PoseStudio] loadFromLibrary triggered for:", name);
         try {
             this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
@@ -7200,7 +7199,6 @@ class PoseStudioWidget {
                     this.activeTab = i; // Switch tab for capture
 
                     if (isDebug) {
-                        console.log("PoseStudio: Randomizing due to debugMode=true");
                         // Generate fresh random params for each pose
                         const debugParams = this.generateDebugParams();
 
@@ -7360,7 +7358,6 @@ class PoseStudioWidget {
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (widget) {
             widget.value = JSON.stringify(data);
-            console.log("[VNCCS PoseStudio] syncToNode saved data to widget. capture_id:", captureId, "captures count:", this.poseCaptures.length);
 
             // Force ComfyUI to recognize the state change so it saves to the workflow
             if (widget.callback) {
@@ -7375,18 +7372,15 @@ class PoseStudioWidget {
     }
 
     loadFromNode() {
-        console.log("[VNCCS PoseStudio] loadFromNode started");
         this.clearSAMCameraMode();
         // Load from pose_data widget
         const widget = this.node.widgets?.find(w => w.name === "pose_data");
         if (!widget || !widget.value) {
-            console.log("[VNCCS PoseStudio] loadFromNode: No widget or widget value found.");
             return;
         }
 
         try {
             const data = JSON.parse(widget.value);
-            console.log("[VNCCS PoseStudio] loadFromNode data parsed successfully. Includes poses:", !!data.poses);
 
             if (data.mesh) {
                 this.meshParams = { ...this.meshParams, ...data.mesh };
