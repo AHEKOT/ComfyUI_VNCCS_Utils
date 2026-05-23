@@ -7624,6 +7624,28 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         if (nodeData.name !== "VNCCS_PoseStudio") return;
 
+        const syncStudioDOMWidgetWidth = (node) => {
+            const widget = node?.widgets?.find(w => w.name === "pose_studio_ui");
+            const nodeWidth = Number(node?.size?.[0]);
+            if (widget && Number.isFinite(nodeWidth) && nodeWidth > 0) {
+                if (!widget._vnccsWidthBound) {
+                    Object.defineProperty(widget, "width", {
+                        configurable: true,
+                        get() {
+                            const width = Number(this._node?.size?.[0]);
+                            return Number.isFinite(width) && width > 0 ? width : undefined;
+                        },
+                        set(_value) {
+                            // ComfyUI may restore a stale widget.width from older DOM layouts.
+                            // Keep this DOM widget tied to the node width instead.
+                        }
+                    });
+                    widget._vnccsWidthBound = true;
+                }
+                if (typeof widget.triggerDraw === "function") widget.triggerDraw();
+            }
+        };
+
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (onCreated) onCreated.apply(this, arguments);
@@ -7633,10 +7655,20 @@ app.registerExtension({
             // Create widget
             this.studioWidget = new PoseStudioWidget(this);
 
-            this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
+            const studioDOMWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
                 serialize: false,
                 hideOnZoom: false
             });
+            this.studioDOMWidget = studioDOMWidget;
+            if (studioDOMWidget) {
+                studioDOMWidget.computeSize = () => {
+                    const width = Math.max(300, Math.round((this.size?.[0] || 900) - 20));
+                    const height = Math.max(300, Math.round((this.size?.[1] || 740) - 60));
+                    return [width, height];
+                };
+            }
+            syncStudioDOMWidgetWidth(this);
+            requestAnimationFrame(() => syncStudioDOMWidgetWidth(this));
 
             // Pre-load library for random functionality
             setTimeout(() => {
@@ -7678,8 +7710,10 @@ app.registerExtension({
             if (this.studioWidget) {
                 // DON'T set container dimensions - let it fill naturally
                 // Just trigger the viewer resize
+                syncStudioDOMWidgetWidth(this);
                 clearTimeout(this.resizeTimer);
                 this.resizeTimer = setTimeout(() => {
+                    syncStudioDOMWidgetWidth(this);
                     this.studioWidget.resize();
                 }, 50);
             }
@@ -7691,7 +7725,9 @@ app.registerExtension({
             if (onConfigure) onConfigure.apply(this, arguments);
 
             if (this.studioWidget) {
+                syncStudioDOMWidgetWidth(this);
                 setTimeout(() => {
+                    syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
