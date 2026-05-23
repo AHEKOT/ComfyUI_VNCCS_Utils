@@ -931,6 +931,28 @@ class VNCCS_ModelListWidget {
 app.registerExtension({
     name: "VNCCS.ModelManager",
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
+        const syncDOMWidgetWidth = (node, widgetName) => {
+            const widget = node?.widgets?.find(w => w.name === widgetName);
+            const nodeWidth = Number(node?.size?.[0]);
+            if (widget && Number.isFinite(nodeWidth) && nodeWidth > 0) {
+                if (!widget._vnccsWidthBound) {
+                    Object.defineProperty(widget, "width", {
+                        configurable: true,
+                        get() {
+                            const width = Number(this._node?.size?.[0]);
+                            return Number.isFinite(width) && width > 0 ? width : undefined;
+                        },
+                        set(_value) {
+                            // ComfyUI may restore stale DOM widget widths from older layouts.
+                            // Keep this DOM widget tied to the node width instead.
+                        }
+                    });
+                    widget._vnccsWidthBound = true;
+                }
+                if (typeof widget.triggerDraw === "function") widget.triggerDraw();
+            }
+        };
+
         if (nodeData.name === "VNCCS_ModelManager") {
             const onNodeCreated = nodeType.prototype.onNodeCreated;
             nodeType.prototype.onNodeCreated = function () {
@@ -949,16 +971,21 @@ app.registerExtension({
                 // Helper to create DOM element
                 const container = document.createElement("div");
                 // ComfyUI DOM Widget wrapper
-                this.addDOMWidget("ModelList", "div", container, {
+                const modelListWidget = this.addDOMWidget("ModelList", "div", container, {
                     serialize: false,
                     hideOnZoom: false
                 });
+                this.modelListDOMWidget = modelListWidget;
+                syncDOMWidgetWidth(this, "ModelList");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "ModelList"));
 
                 // Initialize logic
                 this.listWidget = new VNCCS_ModelListWidget(this, container);
 
                 // Increase default size to fit list
                 this.setSize([400, 500]);
+                syncDOMWidgetWidth(this, "ModelList");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "ModelList"));
 
                 // Auto-fetch on load (delayed to allow graph restore)
                 setTimeout(() => {
@@ -967,6 +994,20 @@ app.registerExtension({
                         this.listWidget.fetchModels(repoWidget.value);
                     }
                 }, 100);
+            };
+
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                if (onResize) onResize.apply(this, arguments);
+                syncDOMWidgetWidth(this, "ModelList");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "ModelList"));
+            };
+
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function (info) {
+                if (onConfigure) onConfigure.apply(this, arguments);
+                syncDOMWidgetWidth(this, "ModelList");
+                setTimeout(() => syncDOMWidgetWidth(this, "ModelList"), 100);
             };
         }
 
@@ -1006,10 +1047,13 @@ app.registerExtension({
 
                 // 3. Register DOM Widget
                 // We add it to the node so ComfyUI renders it
-                this.addDOMWidget("SelectorWidget", "div", container, {
+                const selectorDOMWidget = this.addDOMWidget("SelectorWidget", "div", container, {
                     serialize: false,
                     hideOnZoom: false
                 });
+                this.selectorDOMWidget = selectorDOMWidget;
+                syncDOMWidgetWidth(this, "SelectorWidget");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "SelectorWidget"));
 
                 // 4. Initialize Logic Class
                 this.selectorWidget = new VNCCS_SelectorWidget(this, container);
@@ -1020,10 +1064,18 @@ app.registerExtension({
                 }, 100);
             };
 
+            const onResize = nodeType.prototype.onResize;
+            nodeType.prototype.onResize = function (size) {
+                if (onResize) onResize.apply(this, arguments);
+                syncDOMWidgetWidth(this, "SelectorWidget");
+                requestAnimationFrame(() => syncDOMWidgetWidth(this, "SelectorWidget"));
+            };
+
             // Handle Workflow Loading (Restore values)
             const onConfigure = nodeType.prototype.onConfigure;
             nodeType.prototype.onConfigure = function () {
                 if (onConfigure) onConfigure.apply(this, arguments);
+                syncDOMWidgetWidth(this, "SelectorWidget");
                 // Sync value when graph is restored
                 if (this.selectorWidget) {
                     const w = this.widgets.find(x => x.name === "model_name");
@@ -1032,7 +1084,10 @@ app.registerExtension({
                         // Trigger a render so version logic runs (after fetch?)
                         // We might need to wait for fetch first, usually refresh() handles it
                         // but setting currentValue is key.
-                        setTimeout(() => this.selectorWidget.refresh(), 500);
+                        setTimeout(() => {
+                            syncDOMWidgetWidth(this, "SelectorWidget");
+                            this.selectorWidget.refresh();
+                        }, 500);
                     }
                 }
             };
