@@ -14,6 +14,7 @@ class VNCCS_ModelListWidget {
         this.downloadStatuses = {}; // Store status from server
         this.pollingInterval = null;
         this.downloadStartTimes = {}; // Local logic for fake progress
+        this.downloadProgressTimers = {};
 
         // Styles
         this.styleContainer();
@@ -386,7 +387,10 @@ class VNCCS_ModelListWidget {
 
     async updateStatuses() {
         try {
-            const response = await api.fetchApi("/vnccs/manager/status");
+            const response = await api.fetchApi(`/vnccs/utils/manager/status?t=${Date.now()}`, {
+                cache: "no-store",
+                headers: { "Cache-Control": "no-cache" }
+            });
             if (response.ok) {
                 const newStatuses = await response.json();
 
@@ -401,7 +405,12 @@ class VNCCS_ModelListWidget {
                     }
                 }
 
-                this.downloadStatuses = newStatuses;
+                this.mergeDownloadStatuses(newStatuses);
+                for (const [name, status] of Object.entries(this.downloadStatuses)) {
+                    if (status && (status.status === "downloading" || status.status === "queued")) {
+                        this.startDownloadProgressTimer(name);
+                    }
+                }
 
                 if (needsRefresh) {
                     const repoWidget = this.node.widgets?.find(w => w.name === "repo_id");
@@ -415,11 +424,52 @@ class VNCCS_ModelListWidget {
         } catch (e) { }
     }
 
+    mergeDownloadStatuses(newStatuses = {}) {
+        const merged = { ...newStatuses };
+        for (const [name, oldStatus] of Object.entries(this.downloadStatuses)) {
+            const incoming = newStatuses[name];
+            const oldIsActive = oldStatus && (oldStatus.status === "downloading" || oldStatus.status === "queued");
+            if (!incoming && oldIsActive) {
+                merged[name] = oldStatus;
+            }
+        }
+        this.downloadStatuses = merged;
+    }
+
+    startDownloadProgressTimer(modelName) {
+        if (this.downloadProgressTimers[modelName]) return;
+
+        this.downloadProgressTimers[modelName] = setInterval(() => {
+            const status = this.downloadStatuses[modelName];
+            const active = status && (status.status === "downloading" || status.status === "queued");
+
+            if (!active) {
+                clearInterval(this.downloadProgressTimers[modelName]);
+                delete this.downloadProgressTimers[modelName];
+                return;
+            }
+
+            if (this.models.length > 0) {
+                this.renderList();
+            }
+        }, 500);
+    }
+
+    async pollDownloadStatusNow(modelName) {
+        await this.updateStatuses();
+        const status = this.downloadStatuses[modelName];
+        if (status && (status.status === "downloading" || status.status === "queued")) {
+            this.startDownloadProgressTimer(modelName);
+        }
+        return status;
+    }
+
     async downloadModel(repoId, modelName, version) {
         try {
             // Optimistic update
             this.downloadStatuses[modelName] = { status: "downloading", message: `Requesting v${version}...` };
             this.downloadStartTimes[modelName] = Date.now();
+            this.startDownloadProgressTimer(modelName);
             this.renderList(); // Initial render to start animation
 
             const response = await api.fetchApi("/vnccs/manager/download", {
@@ -433,8 +483,20 @@ class VNCCS_ModelListWidget {
             });
 
             if (response.ok) {
-                // Polling will handle the rest
-                this.updateStatuses();
+                let responseData = {};
+                try {
+                    responseData = await response.json();
+                } catch (e) { }
+
+                if (responseData.status) {
+                    this.downloadStatuses[modelName] = {
+                        status: responseData.status,
+                        message: responseData.message || responseData.status
+                    };
+                    this.renderList();
+                }
+
+                this.pollDownloadStatusNow(modelName);
                 window.dispatchEvent(new CustomEvent("vnccs-registry-updated"));
             } else {
                 this.downloadStatuses[modelName] = { status: "error", message: "Request failed" };
@@ -445,6 +507,20 @@ class VNCCS_ModelListWidget {
             this.downloadStatuses[modelName] = { status: "error", message: e.message };
             this.renderList();
         }
+    }
+
+    getDownloadProgress(modelName, dynStatus) {
+        const rawProgress = Number(dynStatus?.progress);
+        if (Number.isFinite(rawProgress) && rawProgress > 0) {
+            return Math.max(1, Math.min(rawProgress, 100));
+        }
+
+        if (!this.downloadStartTimes[modelName]) {
+            this.downloadStartTimes[modelName] = Date.now();
+        }
+        const startTime = this.downloadStartTimes[modelName];
+        const elapsed = Date.now() - startTime;
+        return Math.min(Math.max((elapsed / 30000) * 100, 3), 95);
     }
 
     renderLoading() {
@@ -624,16 +700,11 @@ class VNCCS_ModelListWidget {
                 if (isDownloading) {
                     let progress = 0;
                     let msg = dynStatus.message || "Downloading";
-                    if (dynStatus.progress !== undefined) {
-                        progress = dynStatus.progress;
-                    } else {
-                        const startTime = this.downloadStartTimes[model.name] || Date.now();
-                        const elapsed = Date.now() - startTime;
-                        progress = Math.min((elapsed / 30000) * 100, 95);
-                    }
+                    progress = this.getDownloadProgress(model.name, dynStatus);
                     bgLayer.style.width = `${progress}%`;
                     bgLayer.style.transition = "width 0.2s linear";
                     bgLayer.style.background = "rgba(40, 100, 40, 0.5)";
+                    item.style.background = `linear-gradient(90deg, rgba(40, 100, 40, 0.45) 0%, rgba(40, 100, 40, 0.45) ${progress}%, #333 ${progress}%, #333 100%)`;
                     statusLabel.innerHTML = `<span style="color: #ccf; font-family: monospace;">⬇ ${msg}</span>`;
                     item.style.borderColor = "#44a";
                     btn.textContent = "Downloading";
@@ -648,6 +719,7 @@ class VNCCS_ModelListWidget {
                     item.style.borderColor = "#884";
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "repeating-linear-gradient(45deg, #443, #443 10px, #332 10px, #332 20px)";
+                    item.style.background = "repeating-linear-gradient(45deg, #443, #443 10px, #332 10px, #332 20px)";
                     statusLabel.innerHTML = `<span style="color: #dd8;">⏳ Queued</span>`;
                     btn.textContent = "Waiting...";
                     btn.disabled = true;
@@ -661,6 +733,7 @@ class VNCCS_ModelListWidget {
                     item.style.borderColor = "#fa0";
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "rgba(100, 80, 0, 0.2)";
+                    item.style.background = "rgba(100, 80, 0, 0.2)";
                     statusLabel.innerHTML = `<span style="color: #fa0;">⚠ API Key Required</span>`;
                     btn.textContent = "Enter Key";
                     btn.disabled = false;
@@ -689,6 +762,7 @@ class VNCCS_ModelListWidget {
                         item.style.borderColor = "#a44";
                         bgLayer.style.width = "100%";
                         bgLayer.style.background = "rgba(100, 40, 40, 0.2)";
+                        item.style.background = "rgba(100, 40, 40, 0.2)";
                         statusLabel.innerHTML = `<span style="color: #f88;">⚠ ${dynStatus.message || "Error"}</span>`;
                         btn.textContent = "Retry";
                         btn.disabled = false;

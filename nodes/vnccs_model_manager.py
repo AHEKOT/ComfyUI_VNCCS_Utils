@@ -267,7 +267,17 @@ class VNCCS_ModelManager:
 # Removed local download_status declaration as it is now global
 @server.PromptServer.instance.routes.get("/vnccs/manager/status")
 async def get_download_status(request):
-    return web.json_response(download_status)
+    return web.json_response(download_status, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    })
+
+@server.PromptServer.instance.routes.get("/vnccs/utils/manager/status")
+async def get_utils_download_status(request):
+    return web.json_response(download_status, headers={
+        "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+        "Pragma": "no-cache",
+    })
 
 def get_installed_version_info():
     # We'll store a local JSON file to track installed versions
@@ -459,6 +469,11 @@ async def download_model(request):
     
     if not repo_id or " " in repo_id:
          return web.json_response({"error": "Invalid Repo ID"}, status=400)
+    if model_name:
+        download_status[model_name] = {
+            "status": "queued",
+            "message": f"Preparing v{target_version or 'latest'}..."
+        }
     
     try:
         def fetch_config_sync():
@@ -631,4 +646,3 @@ class VNCCS_ModelSelector:
             traceback.print_exc()
             print(f"[VNCCS] ModelSelector Error: {e}")
             return ("",)
-
