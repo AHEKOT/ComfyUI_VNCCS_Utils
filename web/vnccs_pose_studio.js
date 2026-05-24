@@ -1071,9 +1071,150 @@ const STYLES = `
     display: none;
 }
 
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-tabs-shell {
+    display: none;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager .vnccs-ps-btn.primary::after,
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-btn.primary::after {
+    display: none;
+    animation: none;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail {
+    padding-top: 130px;
+}
+
 .vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager,
 .vnccs-pose-studio:not(.vnccs-ps-mode-manager) .vnccs-ps-manager {
     display: none;
+}
+
+.vnccs-ps-manager-detail-strip {
+    display: none;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager-detail-strip {
+    --pm-detail-card-w: 96px;
+    display: flex;
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 75;
+    height: 130px;
+    box-sizing: border-box;
+    align-items: stretch;
+    gap: 8px;
+    padding: 8px 10px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: rgba(0, 0, 0, 0.35);
+    border-bottom: 1px solid var(--ps-accent-border);
+    pointer-events: auto;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 143, 163, 0.45) transparent;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager-detail-strip::-webkit-scrollbar {
+    height: 6px;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager-detail-strip::-webkit-scrollbar-thumb {
+    background: rgba(255, 143, 163, 0.45);
+    border-radius: 999px;
+}
+
+.vnccs-ps-detail-card {
+    width: var(--pm-detail-card-w);
+    height: 106px;
+    flex: 0 0 var(--pm-detail-card-w);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 143, 163, 0.24);
+    background: #101017;
+    color: var(--ps-text);
+    cursor: pointer;
+    box-sizing: border-box;
+}
+
+.vnccs-ps-detail-card.active {
+    border-color: rgba(255, 143, 163, 0.85);
+    box-shadow: 0 0 0 1px rgba(255, 143, 163, 0.12);
+}
+
+.vnccs-ps-detail-card-preview {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #5b586b;
+    overflow: hidden;
+}
+
+.vnccs-ps-detail-card-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.vnccs-ps-detail-card-bottom {
+    height: 28px;
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 5px;
+    background: rgba(7, 7, 13, 0.98);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.vnccs-ps-detail-card-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 9px;
+    font-weight: 800;
+}
+
+.vnccs-ps-detail-card-delete {
+    width: 18px;
+    height: 18px;
+    padding: 0;
+    border-radius: 5px;
+    font-size: 10px;
+}
+
+.vnccs-ps-detail-card-add {
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    border-style: dashed;
+    background: rgba(255, 143, 163, 0.06);
+}
+
+.vnccs-ps-detail-card-add-icon {
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 143, 163, 0.42);
+    color: var(--ps-accent);
+    font-size: 28px;
+    line-height: 1;
+}
+
+.vnccs-ps-detail-card-add-label {
+    font-size: 9px;
+    font-weight: 800;
 }
 
 .vnccs-ps-manager {
@@ -1272,16 +1413,23 @@ const STYLES = `
 
 .vnccs-ps-manager-back {
     display: none;
-    position: absolute;
-    top: 9px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 80;
-    pointer-events: auto;
 }
 
 .vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager-back {
     display: flex;
+    width: 100%;
+    position: static !important;
+    transform: none;
+    align-items: center;
+    justify-content: center;
+    padding: 10px;
+    border-radius: 8px;
+    text-align: center;
+    line-height: 1.25;
+    font-size: 12px;
+    font-weight: 800;
+    box-shadow: 0 8px 26px var(--ps-accent-glow);
+    pointer-events: auto;
 }
 
 .vnccs-ps-modal-title {
@@ -2397,6 +2545,7 @@ class PoseStudioWidget {
         this.managerPanel = null;
         this.managerGrid = null;
         this.managerStage = null;
+        this.managerDetailStrip = null;
         this.managerResizeObserver = null;
         this.managerBackBtn = null;
         this._defaultHandPresets = HAND_PRESETS;
@@ -2502,6 +2651,16 @@ class PoseStudioWidget {
 
     _createLeftPanel() {
         const leftPanel = this.leftPanel;
+
+        const managerBackWrap = document.createElement("div");
+        managerBackWrap.style.paddingBottom = "5px";
+        this.managerBackBtn = document.createElement("button");
+        this.managerBackBtn.className = "vnccs-ps-btn primary vnccs-ps-manager-back";
+        this.managerBackBtn.type = "button";
+        this.managerBackBtn.textContent = "Back to Pose Manager";
+        this.managerBackBtn.addEventListener("click", () => this.setInterfaceMode("manager"));
+        managerBackWrap.appendChild(this.managerBackBtn);
+        leftPanel.appendChild(managerBackWrap);
 
         // --- MESH PARAMS SECTION ---
         const meshSection = this.createSection("Mesh Parameters", true);
@@ -2806,6 +2965,10 @@ class PoseStudioWidget {
         }
         this.updateTabs();
 
+        this.managerDetailStrip = document.createElement("div");
+        this.managerDetailStrip.className = "vnccs-ps-manager-detail-strip";
+        this.container.appendChild(this.managerDetailStrip);
+
         // Canvas Container
         this.canvasContainer = document.createElement("div");
         this.canvasContainer.className = "vnccs-ps-canvas-wrap";
@@ -2824,13 +2987,6 @@ class PoseStudioWidget {
         this.canvasContainer.appendChild(this.canvas);
         this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
-
-        this.managerBackBtn = document.createElement("button");
-        this.managerBackBtn.className = "vnccs-ps-btn primary vnccs-ps-manager-back";
-        this.managerBackBtn.type = "button";
-        this.managerBackBtn.textContent = "Back to Pose Manager";
-        this.managerBackBtn.addEventListener("click", () => this.setInterfaceMode("manager"));
-        centerPanel.appendChild(this.managerBackBtn);
 
         // Action Bar
         const actions = document.createElement("div");
@@ -3179,6 +3335,9 @@ class PoseStudioWidget {
         if (!this.container) return;
         this.container.classList.toggle("vnccs-ps-mode-manager", this.interfaceMode === "manager");
         this.container.classList.toggle("vnccs-ps-mode-manager-detail", this.interfaceMode === "managerDetail");
+        if (this.interfaceMode === "managerDetail") {
+            this.renderPoseManagerDetailStrip();
+        }
         if (this.interfaceMode !== "manager") {
             requestAnimationFrame(() => this.resize());
         }
@@ -3344,6 +3503,107 @@ class PoseStudioWidget {
         const cardWidth = Math.max(28, Math.floor(bestWidth));
         this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
         this.managerGrid.style.setProperty("--pm-cols", String(bestCols));
+    }
+
+    renderPoseManagerDetailStrip() {
+        if (!this.managerDetailStrip) return;
+        if (this.interfaceMode !== "managerDetail") return;
+        this.ensurePosePrompts();
+        this.managerDetailStrip.innerHTML = "";
+
+        for (let i = 0; i < this.poses.length; i++) {
+            const card = document.createElement("div");
+            card.className = "vnccs-ps-detail-card" + (i === this.activeTab ? " active" : "");
+            card.tabIndex = 0;
+            card.role = "button";
+            card.title = `Open Pose ${i + 1}`;
+
+            const preview = document.createElement("div");
+            preview.className = "vnccs-ps-detail-card-preview";
+            const capture = this.poseCaptures?.[i];
+            if (capture) {
+                const img = document.createElement("img");
+                img.src = capture;
+                img.alt = `Pose ${i + 1}`;
+                preview.appendChild(img);
+            } else {
+                const placeholder = document.createElement("div");
+                placeholder.className = "vnccs-ps-pose-preview-empty";
+                preview.appendChild(placeholder);
+            }
+
+            const bottom = document.createElement("div");
+            bottom.className = "vnccs-ps-detail-card-bottom";
+
+            const name = document.createElement("div");
+            name.className = "vnccs-ps-detail-card-name";
+            name.textContent = `Pose ${i + 1}`;
+
+            const del = document.createElement("button");
+            del.className = "vnccs-ps-btn danger vnccs-ps-detail-card-delete";
+            del.type = "button";
+            del.textContent = "X";
+            del.title = `Delete Pose ${i + 1}`;
+            del.disabled = this.poses.length <= 1;
+            del.addEventListener("click", (event) => {
+                event.stopPropagation();
+                this.deleteTab(i);
+                this.setInterfaceMode("managerDetail");
+            });
+
+            const open = () => {
+                if (i !== this.activeTab) this.switchTab(i);
+                this.setInterfaceMode("managerDetail");
+            };
+
+            bottom.appendChild(name);
+            bottom.appendChild(del);
+            card.appendChild(preview);
+            card.appendChild(bottom);
+            card.addEventListener("click", open);
+            card.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    open();
+                }
+            });
+            this.managerDetailStrip.appendChild(card);
+        }
+
+        const addCard = document.createElement("div");
+        addCard.className = "vnccs-ps-detail-card vnccs-ps-detail-card-add";
+        addCard.tabIndex = 0;
+        addCard.role = "button";
+        addCard.title = "Add Pose";
+
+        const addIcon = document.createElement("div");
+        addIcon.className = "vnccs-ps-detail-card-add-icon";
+        addIcon.textContent = "+";
+
+        const addLabel = document.createElement("div");
+        addLabel.className = "vnccs-ps-detail-card-add-label";
+        addLabel.textContent = "Add Pose";
+
+        const addPose = () => {
+            this.addTab();
+            this.setInterfaceMode("managerDetail");
+        };
+
+        addCard.appendChild(addIcon);
+        addCard.appendChild(addLabel);
+        addCard.addEventListener("click", addPose);
+        addCard.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                addPose();
+            }
+        });
+        this.managerDetailStrip.appendChild(addCard);
+
+        requestAnimationFrame(() => {
+            const active = this.managerDetailStrip?.querySelector(".vnccs-ps-detail-card.active");
+            active?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+        });
     }
 
     applyCameraToViewer(snap = true) {
@@ -4518,6 +4778,7 @@ class PoseStudioWidget {
             this.scrollActiveTabIntoView();
         });
         this.renderPoseManager();
+        this.renderPoseManagerDetailStrip();
     }
 
     updateTabScrollButtons() {
@@ -7926,6 +8187,7 @@ class PoseStudioWidget {
         }
 
         this.renderPoseManager();
+        this.renderPoseManagerDetailStrip();
         this._isSyncing = false;
     }
 
