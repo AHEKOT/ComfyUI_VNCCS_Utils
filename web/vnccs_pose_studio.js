@@ -1064,6 +1064,226 @@ const STYLES = `
     min-width: 40px;
 }
 
+/* === Pose Manager === */
+.vnccs-pose-studio.vnccs-ps-mode-manager > .vnccs-ps-left,
+.vnccs-pose-studio.vnccs-ps-mode-manager > .vnccs-ps-center,
+.vnccs-pose-studio.vnccs-ps-mode-manager > .vnccs-ps-right-sidebar {
+    display: none;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager,
+.vnccs-pose-studio:not(.vnccs-ps-mode-manager) .vnccs-ps-manager {
+    display: none;
+}
+
+.vnccs-ps-manager {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: #080810;
+    pointer-events: auto;
+}
+
+.vnccs-ps-manager-header {
+    height: 50px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--ps-accent-border);
+    background: rgba(12, 11, 18, 0.96);
+}
+
+.vnccs-ps-manager-title {
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 800;
+    letter-spacing: 1px;
+    color: var(--ps-text);
+    text-transform: uppercase;
+    white-space: nowrap;
+}
+
+.vnccs-ps-manager-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.vnccs-ps-manager-stage {
+    --pm-card-w: 260px;
+    flex: 1;
+    min-height: 0;
+    padding: 14px 18px 18px;
+    overflow: hidden;
+}
+
+.vnccs-ps-manager-grid {
+    height: 100%;
+    display: grid;
+    grid-template-columns: repeat(var(--pm-cols, 1), minmax(0, 1fr));
+    align-content: flex-start;
+    gap: 14px;
+}
+
+.vnccs-ps-pose-card {
+    width: 100%;
+    height: calc(var(--pm-card-w) * 1.42);
+    min-width: 28px;
+    min-height: 40px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-radius: 8px;
+    border: 1px solid rgba(255, 143, 163, 0.28);
+    background: #111119;
+    color: var(--ps-text);
+    cursor: pointer;
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.34);
+    transition: border-color var(--ps-transition), transform var(--ps-transition), box-shadow var(--ps-transition);
+    box-sizing: border-box;
+}
+
+.vnccs-ps-pose-card:hover,
+.vnccs-ps-pose-card.active,
+.vnccs-ps-pose-card-add:hover {
+    border-color: rgba(255, 143, 163, 0.72);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.46), 0 0 0 1px rgba(255, 143, 163, 0.1);
+    transform: translateY(-1px);
+}
+
+.vnccs-ps-pose-card-add {
+    align-items: center;
+    justify-content: center;
+    gap: clamp(8px, calc(var(--pm-card-w) * 0.05), 16px);
+    border-style: dashed;
+    background:
+        linear-gradient(180deg, rgba(255, 143, 163, 0.08), rgba(184, 169, 232, 0.04)),
+        #0c0c14;
+}
+
+.vnccs-ps-pose-card-add-icon {
+    width: clamp(34px, calc(var(--pm-card-w) * 0.28), 96px);
+    height: clamp(34px, calc(var(--pm-card-w) * 0.28), 96px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    border: 1px solid rgba(255, 143, 163, 0.42);
+    background: rgba(255, 143, 163, 0.1);
+    color: var(--ps-accent);
+    font-size: clamp(28px, calc(var(--pm-card-w) * 0.24), 82px);
+    line-height: 1;
+    font-weight: 300;
+}
+
+.vnccs-ps-pose-card-add-label {
+    color: var(--ps-text);
+    font-size: clamp(9px, calc(var(--pm-card-w) * 0.06), 18px);
+    font-weight: 800;
+}
+
+.vnccs-ps-pose-preview {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #5b586b;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.vnccs-ps-pose-preview img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+}
+
+.vnccs-ps-pose-preview-empty {
+    width: 38%;
+    aspect-ratio: 1 / 2.15;
+    border-radius: 999px 999px 12px 12px;
+    background: linear-gradient(180deg, rgba(238, 226, 214, 0.72), rgba(188, 176, 166, 0.72));
+    opacity: 0.8;
+    position: relative;
+}
+
+.vnccs-ps-pose-preview-empty::before {
+    content: '';
+    position: absolute;
+    width: 34%;
+    aspect-ratio: 1;
+    border-radius: 50%;
+    left: 33%;
+    top: -18%;
+    background: rgba(238, 226, 214, 0.84);
+}
+
+.vnccs-ps-pose-card-bottom {
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: clamp(2px, calc(var(--pm-card-w) * 0.035), 10px);
+    padding: clamp(3px, calc(var(--pm-card-w) * 0.045), 14px);
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    background: rgba(7, 7, 13, 0.98);
+}
+
+.vnccs-ps-pose-card-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: clamp(7px, calc(var(--pm-card-w) * 0.075), 20px);
+    font-weight: 800;
+    min-width: 0;
+}
+
+.vnccs-ps-pose-card-edit,
+.vnccs-ps-pose-card-delete {
+    min-width: clamp(14px, calc(var(--pm-card-w) * 0.24), 76px);
+    height: clamp(16px, calc(var(--pm-card-w) * 0.16), 48px);
+    padding: 0 clamp(2px, calc(var(--pm-card-w) * 0.04), 14px);
+    border-radius: clamp(4px, calc(var(--pm-card-w) * 0.03), 8px);
+    font-size: clamp(6px, calc(var(--pm-card-w) * 0.065), 18px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-pose-card-delete {
+    min-width: clamp(14px, calc(var(--pm-card-w) * 0.16), 52px);
+    color: #ff6474;
+}
+
+.vnccs-ps-manager-empty {
+    margin: auto;
+    color: var(--ps-text-muted);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.vnccs-ps-manager-back {
+    display: none;
+    position: absolute;
+    top: 9px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 80;
+    pointer-events: auto;
+}
+
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-manager-back {
+    display: flex;
+}
+
 .vnccs-ps-modal-title {
     background: rgba(0, 0, 0, 0.3);
     padding: 12px 16px;
@@ -2109,6 +2329,7 @@ class PoseStudioWidget {
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
         this.ikMode = true; // IK mode toggle (false = FK, true = IK)
+        this.interfaceMode = "studio"; // studio | manager | managerDetail
 
         // Slider values
         this.meshParams = {
@@ -2155,7 +2376,8 @@ class PoseStudioWidget {
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
             skin_type: "naked", // naked | naked_marks | dummy_white
-            background_url: null
+            background_url: null,
+            interface_mode: "studio"
         };
 
         // Lighting settings (array of light configs)
@@ -2172,6 +2394,11 @@ class PoseStudioWidget {
         this.tabScrollRight = null;
         this._tabResizeObserver = null;
         this.canvasContainer = null;
+        this.managerPanel = null;
+        this.managerGrid = null;
+        this.managerStage = null;
+        this.managerResizeObserver = null;
+        this.managerBackBtn = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -2207,7 +2434,9 @@ class PoseStudioWidget {
         this._createLeftPanel();
         this._createCenterPanel();
         this._createRightSidebar();
+        this._createPoseManager();
         this._setupFinalUI();
+        this.applyInterfaceMode();
     }
 
     _createLayout() {
@@ -2225,6 +2454,50 @@ class PoseStudioWidget {
         this.rightSidebar = document.createElement("div");
         this.rightSidebar.className = "vnccs-ps-right-sidebar";
         this.container.appendChild(this.rightSidebar);
+    }
+
+    _createPoseManager() {
+        this.managerPanel = document.createElement("div");
+        this.managerPanel.className = "vnccs-ps-manager";
+
+        const header = document.createElement("div");
+        header.className = "vnccs-ps-manager-header";
+
+        const title = document.createElement("div");
+        title.className = "vnccs-ps-manager-title";
+        title.textContent = "VNCCS Pose Manager";
+
+        const actions = document.createElement("div");
+        actions.className = "vnccs-ps-manager-actions";
+
+        const captureBtn = document.createElement("button");
+        captureBtn.className = "vnccs-ps-btn";
+        captureBtn.type = "button";
+        captureBtn.textContent = "Capture All";
+        captureBtn.addEventListener("click", () => {
+            this.syncToNode(true);
+            this.renderPoseManager();
+        });
+
+        actions.appendChild(captureBtn);
+        header.appendChild(title);
+        header.appendChild(actions);
+
+        this.managerStage = document.createElement("div");
+        this.managerStage.className = "vnccs-ps-manager-stage";
+        this.managerGrid = document.createElement("div");
+        this.managerGrid.className = "vnccs-ps-manager-grid";
+        this.managerStage.appendChild(this.managerGrid);
+
+        this.managerPanel.appendChild(header);
+        this.managerPanel.appendChild(this.managerStage);
+        this.container.appendChild(this.managerPanel);
+
+        if (typeof ResizeObserver !== "undefined") {
+            this.managerResizeObserver = new ResizeObserver(() => this.layoutPoseManager());
+            this.managerResizeObserver.observe(this.managerStage);
+        }
+        this.renderPoseManager();
     }
 
     _createLeftPanel() {
@@ -2551,6 +2824,13 @@ class PoseStudioWidget {
         this.canvasContainer.appendChild(this.canvas);
         this._createHandPopover();
         centerPanel.appendChild(this.canvasContainer);
+
+        this.managerBackBtn = document.createElement("button");
+        this.managerBackBtn.className = "vnccs-ps-btn primary vnccs-ps-manager-back";
+        this.managerBackBtn.type = "button";
+        this.managerBackBtn.textContent = "Back to Pose Manager";
+        this.managerBackBtn.addEventListener("click", () => this.setInterfaceMode("manager"));
+        centerPanel.appendChild(this.managerBackBtn);
 
         // Action Bar
         const actions = document.createElement("div");
@@ -2879,6 +3159,191 @@ class PoseStudioWidget {
             this.userPromptArea.style.height = 'auto';
             this.userPromptArea.style.height = `${this.userPromptArea.scrollHeight}px`;
         }
+    }
+
+    setInterfaceMode(mode, { sync = true } = {}) {
+        const normalized = mode === "manager" || mode === "managerDetail" ? mode : "studio";
+        this.interfaceMode = normalized;
+        this.exportParams.interface_mode = normalized === "studio" ? "studio" : "manager";
+        this.applyInterfaceMode();
+        if (normalized === "manager") {
+            this.renderPoseManager();
+            requestAnimationFrame(() => this.layoutPoseManager());
+        } else {
+            requestAnimationFrame(() => this.resize());
+        }
+        if (sync) this.syncToNode(false);
+    }
+
+    applyInterfaceMode() {
+        if (!this.container) return;
+        this.container.classList.toggle("vnccs-ps-mode-manager", this.interfaceMode === "manager");
+        this.container.classList.toggle("vnccs-ps-mode-manager-detail", this.interfaceMode === "managerDetail");
+        if (this.interfaceMode !== "manager") {
+            requestAnimationFrame(() => this.resize());
+        }
+    }
+
+    openPoseFromManager(index) {
+        if (index < 0 || index >= this.poses.length) return;
+        if (index !== this.activeTab) {
+            this.switchTab(index);
+        }
+        this.setInterfaceMode("managerDetail");
+    }
+
+    renderPoseManager() {
+        if (!this.managerGrid) return;
+        this.ensurePosePrompts();
+        this.managerGrid.innerHTML = "";
+
+        if (!this.poses.length) {
+            const empty = document.createElement("div");
+            empty.className = "vnccs-ps-manager-empty";
+            empty.textContent = "No poses";
+            this.managerGrid.appendChild(empty);
+            return;
+        }
+
+        for (let i = 0; i < this.poses.length; i++) {
+            const card = document.createElement("div");
+            card.className = "vnccs-ps-pose-card" + (i === this.activeTab ? " active" : "");
+            card.tabIndex = 0;
+            card.role = "button";
+            card.title = `Open Pose ${i + 1}`;
+
+            const preview = document.createElement("div");
+            preview.className = "vnccs-ps-pose-preview";
+            const capture = this.poseCaptures?.[i];
+            if (capture) {
+                const img = document.createElement("img");
+                img.src = capture;
+                img.alt = `Pose ${i + 1}`;
+                preview.appendChild(img);
+            } else {
+                const placeholder = document.createElement("div");
+                placeholder.className = "vnccs-ps-pose-preview-empty";
+                preview.appendChild(placeholder);
+            }
+
+            const bottom = document.createElement("div");
+            bottom.className = "vnccs-ps-pose-card-bottom";
+
+            const name = document.createElement("div");
+            name.className = "vnccs-ps-pose-card-name";
+            name.textContent = `Pose ${i + 1}`;
+
+            const edit = document.createElement("button");
+            edit.className = "vnccs-ps-btn vnccs-ps-pose-card-edit";
+            edit.type = "button";
+            edit.textContent = "Edit";
+            edit.addEventListener("click", (event) => {
+                event.stopPropagation();
+                this.openPoseFromManager(i);
+            });
+
+            const del = document.createElement("button");
+            del.className = "vnccs-ps-btn danger vnccs-ps-pose-card-delete";
+            del.type = "button";
+            del.textContent = "X";
+            del.title = `Delete Pose ${i + 1}`;
+            del.disabled = this.poses.length <= 1;
+            del.addEventListener("click", (event) => {
+                event.stopPropagation();
+                this.deleteTab(i);
+                this.setInterfaceMode("manager");
+            });
+
+            bottom.appendChild(name);
+            bottom.appendChild(edit);
+            bottom.appendChild(del);
+            card.appendChild(preview);
+            card.appendChild(bottom);
+            card.addEventListener("click", () => this.openPoseFromManager(i));
+            card.addEventListener("keydown", (event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    this.openPoseFromManager(i);
+                }
+            });
+            this.managerGrid.appendChild(card);
+        }
+
+        const addCard = document.createElement("div");
+        addCard.className = "vnccs-ps-pose-card vnccs-ps-pose-card-add";
+        addCard.tabIndex = 0;
+        addCard.role = "button";
+        addCard.title = "Add Pose";
+
+        const addIcon = document.createElement("div");
+        addIcon.className = "vnccs-ps-pose-card-add-icon";
+        addIcon.textContent = "+";
+
+        const addLabel = document.createElement("div");
+        addLabel.className = "vnccs-ps-pose-card-add-label";
+        addLabel.textContent = "Add Pose";
+
+        const addPose = () => {
+            this.addTab();
+            this.setInterfaceMode("manager");
+        };
+
+        addCard.appendChild(addIcon);
+        addCard.appendChild(addLabel);
+        addCard.addEventListener("click", addPose);
+        addCard.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                addPose();
+            }
+        });
+        this.managerGrid.appendChild(addCard);
+
+        this.layoutPoseManager();
+    }
+
+    layoutPoseManager() {
+        if (!this.managerStage || !this.managerGrid) return;
+        const count = Math.max(1, (this.poses?.length || 0) + 1);
+        const rect = this.managerStage.getBoundingClientRect();
+        const width = Math.max(1, rect.width - 2);
+        const height = Math.max(1, rect.height - 2);
+        const gap = 14;
+        const cardAspect = 1.42;
+        const preferredMinWidth = 160;
+        let bestWidth = 28;
+        let bestCols = count;
+
+        for (let cols = count; cols >= 1; cols--) {
+            const rows = Math.ceil(count / cols);
+            const availableW = (width - gap * (cols - 1)) / cols;
+            const availableH = (height - gap * (rows - 1)) / rows;
+            const candidate = Math.min(availableW, availableH / cardAspect);
+            if (candidate <= 0) continue;
+
+            if (candidate >= preferredMinWidth || cols === 1) {
+                bestWidth = candidate;
+                bestCols = cols;
+                break;
+            }
+        }
+
+        if (bestWidth < preferredMinWidth) {
+            for (let cols = count; cols >= 1; cols--) {
+                const rows = Math.ceil(count / cols);
+                const availableW = (width - gap * (cols - 1)) / cols;
+                const availableH = (height - gap * (rows - 1)) / rows;
+                const candidate = Math.min(availableW, availableH / cardAspect);
+                if (candidate > bestWidth) {
+                    bestWidth = candidate;
+                    bestCols = cols;
+                }
+            }
+        }
+
+        const cardWidth = Math.max(28, Math.floor(bestWidth));
+        this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
+        this.managerGrid.style.setProperty("--pm-cols", String(bestCols));
     }
 
     applyCameraToViewer(snap = true) {
@@ -4052,6 +4517,7 @@ class PoseStudioWidget {
             this.updateTabScrollButtons();
             this.scrollActiveTabIntoView();
         });
+        this.renderPoseManager();
     }
 
     updateTabScrollButtons() {
@@ -6028,6 +6494,55 @@ class PoseStudioWidget {
         const content = document.createElement('div');
         content.className = 'vnccs-ps-settings-content';
 
+        const interfaceHeader = document.createElement("div");
+        interfaceHeader.className = "vnccs-ps-settings-title";
+        interfaceHeader.style.padding = "4px 0 10px";
+        interfaceHeader.innerText = "Interface";
+        content.appendChild(interfaceHeader);
+
+        const interfaceRow = document.createElement("div");
+        interfaceRow.className = "vnccs-ps-field";
+        interfaceRow.style.marginBottom = "14px";
+
+        const interfaceToggle = document.createElement("div");
+        interfaceToggle.className = "vnccs-ps-toggle";
+        interfaceToggle.style.width = "100%";
+
+        const studioBtn = document.createElement("button");
+        studioBtn.className = "vnccs-ps-toggle-btn";
+        studioBtn.type = "button";
+        studioBtn.innerText = "PoseStudio";
+        studioBtn.style.flex = "1";
+
+        const managerBtn = document.createElement("button");
+        managerBtn.className = "vnccs-ps-toggle-btn";
+        managerBtn.type = "button";
+        managerBtn.innerText = "Pose Manager";
+        managerBtn.style.flex = "1";
+
+        const updateInterfaceUI = () => {
+            const isManager = this.exportParams.interface_mode === "manager" || this.interfaceMode !== "studio";
+            studioBtn.classList.toggle("active", !isManager);
+            managerBtn.classList.toggle("active", isManager);
+        };
+
+        studioBtn.onclick = () => {
+            this.setInterfaceMode("studio");
+            updateInterfaceUI();
+            panel.remove();
+        };
+        managerBtn.onclick = () => {
+            this.setInterfaceMode("manager");
+            updateInterfaceUI();
+            panel.remove();
+        };
+
+        updateInterfaceUI();
+        interfaceToggle.appendChild(studioBtn);
+        interfaceToggle.appendChild(managerBtn);
+        interfaceRow.appendChild(interfaceToggle);
+        content.appendChild(interfaceRow);
+
         const debugSection = this.createSection("Debug", false);
 
         // SAM Camera Override Toggle
@@ -6783,6 +7298,10 @@ class PoseStudioWidget {
 
     resize() {
         this.updateMainUIScale();
+        if (this.interfaceMode === "manager") {
+            this.layoutPoseManager();
+            return;
+        }
         if (this.viewer && this.canvasContainer) {
             const rect = this.canvasContainer.getBoundingClientRect();
             const targetW = Math.round(rect.width);
@@ -7406,6 +7925,7 @@ class PoseStudioWidget {
             }
         }
 
+        this.renderPoseManager();
         this._isSyncing = false;
     }
 
@@ -7545,6 +8065,7 @@ class PoseStudioWidget {
 
             this.updateTabs();
             this.syncPromptFieldToActiveTab();
+            this.setInterfaceMode(this.exportParams.interface_mode === "manager" ? "manager" : "studio", { sync: false });
 
             // Auto-load model
             // Restore skin type on the viewer before loading model
@@ -7777,6 +8298,10 @@ app.registerExtension({
                 if (this.studioWidget._containerResizeObserver) {
                     this.studioWidget._containerResizeObserver.disconnect();
                     this.studioWidget._containerResizeObserver = null;
+                }
+                if (this.studioWidget.managerResizeObserver) {
+                    this.studioWidget.managerResizeObserver.disconnect();
+                    this.studioWidget.managerResizeObserver = null;
                 }
                 if (this.studioWidget._resizeRaf) {
                     cancelAnimationFrame(this.studioWidget._resizeRaf);
