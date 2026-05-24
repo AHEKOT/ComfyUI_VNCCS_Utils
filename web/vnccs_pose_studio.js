@@ -1347,7 +1347,7 @@ const STYLES = `
     grid-template-columns: 1fr auto;
     align-items: center;
     gap: clamp(2px, calc(var(--pm-card-w) * 0.035), 10px);
-    padding: clamp(3px, calc(var(--pm-card-w) * 0.045), 14px);
+    padding: 6px clamp(7px, calc(var(--pm-card-w) * 0.045), 14px);
     box-sizing: border-box;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     background: rgba(7, 7, 13, 0.98);
@@ -1364,7 +1364,7 @@ const STYLES = `
 
 .vnccs-ps-pose-card-delete {
     min-width: clamp(14px, calc(var(--pm-card-w) * 0.24), 76px);
-    height: clamp(16px, calc(var(--pm-card-w) * 0.16), 48px);
+    height: clamp(20px, calc(var(--pm-card-footer-h) - 12px), 48px);
     padding: 0 clamp(2px, calc(var(--pm-card-w) * 0.04), 14px);
     border-radius: clamp(4px, calc(var(--pm-card-w) * 0.03), 8px);
     font-size: clamp(6px, calc(var(--pm-card-w) * 0.065), 18px);
@@ -3630,9 +3630,11 @@ class PoseStudioWidget {
     layoutPoseManager() {
         if (!this.managerStage || !this.managerGrid) return;
         const count = Math.max(1, this.poses?.length || 1);
-        const rect = this.managerStage.getBoundingClientRect();
-        const width = Math.max(1, rect.width - 2);
-        const height = Math.max(1, rect.height - 2);
+        const stageStyle = getComputedStyle(this.managerStage);
+        const padX = (parseFloat(stageStyle.paddingLeft) || 0) + (parseFloat(stageStyle.paddingRight) || 0);
+        const padY = (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
+        const width = Math.max(1, this.managerStage.clientWidth - padX - 2);
+        const height = Math.max(1, this.managerStage.clientHeight - padY - 18);
         const gap = 14;
         const preferredRows = count <= 6 ? 1 : (count <= 12 ? 2 : Math.ceil(count / 6));
         const minCardW = count <= 6 ? 130 : 80;
@@ -3647,7 +3649,7 @@ class PoseStudioWidget {
             if (cardW <= 0) continue;
             if (rowH <= 0) continue;
 
-            const footerH = Math.max(24, Math.min(54, cardW * 0.18));
+            const footerH = Math.max(44, Math.min(60, cardW * 0.18));
             const previewH = Math.max(40, Math.min(cardW * previewAspect, rowH - footerH));
             const cardH = previewH + footerH;
             if ((cardW < minCardW || cardH < minCardH) && count > 1) continue;
@@ -3671,14 +3673,14 @@ class PoseStudioWidget {
             const cols = Math.ceil(count / rows);
             const cardW = Math.max(28, (width - gap * (cols - 1)) / cols);
             const rowH = Math.max(40, (height - gap * (rows - 1)) / rows);
-            const footerH = Math.max(24, Math.min(54, cardW * 0.18));
+            const footerH = Math.max(44, Math.min(60, cardW * 0.18));
             const cardH = Math.max(40, Math.min(rowH, cardW * previewAspect + footerH));
             best = { cols, rows, cardW, cardH, footerH, score: 0 };
         }
 
         const cardWidth = Math.max(28, Math.floor(best.cardW));
         const cardHeight = Math.max(40, Math.floor(best.cardH));
-        const footerHeight = Math.max(24, Math.floor(best.footerH));
+        const footerHeight = Math.max(44, Math.floor(best.footerH));
         this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
         this.managerStage.style.setProperty("--pm-card-h", `${cardHeight}px`);
         this.managerStage.style.setProperty("--pm-card-footer-h", `${footerHeight}px`);
