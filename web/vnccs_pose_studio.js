@@ -1075,6 +1075,11 @@ const STYLES = `
     display: none;
 }
 
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-main-moved-manager,
+.vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-camera-dim-row {
+    display: none;
+}
+
 .vnccs-pose-studio.vnccs-ps-mode-manager .vnccs-ps-btn.primary::after,
 .vnccs-pose-studio.vnccs-ps-mode-manager-detail .vnccs-ps-btn.primary::after {
     display: none;
@@ -1230,9 +1235,34 @@ const STYLES = `
     flex-shrink: 0;
 }
 
+.vnccs-ps-manager-body {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+}
+
+.vnccs-ps-manager-sidebar {
+    width: 220px;
+    zoom: var(--vnccs-ps-ui-scale);
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    overflow-y: auto;
+    border-right: 1px solid var(--ps-border);
+    background: rgba(6, 5, 12, 0.7);
+    pointer-events: auto;
+}
+
+.vnccs-ps-manager-sidebar::-webkit-scrollbar { width: 4px; }
+.vnccs-ps-manager-sidebar::-webkit-scrollbar-thumb { background: var(--ps-accent-border); border-radius: 2px; }
+
 .vnccs-ps-manager-stage {
     --pm-card-w: 260px;
     --pm-card-h: 370px;
+    --pm-card-footer-h: 52px;
     flex: 1;
     min-height: 0;
     padding: 14px 18px 18px;
@@ -1284,8 +1314,8 @@ const STYLES = `
 }
 
 .vnccs-ps-pose-preview img {
-    width: 100%;
-    height: 100%;
+    width: calc(100% - 10px);
+    height: calc(100% - 10px);
     object-fit: contain;
     display: block;
 }
@@ -1312,11 +1342,13 @@ const STYLES = `
 
 .vnccs-ps-pose-card-bottom {
     flex-shrink: 0;
+    height: var(--pm-card-footer-h);
     display: grid;
-    grid-template-columns: 1fr auto auto;
+    grid-template-columns: 1fr auto;
     align-items: center;
     gap: clamp(2px, calc(var(--pm-card-w) * 0.035), 10px);
     padding: clamp(3px, calc(var(--pm-card-w) * 0.045), 14px);
+    box-sizing: border-box;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     background: rgba(7, 7, 13, 0.98);
 }
@@ -1330,7 +1362,6 @@ const STYLES = `
     min-width: 0;
 }
 
-.vnccs-ps-pose-card-edit,
 .vnccs-ps-pose-card-delete {
     min-width: clamp(14px, calc(var(--pm-card-w) * 0.24), 76px);
     height: clamp(16px, calc(var(--pm-card-w) * 0.16), 48px);
@@ -2488,6 +2519,11 @@ class PoseStudioWidget {
         this.managerPanel = null;
         this.managerGrid = null;
         this.managerStage = null;
+        this.managerBody = null;
+        this.managerSidebar = null;
+        this.managerControls = {};
+        this.managerGenderBtns = null;
+        this.managerGenderFields = {};
         this.managerDetailStrip = null;
         this.managerResizeObserver = null;
         this.managerBackBtn = null;
@@ -2567,7 +2603,7 @@ class PoseStudioWidget {
         addBtn.type = "button";
         addBtn.textContent = "Add Pose";
         addBtn.addEventListener("click", () => {
-            this.addTab();
+            this.addTab({ capturePreview: true });
             this.setInterfaceMode("manager");
         });
 
@@ -2575,14 +2611,20 @@ class PoseStudioWidget {
         header.appendChild(title);
         header.appendChild(actions);
 
+        this.managerBody = document.createElement("div");
+        this.managerBody.className = "vnccs-ps-manager-body";
+        this.managerSidebar = this._createPoseManagerSidebar();
+
         this.managerStage = document.createElement("div");
         this.managerStage.className = "vnccs-ps-manager-stage";
         this.managerGrid = document.createElement("div");
         this.managerGrid.className = "vnccs-ps-manager-grid";
         this.managerStage.appendChild(this.managerGrid);
+        this.managerBody.appendChild(this.managerSidebar);
+        this.managerBody.appendChild(this.managerStage);
 
         this.managerPanel.appendChild(header);
-        this.managerPanel.appendChild(this.managerStage);
+        this.managerPanel.appendChild(this.managerBody);
         this.container.appendChild(this.managerPanel);
 
         if (typeof ResizeObserver !== "undefined") {
@@ -2590,6 +2632,223 @@ class PoseStudioWidget {
             this.managerResizeObserver.observe(this.managerStage);
         }
         this.renderPoseManager();
+    }
+
+    _createPoseManagerSidebar() {
+        const sidebar = document.createElement("div");
+        sidebar.className = "vnccs-ps-manager-sidebar";
+
+        const meshSection = this.createSection("Mesh Parameters", true);
+
+        const genderField = document.createElement("div");
+        genderField.className = "vnccs-ps-field";
+        const genderLabel = document.createElement("div");
+        genderLabel.className = "vnccs-ps-label";
+        genderLabel.innerText = "Gender";
+        const genderToggle = document.createElement("div");
+        genderToggle.className = "vnccs-ps-toggle";
+
+        const btnMale = document.createElement("button");
+        btnMale.className = "vnccs-ps-toggle-btn male";
+        btnMale.type = "button";
+        btnMale.innerText = "Male";
+        const btnFemale = document.createElement("button");
+        btnFemale.className = "vnccs-ps-toggle-btn female";
+        btnFemale.type = "button";
+        btnFemale.innerText = "Female";
+        this.managerGenderBtns = { male: btnMale, female: btnFemale };
+
+        btnMale.addEventListener("click", () => this.setManagerGender(1.0));
+        btnFemale.addEventListener("click", () => this.setManagerGender(0.0));
+        genderToggle.appendChild(btnMale);
+        genderToggle.appendChild(btnFemale);
+        genderField.appendChild(genderLabel);
+        genderField.appendChild(genderToggle);
+        meshSection.content.appendChild(genderField);
+
+        [
+            { key: "age", label: "Age", min: 1, max: 90, step: 1 },
+            { key: "weight", label: "Weight", min: 0, max: 1, step: 0.01 },
+            { key: "muscle", label: "Muscle", min: 0, max: 1, step: 0.01 },
+            { key: "height", label: "Height", min: 0, max: 2, step: 0.01 }
+        ].forEach((def) => {
+            meshSection.content.appendChild(this.createManagerSlider(def, "mesh"));
+        });
+        sidebar.appendChild(meshSection.el);
+
+        const genderSection = this.createSection("Gender Settings", true);
+        [
+            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, gender: "female" },
+            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, gender: "female" },
+            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, gender: "male" },
+            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, gender: "male" },
+            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, gender: "male" }
+        ].forEach((def) => {
+            const field = this.createManagerSlider(def, "mesh");
+            this.managerGenderFields[def.key] = { field, gender: def.gender };
+            genderSection.content.appendChild(field);
+        });
+        sidebar.appendChild(genderSection.el);
+
+        const cameraSection = this.createSection("Camera", true);
+        const dimRow = document.createElement("div");
+        dimRow.className = "vnccs-ps-row";
+        dimRow.appendChild(this.createManagerInput({ key: "view_width", label: "Width", min: 64, max: 4096, step: 8 }));
+        dimRow.appendChild(this.createManagerInput({ key: "view_height", label: "Height", min: 64, max: 4096, step: 8 }));
+        cameraSection.content.appendChild(dimRow);
+        sidebar.appendChild(cameraSection.el);
+
+        this.refreshPoseManagerControls();
+        return sidebar;
+    }
+
+    createManagerSlider(def, group) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const labelRow = document.createElement("div");
+        labelRow.className = "vnccs-ps-label-row";
+        labelRow.style.display = "flex";
+        labelRow.style.justifyContent = "space-between";
+        labelRow.style.alignItems = "center";
+
+        const label = document.createElement("span");
+        label.className = "vnccs-ps-label";
+        label.innerText = def.label;
+
+        const value = document.createElement("span");
+        value.className = "vnccs-ps-value";
+
+        const wrap = document.createElement("div");
+        wrap.className = "vnccs-ps-slider-wrap";
+
+        const slider = document.createElement("input");
+        slider.type = "range";
+        slider.className = "vnccs-ps-slider";
+        slider.min = def.min;
+        slider.max = def.max;
+        slider.step = def.step;
+
+        slider.addEventListener("input", () => {
+            const next = this.normalizeManagerNumber(slider.value, def);
+            slider.value = next;
+            this.applyManagerMeshValue(def.key, next);
+        });
+
+        labelRow.appendChild(label);
+        labelRow.appendChild(value);
+        wrap.appendChild(slider);
+        field.appendChild(labelRow);
+        field.appendChild(wrap);
+
+        this.managerControls[def.key] = { input: slider, value, group, def };
+        return field;
+    }
+
+    createManagerInput(def) {
+        const field = document.createElement("div");
+        field.className = "vnccs-ps-field";
+
+        const label = document.createElement("div");
+        label.className = "vnccs-ps-label";
+        label.innerText = def.label;
+
+        const input = document.createElement("input");
+        input.type = "number";
+        input.className = "vnccs-ps-input";
+        input.min = def.min;
+        input.max = def.max;
+        input.step = def.step;
+
+        input.addEventListener("change", () => {
+            const next = this.normalizeManagerNumber(input.value, def);
+            input.value = next;
+            this.applyManagerExportValue(def.key, next);
+        });
+
+        field.appendChild(label);
+        field.appendChild(input);
+        this.managerControls[def.key] = { input, group: "export", def };
+        return field;
+    }
+
+    normalizeManagerNumber(value, def) {
+        let next = Number(value);
+        if (!Number.isFinite(next)) {
+            const source = def.key in this.meshParams ? this.meshParams : this.exportParams;
+            next = Number(source[def.key] ?? def.min ?? 0);
+        }
+        next = Math.max(def.min, Math.min(def.max, next));
+        if (def.step >= 1) next = Math.round(next);
+        return next;
+    }
+
+    formatManagerValue(key, value) {
+        return key === "age" || key === "view_width" || key === "view_height"
+            ? String(Math.round(Number(value) || 0))
+            : Number(value || 0).toFixed(2);
+    }
+
+    applyManagerMeshValue(key, value) {
+        this.meshParams[key] = value;
+        const main = this.sliders?.[key];
+        if (main) {
+            main.slider.value = value;
+            main.label.innerText = this.formatManagerValue(key, value);
+        }
+        this.refreshPoseManagerControls();
+        this.onMeshParamsChanged();
+        this.syncToNode(false, { skipCapture: true });
+    }
+
+    setManagerGender(value) {
+        this.meshParams.gender = value;
+        this.updateGenderUI();
+        this.updateGenderVisibility();
+        this.refreshPoseManagerControls();
+        this.onMeshParamsChanged();
+        this.syncToNode(false, { skipCapture: true });
+    }
+
+    applyManagerExportValue(key, value) {
+        this.exportParams[key] = value;
+        const main = this.exportWidgets?.[key];
+        if (main) main.value = value;
+        const isDimension = key === "view_width" || key === "view_height";
+        if (isDimension) {
+            this._lastResizeW = 0;
+            this._lastResizeH = 0;
+            this.resize();
+            this.updateCaptureCameraPreview();
+            this.layoutPoseManager();
+        }
+        this.refreshPoseManagerControls();
+        if (isDimension) {
+            this.syncToNode(true);
+            return;
+        }
+        this.syncToNode(false, { skipCapture: true });
+    }
+
+    refreshPoseManagerControls() {
+        if (this.managerGenderBtns) {
+            const isFemale = this.meshParams.gender < 0.5;
+            this.managerGenderBtns.male.classList.toggle("active", !isFemale);
+            this.managerGenderBtns.female.classList.toggle("active", isFemale);
+        }
+
+        for (const [key, info] of Object.entries(this.managerControls || {})) {
+            const source = info.group === "export" ? this.exportParams : this.meshParams;
+            const value = source[key];
+            if (info.input && value !== undefined) info.input.value = value;
+            if (info.value) info.value.innerText = this.formatManagerValue(key, value);
+        }
+
+        const isFemale = this.meshParams.gender < 0.5;
+        for (const info of Object.values(this.managerGenderFields || {})) {
+            if (info.gender === "female") info.field.style.display = isFemale ? "" : "none";
+            else if (info.gender === "male") info.field.style.display = isFemale ? "none" : "";
+        }
     }
 
     _createLeftPanel() {
@@ -2607,6 +2866,7 @@ class PoseStudioWidget {
 
         // --- MESH PARAMS SECTION ---
         const meshSection = this.createSection("Mesh Parameters", true);
+        meshSection.el.classList.add("vnccs-ps-main-moved-manager");
 
         // Gender Toggle
         const genderField = document.createElement("div");
@@ -2692,6 +2952,7 @@ class PoseStudioWidget {
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
+        genderSection.el.classList.add("vnccs-ps-main-moved-manager");
         this.genderFields = {};
 
         const femaleSliders = [
@@ -2795,7 +3056,7 @@ class PoseStudioWidget {
         // --- CAMERA SETTINGS SECTION ---
         const camSection = this.createSection("Camera", true);
         const dimRow = document.createElement("div");
-        dimRow.className = "vnccs-ps-row";
+        dimRow.className = "vnccs-ps-row vnccs-ps-camera-dim-row";
         dimRow.appendChild(this.createInputField("Width", "view_width", "number", 64, 4096, 8));
         dimRow.appendChild(this.createInputField("Height", "view_height", "number", 64, 4096, 8));
         camSection.content.appendChild(dimRow);
@@ -3266,12 +3527,13 @@ class PoseStudioWidget {
         this.exportParams.interface_mode = normalized === "studio" ? "studio" : "manager";
         this.applyInterfaceMode();
         if (normalized === "manager") {
+            this.refreshPoseManagerControls();
             this.renderPoseManager();
             requestAnimationFrame(() => this.layoutPoseManager());
         } else {
             requestAnimationFrame(() => this.resize());
         }
-        if (sync) this.syncToNode(false);
+        if (sync) this.syncToNode(false, { skipCapture: normalized === "manager" });
     }
 
     applyInterfaceMode() {
@@ -3296,6 +3558,7 @@ class PoseStudioWidget {
 
     renderPoseManager() {
         if (!this.managerGrid) return;
+        this.refreshPoseManagerControls();
         this.ensurePosePrompts();
         this.managerGrid.innerHTML = "";
 
@@ -3335,15 +3598,6 @@ class PoseStudioWidget {
             name.className = "vnccs-ps-pose-card-name";
             name.textContent = `Pose ${i + 1}`;
 
-            const edit = document.createElement("button");
-            edit.className = "vnccs-ps-btn vnccs-ps-pose-card-edit";
-            edit.type = "button";
-            edit.textContent = "Edit";
-            edit.addEventListener("click", (event) => {
-                event.stopPropagation();
-                this.openPoseFromManager(i);
-            });
-
             const del = document.createElement("button");
             del.className = "vnccs-ps-btn danger vnccs-ps-pose-card-delete";
             del.type = "button";
@@ -3357,7 +3611,6 @@ class PoseStudioWidget {
             });
 
             bottom.appendChild(name);
-            bottom.appendChild(edit);
             bottom.appendChild(del);
             card.appendChild(preview);
             card.appendChild(bottom);
@@ -3381,30 +3634,54 @@ class PoseStudioWidget {
         const width = Math.max(1, rect.width - 2);
         const height = Math.max(1, rect.height - 2);
         const gap = 14;
-        const cardAspect = 1.42;
-        let best = { cols: count, rows: 1, cardW: 28, cardH: 40, score: -Infinity };
+        const preferredRows = count <= 6 ? 1 : (count <= 12 ? 2 : Math.ceil(count / 6));
+        const minCardW = count <= 6 ? 130 : 80;
+        const minCardH = 130;
+        const previewAspect = Math.max(0.35, Math.min(4, (Number(this.exportParams.view_height) || 1024) / (Number(this.exportParams.view_width) || 1024)));
+        let best = null;
 
-        for (let cols = 1; cols <= count; cols++) {
-            const rows = Math.ceil(count / cols);
+        for (let rows = 1; rows <= count; rows++) {
+            const cols = Math.ceil(count / rows);
             const cardW = (width - gap * (cols - 1)) / cols;
-            const cardH = (height - gap * (rows - 1)) / rows;
-            if (cardW <= 0 || cardH <= 0) continue;
+            const rowH = (height - gap * (rows - 1)) / rows;
+            if (cardW <= 0) continue;
+            if (rowH <= 0) continue;
 
-            const ratio = cardH / cardW;
-            const ratioPenalty = Math.abs(ratio - cardAspect);
+            const footerH = Math.max(24, Math.min(54, cardW * 0.18));
+            const previewH = Math.max(40, Math.min(cardW * previewAspect, rowH - footerH));
+            const cardH = previewH + footerH;
+            if ((cardW < minCardW || cardH < minCardH) && count > 1) continue;
+
             const emptySlots = rows * cols - count;
-            const usedArea = (cardW * cardH * count) / (width * height);
-            const score = usedArea * 5 - ratioPenalty * 1.6 - emptySlots * 0.18 - rows * 0.02;
+            const rowPenalty = Math.abs(rows - preferredRows) * 100000;
+            const aspect = previewH / Math.max(1, cardW);
+            const aspectPenalty = Math.abs(aspect - Math.min(previewAspect, 1.8)) * 80;
+            const unusedRowH = Math.max(0, rowH - cardH);
+            const sizeScore = Math.min(cardW, previewH / Math.min(previewAspect, 1.8)) * 100;
+            const fillBonus = previewAspect > 1.6 ? -unusedRowH * 0.2 : -unusedRowH * 0.02;
+            const score = sizeScore - rowPenalty - emptySlots * 80 - aspectPenalty;
 
-            if (score > best.score) {
-                best = { cols, rows, cardW, cardH, score };
+            if (!best || score > best.score) {
+                best = { cols, rows, cardW, cardH, footerH, score: score + fillBonus };
             }
+        }
+
+        if (!best) {
+            const rows = Math.min(count, Math.max(1, preferredRows));
+            const cols = Math.ceil(count / rows);
+            const cardW = Math.max(28, (width - gap * (cols - 1)) / cols);
+            const rowH = Math.max(40, (height - gap * (rows - 1)) / rows);
+            const footerH = Math.max(24, Math.min(54, cardW * 0.18));
+            const cardH = Math.max(40, Math.min(rowH, cardW * previewAspect + footerH));
+            best = { cols, rows, cardW, cardH, footerH, score: 0 };
         }
 
         const cardWidth = Math.max(28, Math.floor(best.cardW));
         const cardHeight = Math.max(40, Math.floor(best.cardH));
+        const footerHeight = Math.max(24, Math.floor(best.footerH));
         this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
         this.managerStage.style.setProperty("--pm-card-h", `${cardHeight}px`);
+        this.managerStage.style.setProperty("--pm-card-footer-h", `${footerHeight}px`);
         this.managerGrid.style.setProperty("--pm-cols", String(best.cols));
     }
 
@@ -4744,7 +5021,7 @@ class PoseStudioWidget {
         this.syncToNode(false);
     }
 
-    addTab() {
+    addTab(options = {}) {
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.viewer.getPose();
@@ -4771,7 +5048,7 @@ class PoseStudioWidget {
         }
         this.updateCaptureCameraPreview();
 
-        this.syncToNode(false);
+        this.syncToNode(false, { skipCapture: options.capturePreview ? false : undefined });
     }
 
     deleteTab(targetIndex = -1) {
@@ -7841,9 +8118,10 @@ class PoseStudioWidget {
         }
     }
 
-    syncToNode(fullCapture = false) {
+    syncToNode(fullCapture = false, options = {}) {
         if (this._isSyncing) return;
         this._isSyncing = true;
+        const skipCapture = options.skipCapture === true || (options.skipCapture !== false && this.interfaceMode === "manager" && !fullCapture);
 
         if (this.radarRedraw) this.radarRedraw();
 
@@ -7872,7 +8150,7 @@ class PoseStudioWidget {
         while (this.lightingPrompts.length > this.poses.length) this.lightingPrompts.pop();
 
         // Capture Image (CSR)
-        if (this.viewer && this.viewer.isInitialized()) {
+        if (!skipCapture && this.viewer && this.viewer.isInitialized()) {
             const w = this.exportParams.view_width || 1024;
             const h = this.exportParams.view_height || 1024;
             const bg = this.exportParams.bg_color || [40, 40, 40];
@@ -8200,6 +8478,7 @@ class PoseStudioWidget {
 
             this.updateTabs();
             this.syncPromptFieldToActiveTab();
+            this.refreshPoseManagerControls();
             this.setInterfaceMode(this.exportParams.interface_mode === "manager" ? "manager" : "studio", { sync: false });
 
             // Auto-load model
