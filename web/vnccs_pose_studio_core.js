@@ -3593,6 +3593,50 @@ export class PoseViewerCore {
         this.orbit.enableDamping = prevDamping;
     }
 
+    computeModelFitZoom(width = 1024, height = 1024, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0, margin = 0.08) {
+        if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        this.updateCaptureCamera(width, height, 1.0, offsetX, offsetY, yawDeg, pitchDeg);
+        this.captureCamera.updateMatrixWorld(true);
+        this.captureCamera.updateProjectionMatrix();
+
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry?.attributes?.position;
+        if (!position) return null;
+
+        const xs = [];
+        const ys = [];
+        const point = new this.THREE.Vector3();
+        const step = Math.max(1, Math.ceil(position.count / 8000));
+
+        for (let index = 0; index < position.count; index += step) {
+            point.fromBufferAttribute(position, index);
+            if (typeof this.skinnedMesh.applyBoneTransform === 'function') {
+                this.skinnedMesh.applyBoneTransform(index, point);
+            }
+            point.applyMatrix4(this.skinnedMesh.matrixWorld).project(this.captureCamera);
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+            xs.push(point.x);
+            ys.push(point.y);
+        }
+
+        if (xs.length < 16 || ys.length < 16) return null;
+        xs.sort((a, b) => a - b);
+        ys.sort((a, b) => a - b);
+        const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
+        const minX = pick(xs, 0.01);
+        const maxX = pick(xs, 0.99);
+        const minY = pick(ys, 0.01);
+        const maxY = pick(ys, 0.99);
+        const boundsW = Math.max(1e-5, maxX - minX);
+        const boundsH = Math.max(1e-5, maxY - minY);
+        const target = Math.max(0.2, Math.min(0.98, 1 - Math.max(0, margin) * 2)) * 2;
+        return Math.max(0.1, Math.min(7.0, Math.min(target / boundsW, target / boundsH)));
+    }
+
     computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null, forceFallback = false) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 

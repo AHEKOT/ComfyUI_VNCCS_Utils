@@ -2452,6 +2452,7 @@ class PoseStudioWidget {
         this.poseCaptures = []; // Cache for captured images
         this.ikMode = true; // IK mode toggle (false = FK, true = IK)
         this.interfaceMode = "studio"; // studio | manager | managerDetail
+        this.pendingAgeCameraFit = false;
 
         // Slider values
         this.meshParams = {
@@ -2797,7 +2798,7 @@ class PoseStudioWidget {
             main.label.innerText = this.formatManagerValue(key, value);
         }
         this.refreshPoseManagerControls();
-        this.onMeshParamsChanged();
+        this.onMeshParamsChanged(key);
         this.syncToNode(false, { skipCapture: true });
     }
 
@@ -2806,7 +2807,7 @@ class PoseStudioWidget {
         this.updateGenderUI();
         this.updateGenderVisibility();
         this.refreshPoseManagerControls();
-        this.onMeshParamsChanged();
+        this.onMeshParamsChanged("gender");
         this.syncToNode(false, { skipCapture: true });
     }
 
@@ -2894,14 +2895,14 @@ class PoseStudioWidget {
             this.meshParams.gender = 1.0;
             this.updateGenderUI();
             this.updateGenderVisibility();
-            this.onMeshParamsChanged();
+            this.onMeshParamsChanged("gender");
         });
 
         btnFemale.addEventListener("click", () => {
             this.meshParams.gender = 0.0;
             this.updateGenderUI();
             this.updateGenderVisibility();
-            this.onMeshParamsChanged();
+            this.onMeshParamsChanged("gender");
         });
 
         this.updateGenderUI();
@@ -3858,6 +3859,59 @@ class PoseStudioWidget {
         this.applyCameraToViewer(false);
     }
 
+    applyAgeCameraFit() {
+        if (!this.viewer?.computeModelFitZoom) return false;
+        if (!this.viewer?.isInitialized?.()) return false;
+
+        const originalTab = this.activeTab;
+        let changed = false;
+
+        for (let i = 0; i < this.poses.length; i++) {
+            const pose = this.poses[i] || {};
+            const camera = pose.cameraParams || {};
+
+            this.viewer.setPose(pose, true);
+            const zoom = this.viewer.computeModelFitZoom(
+                this.exportParams.view_width || 1024,
+                this.exportParams.view_height || 1024,
+                camera.offset_x ?? this.exportParams.cam_offset_x ?? 0,
+                camera.offset_y ?? this.exportParams.cam_offset_y ?? 0,
+                camera.yaw_deg ?? this.exportParams.cam_yaw_deg ?? 0,
+                camera.pitch_deg ?? this.exportParams.cam_pitch_deg ?? 0,
+                0.08
+            );
+            if (!Number.isFinite(zoom)) continue;
+
+            this.poses[i] = {
+                ...pose,
+                cameraParams: {
+                    offset_x: camera.offset_x ?? this.exportParams.cam_offset_x ?? 0,
+                    offset_y: camera.offset_y ?? this.exportParams.cam_offset_y ?? 0,
+                    yaw_deg: camera.yaw_deg ?? this.exportParams.cam_yaw_deg ?? 0,
+                    pitch_deg: camera.pitch_deg ?? this.exportParams.cam_pitch_deg ?? 0,
+                    zoom: Math.max(0.1, Math.min(7.0, zoom))
+                }
+            };
+            changed = true;
+        }
+
+        this.activeTab = originalTab;
+        this.viewer.setPose(this.poses[this.activeTab] || {}, true);
+        const activeCamera = this.poses[this.activeTab]?.cameraParams;
+        if (activeCamera) {
+            this.exportParams.cam_zoom = activeCamera.zoom ?? this.exportParams.cam_zoom;
+            this.exportParams.cam_offset_x = activeCamera.offset_x ?? this.exportParams.cam_offset_x;
+            this.exportParams.cam_offset_y = activeCamera.offset_y ?? this.exportParams.cam_offset_y;
+            this.exportParams.cam_yaw_deg = activeCamera.yaw_deg ?? this.exportParams.cam_yaw_deg;
+            this.exportParams.cam_pitch_deg = activeCamera.pitch_deg ?? this.exportParams.cam_pitch_deg;
+        }
+        this.syncCameraWidgets();
+        this.refreshPoseManagerControls();
+        this.applyCameraToViewer(true);
+        this.updateRotationSliders();
+        return changed;
+    }
+
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
@@ -3951,7 +4005,7 @@ class PoseStudioWidget {
                 } else {
                     // Directly update meshParams and trigger mesh rebuild
                     this.meshParams[key] = val;
-                    this.onMeshParamsChanged();
+                    this.onMeshParamsChanged(key);
                 }
             }
         });
@@ -7685,7 +7739,11 @@ class PoseStudioWidget {
         this.genderBtns.female.classList.toggle("active", isFemale);
     }
 
-    onMeshParamsChanged() {
+    onMeshParamsChanged(changedKey = null) {
+        if (changedKey === "age") {
+            this.pendingAgeCameraFit = true;
+        }
+
         // Update node widgets
         for (const [key, value] of Object.entries(this.meshParams)) {
             const widget = this.node.widgets?.find(w => w.name === key);
@@ -7702,9 +7760,17 @@ class PoseStudioWidget {
         this.pendingMeshUpdate = false;
 
         this.loadModel(false).finally(() => {
+            const hasPendingMeshUpdate = this.pendingMeshUpdate;
             this.isMeshUpdating = false;
-            if (this.pendingMeshUpdate) {
+            if (hasPendingMeshUpdate) {
                 this.onMeshParamsChanged();
+                return;
+            }
+            if (this.pendingAgeCameraFit) {
+                this.pendingAgeCameraFit = false;
+                if (this.applyAgeCameraFit()) {
+                    this.syncToNode(this.interfaceMode !== "studio");
+                }
             }
         });
     }
