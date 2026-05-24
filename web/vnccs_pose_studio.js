@@ -1191,32 +1191,6 @@ const STYLES = `
     font-size: 10px;
 }
 
-.vnccs-ps-detail-card-add {
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    border-style: dashed;
-    background: rgba(255, 143, 163, 0.06);
-}
-
-.vnccs-ps-detail-card-add-icon {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 143, 163, 0.42);
-    color: var(--ps-accent);
-    font-size: 28px;
-    line-height: 1;
-}
-
-.vnccs-ps-detail-card-add-label {
-    font-size: 9px;
-    font-weight: 800;
-}
-
 .vnccs-ps-manager {
     flex: 1;
     min-width: 0;
@@ -1258,6 +1232,7 @@ const STYLES = `
 
 .vnccs-ps-manager-stage {
     --pm-card-w: 260px;
+    --pm-card-h: 370px;
     flex: 1;
     min-height: 0;
     padding: 14px 18px 18px;
@@ -1274,7 +1249,7 @@ const STYLES = `
 
 .vnccs-ps-pose-card {
     width: 100%;
-    height: calc(var(--pm-card-w) * 1.42);
+    height: var(--pm-card-h);
     min-width: 28px;
     min-height: 40px;
     display: flex;
@@ -1291,42 +1266,10 @@ const STYLES = `
 }
 
 .vnccs-ps-pose-card:hover,
-.vnccs-ps-pose-card.active,
-.vnccs-ps-pose-card-add:hover {
+.vnccs-ps-pose-card.active {
     border-color: rgba(255, 143, 163, 0.72);
     box-shadow: 0 14px 36px rgba(0, 0, 0, 0.46), 0 0 0 1px rgba(255, 143, 163, 0.1);
     transform: translateY(-1px);
-}
-
-.vnccs-ps-pose-card-add {
-    align-items: center;
-    justify-content: center;
-    gap: clamp(8px, calc(var(--pm-card-w) * 0.05), 16px);
-    border-style: dashed;
-    background:
-        linear-gradient(180deg, rgba(255, 143, 163, 0.08), rgba(184, 169, 232, 0.04)),
-        #0c0c14;
-}
-
-.vnccs-ps-pose-card-add-icon {
-    width: clamp(34px, calc(var(--pm-card-w) * 0.28), 96px);
-    height: clamp(34px, calc(var(--pm-card-w) * 0.28), 96px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 50%;
-    border: 1px solid rgba(255, 143, 163, 0.42);
-    background: rgba(255, 143, 163, 0.1);
-    color: var(--ps-accent);
-    font-size: clamp(28px, calc(var(--pm-card-w) * 0.24), 82px);
-    line-height: 1;
-    font-weight: 300;
-}
-
-.vnccs-ps-pose-card-add-label {
-    color: var(--ps-text);
-    font-size: clamp(9px, calc(var(--pm-card-w) * 0.06), 18px);
-    font-weight: 800;
 }
 
 .vnccs-ps-pose-preview {
@@ -2619,16 +2562,16 @@ class PoseStudioWidget {
         const actions = document.createElement("div");
         actions.className = "vnccs-ps-manager-actions";
 
-        const captureBtn = document.createElement("button");
-        captureBtn.className = "vnccs-ps-btn";
-        captureBtn.type = "button";
-        captureBtn.textContent = "Capture All";
-        captureBtn.addEventListener("click", () => {
-            this.syncToNode(true);
-            this.renderPoseManager();
+        const addBtn = document.createElement("button");
+        addBtn.className = "vnccs-ps-btn primary";
+        addBtn.type = "button";
+        addBtn.textContent = "Add Pose";
+        addBtn.addEventListener("click", () => {
+            this.addTab();
+            this.setInterfaceMode("manager");
         });
 
-        actions.appendChild(captureBtn);
+        actions.appendChild(addBtn);
         header.appendChild(title);
         header.appendChild(actions);
 
@@ -3428,81 +3371,41 @@ class PoseStudioWidget {
             this.managerGrid.appendChild(card);
         }
 
-        const addCard = document.createElement("div");
-        addCard.className = "vnccs-ps-pose-card vnccs-ps-pose-card-add";
-        addCard.tabIndex = 0;
-        addCard.role = "button";
-        addCard.title = "Add Pose";
-
-        const addIcon = document.createElement("div");
-        addIcon.className = "vnccs-ps-pose-card-add-icon";
-        addIcon.textContent = "+";
-
-        const addLabel = document.createElement("div");
-        addLabel.className = "vnccs-ps-pose-card-add-label";
-        addLabel.textContent = "Add Pose";
-
-        const addPose = () => {
-            this.addTab();
-            this.setInterfaceMode("manager");
-        };
-
-        addCard.appendChild(addIcon);
-        addCard.appendChild(addLabel);
-        addCard.addEventListener("click", addPose);
-        addCard.addEventListener("keydown", (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                addPose();
-            }
-        });
-        this.managerGrid.appendChild(addCard);
-
         this.layoutPoseManager();
     }
 
     layoutPoseManager() {
         if (!this.managerStage || !this.managerGrid) return;
-        const count = Math.max(1, (this.poses?.length || 0) + 1);
+        const count = Math.max(1, this.poses?.length || 1);
         const rect = this.managerStage.getBoundingClientRect();
         const width = Math.max(1, rect.width - 2);
         const height = Math.max(1, rect.height - 2);
         const gap = 14;
         const cardAspect = 1.42;
-        const preferredMinWidth = 160;
-        let bestWidth = 28;
-        let bestCols = count;
+        let best = { cols: count, rows: 1, cardW: 28, cardH: 40, score: -Infinity };
 
-        for (let cols = count; cols >= 1; cols--) {
+        for (let cols = 1; cols <= count; cols++) {
             const rows = Math.ceil(count / cols);
-            const availableW = (width - gap * (cols - 1)) / cols;
-            const availableH = (height - gap * (rows - 1)) / rows;
-            const candidate = Math.min(availableW, availableH / cardAspect);
-            if (candidate <= 0) continue;
+            const cardW = (width - gap * (cols - 1)) / cols;
+            const cardH = (height - gap * (rows - 1)) / rows;
+            if (cardW <= 0 || cardH <= 0) continue;
 
-            if (candidate >= preferredMinWidth || cols === 1) {
-                bestWidth = candidate;
-                bestCols = cols;
-                break;
+            const ratio = cardH / cardW;
+            const ratioPenalty = Math.abs(ratio - cardAspect);
+            const emptySlots = rows * cols - count;
+            const usedArea = (cardW * cardH * count) / (width * height);
+            const score = usedArea * 5 - ratioPenalty * 1.6 - emptySlots * 0.18 - rows * 0.02;
+
+            if (score > best.score) {
+                best = { cols, rows, cardW, cardH, score };
             }
         }
 
-        if (bestWidth < preferredMinWidth) {
-            for (let cols = count; cols >= 1; cols--) {
-                const rows = Math.ceil(count / cols);
-                const availableW = (width - gap * (cols - 1)) / cols;
-                const availableH = (height - gap * (rows - 1)) / rows;
-                const candidate = Math.min(availableW, availableH / cardAspect);
-                if (candidate > bestWidth) {
-                    bestWidth = candidate;
-                    bestCols = cols;
-                }
-            }
-        }
-
-        const cardWidth = Math.max(28, Math.floor(bestWidth));
+        const cardWidth = Math.max(28, Math.floor(best.cardW));
+        const cardHeight = Math.max(40, Math.floor(best.cardH));
         this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
-        this.managerGrid.style.setProperty("--pm-cols", String(bestCols));
+        this.managerStage.style.setProperty("--pm-card-h", `${cardHeight}px`);
+        this.managerGrid.style.setProperty("--pm-cols", String(best.cols));
     }
 
     renderPoseManagerDetailStrip() {
@@ -3569,36 +3472,6 @@ class PoseStudioWidget {
             });
             this.managerDetailStrip.appendChild(card);
         }
-
-        const addCard = document.createElement("div");
-        addCard.className = "vnccs-ps-detail-card vnccs-ps-detail-card-add";
-        addCard.tabIndex = 0;
-        addCard.role = "button";
-        addCard.title = "Add Pose";
-
-        const addIcon = document.createElement("div");
-        addIcon.className = "vnccs-ps-detail-card-add-icon";
-        addIcon.textContent = "+";
-
-        const addLabel = document.createElement("div");
-        addLabel.className = "vnccs-ps-detail-card-add-label";
-        addLabel.textContent = "Add Pose";
-
-        const addPose = () => {
-            this.addTab();
-            this.setInterfaceMode("managerDetail");
-        };
-
-        addCard.appendChild(addIcon);
-        addCard.appendChild(addLabel);
-        addCard.addEventListener("click", addPose);
-        addCard.addEventListener("keydown", (event) => {
-            if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                addPose();
-            }
-        });
-        this.managerDetailStrip.appendChild(addCard);
 
         requestAnimationFrame(() => {
             const active = this.managerDetailStrip?.querySelector(".vnccs-ps-detail-card.active");
