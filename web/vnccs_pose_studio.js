@@ -2802,6 +2802,52 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true });
     }
 
+    applyExternalCharacterCreatorValues(values, { initial = false } = {}) {
+        if (!values) return false;
+        let changed = false;
+        const sourceKeys = [];
+
+        if (Number.isFinite(values.age)) {
+            const age = Math.max(1, Math.min(90, Math.round(values.age)));
+            if (this.meshParams.age !== age) {
+                this.meshParams.age = age;
+                sourceKeys.push("age");
+                changed = true;
+            }
+        }
+
+        if (Number.isFinite(values.gender)) {
+            const gender = Math.max(0, Math.min(1, values.gender));
+            if (this.meshParams.gender !== gender) {
+                this.meshParams.gender = gender;
+                sourceKeys.push("gender");
+                changed = true;
+            }
+        }
+
+        if (!changed) return false;
+
+        for (const key of sourceKeys) {
+            const main = this.sliders?.[key];
+            if (main) {
+                main.slider.value = this.meshParams[key];
+                main.label.innerText = this.formatManagerValue(key, this.meshParams[key]);
+            }
+        }
+
+        this.updateGenderUI();
+        this.updateGenderVisibility();
+        this.refreshPoseManagerControls();
+        if (initial) {
+            this._suppressNextAgeFitSync = true;
+        }
+        this.onMeshParamsChanged(sourceKeys.includes("age") ? "age" : sourceKeys[0]);
+        if (!initial) {
+            this.syncToNode(false, { skipCapture: this.interfaceMode === "manager" });
+        }
+        return true;
+    }
+
     setManagerGender(value) {
         this.meshParams.gender = value;
         this.updateGenderUI();
@@ -7768,8 +7814,12 @@ class PoseStudioWidget {
             }
             if (this.pendingAgeCameraFit) {
                 this.pendingAgeCameraFit = false;
+                const suppressAgeFitSync = this._suppressNextAgeFitSync === true;
+                this._suppressNextAgeFitSync = false;
                 if (this.applyAgeCameraFit()) {
-                    this.syncToNode(this.interfaceMode !== "studio");
+                    if (!suppressAgeFitSync) {
+                        this.syncToNode(this.interfaceMode !== "studio");
+                    }
                 }
             }
         });
@@ -8571,6 +8621,119 @@ app.registerExtension({
     name: "VNCCS.PoseStudio",
 
     setup() {
+        (() => {
+            if (window.__vnccsPoseStudioCharacterCreatorSync) {
+                return window.__vnccsPoseStudioCharacterCreatorSync;
+            }
+
+            const parseSource = (node) => {
+                if (!node || node.type !== "CharacterCreatorV2") return null;
+                const dataWidget = node.widgets?.find(w => w.name === "widget_data");
+                if (dataWidget?.value) {
+                    try {
+                        const parsed = JSON.parse(dataWidget.value);
+                        const info = parsed?.character_info || {};
+                        const age = Number(info.age);
+                        const sex = String(info.sex || "").toLowerCase();
+                        const gender = sex === "male" ? 1.0 : (sex === "female" ? 0.0 : NaN);
+                        return {
+                            age: Number.isFinite(age) ? age : NaN,
+                            gender,
+                            signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
+                        };
+                    } catch (_) {
+                        // Fall back to ordinary widgets below.
+                    }
+                }
+
+                const ageWidget = node.widgets?.find(w => w.name === "age");
+                const sexWidget = node.widgets?.find(w => w.name === "sex" || w.name === "gender");
+                const age = Number(ageWidget?.value);
+                const sex = String(sexWidget?.value || "").toLowerCase();
+                const gender = sex === "male" ? 1.0 : (sex === "female" ? 0.0 : NaN);
+                if (!Number.isFinite(age) && !Number.isFinite(gender)) return null;
+                return {
+                    age: Number.isFinite(age) ? age : NaN,
+                    gender,
+                    signature: `${Number.isFinite(age) ? Math.round(age) : "?"}|${Number.isFinite(gender) ? gender : "?"}`
+                };
+            };
+
+            const api = {
+                studios: new Set(),
+                sourceSignatures: new WeakMap(),
+                findSourceNode() {
+                    const nodes = app.graph?._nodes || [];
+                    return nodes.find(n => n?.type === "CharacterCreatorV2") || null;
+                },
+                applyToStudio(studio, values, options = {}) {
+                    if (!studio || !values) return;
+                    studio.applyExternalCharacterCreatorValues?.(values, options);
+                },
+                applySource(node, options = {}) {
+                    const values = parseSource(node);
+                    if (!values) return;
+                    if (!options.initial) {
+                        const previous = this.sourceSignatures.get(node);
+                        if (previous === values.signature) return;
+                    }
+                    this.sourceSignatures.set(node, values.signature);
+                    for (const studio of this.studios) {
+                        this.applyToStudio(studio, values, options);
+                    }
+                },
+                registerStudio(studio) {
+                    if (!studio) return;
+                    this.studios.add(studio);
+                    this.scan();
+                    const source = this.findSourceNode();
+                    if (source) this.applyToStudio(studio, parseSource(source), { initial: true });
+                },
+                unregisterStudio(studio) {
+                    this.studios.delete(studio);
+                },
+                hookNode(node) {
+                    if (!node || node.type !== "CharacterCreatorV2") return;
+                    const dataWidget = node.widgets?.find(w => w.name === "widget_data");
+                    if (dataWidget && !dataWidget._vnccsPoseStudioValueHooked) {
+                        let currentValue = dataWidget.value;
+                        Object.defineProperty(dataWidget, "value", {
+                            configurable: true,
+                            get() {
+                                return currentValue;
+                            },
+                            set: (value) => {
+                                currentValue = value;
+                                queueMicrotask(() => this.applySource(node));
+                            }
+                        });
+                        dataWidget._vnccsPoseStudioValueHooked = true;
+                    }
+
+                    for (const name of ["age", "sex", "gender"]) {
+                        const widget = node.widgets?.find(w => w.name === name);
+                        if (!widget || widget._vnccsPoseStudioCallbackHooked) continue;
+                        const original = widget.callback;
+                        widget.callback = (...args) => {
+                            const result = original?.apply(widget, args);
+                            queueMicrotask(() => this.applySource(node));
+                            return result;
+                        };
+                        widget._vnccsPoseStudioCallbackHooked = true;
+                    }
+
+                    this.applySource(node, { initial: true });
+                },
+                scan() {
+                    const nodes = app.graph?._nodes || [];
+                    for (const node of nodes) this.hookNode(node);
+                }
+            };
+
+            window.__vnccsPoseStudioCharacterCreatorSync = api;
+            return api;
+        })();
+
         const uploadPoseStudioSync = async (node, nodeId) => {
             const poseWidget = node.widgets.find(w => w.name === "pose_data");
             if (!poseWidget) return;
@@ -8722,6 +8885,7 @@ app.registerExtension({
             // Load model after initialization
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
+                window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this.studioWidget.loadModel().then(() => {
                     if (this.studioWidget.viewer) {
                         this.studioWidget.updateCaptureCameraPreview();
@@ -8757,6 +8921,7 @@ app.registerExtension({
                 setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
+                    window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.studioWidget.autoRefreshEnabledPoseRepositories();
@@ -8775,6 +8940,7 @@ app.registerExtension({
 
         const onRemoved = nodeType.prototype.onRemoved;
         nodeType.prototype.onRemoved = function () {
+            window.__vnccsPoseStudioCharacterCreatorSync?.unregisterStudio(this.studioWidget);
             if (onRemoved) onRemoved.apply(this, arguments);
             if (this.studioWidget) {
                 if (this.studioWidget._containerResizeObserver) {
@@ -8793,5 +8959,21 @@ app.registerExtension({
                 }
             }
         };
+    },
+
+    nodeCreated(node) {
+        window.__vnccsPoseStudioCharacterCreatorSync?.hookNode(node);
+        if (node?.type === "CharacterCreatorV2") {
+            setTimeout(() => window.__vnccsPoseStudioCharacterCreatorSync?.hookNode(node), 0);
+            setTimeout(() => window.__vnccsPoseStudioCharacterCreatorSync?.hookNode(node), 500);
+        }
+    },
+
+    loadedGraphNode(node) {
+        window.__vnccsPoseStudioCharacterCreatorSync?.hookNode(node);
+    },
+
+    loadedGraph() {
+        window.__vnccsPoseStudioCharacterCreatorSync?.scan();
     }
 });
