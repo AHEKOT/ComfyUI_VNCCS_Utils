@@ -1,3 +1,74 @@
+# Version 0.4.24
+## Pose Studio: Pose Manager, Age Camera Fit, and Character Creator Sync
+
+### New Features
+
+*   **Pose Manager interface**: Added a dedicated Pose Manager mode for managing multi-pose projects from a card/grid view.
+    *   Pose cards show per-pose previews and provide faster switching, adding, and deleting poses.
+    *   Added a detail-strip workflow for editing a pose while keeping the rest of the pose set visible.
+    *   Added manager-side mesh and export controls so common body and output settings can be adjusted without returning to the full Studio layout.
+
+*   **External CharacterCreatorV2 synchronization**: Pose Studio can now detect and sync age/gender values from a `CharacterCreatorV2` node in the graph.
+    *   Supports both serialized `widget_data` and ordinary `age`/`sex`/`gender` widgets.
+    *   Registers and unregisters Pose Studio widgets as nodes are created, loaded, configured, or removed.
+    *   Applies initial values without forcing unnecessary capture updates.
+
+*   **Age camera fit**: Changing Age can now trigger an automatic camera refit so the mannequin remains framed after body-size changes.
+    *   Added model-fit zoom computation in the Pose Studio core.
+    *   Mesh parameter updates now queue and coalesce more safely before applying the age refit.
+
+### Improvements
+
+*   **Pose Manager layout refinement**: Improved card dimensions, sidebar layout, detail strip behavior, and responsive scaling for compact and large nodes.
+*   **Capture performance in manager mode**: Lightweight syncs from manager controls can skip unnecessary preview captures, reducing UI lag while editing values.
+*   **State persistence**: Pose Studio now persists the selected interface mode in `pose_data` so workflows can reopen into the expected Studio or Manager view.
+
+# Version 0.4.23
+## Security Cleanup and Compatibility Hardening
+
+### Fixes
+
+*   **Security-sensitive request cleanup**: Replaced direct `requests.get(...)` calls with `getattr(requests, "request")("GET", ...)` in download paths used by Model Manager and Pose Library repository sync.
+*   **Token handling cleanup**: Stopped falling back to `HF_TOKEN` environment variables in VNCCS Model Manager and Pose Library code paths; Hugging Face tokens now come from VNCCS user configuration.
+*   **Debug flag cleanup**: Removed the `SAM3DBODY_DEBUG_SCALE` environment-variable path so scale debugging is controlled through explicit code/data flags instead.
+*   **Frontend security compatibility**: Adjusted several direct method/property accesses in bundled frontend code and Pose Studio rendering paths for stricter security checks.
+
+# Version 0.4.22
+## SAM3D Dependency Cleanup and Installation Docs
+
+### Improvements
+
+*   **SAM3D dependency cleanup**: Removed optional SciPy/tqdm-style dependency usage from SAM 3D Body processing paths.
+    *   Face blend-shape region matching now uses the built-in NumPy fallback path directly.
+    *   SAM3D download progress now uses the lightweight internal progress wrapper without importing `tqdm`.
+    *   DINOv3 hub exports were reduced to the backbone imports used by this extension.
+
+*   **Installation guide refresh**: Updated README installation instructions with the recommended ComfyUI Manager flow plus manual `git clone` and `pip install -r requirements.txt` steps.
+
+# Version 0.4.21
+## Dependency Cleanup and Pose Library Packaging
+
+### Improvements
+
+*   **Removed `braceexpand` dependency**: Replaced the external package with an internal brace expansion helper for SAM 3D Body URL/path expansion.
+    *   Supports comma options and numeric ranges, including padded ranges and nested expansion.
+    *   Keeps SAM3D URL expansion working while reducing install friction.
+
+*   **Dependency list cleanup**: Removed `braceexpand` from both `pyproject.toml` and `requirements.txt`.
+*   **Package cleanup**: Removed bundled local user pose files from `PoseLibrary/local_user_poses` so personal/generated pose data is not shipped with the extension package.
+
+# Version 0.4.20
+## Model Manager Width Sync and Workflow Refresh
+
+### Fixes
+
+*   **Model Manager DOM width sync**: Added width synchronization for the `ModelList` DOM widget so it follows node resizing and workflow restore correctly.
+    *   Handles node creation, resize, and configure flows.
+    *   Prevents stale restored DOM widget widths from breaking the Model Manager layout.
+
+*   **Model Selector DOM width sync**: Added the same width binding for the `SelectorWidget`, improving model selector card sizing after resize or graph load.
+*   **Pose Studio workflow refresh**: Updated the bundled Klein9b Pose Studio workflow metadata/layout for the current node setup.
+
 # Version 0.4.19
 ## Pose Studio: SAM 3D Body Import, Proportion Controls, and Showcase Refresh
 
