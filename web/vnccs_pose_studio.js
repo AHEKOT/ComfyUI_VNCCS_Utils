@@ -2500,7 +2500,8 @@ class PoseStudioWidget {
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
             skin_type: "naked", // naked | naked_marks | dummy_white
             background_url: null,
-            interface_mode: "studio"
+            interface_mode: "studio",
+            hand_controls_v2: true
         };
 
         // Lighting settings (array of light configs)
@@ -3467,6 +3468,7 @@ class PoseStudioWidget {
             showSkeletonHelper: true,
             showCaptureFrame: true,
             syncMode: 'end',
+            useHandControlPopover: this.exportParams.hand_controls_v2 !== false,
             onHandHover: ({ side }) => {
                 this._hoveredHandSide = side;
                 if (!side && !this._activeHandSide) {
@@ -3486,6 +3488,7 @@ class PoseStudioWidget {
         });
 
         this.viewer.init();
+        this.viewer.setUseHandControlPopover?.(this.exportParams.hand_controls_v2 !== false);
         if (this.lightParams) {
             this.viewer.updateLights(this.lightParams);
         }
@@ -7056,6 +7059,37 @@ class PoseStudioWidget {
         interfaceRow.appendChild(interfaceToggle);
         content.appendChild(interfaceRow);
 
+        const handControlsRow = document.createElement("div");
+        handControlsRow.className = "vnccs-ps-field";
+        handControlsRow.style.marginBottom = "14px";
+
+        const handControlsLabel = document.createElement("label");
+        handControlsLabel.style.display = "flex";
+        handControlsLabel.style.alignItems = "center";
+        handControlsLabel.style.gap = "10px";
+        handControlsLabel.style.cursor = "pointer";
+        handControlsLabel.style.userSelect = "none";
+
+        const handControlsCheckbox = document.createElement("input");
+        handControlsCheckbox.type = "checkbox";
+        handControlsCheckbox.checked = this.exportParams.hand_controls_v2 !== false;
+        handControlsCheckbox.onchange = () => {
+            this.exportParams.hand_controls_v2 = handControlsCheckbox.checked;
+            if (!handControlsCheckbox.checked) {
+                this.hideHandControlPopover();
+            }
+            this.viewer?.setUseHandControlPopover?.(handControlsCheckbox.checked);
+            this.syncToNode(false);
+        };
+
+        const handControlsText = document.createElement("div");
+        handControlsText.innerHTML = "<strong>New Hand Controls</strong><div style='font-size:11px; color:#888; margin-top:4px;'>When enabled, clicking a hand opens the floating hand editor. Disable to show and edit every finger joint directly.</div>";
+
+        handControlsLabel.appendChild(handControlsCheckbox);
+        handControlsLabel.appendChild(handControlsText);
+        handControlsRow.appendChild(handControlsLabel);
+        content.appendChild(handControlsRow);
+
         const debugSection = this.createSection("Debug", false);
 
         // SAM Camera Override Toggle
@@ -8561,6 +8595,7 @@ class PoseStudioWidget {
             if (this.viewer?.setKpFigureVisible) {
                 this.viewer.setKpFigureVisible(this.exportParams.debugShowSAMHelper !== false);
             }
+            this.viewer?.setUseHandControlPopover?.(this.exportParams.hand_controls_v2 !== false);
             if (this.updateOverrideBtn) this.updateOverrideBtn();
 
             if (data.poses && Array.isArray(data.poses)) {
