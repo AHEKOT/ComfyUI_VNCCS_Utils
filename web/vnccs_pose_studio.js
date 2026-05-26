@@ -1274,16 +1274,21 @@ const STYLES = `
 .vnccs-ps-manager-grid {
     height: 100%;
     display: grid;
-    grid-template-columns: repeat(var(--pm-cols, 1), minmax(0, 1fr));
-    align-content: flex-start;
+    grid-template-columns: repeat(var(--pm-cols, 1), var(--pm-cell-w, 220px));
+    grid-template-rows: repeat(var(--pm-rows, 1), var(--pm-cell-h, 320px));
+    align-content: center;
+    justify-content: center;
     gap: 14px;
+    overflow: hidden;
 }
 
 .vnccs-ps-pose-card {
-    width: 100%;
+    width: var(--pm-card-w);
     height: var(--pm-card-h);
     min-width: 28px;
     min-height: 40px;
+    justify-self: center;
+    align-self: center;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -2532,6 +2537,8 @@ class PoseStudioWidget {
         this.managerDetailStrip = null;
         this.managerResizeObserver = null;
         this.managerBackBtn = null;
+        this.managerImageMetrics = new Map();
+        this.managerLayoutFrame = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -2633,7 +2640,7 @@ class PoseStudioWidget {
         this.container.appendChild(this.managerPanel);
 
         if (typeof ResizeObserver !== "undefined") {
-            this.managerResizeObserver = new ResizeObserver(() => this.layoutPoseManager());
+            this.managerResizeObserver = new ResizeObserver(() => this.schedulePoseManagerGridLayout());
             this.managerResizeObserver.observe(this.managerStage);
         }
         this.renderPoseManager();
@@ -2871,7 +2878,7 @@ class PoseStudioWidget {
             this._lastResizeH = 0;
             this.resize();
             this.updateCaptureCameraPreview();
-            this.layoutPoseManager();
+            this.schedulePoseManagerGridLayout();
         }
         this.refreshPoseManagerControls();
         if (isDimension) {
@@ -3583,7 +3590,7 @@ class PoseStudioWidget {
         if (normalized === "manager") {
             this.refreshPoseManagerControls();
             this.renderPoseManager();
-            requestAnimationFrame(() => this.layoutPoseManager());
+            this.schedulePoseManagerGridLayout();
         } else {
             requestAnimationFrame(() => this.resize());
         }
@@ -3678,7 +3685,45 @@ class PoseStudioWidget {
             this.managerGrid.appendChild(card);
         }
 
-        this.layoutPoseManager();
+        this.schedulePoseManagerGridLayout();
+    }
+
+    schedulePoseManagerGridLayout() {
+        if (this.managerLayoutFrame) cancelAnimationFrame(this.managerLayoutFrame);
+        this.managerLayoutFrame = requestAnimationFrame(() => {
+            this.managerLayoutFrame = null;
+            this.layoutPoseManager();
+        });
+        for (const capture of this.poseCaptures || []) {
+            if (capture) this.ensurePoseManagerImageMetrics(capture, () => this.layoutPoseManager());
+        }
+    }
+
+    ensurePoseManagerImageMetrics(src, onReady) {
+        const existing = this.managerImageMetrics.get(src);
+        if (existing) {
+            if (existing.loading && onReady) existing.callbacks.push(onReady);
+            else onReady?.();
+            return;
+        }
+
+        this.managerImageMetrics.set(src, { width: 1, height: 1, loading: true, callbacks: onReady ? [onReady] : [] });
+        const img = new Image();
+        img.onload = () => {
+            const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
+            this.managerImageMetrics.set(src, {
+                width: img.naturalWidth || 1,
+                height: img.naturalHeight || 1,
+                loading: false,
+            });
+            callbacks.forEach(callback => callback?.());
+        };
+        img.onerror = () => {
+            const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
+            this.managerImageMetrics.set(src, { width: 1, height: 1, loading: false });
+            callbacks.forEach(callback => callback?.());
+        };
+        img.src = src;
     }
 
     layoutPoseManager() {
@@ -3688,57 +3733,58 @@ class PoseStudioWidget {
         const padX = (parseFloat(stageStyle.paddingLeft) || 0) + (parseFloat(stageStyle.paddingRight) || 0);
         const padY = (parseFloat(stageStyle.paddingTop) || 0) + (parseFloat(stageStyle.paddingBottom) || 0);
         const width = Math.max(1, this.managerStage.clientWidth - padX - 2);
-        const height = Math.max(1, this.managerStage.clientHeight - padY - 18);
+        const height = Math.max(1, this.managerStage.clientHeight - padY - 2);
         const gap = 14;
-        const preferredRows = count <= 6 ? 1 : (count <= 12 ? 2 : Math.ceil(count / 6));
-        const minCardW = count <= 6 ? 130 : 80;
-        const minCardH = 130;
-        const previewAspect = Math.max(0.35, Math.min(4, (Number(this.exportParams.view_height) || 1024) / (Number(this.exportParams.view_width) || 1024)));
+        const fallbackAspect = Math.max(0.05, Math.min(20, (Number(this.exportParams.view_width) || 1024) / (Number(this.exportParams.view_height) || 1024)));
+        const aspects = Array.from({ length: count }, (_, index) => {
+            const capture = this.poseCaptures?.[index];
+            const metrics = capture ? this.managerImageMetrics.get(capture) : null;
+            return Math.max(0.05, Math.min(20, (metrics?.width && metrics?.height) ? metrics.width / metrics.height : fallbackAspect));
+        });
         let best = null;
 
-        for (let rows = 1; rows <= count; rows++) {
-            const cols = Math.ceil(count / rows);
-            const cardW = (width - gap * (cols - 1)) / cols;
-            const rowH = (height - gap * (rows - 1)) / rows;
-            if (cardW <= 0) continue;
-            if (rowH <= 0) continue;
+        for (let cols = 1; cols <= count; cols++) {
+            const rows = Math.ceil(count / cols);
+            const cellW = (width - gap * (cols - 1)) / cols;
+            const cellH = (height - gap * (rows - 1)) / rows;
+            if (cellW <= 0 || cellH <= 0) continue;
 
-            const footerH = Math.max(44, Math.min(60, cardW * 0.18));
-            const previewH = Math.max(40, Math.min(cardW * previewAspect, rowH - footerH));
-            const cardH = previewH + footerH;
-            if ((cardW < minCardW || cardH < minCardH) && count > 1) continue;
-
+            const footerH = Math.max(36, Math.min(56, cellW * 0.18));
+            const previewCellH = Math.max(1, cellH - footerH);
+            let minArea = Infinity;
+            let totalArea = 0;
+            for (const aspect of aspects) {
+                const drawW = Math.min(cellW, previewCellH * aspect);
+                const drawH = drawW / aspect;
+                const area = drawW * drawH;
+                minArea = Math.min(minArea, area);
+                totalArea += area;
+            }
             const emptySlots = rows * cols - count;
-            const rowPenalty = Math.abs(rows - preferredRows) * 100000;
-            const aspect = previewH / Math.max(1, cardW);
-            const aspectPenalty = Math.abs(aspect - Math.min(previewAspect, 1.8)) * 80;
-            const unusedRowH = Math.max(0, rowH - cardH);
-            const sizeScore = Math.min(cardW, previewH / Math.min(previewAspect, 1.8)) * 100;
-            const fillBonus = previewAspect > 1.6 ? -unusedRowH * 0.2 : -unusedRowH * 0.02;
-            const score = sizeScore - rowPenalty - emptySlots * 80 - aspectPenalty;
-
+            const score = minArea * 1000000 + totalArea - emptySlots * 1000;
             if (!best || score > best.score) {
-                best = { cols, rows, cardW, cardH, footerH, score: score + fillBonus };
+                best = { cols, rows, cellW, cellH, footerH, score };
             }
         }
 
-        if (!best) {
-            const rows = Math.min(count, Math.max(1, preferredRows));
-            const cols = Math.ceil(count / rows);
-            const cardW = Math.max(28, (width - gap * (cols - 1)) / cols);
-            const rowH = Math.max(40, (height - gap * (rows - 1)) / rows);
-            const footerH = Math.max(44, Math.min(60, cardW * 0.18));
-            const cardH = Math.max(40, Math.min(rowH, cardW * previewAspect + footerH));
-            best = { cols, rows, cardW, cardH, footerH, score: 0 };
-        }
+        if (!best) return;
 
-        const cardWidth = Math.max(28, Math.floor(best.cardW));
-        const cardHeight = Math.max(40, Math.floor(best.cardH));
-        const footerHeight = Math.max(44, Math.floor(best.footerH));
-        this.managerStage.style.setProperty("--pm-card-w", `${cardWidth}px`);
-        this.managerStage.style.setProperty("--pm-card-h", `${cardHeight}px`);
-        this.managerStage.style.setProperty("--pm-card-footer-h", `${footerHeight}px`);
         this.managerGrid.style.setProperty("--pm-cols", String(best.cols));
+        this.managerGrid.style.setProperty("--pm-rows", String(best.rows));
+        this.managerGrid.style.setProperty("--pm-cell-w", `${Math.max(1, Math.floor(best.cellW))}px`);
+        this.managerGrid.style.setProperty("--pm-cell-h", `${Math.max(1, Math.floor(best.cellH))}px`);
+
+        [...this.managerGrid.children].forEach((card, index) => {
+            if (!card.classList?.contains("vnccs-ps-pose-card")) return;
+            const aspect = aspects[index] || fallbackAspect;
+            const drawW = Math.min(best.cellW, Math.max(1, best.cellH - best.footerH) * aspect);
+            const drawH = drawW / aspect;
+            const cardW = Math.max(28, Math.floor(drawW));
+            const footerH = Math.max(36, Math.floor(best.footerH));
+            card.style.setProperty("--pm-card-w", `${cardW}px`);
+            card.style.setProperty("--pm-card-h", `${Math.max(40, Math.floor(drawH) + footerH)}px`);
+            card.style.setProperty("--pm-card-footer-h", `${footerH}px`);
+        });
     }
 
     renderPoseManagerDetailStrip() {
@@ -7870,7 +7916,7 @@ class PoseStudioWidget {
     resize() {
         this.updateMainUIScale();
         if (this.interfaceMode === "manager") {
-            this.layoutPoseManager();
+            this.schedulePoseManagerGridLayout();
             return;
         }
         if (this.viewer && this.canvasContainer) {
@@ -8996,6 +9042,10 @@ app.registerExtension({
                 if (this.studioWidget.managerResizeObserver) {
                     this.studioWidget.managerResizeObserver.disconnect();
                     this.studioWidget.managerResizeObserver = null;
+                }
+                if (this.studioWidget.managerLayoutFrame) {
+                    cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
+                    this.studioWidget.managerLayoutFrame = null;
                 }
                 if (this.studioWidget._resizeRaf) {
                     cancelAnimationFrame(this.studioWidget._resizeRaf);
