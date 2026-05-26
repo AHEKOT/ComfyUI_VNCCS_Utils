@@ -1,3 +1,25 @@
+# Version 0.4.25
+## Pose Studio: Pose Manager Grid and Hand Control Options
+
+### New Features
+
+*   **Hand control mode toggle**: Added a Settings option to enable or disable the newer floating hand-control interface introduced in `0.4.18`.
+    *   When disabled, hand editing returns to the pre-`0.4.18` direct-joint workflow with individual finger joints visible and selectable.
+    *   The option is persisted in `pose_data` so workflows reopen with the selected hand-control behavior.
+
+*   **Foot Size proportion control**: Added a `Foot Size` slider to Mesh Proportions.
+    *   Scales both feet live in the Pose Studio viewer.
+    *   Persists with the other mesh proportion settings.
+
+### Improvements
+
+*   **Pose Manager preview grid**: Reworked Pose Manager card layout using the same adaptive image-grid strategy as `VNCCS Character Generator`.
+    *   Preview images are measured by their real dimensions before layout.
+    *   The grid now chooses rows, columns, and cell sizes to maximize usable preview area across different pose counts and output aspect ratios.
+    *   Pose cards stay centered and scale more consistently in wide, tall, compact, and sparse layouts.
+
+*   **Settings toggle visibility**: Improved active-state styling for segmented controls in Settings so the selected option remains clearly visible against the dark background.
+
 # Version 0.4.24
 ## Pose Studio: Pose Manager, Age Camera Fit, and Character Creator Sync
 
