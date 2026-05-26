@@ -2468,6 +2468,7 @@ class PoseStudioWidget {
             head_size: 1.0,
             arm_size: 1.0,
             hand_size: 1.0,
+            foot_size: 1.0,
             upper_arm_l_length: 0.5,
             upper_arm_r_length: 0.5,
             forearm_l_length: 0.5,
@@ -2982,6 +2983,7 @@ class PoseStudioWidget {
             { key: "head_size", label: "Head Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "foot_size", label: "Foot Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "upper_arm_l_length", label: "Left Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "upper_arm_r_length", label: "Right Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "forearm_l_length", label: "Left Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
@@ -4046,6 +4048,10 @@ class PoseStudioWidget {
                     this.syncToNode(false);
                 } else if (key === 'hand_size') {
                     if (this.viewer) this.viewer.updateHandScale(val);
+                    this.meshParams[key] = val;
+                    this.syncToNode(false);
+                } else if (key === 'foot_size') {
+                    if (this.viewer) this.viewer.updateFootScale(val);
                     this.meshParams[key] = val;
                     this.syncToNode(false);
                 } else if (key.endsWith('_length')) {
@@ -8531,6 +8537,9 @@ class PoseStudioWidget {
                 }
                 if (this.viewer && this.meshParams.hand_size !== undefined) {
                     this.viewer.updateHandScale(this.meshParams.hand_size);
+                }
+                if (this.viewer && this.meshParams.foot_size !== undefined) {
+                    this.viewer.updateFootScale(this.meshParams.foot_size);
                 }
                 if (data.mesh.arm_length !== undefined) {
                     if (data.mesh.upper_arm_l_length === undefined) this.meshParams.upper_arm_l_length = data.mesh.arm_length;

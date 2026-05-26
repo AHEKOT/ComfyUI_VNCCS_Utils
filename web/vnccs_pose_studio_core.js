@@ -956,6 +956,7 @@ export class PoseViewerCore {
         this.headScale = 1.0;
         this.armScale = 1.0;
         this.handScale = 1.0;
+        this.footScale = 1.0;
         this.boneLengthParams = {
             upper_arm_l: 0.5,
             upper_arm_r: 0.5,
@@ -2463,6 +2464,9 @@ export class PoseViewerCore {
         if (this.handScale !== 1.0) {
             this.updateHandScale(this.handScale);
         }
+        if (this.footScale !== 1.0) {
+            this.updateFootScale(this.footScale);
+        }
         this.applyBoneLengthScales();
 
         this._initIKHelpers();
@@ -2702,6 +2706,17 @@ export class PoseViewerCore {
         for (const bone of this.boneList) {
             const n = bone.name.toLowerCase();
             if (n === 'hand_l' || n === 'hand_r') {
+                bone.scale.set(scale, scale, scale);
+            }
+        }
+        this.requestRender();
+    }
+
+    updateFootScale(scale) {
+        this.footScale = scale;
+        for (const bone of this.boneList) {
+            const n = bone.name.toLowerCase();
+            if (n === 'foot_l' || n === 'foot_r') {
                 bone.scale.set(scale, scale, scale);
             }
         }
