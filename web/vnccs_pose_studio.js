@@ -379,7 +379,9 @@ const STYLES = `
 }
 
 .vnccs-ps-toggle-btn.active {
+    background: linear-gradient(135deg, var(--ps-accent), var(--ps-accent-hover));
     color: #1a1525;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 2px 8px var(--ps-accent-glow);
 }
 
 .vnccs-ps-toggle-btn.male.active {
