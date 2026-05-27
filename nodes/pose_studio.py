@@ -21,6 +21,8 @@ from ..CharacterData.mh_parser import TargetParser, HumanSolver
 from ..CharacterData.obj_loader import load_obj
 from ..CharacterData import matrix
 from ..CharacterData.mh_skeleton import Skeleton
+import threading
+_CACHE_LOCK = threading.Lock()
 
 
 # === Data Cache and Loader (from Character Studio) ===
@@ -42,7 +44,10 @@ def _get_character_data_path():
 def _ensure_data_loaded():
     """Load MakeHuman data if not already loaded."""
     if POSE_STUDIO_CACHE['base_mesh'] is not None:
-        return
+        return  # fast path without lock
+    with _CACHE_LOCK:
+        if POSE_STUDIO_CACHE['base_mesh'] is not None:
+            return  # double-check after acquiring lock
 
     char_data_path = _get_character_data_path()
     mh_path = os.path.join(char_data_path, "makehuman")
@@ -210,18 +215,16 @@ class VNCCS_PoseStudio:
             # --- LIVE SYNC with Frontend ---
             # We request a fresh capture/sync from the frontend on every run
             # to ensure the backend uses EXACTLY what the user sees in the widget.
-            if unique_id and not pose_image_synced:
+            if unique_id and not pose_image_synced and not data.get("captured_images"):
                 try:
                     from server import PromptServer
                     import time
-                    
-                    # 1. Request capture
                     PromptServer.instance.send_sync("vnccs_req_pose_sync", {"node_id": unique_id})
-                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=15.0)
+                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=5.0)
                     if synced:
                         data = synced
                 except Exception as e:
-                    print(f"VNCCS Pose Studio Sync Error: {e}")
+                    print(f"[VNCCS Pose Studio] Sync error: {e}")
             # ---------------------------------------------
             
         except (json.JSONDecodeError, TypeError):
