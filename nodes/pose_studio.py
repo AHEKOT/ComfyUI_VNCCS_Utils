@@ -22,6 +22,7 @@ from ..CharacterData.obj_loader import load_obj
 from ..CharacterData import matrix
 from ..CharacterData.mh_skeleton import Skeleton
 import threading
+import types
 _CACHE_LOCK = threading.Lock()
 
 
@@ -124,13 +125,15 @@ class VNCCS_PoseStudio:
             export = data.get("export", {})
             if export.get("debugMode", False):
                 return float("NaN")
-        except:
+        except Exception:
             pass
         if pose_image is None:
             return pose_data
         try:
             tensor = pose_image.detach().cpu()
-            digest = hashlib.sha256(tensor.numpy().tobytes()).hexdigest()
+            arr = tensor.numpy()
+            sample = arr.flat[::max(1, arr.size // 1000)]
+            digest = hashlib.sha256(bytes(sample)).hexdigest()
             return f"{pose_data}|pose_image:{digest}"
         except Exception:
             return f"{pose_data}|pose_image:{id(pose_image)}"
@@ -382,11 +385,7 @@ class VNCCS_PoseStudio:
     def _apply_pose(self, verts, bones_data, model_rotation):
         """Apply bone rotations (FK) and global rotation to vertices."""
         
-        # 1. Setup Wrapper for Mesh (needed for skeleton update)
-        class MeshWrapper:
-            def __init__(self, v): self.vertices = v
-        
-        mesh_wrapper = MeshWrapper(verts)
+        mesh_wrapper = types.SimpleNamespace(vertices=verts)
         
         # 2. Get and copy skeleton
         # We must copy because we modify joint positions (fitting) and bone rotations
@@ -408,10 +407,8 @@ class VNCCS_PoseStudio:
             bone = skel.getBone(bone_name)
             if not bone:
                 continue
-            
-            # Rotation order: Z * Y * X (Extrinsic? Intrinsic?)
-            # Three.js (Frontend) uses Euler XYZ.
-            # Assuming standard composition:
+            if not isinstance(rot_deg, (list, tuple)) or len(rot_deg) < 3:
+                continue
             rx, ry, rz = rot_deg[0] * deg2rad, rot_deg[1] * deg2rad, rot_deg[2] * deg2rad
             
             # Create rotation matrix
@@ -511,12 +508,12 @@ class VNCCS_PoseStudio:
         verts_screen[:, 1] = H / 2 - (verts[:, 1] - center[1]) * scale
         
         # Get valid faces
-        valid_prefixes = ["body", "helper-r-eye", "helper-l-eye", "helper-upper-teeth", "helper-lower-teeth"]
+        valid_face_groups = ["body", "helper-r-eye", "helper-l-eye", "helper-upper-teeth", "helper-lower-teeth"]
         faces = []
         if base_mesh.face_groups:
             for i, group in enumerate(base_mesh.face_groups):
                 g_clean = group.strip()
-                if g_clean in valid_prefixes:
+                if g_clean in valid_face_groups:
                     faces.append(base_mesh.faces[i])
         
         # Render with flat shading

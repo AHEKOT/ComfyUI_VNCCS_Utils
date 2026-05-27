@@ -95,22 +95,12 @@ class TargetParser:
         parts = name.replace('_', '-').split('-')
         
         tags = {}
-        found_categories = set()
-
-        # Check full name against special keys (like penis-length-decr)
-        for cat, values in self.categories.items():
-            for val in values:
-                if val in name: # substring check for complex names? 
-                    # Danger: 'penis-length-decr' contains 'length'
-                    # Better to check parts or exact mapping.
-                    pass
 
         for part in parts:
             for cat, values in self.categories.items():
                  # Simple match
                  if part in values:
                     tags[cat] = part
-                    found_categories.add(cat)
                     
         # Special handling for composite tags in genitals that might not align with simple split
         if 'penis' in parts:
