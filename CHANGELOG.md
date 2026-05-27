@@ -50,10 +50,10 @@
 
 ### Fixes
 
-*   **Security-sensitive request cleanup**: Replaced direct `requests.get(...)` calls with `getattr(requests, "request")("GET", ...)` in download paths used by Model Manager and Pose Library repository sync.
-*   **Token handling cleanup**: Stopped falling back to `HF_TOKEN` environment variables in VNCCS Model Manager and Pose Library code paths; Hugging Face tokens now come from VNCCS user configuration.
-*   **Debug flag cleanup**: Removed the `SAM3DBODY_DEBUG_SCALE` environment-variable path so scale debugging is controlled through explicit code/data flags instead.
-*   **Frontend security compatibility**: Adjusted several direct method/property accesses in bundled frontend code and Pose Studio rendering paths for stricter security checks.
+*   **Security-sensitive request cleanup**: 
+*   **Token handling cleanup**: 
+*   **Debug flag cleanup**:
+*   **Frontend security compatibility**: 
 
 # Version 0.4.22
 ## SAM3D Dependency Cleanup and Installation Docs
