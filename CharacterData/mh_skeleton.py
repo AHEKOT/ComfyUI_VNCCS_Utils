@@ -419,7 +419,7 @@ class Skeleton(object):
             }
             
             for target_bone, sources in extra_mapping.items():
-                if target_bone in self.vertexWeights.data:
+                if target_bone in new_weights_data or target_bone in self.vertexWeights.data:
                     # Get existing target weights
                     t_vs, t_ws = new_weights_data.get(target_bone, (np.array([], dtype=np.uint32), np.array([], dtype=np.float32)))
                     
@@ -481,7 +481,7 @@ class Skeleton(object):
     def copy(self):
         # Create new empty skeleton
         new_skel = Skeleton(self.name)
-        new_skel.joints_pos_idxs = self.joint_pos_idxs # Ref copy OK, read only
+        new_skel.joint_pos_idxs = self.joint_pos_idxs # Ref copy OK, read only
         new_skel.planes = self.planes # Ref copy OK
         new_skel.vertexWeights = self.vertexWeights # Ref copy OK
         
