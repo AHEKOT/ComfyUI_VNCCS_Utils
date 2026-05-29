@@ -1,3 +1,42 @@
+# Version 0.4.29
+## Pose Studio Live Morph Performance and Pose Manager Stability
+
+### Improvements
+
+*   **Pose Studio live morphing moved to the browser**: Added a dedicated browser-side morph data pipeline for realtime body-parameter previews.
+    *   MakeHuman base vertices, morph targets, joint data, and skeleton metadata are exposed through a compact binary endpoint for the live worker.
+    *   Age, Gender, Weight, Muscle, Height, breast, firmness, and genital morph parameters can now update the visible mesh without a full Python preview rebuild on every slider input.
+    *   A shared morph worker is reused across Pose Studio widgets so multiple active nodes do not each create their own heavy morph worker and duplicate morph-data downloads.
+    *   Worker messages are routed by client id so concurrent Pose Studio widgets receive only their own live morph results.
+
+*   **Pose Manager realtime preview updates**: Reworked manager-mode body-slider updates so all pose cards refresh during live morph changes.
+    *   Pose Manager now updates every visible pose preview during realtime Age/Weight/Muscle/Height edits instead of waiting for a final Python sync.
+    *   Preview refresh work is chunked across animation frames to keep the UI responsive while multiple cards are being recaptured.
+    *   Stale worker results are ignored by sequence id so quick slider movement cannot apply older mesh states over newer ones.
+
+*   **Non-blocking Pose Studio startup load**: Reworked the MakeHuman preload path used by the preview API to cooperate with ComfyUI's async server loop.
+    *   Startup model loading still happens when the Pose Studio widget opens, but OBJ and target-file reads now yield between chunks instead of monopolizing the server handler.
+    *   Preview payload building runs off the aiohttp request path after the shared Pose Studio data cache is loaded.
+    *   Cache loading remains serialized so parallel widget startup does not create partially initialized shared MakeHuman state.
+
+### Fixes
+
+*   **Age and Height live skinning**: Fixed live Age/Height morph updates that could temporarily detach the mesh from the skeleton while dragging.
+    *   Live morph results now include updated bone/joint positions so the frontend can keep skinned geometry aligned during realtime body-size changes.
+    *   The final Python sync remains available for full authoritative mesh rebuilds after dragging, without hammering the server on every input event.
+
+*   **Pose Manager card flicker**: Reduced manager-card flicker after final body-scale recalculation.
+    *   Pose cards preserve measured preview dimensions while captures are refreshed.
+    *   Capture replacement updates existing card images instead of forcing avoidable full-grid layout churn.
+    *   Deleted/reordered poses keep their card metrics aligned with the correct pose index during subsequent live morph refreshes.
+
+*   **Pose Manager lighting restore**: Fixed Pose Manager reloads that could show black/unlit model previews until any parameter was changed.
+    *   Lighting is now applied when model data is loaded so restored cards match the configured light state immediately.
+
+*   **Preview API cleanup**: Removed obsolete unreachable preview-generation code left behind during the live morph refactor.
+    *   Removed the rejected subprocess preload experiment and all related helper code.
+    *   Removed the remaining synchronous data-load fallback from the new preview payload path.
+
 # Version 0.4.28
 ## Security Hardening, Pose Studio Fixes, and XPU BiRefNet
 
