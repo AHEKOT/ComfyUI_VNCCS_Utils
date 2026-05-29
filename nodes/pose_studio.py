@@ -24,6 +24,10 @@ from ..CharacterData.mh_skeleton import Skeleton
 import threading
 import types
 _CACHE_LOCK = threading.Lock()
+_CAPTURED_IMAGE_MAX_COUNT = 16
+_CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
+_CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
+_CAPTURED_IMAGE_MAX_PIXELS = 4096 * 4096
 
 
 # === Data Cache and Loader (from Character Studio) ===
@@ -35,6 +39,35 @@ POSE_STUDIO_CACHE = {
     "parser": None,
     "skeleton": None
 }
+
+
+def _decode_captured_images(captured_images):
+    if not isinstance(captured_images, list):
+        raise ValueError("captured_images must be a list")
+    if len(captured_images) > _CAPTURED_IMAGE_MAX_COUNT:
+        raise ValueError(f"captured_images limit is {_CAPTURED_IMAGE_MAX_COUNT}")
+
+    rendered_images = []
+    total_chars = 0
+    for b64 in captured_images:
+        if not b64:
+            continue
+        if not isinstance(b64, str):
+            raise ValueError("captured_images entries must be strings")
+        total_chars += len(b64)
+        if total_chars > _CAPTURED_IMAGE_MAX_TOTAL_CHARS:
+            raise ValueError("captured_images payload is too large")
+        if "," in b64:
+            b64 = b64.split(",", 1)[1]
+
+        img_data = base64.b64decode(b64)
+        if len(img_data) > _CAPTURED_IMAGE_MAX_BYTES:
+            raise ValueError("captured image is too large")
+        img = Image.open(BytesIO(img_data))
+        if img.width * img.height > _CAPTURED_IMAGE_MAX_PIXELS:
+            raise ValueError("captured image dimensions are too large")
+        rendered_images.append(img.convert('RGB'))
+    return rendered_images
 
 
 def _get_character_data_path():
@@ -50,45 +83,51 @@ def _ensure_data_loaded():
         if POSE_STUDIO_CACHE['base_mesh'] is not None:
             return  # double-check after acquiring lock
 
-    char_data_path = _get_character_data_path()
-    mh_path = os.path.join(char_data_path, "makehuman")
-    
-    if not os.path.exists(mh_path):
-        raise Exception(f"MakeHuman data not found at: {mh_path}")
+        char_data_path = _get_character_data_path()
+        mh_path = os.path.join(char_data_path, "makehuman")
 
-    print(f"[VNCCS Pose Studio] Loading MakeHuman data from {mh_path}...")
+        if not os.path.exists(mh_path):
+            raise Exception(f"MakeHuman data not found at: {mh_path}")
 
-    # 1. Load Base Mesh
-    base_obj_paths = [
-        os.path.join(mh_path, "makehuman", "data", "3dobjs", "base.obj"),
-        os.path.join(mh_path, "data", "3dobjs", "base.obj"),
-    ]
-    
-    base_path = next((p for p in base_obj_paths if os.path.exists(p)), None)
-    if not base_path:
-        raise Exception("Could not find base.obj inside makehuman data.")
+        print(f"[VNCCS Pose Studio] Loading MakeHuman data from {mh_path}...")
 
-    POSE_STUDIO_CACHE['base_mesh'] = load_obj(base_path)
-    
-    # 2. Load Targets
-    parser = TargetParser(mh_path)
-    POSE_STUDIO_CACHE['targets'] = parser.scan_targets()
-    POSE_STUDIO_CACHE['parser'] = parser
-    
-    print(f"[VNCCS Pose Studio] Loaded {len(POSE_STUDIO_CACHE['targets'])} targets.")
-    
-    # 3. Load Skeleton (Preference: game_engine > default)
-    skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "game_engine.mhskel")
-    if not os.path.exists(skel_path):
-        skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
-        
-    if os.path.exists(skel_path):
-        print(f"[VNCCS Pose Studio] Loading skeleton from {skel_path}...")
-        skel = Skeleton()
-        skel.fromFile(skel_path, POSE_STUDIO_CACHE['base_mesh'])
-        POSE_STUDIO_CACHE['skeleton'] = skel
-    else:
-        print(f"[VNCCS Pose Studio] Warning: Default skeleton not found at {skel_path}")
+        # 1. Load Base Mesh
+        base_obj_paths = [
+            os.path.join(mh_path, "makehuman", "data", "3dobjs", "base.obj"),
+            os.path.join(mh_path, "data", "3dobjs", "base.obj"),
+        ]
+
+        base_path = next((p for p in base_obj_paths if os.path.exists(p)), None)
+        if not base_path:
+            raise Exception("Could not find base.obj inside makehuman data.")
+
+        base_mesh = load_obj(base_path)
+
+        # 2. Load Targets
+        parser = TargetParser(mh_path)
+        targets = parser.scan_targets()
+
+        print(f"[VNCCS Pose Studio] Loaded {len(targets)} targets.")
+
+        # 3. Load Skeleton (Preference: game_engine > default)
+        skeleton = None
+        skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "game_engine.mhskel")
+        if not os.path.exists(skel_path):
+            skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
+
+        if os.path.exists(skel_path):
+            print(f"[VNCCS Pose Studio] Loading skeleton from {skel_path}...")
+            skeleton = Skeleton()
+            skeleton.fromFile(skel_path, base_mesh)
+        else:
+            print(f"[VNCCS Pose Studio] Warning: Default skeleton not found at {skel_path}")
+
+        POSE_STUDIO_CACHE.update({
+            "base_mesh": base_mesh,
+            "targets": targets,
+            "parser": parser,
+            "skeleton": skeleton,
+        })
 
 
 # === Main Node Class ===
@@ -208,6 +247,9 @@ class VNCCS_PoseStudio:
         try:
             data = json.loads(pose_data) if pose_data else {}
             pose_image_synced = False
+            export_settings = data.get("export", {}) if isinstance(data, dict) else {}
+            if isinstance(export_settings, dict) and export_settings.get("interface_mode") == "manager":
+                pose_image = None
 
             if pose_image is not None:
                 synced = self._apply_pose_image_via_frontend(pose_image, unique_id)
@@ -287,27 +329,17 @@ class VNCCS_PoseStudio:
         captured_images = data.get("captured_images", [])
         
         if captured_images:
-            rendered_images = []
-            
             # Extract prompts (frontend generated)
             lighting_prompts = data.get("lighting_prompts", [])
             
             # Pad prompts to match images count if needed
             while len(lighting_prompts) < len(captured_images):
                 lighting_prompts.append("")
-                
-            for b64 in captured_images:
-                if not b64: continue
-                # Remove header if present (data:image/png;base64,...)
-                if "," in b64:
-                    b64 = b64.split(",", 1)[1]
-                
-                try:
-                    img_data = base64.b64decode(b64)
-                    img = Image.open(BytesIO(img_data)).convert('RGB')
-                    rendered_images.append(img)
-                except Exception as e:
-                    print(f"Pose Studio Error: Failed to decode image: {e}")
+            try:
+                rendered_images = _decode_captured_images(captured_images)
+            except Exception as e:
+                print(f"Pose Studio Error: Failed to decode captured images: {e}")
+                rendered_images = []
             
             if rendered_images:
                 # Convert to tensors

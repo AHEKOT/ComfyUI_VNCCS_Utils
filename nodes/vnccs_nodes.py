@@ -57,7 +57,8 @@ class VNCCS_PositionControl:
         
         # Build Prompt
         parts = []
-        parts.append("<sks>")
+        if include_trigger:
+            parts.append("<sks>")
             
         parts.append(az_str)
         parts.append(el_str)

@@ -3586,6 +3586,7 @@ class PoseStudioWidget {
         const normalized = mode === "manager" || mode === "managerDetail" ? mode : "studio";
         this.interfaceMode = normalized;
         this.exportParams.interface_mode = normalized === "studio" ? "studio" : "manager";
+        this.node?._vnccsSetPoseImageInputDisabled?.(normalized !== "studio");
         this.applyInterfaceMode();
         if (normalized === "manager") {
             this.refreshPoseManagerControls();
@@ -4208,6 +4209,75 @@ class PoseStudioWidget {
         return field;
     }
 
+    getCanvasPointerPoint(canvas, event) {
+        const style = getComputedStyle(canvas);
+        const layoutW = Number.parseFloat(style.width) || canvas.offsetWidth || canvas.width;
+        const layoutH = Number.parseFloat(style.height) || canvas.offsetHeight || canvas.height;
+        const rect = canvas.getBoundingClientRect();
+        const hasOffset = event.target === canvas
+            && Number.isFinite(event.offsetX)
+            && Number.isFinite(event.offsetY)
+            && layoutW > 0
+            && layoutH > 0;
+
+        const rectScaleX = canvas.width / Math.max(rect.width || 1, 1);
+        const rectScaleY = canvas.height / Math.max(rect.height || 1, 1);
+        const rectPoint = {
+            x: (event.clientX - rect.left) * rectScaleX,
+            y: (event.clientY - rect.top) * rectScaleY,
+        };
+        const offsetPoint = hasOffset
+            ? {
+                x: event.offsetX * (canvas.width / layoutW),
+                y: event.offsetY * (canvas.height / layoutH),
+            }
+            : null;
+
+        if (window.VNCCS_POSE_RADAR_DEBUG) {
+            console.log("[VNCCS Pose Studio] radar pointer", {
+                source: "rect",
+                point: rectPoint,
+                rectPoint,
+                offsetPoint,
+                eventType: event.type,
+                pointerType: event.pointerType,
+                client: { x: event.clientX, y: event.clientY },
+                offset: { x: event.offsetX, y: event.offsetY },
+                rect: {
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                },
+                layout: {
+                    width: layoutW,
+                    height: layoutH,
+                    offsetWidth: canvas.offsetWidth,
+                    offsetHeight: canvas.offsetHeight,
+                    styleWidth: style.width,
+                    styleHeight: style.height,
+                    canvasWidth: canvas.width,
+                    canvasHeight: canvas.height,
+                },
+                uiScale: this.container
+                    ? getComputedStyle(this.container).getPropertyValue("--vnccs-ps-ui-scale")
+                    : null,
+                devicePixelRatio: window.devicePixelRatio,
+                visualViewport: window.visualViewport
+                    ? {
+                        scale: window.visualViewport.scale,
+                        offsetLeft: window.visualViewport.offsetLeft,
+                        offsetTop: window.visualViewport.offsetTop,
+                        width: window.visualViewport.width,
+                        height: window.visualViewport.height,
+                    }
+                    : null,
+            });
+        }
+
+        return rectPoint;
+    }
+
     createCameraRadar(section) {
         const wrap = document.createElement("div");
         wrap.className = "vnccs-ps-radar-wrap";
@@ -4228,6 +4298,7 @@ class PoseStudioWidget {
         canvas.style.width = "140px";
         canvas.style.height = "140px";
         canvas.style.cursor = "crosshair";
+        canvas.style.touchAction = "none";
 
         const ctx = canvas.getContext("2d");
 
@@ -4237,13 +4308,9 @@ class PoseStudioWidget {
         const range = 20.0; // Max offset range (+/- 20)
 
         const updateFromMouse = (e) => {
-            const rect = canvas.getBoundingClientRect();
-            // Scaling support
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
+            const pointer = this.getCanvasPointerPoint(canvas, e);
+            const mouseX = pointer.x;
+            const mouseY = pointer.y;
 
             // Aspect Ratio Logic to find active area
             const viewW = this.exportParams.view_width || 1024;
@@ -4305,21 +4372,27 @@ class PoseStudioWidget {
             this.applyCameraToViewer(true);
         };
 
-        canvas.addEventListener("mousedown", (e) => {
+        canvas.addEventListener("pointerdown", (e) => {
+            canvas.setPointerCapture(e.pointerId);
             isDragging = true;
             updateFromMouse(e);
         });
 
-        document.addEventListener("mousemove", (e) => {
+        canvas.addEventListener("pointermove", (e) => {
             if (isDragging) updateFromMouse(e);
         });
 
-        document.addEventListener("mouseup", () => {
+        const finishDrag = (e) => {
             if (isDragging) {
+                if (e && canvas.hasPointerCapture(e.pointerId)) {
+                    canvas.releasePointerCapture(e.pointerId);
+                }
                 isDragging = false;
                 this.syncToNode(false);
             }
-        });
+        };
+        canvas.addEventListener("pointerup", finishDrag);
+        canvas.addEventListener("pointercancel", finishDrag);
 
         const draw = () => {
             // Clear
@@ -4520,12 +4593,9 @@ class PoseStudioWidget {
         };
 
         const updateFromMouse = (e) => {
-            const rect = canvas.getBoundingClientRect();
-            // Scaling support (accounts for CSS zoom)
-            const scaleX = canvas.width / rect.width;
-            const scaleY = canvas.height / rect.height;
-            const mouseX = (e.clientX - rect.left) * scaleX;
-            const mouseY = (e.clientY - rect.top) * scaleY;
+            const pointer = this.getCanvasPointerPoint(canvas, e);
+            const mouseX = pointer.x;
+            const mouseY = pointer.y;
             const cx = size / 2;
             const cy = size / 2;
 
@@ -8914,6 +8984,25 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         if (nodeData.name !== "VNCCS_PoseStudio") return;
 
+        const setPoseImageInputDisabled = (node, disabled) => {
+            if (!node) return;
+            const inputIndex = node.inputs?.findIndex(input => input?.name === "pose_image") ?? -1;
+            if (disabled) {
+                if (inputIndex >= 0) {
+                    if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
+                    if (typeof node.removeInput === "function") node.removeInput(inputIndex);
+                    else node.inputs.splice(inputIndex, 1);
+                }
+                node._vnccsPoseImageInputDisabled = true;
+                return;
+            }
+
+            if (inputIndex < 0 && typeof node.addInput === "function") {
+                node.addInput("pose_image", "IMAGE");
+            }
+            node._vnccsPoseImageInputDisabled = false;
+        };
+
         const syncStudioDOMWidgetWidth = (node) => {
             const widget = node?.widgets?.find(w => w.name === "pose_studio_ui");
             const nodeWidth = Number(node?.size?.[0]);
@@ -8944,6 +9033,7 @@ app.registerExtension({
 
             // Create widget
             this.studioWidget = new PoseStudioWidget(this);
+            this._vnccsSetPoseImageInputDisabled = (disabled) => setPoseImageInputDisabled(this, disabled);
 
             const studioDOMWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
                 serialize: false,
@@ -8977,6 +9067,7 @@ app.registerExtension({
             // Load model after initialization
             setTimeout(() => {
                 this.studioWidget.loadFromNode();
+                this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
                 window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this.studioWidget.loadModel().then(() => {
                     if (this.studioWidget.viewer) {
@@ -9013,6 +9104,7 @@ app.registerExtension({
                 setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
+                    this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
                     window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only

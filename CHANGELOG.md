@@ -1,3 +1,44 @@
+# Version 0.4.28
+## Security Hardening, Pose Studio Fixes, and XPU BiRefNet
+
+### Improvements
+
+*   **Pose Studio API and capture hardening**: Added request-size limits, safe ID normalization, and payload validation around preview updates, pose capture cache uploads, SAM3D pose import, mesh-overlay generation, and synchronized pose captures.
+    *   Capture uploads are limited by image count and total payload size before entering the cache.
+    *   SAM3D image imports now reject oversized uploads and excessive pixel counts before decoding into tensors.
+    *   Server-side captured image decoding now validates list shape, per-image size, total payload size, and image dimensions before tensor conversion.
+
+*   **Pose Library safety pass**: Hardened pose repository and local pose save flows.
+    *   Added request-size limits to repository management, repository refresh, local pose save, and sync-capture upload endpoints.
+    *   Added SHA256 verification for downloaded repository files.
+    *   Added per-file and total sync download limits for pose repositories.
+    *   Local pose saves now write JSON and preview files through temporary files before replacing the final files.
+    *   User config files are saved with restricted file permissions where supported.
+
+*   **Model Manager download hardening**: Tightened model manifest download/install behavior.
+    *   Model `local_path` values are now constrained to the ComfyUI `models/` directory.
+    *   Direct model download URLs must be HTTPS and cannot resolve to local/private hosts.
+    *   Downloads now use request timeouts, a safety size cap, unique temporary files, and cleanup for failed partial downloads.
+    *   Model Selector now rejects unsafe manifest paths instead of returning them.
+
+*   **BiRefNet XPU support**: BiRefNet mask loading now selects `xpu` when CUDA is unavailable and `torch.xpu.is_available()` returns true, falling back to CPU otherwise.
+
+*   **SAM3D preset-pack fallback**: Added local preset-pack path helpers for the vendored SAM3D bridge so optional blendshape preset assets can be absent without breaking imports.
+
+### Fixes
+
+*   **Pose Studio camera radar coordinates**: Fixed camera/light radar pointer mapping under ComfyUI node zoom and Pose Studio UI scaling.
+    *   Pointer handling now uses a shared canvas-coordinate helper based on `clientX/clientY` plus `getBoundingClientRect()`.
+    *   Dragging now uses pointer capture, improving behavior when dragging outside the radar canvas.
+    *   Added an opt-in debug log via `window.VNCCS_POSE_RADAR_DEBUG = true` for future coordinate edge-case reports.
+
+*   **Pose Manager input behavior**: `pose_image` is now hidden and disconnected while Pose Studio is in Pose Manager mode.
+    *   The backend also ignores `pose_image` when serialized `pose_data` indicates Manager mode, preventing unintended SAM3D pose import execution.
+
+*   **Pose Studio cache initialization**: Protected MakeHuman mesh/target/skeleton loading with a cache lock and atomic cache update to avoid partially initialized shared state.
+
+*   **VNCCS Position Control trigger toggle**: Fixed `include_trigger` so `<sks>` is only emitted when the option is enabled.
+
 # Version 0.4.25
 ## Pose Studio: Pose Manager Grid and Hand Control Options
 

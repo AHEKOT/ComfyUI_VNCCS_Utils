@@ -22,6 +22,17 @@ _MODEL = None
 _DEVICE = None
 
 
+def _select_device():
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    xpu = getattr(torch, "xpu", None)
+    if xpu is not None and callable(getattr(xpu, "is_available", None)) and xpu.is_available():
+        return "xpu"
+    return "cpu"
+
+
 def _ensure_snapshot():
     os.makedirs(_MODEL_DIR, exist_ok=True)
     if os.path.isfile(os.path.join(_MODEL_DIR, "config.json")):
@@ -62,7 +73,7 @@ def _load_model():
 
         torch.set_float32_matmul_precision("high")
         model_dir = _ensure_snapshot()
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = _select_device()
         print(f"[SAM3DBody] Loading BiRefNet lite from {model_dir} on {device}")
         progress.update(f"Step 3/6: Loading BiRefNet mask model on {device.upper()}...", 52)
         model = AutoModelForImageSegmentation.from_pretrained(

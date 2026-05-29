@@ -31,7 +31,47 @@ __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
 # === API Endpoint Registration for Pose Studio ===
 import os
 import json
+import re
 import numpy as np
+
+_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_CAPTURE_CACHE_MAX_IMAGES = 16
+_CAPTURE_CACHE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
+_SAM3D_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+_SAM3D_MAX_PIXELS = 4096 * 4096
+
+def _vnccs_content_length_ok(request, max_bytes):
+    try:
+        raw_length = request.headers.get("Content-Length")
+        if raw_length is None:
+            return not getattr(request, "can_read_body", False)
+        length = int(raw_length)
+    except Exception:
+        return False
+    return length <= int(max_bytes or 0)
+
+def _vnccs_safe_id(value, fallback="item"):
+    cleaned = _SAFE_ID_RE.sub("_", str(value or "")).strip("_")
+    return cleaned[:128] or fallback
+
+def _vnccs_validate_capture_payload(data):
+    captured_images = data.get("captured_images", [])
+    lighting_prompts = data.get("lighting_prompts", [])
+    if not isinstance(captured_images, list):
+        raise ValueError("captured_images must be a list")
+    if len(captured_images) > _CAPTURE_CACHE_MAX_IMAGES:
+        raise ValueError(f"captured_images limit is {_CAPTURE_CACHE_MAX_IMAGES}")
+    total_chars = 0
+    for image in captured_images:
+        if not isinstance(image, str):
+            raise ValueError("captured_images entries must be strings")
+        total_chars += len(image)
+        if total_chars > _CAPTURE_CACHE_MAX_TOTAL_CHARS:
+            raise ValueError("captured_images payload is too large")
+    if not isinstance(lighting_prompts, list):
+        lighting_prompts = []
+    lighting_prompts = [str(prompt)[:4096] for prompt in lighting_prompts[:_CAPTURE_CACHE_MAX_IMAGES]]
+    return captured_images, lighting_prompts
 
 def _vnccs_register_endpoint():
     """Lazy registration to avoid import errors in analysis tools."""
@@ -44,6 +84,8 @@ def _vnccs_register_endpoint():
     @PromptServer.instance.routes.post("/vnccs/character_studio/update_preview")
     async def vnccs_character_studio_update_preview(request):
         try:
+            if not _vnccs_content_length_ok(request, 1024 * 1024):
+                return web.json_response({"error": "Request body is too large"}, status=413)
             data = await request.json()
             
             # Extract params
@@ -309,14 +351,21 @@ def _vnccs_register_capture_cache():
     @PromptServer.instance.routes.post("/vnccs/pose_captures_upload")
     async def vnccs_pose_captures_upload(request):
         try:
+            if not _vnccs_content_length_ok(request, _CAPTURE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+                return web.json_response({"error": "captured_images payload is too large"}, status=413)
             data = await request.json()
             capture_id = data.get("capture_id")
             if not capture_id:
                 return web.json_response({"error": "missing capture_id"}, status=400)
+            capture_id = _vnccs_safe_id(capture_id, "capture")
+            try:
+                captured_images, lighting_prompts = _vnccs_validate_capture_payload(data)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=413)
 
             VNCCS_CAPTURE_CACHE[capture_id] = {
-                "captured_images": data.get("captured_images", []),
-                "lighting_prompts": data.get("lighting_prompts", []),
+                "captured_images": captured_images,
+                "lighting_prompts": lighting_prompts,
             }
 
             # LRU eviction: keep only last _CAPTURE_CACHE_MAX entries
@@ -330,7 +379,7 @@ def _vnccs_register_capture_cache():
 
     @PromptServer.instance.routes.get("/vnccs/pose_captures/{capture_id}")
     async def vnccs_pose_captures_get(request):
-        capture_id = request.match_info["capture_id"]
+        capture_id = _vnccs_safe_id(request.match_info["capture_id"], "capture")
         entry = VNCCS_CAPTURE_CACHE.get(capture_id)
         if not entry:
             return web.json_response({"error": "not found"}, status=404)
@@ -368,6 +417,8 @@ def _vnccs_register_sam3d_pose_import():
             import torch
             from PIL import Image
 
+            if not _vnccs_content_length_ok(request, _SAM3D_MAX_UPLOAD_BYTES + 1024 * 1024):
+                return web.json_response({"error": "image upload is too large"}, status=413)
             post = await request.post()
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
@@ -375,7 +426,12 @@ def _vnccs_register_sam3d_pose_import():
             task_id = str(post.get("task_id") or "")
 
             image_bytes = image_field.file.read()
-            pil_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+            if len(image_bytes) > _SAM3D_MAX_UPLOAD_BYTES:
+                return web.json_response({"error": "image upload is too large"}, status=413)
+            pil_image = Image.open(io.BytesIO(image_bytes))
+            if pil_image.width * pil_image.height > _SAM3D_MAX_PIXELS:
+                return web.json_response({"error": "image dimensions are too large"}, status=413)
+            pil_image = pil_image.convert("RGB")
             image_np = np.asarray(pil_image).astype(np.float32) / 255.0
             image_tensor = torch.from_numpy(image_np).unsqueeze(0)
 
@@ -415,6 +471,8 @@ def _vnccs_register_sam3d_pose_import():
         try:
             import asyncio
 
+            if not _vnccs_content_length_ok(request, 32 * 1024 * 1024):
+                return web.json_response({"error": "mesh overlay payload is too large"}, status=413)
             data = await request.json()
             pose_data = data.get("pose_data")
             if not isinstance(pose_data, dict):

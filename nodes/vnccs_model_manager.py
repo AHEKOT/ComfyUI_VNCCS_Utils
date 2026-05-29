@@ -12,10 +12,14 @@ import requests
 import queue
 import urllib.parse
 import time
+import ipaddress
+import socket
 
 # Cache for model_updater.json to prevent excessive HEAD requests
 # Structure: { repo_id: { "timestamp": float, "remote_timestamp": float, "path": str } }
 _CONFIG_CACHE = {}
+MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024 * 1024  # 100 GiB safety cap
+REQUEST_TIMEOUT = (10, 60)
 
 # Universal Type to force connections
 class AnyType(str):
@@ -37,6 +41,59 @@ def resolve_path(relative_path):
     # Ensure folder_paths.base_path is valid
     base = getattr(folder_paths, "base_path", os.getcwd())
     return os.path.abspath(os.path.join(base, relative_path))
+
+def _is_relative_safe_path(path):
+    if not path:
+        return False
+    path = str(path).replace("\\", "/")
+    if path.startswith(("~", "/", "\\")) or "://" in path:
+        return False
+    parts = [part for part in path.split("/") if part not in ("", ".")]
+    return bool(parts) and ".." not in parts
+
+def resolve_model_local_path(relative_path):
+    """Resolve a model manifest path while preventing writes outside models/."""
+    if not _is_relative_safe_path(relative_path):
+        raise ValueError(f"Unsafe local_path: {relative_path!r}")
+
+    base = os.path.abspath(getattr(folder_paths, "base_path", os.getcwd()))
+    models_dir = os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(base, "models")))
+    normalized = str(relative_path).replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts or parts[0] != "models" or len(parts) < 2:
+        raise ValueError("local_path must start with models/ and include a file path")
+
+    target_abs = os.path.abspath(os.path.join(models_dir, *parts[1:]))
+
+    if target_abs == models_dir or not target_abs.startswith(models_dir + os.sep):
+        raise ValueError("local_path must stay inside the ComfyUI models directory")
+    return target_abs
+
+def _reject_local_download_ip(ip_text):
+    ip = ipaddress.ip_address(ip_text)
+    if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
+        raise ValueError("Private or local download hosts are not allowed")
+
+def validate_download_url(url):
+    parsed = urllib.parse.urlparse(str(url or ""))
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise ValueError("Only https download URLs are allowed")
+    host = parsed.hostname or ""
+    lowered = host.lower()
+    if lowered in {"localhost", "localdomain"} or lowered.endswith(".localhost"):
+        raise ValueError("Local download hosts are not allowed")
+    try:
+        _reject_local_download_ip(lowered)
+    except ValueError as exc:
+        if "download hosts" in str(exc):
+            raise
+    try:
+        for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(host, parsed.port or 443):
+            if family in (socket.AF_INET, socket.AF_INET6):
+                _reject_local_download_ip(sockaddr[0])
+    except socket.gaierror as exc:
+        raise ValueError(f"Could not resolve download host: {host}") from exc
+    return urllib.parse.urlunparse(parsed)
 
 def get_cached_config_path(repo_id, force_refresh=False):
     now = time.time()
@@ -122,6 +179,7 @@ def worker_loop():
         # Support per-model repository override
         download_repo_id = target_model.get("hf_repo", repo_id)
         
+        temp_path = None
         try:
             download_status[model_name] = {"status": "downloading", "message": "Initializing..."}
             
@@ -140,6 +198,8 @@ def worker_loop():
                         ver_id = qs["modelVersionId"][0]
                         url = f"https://civitai.com/api/download/models/{ver_id}"
                         print(f"[VNCCS] Auto-converted Civitai Web Link to API: {url}")
+
+                url = validate_download_url(url)
 
                 print(f"[VNCCS] Starting download from URL: {url}...")
                 
@@ -163,56 +223,61 @@ def worker_loop():
                 user_config = get_vnccs_config()
                 token = user_config.get("hf_token")
                 headers = {"Authorization": f"Bearer {token}"} if token else {}
-            
+
             # Use requests for streaming download
-            response = getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True)
-            response.raise_for_status()
-            
-            total_size = int(response.headers.get('content-length', 0))
-            downloadStart = 0
-            
-            # Temp file approach
-            import tempfile
-            temp_dir = os.path.join(folder_paths.base_path, "temp")
-            os.makedirs(temp_dir, exist_ok=True)
-            
-            # Generate shorter temp name
-            sanitized_name = "".join(x for x in model_name if x.isalnum())
-            temp_path = os.path.join(temp_dir, f"vnccs_{sanitized_name}.tmp")
-            
-            with open(temp_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloadStart += len(chunk)
-                        # Update status every MB or so? Doing it every chunk is too fast/spammy
-                        # Python dict is thread-safe for atomic updates assignment
-                        if total_size > 0:
-                            percent = (downloadStart / total_size) * 100
-                            mb_done = downloadStart / (1024 * 1024)
-                            mb_total = total_size / (1024 * 1024)
-                            msg = f"{mb_done:.1f}/{mb_total:.1f} MB"
-                            download_status[model_name] = {
-                                "status": "downloading", 
-                                "message": msg,
-                                "progress": percent
-                            }
-                        else:
-                             mb_done = downloadStart / (1024 * 1024)
-                             download_status[model_name] = {
-                                "status": "downloading", 
-                                "message": f"{mb_done:.1f} MB",
-                                "progress": 0
-                             }
+            with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=REQUEST_TIMEOUT) as response:
+                response.raise_for_status()
+
+                total_size = int(response.headers.get('content-length', 0))
+                if total_size > MAX_DOWNLOAD_BYTES:
+                    raise ValueError("Download is larger than the allowed safety limit")
+                downloadStart = 0
+
+                # Temp file approach
+                import tempfile
+                temp_dir = os.path.join(folder_paths.base_path, "temp")
+                os.makedirs(temp_dir, exist_ok=True)
+
+                # Generate shorter temp name
+                sanitized_name = "".join(x for x in model_name if x.isalnum()) or "model"
+                fd, temp_path = tempfile.mkstemp(prefix=f"vnccs_{sanitized_name}_", suffix=".tmp", dir=temp_dir)
+                os.close(fd)
+
+                with open(temp_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+                            downloadStart += len(chunk)
+                            if downloadStart > MAX_DOWNLOAD_BYTES:
+                                raise ValueError("Download exceeded the allowed safety limit")
+                            # Update status every chunk; assignment is atomic enough for UI polling.
+                            if total_size > 0:
+                                percent = (downloadStart / total_size) * 100
+                                mb_done = downloadStart / (1024 * 1024)
+                                mb_total = total_size / (1024 * 1024)
+                                msg = f"{mb_done:.1f}/{mb_total:.1f} MB"
+                                download_status[model_name] = {
+                                    "status": "downloading",
+                                    "message": msg,
+                                    "progress": percent
+                                }
+                            else:
+                                 mb_done = downloadStart / (1024 * 1024)
+                                 download_status[model_name] = {
+                                    "status": "downloading",
+                                    "message": f"{mb_done:.1f} MB",
+                                    "progress": 0
+                                 }
 
             # 3. Install
             download_status[model_name]["message"] = "Installing..."
-            target_abs_path = resolve_path(target_model["local_path"])
+            target_abs_path = resolve_model_local_path(target_model["local_path"])
             target_dir = os.path.dirname(target_abs_path)
             os.makedirs(target_dir, exist_ok=True)
             
             import shutil
             shutil.move(temp_path, target_abs_path) # Move is instant usually
+            temp_path = None
             
             # 4. Update registry
             update_installed_version(model_name, target_model["version"])
@@ -237,6 +302,11 @@ def worker_loop():
                 err_msg = "File not found (404)"
             
             download_status[model_name] = {"status": status_code, "message": err_msg}
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
         finally:
             download_queue.task_done()
 
@@ -314,6 +384,10 @@ def save_vnccs_config(new_data):
     data.update(new_data)
     with open(config_path, 'w') as f:
         json.dump(data, f, indent=4)
+    try:
+        os.chmod(config_path, 0o600)
+    except Exception:
+        pass
 
 @server.PromptServer.instance.routes.post("/vnccs/manager/save_token")
 async def save_api_token(request):
@@ -403,8 +477,12 @@ async def check_models(request):
             # 2. Determine ALL Installed Versions (Scan Disk)
             installed_versions = []
             for v in variants:
-                full_path = resolve_path(v["local_path"])
-                exists = os.path.exists(full_path)
+                try:
+                    full_path = resolve_model_local_path(v["local_path"])
+                    exists = os.path.exists(full_path)
+                except ValueError:
+                    full_path = ""
+                    exists = False
                 if force_refresh:
                     print(f"[VNCCS] Check: {name} v{v['version']} -> {full_path} [{'EXISTS' if exists else 'MISSING'}]")
                 if exists:
@@ -498,6 +576,13 @@ async def download_model(request):
              
         if not target_model:
             return web.json_response({"error": f"Model '{model_name}' (v{target_version}) not found in config"}, status=404)
+
+        try:
+            resolve_model_local_path(target_model.get("local_path"))
+            if target_model.get("url"):
+                validate_download_url(target_model.get("url"))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
             
         # Add to Global Queue instead of spawning new thread directly
         # If queue is empty, it starts immediately. If busy, it waits.
@@ -604,6 +689,11 @@ class VNCCS_ModelSelector:
 
             if found:
                 local_path = found["local_path"]
+                try:
+                    resolve_model_local_path(local_path)
+                except ValueError as exc:
+                    print(f"[VNCCS] ModelSelector: invalid local_path for '{model_name}': {exc}")
+                    return ("",)
                 # Normalize slashes to forward slash for processing
                 norm_path = local_path.replace("\\", "/")
                 

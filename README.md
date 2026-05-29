@@ -17,7 +17,7 @@ A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI
   <img src="images/pose-studio-logo.png" alt="VNCCS Pose Studio logo" width="360">
 </p>
 
-**[Example Workflow](workflows/VNCCS_Utils%20Pose%20Studio.json)**
+**Example Workflows:** [QWEN](workflows/VNCCS_Utils%20Pose%20Studio%20QWEN.json) · [Klein9b](workflows/VNCCS_Utils%20Pose%20Studio%20Klein9b.json)
 
 **VNCCS Pose Studio** is a professional 3D posing, framing, lighting, and pose-library environment running directly inside a ComfyUI node. It is designed for building high-quality pose/control references without leaving the graph: adjust the character body, pose bones interactively, frame the camera, tune lights, manage saved poses, and output single images or pose batches.
 

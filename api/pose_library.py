@@ -9,6 +9,7 @@ import tempfile
 import uuid
 import threading
 import asyncio
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from aiohttp import web
@@ -18,6 +19,11 @@ DEFAULT_REPO_ID = "MIUProject/VNCCS_PoseLibrary_Main"
 LOCAL_USER_REPOSITORY = "local_user_poses"
 DEFAULT_CATEGORY = "Uncategorized"
 RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
+SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
+MAX_PREVIEW_BYTES = 16 * 1024 * 1024
+MAX_SYNC_CAPTURE_CHARS = 64 * 1024 * 1024
+MAX_POSE_REPOSITORY_FILE_BYTES = 32 * 1024 * 1024
+MAX_POSE_REPOSITORY_SYNC_BYTES = 256 * 1024 * 1024
 _REPOSITORY_PROGRESS = {}
 _BACKGROUND_REFRESH_STATE = {
     "running": False,
@@ -108,6 +114,10 @@ def save_vnccs_user_config(new_data):
     data.update(new_data)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
+    try:
+        os.chmod(path, 0o600)
+    except Exception:
+        pass
 
 def normalize_repo_id(repo_id):
     repo_id = str(repo_id or "").strip()
@@ -286,6 +296,24 @@ def human_bytes(value):
             return f"{value:.1f} {unit}" if unit != "B" else f"{int(value)} B"
         value /= 1024
 
+def expected_content_length(request, max_chars):
+    try:
+        raw_length = request.headers.get("Content-Length")
+        if raw_length is None:
+            return not getattr(request, "can_read_body", False)
+        length = int(raw_length)
+    except Exception:
+        return False
+    return length <= int(max_chars or 0)
+
+def verify_expected_sha(path, expected_sha):
+    expected_sha = str(expected_sha or "").strip().lower()
+    if not expected_sha:
+        return
+    actual_sha = sha256_file(path).lower()
+    if actual_sha != expected_sha:
+        raise ValueError(f"SHA256 mismatch for downloaded file: expected {expected_sha}, got {actual_sha}")
+
 def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=None, file_index=0, total_files=1):
     from huggingface_hub import hf_hub_url
     import requests
@@ -300,6 +328,8 @@ def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=No
         with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
             response.raise_for_status()
             total_bytes = int(response.headers.get("content-length") or 0)
+            if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
+                raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
             repository_progress_update(
                 task_id,
                 message=f"Downloading {path_in_repo}...",
@@ -316,6 +346,8 @@ def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=No
                         continue
                     f.write(chunk)
                     bytes_done += len(chunk)
+                    if bytes_done > MAX_POSE_REPOSITORY_FILE_BYTES:
+                        raise ValueError(f"{path_in_repo} exceeded the per-file download limit ({human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
                     file_fraction = (bytes_done / total_bytes) if total_bytes else 0
                     overall = ((file_index + file_fraction) / max(total_files, 1)) * 100
                     byte_msg = human_bytes(bytes_done)
@@ -350,10 +382,17 @@ def download_hf_file(repo_id, path_in_repo, token=None):
     try:
         with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
             response.raise_for_status()
+            total_bytes = int(response.headers.get("content-length") or 0)
+            if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
+                raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
+            bytes_done = 0
             with open(tmp_path, "wb") as f:
                 for chunk in response.iter_content(chunk_size=1024 * 256):
                     if chunk:
                         f.write(chunk)
+                        bytes_done += len(chunk)
+                        if bytes_done > MAX_POSE_REPOSITORY_FILE_BYTES:
+                            raise ValueError(f"{path_in_repo} exceeded the per-file download limit ({human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
         return tmp_path
     except Exception:
         try:
@@ -456,6 +495,7 @@ def infer_category_from_hub_path(path_in_repo):
     return DEFAULT_CATEGORY
 
 def copy_if_changed(src_path, dst_path, expected_sha=""):
+    verify_expected_sha(src_path, expected_sha)
     os.makedirs(os.path.dirname(dst_path), exist_ok=True)
     if os.path.exists(dst_path):
         try:
@@ -545,7 +585,7 @@ def download_pose_repository_file_job(repo_id, token, job):
     tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
     try:
         changed = copy_if_changed(tmp_path, job["target_path"], job.get("expected_sha") or "")
-        return {**job, "changed": changed}
+        return {**job, "changed": changed, "bytes": os.path.getsize(tmp_path)}
     finally:
         try:
             os.remove(tmp_path)
@@ -574,18 +614,18 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         category = str(pose.get("category") or infer_category_from_hub_path(hub_json_path) or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
         pose_dir = get_pose_dir(repo_id, category)
         target_json = os.path.join(pose_dir, f"{name}.json")
-        expected_json_paths.add(target_json)
         pose_states[hub_json_path] = {"changed": False, "error": False}
 
         try:
             if local_file_matches(target_json, pose.get("json_sha256") or ""):
-                pass
+                expected_json_paths.add(target_json)
             else:
                 download_jobs.append({
                     "pose_key": hub_json_path,
                     "hub_path": hub_json_path,
                     "target_path": target_json,
                     "expected_sha": pose.get("json_sha256") or "",
+                    "expected_kind": "json",
                 })
 
             hub_preview_path = pose.get("preview_path") or ""
@@ -593,15 +633,15 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                 try:
                     ext = os.path.splitext(hub_preview_path)[1].lower() or ".webp"
                     target_preview = os.path.join(pose_dir, f"{name}{ext}")
-                    expected_preview_paths.add(target_preview)
                     if local_file_matches(target_preview, pose.get("preview_sha256") or ""):
-                        pass
+                        expected_preview_paths.add(target_preview)
                     else:
                         download_jobs.append({
                             "pose_key": hub_json_path,
                             "hub_path": hub_preview_path,
                             "target_path": target_preview,
                             "expected_sha": pose.get("preview_sha256") or "",
+                            "expected_kind": "preview",
                         })
                 except Exception as exc:
                     errors.append(f"{hub_preview_path}: {exc}")
@@ -611,37 +651,47 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
             pose_states[hub_json_path]["error"] = True
 
     if download_jobs:
-        max_workers = min(8, max(2, len(download_jobs)))
+        downloaded_bytes = 0
         repository_progress_update(
             task_id,
-            message=f"Downloading {len(download_jobs)} changed files with {max_workers} workers...",
+            message=f"Downloading {len(download_jobs)} changed files...",
             current_file="",
             file_index=0,
             total_files=len(download_jobs),
             progress=2,
         )
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {
-                executor.submit(download_pose_repository_file_job, repo_id, token, job): job
-                for job in download_jobs
-            }
-            for completed, future in enumerate(as_completed(futures), start=1):
-                job = futures[future]
-                try:
-                    result = future.result()
-                    if result.get("changed"):
-                        pose_states[job["pose_key"]]["changed"] = True
-                except Exception as exc:
-                    errors.append(f"{job['hub_path']}: {exc}")
-                    pose_states[job["pose_key"]]["error"] = True
-                repository_progress_update(
-                    task_id,
-                    message=f"Downloaded {completed}/{len(download_jobs)} changed files...",
-                    current_file=job["hub_path"],
-                    file_index=completed,
-                    total_files=len(download_jobs),
-                    progress=2 + (completed / max(len(download_jobs), 1)) * 94,
-                )
+        for completed, job in enumerate(download_jobs, start=1):
+            tmp_path = None
+            try:
+                tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+                file_bytes = os.path.getsize(tmp_path)
+                if downloaded_bytes + file_bytes > MAX_POSE_REPOSITORY_SYNC_BYTES:
+                    raise ValueError(f"Repository sync exceeded the total download limit ({human_bytes(MAX_POSE_REPOSITORY_SYNC_BYTES)})")
+                changed = copy_if_changed(tmp_path, job["target_path"], job.get("expected_sha") or "")
+                downloaded_bytes += file_bytes
+                if changed:
+                    pose_states[job["pose_key"]]["changed"] = True
+                if job.get("expected_kind") == "preview":
+                    expected_preview_paths.add(job["target_path"])
+                else:
+                    expected_json_paths.add(job["target_path"])
+            except Exception as exc:
+                errors.append(f"{job['hub_path']}: {exc}")
+                pose_states[job["pose_key"]]["error"] = True
+            finally:
+                if tmp_path:
+                    try:
+                        os.remove(tmp_path)
+                    except Exception:
+                        pass
+            repository_progress_update(
+                task_id,
+                message=f"Downloaded {completed}/{len(download_jobs)} changed files...",
+                current_file=job["hub_path"],
+                file_index=completed,
+                total_files=len(download_jobs),
+                progress=2 + (completed / max(len(download_jobs), 1)) * 94,
+            )
     else:
         repository_progress_update(task_id, message="All repository files are already up to date.", progress=96)
 
@@ -971,6 +1021,8 @@ async def repository_progress_status(request):
 
 async def add_pose_repository(request):
     try:
+        if not expected_content_length(request, 1024 * 1024):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
@@ -995,6 +1047,8 @@ async def add_pose_repository(request):
 
 async def toggle_pose_repository(request):
     try:
+        if not expected_content_length(request, 1024 * 1024):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
@@ -1076,6 +1130,8 @@ def run_background_enabled_repository_refresh(task_id):
 async def auto_refresh_enabled_pose_repositories(request):
     now = time.time()
     try:
+        if not expected_content_length(request, 1024 * 1024):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:
         data = {}
@@ -1117,6 +1173,8 @@ async def auto_refresh_enabled_pose_repositories(request):
 
 async def refresh_pose_repositories(request):
     try:
+        if not expected_content_length(request, 1024 * 1024):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:
         data = {}
@@ -1132,6 +1190,8 @@ async def refresh_pose_repositories(request):
 
 async def publish_local_pose_repository(request):
     try:
+        if not expected_content_length(request, 1024 * 1024):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except Exception:
         return web.json_response({"error": "Invalid JSON"}, status=400)
@@ -1167,6 +1227,10 @@ async def publish_local_pose_repository(request):
 def sanitize_pose_name(name):
     name = "".join(c for c in str(name or "") if c.isalnum() or c in "-_ ").strip()
     return name
+
+def sanitize_node_id(value):
+    cleaned = SAFE_ID_RE.sub("_", str(value or "")).strip("_")
+    return cleaned[:128]
 
 def sanitize_path_segment(value, fallback):
     value = str(value or "").strip() or fallback
@@ -1253,24 +1317,49 @@ def remove_previews(folder_path, name):
         if os.path.exists(path):
             os.remove(path)
 
-def save_preview(folder_path, name, preview_b64):
+def prepare_preview_file(folder_path, preview_b64):
     if not preview_b64:
-        return
+        return None
     if "," in preview_b64:
         preview_b64 = preview_b64.split(",", 1)[1]
     raw = base64.b64decode(preview_b64)
+    if len(raw) > MAX_PREVIEW_BYTES:
+        raise ValueError("Preview image is too large")
     os.makedirs(folder_path, exist_ok=True)
-    remove_previews(folder_path, name)
     try:
         image = Image.open(io.BytesIO(raw)).convert("RGB")
         resample = getattr(getattr(Image, "Resampling", Image), "LANCZOS", Image.LANCZOS)
         image.thumbnail((768, 768), resample)
-        output_path = os.path.join(folder_path, f"{name}.webp")
+        fd, output_path = tempfile.mkstemp(prefix="vnccs_preview_", suffix=".webp", dir=folder_path)
+        os.close(fd)
         image.save(output_path, "WEBP", quality=76, method=6)
+        return output_path, ".webp"
     except Exception:
-        output_path = os.path.join(folder_path, f"{name}.jpg")
+        fd, output_path = tempfile.mkstemp(prefix="vnccs_preview_", suffix=".jpg", dir=folder_path)
+        os.close(fd)
         with open(output_path, "wb") as f:
             f.write(raw)
+        return output_path, ".jpg"
+
+def install_prepared_preview(folder_path, name, prepared_preview):
+    if not prepared_preview:
+        return
+    tmp_path, ext = prepared_preview
+    remove_previews(folder_path, name)
+    os.replace(tmp_path, os.path.join(folder_path, f"{name}{ext}"))
+
+def save_preview(folder_path, name, preview_b64):
+    prepared_preview = None
+    try:
+        prepared_preview = prepare_preview_file(folder_path, preview_b64)
+        install_prepared_preview(folder_path, name, prepared_preview)
+        prepared_preview = None
+    finally:
+        if prepared_preview:
+            try:
+                os.remove(prepared_preview[0])
+            except Exception:
+                pass
 
 def normalize_request_repository(value):
     return str(value or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
@@ -1425,6 +1514,8 @@ async def get_pose(request):
 async def save_pose(request):
     """POST /vnccs/pose_library/save - Saves a pose with optional preview."""
     try:
+        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
+            return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except:
         return web.json_response({"error": "Invalid JSON"}, status=400)
@@ -1456,28 +1547,51 @@ async def save_pose(request):
         old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category)
         old_pose_dir = os.path.dirname(old_pose_path) if old_pose_path else None
 
-    if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
-        old_preview_path, _ = find_preview(old_pose_dir, old_name)
-        if old_preview_path and not preview_b64:
+    pose = set_pose_meta(pose, repository=repository, category=category, tags=tags)
+    old_preview_path = None
+    prepared_preview = None
+    pose_tmp_path = None
+
+    try:
+        if preview_b64:
+            prepared_preview = prepare_preview_file(pose_dir, preview_b64)
+
+        fd, pose_tmp_path = tempfile.mkstemp(prefix="vnccs_pose_", suffix=".json", dir=pose_dir)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(pose, f, indent=2)
+
+        if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
+            old_preview_path, _ = find_preview(old_pose_dir, old_name)
+
+        os.replace(pose_tmp_path, pose_path)
+        pose_tmp_path = None
+
+        if prepared_preview:
+            install_prepared_preview(pose_dir, name, prepared_preview)
+            prepared_preview = None
+        elif old_preview_path:
             ext = os.path.splitext(old_preview_path)[1].lower() or ".webp"
             remove_previews(pose_dir, name)
             shutil.move(old_preview_path, os.path.join(pose_dir, f"{name}{ext}"))
-        elif old_pose_dir:
+        elif old_pose_path and old_pose_dir and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
             remove_previews(old_pose_dir, old_name)
-        os.remove(old_pose_path)
 
-    pose = set_pose_meta(pose, repository=repository, category=category, tags=tags)
-
-    # Save pose data
-    with open(pose_path, "w", encoding="utf-8") as f:
-        json.dump(pose, f, indent=2)
-
-    # Save preview if provided
-    if preview_b64:
-        try:
-            save_preview(pose_dir, name, preview_b64)
-        except:
-            pass  # Ignore preview errors
+        if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path) and os.path.exists(old_pose_path):
+            os.remove(old_pose_path)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=413)
+    except Exception as exc:
+        return web.json_response({"error": f"Failed to save pose: {exc}"}, status=400)
+    finally:
+        leftovers = [pose_tmp_path]
+        if prepared_preview:
+            leftovers.append(prepared_preview[0])
+        for leftover in leftovers:
+            if leftover:
+                try:
+                    os.remove(leftover)
+                except Exception:
+                    pass
 
     return web.json_response({
         "success": True,
@@ -1531,15 +1645,23 @@ async def get_preview(request):
 async def upload_pose_sync(request):
     """POST /vnccs/pose_sync/upload_capture - Saves synchronized capture for execution."""
     try:
+        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
+            return web.json_response({"error": "capture payload is too large"}, status=413)
         data = await request.json()
-        node_id = data.get("node_id")
+        node_id = sanitize_node_id(data.get("node_id"))
         if not node_id:
              return web.json_response({"error": "No node_id"}, status=400)
+        if len(json.dumps(data, separators=(",", ":"))) > MAX_SYNC_CAPTURE_CHARS:
+            return web.json_response({"error": "capture payload is too large"}, status=413)
              
         import folder_paths
         temp_dir = folder_paths.get_temp_directory()
         # Note: we use 'debug' in the filename for backwards compatibility with the backend check
         filepath = os.path.join(temp_dir, f"vnccs_debug_{node_id}.json")
+        temp_abs = os.path.abspath(temp_dir)
+        file_abs = os.path.abspath(filepath)
+        if file_abs != temp_abs and not file_abs.startswith(temp_abs + os.sep):
+            return web.json_response({"error": "Invalid node_id"}, status=400)
         
         with open(filepath, "w") as f:
             json.dump(data, f)
