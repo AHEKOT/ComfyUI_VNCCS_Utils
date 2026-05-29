@@ -12,6 +12,47 @@ import { importMixamoFBXAsPoses } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
+let VNCCS_SHARED_MORPH_WORKER = null;
+let VNCCS_SHARED_MORPH_WORKER_FAILED = false;
+let VNCCS_SHARED_MORPH_WORKER_WARMED = false;
+let VNCCS_SHARED_MORPH_CLIENT_ID = 1;
+const VNCCS_SHARED_MORPH_CLIENTS = new Map();
+
+function getVNCCSSharedMorphWorker() {
+    if (VNCCS_SHARED_MORPH_WORKER_FAILED || typeof Worker === "undefined") return null;
+    if (VNCCS_SHARED_MORPH_WORKER) return VNCCS_SHARED_MORPH_WORKER;
+
+    try {
+        const worker = new Worker(VNCCS_POSE_MORPH_WORKER_URL, { type: "module" });
+        worker.onmessage = (event) => {
+            const message = event.data || {};
+            const handler = VNCCS_SHARED_MORPH_CLIENTS.get(message.clientId);
+            if (handler) {
+                handler(message);
+                return;
+            }
+            if (message.type === "error") {
+                for (const callback of VNCCS_SHARED_MORPH_CLIENTS.values()) callback(message);
+            }
+        };
+        worker.onerror = (event) => {
+            VNCCS_SHARED_MORPH_WORKER_FAILED = true;
+            console.warn("[VNCCS PoseStudio] Shared live morph worker error:", event.message || event);
+            for (const callback of VNCCS_SHARED_MORPH_CLIENTS.values()) {
+                callback({ type: "error", message: event.message || String(event) });
+            }
+            try { worker.terminate(); } catch (_) {}
+            VNCCS_SHARED_MORPH_WORKER = null;
+            VNCCS_SHARED_MORPH_WORKER_WARMED = false;
+        };
+        VNCCS_SHARED_MORPH_WORKER = worker;
+    } catch (error) {
+        VNCCS_SHARED_MORPH_WORKER_FAILED = true;
+        console.warn("[VNCCS PoseStudio] Shared live morph worker unavailable:", error);
+    }
+
+    return VNCCS_SHARED_MORPH_WORKER;
+}
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
@@ -2751,6 +2792,8 @@ class PoseStudioWidget {
         this._morphSeq = 0;
         this._lastAppliedMorphSeq = 0;
         this._managerPreviewRefreshFrame = null;
+        this._managerPreviewRefreshGeneration = 0;
+        this._managerPreviewRefreshNextIndex = 0;
         this._samCamStoredProjectionFrame = null;
         this._hoveredHandSide = null;
         this._handPopover = null;
@@ -3951,7 +3994,9 @@ class PoseStudioWidget {
         });
         const img = new Image();
         img.onload = () => {
-            const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
+            const entry = this.managerImageMetrics.get(src);
+            if (!entry) return;
+            const callbacks = entry.callbacks || [];
             const metrics = {
                 width: img.naturalWidth || 1,
                 height: img.naturalHeight || 1,
@@ -3962,13 +4007,29 @@ class PoseStudioWidget {
             callbacks.forEach(callback => callback?.());
         };
         img.onerror = () => {
-            const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
+            const entry = this.managerImageMetrics.get(src);
+            if (!entry) return;
+            const callbacks = entry.callbacks || [];
             const metrics = fallback || { width: 1, height: 1, loading: false };
             this.managerImageMetrics.set(src, { ...metrics, loading: false });
             if (index >= 0) this.managerPoseMetrics[index] = metrics;
             callbacks.forEach(callback => callback?.());
         };
         img.src = src;
+    }
+
+    forgetPoseManagerImageMetrics(src) {
+        if (!src || !this.managerImageMetrics) return;
+        this.managerImageMetrics.delete(src);
+    }
+
+    setPoseCapture(index, capture) {
+        if (!this.poseCaptures) this.poseCaptures = [];
+        const previousCapture = this.poseCaptures[index];
+        if (previousCapture && previousCapture !== capture) {
+            this.forgetPoseManagerImageMetrics(previousCapture);
+        }
+        this.poseCaptures[index] = capture;
     }
 
     layoutPoseManager() {
@@ -4074,17 +4135,26 @@ class PoseStudioWidget {
         if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return;
         if (!this.viewer?.isInitialized?.()) return;
         if (!this.poses?.length) return;
-        if (this._managerPreviewRefreshFrame) return;
+        const isMidRefresh = Boolean(this._managerPreviewRefreshFrame) || (this._managerPreviewRefreshNextIndex || 0) > 0;
+        this._managerPreviewRefreshGeneration = (this._managerPreviewRefreshGeneration || 0) + 1;
+        this._managerPreviewRefreshNextIndex = isMidRefresh
+            ? (this._managerPreviewRefreshNextIndex || 0) % this.poses.length
+            : 0;
+        if (this._managerPreviewRefreshFrame) {
+            cancelAnimationFrame(this._managerPreviewRefreshFrame);
+        }
 
+        const generation = this._managerPreviewRefreshGeneration;
         this._managerPreviewRefreshFrame = requestAnimationFrame(() => {
             this._managerPreviewRefreshFrame = null;
-            this.refreshAllManagerPreviews();
+            this.refreshAllManagerPreviews(generation);
         });
     }
 
-    refreshAllManagerPreviews() {
+    refreshAllManagerPreviews(generation = this._managerPreviewRefreshGeneration) {
         if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return;
         if (!this.viewer?.isInitialized?.()) return;
+        if (generation !== this._managerPreviewRefreshGeneration) return;
 
         const originalPose = this.viewer.getPose();
         const originalLights = JSON.parse(JSON.stringify(this.lightParams || []));
@@ -4098,7 +4168,10 @@ class PoseStudioWidget {
         this.ensurePosePrompts();
 
         try {
-            for (let i = 0; i < this.poses.length; i++) {
+            const capturesPerFrame = 2;
+            const startIndex = Math.max(0, Math.min(this._managerPreviewRefreshNextIndex || 0, this.poses.length));
+            const endIndex = Math.min(this.poses.length, startIndex + capturesPerFrame);
+            for (let i = startIndex; i < endIndex; i++) {
                 const pose = this.poses[i] || {};
                 this.viewer.setPose(pose, true);
 
@@ -4115,16 +4188,28 @@ class PoseStudioWidget {
                     this.viewer.updateLights(this.lightParams);
                 }
 
-                this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
+                const nextCapture = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
+                this.setPoseCapture(i, nextCapture);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(i)
                 );
                 this.updatePoseManagerPreviewImage(i);
             }
+            this._managerPreviewRefreshNextIndex = endIndex;
         } finally {
             this.viewer.setPose(originalPose, true);
             this.viewer.updateLights(originalLights);
+        }
+
+        if (generation !== this._managerPreviewRefreshGeneration) return;
+        if (this._managerPreviewRefreshNextIndex < this.poses.length) {
+            this._managerPreviewRefreshFrame = requestAnimationFrame(() => {
+                this._managerPreviewRefreshFrame = null;
+                this.refreshAllManagerPreviews(generation);
+            });
+        } else {
+            this._managerPreviewRefreshNextIndex = 0;
         }
     }
 
@@ -5664,7 +5749,11 @@ class PoseStudioWidget {
 
         // Remove capture
         if (this.poseCaptures && this.poseCaptures.length > idx) {
-            this.poseCaptures.splice(idx, 1);
+            const [removedCapture] = this.poseCaptures.splice(idx, 1);
+            this.forgetPoseManagerImageMetrics(removedCapture);
+        }
+        if (this.managerPoseMetrics && this.managerPoseMetrics.length > idx) {
+            this.managerPoseMetrics.splice(idx, 1);
         }
 
         this.poses.splice(idx, 1);
@@ -8044,36 +8133,33 @@ class PoseStudioWidget {
 
     ensureMorphWorker() {
         if (this._morphWorker || this._morphWorkerFailed) return this._morphWorker;
-        if (typeof Worker === "undefined") return null;
-
-        try {
-            const worker = new Worker(VNCCS_POSE_MORPH_WORKER_URL, { type: "module" });
-            worker.onmessage = (event) => {
-                const message = event.data || {};
-                if (message.type === "error") {
-                    console.warn("[VNCCS PoseStudio] Live morph worker failed:", message.message);
-                    this._morphWorkerFailed = true;
-                    return;
-                }
-                if (message.type !== "result") return;
-                if (message.seq < this._morphSeq || message.seq < this._lastAppliedMorphSeq) return;
-                if (!this.viewer?.updateBodyVertices?.(message.vertices, message.bonePositions)) return;
-                this._lastAppliedMorphSeq = message.seq;
-                this.scheduleAllManagerPreviewRefresh();
-            };
-            worker.onerror = (event) => {
-                console.warn("[VNCCS PoseStudio] Live morph worker error:", event.message || event);
-                this._morphWorkerFailed = true;
-                try { worker.terminate(); } catch (_) {}
-                if (this._morphWorker === worker) this._morphWorker = null;
-            };
-            worker.postMessage({ type: "warmup" });
-            this._morphWorker = worker;
-        } catch (error) {
-            console.warn("[VNCCS PoseStudio] Live morph worker unavailable:", error);
+        const worker = getVNCCSSharedMorphWorker();
+        if (!worker) {
             this._morphWorkerFailed = true;
+            return null;
         }
+
+        if (!this._morphClientId) this._morphClientId = VNCCS_SHARED_MORPH_CLIENT_ID++;
+        VNCCS_SHARED_MORPH_CLIENTS.set(this._morphClientId, (message) => this.handleMorphWorkerMessage(message));
+        if (!VNCCS_SHARED_MORPH_WORKER_WARMED) {
+            VNCCS_SHARED_MORPH_WORKER_WARMED = true;
+            worker.postMessage({ type: "warmup", clientId: this._morphClientId });
+        }
+        this._morphWorker = worker;
         return this._morphWorker;
+    }
+
+    handleMorphWorkerMessage(message) {
+        if (message.type === "error") {
+            console.warn("[VNCCS PoseStudio] Live morph worker failed:", message.message);
+            this._morphWorkerFailed = true;
+            return;
+        }
+        if (message.type !== "result") return;
+        if (message.seq < this._morphSeq || message.seq < this._lastAppliedMorphSeq) return;
+        if (!this.viewer?.updateBodyVertices?.(message.vertices, message.bonePositions)) return;
+        this._lastAppliedMorphSeq = message.seq;
+        this.scheduleAllManagerPreviewRefresh();
     }
 
     requestLiveMorph(changedKey = null) {
@@ -8084,6 +8170,7 @@ class PoseStudioWidget {
         worker.postMessage({
             type: "solve",
             seq,
+            clientId: this._morphClientId,
             params: { ...this.meshParams },
         });
         return true;
@@ -8914,7 +9001,7 @@ class PoseStudioWidget {
                         }
 
                         // Capture
-                        this.poseCaptures[i] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY);
+                        this.setPoseCapture(i, this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY));
 
                         // Prompt
                         const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || originalLights);
@@ -8936,7 +9023,7 @@ class PoseStudioWidget {
                             this.viewer.updateLights(this.lightParams);
                         }
 
-                        this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
+                        this.setPoseCapture(i, this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch));
                         this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, this.getPosePrompt(i));
                     }
                 }
@@ -8969,7 +9056,7 @@ class PoseStudioWidget {
                         this.viewer.updateLights(debugParams.lights);
                     }
 
-                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY, 0, 0);
+                    this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY, 0, 0));
 
                     const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || userLights);
                     this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights, this.getPosePrompt(this.activeTab));
@@ -8996,7 +9083,7 @@ class PoseStudioWidget {
                         this.viewer.updateLights(this.lightParams);
                     }
 
-                    this.poseCaptures[this.activeTab] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
+                    this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch));
                     this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, this.getPosePrompt(this.activeTab));
 
                     if (isOriginalLighting) {
@@ -9589,7 +9676,14 @@ app.registerExtension({
                     cancelAnimationFrame(this.studioWidget._resizeRaf);
                 }
                 if (this.studioWidget._morphWorker) {
-                    try { this.studioWidget._morphWorker.terminate(); } catch (_) {}
+                    if (this.studioWidget._morphClientId) {
+                        VNCCS_SHARED_MORPH_CLIENTS.delete(this.studioWidget._morphClientId);
+                    }
+                    if (VNCCS_SHARED_MORPH_CLIENTS.size === 0 && VNCCS_SHARED_MORPH_WORKER) {
+                        try { VNCCS_SHARED_MORPH_WORKER.terminate(); } catch (_) {}
+                        VNCCS_SHARED_MORPH_WORKER = null;
+                        VNCCS_SHARED_MORPH_WORKER_WARMED = false;
+                    }
                     this.studioWidget._morphWorker = null;
                 }
                 if (this.studioWidget.viewer) {

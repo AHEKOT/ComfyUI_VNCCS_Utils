@@ -209,11 +209,11 @@ function solveMorph(data, params) {
 }
 
 self.onmessage = async (event) => {
-    const { type, seq, params } = event.data || {};
+    const { type, seq, params, clientId } = event.data || {};
     try {
         if (type === "warmup") {
             await loadMorphData();
-            self.postMessage({ type: "ready" });
+            self.postMessage({ type: "ready", clientId });
             return;
         }
         if (type !== "solve") return;
@@ -225,6 +225,7 @@ self.onmessage = async (event) => {
         self.postMessage({
             type: "result",
             seq,
+            clientId,
             vertices: result.vertices,
             bonePositions: result.bonePositions,
         }, transfers);
@@ -232,6 +233,7 @@ self.onmessage = async (event) => {
         self.postMessage({
             type: "error",
             seq,
+            clientId,
             message: error?.message || String(error),
         });
     }
