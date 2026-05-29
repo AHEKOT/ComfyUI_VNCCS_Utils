@@ -2688,20 +2688,6 @@ class PoseStudioWidget {
         });
         sidebar.appendChild(meshSection.el);
 
-        const genderSection = this.createSection("Gender Settings", true);
-        [
-            { key: "breast_size", label: "Breast Size", min: 0, max: 2, step: 0.01, gender: "female" },
-            { key: "firmness", label: "Firmness", min: 0, max: 1, step: 0.01, gender: "female" },
-            { key: "penis_len", label: "Length", min: 0, max: 1, step: 0.01, gender: "male" },
-            { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, gender: "male" },
-            { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, gender: "male" }
-        ].forEach((def) => {
-            const field = this.createManagerSlider(def, "mesh");
-            this.managerGenderFields[def.key] = { field, gender: def.gender };
-            genderSection.content.appendChild(field);
-        });
-        sidebar.appendChild(genderSection.el);
-
         const cameraSection = this.createSection("Camera", true);
         const dimRow = document.createElement("div");
         dimRow.className = "vnccs-ps-row";
@@ -3011,7 +2997,6 @@ class PoseStudioWidget {
 
         // --- GENDER SETTINGS SECTION ---
         const genderSection = this.createSection("Gender Settings", true);
-        genderSection.el.classList.add("vnccs-ps-main-moved-manager");
         this.genderFields = {};
 
         const femaleSliders = [
