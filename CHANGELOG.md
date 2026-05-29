@@ -25,6 +25,9 @@
 
 *   **SAM3D preset-pack fallback**: Added local preset-pack path helpers for the vendored SAM3D bridge so optional blendshape preset assets can be absent without breaking imports.
 
+*   **Pose Studio ComfyUI navigation passthrough**: Added cautious middle-mouse drag and wheel forwarding from non-interactive Pose Studio background areas to the main ComfyUI canvas.
+    *   The passthrough intentionally skips controls, sliders, inputs, tabs, scroll containers, the 3D viewer, camera/light radars, hand popovers, manager grids, and library/modals so existing node interactions keep priority.
+
 ### Fixes
 
 *   **Pose Studio camera radar coordinates**: Fixed camera/light radar pointer mapping under ComfyUI node zoom and Pose Studio UI scaling.

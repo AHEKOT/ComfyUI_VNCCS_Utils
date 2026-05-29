@@ -2444,6 +2444,196 @@ const styleEl = document.createElement("style");
 styleEl.textContent = STYLES;
 document.head.appendChild(styleEl);
 
+function enablePoseStudioCanvasNavigationForwarding(root) {
+    if (!root || root._vnccsPoseCanvasNavigationForwarding) return;
+    root._vnccsPoseCanvasNavigationForwarding = true;
+
+    const canvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+    let panning = false;
+
+    const markForwarded = (event) => {
+        Object.defineProperty(event, "_vnccsPoseForwardedCanvasInput", { value: true });
+        return event;
+    };
+
+    const cloneMouseEvent = (type, source, buttons = source.buttons) => markForwarded(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        button: source.button,
+        buttons,
+    }));
+
+    const clonePointerEvent = (type, source, buttons = source.buttons) => {
+        const EventCtor = window.PointerEvent || window.MouseEvent;
+        return markForwarded(new EventCtor(type, {
+            bubbles: true,
+            cancelable: true,
+            view: window,
+            detail: source.detail,
+            screenX: source.screenX,
+            screenY: source.screenY,
+            clientX: source.clientX,
+            clientY: source.clientY,
+            ctrlKey: source.ctrlKey,
+            altKey: source.altKey,
+            shiftKey: source.shiftKey,
+            metaKey: source.metaKey,
+            button: 1,
+            buttons,
+            pointerId: source.pointerId || 1,
+            pointerType: source.pointerType || "mouse",
+            isPrimary: source.isPrimary !== false,
+        }));
+    };
+
+    const cloneWheelEvent = (source) => markForwarded(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        deltaX: source.deltaX,
+        deltaY: source.deltaY,
+        deltaZ: source.deltaZ,
+        deltaMode: source.deltaMode,
+    }));
+
+    const forwardMouse = (type, event, buttons) => {
+        const canvasEl = canvas();
+        if (!canvasEl) return false;
+        const pointerType = type === "mousedown" ? "pointerdown" : type === "mousemove" ? "pointermove" : "pointerup";
+        canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+        canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
+        return true;
+    };
+
+    const forwardWheel = (event) => {
+        const canvasEl = canvas();
+        if (!canvasEl) return false;
+        canvasEl.dispatchEvent(cloneWheelEvent(event));
+        return true;
+    };
+
+    const hasOwnWheelHandler = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (typeof el.onwheel === "function") return true;
+        }
+        return false;
+    };
+
+    const hasScrollableAncestor = (target) => {
+        for (let el = target; el && el !== root; el = el.parentElement) {
+            if (!(el instanceof HTMLElement)) continue;
+            const style = getComputedStyle(el);
+            const scrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
+            const scrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1;
+            if (scrollY || scrollX) return true;
+        }
+        return false;
+    };
+
+    const hasInteractiveTarget = (target) => {
+        if (!(target instanceof Element)) return true;
+        return Boolean(target.closest([
+            "button",
+            "input",
+            "textarea",
+            "select",
+            "label",
+            "a",
+            "canvas",
+            "[contenteditable='true']",
+            "[role='button']",
+            ".vnccs-ps-toggle",
+            ".vnccs-ps-slider-wrap",
+            ".vnccs-ps-tabs-shell",
+            ".vnccs-ps-canvas-wrap",
+            ".vnccs-ps-radar-wrap",
+            ".vnccs-ps-light-radar-wrap",
+            ".vnccs-ps-manager-grid",
+            ".vnccs-ps-manager-actions",
+            ".vnccs-ps-manager-detail-strip",
+            ".vnccs-ps-hand-popover",
+            ".vnccs-ps-settings-panel",
+            ".vnccs-ps-modal-overlay",
+            ".vnccs-ps-library-modal",
+            ".vnccs-ps-library-grid",
+            ".vnccs-ps-library-modal-grid",
+            ".vnccs-ps-library-inspector",
+        ].join(",")));
+    };
+
+    const canForwardFrom = (target) => {
+        if (hasInteractiveTarget(target)) return false;
+        if (hasOwnWheelHandler(target)) return false;
+        if (hasScrollableAncestor(target)) return false;
+        return true;
+    };
+
+    const finishPan = (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!panning) return;
+        panning = false;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mouseup", event, 0);
+        window.removeEventListener("mousemove", movePan, true);
+        window.removeEventListener("mouseup", finishPan, true);
+    };
+
+    const movePan = (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!panning) return;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mousemove", event, event.buttons || 4);
+    };
+
+    root.addEventListener("mousedown", (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (event.button !== 1) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardMouse("mousedown", event, 4)) return;
+        panning = true;
+        event.preventDefault();
+        event.stopPropagation();
+        window.addEventListener("mousemove", movePan, true);
+        window.addEventListener("mouseup", finishPan, true);
+    }, true);
+
+    root.addEventListener("auxclick", (event) => {
+        if (event.button !== 1) return;
+        if (!canForwardFrom(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
+
+    root.addEventListener("wheel", (event) => {
+        if (event._vnccsPoseForwardedCanvasInput) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardWheel(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    }, { capture: true, passive: false });
+}
+
 
 // === 3D Viewer (from Debug3) ===
 class PoseStudioWidget {
@@ -2582,6 +2772,7 @@ class PoseStudioWidget {
     _createLayout() {
         this.container = document.createElement("div");
         this.container.className = "vnccs-pose-studio";
+        enablePoseStudioCanvasNavigationForwarding(this.container);
 
         this.leftPanel = document.createElement("div");
         this.leftPanel.className = "vnccs-ps-left";
