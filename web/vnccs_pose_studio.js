@@ -11,6 +11,8 @@ import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAsPoses } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 
+const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
+
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
 
@@ -2728,6 +2730,7 @@ class PoseStudioWidget {
         this.managerResizeObserver = null;
         this.managerBackBtn = null;
         this.managerImageMetrics = new Map();
+        this.managerPoseMetrics = [];
         this.managerLayoutFrame = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -2743,6 +2746,11 @@ class PoseStudioWidget {
         this._samCamDisplayActive = true;
         this._samCamPreParams = null;
         this._samCamStoredParams = null;
+        this._morphWorker = null;
+        this._morphWorkerFailed = false;
+        this._morphSeq = 0;
+        this._lastAppliedMorphSeq = 0;
+        this._managerPreviewRefreshFrame = null;
         this._samCamStoredProjectionFrame = null;
         this._hoveredHandSide = null;
         this._handPopover = null;
@@ -2921,7 +2929,13 @@ class PoseStudioWidget {
         slider.addEventListener("input", () => {
             const next = this.normalizeManagerNumber(slider.value, def);
             slider.value = next;
-            this.applyManagerMeshValue(def.key, next);
+            this.applyManagerMeshValue(def.key, next, { liveOnly: this.isLiveMorphKey?.(def.key) === true });
+        });
+
+        slider.addEventListener("change", () => {
+            const next = this.normalizeManagerNumber(slider.value, def);
+            slider.value = next;
+            this.applyManagerMeshValue(def.key, next, { finalize: true });
         });
 
         labelRow.appendChild(label);
@@ -2978,7 +2992,7 @@ class PoseStudioWidget {
             : Number(value || 0).toFixed(2);
     }
 
-    applyManagerMeshValue(key, value) {
+    applyManagerMeshValue(key, value, options = {}) {
         this.meshParams[key] = value;
         const main = this.sliders?.[key];
         if (main) {
@@ -2986,6 +3000,10 @@ class PoseStudioWidget {
             main.label.innerText = this.formatManagerValue(key, value);
         }
         this.refreshPoseManagerControls();
+        if (options.liveOnly && this.isLiveMorphKey?.(key)) {
+            this.onMeshParamsChanged(key, { liveOnly: true });
+            return;
+        }
         this.onMeshParamsChanged(key);
         this.syncToNode(false, { skipCapture: true });
     }
@@ -3794,10 +3812,41 @@ class PoseStudioWidget {
         this.setInterfaceMode("managerDetail");
     }
 
+    updateExistingPoseManagerCards() {
+        if (!this.managerGrid || !this.poses.length) return false;
+        const cards = Array.from(this.managerGrid.children).filter(card => card.classList?.contains("vnccs-ps-pose-card"));
+        if (cards.length !== this.poses.length || cards.length !== this.managerGrid.children.length) return false;
+
+        for (let i = 0; i < cards.length; i++) {
+            const card = cards[i];
+            card.classList.toggle("active", i === this.activeTab);
+            card.dataset.poseIndex = String(i);
+            card.title = `Open Pose ${i + 1}`;
+
+            const name = card.querySelector(".vnccs-ps-pose-card-name");
+            if (name) name.textContent = `Pose ${i + 1}`;
+
+            const del = card.querySelector(".vnccs-ps-pose-card-delete");
+            if (del) {
+                del.title = `Delete Pose ${i + 1}`;
+                del.disabled = this.poses.length <= 1;
+            }
+
+            this.updatePoseManagerPreviewImage(i);
+        }
+        return true;
+    }
+
     renderPoseManager() {
         if (!this.managerGrid) return;
         this.refreshPoseManagerControls();
         this.ensurePosePrompts();
+
+        if (this.updateExistingPoseManagerCards()) {
+            this.schedulePoseManagerGridLayout();
+            return;
+        }
+
         this.managerGrid.innerHTML = "";
 
         if (!this.poses.length) {
@@ -3811,6 +3860,7 @@ class PoseStudioWidget {
         for (let i = 0; i < this.poses.length; i++) {
             const card = document.createElement("div");
             card.className = "vnccs-ps-pose-card" + (i === this.activeTab ? " active" : "");
+            card.dataset.poseIndex = String(i);
             card.tabIndex = 0;
             card.role = "button";
             card.title = `Open Pose ${i + 1}`;
@@ -3871,12 +3921,20 @@ class PoseStudioWidget {
             this.managerLayoutFrame = null;
             this.layoutPoseManager();
         });
-        for (const capture of this.poseCaptures || []) {
-            if (capture) this.ensurePoseManagerImageMetrics(capture, () => this.layoutPoseManager());
+        for (let i = 0; i < (this.poseCaptures || []).length; i++) {
+            const capture = this.poseCaptures[i];
+            const stableMetrics = this.managerPoseMetrics?.[i];
+            if (capture) {
+                this.ensurePoseManagerImageMetrics(
+                    capture,
+                    stableMetrics?.width && stableMetrics?.height ? null : () => this.layoutPoseManager(),
+                    i
+                );
+            }
         }
     }
 
-    ensurePoseManagerImageMetrics(src, onReady) {
+    ensurePoseManagerImageMetrics(src, onReady, index = -1) {
         const existing = this.managerImageMetrics.get(src);
         if (existing) {
             if (existing.loading && onReady) existing.callbacks.push(onReady);
@@ -3884,20 +3942,30 @@ class PoseStudioWidget {
             return;
         }
 
-        this.managerImageMetrics.set(src, { width: 1, height: 1, loading: true, callbacks: onReady ? [onReady] : [] });
+        const fallback = index >= 0 ? this.managerPoseMetrics?.[index] : null;
+        this.managerImageMetrics.set(src, {
+            width: fallback?.width || 0,
+            height: fallback?.height || 0,
+            loading: true,
+            callbacks: onReady ? [onReady] : [],
+        });
         const img = new Image();
         img.onload = () => {
             const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
-            this.managerImageMetrics.set(src, {
+            const metrics = {
                 width: img.naturalWidth || 1,
                 height: img.naturalHeight || 1,
                 loading: false,
-            });
+            };
+            this.managerImageMetrics.set(src, metrics);
+            if (index >= 0) this.managerPoseMetrics[index] = metrics;
             callbacks.forEach(callback => callback?.());
         };
         img.onerror = () => {
             const callbacks = this.managerImageMetrics.get(src)?.callbacks || [];
-            this.managerImageMetrics.set(src, { width: 1, height: 1, loading: false });
+            const metrics = fallback || { width: 1, height: 1, loading: false };
+            this.managerImageMetrics.set(src, { ...metrics, loading: false });
+            if (index >= 0) this.managerPoseMetrics[index] = metrics;
             callbacks.forEach(callback => callback?.());
         };
         img.src = src;
@@ -3916,7 +3984,8 @@ class PoseStudioWidget {
         const aspects = Array.from({ length: count }, (_, index) => {
             const capture = this.poseCaptures?.[index];
             const metrics = capture ? this.managerImageMetrics.get(capture) : null;
-            return Math.max(0.05, Math.min(20, (metrics?.width && metrics?.height) ? metrics.width / metrics.height : fallbackAspect));
+            const stableMetrics = (metrics?.width && metrics?.height) ? metrics : this.managerPoseMetrics?.[index];
+            return Math.max(0.05, Math.min(20, (stableMetrics?.width && stableMetrics?.height) ? stableMetrics.width / stableMetrics.height : fallbackAspect));
         });
         let best = null;
 
@@ -3964,15 +4033,145 @@ class PoseStudioWidget {
         });
     }
 
+    updatePoseManagerPreviewImage(index) {
+        const capture = this.poseCaptures?.[index];
+        if (capture) this.ensurePoseManagerImageMetrics(capture, null, index);
+
+        const updateCard = (card, previewSelector) => {
+            if (!card) return;
+            const preview = card.querySelector(previewSelector);
+            if (!preview) return;
+            if (!capture) {
+                if (!preview.querySelector(".vnccs-ps-pose-preview-empty")) {
+                    preview.innerHTML = "";
+                    const placeholder = document.createElement("div");
+                    placeholder.className = "vnccs-ps-pose-preview-empty";
+                    preview.appendChild(placeholder);
+                }
+                return;
+            }
+            let img = preview.querySelector("img");
+            if (!img) {
+                preview.innerHTML = "";
+                img = document.createElement("img");
+                img.alt = `Pose ${index + 1}`;
+                preview.appendChild(img);
+            }
+            img.src = capture;
+        };
+
+        updateCard(
+            this.managerGrid?.querySelector(`.vnccs-ps-pose-card[data-pose-index="${index}"]`),
+            ".vnccs-ps-pose-preview"
+        );
+        updateCard(
+            this.managerDetailStrip?.querySelector(`.vnccs-ps-detail-card[data-pose-index="${index}"]`),
+            ".vnccs-ps-detail-card-preview"
+        );
+    }
+
+    scheduleAllManagerPreviewRefresh() {
+        if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return;
+        if (!this.viewer?.isInitialized?.()) return;
+        if (!this.poses?.length) return;
+        if (this._managerPreviewRefreshFrame) return;
+
+        this._managerPreviewRefreshFrame = requestAnimationFrame(() => {
+            this._managerPreviewRefreshFrame = null;
+            this.refreshAllManagerPreviews();
+        });
+    }
+
+    refreshAllManagerPreviews() {
+        if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return;
+        if (!this.viewer?.isInitialized?.()) return;
+
+        const originalPose = this.viewer.getPose();
+        const originalLights = JSON.parse(JSON.stringify(this.lightParams || []));
+        const w = this.exportParams.view_width || 1024;
+        const h = this.exportParams.view_height || 1024;
+        const bg = this.exportParams.bg_color || [40, 40, 40];
+        const isOriginalLighting = this.exportParams.keepOriginalLighting;
+
+        if (!this.poseCaptures) this.poseCaptures = [];
+        if (!this.lightingPrompts) this.lightingPrompts = [];
+        this.ensurePosePrompts();
+
+        try {
+            for (let i = 0; i < this.poses.length; i++) {
+                const pose = this.poses[i] || {};
+                this.viewer.setPose(pose, true);
+
+                const poseCam = pose.cameraParams || {};
+                const z = poseCam.zoom || this.exportParams.cam_zoom || 1.0;
+                const oX = (poseCam.offset_x !== undefined ? poseCam.offset_x : this.exportParams.cam_offset_x) || 0;
+                const oY = (poseCam.offset_y !== undefined ? poseCam.offset_y : this.exportParams.cam_offset_y) || 0;
+                const yaw = (poseCam.yaw_deg !== undefined ? poseCam.yaw_deg : this.exportParams.cam_yaw_deg) || 0;
+                const pitch = (poseCam.pitch_deg !== undefined ? poseCam.pitch_deg : this.exportParams.cam_pitch_deg) || 0;
+
+                if (isOriginalLighting) {
+                    this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                } else {
+                    this.viewer.updateLights(this.lightParams);
+                }
+
+                this.poseCaptures[i] = this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch);
+                this.lightingPrompts[i] = this.generatePromptFromLights(
+                    isOriginalLighting ? [] : this.lightParams,
+                    this.getPosePrompt(i)
+                );
+                this.updatePoseManagerPreviewImage(i);
+            }
+        } finally {
+            this.viewer.setPose(originalPose, true);
+            this.viewer.updateLights(originalLights);
+        }
+    }
+
+    updateExistingPoseManagerDetailCards() {
+        if (!this.managerDetailStrip || this.interfaceMode !== "managerDetail" || !this.poses.length) return false;
+        const cards = Array.from(this.managerDetailStrip.children).filter(card => card.classList?.contains("vnccs-ps-detail-card"));
+        if (cards.length !== this.poses.length || cards.length !== this.managerDetailStrip.children.length) return false;
+
+        for (let i = 0; i < cards.length; i++) {
+            const card = cards[i];
+            card.classList.toggle("active", i === this.activeTab);
+            card.dataset.poseIndex = String(i);
+            card.title = `Open Pose ${i + 1}`;
+
+            const name = card.querySelector(".vnccs-ps-detail-card-name");
+            if (name) name.textContent = `Pose ${i + 1}`;
+
+            const del = card.querySelector(".vnccs-ps-detail-card-delete");
+            if (del) {
+                del.title = `Delete Pose ${i + 1}`;
+                del.disabled = this.poses.length <= 1;
+            }
+
+            this.updatePoseManagerPreviewImage(i);
+        }
+        return true;
+    }
+
     renderPoseManagerDetailStrip() {
         if (!this.managerDetailStrip) return;
         if (this.interfaceMode !== "managerDetail") return;
         this.ensurePosePrompts();
+
+        if (this.updateExistingPoseManagerDetailCards()) {
+            requestAnimationFrame(() => {
+                const active = this.managerDetailStrip?.querySelector(".vnccs-ps-detail-card.active");
+                active?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+            });
+            return;
+        }
+
         this.managerDetailStrip.innerHTML = "";
 
         for (let i = 0; i < this.poses.length; i++) {
             const card = document.createElement("div");
             card.className = "vnccs-ps-detail-card" + (i === this.activeTab ? " active" : "");
+            card.dataset.poseIndex = String(i);
             card.tabIndex = 0;
             card.role = "button";
             card.title = `Open Pose ${i + 1}`;
@@ -4237,6 +4436,7 @@ class PoseStudioWidget {
         slider.step = step;
         slider.value = value;
         slider._vnccsValueSpan = valueSpan;
+        const isLiveMorphSlider = !isExport && this.isLiveMorphKey?.(key);
 
         // Reset logic
         resetBtn.onclick = (e) => {
@@ -4285,7 +4485,7 @@ class PoseStudioWidget {
                 } else {
                     // Directly update meshParams and trigger mesh rebuild
                     this.meshParams[key] = val;
-                    this.onMeshParamsChanged(key);
+                    this.onMeshParamsChanged(key, isLiveMorphSlider ? { liveOnly: true } : {});
                 }
             }
         });
@@ -4294,6 +4494,8 @@ class PoseStudioWidget {
             if (isExport) {
                 const needsFull = ['view_width', 'view_height', 'cam_zoom', 'bg_color', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg'].includes(key);
                 this.syncToNode(needsFull);
+            } else if (isLiveMorphSlider) {
+                this.queueFullMeshUpdate(key);
             }
         });
 
@@ -7797,6 +7999,7 @@ class PoseStudioWidget {
                 // Reload mesh data without implicit camera math; if we need a reset,
                 // do the same explicit snap the Preview button uses.
                 this.viewer.loadData(d, true);
+                this.ensureMorphWorker();
 
                 // Apply lighting configuration
                 this.viewer.updateLights(this.lightParams);
@@ -7828,6 +8031,92 @@ class PoseStudioWidget {
             }
         }).finally(() => {
             if (this.loadingOverlay) this.loadingOverlay.style.display = "none";
+        });
+    }
+
+    isLiveMorphKey(key) {
+        return [
+            "age", "gender", "weight", "muscle", "height",
+            "breast_size", "firmness",
+            "penis_len", "penis_circ", "penis_test",
+        ].includes(key);
+    }
+
+    ensureMorphWorker() {
+        if (this._morphWorker || this._morphWorkerFailed) return this._morphWorker;
+        if (typeof Worker === "undefined") return null;
+
+        try {
+            const worker = new Worker(VNCCS_POSE_MORPH_WORKER_URL, { type: "module" });
+            worker.onmessage = (event) => {
+                const message = event.data || {};
+                if (message.type === "error") {
+                    console.warn("[VNCCS PoseStudio] Live morph worker failed:", message.message);
+                    this._morphWorkerFailed = true;
+                    return;
+                }
+                if (message.type !== "result") return;
+                if (message.seq < this._morphSeq || message.seq < this._lastAppliedMorphSeq) return;
+                if (!this.viewer?.updateBodyVertices?.(message.vertices, message.bonePositions)) return;
+                this._lastAppliedMorphSeq = message.seq;
+                this.scheduleAllManagerPreviewRefresh();
+            };
+            worker.onerror = (event) => {
+                console.warn("[VNCCS PoseStudio] Live morph worker error:", event.message || event);
+                this._morphWorkerFailed = true;
+                try { worker.terminate(); } catch (_) {}
+                if (this._morphWorker === worker) this._morphWorker = null;
+            };
+            worker.postMessage({ type: "warmup" });
+            this._morphWorker = worker;
+        } catch (error) {
+            console.warn("[VNCCS PoseStudio] Live morph worker unavailable:", error);
+            this._morphWorkerFailed = true;
+        }
+        return this._morphWorker;
+    }
+
+    requestLiveMorph(changedKey = null) {
+        if (changedKey && !this.isLiveMorphKey(changedKey)) return false;
+        const worker = this.ensureMorphWorker();
+        if (!worker || !this.viewer?.isInitialized?.()) return false;
+        const seq = ++this._morphSeq;
+        worker.postMessage({
+            type: "solve",
+            seq,
+            params: { ...this.meshParams },
+        });
+        return true;
+    }
+
+    queueFullMeshUpdate(changedKey = null) {
+        if (changedKey === "age") {
+            this.pendingAgeCameraFit = true;
+        }
+
+        this.pendingMeshUpdate = true;
+
+        if (this.isMeshUpdating) return;
+        this.isMeshUpdating = true;
+        this.pendingMeshUpdate = false;
+
+        this.loadModel(false).finally(() => {
+            const hasPendingMeshUpdate = this.pendingMeshUpdate;
+            this.isMeshUpdating = false;
+            if (hasPendingMeshUpdate) {
+                this.queueFullMeshUpdate();
+                return;
+            }
+            if (this.pendingAgeCameraFit) {
+                this.pendingAgeCameraFit = false;
+                const suppressAgeFitSync = this._suppressNextAgeFitSync === true;
+                this._suppressNextAgeFitSync = false;
+                if (this.applyAgeCameraFit()) {
+                    if (!suppressAgeFitSync) {
+                        this.syncToNode(this.interfaceMode !== "studio");
+                    }
+                }
+            }
         });
     }
 
@@ -8119,11 +8408,7 @@ class PoseStudioWidget {
         this.genderBtns.female.classList.toggle("active", isFemale);
     }
 
-    onMeshParamsChanged(changedKey = null) {
-        if (changedKey === "age") {
-            this.pendingAgeCameraFit = true;
-        }
-
+    onMeshParamsChanged(changedKey = null, options = {}) {
         // Update node widgets
         for (const [key, value] of Object.entries(this.meshParams)) {
             const widget = this.node.widgets?.find(w => w.name === key);
@@ -8132,31 +8417,12 @@ class PoseStudioWidget {
             }
         }
 
-        // Async Queue update
-        this.pendingMeshUpdate = true;
+        const liveRequested = this.requestLiveMorph(changedKey);
+        if (options.liveOnly && liveRequested) {
+            return;
+        }
 
-        if (this.isMeshUpdating) return;
-        this.isMeshUpdating = true;
-        this.pendingMeshUpdate = false;
-
-        this.loadModel(false).finally(() => {
-            const hasPendingMeshUpdate = this.pendingMeshUpdate;
-            this.isMeshUpdating = false;
-            if (hasPendingMeshUpdate) {
-                this.onMeshParamsChanged();
-                return;
-            }
-            if (this.pendingAgeCameraFit) {
-                this.pendingAgeCameraFit = false;
-                const suppressAgeFitSync = this._suppressNextAgeFitSync === true;
-                this._suppressNextAgeFitSync = false;
-                if (this.applyAgeCameraFit()) {
-                    if (!suppressAgeFitSync) {
-                        this.syncToNode(this.interfaceMode !== "studio");
-                    }
-                }
-            }
-        });
+        this.queueFullMeshUpdate(changedKey);
     }
 
     resize() {
@@ -9315,8 +9581,16 @@ app.registerExtension({
                     cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
                     this.studioWidget.managerLayoutFrame = null;
                 }
+                if (this.studioWidget._managerPreviewRefreshFrame) {
+                    cancelAnimationFrame(this.studioWidget._managerPreviewRefreshFrame);
+                    this.studioWidget._managerPreviewRefreshFrame = null;
+                }
                 if (this.studioWidget._resizeRaf) {
                     cancelAnimationFrame(this.studioWidget._resizeRaf);
+                }
+                if (this.studioWidget._morphWorker) {
+                    try { this.studioWidget._morphWorker.terminate(); } catch (_) {}
+                    this.studioWidget._morphWorker = null;
                 }
                 if (this.studioWidget.viewer) {
                     this.studioWidget.viewer.dispose();

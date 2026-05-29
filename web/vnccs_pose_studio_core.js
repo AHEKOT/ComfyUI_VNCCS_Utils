@@ -2500,6 +2500,87 @@ export class PoseViewerCore {
         return { geometry, vertices, indices };
     }
 
+    updateBodyVertices(vertices, bonePositions = null) {
+        if (!this.initialized || !this.skinnedMesh || !this.skinnedMesh.geometry || !vertices) return false;
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry.getAttribute('position');
+        if (!position || position.array.length !== vertices.length) return false;
+
+        const savedRotations = new Map();
+        let savedMeshRotation = null;
+        if (bonePositions && this.boneList?.length && bonePositions.length >= this.boneList.length * 6) {
+            for (const bone of this.boneList) {
+                savedRotations.set(bone.name, bone.rotation.clone());
+                bone.rotation.set(0, 0, 0);
+            }
+            savedMeshRotation = this.skinnedMesh.rotation.clone();
+            this.skinnedMesh.rotation.set(0, 0, 0);
+        }
+
+        position.array.set(vertices);
+        position.needsUpdate = true;
+        geometry.computeVertexNormals();
+        geometry.computeBoundingBox();
+        geometry.computeBoundingSphere();
+        if (geometry.boundingBox && this.THREE) {
+            if (!this.meshCenter) this.meshCenter = new this.THREE.Vector3();
+            geometry.boundingBox.getCenter(this.meshCenter);
+        }
+
+        if (bonePositions && this.boneList?.length && bonePositions.length >= this.boneList.length * 6) {
+            for (let i = 0; i < this.boneList.length; i++) {
+                const bone = this.boneList[i];
+                const offset = i * 6;
+                const head = [
+                    bonePositions[offset],
+                    bonePositions[offset + 1],
+                    bonePositions[offset + 2],
+                ];
+                const tail = [
+                    bonePositions[offset + 3],
+                    bonePositions[offset + 4],
+                    bonePositions[offset + 5],
+                ];
+                bone.userData.headPos = head;
+                bone.userData.tailPos = tail;
+
+                const parentName = bone.userData.parentName;
+                const parent = parentName ? this.bones?.[parentName] : null;
+                if (parent?.userData?.headPos) {
+                    const parentHead = parent.userData.headPos;
+                    bone.position.set(
+                        head[0] - parentHead[0],
+                        head[1] - parentHead[1],
+                        head[2] - parentHead[2]
+                    );
+                } else {
+                    bone.position.set(head[0], head[1], head[2]);
+                }
+
+                if (this.initialBoneStates?.[bone.name]) {
+                    this.initialBoneStates[bone.name].position.copy(bone.position);
+                }
+            }
+
+            this.skinnedMesh.updateMatrixWorld(true);
+            for (const bone of this.boneList) bone.updateMatrixWorld(true);
+            if (this.skeleton?.calculateInverses) {
+                this.skeleton.calculateInverses();
+            }
+
+            for (const bone of this.boneList) {
+                const rotation = savedRotations.get(bone.name);
+                if (rotation) bone.rotation.copy(rotation);
+            }
+            if (savedMeshRotation) this.skinnedMesh.rotation.copy(savedMeshRotation);
+            if (this.skeleton) this.skeleton.update();
+            this.updateIKEffectorPositions?.();
+        }
+
+        this.requestRender();
+        return true;
+    }
+
     _initSkeleton(data, geometry, vertices) {
         const THREE = this.THREE;
         this.bones = {};

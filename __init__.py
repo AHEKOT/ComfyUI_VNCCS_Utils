@@ -33,12 +33,14 @@ import os
 import json
 import re
 import numpy as np
+import struct
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _CAPTURE_CACHE_MAX_IMAGES = 16
 _CAPTURE_CACHE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _SAM3D_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 _SAM3D_MAX_PIXELS = 4096 * 4096
+_VNCCS_MORPH_DATA_BINARY = None
 
 def _vnccs_content_length_ok(request, max_bytes):
     try:
@@ -318,6 +320,93 @@ def _vnccs_register_endpoint():
                 "landmarks": landmarks_for_frontend,
                 "landmark_indices": landmark_indices_for_frontend
             })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/character_studio/morph_data.bin")
+    async def vnccs_character_studio_morph_data(request):
+        try:
+            global _VNCCS_MORPH_DATA_BINARY
+            if _VNCCS_MORPH_DATA_BINARY is None:
+                from .nodes.pose_studio import POSE_STUDIO_CACHE, _ensure_data_loaded
+
+                _ensure_data_loaded()
+                base_mesh = POSE_STUDIO_CACHE["base_mesh"]
+                targets = POSE_STUDIO_CACHE["targets"] or []
+
+                buffers = []
+                header = {
+                    "version": 1,
+                    "vertex_count": int(len(base_mesh.vertices)),
+                    "base_vertices": {"offset": 0, "length": int(base_mesh.vertices.size)},
+                    "targets": [],
+                    "joints": {},
+                    "bones": [],
+                }
+
+                offset = 0
+                base_vertices = np.asarray(base_mesh.vertices, dtype="<f4")
+                base_bytes = base_vertices.tobytes(order="C")
+                buffers.append(base_bytes)
+                offset += len(base_bytes)
+
+                for target in targets:
+                    data = target.get("data")
+                    if data is None:
+                        continue
+                    indices, deltas = data
+                    indices = np.asarray(indices, dtype="<u4")
+                    deltas = np.asarray(deltas, dtype="<f4").reshape(-1, 3)
+                    if len(indices) == 0 or len(deltas) != len(indices):
+                        continue
+
+                    indices_bytes = indices.tobytes(order="C")
+                    deltas_bytes = deltas.tobytes(order="C")
+                    target_header = {
+                        "tags": target.get("tags", {}),
+                        "count": int(len(indices)),
+                        "indices": {"offset": offset, "length": int(len(indices))},
+                    }
+                    buffers.append(indices_bytes)
+                    offset += len(indices_bytes)
+                    target_header["deltas"] = {"offset": offset, "length": int(deltas.size)}
+                    buffers.append(deltas_bytes)
+                    offset += len(deltas_bytes)
+                    header["targets"].append(target_header)
+
+                skeleton = POSE_STUDIO_CACHE.get("skeleton")
+                if skeleton:
+                    header["joints"] = {
+                        name: [int(index) for index in indices]
+                        for name, indices in skeleton.joint_pos_idxs.items()
+                    }
+                    header["bones"] = [
+                        {
+                            "name": bone.name,
+                            "parent": bone.parent.name if bone.parent else None,
+                            "head_joint": bone.headJoint,
+                            "tail_joint": bone.tailJoint,
+                        }
+                        for bone in skeleton.getBones()
+                    ]
+
+                header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+                header_padding = b"\0" * ((4 - ((12 + len(header_bytes)) % 4)) % 4)
+                _VNCCS_MORPH_DATA_BINARY = (
+                    b"VNMORPH1"
+                    + struct.pack("<I", len(header_bytes))
+                    + header_bytes
+                    + header_padding
+                    + b"".join(buffers)
+                )
+
+            return web.Response(
+                body=_VNCCS_MORPH_DATA_BINARY,
+                content_type="application/octet-stream",
+                headers={"Cache-Control": "no-store"},
+            )
         except Exception as e:
             import traceback
             traceback.print_exc()
