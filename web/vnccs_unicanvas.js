@@ -1111,7 +1111,7 @@ class UniCanvasWidget {
     if (!staging?.img || staging.visible === false) return;
     const placement = this.getStagingImageRect();
     ctx.save();
-    ctx.globalAlpha = 0.96;
+    ctx.globalAlpha = 1;
     ctx.drawImage(staging.img, placement.x, placement.y, placement.width, placement.height);
     ctx.restore();
   }
@@ -1123,10 +1123,10 @@ class UniCanvasWidget {
       this.stagingControls.classList.remove("visible");
       return;
     }
-    const placement = this.getStagingImageRect();
-    const left = this.view.x + (placement.x + placement.width / 2) * this.view.scale;
-    const top = this.view.y + (placement.y + placement.height) * this.view.scale + 8;
-    const maxWidth = Math.max(72, Math.min(placement.width * this.view.scale, 180));
+    const bbox = staging.bbox || this.bbox;
+    const left = this.view.x + (bbox.x + bbox.width / 2) * this.view.scale;
+    const top = this.view.y + (bbox.y + bbox.height) * this.view.scale + 8;
+    const maxWidth = Math.max(72, Math.min(bbox.width * this.view.scale, 180));
     this.stagingControls.style.left = `${Math.round(left)}px`;
     this.stagingControls.style.top = `${Math.round(top)}px`;
     this.stagingControls.style.width = `${Math.round(maxWidth)}px`;
@@ -1495,7 +1495,7 @@ class UniCanvasWidget {
     this.view.y = rect.height / 2 - (this.bbox.y + this.bbox.height / 2) * this.view.scale;
   }
 
-  exportCanvas(type, inferenceSize = this.getInferenceSize()) {
+  makeExportCanvas(type, inferenceSize = this.getInferenceSize()) {
     const out = document.createElement("canvas");
     out.width = Math.max(64, Math.round(inferenceSize.width));
     out.height = Math.max(64, Math.round(inferenceSize.height));
@@ -1523,7 +1523,73 @@ class UniCanvasWidget {
       );
       ctx.restore();
     }
-    return out.toDataURL("image/png");
+    if (type === "mask") this.sanitizeMaskCanvas(out);
+    return out;
+  }
+
+  sanitizeMaskCanvas(canvas) {
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    for (let i = 0; i < data.length; i += 4) {
+      const alpha = data[i + 3];
+      data[i] = alpha > 0 ? 255 : 0;
+      data[i + 1] = alpha > 0 ? 255 : 0;
+      data[i + 2] = alpha > 0 ? 255 : 0;
+      data[i + 3] = alpha;
+    }
+    ctx.putImageData(imageData, 0, 0);
+  }
+
+  sanitizeMaskLayer(layer) {
+    if (!layer || layer.type !== "mask") return;
+    this.sanitizeMaskCanvas(layer.canvas);
+  }
+
+  exportCanvas(type, inferenceSize = this.getInferenceSize()) {
+    return this.makeExportCanvas(type, inferenceSize).toDataURL("image/png");
+  }
+
+  getCanvasAlphaStats(canvas) {
+    const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    let minX = canvas.width;
+    let minY = canvas.height;
+    let maxX = -1;
+    let maxY = -1;
+    let alphaSum = 0;
+    let nonzero = 0;
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        const alpha = data[(y * canvas.width + x) * 4 + 3];
+        alphaSum += alpha;
+        if (alpha > 8) {
+          nonzero++;
+          if (x < minX) minX = x;
+          if (y < minY) minY = y;
+          if (x > maxX) maxX = x;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+    return {
+      size: { width: canvas.width, height: canvas.height },
+      alphaSum,
+      nonzeroAlphaPixels: nonzero,
+      bboxAlphaGt8: nonzero ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } : null,
+    };
+  }
+
+  getLayerDebugSummary() {
+    return this.layers.map((layer, index) => ({
+      index,
+      id: layer.id,
+      name: layer.name,
+      type: layer.type,
+      visible: layer.visible,
+      locked: layer.locked,
+      opacity: layer.opacity,
+      alpha: layer.type === "mask" ? this.getCanvasAlphaStats(layer.canvas) : null,
+    }));
   }
 
   async draw() {
@@ -1536,12 +1602,29 @@ class UniCanvasWidget {
       this.setStatus("Select Anima diffusion, CLIP and VAE first", true);
       return;
     }
-    const mode = this.hasMaskContent() ? "inpaint" : "img2img";
+    const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const mode = this.hasMaskContentInBbox() ? "inpaint" : "img2img";
     const inferenceSize = this.getInferenceSize();
     const outputSize = {
       width: Math.max(64, Math.round(this.bbox.width)),
       height: Math.max(64, Math.round(this.bbox.height)),
     };
+    const imageCanvas = this.makeExportCanvas("image", inferenceSize);
+    const maskCanvas = this.makeExportCanvas("mask", inferenceSize);
+    const debug = {
+      debugId,
+      mode,
+      bbox: { ...this.bbox },
+      origin: { ...this.origin },
+      worldSize: { ...this.size },
+      view: { ...this.view },
+      inferenceSize,
+      outputSize,
+      layers: this.getLayerDebugSummary(),
+      maskInBbox: this.getMaskContentInBboxStats(),
+      exportedMask: this.getCanvasAlphaStats(maskCanvas),
+    };
+    console.debug("[VNCCS UniCanvas] DRAW request", debug);
     this.setStatus(`Drawing ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
     this.drawBtn.disabled = true;
     try {
@@ -1549,20 +1632,33 @@ class UniCanvasWidget {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          debug_id: debugId,
           mode,
-          image: this.exportCanvas("image", inferenceSize),
-          mask: this.exportCanvas("mask", inferenceSize),
+          image: imageCanvas.toDataURL("image/png"),
+          mask: maskCanvas.toDataURL("image/png"),
           bbox: this.bbox,
           inference_size: inferenceSize,
           output_size: outputSize,
           settings: this.settings,
+          debug,
         }),
       });
       const data = await res.json();
+      console.debug("[VNCCS UniCanvas] DRAW response", { debugId, data });
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const url = this.imageResultToURL(data.image);
       const img = await this.loadImage(url);
-      this.addStagingItem({ url, bbox: { ...this.bbox }, displaySize: outputSize, inferenceSize, image: data.image, img, visible: true });
+      this.addStagingItem({
+        url,
+        bbox: { ...this.bbox },
+        displaySize: outputSize,
+        inferenceSize,
+        image: data.image,
+        img,
+        visible: true,
+        mode,
+        maskCanvas: mode === "inpaint" ? maskCanvas : null,
+      });
       this.render();
       this.setStatus(`DRAW complete (${this.stagingItems.length} staged)`);
     } catch (err) {
@@ -1586,11 +1682,24 @@ class UniCanvasWidget {
     const staging = this.activeStaging;
     if (!staging) return;
     const img = staging.img || await this.loadImage(staging.url);
-    const placement = this.getImageFitInRect(img, staging.bbox || this.bbox);
+    const placement = this.getStagingImageRect();
     const layer = this.addLayer("raster", "DRAW Result");
     this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128);
     this.ensureWorldBounds(placement.x, placement.y, 128);
-    layer.canvas.getContext("2d").drawImage(img, placement.x - this.origin.x, placement.y - this.origin.y, placement.width, placement.height);
+    const ctx = layer.canvas.getContext("2d");
+    if (staging.mode === "inpaint" && staging.maskCanvas) {
+      const masked = document.createElement("canvas");
+      masked.width = placement.width;
+      masked.height = placement.height;
+      const maskedCtx = masked.getContext("2d");
+      maskedCtx.drawImage(img, 0, 0, placement.width, placement.height);
+      maskedCtx.globalCompositeOperation = "destination-in";
+      maskedCtx.drawImage(staging.maskCanvas, 0, 0, placement.width, placement.height);
+      maskedCtx.globalCompositeOperation = "source-over";
+      ctx.drawImage(masked, placement.x - this.origin.x, placement.y - this.origin.y);
+    } else {
+      ctx.drawImage(img, placement.x - this.origin.x, placement.y - this.origin.y, placement.width, placement.height);
+    }
     this.removeActiveStagingItem();
     this.render();
     this.renderLayerList();
@@ -1647,7 +1756,8 @@ class UniCanvasWidget {
       if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
         throw new Error("Canvas is too large for PSD export");
       }
-      const children = visibleLayers.map((layer, index) => {
+      const psdLayers = [...visibleLayers].reverse();
+      const children = psdLayers.map((layer, index) => {
         const crop = this.getCanvasAlphaBounds(layer.canvas);
         const canvas = document.createElement("canvas");
         canvas.width = crop.width;
@@ -1815,6 +1925,7 @@ class UniCanvasWidget {
             layer.canvas.getContext("2d").drawImage(img, 0, 0);
           }
         }
+        this.sanitizeMaskLayer(layer);
         layers.push(layer);
       }
       if (layers.length) {
@@ -1838,6 +1949,51 @@ class UniCanvasWidget {
       }
     }
     return false;
+  }
+
+  hasMaskContentInBbox() {
+    return this.getMaskContentInBboxStats().nonzeroAlphaPixels > 0;
+  }
+
+  getMaskContentInBboxStats() {
+    const sx = Math.max(0, Math.floor(this.bbox.x - this.origin.x));
+    const sy = Math.max(0, Math.floor(this.bbox.y - this.origin.y));
+    const ex = Math.min(this.size.width, Math.ceil(this.bbox.x + this.bbox.width - this.origin.x));
+    const ey = Math.min(this.size.height, Math.ceil(this.bbox.y + this.bbox.height - this.origin.y));
+    const width = Math.max(0, ex - sx);
+    const height = Math.max(0, ey - sy);
+    const stats = {
+      crop: { x: sx, y: sy, width, height },
+      alphaSum: 0,
+      nonzeroAlphaPixels: 0,
+      bboxAlphaGt8: null,
+    };
+    if (!width || !height) return stats;
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+    for (const layer of this.layers) {
+      if (layer.type !== "mask" || !layer.visible) continue;
+      const data = layer.canvas.getContext("2d").getImageData(sx, sy, width, height).data;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const alpha = data[(y * width + x) * 4 + 3];
+          stats.alphaSum += alpha;
+          if (alpha > 8) {
+            stats.nonzeroAlphaPixels++;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+          }
+        }
+      }
+    }
+    if (stats.nonzeroAlphaPixels) {
+      stats.bboxAlphaGt8 = { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+    }
+    return stats;
   }
 
   dispose() {
