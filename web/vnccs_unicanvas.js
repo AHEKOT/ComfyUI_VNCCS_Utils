@@ -85,6 +85,7 @@ const STAGE_SNAP_TOLERANCE = 0.02;
 const ZOOM_DRAG_PIXELS_PER_DOUBLING = 240;
 const MAX_LAYER_CANVAS_SIDE = 8192;
 const MAX_LAYER_CANVAS_PIXELS = 32 * 1024 * 1024;
+const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 
 class UniCanvasWidget {
   constructor(node) {
@@ -372,12 +373,23 @@ class UniCanvasWidget {
       opacity: 1,
       canvas: this._createCanvas(),
     };
+    this.invalidateLayerCaches(layer);
     this.layers.unshift(layer);
     this.activeLayerId = layer.id;
     this.renderLayerList();
     this.render();
     this.syncToNode();
     return layer;
+  }
+
+  invalidateLayerCaches(layer) {
+    if (!layer) return;
+    layer._boundsCache = undefined;
+    layer._thumbCache = undefined;
+  }
+
+  invalidateAllLayerCaches() {
+    for (const layer of this.layers) this.invalidateLayerCaches(layer);
   }
 
   get activeLayer() {
@@ -429,6 +441,7 @@ class UniCanvasWidget {
       if (target.dataset.control === "opacity") this.opacity = Number(target.value);
       if (target.dataset.control === "layerOpacity" && this.activeLayer) {
         this.activeLayer.opacity = Number(target.value);
+        this.invalidateLayerCaches(this.activeLayer);
         this.renderLayerList();
         this.syncToNode();
       }
@@ -650,6 +663,7 @@ class UniCanvasWidget {
       this.pointerMode = "layer-move";
       this.dragStart.layerCanvas = this.cloneCanvas(this.activeLayer.canvas);
       this.dragStart.layerOrigin = { ...this.origin };
+      this.dragStart.layerBounds = this.getCanvasAlphaBounds(this.dragStart.layerCanvas);
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       const lastToolPoint = this.lastDrawPointByTool[this.pointerMode];
@@ -776,6 +790,7 @@ class UniCanvasWidget {
     ctx.fillStyle = layer.type === "mask" ? "#fff" : this.fg;
     ctx.fillRect(rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
     ctx.restore();
+    this.invalidateLayerCaches(layer);
   }
 
   appendLassoPoint(point) {
@@ -810,6 +825,7 @@ class UniCanvasWidget {
     ctx.closePath();
     ctx.fill();
     ctx.restore();
+    this.invalidateLayerCaches(layer);
   }
 
   cloneCanvas(canvas) {
@@ -824,7 +840,7 @@ class UniCanvasWidget {
     const layer = this.activeLayer;
     if (!layer || !this.dragStart?.layerCanvas) return;
     const sourceOrigin = this.dragStart.layerOrigin || this.origin;
-    const crop = this.getCanvasAlphaBounds(this.dragStart.layerCanvas);
+    const crop = this.dragStart.layerBounds;
     if (crop) {
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + dx, sourceOrigin.y + crop.y + dy, 256)) return;
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + crop.width + dx, sourceOrigin.y + crop.y + crop.height + dy, 256)) return;
@@ -836,6 +852,7 @@ class UniCanvasWidget {
       Math.round(sourceOrigin.x - this.origin.x + dx),
       Math.round(sourceOrigin.y - this.origin.y + dy)
     );
+    this.invalidateLayerCaches(layer);
   }
 
   alignCoordForTool(point, width) {
@@ -1021,6 +1038,7 @@ class UniCanvasWidget {
       next.height = newH;
       next.getContext("2d").drawImage(layer.canvas, this.origin.x - left, this.origin.y - top);
       layer.canvas = next;
+      this.invalidateLayerCaches(layer);
     }
     this.origin = { x: left, y: top };
     this.size = { width: newW, height: newH };
@@ -1054,6 +1072,7 @@ class UniCanvasWidget {
     ctx.lineTo(end.x - this.origin.x, end.y - this.origin.y);
     ctx.stroke();
     ctx.restore();
+    this.invalidateLayerCaches(layer);
     if (this.tool in this.lastDrawPointByTool) this.lastDrawPointByTool[this.tool] = { x: b.x, y: b.y };
   }
 
@@ -1075,6 +1094,7 @@ class UniCanvasWidget {
     ctx.translate(this.view.x, this.view.y);
     ctx.scale(this.view.scale, this.view.scale);
     ctx.imageSmoothingEnabled = false;
+    this._visibleWorldRectForRender = this.visibleWorldRect();
     for (const layer of [...this.layers].reverse()) {
       if (!layer.visible) continue;
       ctx.save();
@@ -1082,10 +1102,11 @@ class UniCanvasWidget {
         this.drawMaskLayer(ctx, layer);
       } else {
         ctx.globalAlpha = layer.opacity;
-        ctx.drawImage(layer.canvas, this.origin.x, this.origin.y);
+        this.drawLayerCanvasVisible(ctx, layer.canvas);
       }
       ctx.restore();
     }
+    this._visibleWorldRectForRender = null;
     this.drawStagingOverlay(ctx);
     this.drawShapeDraft(ctx);
     this.drawLassoDraft(ctx);
@@ -1110,16 +1131,46 @@ class UniCanvasWidget {
   }
 
   drawMaskLayer(ctx, layer) {
-    const tint = document.createElement("canvas");
-    tint.width = layer.canvas.width;
-    tint.height = layer.canvas.height;
+    const crop = this.getVisibleLayerCrop(layer.canvas);
+    if (!crop) return;
+    const tint = this.getMaskTintScratch(crop.sw, crop.sh);
     const tintCtx = tint.getContext("2d");
-    tintCtx.drawImage(layer.canvas, 0, 0);
+    tintCtx.clearRect(0, 0, tint.width, tint.height);
+    tintCtx.globalCompositeOperation = "source-over";
+    tintCtx.drawImage(layer.canvas, crop.sx, crop.sy, crop.sw, crop.sh, 0, 0, crop.sw, crop.sh);
     tintCtx.globalCompositeOperation = "source-in";
     tintCtx.fillStyle = MASK_OVERLAY_COLOR;
-    tintCtx.globalAlpha = layer.opacity;
-    tintCtx.fillRect(0, 0, tint.width, tint.height);
-    ctx.drawImage(tint, this.origin.x, this.origin.y);
+    tintCtx.fillRect(0, 0, crop.sw, crop.sh);
+    tintCtx.globalCompositeOperation = "source-over";
+    ctx.save();
+    ctx.globalAlpha = layer.opacity;
+    ctx.drawImage(tint, 0, 0, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
+    ctx.restore();
+  }
+
+  getMaskTintScratch(width, height) {
+    if (!this._maskTintScratch) this._maskTintScratch = document.createElement("canvas");
+    if (this._maskTintScratch.width !== width) this._maskTintScratch.width = width;
+    if (this._maskTintScratch.height !== height) this._maskTintScratch.height = height;
+    return this._maskTintScratch;
+  }
+
+  drawLayerCanvasVisible(ctx, canvas) {
+    const crop = this.getVisibleLayerCrop(canvas);
+    if (!crop) return;
+    ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
+  }
+
+  getVisibleLayerCrop(canvas) {
+    const visible = this._visibleWorldRectForRender || this.visibleWorldRect();
+    const sx = Math.max(0, Math.floor(visible.x - this.origin.x));
+    const sy = Math.max(0, Math.floor(visible.y - this.origin.y));
+    const ex = Math.min(canvas.width, Math.ceil(visible.x + visible.width - this.origin.x));
+    const ey = Math.min(canvas.height, Math.ceil(visible.y + visible.height - this.origin.y));
+    const sw = Math.max(0, ex - sx);
+    const sh = Math.max(0, ey - sy);
+    if (!sw || !sh) return null;
+    return { sx, sy, sw, sh, dx: this.origin.x + sx, dy: this.origin.y + sy };
   }
 
   get activeStaging() {
@@ -1150,13 +1201,42 @@ class UniCanvasWidget {
     return removed || null;
   }
 
+  makeMaskedStagingCanvas(staging, img, width, height) {
+    const cacheWidth = Math.max(1, Math.round(width));
+    const cacheHeight = Math.max(1, Math.round(height));
+    if (
+      staging._maskedCanvas &&
+      staging._maskedCanvas.width === cacheWidth &&
+      staging._maskedCanvas.height === cacheHeight &&
+      staging._maskedSource === img &&
+      staging._maskedMask === staging.maskCanvas
+    ) {
+      return staging._maskedCanvas;
+    }
+    const masked = document.createElement("canvas");
+    masked.width = cacheWidth;
+    masked.height = cacheHeight;
+    const maskedCtx = masked.getContext("2d");
+    maskedCtx.drawImage(img, 0, 0, masked.width, masked.height);
+    if ((staging.mode === "inpaint" || staging.mode === "outpaint") && staging.maskCanvas) {
+      maskedCtx.globalCompositeOperation = "destination-in";
+      maskedCtx.drawImage(staging.maskCanvas, 0, 0, masked.width, masked.height);
+      maskedCtx.globalCompositeOperation = "source-over";
+    }
+    staging._maskedCanvas = masked;
+    staging._maskedSource = img;
+    staging._maskedMask = staging.maskCanvas;
+    return masked;
+  }
+
   drawStagingOverlay(ctx) {
     const staging = this.activeStaging;
     if (!staging?.img || staging.visible === false) return;
     const placement = this.getStagingImageRect();
+    const masked = this.makeMaskedStagingCanvas(staging, staging.img, placement.width, placement.height);
     ctx.save();
     ctx.globalAlpha = 1;
-    ctx.drawImage(staging.img, placement.x, placement.y, placement.width, placement.height);
+    ctx.drawImage(masked, placement.x, placement.y, placement.width, placement.height);
     ctx.restore();
   }
 
@@ -1395,15 +1475,28 @@ class UniCanvasWidget {
     const ctx = canvas.getContext("2d");
     const size = canvas.width;
     ctx.clearRect(0, 0, size, size);
+    const base = this.getLayerThumbnailCanvas(layer, size);
+    ctx.drawImage(base, 0, 0);
+    if (!layer.visible) this.drawHiddenSlash(ctx, size);
+  }
+
+  getLayerThumbnailCanvas(layer, size) {
+    if (layer._thumbCache && layer._thumbCache.width === size && layer._thumbCache.height === size) {
+      return layer._thumbCache;
+    }
+    const thumb = document.createElement("canvas");
+    thumb.width = size;
+    thumb.height = size;
+    const ctx = thumb.getContext("2d");
     this.drawCheckerboard(ctx, size, 5);
-    const crop = this.getCanvasAlphaBounds(layer.canvas);
+    const crop = this.getLayerAlphaBounds(layer);
     if (!crop) {
       ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.38)" : "rgba(255,255,255,.18)";
       ctx.beginPath();
       ctx.arc(size / 2, size / 2, size * 0.17, 0, Math.PI * 2);
       ctx.fill();
-      if (!layer.visible) this.drawHiddenSlash(ctx, size);
-      return;
+      layer._thumbCache = thumb;
+      return thumb;
     }
     const scale = Math.min((size - 8) / crop.width, (size - 8) / crop.height);
     const w = Math.max(1, crop.width * scale);
@@ -1425,7 +1518,8 @@ class UniCanvasWidget {
       ctx.drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, x, y, w, h);
       ctx.globalAlpha = 1;
     }
-    if (!layer.visible) this.drawHiddenSlash(ctx, size);
+    layer._thumbCache = thumb;
+    return thumb;
   }
 
   drawHiddenSlash(ctx, size) {
@@ -1475,6 +1569,7 @@ class UniCanvasWidget {
       canvas: this._createCanvas(),
     };
     copy.canvas.getContext("2d").drawImage(layer.canvas, 0, 0);
+    this.invalidateLayerCaches(copy);
     const index = this.layers.findIndex((l) => l.id === layer.id);
     this.layers.splice(Math.max(0, index), 0, copy);
     this.activeLayerId = copy.id;
@@ -1503,6 +1598,7 @@ class UniCanvasWidget {
     const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""));
     const ctx = layer.canvas.getContext("2d");
     ctx.drawImage(img, this.bbox.x - this.origin.x, this.bbox.y - this.origin.y);
+    this.invalidateLayerCaches(layer);
     this.render();
     this.syncToNode();
   }
@@ -1809,19 +1905,9 @@ class UniCanvasWidget {
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
     const layer = this.addLayer("raster", "DRAW Result");
     const ctx = layer.canvas.getContext("2d");
-    if ((staging.mode === "inpaint" || staging.mode === "outpaint") && staging.maskCanvas) {
-      const masked = document.createElement("canvas");
-      masked.width = placement.width;
-      masked.height = placement.height;
-      const maskedCtx = masked.getContext("2d");
-      maskedCtx.drawImage(img, 0, 0, placement.width, placement.height);
-      maskedCtx.globalCompositeOperation = "destination-in";
-      maskedCtx.drawImage(staging.maskCanvas, 0, 0, placement.width, placement.height);
-      maskedCtx.globalCompositeOperation = "source-over";
-      ctx.drawImage(masked, placement.x - this.origin.x, placement.y - this.origin.y);
-    } else {
-      ctx.drawImage(img, placement.x - this.origin.x, placement.y - this.origin.y, placement.width, placement.height);
-    }
+    const masked = this.makeMaskedStagingCanvas(staging, img, placement.width, placement.height);
+    ctx.drawImage(masked, placement.x - this.origin.x, placement.y - this.origin.y);
+    this.invalidateLayerCaches(layer);
     this.removeActiveStagingItem();
     this.render();
     this.renderLayerList();
@@ -1962,19 +2048,15 @@ class UniCanvasWidget {
     if (this._isRestoring) return;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
-    const state = this.buildSerializedState(true);
+    const state = this.buildSerializedState(false);
     const compactState = {
       ...state,
-      layers: state.layers.map((layer) => ({
-        ...layer,
-        dataURL: null,
-        cached: Boolean(layer.dataURL),
-      })),
+      layers: state.layers.map((layer) => ({ ...layer, cached: layer.crop !== null })),
     };
     widget.value = JSON.stringify(compactState);
     widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas?.(true, true);
-    this.scheduleStateUpload(state);
+    this.scheduleStateUpload();
   }
 
   buildSerializedState(includeLayerData) {
@@ -1997,23 +2079,25 @@ class UniCanvasWidget {
     return this.stateCacheId;
   }
 
-  scheduleStateUpload(state) {
+  scheduleStateUpload() {
     clearTimeout(this.stateUploadTimer);
-    this.pendingStateUpload = state;
-    void this.uploadStateSnapshot();
+    this.pendingStateUpload = true;
+    this.stateUploadTimer = window.setTimeout(() => {
+      void this.uploadStateSnapshot();
+    }, STATE_UPLOAD_DEBOUNCE_MS);
   }
 
   flushStateUpload(keepalive = false) {
     clearTimeout(this.stateUploadTimer);
-    const state = this.pendingStateUpload || this.buildSerializedState(true);
+    const state = this.buildSerializedState(true);
     this.pendingStateUpload = null;
     return this.uploadStatePayload(state, keepalive);
   }
 
   async uploadStateSnapshot() {
-    const state = this.pendingStateUpload;
-    if (!state) return;
+    if (!this.pendingStateUpload) return;
     this.pendingStateUpload = null;
+    const state = this.buildSerializedState(true);
     return this.uploadStatePayload(state, false);
   }
 
@@ -2041,7 +2125,7 @@ class UniCanvasWidget {
   }
 
   serializeLayer(layer, includeData = true) {
-    const crop = this.getCanvasAlphaBounds(layer.canvas);
+    const crop = this.getLayerAlphaBounds(layer);
     const payload = {
       id: layer.id,
       name: layer.name,
@@ -2059,6 +2143,12 @@ class UniCanvasWidget {
     out.getContext("2d").drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
     payload.dataURL = out.toDataURL("image/png");
     return payload;
+  }
+
+  getLayerAlphaBounds(layer) {
+    if (layer._boundsCache !== undefined) return layer._boundsCache;
+    layer._boundsCache = this.getCanvasAlphaBounds(layer.canvas);
+    return layer._boundsCache;
   }
 
   getCanvasAlphaBounds(canvas) {

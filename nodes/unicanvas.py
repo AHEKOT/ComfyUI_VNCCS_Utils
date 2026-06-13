@@ -118,6 +118,22 @@ def _latent_debug(latent: Any) -> dict[str, Any]:
     }
 
 
+def _conditioning_debug(conditioning: Any) -> dict[str, Any]:
+    if not isinstance(conditioning, list):
+        return {"type": type(conditioning).__name__, "is_list": False}
+    entries = []
+    for item in conditioning[:2]:
+        entry: dict[str, Any] = {"type": type(item).__name__}
+        if isinstance(item, (list, tuple)) and len(item) > 1 and isinstance(item[1], dict):
+            metadata = item[1]
+            entry["keys"] = sorted(str(key) for key in metadata.keys())
+            for key in ("concat_latent_image", "concat_mask"):
+                if key in metadata:
+                    entry[key] = _tensor_debug(metadata.get(key))
+        entries.append(entry)
+    return {"type": type(conditioning).__name__, "is_list": True, "count": len(conditioning), "entries": entries}
+
+
 class VNCCS_UniCanvas:
     """A ComfyUI node that hosts the VNCCS UniCanvas editor.
 
@@ -239,7 +255,7 @@ def _max_filter2d_weighted(image: torch.Tensor, kernel: torch.Tensor) -> torch.T
     return result
 
 
-def _make_outpaint_denoise_mask(mask_image: Image.Image, edge_radius: int, draw_id: str) -> tuple[Image.Image, Image.Image]:
+def _make_gradient_denoise_mask(mask_image: Image.Image, edge_radius: int, draw_id: str) -> tuple[Image.Image, Image.Image]:
     """Comfy noise mask + expanded paste area: white/1 means denoise."""
     hard = np.where(np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8) > 8, 255, 0).astype(np.uint8)
     width, height = mask_image.size
@@ -255,7 +271,7 @@ def _make_outpaint_denoise_mask(mask_image: Image.Image, edge_radius: int, draw_
     expanded_area = Image.fromarray(np.where(np.asarray(denoise, dtype=np.uint8) > 1, 255, 0).astype(np.uint8), mode="L")
     _uc_log(
         draw_id,
-        "outpaint denoise mask prepared",
+        "gradient denoise mask prepared",
         {
             "edge_radius": edge_radius,
             "latent_edge_radius": latent_radius,
@@ -266,7 +282,7 @@ def _make_outpaint_denoise_mask(mask_image: Image.Image, edge_radius: int, draw_
     return denoise, expanded_area
 
 
-def _make_outpaint_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_id: str) -> Image.Image:
+def _make_gradient_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_id: str) -> Image.Image:
     """Paste mask: white chooses generated pixels, black keeps the source."""
     hard = Image.fromarray(
         np.where(np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8) > 8, 255, 0).astype(np.uint8),
@@ -282,7 +298,7 @@ def _make_outpaint_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_i
     paste_image = Image.fromarray(paste.astype(np.uint8), mode="L")
     _uc_log(
         draw_id,
-        "outpaint paste mask prepared",
+        "gradient paste mask prepared",
         {
             "fade_size_px": fade,
             "mask": _tensor_debug(torch.from_numpy(paste.astype(np.float32) / 255.0)[None,]),
@@ -796,6 +812,74 @@ def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tens
     return encoded
 
 
+def _prepare_inpaint_model_conditioning(
+    positive: Any,
+    negative: Any,
+    vae: Any,
+    image_tensor: torch.Tensor,
+    mask: torch.Tensor,
+    grow_mask_by: int,
+    draw_id: str = "unknown",
+) -> tuple[Any, Any, dict[str, Any]]:
+    import node_helpers
+    import nodes
+
+    try:
+        encoded = nodes.InpaintModelConditioning().encode(
+            positive=positive,
+            negative=negative,
+            pixels=image_tensor,
+            vae=vae,
+            mask=mask,
+            noise_mask=True,
+        )
+        if isinstance(encoded, tuple) and len(encoded) >= 3 and isinstance(encoded[2], dict):
+            native_positive, native_negative, native_latent = encoded[:3]
+            _uc_log(
+                draw_id,
+                "InpaintModelConditioning returned",
+                {
+                    "positive": _conditioning_debug(native_positive),
+                    "negative": _conditioning_debug(native_negative),
+                    "latent": _latent_debug(native_latent),
+                },
+            )
+            return native_positive, native_negative, native_latent
+        _uc_log(draw_id, "InpaintModelConditioning returned unexpected output", {"type": type(encoded).__name__})
+    except Exception as exc:
+        _uc_log(draw_id, "InpaintModelConditioning failed; using manual fallback", {"error": str(exc)})
+
+    encode_pixels, noise_mask = _prepare_noise_mask_for_latent(vae, image_tensor, mask, grow_mask_by)
+    masked_pixels = encode_pixels.clone()
+    pixel_mask = noise_mask.round().squeeze(1)
+    for channel in range(3):
+        masked_pixels[:, :, :, channel] -= 0.5
+        masked_pixels[:, :, :, channel] *= 1.0 - pixel_mask
+        masked_pixels[:, :, :, channel] += 0.5
+
+    latent = nodes.VAEEncode().encode(vae, encode_pixels)[0]
+    latent["noise_mask"] = noise_mask
+    concat_latent = nodes.VAEEncode().encode(vae, masked_pixels)[0]["samples"]
+    positive = node_helpers.conditioning_set_values(
+        positive,
+        {"concat_latent_image": concat_latent, "concat_mask": noise_mask},
+    )
+    negative = node_helpers.conditioning_set_values(
+        negative,
+        {"concat_latent_image": concat_latent, "concat_mask": noise_mask},
+    )
+    _uc_log(
+        draw_id,
+        "manual inpaint conditioning returned",
+        {
+            "positive": _conditioning_debug(positive),
+            "negative": _conditioning_debug(negative),
+            "latent": _latent_debug(latent),
+        },
+    )
+    return positive, negative, latent
+
+
 def _create_empty_generation_latent(width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
     generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
     if generation_mode == "anima":
@@ -1077,16 +1161,19 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 mask_image = mask_image.resize(source.size, Image.Resampling.BILINEAR)
             if mode == "outpaint":
                 mask_image = _combine_mask_with_source_alpha(mask_image, source_rgba)
-                denoise_mask_image, expanded_mask_area = _make_outpaint_denoise_mask(
+                denoise_mask_image, expanded_mask_area = _make_gradient_denoise_mask(
                     mask_image, coherence_edge_size, draw_id
                 )
-                paste_mask_image = _make_outpaint_paste_mask(expanded_mask_area, mask_blur, draw_id)
+                paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
                 source = _infill_masked_rgb(source_rgba, mask_image, draw_id)
                 source_for_composite = source_rgba.convert("RGB")
                 mask = _pil_to_mask_tensor(denoise_mask_image)
             else:
-                paste_mask_image = mask_image
-                mask = _pil_to_mask_tensor(mask_image)
+                denoise_mask_image, expanded_mask_area = _make_gradient_denoise_mask(
+                    mask_image, coherence_edge_size, draw_id
+                )
+                paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
+                mask = _pil_to_mask_tensor(denoise_mask_image)
             mask_for_debug = _pil_to_mask_image(mask_image)
             _uc_log(
                 draw_id,
@@ -1109,6 +1196,16 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         if mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
+        elif mode in {"inpaint", "outpaint"} and mask is not None:
+            positive, negative, latent = _prepare_inpaint_model_conditioning(
+                positive=positive,
+                negative=negative,
+                vae=vae,
+                image_tensor=image_tensor,
+                mask=mask,
+                grow_mask_by=grow_mask_by,
+                draw_id=draw_id,
+            )
         else:
             latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
         latent = _sample_generation_latent(
@@ -1131,7 +1228,18 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
 
     output_size = (output_width, output_height)
     if mode in {"inpaint", "outpaint"} and mask_image is not None:
-        result_image = _composite_inpaint_result(source_for_composite, result_image, paste_mask_image or mask_image, output_size, draw_id)
+        if result_image.size != output_size:
+            _uc_log(draw_id, "masked result resized to output size", {"from": result_image.size, "to": output_size})
+            result_image = result_image.resize(output_size, Image.Resampling.LANCZOS)
+        _uc_log(
+            draw_id,
+            "masked-region output",
+            {
+                "note": "Returning raw generated pixels plus paste mask; frontend stores only masked regions as the layer.",
+                "result_size": result_image.size,
+                "paste_mask_size": paste_mask_image.size if paste_mask_image is not None else mask_image.size,
+            },
+        )
     elif result_image.size != output_size:
         _uc_log(draw_id, "result resized to output size", {"from": result_image.size, "to": (output_width, output_height)})
         result_image = result_image.resize(output_size, Image.Resampling.LANCZOS)
