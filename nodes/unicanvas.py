@@ -506,6 +506,16 @@ def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tens
     return nodes.VAEEncode().encode(vae, image_tensor)[0]
 
 
+def _ensure_direct_sampling_prompt_context(prompt_id: str = "unicanvas_draw") -> None:
+    try:
+        from server import PromptServer
+
+        if not hasattr(PromptServer.instance, "last_prompt_id"):
+            PromptServer.instance.last_prompt_id = prompt_id
+    except Exception:
+        pass
+
+
 def _sample_generation_latent(
     model: Any,
     positive: Any,
@@ -521,26 +531,27 @@ def _sample_generation_latent(
 ):
     import nodes
 
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
-        sampled = _call_node_method(
-            ["KSampler"],
-            ["sample"],
-            model=model,
-            seed=seed,
-            steps=steps,
-            cfg=cfg,
-            sampler_name=sampler_name,
-            scheduler=scheduler,
-            positive=positive,
-            negative=negative,
-            latent_image=latent,
-            latent=latent,
-            denoise=denoise,
-        )
-        if isinstance(sampled, tuple) and sampled:
-            return sampled[0]
-        if sampled is not None:
-            return sampled
+    _ensure_direct_sampling_prompt_context()
+
+    sampled = _call_node_method(
+        ["KSampler"],
+        ["sample"],
+        model=model,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler_name=sampler_name,
+        scheduler=scheduler,
+        positive=positive,
+        negative=negative,
+        latent_image=latent,
+        latent=latent,
+        denoise=denoise,
+    )
+    if isinstance(sampled, tuple) and sampled:
+        return sampled[0]
+    if sampled is not None:
+        return sampled
 
     return nodes.common_ksampler(
         model=model,
@@ -648,6 +659,20 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     source = _decode_data_url(str(payload.get("image") or ""), "RGB")
     image_tensor = _pil_to_image_tensor(source)
     width, height = source.size
+    inference_payload = payload.get("inference_size") or {}
+    expected_width = int(inference_payload.get("width") or width)
+    expected_height = int(inference_payload.get("height") or height)
+    if (width, height) != (expected_width, expected_height):
+        raise ValueError(
+            f"inference_size mismatch: payload says {expected_width}x{expected_height}, image is {width}x{height}"
+        )
+    output_payload = payload.get("output_size") or {}
+    output_width = int(output_payload.get("width") or width)
+    output_height = int(output_payload.get("height") or height)
+    if output_width < 1 or output_height < 1:
+        raise ValueError("output_size must be positive")
+    if output_width * output_height > _MAX_PIXELS:
+        raise ValueError("output_size is too large")
 
     with torch.inference_mode():
         model, clip, vae = _load_generation_assets(settings)
@@ -681,12 +706,17 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         decoded = _decode_generation_samples(vae, latent, settings)
         result_image = _image_tensor_to_pil(decoded)
 
+    if result_image.size != (output_width, output_height):
+        result_image = result_image.resize((output_width, output_height), Image.Resampling.LANCZOS)
+
     saved = _save_temp_image(result_image)
     return {
         "status": "ok",
         "image": saved,
-        "width": width,
-        "height": height,
+        "width": output_width,
+        "height": output_height,
+        "inference_width": width,
+        "inference_height": height,
         "generation_mode": settings.get("generation_mode", "illustrious"),
     }
 

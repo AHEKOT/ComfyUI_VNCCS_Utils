@@ -10,9 +10,9 @@ const STYLES = `
   --uc-hover:rgba(44,40,62,.95); --uc-border:rgba(255,255,255,.08);
   --uc-accent:#ff8fa3; --uc-accent-2:#b8a9e8; --uc-text:#e8e8f0; --uc-muted:#9898a8;
   --uc-danger:#ff4757; --uc-good:#00d68f; --uc-font:'Sora',-apple-system,BlinkMacSystemFont,sans-serif;
-  width:100%; height:100%; min-height:620px; display:grid; grid-template-columns:minmax(0,1fr) 238px;
+  width:100%; height:100%; display:grid; grid-template-columns:minmax(0,1fr) 238px;
   grid-template-rows:minmax(0,1fr) 92px; background:var(--uc-bg); color:var(--uc-text);
-  font:11px var(--uc-font); overflow:hidden; border-radius:12px; pointer-events:auto; position:relative;
+  font:11px var(--uc-font); overflow:hidden; border-radius:12px; pointer-events:auto; position:relative; box-sizing:border-box;
 }
 .vnccs-uc-stage-wrap { grid-column:1; grid-row:1; position:relative; min-width:0; min-height:0; overflow:hidden; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
@@ -22,8 +22,9 @@ const STYLES = `
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-layers { flex:1; min-height:140px; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:5px; }
-.vnccs-uc-layer { display:grid; grid-template-columns:22px 1fr 22px 22px; gap:5px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
+.vnccs-uc-layer { display:grid; grid-template-columns:34px 1fr 22px 22px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
 .vnccs-uc-layer.active { border-color:rgba(255,143,163,.55); background:rgba(255,143,163,.12); }
+.vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:1; grid-row:2; display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:stretch; padding:8px; border-top:1px solid var(--uc-border); background:rgba(6,5,12,.75); }
@@ -42,10 +43,16 @@ const STYLES = `
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
 .vnccs-uc-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
-.vnccs-uc-staging { min-height:92px; display:flex; flex-direction:column; gap:6px; }
-.vnccs-uc-preview { width:100%; aspect-ratio:1.5; background:rgba(255,255,255,.035); border:1px dashed var(--uc-border); border-radius:8px; object-fit:contain; }
 .vnccs-uc-status { min-height:16px; color:var(--uc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-file { display:none; }
+.vnccs-uc-row { display:flex; gap:6px; align-items:center; }
+.vnccs-uc-staging-popover {
+  position:absolute; display:none; gap:6px; align-items:center; justify-content:center; z-index:5;
+  padding:6px; background:rgba(10,10,15,.88); border:1px solid rgba(255,255,255,.14);
+  border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.38); pointer-events:auto;
+}
+.vnccs-uc-staging-popover.visible { display:flex; }
+.vnccs-uc-staging-count { min-width:34px; text-align:center; color:var(--uc-muted); font-weight:700; }
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -57,6 +64,13 @@ if (!document.getElementById("vnccs-unicanvas-styles")) {
 
 const uid = () => `uc_${Math.random().toString(36).slice(2, 10)}`;
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
+const STAGE_MIN_SCALE = 0.1;
+const STAGE_MAX_SCALE = 20;
+const STAGE_FIT_PADDING_PX = 48;
+const STAGE_SCALE_FACTOR = 0.999;
+const STAGE_SNAP_POINTS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5];
+const STAGE_SNAP_TOLERANCE = 0.02;
+const ZOOM_DRAG_PIXELS_PER_DOUBLING = 240;
 
 class UniCanvasWidget {
   constructor(node) {
@@ -76,14 +90,21 @@ class UniCanvasWidget {
     this.hoverPoint = null;
     this.hoverPointerType = "mouse";
     this.brushSize = 48;
+    this.lastDrawPointByTool = { brush: null, eraser: null, mask: null };
     this.opacity = 1;
     this.fg = "#ffffff";
     this.isPointerDown = false;
     this.pointerMode = null;
     this.lastPoint = null;
     this.dragStart = null;
+    this.zoomDragStart = null;
+    this.intendedScale = 1;
+    this.activeSnapPoint = null;
+    this.lastScrollEventTimestamp = null;
+    this.snapTimeout = null;
     this.didInitialCenter = false;
-    this.staging = null;
+    this.stagingItems = [];
+    this.activeStagingIndex = -1;
     this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = {
@@ -97,6 +118,7 @@ class UniCanvasWidget {
       dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
       dmd_lora_strength: 1,
       lora_stack: [],
+      inference_scale: 1,
       positive: "",
       negative: "",
       seed: 0,
@@ -133,6 +155,22 @@ class UniCanvasWidget {
     this.hud = document.createElement("div");
     this.hud.className = "vnccs-uc-hud";
     this.stageWrap.appendChild(this.hud);
+    this.stagingControls = document.createElement("div");
+    this.stagingControls.className = "vnccs-uc-staging-popover";
+    this.stagingPrevBtn = this._button("‹", "vnccs-uc-icon", () => this.selectRelativeStaging(-1), "Previous result");
+    this.stagingCount = document.createElement("span");
+    this.stagingCount.className = "vnccs-uc-staging-count";
+    this.stagingNextBtn = this._button("›", "vnccs-uc-icon", () => this.selectRelativeStaging(1), "Next result");
+    this.stagingToggleBtn = this._button("◐", "vnccs-uc-icon", () => this.toggleStagingVisibility(), "Toggle before/after");
+    this.stagingControls.append(
+      this._button("×", "vnccs-uc-icon danger", () => this.discardStaging(), "Discard"),
+      this.stagingPrevBtn,
+      this.stagingCount,
+      this.stagingNextBtn,
+      this.stagingToggleBtn,
+      this._button("✓", "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
+    );
+    this.stageWrap.appendChild(this.stagingControls);
 
     this.side = document.createElement("div");
     this.side.className = "vnccs-uc-side";
@@ -153,6 +191,7 @@ class UniCanvasWidget {
         <option value="illustrious">SDXL checkpoint</option>
         <option value="anima">Anima</option>
       </select></label>
+      <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" min="0.125" step="0.125"></label>
       <label class="vnccs-uc-field">Checkpoint<select class="vnccs-uc-select" data-setting="ckpt_name"></select></label>
       <label class="vnccs-uc-field">Diffusion<select class="vnccs-uc-select" data-setting="diffusion_model_name"></select></label>
       <label class="vnccs-uc-field">CLIP<select class="vnccs-uc-select" data-setting="clip_name"></select></label>
@@ -167,18 +206,11 @@ class UniCanvasWidget {
       </div>`;
     const promptSection = this._section("Draw", this.promptBox);
 
-    this.stagingBox = document.createElement("div");
-    this.stagingBox.className = "vnccs-uc-stack vnccs-uc-staging";
-    this.preview = document.createElement("img");
-    this.preview.className = "vnccs-uc-preview";
-    const accept = this._button("Accept as layer", "vnccs-uc-btn", () => this.acceptStaging());
     this.status = document.createElement("div");
     this.status.className = "vnccs-uc-status";
     this.status.textContent = "Ready";
-    this.stagingBox.append(this.preview, accept, this.status);
-    const stagingSection = this._section("Staging", this.stagingBox);
 
-    this.side.append(layersSection, promptSection, stagingSection);
+    this.side.append(layersSection, promptSection);
 
     this.bottom = document.createElement("div");
     this.bottom.className = "vnccs-uc-bottom";
@@ -211,8 +243,9 @@ class UniCanvasWidget {
 
     this.actions = document.createElement("div");
     this.actions.className = "vnccs-uc-actions";
+    this.psdBtn = this._button("PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD");
     this.drawBtn = this._button("DRAW", "vnccs-uc-btn primary", () => this.draw());
-    this.actions.append(this.drawBtn);
+    this.actions.append(this.status, this.psdBtn, this.drawBtn);
     this.bottom.append(this.tools, this.settingsBar, this.actions, this.fileInput);
 
     this.container.append(this.stageWrap, this.side, this.bottom);
@@ -348,6 +381,7 @@ class UniCanvasWidget {
       if (!key) return;
       this.settings[key] = target.type === "number" ? Number(target.value) : target.value;
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
+      if (key === "inference_scale") this.syncInferenceControls();
       this.syncToNode();
     });
     this.setTool(this.tool);
@@ -402,7 +436,44 @@ class UniCanvasWidget {
       this.settings.steps = 24;
       this.settings.cfg = 7;
     }
+    this.syncInferenceControls();
     this.syncPromptControls();
+  }
+
+  getModelBase() {
+    return (this.settings.generation_mode || "illustrious") === "anima" ? "anima" : "sdxl";
+  }
+
+  getGridSize() {
+    return 8;
+  }
+
+  getOptimalDimension() {
+    return 1024;
+  }
+
+  getInferenceSize() {
+    const originalSize = {
+      width: Math.max(64, Math.round(this.bbox.width)),
+      height: Math.max(64, Math.round(this.bbox.height)),
+    };
+    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    const targetSide = this.getOptimalDimension() * scale;
+    const targetArea = targetSide * targetSide;
+    const aspectRatio = originalSize.width / originalSize.height;
+    const width = Math.sqrt(targetArea * aspectRatio);
+    const height = width / aspectRatio;
+    return {
+      width: Math.max(64, this.roundToMultiple(width, this.getGridSize())),
+      height: Math.max(64, this.roundToMultiple(height, this.getGridSize())),
+    };
+  }
+
+  syncInferenceControls() {
+    const scaleInput = this.container.querySelector('[data-setting="inference_scale"]');
+    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    this.settings.inference_scale = scale;
+    if (scaleInput) scaleInput.value = scale;
   }
 
   _escape(value) {
@@ -412,10 +483,12 @@ class UniCanvasWidget {
   resize() {
     const rect = this.stageWrap.getBoundingClientRect();
     const dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.max(1, Math.floor(rect.width * dpr));
-    this.canvas.height = Math.max(1, Math.floor(rect.height * dpr));
-    this.canvas.style.width = `${rect.width}px`;
-    this.canvas.style.height = `${rect.height}px`;
+    const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
+    const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
+    if (this.canvas.width !== nextWidth) this.canvas.width = nextWidth;
+    if (this.canvas.height !== nextHeight) this.canvas.height = nextHeight;
+    this.canvas.style.width = "100%";
+    this.canvas.style.height = "100%";
     if (!this.didInitialCenter && rect.width > 0 && rect.height > 0) {
       this.centerBbox(false);
       this.didInitialCenter = true;
@@ -471,6 +544,15 @@ class UniCanvasWidget {
     this.lastPoint = point;
     this.dragStart = { point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
     this.pointerMode = e.button === 1 ? "pan" : this.tool;
+    if (e.button === 1 && (e.ctrlKey || e.metaKey)) {
+      this.pointerMode = "zoom-drag";
+      this.zoomDragStart = {
+        pointerId: e.pointerId,
+        clientY: e.clientY,
+        scale: this.view.scale,
+        center: screen,
+      };
+    }
     if (this.pointerMode === "bbox") {
       const bboxHandle = this.hitBboxHandle(point);
       if (bboxHandle) {
@@ -491,7 +573,14 @@ class UniCanvasWidget {
       this.pointerMode = "layer-move";
       this.dragStart.layerCanvas = this.cloneCanvas(this.activeLayer.canvas);
     }
-    if (["brush", "eraser", "mask"].includes(this.pointerMode)) this.drawStroke(point, point);
+    if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
+      const lastToolPoint = this.lastDrawPointByTool[this.pointerMode];
+      if (e.shiftKey && lastToolPoint) {
+        this.drawStroke(lastToolPoint, point);
+      } else {
+        this.drawStroke(point, point);
+      }
+    }
   }
 
   onPointerMove(e) {
@@ -508,8 +597,12 @@ class UniCanvasWidget {
     if (this.pointerMode === "pan" || (this.pointerMode === "move" && e.altKey)) {
       this.view.x = this.dragStart.view.x + (screen.x - this.dragStart.screen.x);
       this.view.y = this.dragStart.view.y + (screen.y - this.dragStart.screen.y);
+    } else if (this.pointerMode === "zoom-drag" && this.zoomDragStart?.pointerId === e.pointerId) {
+      const deltaY = e.clientY - this.zoomDragStart.clientY;
+      const scaleFactor = 2 ** (-deltaY / ZOOM_DRAG_PIXELS_PER_DOUBLING);
+      this.setStageScale(this.zoomDragStart.scale * scaleFactor, this.zoomDragStart.center);
     } else if (this.pointerMode === "bbox-move") {
-      const grid = e.shiftKey ? 8 : 1;
+      const grid = e.ctrlKey || e.metaKey ? 8 : 64;
       this.bbox.x = this.roundToMultiple(this.dragStart.bbox.x + point.x - this.dragStart.point.x, grid);
       this.bbox.y = this.roundToMultiple(this.dragStart.bbox.y + point.y - this.dragStart.point.y, grid);
     } else if (this.pointerMode === "bbox-resize") {
@@ -531,6 +624,7 @@ class UniCanvasWidget {
     if (!this.isPointerDown) return;
     e?.preventDefault?.();
     e?.stopPropagation?.();
+    const finishedMode = this.pointerMode;
     if (this.pointerMode === "rect" && this.shapeDraft) {
       this.commitRectShape();
     }
@@ -541,8 +635,11 @@ class UniCanvasWidget {
     this.pointerMode = null;
     this.lastPoint = null;
     this.dragStart = null;
+    this.zoomDragStart = null;
     this.shapeDraft = null;
     this.lassoPoints = [];
+    if (finishedMode === "bbox-resize") this.syncInferenceControls();
+    this.renderLayerList();
     this.syncToNode();
   }
 
@@ -610,7 +707,7 @@ class UniCanvasWidget {
   }
 
   commitLassoShape() {
-    const layer = this.activeLayer;
+    const layer = this.getOrCreateMaskLayer();
     if (!layer || layer.locked || this.lassoPoints.length < 3) return;
     const bounds = this.lassoPoints.reduce((acc, p) => ({
       minX: Math.min(acc.minX, p.x),
@@ -680,22 +777,49 @@ class UniCanvasWidget {
     const box = { ...this.dragStart.bbox };
     const handle = this.dragStart.bboxHandle || "";
     const grid = event?.ctrlKey || event?.metaKey ? 8 : 64;
+    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     let left = box.x;
     let right = box.x + box.width;
     let top = box.y;
     let bottom = box.y + box.height;
-    if (handle.includes("w")) left = point.x;
-    if (handle.includes("e")) right = point.x;
-    if (handle.includes("n")) top = point.y;
-    if (handle.includes("s")) bottom = point.y;
+    if (event?.altKey) {
+      if (handle.includes("w") || handle.includes("e")) {
+        const halfWidth = Math.abs(point.x - center.x);
+        left = center.x - halfWidth;
+        right = center.x + halfWidth;
+      }
+      if (handle.includes("n") || handle.includes("s")) {
+        const halfHeight = Math.abs(point.y - center.y);
+        top = center.y - halfHeight;
+        bottom = center.y + halfHeight;
+      }
+    } else {
+      if (handle.includes("w")) left = point.x;
+      if (handle.includes("e")) right = point.x;
+      if (handle.includes("n")) top = point.y;
+      if (handle.includes("s")) bottom = point.y;
+    }
     if (right - left < 64) handle.includes("w") ? left = right - 64 : right = left + 64;
     if (bottom - top < 64) handle.includes("n") ? top = bottom - 64 : bottom = top + 64;
     let width = this.roundToMultiple(Math.max(64, right - left), grid);
     let height = this.roundToMultiple(Math.max(64, bottom - top), grid);
+    if (event?.shiftKey && !event?.altKey) {
+      const ratio = box.width / box.height;
+      if (width / height > ratio) width = this.roundToMultiple(height * ratio, grid);
+      else height = this.roundToMultiple(width / ratio, grid);
+      width = Math.max(64, width);
+      height = Math.max(64, height);
+    }
     if (handle.includes("w")) left = right - width;
     else right = left + width;
     if (handle.includes("n")) top = bottom - height;
     else bottom = top + height;
+    if (event?.altKey) {
+      left = center.x - width / 2;
+      top = center.y - height / 2;
+      right = center.x + width / 2;
+      bottom = center.y + height / 2;
+    }
     this.bbox = {
       x: Math.round(left),
       y: Math.round(top),
@@ -712,13 +836,73 @@ class UniCanvasWidget {
   onWheel(e) {
     e.preventDefault();
     e.stopPropagation();
+    if (e.ctrlKey || e.metaKey) return;
     const screen = this.canvasPointFromEvent(e);
-    const before = this.worldFromCanvasPoint(screen);
-    const factor = e.deltaY > 0 ? 0.92 : 1.087;
-    this.view.scale = Math.min(8, Math.max(0.08, this.view.scale * factor));
-    this.view.x = screen.x - before.x * this.view.scale;
-    this.view.y = screen.y - before.y * this.view.scale;
+    const now = window.performance.now();
+    const deltaT = this.lastScrollEventTimestamp === null ? Infinity : now - this.lastScrollEventTimestamp;
+    this.lastScrollEventTimestamp = now;
+    let dynamicScaleFactor = STAGE_SCALE_FACTOR;
+    if (deltaT > 300) {
+      dynamicScaleFactor = STAGE_SCALE_FACTOR + (1 - STAGE_SCALE_FACTOR) / 2;
+    } else if (deltaT < 300) {
+      dynamicScaleFactor = Math.min(STAGE_SCALE_FACTOR + (1 - STAGE_SCALE_FACTOR) * (deltaT / 200), 0.9999);
+    }
+    const scaleFactor = e.deltaY > 0
+      ? dynamicScaleFactor ** Math.abs(e.deltaY)
+      : (1 / dynamicScaleFactor) ** Math.abs(e.deltaY);
+    this.intendedScale = this.constrainStageScale(this.intendedScale * scaleFactor);
+    this.updateScaleWithSnapping(screen);
+    if (this.snapTimeout !== null) window.clearTimeout(this.snapTimeout);
+    this.snapTimeout = window.setTimeout(() => {
+      this.intendedScale = this.view.scale;
+    }, 300);
     this.render();
+  }
+
+  constrainStageScale(scale) {
+    return Math.min(STAGE_MAX_SCALE, Math.max(STAGE_MIN_SCALE, scale));
+  }
+
+  setStageScale(scale, center = null) {
+    const nextScale = this.constrainStageScale(scale);
+    this.intendedScale = nextScale;
+    this.activeSnapPoint = null;
+    this.applyStageScale(nextScale, center);
+  }
+
+  applyStageScale(newScale, center = null) {
+    const oldScale = this.view.scale;
+    const zoomCenter = center || {
+      x: this.stageWrap.getBoundingClientRect().width / 2,
+      y: this.stageWrap.getBoundingClientRect().height / 2,
+    };
+    const deltaX = (zoomCenter.x - this.view.x) / oldScale;
+    const deltaY = (zoomCenter.y - this.view.y) / oldScale;
+    this.view.x = zoomCenter.x - deltaX * newScale;
+    this.view.y = zoomCenter.y - deltaY * newScale;
+    this.view.scale = newScale;
+  }
+
+  updateScaleWithSnapping(center) {
+    if (this.activeSnapPoint !== null) {
+      const threshold = this.activeSnapPoint * STAGE_SNAP_TOLERANCE;
+      if (Math.abs(this.intendedScale - this.activeSnapPoint) > threshold) {
+        this.activeSnapPoint = null;
+        this.applyStageScale(this.intendedScale, center);
+      } else {
+        this.intendedScale = this.activeSnapPoint;
+      }
+      return;
+    }
+    for (const snapPoint of STAGE_SNAP_POINTS) {
+      const threshold = snapPoint * STAGE_SNAP_TOLERANCE;
+      if (Math.abs(this.intendedScale - snapPoint) < threshold) {
+        this.activeSnapPoint = snapPoint;
+        this.applyStageScale(snapPoint, center);
+        return;
+      }
+    }
+    this.applyStageScale(this.intendedScale, center);
   }
 
   ensureWorldBounds(x, y, padding = 256) {
@@ -772,6 +956,7 @@ class UniCanvasWidget {
     ctx.lineTo(end.x - this.origin.x, end.y - this.origin.y);
     ctx.stroke();
     ctx.restore();
+    if (this.tool in this.lastDrawPointByTool) this.lastDrawPointByTool[this.tool] = { x: b.x, y: b.y };
   }
 
   getOrCreateMaskLayer() {
@@ -803,12 +988,15 @@ class UniCanvasWidget {
       }
       ctx.restore();
     }
+    this.drawStagingOverlay(ctx);
     this.drawShapeDraft(ctx);
     this.drawLassoDraft(ctx);
     this.drawBbox(ctx);
     this.drawToolPreview(ctx);
     ctx.restore();
-    this.hud.innerHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span>`;
+    const inferenceSize = this.getInferenceSize();
+    this.hud.innerHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
+    this.updateStagingControls();
   }
 
   drawBackground(ctx, w, h) {
@@ -834,6 +1022,105 @@ class UniCanvasWidget {
     tintCtx.globalAlpha = layer.opacity;
     tintCtx.fillRect(0, 0, tint.width, tint.height);
     ctx.drawImage(tint, this.origin.x, this.origin.y);
+  }
+
+  get activeStaging() {
+    if (!this.stagingItems.length) return null;
+    if (this.activeStagingIndex < 0 || this.activeStagingIndex >= this.stagingItems.length) {
+      this.activeStagingIndex = this.stagingItems.length - 1;
+    }
+    return this.stagingItems[this.activeStagingIndex] || null;
+  }
+
+  addStagingItem(item) {
+    this.stagingItems.push(item);
+    this.activeStagingIndex = this.stagingItems.length - 1;
+  }
+
+  selectRelativeStaging(direction) {
+    if (this.stagingItems.length < 2) return;
+    const count = this.stagingItems.length;
+    this.activeStagingIndex = (this.activeStagingIndex + direction + count) % count;
+    this.render();
+  }
+
+  removeActiveStagingItem() {
+    if (!this.stagingItems.length) return null;
+    const index = Math.max(0, Math.min(this.activeStagingIndex, this.stagingItems.length - 1));
+    const [removed] = this.stagingItems.splice(index, 1);
+    this.activeStagingIndex = this.stagingItems.length ? Math.min(index, this.stagingItems.length - 1) : -1;
+    return removed || null;
+  }
+
+  drawStagingOverlay(ctx) {
+    const staging = this.activeStaging;
+    if (!staging?.img || staging.visible === false) return;
+    const placement = this.getStagingImageRect();
+    ctx.save();
+    ctx.globalAlpha = 0.96;
+    ctx.drawImage(staging.img, placement.x, placement.y, placement.width, placement.height);
+    ctx.restore();
+  }
+
+  updateStagingControls() {
+    if (!this.stagingControls) return;
+    const staging = this.activeStaging;
+    if (!staging?.img) {
+      this.stagingControls.classList.remove("visible");
+      return;
+    }
+    const placement = this.getStagingImageRect();
+    const left = this.view.x + (placement.x + placement.width / 2) * this.view.scale;
+    const top = this.view.y + (placement.y + placement.height) * this.view.scale + 8;
+    const maxWidth = Math.max(72, Math.min(placement.width * this.view.scale, 180));
+    this.stagingControls.style.left = `${Math.round(left)}px`;
+    this.stagingControls.style.top = `${Math.round(top)}px`;
+    this.stagingControls.style.width = `${Math.round(maxWidth)}px`;
+    this.stagingControls.style.transform = "translateX(-50%)";
+    if (this.stagingCount) this.stagingCount.textContent = `${this.activeStagingIndex + 1}/${this.stagingItems.length}`;
+    if (this.stagingPrevBtn) this.stagingPrevBtn.disabled = this.stagingItems.length < 2;
+    if (this.stagingNextBtn) this.stagingNextBtn.disabled = this.stagingItems.length < 2;
+    if (this.stagingToggleBtn) {
+      const visible = staging.visible !== false;
+      this.stagingToggleBtn.classList.toggle("active", visible);
+      this.stagingToggleBtn.textContent = visible ? "◐" : "○";
+      this.stagingToggleBtn.title = visible ? "Hide result preview" : "Show result preview";
+    }
+    this.stagingControls.classList.add("visible");
+  }
+
+  getImageFitInRect(img, rect) {
+    const imgW = img?.naturalWidth || img?.width || rect.width;
+    const imgH = img?.naturalHeight || img?.height || rect.height;
+    const scale = Math.min(rect.width / Math.max(1, imgW), rect.height / Math.max(1, imgH));
+    const width = Math.max(1, Math.round(imgW * scale));
+    const height = Math.max(1, Math.round(imgH * scale));
+    return {
+      x: Math.round(rect.x + (rect.width - width) / 2),
+      y: Math.round(rect.y + (rect.height - height) / 2),
+      width,
+      height,
+    };
+  }
+
+  getStagingImageRect() {
+    const staging = this.activeStaging;
+    const rect = staging?.bbox || this.bbox;
+    const img = staging?.img;
+    if (staging?.displaySize) {
+      return {
+        x: rect.x,
+        y: rect.y,
+        width: staging.displaySize.width,
+        height: staging.displaySize.height,
+      };
+    }
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: img?.naturalWidth || img?.width || rect.width,
+      height: img?.naturalHeight || img?.height || rect.height,
+    };
   }
 
   drawBbox(ctx) {
@@ -914,10 +1201,9 @@ class UniCanvasWidget {
   drawLassoDraft(ctx) {
     if (this.lassoPoints.length < 2) return;
     ctx.save();
-    ctx.globalAlpha = this.opacity;
-    ctx.fillStyle = this.shapeComposite === "destination-out" ? "rgba(255,255,255,.75)" : this.fg;
-    ctx.strokeStyle = "rgba(212,216,234,.9)";
-    ctx.lineWidth = 1 / this.view.scale;
+    ctx.fillStyle = "rgba(90,175,255,.2)";
+    ctx.strokeStyle = "rgba(90,175,255,1)";
+    ctx.lineWidth = 1.5 / this.view.scale;
     ctx.beginPath();
     this.lassoPoints.forEach((p, index) => {
       if (index === 0) ctx.moveTo(p.x, p.y);
@@ -976,11 +1262,17 @@ class UniCanvasWidget {
     for (const layer of this.layers) {
       const row = document.createElement("div");
       row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""}`;
-      row.innerHTML = `
-        <button class="vnccs-uc-icon" title="Visible">${layer.visible ? "●" : "○"}</button>
-        <div><div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}</div></div>
-        <button class="vnccs-uc-icon" title="Lock">${layer.locked ? "◆" : "◇"}</button>
-        <button class="vnccs-uc-icon danger" title="Delete">×</button>`;
+      const thumb = document.createElement("canvas");
+      thumb.className = "vnccs-uc-thumb";
+      thumb.title = layer.visible ? "Visible" : "Hidden";
+      thumb.width = 68;
+      thumb.height = 68;
+      this.drawLayerThumbnail(thumb, layer);
+      const label = document.createElement("div");
+      label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
+      const lock = this._button(layer.locked ? "◆" : "◇", "vnccs-uc-icon", null, "Lock");
+      const del = this._button("×", "vnccs-uc-icon danger", null, "Delete");
+      row.append(thumb, label, lock, del);
       row.addEventListener("click", () => {
         this.activeLayerId = layer.id;
         this.renderLayerList();
@@ -994,12 +1286,69 @@ class UniCanvasWidget {
           this.syncToNode();
         }
       });
-      row.children[0].addEventListener("click", (e) => { e.stopPropagation(); layer.visible = !layer.visible; this.renderLayerList(); this.render(); this.syncToNode(); });
-      row.children[2].addEventListener("click", (e) => { e.stopPropagation(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
-      row.children[3].addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
+      thumb.addEventListener("click", (e) => { e.stopPropagation(); layer.visible = !layer.visible; this.renderLayerList(); this.render(); this.syncToNode(); });
+      lock.addEventListener("click", (e) => { e.stopPropagation(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
+      del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
       this.layerList.append(row);
     }
     this.syncActiveLayerControls();
+  }
+
+  drawLayerThumbnail(canvas, layer) {
+    const ctx = canvas.getContext("2d");
+    const size = canvas.width;
+    ctx.clearRect(0, 0, size, size);
+    this.drawCheckerboard(ctx, size, 5);
+    const crop = this.getCanvasAlphaBounds(layer.canvas);
+    if (!crop) {
+      ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.38)" : "rgba(255,255,255,.18)";
+      ctx.beginPath();
+      ctx.arc(size / 2, size / 2, size * 0.17, 0, Math.PI * 2);
+      ctx.fill();
+      if (!layer.visible) this.drawHiddenSlash(ctx, size);
+      return;
+    }
+    const scale = Math.min((size - 8) / crop.width, (size - 8) / crop.height);
+    const w = Math.max(1, crop.width * scale);
+    const h = Math.max(1, crop.height * scale);
+    const x = (size - w) / 2;
+    const y = (size - h) / 2;
+    if (layer.type === "mask") {
+      const tint = document.createElement("canvas");
+      tint.width = crop.width;
+      tint.height = crop.height;
+      const tintCtx = tint.getContext("2d");
+      tintCtx.drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+      tintCtx.globalCompositeOperation = "source-in";
+      tintCtx.fillStyle = MASK_OVERLAY_COLOR;
+      tintCtx.fillRect(0, 0, crop.width, crop.height);
+      ctx.drawImage(tint, x, y, w, h);
+    } else {
+      ctx.globalAlpha = layer.opacity;
+      ctx.drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, x, y, w, h);
+      ctx.globalAlpha = 1;
+    }
+    if (!layer.visible) this.drawHiddenSlash(ctx, size);
+  }
+
+  drawHiddenSlash(ctx, size) {
+    ctx.strokeStyle = "rgba(255,255,255,.68)";
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(size * 0.22, size * 0.78);
+    ctx.lineTo(size * 0.78, size * 0.22);
+    ctx.stroke();
+  }
+
+  drawCheckerboard(ctx, size, cell = 5) {
+    ctx.fillStyle = "hsl(220 12% 10%)";
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = "hsl(220 12% 16%)";
+    for (let y = 0; y < size; y += cell) {
+      for (let x = 0; x < size; x += cell) {
+        if (((x / cell) + (y / cell)) % 2 === 0) ctx.fillRect(x, y, cell, cell);
+      }
+    }
   }
 
   syncActiveLayerControls() {
@@ -1078,23 +1427,24 @@ class UniCanvasWidget {
   centerBbox(allowZoomOut = false) {
     const rect = this.stageWrap.getBoundingClientRect();
     if (!rect.width || !rect.height) return;
-    const pad = 64;
     if (allowZoomOut) {
       const fitScale = Math.min(
-        (rect.width - pad * 2) / this.bbox.width,
-        (rect.height - pad * 2) / this.bbox.height,
-        this.view.scale
+        (rect.width - STAGE_FIT_PADDING_PX * 2) / this.bbox.width,
+        (rect.height - STAGE_FIT_PADDING_PX * 2) / this.bbox.height,
+        1
       );
-      this.view.scale = Math.max(0.08, fitScale);
+      this.view.scale = this.constrainStageScale(fitScale);
+      this.intendedScale = this.view.scale;
+      this.activeSnapPoint = null;
     }
     this.view.x = rect.width / 2 - (this.bbox.x + this.bbox.width / 2) * this.view.scale;
     this.view.y = rect.height / 2 - (this.bbox.y + this.bbox.height / 2) * this.view.scale;
   }
 
-  exportCanvas(type) {
+  exportCanvas(type, inferenceSize = this.getInferenceSize()) {
     const out = document.createElement("canvas");
-    out.width = Math.max(64, Math.round(this.bbox.width));
-    out.height = Math.max(64, Math.round(this.bbox.height));
+    out.width = Math.max(64, Math.round(inferenceSize.width));
+    out.height = Math.max(64, Math.round(inferenceSize.height));
     const ctx = out.getContext("2d");
     if (type === "image") {
       ctx.fillStyle = "#000";
@@ -1110,8 +1460,8 @@ class UniCanvasWidget {
         layer.canvas,
         this.bbox.x - this.origin.x,
         this.bbox.y - this.origin.y,
-        out.width,
-        out.height,
+        Math.max(1, Math.round(this.bbox.width)),
+        Math.max(1, Math.round(this.bbox.height)),
         0,
         0,
         out.width,
@@ -1133,7 +1483,12 @@ class UniCanvasWidget {
       return;
     }
     const mode = this.hasMaskContent() ? "inpaint" : "img2img";
-    this.setStatus(`Drawing ${mode}...`);
+    const inferenceSize = this.getInferenceSize();
+    const outputSize = {
+      width: Math.max(64, Math.round(this.bbox.width)),
+      height: Math.max(64, Math.round(this.bbox.height)),
+    };
+    this.setStatus(`Drawing ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
     this.drawBtn.disabled = true;
     try {
       const res = await fetch("/vnccs/unicanvas/draw", {
@@ -1141,18 +1496,21 @@ class UniCanvasWidget {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode,
-          image: this.exportCanvas("image"),
-          mask: this.exportCanvas("mask"),
+          image: this.exportCanvas("image", inferenceSize),
+          mask: this.exportCanvas("mask", inferenceSize),
           bbox: this.bbox,
+          inference_size: inferenceSize,
+          output_size: outputSize,
           settings: this.settings,
         }),
       });
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const url = this.imageResultToURL(data.image);
-      this.staging = { url, bbox: { ...this.bbox }, image: data.image };
-      this.preview.src = url;
-      this.setStatus("DRAW complete");
+      const img = await this.loadImage(url);
+      this.addStagingItem({ url, bbox: { ...this.bbox }, displaySize: outputSize, inferenceSize, image: data.image, img, visible: true });
+      this.render();
+      this.setStatus(`DRAW complete (${this.stagingItems.length} staged)`);
     } catch (err) {
       this.setStatus(`DRAW failed: ${err.message || err}`, true);
     } finally {
@@ -1171,13 +1529,133 @@ class UniCanvasWidget {
   }
 
   async acceptStaging() {
-    if (!this.staging) return;
-    const img = await this.loadImage(this.staging.url);
+    const staging = this.activeStaging;
+    if (!staging) return;
+    const img = staging.img || await this.loadImage(staging.url);
+    const placement = this.getImageFitInRect(img, staging.bbox || this.bbox);
     const layer = this.addLayer("raster", "DRAW Result");
-    this.ensureWorldBounds(this.staging.bbox.x + this.staging.bbox.width, this.staging.bbox.y + this.staging.bbox.height, 128);
-    layer.canvas.getContext("2d").drawImage(img, this.staging.bbox.x - this.origin.x, this.staging.bbox.y - this.origin.y, this.staging.bbox.width, this.staging.bbox.height);
+    this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128);
+    this.ensureWorldBounds(placement.x, placement.y, 128);
+    layer.canvas.getContext("2d").drawImage(img, placement.x - this.origin.x, placement.y - this.origin.y, placement.width, placement.height);
+    this.removeActiveStagingItem();
     this.render();
+    this.renderLayerList();
     this.syncToNode();
+  }
+
+  discardStaging() {
+    this.removeActiveStagingItem();
+    this.render();
+    this.setStatus(this.stagingItems.length ? `Staging discarded (${this.stagingItems.length} left)` : "Staging discarded");
+  }
+
+  toggleStagingVisibility() {
+    const staging = this.activeStaging;
+    if (!staging) return;
+    staging.visible = staging.visible === false;
+    this.render();
+  }
+
+  async loadAgPsd() {
+    if (this.agPsd) return this.agPsd;
+    if (window.agPsd?.writePsd) {
+      this.agPsd = window.agPsd;
+      return this.agPsd;
+    }
+    try {
+      this.agPsd = await import("./vendor/ag-psd.bundle.mjs");
+      return this.agPsd;
+    } catch (localErr) {
+      console.warn("[VNCCS UniCanvas] local ag-psd load failed, trying CDN", localErr);
+    }
+    try {
+      this.agPsd = await import("https://esm.sh/ag-psd@28.2.2?bundle");
+      return this.agPsd;
+    } catch (err) {
+      throw new Error(`ag-psd load failed: ${err.message || err}`);
+    }
+  }
+
+  async exportPSD() {
+    try {
+      this.setStatus("Preparing PSD...");
+      const { writePsd } = await this.loadAgPsd();
+      if (typeof writePsd !== "function") throw new Error("ag-psd writePsd is not available");
+      const visibleLayers = this.layers.filter((layer) => layer.visible && layer.type === "raster" && this.getCanvasAlphaBounds(layer.canvas));
+      if (!visibleLayers.length) {
+        this.setStatus("No visible raster layers to export", true);
+        return;
+      }
+      const visibleRect = this.getLayersVisibleWorldRect(visibleLayers);
+      const maxDimension = 8192;
+      const maxArea = maxDimension * maxDimension;
+      if (visibleRect.width <= 0 || visibleRect.height <= 0) throw new Error("Invalid PSD bounds");
+      if (visibleRect.width > maxDimension || visibleRect.height > maxDimension || visibleRect.width * visibleRect.height > maxArea) {
+        throw new Error("Canvas is too large for PSD export");
+      }
+      const children = visibleLayers.map((layer, index) => {
+        const crop = this.getCanvasAlphaBounds(layer.canvas);
+        const canvas = document.createElement("canvas");
+        canvas.width = crop.width;
+        canvas.height = crop.height;
+        canvas.getContext("2d").drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+        const worldX = this.origin.x + crop.x;
+        const worldY = this.origin.y + crop.y;
+        return {
+          name: layer.name || `Layer ${index + 1}`,
+          left: Math.floor(worldX - visibleRect.x),
+          top: Math.floor(worldY - visibleRect.y),
+          right: Math.floor(worldX - visibleRect.x + canvas.width),
+          bottom: Math.floor(worldY - visibleRect.y + canvas.height),
+          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
+          hidden: false,
+          blendMode: "normal",
+          canvas,
+        };
+      });
+      const psd = {
+        width: visibleRect.width,
+        height: visibleRect.height,
+        channels: 3,
+        bitsPerChannel: 8,
+        colorMode: 3,
+        children,
+      };
+      const buffer = writePsd(psd);
+      const blob = new Blob([buffer], { type: "application/octet-stream" });
+      this.downloadBlob(blob, `unicanvas-layers-${new Date().toISOString().slice(0, 10)}.psd`);
+      this.setStatus(`PSD exported: ${children.length} layers`);
+    } catch (err) {
+      this.setStatus(`PSD failed: ${err.message || err}`, true);
+    }
+  }
+
+  getLayersVisibleWorldRect(layers) {
+    const rects = layers.map((layer) => {
+      const crop = this.getCanvasAlphaBounds(layer.canvas);
+      return {
+        x: this.origin.x + crop.x,
+        y: this.origin.y + crop.y,
+        width: crop.width,
+        height: crop.height,
+      };
+    });
+    const left = Math.floor(Math.min(...rects.map((rect) => rect.x)));
+    const top = Math.floor(Math.min(...rects.map((rect) => rect.y)));
+    const right = Math.ceil(Math.max(...rects.map((rect) => rect.x + rect.width)));
+    const bottom = Math.ceil(Math.max(...rects.map((rect) => rect.y + rect.height)));
+    return { x: left, y: top, width: right - left, height: bottom - top };
+  }
+
+  downloadBlob(blob, fileName) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   setStatus(text, isError = false) {
@@ -1186,10 +1664,12 @@ class UniCanvasWidget {
   }
 
   syncPromptControls() {
+    this.syncInferenceControls();
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
       if (key in this.settings) el.value = this.settings[key];
     });
+    this.syncInferenceControls();
   }
 
   syncToNode() {
@@ -1316,6 +1796,27 @@ app.registerExtension({
   async beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData.name !== "VNCCS_UniCanvas") return;
 
+    const syncUniCanvasDOMWidgetWidth = (node) => {
+      const widget = node?.widgets?.find((w) => w.name === "unicanvas_ui");
+      const nodeWidth = Number(node?.size?.[0]);
+      if (widget && Number.isFinite(nodeWidth) && nodeWidth > 0) {
+        if (!widget._vnccsWidthBound) {
+          Object.defineProperty(widget, "width", {
+            configurable: true,
+            get() {
+              const width = Number(this._node?.size?.[0]);
+              return Number.isFinite(width) && width > 0 ? width : undefined;
+            },
+            set(_value) {
+              // Keep this DOM widget tied to the node width, matching Pose Studio.
+            },
+          });
+          widget._vnccsWidthBound = true;
+        }
+        if (typeof widget.triggerDraw === "function") widget.triggerDraw();
+      }
+    };
+
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       onCreated?.apply(this, arguments);
@@ -1326,6 +1827,8 @@ app.registerExtension({
         hideOnZoom: false,
       });
       this.uniCanvasDOMWidget = domWidget;
+      syncUniCanvasDOMWidgetWidth(this);
+      requestAnimationFrame(() => syncUniCanvasDOMWidgetWidth(this));
       const stateWidget = this.widgets?.find((w) => w.name === "unicanvas_state");
       if (stateWidget) {
         stateWidget.type = "hidden";
@@ -1337,8 +1840,12 @@ app.registerExtension({
     };
 
     nodeType.prototype.onResize = function () {
+      syncUniCanvasDOMWidgetWidth(this);
       clearTimeout(this._vnccsUniCanvasResizeTimer);
-      this._vnccsUniCanvasResizeTimer = setTimeout(() => this.uniCanvasWidget?.resize(), 40);
+      this._vnccsUniCanvasResizeTimer = setTimeout(() => {
+        syncUniCanvasDOMWidgetWidth(this);
+        this.uniCanvasWidget?.resize();
+      }, 50);
     };
 
     const onConfigure = nodeType.prototype.onConfigure;
@@ -1346,6 +1853,7 @@ app.registerExtension({
       onConfigure?.apply(this, arguments);
       setTimeout(async () => {
         if (!this.uniCanvasWidget) return;
+        syncUniCanvasDOMWidgetWidth(this);
         this.uniCanvasWidget._isRestoring = true;
         await this.uniCanvasWidget._loadFromNode();
         this.uniCanvasWidget._isRestoring = false;
