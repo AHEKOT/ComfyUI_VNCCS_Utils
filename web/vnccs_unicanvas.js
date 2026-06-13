@@ -11,15 +11,17 @@ const STYLES = `
   --uc-accent:#ff8fa3; --uc-accent-2:#b8a9e8; --uc-text:#e8e8f0; --uc-muted:#9898a8;
   --uc-danger:#ff4757; --uc-good:#00d68f; --uc-font:'Sora',-apple-system,BlinkMacSystemFont,sans-serif;
   --vnccs-uc-ui-scale:1;
-  width:100%; height:100%; display:grid; grid-template-columns:minmax(0,1fr) auto;
+  width:100%; height:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto;
   grid-template-rows:minmax(0,1fr) auto; background:var(--uc-bg); color:var(--uc-text);
   font:11px var(--uc-font); overflow:hidden; border-radius:12px; pointer-events:auto; position:relative; box-sizing:border-box;
 }
-.vnccs-uc-stage-wrap { grid-column:1; grid-row:1; position:relative; min-width:0; min-height:0; overflow:hidden; }
+.vnccs-uc-stage-wrap { grid-column:2; grid-row:1; position:relative; min-width:0; min-height:0; overflow:hidden; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
 .vnccs-uc-hud { position:absolute; left:10px; top:10px; display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
-.vnccs-uc-side { grid-column:2; grid-row:1 / span 2; width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; border-left:1px solid var(--uc-border); background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; }
+.vnccs-uc-left, .vnccs-uc-side { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
+.vnccs-uc-left { grid-column:1; grid-row:1 / span 2; border-right:1px solid var(--uc-border); }
+.vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-layers { flex:1; min-height:140px; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:5px; }
@@ -28,7 +30,7 @@ const STYLES = `
 .vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
-.vnccs-uc-bottom { grid-column:1; grid-row:2; zoom:var(--vnccs-uc-ui-scale); display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:stretch; padding:8px; border-top:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; }
+.vnccs-uc-bottom { grid-column:2; grid-row:2; zoom:var(--vnccs-uc-ui-scale); display:grid; grid-template-columns:auto 1fr auto; gap:8px; align-items:stretch; padding:8px; border-top:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; }
 .vnccs-uc-tools, .vnccs-uc-settings, .vnccs-uc-actions { display:flex; align-items:center; gap:6px; min-width:0; }
 .vnccs-uc-settings { overflow:auto; }
 .vnccs-uc-btn, .vnccs-uc-icon { border:1px solid var(--uc-border); background:var(--uc-surface); color:var(--uc-text); border-radius:8px; height:28px; padding:0 9px; cursor:pointer; font:inherit; white-space:nowrap; }
@@ -44,6 +46,7 @@ const STYLES = `
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
 .vnccs-uc-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
+.vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
 .vnccs-uc-status { min-height:16px; color:var(--uc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-file { display:none; }
 .vnccs-uc-row { display:flex; gap:6px; align-items:center; }
@@ -154,8 +157,7 @@ class UniCanvasWidget {
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       this._isRestoring = false;
-      this.centerBbox(false);
-      this.didInitialCenter = true;
+      this.fitInitialView();
       this.renderLayerList();
       this.render();
     });
@@ -191,6 +193,8 @@ class UniCanvasWidget {
     );
     this.stageWrap.appendChild(this.stagingControls);
 
+    this.left = document.createElement("div");
+    this.left.className = "vnccs-uc-left";
     this.side = document.createElement("div");
     this.side.className = "vnccs-uc-side";
     this.layerList = document.createElement("div");
@@ -223,13 +227,18 @@ class UniCanvasWidget {
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" step="0.1"></label>
         <label class="vnccs-uc-field">Denoise<input class="vnccs-uc-input" data-setting="denoise" type="number" step="0.01" min="0" max="1"></label>
       </div>`;
-    const promptSection = this._section("Draw", this.promptBox);
-
     this.status = document.createElement("div");
     this.status.className = "vnccs-uc-status";
     this.status.textContent = "Ready";
+    this.drawBtn = this._button("DRAW", "vnccs-uc-btn primary", () => this.draw());
+    this.drawFooter = document.createElement("div");
+    this.drawFooter.className = "vnccs-uc-draw-footer";
+    this.drawFooter.append(this.status, this.drawBtn);
+    this.promptBox.appendChild(this.drawFooter);
+    const promptSection = this._section("Draw", this.promptBox);
 
-    this.side.append(layersSection, promptSection);
+    this.left.append(promptSection);
+    this.side.append(layersSection);
 
     this.bottom = document.createElement("div");
     this.bottom.className = "vnccs-uc-bottom";
@@ -263,11 +272,10 @@ class UniCanvasWidget {
     this.actions = document.createElement("div");
     this.actions.className = "vnccs-uc-actions";
     this.psdBtn = this._button("PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD");
-    this.drawBtn = this._button("DRAW", "vnccs-uc-btn primary", () => this.draw());
-    this.actions.append(this.status, this.psdBtn, this.drawBtn);
+    this.actions.append(this.psdBtn);
     this.bottom.append(this.tools, this.settingsBar, this.actions, this.fileInput);
 
-    this.container.append(this.stageWrap, this.side, this.bottom);
+    this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
 
   _section(title, body, actions = []) {
@@ -453,7 +461,7 @@ class UniCanvasWidget {
       if (action === "import") this.fileInput.click();
     });
     this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
-    this.side.addEventListener("input", (e) => {
+    this.left.addEventListener("input", (e) => {
       const target = e.target;
       const key = target?.dataset?.setting;
       if (!key) return;
@@ -569,10 +577,14 @@ class UniCanvasWidget {
     this.canvas.style.width = "100%";
     this.canvas.style.height = "100%";
     if (!this.didInitialCenter && rect.width > 0 && rect.height > 0) {
-      this.centerBbox(false);
-      this.didInitialCenter = true;
+      this.fitInitialView();
     }
     this.render();
+  }
+
+  fitInitialView() {
+    this.centerBbox(true);
+    this.didInitialCenter = true;
   }
 
   updateMainUIScale() {
@@ -2351,7 +2363,7 @@ app.registerExtension({
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       onCreated?.apply(this, arguments);
-      this.setSize([1040, 720]);
+      this.setSize([1280, 720]);
       this.uniCanvasWidget = new UniCanvasWidget(this);
       const domWidget = this.addDOMWidget("unicanvas_ui", "ui", this.uniCanvasWidget.container, {
         serialize: false,
@@ -2390,6 +2402,7 @@ app.registerExtension({
         this.uniCanvasWidget._isRestoring = false;
         this.uniCanvasWidget.renderLayerList();
         this.uniCanvasWidget.resize();
+        this.uniCanvasWidget.fitInitialView();
         this.uniCanvasWidget.render();
       }, 100);
     };

@@ -13,6 +13,8 @@ import math
 import os
 import ntpath
 import time
+import tempfile
+import re
 
 import numpy as np
 import torch
@@ -25,6 +27,8 @@ _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
+_SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
@@ -142,8 +146,8 @@ class VNCCS_UniCanvas:
     ComfyUI graph.
     """
 
-    RETURN_TYPES = ("STRING",)
-    RETURN_NAMES = ("unicanvas_state",)
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("image",)
     FUNCTION = "export_state"
     CATEGORY = "VNCCS/canvas"
 
@@ -163,7 +167,7 @@ class VNCCS_UniCanvas:
         return unicanvas_state
 
     def export_state(self, unicanvas_state: str = "{}", unique_id: str | None = None):
-        return (unicanvas_state,)
+        return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
 
 
 def _content_length_ok(request, max_bytes: int) -> bool:
@@ -187,6 +191,130 @@ def _decode_data_url(data_url: str, mode: str) -> Image.Image:
     if image.width * image.height > _MAX_PIXELS:
         raise ValueError("Image dimensions are too large")
     return image.convert(mode)
+
+
+def _safe_unicanvas_state_id(value: Any) -> str:
+    safe = _SAFE_ID_RE.sub("_", str(value or ""))[:96].strip("_")
+    return safe or "unicanvas"
+
+
+def _read_unicanvas_state_cache(state_id: str) -> dict[str, Any] | None:
+    path = os.path.join(_UNICANVAS_STATE_CACHE_DIR, f"{_safe_unicanvas_state_id(state_id)}.json")
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        entry = json.load(handle)
+    return entry.get("state") if isinstance(entry, dict) else None
+
+
+def _load_unicanvas_state(unicanvas_state: str) -> dict[str, Any]:
+    try:
+        state = json.loads(unicanvas_state or "{}")
+    except Exception as exc:
+        raise ValueError("Invalid UniCanvas state JSON") from exc
+    if not isinstance(state, dict):
+        raise ValueError("Invalid UniCanvas state")
+
+    state_id = state.get("state_id")
+    layers = state.get("layers")
+    needs_cache = (
+        state.get("storage") == "server_cache"
+        or (isinstance(layers, list) and any(layer.get("cached") and not layer.get("dataURL") for layer in layers if isinstance(layer, dict)))
+    )
+    if state_id and needs_cache:
+        cached = _read_unicanvas_state_cache(str(state_id))
+        if isinstance(cached, dict) and isinstance(cached.get("layers"), list):
+            state = cached
+        elif any(layer.get("cached") and not layer.get("dataURL") for layer in layers or [] if isinstance(layer, dict)):
+            raise ValueError("UniCanvas state cache is missing; interact with the canvas once or wait for state sync before queueing")
+
+    if not isinstance(state.get("layers"), list):
+        state["layers"] = []
+    return state
+
+
+def _number(value: Any, default: float) -> float:
+    try:
+        result = float(value)
+        if math.isfinite(result):
+            return result
+    except Exception:
+        pass
+    return default
+
+
+def _rect_from_state(value: Any, default: dict[str, float]) -> dict[str, float]:
+    data = value if isinstance(value, dict) else {}
+    return {
+        "x": _number(data.get("x"), default["x"]),
+        "y": _number(data.get("y"), default["y"]),
+        "width": max(1.0, _number(data.get("width"), default["width"])),
+        "height": max(1.0, _number(data.get("height"), default["height"])),
+    }
+
+
+def _pil_rgba_to_image_tensor(image: Image.Image) -> torch.Tensor:
+    arr = np.asarray(image.convert("RGBA"), dtype=np.float32) / 255.0
+    return torch.from_numpy(arr)[None,]
+
+
+def _apply_layer_opacity(image: Image.Image, opacity: float) -> Image.Image:
+    opacity = max(0.0, min(1.0, opacity))
+    if opacity >= 0.999:
+        return image
+    rgba = image.convert("RGBA")
+    alpha = rgba.getchannel("A").point(lambda value: int(round(value * opacity)))
+    rgba.putalpha(alpha)
+    return rgba
+
+
+def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
+    state = _load_unicanvas_state(unicanvas_state)
+    origin = _rect_from_state(state.get("origin"), {"x": 0, "y": 0, "width": 1, "height": 1})
+    bbox = _rect_from_state(state.get("bbox"), {"x": 0, "y": 0, "width": 1024, "height": 1024})
+    width = max(1, int(round(bbox["width"])))
+    height = max(1, int(round(bbox["height"])))
+    bbox_local_x = bbox["x"] - origin["x"]
+    bbox_local_y = bbox["y"] - origin["y"]
+    out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+
+    for layer in reversed(state.get("layers") or []):
+        if not isinstance(layer, dict):
+            continue
+        if layer.get("type") != "raster" or layer.get("visible") is False:
+            continue
+        crop = layer.get("crop")
+        data_url = layer.get("dataURL")
+        if not isinstance(crop, dict) or not data_url:
+            continue
+
+        layer_x = int(round(_number(crop.get("x"), 0)))
+        layer_y = int(round(_number(crop.get("y"), 0)))
+        layer_w = max(1, int(round(_number(crop.get("width"), 1))))
+        layer_h = max(1, int(round(_number(crop.get("height"), 1))))
+        dst_x = int(round(layer_x - bbox_local_x))
+        dst_y = int(round(layer_y - bbox_local_y))
+        inter_left = max(0, dst_x)
+        inter_top = max(0, dst_y)
+        inter_right = min(width, dst_x + layer_w)
+        inter_bottom = min(height, dst_y + layer_h)
+        if inter_right <= inter_left or inter_bottom <= inter_top:
+            continue
+
+        image = _decode_data_url(str(data_url), "RGBA")
+        src_left = inter_left - dst_x
+        src_top = inter_top - dst_y
+        src_right = src_left + (inter_right - inter_left)
+        src_bottom = src_top + (inter_bottom - inter_top)
+        image = image.crop((src_left, src_top, src_right, src_bottom))
+        image = _apply_layer_opacity(image, _number(layer.get("opacity"), 1.0))
+        out.alpha_composite(image, (inter_left, inter_top))
+
+    return out
+
+
+def _render_unicanvas_state_to_image_tensor(unicanvas_state: str) -> torch.Tensor:
+    return _pil_rgba_to_image_tensor(_render_unicanvas_state_to_rgba(unicanvas_state))
 
 
 def _pil_to_image_tensor(image: Image.Image) -> torch.Tensor:
