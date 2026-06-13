@@ -21,24 +21,44 @@ const STYLES = `
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
 .vnccs-uc-left, .vnccs-uc-side { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 2; border-right:1px solid var(--uc-border); }
-.vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); }
+.vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); overflow:hidden; }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
-.vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
-.vnccs-uc-layers { flex:1; min-height:140px; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:5px; }
-.vnccs-uc-layer { display:grid; grid-template-columns:34px 1fr 22px 22px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
+.vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
+.vnccs-uc-section-title { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-section-actions { flex:0 0 auto; display:flex; gap:4px; align-items:center; }
+.vnccs-uc-section-actions .vnccs-uc-icon { width:24px; height:24px; border-radius:7px; }
+.vnccs-uc-section-actions .vnccs-uc-icon svg { width:14px; height:14px; }
+.vnccs-uc-layers { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:6px; display:flex; flex-direction:column; gap:5px; }
+.vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
+.vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
+.vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
 .vnccs-uc-layer.active { border-color:rgba(255,143,163,.55); background:rgba(255,143,163,.12); }
+.vnccs-uc-layer.dragging { opacity:.46; }
+.vnccs-uc-layer.drop-before { box-shadow:0 -2px 0 var(--uc-accent); }
+.vnccs-uc-layer.drop-after { box-shadow:0 2px 0 var(--uc-accent); }
 .vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:2; grid-row:1; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
-.vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:6px; padding:8px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
-.vnccs-uc-settings, .vnccs-uc-actions { display:flex; align-items:center; gap:6px; min-width:0; }
+.vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+.vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+.vnccs-uc-tool-settings.visible { display:flex; }
+.vnccs-uc-tool-settings-title { color:var(--uc-accent); font-weight:800; font-size:14px; }
+.vnccs-uc-tool-setting { display:grid; grid-template-columns:72px minmax(0,1fr); align-items:center; gap:10px; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-tool-setting-label { color:var(--uc-muted); font-size:12px; line-height:1; white-space:nowrap; }
+.vnccs-uc-tool-settings .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
+.vnccs-uc-tool-settings .vnccs-uc-input[type="color"] { width:42px; height:28px; padding:0; border-radius:7px; }
+.vnccs-uc-settings { display:flex; align-items:center; gap:6px; min-width:0; }
 .vnccs-uc-settings { overflow:auto; flex:1 1 auto; }
-.vnccs-uc-actions { margin-left:auto; flex:0 0 auto; }
 .vnccs-uc-btn, .vnccs-uc-icon { border:1px solid var(--uc-border); background:var(--uc-surface); color:var(--uc-text); border-radius:8px; height:28px; padding:0 9px; cursor:pointer; font:inherit; white-space:nowrap; }
 .vnccs-uc-icon { width:30px; padding:0; display:grid; place-items:center; }
-.vnccs-uc-tools .vnccs-uc-icon { width:44px; height:44px; border-radius:10px; font-size:18px; font-weight:800; }
-.vnccs-uc-tools svg { width:24px; height:24px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.vnccs-uc-icon svg { width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
+.vnccs-uc-icon svg .fill { fill:currentColor; stroke:none; }
+.vnccs-uc-icon.danger { color:var(--uc-danger); border-color:rgba(255,71,87,.38); }
+.vnccs-uc-layer .vnccs-uc-icon { width:28px; height:28px; border-radius:7px; }
+.vnccs-uc-tools .vnccs-uc-icon { width:66px; height:66px; border-radius:12px; font-size:18px; font-weight:800; }
+.vnccs-uc-tools svg { width:36px; height:36px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-tools svg .fill { fill:currentColor; stroke:none; }
 .vnccs-uc-btn:hover, .vnccs-uc-icon:hover { background:var(--uc-hover); border-color:rgba(255,255,255,.16); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
@@ -53,26 +73,32 @@ const STYLES = `
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
 .vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
 .vnccs-uc-status { min-height:16px; color:var(--uc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vnccs-uc-layers-footer { padding:6px; border-top:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
+.vnccs-uc-layers-footer .vnccs-uc-btn { width:100%; }
 .vnccs-uc-file { display:none; }
 .vnccs-uc-row { display:flex; gap:6px; align-items:center; }
 .vnccs-uc-staging-popover {
-  position:absolute; display:none; gap:6px; align-items:center; justify-content:center; z-index:5;
-  padding:6px; background:rgba(10,10,15,.88); border:1px solid rgba(255,255,255,.14);
-  border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.38); pointer-events:auto;
+  position:absolute; display:none; gap:8px; align-items:center; justify-content:center; z-index:5;
+  padding:10px; background:rgba(10,10,15,.9); border:1px solid rgba(255,255,255,.16);
+  border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto;
 }
 .vnccs-uc-staging-popover.visible { display:flex; }
-.vnccs-uc-staging-count { min-width:34px; text-align:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-staging-popover .vnccs-uc-icon { width:44px; height:44px; border-radius:10px; }
+.vnccs-uc-staging-popover .vnccs-uc-icon svg { width:22px; height:22px; }
+.vnccs-uc-staging-count { min-width:48px; text-align:center; color:var(--uc-text); font-weight:800; font-size:14px; }
 .vnccs-uc-modal-overlay {
   position:absolute; inset:0; z-index:20; display:grid; place-items:center;
   background:rgba(4,4,8,.58); pointer-events:auto;
 }
 .vnccs-uc-modal {
-  width:min(360px, calc(100% - 36px)); background:var(--uc-panel); color:var(--uc-text);
+  width:min(560px, calc(100% - 72px)); background:var(--uc-panel); color:var(--uc-text);
   border:1px solid rgba(255,143,163,.34); border-radius:12px; box-shadow:0 18px 48px rgba(0,0,0,.55);
-  padding:14px; display:flex; flex-direction:column; gap:10px;
+  padding:22px; display:flex; flex-direction:column; gap:16px; font-size:16px; line-height:1.45;
 }
-.vnccs-uc-modal-title { color:var(--uc-accent); font-weight:800; font-size:13px; }
+.vnccs-uc-modal-title { color:var(--uc-accent); font-weight:800; font-size:18px; }
+.vnccs-uc-modal-message { color:var(--uc-text); line-height:1.5; }
 .vnccs-uc-modal-actions { display:flex; justify-content:flex-end; gap:8px; }
+.vnccs-uc-modal-actions .vnccs-uc-btn { height:34px; padding:0 14px; font-size:14px; }
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -103,6 +129,24 @@ const TOOL_ICONS = {
   lasso: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 18c-2.5-1.2-4-3.2-4-5.5C4 8.9 7.6 6 12 6s8 2.9 8 6.5S16.4 19 12 19c-1.2 0-2.3-.2-3.3-.6"/><path d="M8 18 5 21"/><path d="M5 21h5"/></svg>`,
   bbox: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v4H3"/><path d="M17 3v4h4"/><path d="M7 21v-4H3"/><path d="M17 21v-4h4"/><rect x="7" y="7" width="10" height="10" rx="1.5" stroke-dasharray="3 2"/></svg>`,
   pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12V7.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11V6.5a1.5 1.5 0 0 1 3 0V12"/><path d="M14 11V8a1.5 1.5 0 0 1 3 0v5"/><path d="M8 12 6.8 10.8a1.6 1.6 0 0 0-2.2 2.3l4.7 5.1A6 6 0 0 0 19 14v-2a1.5 1.5 0 0 0-3 0"/></svg>`,
+};
+const UI_ICONS = {
+  plus: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>`,
+  mask: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="13" height="13" rx="2" stroke-dasharray="3 2"/><circle cx="10.5" cy="11.5" r="3.2" class="fill"/><path d="M18 14v6"/><path d="M15 17h6"/></svg>`,
+  duplicate: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="10" height="10" rx="1.5"/><rect x="5" y="5" width="10" height="10" rx="1.5"/></svg>`,
+  up: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>`,
+  down: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+  lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`,
+  unlock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.2-2.4"/></svg>`,
+  trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg>`,
+};
+const STAGING_ICONS = {
+  discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
+  prev: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`,
+  next: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>`,
+  show: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="3"/></svg>`,
+  hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 10.6A3 3 0 0 0 13.4 13.4"/><path d="M9.9 5.2A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17.4 17.4 0 0 1-2.4 3.2"/><path d="M6.1 6.7C3.8 8.3 2.5 12 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4-.8"/></svg>`,
+  accept: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
 };
 
 class UniCanvasWidget {
@@ -196,18 +240,18 @@ class UniCanvasWidget {
     this.stageWrap.appendChild(this.hud);
     this.stagingControls = document.createElement("div");
     this.stagingControls.className = "vnccs-uc-staging-popover";
-    this.stagingPrevBtn = this._button("‹", "vnccs-uc-icon", () => this.selectRelativeStaging(-1), "Previous result");
+    this.stagingPrevBtn = this._button(STAGING_ICONS.prev, "vnccs-uc-icon", () => this.selectRelativeStaging(-1), "Previous result");
     this.stagingCount = document.createElement("span");
     this.stagingCount.className = "vnccs-uc-staging-count";
-    this.stagingNextBtn = this._button("›", "vnccs-uc-icon", () => this.selectRelativeStaging(1), "Next result");
-    this.stagingToggleBtn = this._button("◐", "vnccs-uc-icon", () => this.toggleStagingVisibility(), "Toggle before/after");
+    this.stagingNextBtn = this._button(STAGING_ICONS.next, "vnccs-uc-icon", () => this.selectRelativeStaging(1), "Next result");
+    this.stagingToggleBtn = this._button(STAGING_ICONS.show, "vnccs-uc-icon", () => this.toggleStagingVisibility(), "Hide result preview");
     this.stagingControls.append(
-      this._button("×", "vnccs-uc-icon danger", () => this.discardStaging(), "Discard"),
+      this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.discardStaging(), "Discard"),
       this.stagingPrevBtn,
       this.stagingCount,
       this.stagingNextBtn,
       this.stagingToggleBtn,
-      this._button("✓", "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
+      this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
     );
     this.stageWrap.appendChild(this.stagingControls);
 
@@ -217,13 +261,28 @@ class UniCanvasWidget {
     this.side.className = "vnccs-uc-side";
     this.layerList = document.createElement("div");
     this.layerList.className = "vnccs-uc-layers";
-    const layersSection = this._section("Layers", this.layerList, [
-      ["+", "Add raster", () => this.addLayer("raster")],
-      ["◐", "Add mask", () => this.addLayer("mask")],
-      ["⧉", "Duplicate selected", () => this.duplicateActiveLayer()],
-      ["↑", "Move selected up", () => this.moveActiveLayer(-1)],
-      ["↓", "Move selected down", () => this.moveActiveLayer(1)],
+    this.layersTopActions = document.createElement("div");
+    this.layersTopActions.className = "vnccs-uc-layers-top-actions";
+    this.layersTopActions.append(
+      this._button("Import Image", "vnccs-uc-btn", () => this.fileInput.click(), "Import image")
+    );
+    this.flattenLayersFooter = document.createElement("div");
+    this.flattenLayersFooter.className = "vnccs-uc-layers-footer";
+    this.flattenLayersFooter.append(
+      this._button("Flatten layers", "vnccs-uc-btn danger", () => this.confirmFlattenLayers(), "Flatten all layers"),
+      this._button("Export Layers as PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD")
+    );
+    const layersBody = document.createElement("div");
+    layersBody.className = "vnccs-uc-layers-section";
+    layersBody.append(this.layersTopActions, this.layerList, this.flattenLayersFooter);
+    const layersSection = this._section("Layers", layersBody, [
+      [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
+      [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
+      [UI_ICONS.duplicate, "Duplicate selected", () => this.duplicateActiveLayer()],
+      [UI_ICONS.up, "Move selected up", () => this.moveActiveLayer(-1)],
+      [UI_ICONS.down, "Move selected down", () => this.moveActiveLayer(1)],
     ]);
+    layersSection.classList.add("vnccs-uc-layers-section");
 
     this.promptBox = document.createElement("div");
     this.promptBox.className = "vnccs-uc-stack";
@@ -273,26 +332,20 @@ class UniCanvasWidget {
       ["pan", "Pan view"],
     ].forEach(([tool, title]) => this.tools.appendChild(this._toolButton(tool, title)));
     this.stageWrap.appendChild(this.tools);
+    this.toolSettings = document.createElement("div");
+    this.toolSettings.className = "vnccs-uc-tool-settings";
+    this.stageWrap.appendChild(this.toolSettings);
 
     this.settingsBar = document.createElement("div");
     this.settingsBar.className = "vnccs-uc-settings";
     this.settingsBar.innerHTML = `
-      <label class="vnccs-uc-field inline">Size <input class="vnccs-uc-range" type="range" min="1" max="220" value="${this.brushSize}" data-control="brushSize"></label>
-      <label class="vnccs-uc-field inline">Color <input class="vnccs-uc-input" type="color" value="${this.fg}" data-control="fg" style="width:42px;padding:0"></label>
-      <label class="vnccs-uc-field inline">Alpha <input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" value="${this.opacity}" data-control="opacity"></label>
-      <label class="vnccs-uc-field inline">Layer <input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" value="${this.activeLayer?.opacity || 1}" data-control="layerOpacity"></label>
-      <button class="vnccs-uc-btn" data-action="fit">Fit</button>
-      <button class="vnccs-uc-btn" data-action="import">Import</button>`;
+      <button class="vnccs-uc-btn" data-action="fit">Fit</button>`;
     this.fileInput = document.createElement("input");
     this.fileInput.className = "vnccs-uc-file";
     this.fileInput.type = "file";
     this.fileInput.accept = "image/*";
 
-    this.actions = document.createElement("div");
-    this.actions.className = "vnccs-uc-actions";
-    this.psdBtn = this._button("PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD");
-    this.actions.append(this.psdBtn);
-    this.bottom.append(this.settingsBar, this.actions, this.fileInput);
+    this.bottom.append(this.settingsBar, this.fileInput);
 
     this.container.append(this.left, this.stageWrap, this.side, this.bottom);
   }
@@ -303,10 +356,10 @@ class UniCanvasWidget {
     const head = document.createElement("div");
     head.className = "vnccs-uc-section-head";
     const text = document.createElement("span");
+    text.className = "vnccs-uc-section-title";
     text.textContent = title;
     const actionBox = document.createElement("div");
-    actionBox.style.display = "flex";
-    actionBox.style.gap = "4px";
+    actionBox.className = "vnccs-uc-section-actions";
     for (const [label, hint, fn] of actions) actionBox.append(this._button(label, "vnccs-uc-icon", fn, hint));
     head.append(text, actionBox);
     section.append(head, body);
@@ -317,7 +370,11 @@ class UniCanvasWidget {
     const btn = document.createElement("button");
     btn.className = className;
     btn.type = "button";
-    btn.textContent = label;
+    if (typeof label === "string" && label.trim().startsWith("<svg")) {
+      btn.innerHTML = label;
+    } else {
+      btn.textContent = label;
+    }
     btn.title = title;
     btn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -370,6 +427,43 @@ class UniCanvasWidget {
     });
   }
 
+  confirmInWidget(title, message, confirmLabel = "OK") {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "vnccs-uc-modal-overlay";
+      const modal = document.createElement("div");
+      modal.className = "vnccs-uc-modal";
+      const titleEl = document.createElement("div");
+      titleEl.className = "vnccs-uc-modal-title";
+      titleEl.textContent = title;
+      const messageEl = document.createElement("div");
+      messageEl.className = "vnccs-uc-modal-message";
+      messageEl.textContent = message;
+      const actions = document.createElement("div");
+      actions.className = "vnccs-uc-modal-actions";
+      const cancel = this._button("Cancel", "vnccs-uc-btn", () => close(false), "Cancel");
+      const ok = this._button(confirmLabel, "vnccs-uc-btn danger", () => close(true), confirmLabel);
+      const close = (result) => {
+        overlay.remove();
+        resolve(result);
+      };
+      actions.append(cancel, ok);
+      modal.append(titleEl, messageEl, actions);
+      overlay.appendChild(modal);
+      overlay.addEventListener("pointerdown", (e) => {
+        if (e.target === overlay) close(false);
+      });
+      overlay.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") close(false);
+        if (e.key === "Enter") close(true);
+      });
+      this.container.appendChild(overlay);
+      requestAnimationFrame(() => {
+        ok.focus();
+      });
+    });
+  }
+
   _toolButton(tool, title) {
     const btn = this._button("", "vnccs-uc-icon vnccs-uc-tool", () => this.setTool(tool), title);
     btn.innerHTML = TOOL_ICONS[tool] || "";
@@ -402,7 +496,7 @@ class UniCanvasWidget {
   addLayer(type = "raster", name = null) {
     const layer = {
       id: uid(),
-      name: name || (type === "mask" ? `Mask ${this.layers.filter((l) => l.type === "mask").length + 1}` : `Layer ${this.layers.filter((l) => l.type === "raster").length + 1}`),
+      name: name || this.getNextLayerName(type),
       type,
       visible: true,
       locked: false,
@@ -416,6 +510,17 @@ class UniCanvasWidget {
     this.render();
     this.syncToNode();
     return layer;
+  }
+
+  getNextLayerName(type = "raster") {
+    const prefix = type === "mask" ? "Mask" : "Layer";
+    const matcher = new RegExp(`^${prefix} (\\d+)$`);
+    let max = 0;
+    for (const layer of this.layers) {
+      const match = String(layer.name || "").match(matcher);
+      if (match) max = Math.max(max, Number(match[1]));
+    }
+    return `${prefix} ${max + 1}`;
   }
 
   invalidateLayerCaches(layer) {
@@ -468,7 +573,39 @@ class UniCanvasWidget {
     this.tool = tool;
     this.container.querySelectorAll(".vnccs-uc-tool").forEach((btn) => btn.classList.toggle("active", btn.dataset.tool === tool));
     this.syncCursorStyle();
+    this.renderToolSettings();
     this.render();
+  }
+
+  getToolSettingControls(tool = this.tool) {
+    if (tool === "brush") return ["brushSize", "fg", "opacity"];
+    if (tool === "eraser" || tool === "mask") return ["brushSize", "opacity"];
+    if (tool === "rect" || tool === "lasso") return ["fg", "opacity"];
+    return [];
+  }
+
+  renderToolSettings() {
+    if (!this.toolSettings) return;
+    const controls = this.getToolSettingControls();
+    if (!controls.length) {
+      this.toolSettings.classList.remove("visible");
+      this.toolSettings.innerHTML = "";
+      return;
+    }
+    const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso" };
+    const title = titleMap[this.tool] || this.tool;
+    const html = [`<div class="vnccs-uc-tool-settings-title">${this._escape(title)} Settings</div>`];
+    if (controls.includes("brushSize")) {
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Size</span><input class="vnccs-uc-range" type="range" min="1" max="220" value="${this.brushSize}" data-control="brushSize"></label>`);
+    }
+    if (controls.includes("fg")) {
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Color</span><input class="vnccs-uc-input" type="color" value="${this.fg}" data-control="fg"></label>`);
+    }
+    if (controls.includes("opacity")) {
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Opacity</span><input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" value="${this.opacity}" data-control="opacity"></label>`);
+    }
+    this.toolSettings.innerHTML = html.join("");
+    this.toolSettings.classList.add("visible");
   }
 
   syncCursorStyle() {
@@ -500,25 +637,19 @@ class UniCanvasWidget {
     window.addEventListener("pagehide", this._flushStateBeforeUnload);
     window.addEventListener("beforeunload", this._flushStateBeforeUnload);
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
+    this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
 
-    this.settingsBar.addEventListener("input", (e) => {
+    this.toolSettings.addEventListener("input", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement)) return;
       if (target.dataset.control === "brushSize") this.brushSize = Number(target.value);
       if (target.dataset.control === "fg") this.fg = target.value;
       if (target.dataset.control === "opacity") this.opacity = Number(target.value);
-      if (target.dataset.control === "layerOpacity" && this.activeLayer) {
-        this.activeLayer.opacity = Number(target.value);
-        this.invalidateLayerCaches(this.activeLayer);
-        this.renderLayerList();
-        this.syncToNode();
-      }
       this.render();
     });
     this.settingsBar.addEventListener("click", (e) => {
       const action = e.target?.dataset?.action;
       if (action === "fit") this.fitView();
-      if (action === "import") this.fileInput.click();
     });
     this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
     this.left.addEventListener("input", (e) => {
@@ -1454,7 +1585,7 @@ class UniCanvasWidget {
     if (this.stagingToggleBtn) {
       const visible = staging.visible !== false;
       this.stagingToggleBtn.classList.toggle("active", visible);
-      this.stagingToggleBtn.textContent = visible ? "◐" : "○";
+      this.stagingToggleBtn.innerHTML = visible ? STAGING_ICONS.show : STAGING_ICONS.hide;
       this.stagingToggleBtn.title = visible ? "Hide result preview" : "Show result preview";
     }
     this.stagingControls.classList.add("visible");
@@ -1632,20 +1763,45 @@ class UniCanvasWidget {
     for (const layer of this.layers) {
       const row = document.createElement("div");
       row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""}`;
+      row.draggable = true;
+      row.dataset.layerId = layer.id;
       const thumb = document.createElement("canvas");
       thumb.className = "vnccs-uc-thumb";
-      thumb.title = layer.visible ? "Visible" : "Hidden";
+      thumb.title = layer.visible ? "Hide layer" : "Show layer";
       thumb.width = 68;
       thumb.height = 68;
       this.drawLayerThumbnail(thumb, layer);
       const label = document.createElement("div");
       label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
-      const lock = this._button(layer.locked ? "◆" : "◇", "vnccs-uc-icon", null, "Lock");
-      const del = this._button("×", "vnccs-uc-icon danger", null, "Delete");
+      const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
+      const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
       row.append(thumb, label, lock, del);
       row.addEventListener("click", () => {
         this.activeLayerId = layer.id;
         this.renderLayerList();
+      });
+      row.addEventListener("dragstart", (e) => {
+        this.activeLayerId = layer.id;
+        row.classList.add("dragging");
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", layer.id);
+      });
+      row.addEventListener("dragend", () => {
+        row.classList.remove("dragging", "drop-before", "drop-after");
+        this.clearLayerDropMarkers();
+      });
+      row.addEventListener("dragover", (e) => {
+        e.preventDefault();
+        const placement = this.getLayerDropPlacement(row, e.clientY);
+        this.markLayerDropTarget(row, placement);
+        e.dataTransfer.dropEffect = "move";
+      });
+      row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
+      row.addEventListener("drop", (e) => {
+        e.preventDefault();
+        const sourceId = e.dataTransfer.getData("text/plain");
+        const placement = this.getLayerDropPlacement(row, e.clientY);
+        this.reorderLayer(sourceId, layer.id, placement);
       });
       row.addEventListener("dblclick", async (e) => {
         e.stopPropagation();
@@ -1661,7 +1817,48 @@ class UniCanvasWidget {
       del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
       this.layerList.append(row);
     }
+    this.layerList.ondragover = (e) => {
+      if (!this.layers.length) return;
+      e.preventDefault();
+    };
+    this.layerList.ondrop = (e) => {
+      const sourceId = e.dataTransfer.getData("text/plain");
+      if (!sourceId || e.target !== this.layerList) return;
+      e.preventDefault();
+      this.reorderLayer(sourceId, this.layers[this.layers.length - 1]?.id, "after");
+    };
     this.syncActiveLayerControls();
+  }
+
+  clearLayerDropMarkers() {
+    this.layerList.querySelectorAll(".drop-before,.drop-after").forEach((el) => {
+      el.classList.remove("drop-before", "drop-after");
+    });
+  }
+
+  getLayerDropPlacement(row, clientY) {
+    const rect = row.getBoundingClientRect();
+    return clientY < rect.top + rect.height / 2 ? "before" : "after";
+  }
+
+  markLayerDropTarget(row, placement) {
+    this.clearLayerDropMarkers();
+    row.classList.add(placement === "before" ? "drop-before" : "drop-after");
+  }
+
+  reorderLayer(sourceId, targetId, placement = "before") {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const from = this.layers.findIndex((l) => l.id === sourceId);
+    const target = this.layers.findIndex((l) => l.id === targetId);
+    if (from < 0 || target < 0) return;
+    const [layer] = this.layers.splice(from, 1);
+    let to = this.layers.findIndex((l) => l.id === targetId);
+    if (placement === "after") to += 1;
+    this.layers.splice(Math.max(0, Math.min(this.layers.length, to)), 0, layer);
+    this.activeLayerId = layer.id;
+    this.renderLayerList();
+    this.render();
+    this.syncToNode();
   }
 
   drawLayerThumbnail(canvas, layer) {
@@ -1691,7 +1888,7 @@ class UniCanvasWidget {
       layer._thumbCache = thumb;
       return thumb;
     }
-    const scale = Math.min((size - 8) / crop.width, (size - 8) / crop.height);
+    const scale = Math.max(size / crop.width, size / crop.height);
     const w = Math.max(1, crop.width * scale);
     const h = Math.max(1, crop.height * scale);
     const x = (size - w) / 2;
@@ -1736,8 +1933,7 @@ class UniCanvasWidget {
   }
 
   syncActiveLayerControls() {
-    const opacity = this.container.querySelector('[data-control="layerOpacity"]');
-    if (opacity && this.activeLayer) opacity.value = this.activeLayer.opacity;
+    this.renderToolSettings();
   }
 
   deleteLayer(id) {
@@ -1785,6 +1981,53 @@ class UniCanvasWidget {
     this.renderLayerList();
     this.render();
     this.syncToNode();
+  }
+
+  async confirmFlattenLayers() {
+    if (this.layers.length <= 1) {
+      this.setStatus("There is only one layer");
+      return;
+    }
+    const confirmed = await this.confirmInWidget(
+      "Flatten Layers",
+      "All visible raster layers will be flattened into one master layer. All other layers will be deleted. This operation cannot be undone.",
+      "Flatten"
+    );
+    if (!confirmed) return;
+    this.flattenLayersToMaster();
+  }
+
+  flattenLayersToMaster() {
+    const master = {
+      id: uid(),
+      name: "Master Layer",
+      type: "raster",
+      visible: true,
+      locked: false,
+      opacity: 1,
+      canvas: this._createCanvas(),
+    };
+    const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
+    const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
+    const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
+    for (const layer of [...this.layers].reverse()) {
+      if (!layer.visible || layer.type !== "raster") continue;
+      ctx.save();
+      ctx.globalAlpha = layer.opacity;
+      if (layer.hiresCanvas && layer.hiresRect) {
+        this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
+      } else {
+        ctx.drawImage(layer.canvas, 0, 0);
+      }
+      ctx.restore();
+    }
+    this.invalidateLayerCaches(master);
+    this.layers = [master];
+    this.activeLayerId = master.id;
+    this.renderLayerList();
+    this.render();
+    this.syncToNode();
+    this.setStatus("Layers flattened to Master Layer");
   }
 
   async importFile(file) {
@@ -2128,7 +2371,7 @@ class UniCanvasWidget {
     const placement = this.getStagingImageRect();
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
-    const layer = this.addLayer("raster", "DRAW Result");
+    const layer = this.addLayer("raster");
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     const hiresWidth = Math.max(1, img.naturalWidth || img.width || placement.width);
     const hiresHeight = Math.max(1, img.naturalHeight || img.height || placement.height);
@@ -2137,11 +2380,12 @@ class UniCanvasWidget {
     layer.hiresRect = { ...placement };
     ctx.drawImage(masked, placement.x - this.origin.x, placement.y - this.origin.y, placement.width, placement.height);
     this.invalidateLayerCaches(layer);
-    this.removeActiveStagingItem();
+    this.stagingItems = [];
+    this.activeStagingIndex = -1;
     this.render();
     this.renderLayerList();
     this.syncToNode();
-    this.setStatus(this.stagingItems.length ? `Staging accepted (${this.stagingItems.length} left)` : "Staging accepted");
+    this.setStatus("Staging accepted; remaining results discarded");
   }
 
   discardStaging() {
