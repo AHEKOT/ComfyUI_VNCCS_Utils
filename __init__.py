@@ -2,6 +2,7 @@ from .nodes.vnccs_nodes import VNCCS_PositionControl, VNCCS_VisualPositionContro
 from .nodes.vnccs_qwen_detailer import VNCCS_QWEN_Detailer, VNCCS_BBox_Extractor
 from .nodes.vnccs_model_manager import VNCCS_ModelManager, VNCCS_ModelSelector
 from .nodes.pose_studio import VNCCS_PoseStudio
+from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_PositionControl": VNCCS_PositionControl,
@@ -11,6 +12,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_ModelManager": VNCCS_ModelManager,
     "VNCCS_ModelSelector": VNCCS_ModelSelector,
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
+    "VNCCS_UniCanvas": VNCCS_UniCanvas,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -21,6 +23,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_ModelManager": "VNCCS Model Manager",
     "VNCCS_ModelSelector": "VNCCS Model Selector",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
+    "VNCCS_UniCanvas": "VNCCS UniCanvas",
 }
 
 WEB_DIRECTORY = "./web"
@@ -664,6 +667,7 @@ def _vnccs_register_capture_cache():
         return web.json_response(entry)
 
 _vnccs_register_capture_cache()
+register_unicanvas_routes()
 
 
 def _vnccs_register_sam3d_pose_import():

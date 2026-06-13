@@ -2,20 +2,32 @@
 
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, with **VNCCS Pose Studio** as the main node of the package.
 
----
-<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="https://img.shields.io/badge/Join%20our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white" style="height: 60px !important;"></a>
 
----
-
-## **If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!**
-
-<a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
 
 ## VNCCS Pose Studio
 
 <p align="center">
   <img src="images/pose-studio-logo.png" alt="VNCCS Pose Studio logo" width="360">
 </p>
+
+---
+
+<table>
+<tr>
+<td width="50%" align="center">
+<strong>Join The Community</strong><br>
+Share results, ask questions, and follow VNCCS updates.<br><br>
+<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="images/VNCCS_Discord_Button.png" alt="Join our Discord"></a>
+</td>
+<td width="50%" align="center">
+<strong>Support VNCCS</strong><br>
+VNCCS is developed independently. Support helps keep the project moving.<br><br>
+<a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="images/VNCCS_Donate_Button.png" alt="Support VNCCS"></a>
+</td>
+</tr>
+</table>
+
+---
 
 **Example Workflows:** [QWEN](workflows/VNCCS_Utils%20Pose%20Studio%20QWEN.json) · [Klein9b](workflows/VNCCS_Utils%20Pose%20Studio%20Klein9b.json)
 
