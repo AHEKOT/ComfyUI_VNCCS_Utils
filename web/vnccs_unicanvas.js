@@ -84,9 +84,19 @@ class UniCanvasWidget {
     this.dragStart = null;
     this.didInitialCenter = false;
     this.staging = null;
+    this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = {
+      generation_mode: "illustrious",
       ckpt_name: "",
+      diffusion_model_name: "",
+      clip_name: "qwen_3_06b_base.safetensors",
+      vae_name: "qwen_image_vae.safetensors",
+      clip_type: "stable_diffusion",
+      turbo_enabled: false,
+      dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
+      dmd_lora_strength: 1,
+      lora_stack: [],
       positive: "",
       negative: "",
       seed: 0,
@@ -108,7 +118,7 @@ class UniCanvasWidget {
       this.renderLayerList();
       this.render();
     });
-    this._loadCheckpoints();
+    this._loadAssets();
     this._attachEvents();
     this.resize();
     this.render();
@@ -139,7 +149,14 @@ class UniCanvasWidget {
     this.promptBox = document.createElement("div");
     this.promptBox.className = "vnccs-uc-stack";
     this.promptBox.innerHTML = `
+      <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">
+        <option value="illustrious">SDXL checkpoint</option>
+        <option value="anima">Anima</option>
+      </select></label>
       <label class="vnccs-uc-field">Checkpoint<select class="vnccs-uc-select" data-setting="ckpt_name"></select></label>
+      <label class="vnccs-uc-field">Diffusion<select class="vnccs-uc-select" data-setting="diffusion_model_name"></select></label>
+      <label class="vnccs-uc-field">CLIP<select class="vnccs-uc-select" data-setting="clip_name"></select></label>
+      <label class="vnccs-uc-field">VAE<select class="vnccs-uc-select" data-setting="vae_name"></select></label>
       <label class="vnccs-uc-field">Positive<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <div class="vnccs-uc-mini-grid">
@@ -148,7 +165,7 @@ class UniCanvasWidget {
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" step="0.1"></label>
         <label class="vnccs-uc-field">Denoise<input class="vnccs-uc-input" data-setting="denoise" type="number" step="0.01" min="0" max="1"></label>
       </div>`;
-    const promptSection = this._section("SDXL Draw", this.promptBox);
+    const promptSection = this._section("Draw", this.promptBox);
 
     this.stagingBox = document.createElement("div");
     this.stagingBox.className = "vnccs-uc-stack vnccs-uc-staging";
@@ -330,24 +347,62 @@ class UniCanvasWidget {
       const key = target?.dataset?.setting;
       if (!key) return;
       this.settings[key] = target.type === "number" ? Number(target.value) : target.value;
+      if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
       this.syncToNode();
     });
     this.setTool(this.tool);
   }
 
-  async _loadCheckpoints() {
+  async _loadAssets() {
     try {
-      const res = await fetch("/vnccs/unicanvas/checkpoints");
+      const res = await fetch("/vnccs/unicanvas/assets");
       const data = await res.json();
-      this.checkpoints = data.checkpoints || [];
-      const select = this.container.querySelector('[data-setting="ckpt_name"]');
-      select.innerHTML = this.checkpoints.map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
+      this.assets = {
+        checkpoints: data.checkpoints || [],
+        diffusion_models: data.diffusion_models || [],
+        text_encoders: data.text_encoders || [],
+        vae_models: data.vae_models || [],
+        loras: data.loras || [],
+        samplers: data.samplers || [],
+        schedulers: data.schedulers || [],
+      };
+      this.checkpoints = this.assets.checkpoints;
+      this.fillSelect("ckpt_name", this.assets.checkpoints);
+      this.fillSelect("diffusion_model_name", this.assets.diffusion_models);
+      this.fillSelect("clip_name", this.assets.text_encoders);
+      this.fillSelect("vae_name", this.assets.vae_models);
       if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
-      select.value = this.settings.ckpt_name;
+      if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
+      if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
+      if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
       this.syncPromptControls();
     } catch (err) {
-      this.setStatus(`Checkpoint list failed: ${err.message || err}`, true);
+      this.setStatus(`Asset list failed: ${err.message || err}`, true);
     }
+  }
+
+  fillSelect(setting, values) {
+    const select = this.container.querySelector(`[data-setting="${setting}"]`);
+    if (!select) return;
+    select.innerHTML = (values || []).map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
+  }
+
+  applyGenerationModeDefaults(mode) {
+    if (mode === "anima") {
+      this.settings.sampler_name = "er_sde";
+      this.settings.scheduler = "simple";
+      this.settings.steps = 30;
+      this.settings.cfg = 4;
+      if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
+      if (!this.settings.clip_name) this.settings.clip_name = "qwen_3_06b_base.safetensors";
+      if (!this.settings.vae_name) this.settings.vae_name = "qwen_image_vae.safetensors";
+    } else {
+      this.settings.sampler_name = "euler";
+      this.settings.scheduler = "normal";
+      this.settings.steps = 24;
+      this.settings.cfg = 7;
+    }
+    this.syncPromptControls();
   }
 
   _escape(value) {
@@ -1068,8 +1123,13 @@ class UniCanvasWidget {
   }
 
   async draw() {
-    if (!this.settings.ckpt_name) {
+    const generationMode = this.settings.generation_mode || "illustrious";
+    if (generationMode !== "anima" && !this.settings.ckpt_name) {
       this.setStatus("Select a checkpoint first", true);
+      return;
+    }
+    if (generationMode === "anima" && (!this.settings.diffusion_model_name || !this.settings.clip_name || !this.settings.vae_name)) {
+      this.setStatus("Select Anima diffusion, CLIP and VAE first", true);
       return;
     }
     const mode = this.hasMaskContent() ? "inpaint" : "img2img";
