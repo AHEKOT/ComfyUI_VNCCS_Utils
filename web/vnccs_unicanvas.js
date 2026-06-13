@@ -1928,7 +1928,14 @@ class UniCanvasWidget {
           this.syncToNode();
         }
       });
-      thumb.addEventListener("click", (e) => { e.stopPropagation(); layer.visible = !layer.visible; this.renderLayerList(); this.render(); this.syncToNode(); });
+      thumb.addEventListener("click", (e) => {
+        e.stopPropagation();
+        layer.visible = !layer.visible;
+        this.renderLayerList();
+        this.render();
+        this.syncToNode();
+        void this.flushStateUpload(false);
+      });
       lock.addEventListener("click", (e) => { e.stopPropagation(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
       del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
       this.layerList.append(row);

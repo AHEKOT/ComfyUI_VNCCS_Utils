@@ -236,6 +236,35 @@ def _read_unicanvas_state_cache(state_id: str) -> dict[str, Any] | None:
     return entry.get("state") if isinstance(entry, dict) else None
 
 
+def _merge_unicanvas_state_with_cache(state: dict[str, Any], cached: dict[str, Any]) -> dict[str, Any]:
+    cached_layers = cached.get("layers")
+    live_layers = state.get("layers")
+    if not isinstance(cached_layers, list) or not isinstance(live_layers, list):
+        return cached
+
+    cached_by_id = {
+        layer.get("id"): layer
+        for layer in cached_layers
+        if isinstance(layer, dict) and layer.get("id") is not None
+    }
+    merged = {**cached, **state}
+    merged_layers: list[dict[str, Any]] = []
+    for live_layer in live_layers:
+        if not isinstance(live_layer, dict):
+            continue
+        cached_layer = cached_by_id.get(live_layer.get("id"))
+        if isinstance(cached_layer, dict):
+            layer = {**cached_layer, **live_layer}
+            if live_layer.get("cached") and not live_layer.get("dataURL"):
+                for key in ("crop", "dataURL", "hiresRect", "hiresDataURL"):
+                    layer[key] = cached_layer.get(key)
+        else:
+            layer = dict(live_layer)
+        merged_layers.append(layer)
+    merged["layers"] = merged_layers
+    return merged
+
+
 def _load_unicanvas_state(unicanvas_state: str) -> dict[str, Any]:
     try:
         state = json.loads(unicanvas_state or "{}")
@@ -253,7 +282,7 @@ def _load_unicanvas_state(unicanvas_state: str) -> dict[str, Any]:
     if state_id and needs_cache:
         cached = _read_unicanvas_state_cache(str(state_id))
         if isinstance(cached, dict) and isinstance(cached.get("layers"), list):
-            state = cached
+            state = _merge_unicanvas_state_with_cache(state, cached)
         elif any(layer.get("cached") and not layer.get("dataURL") for layer in layers or [] if isinstance(layer, dict)):
             raise ValueError("UniCanvas state cache is missing; interact with the canvas once or wait for state sync before queueing")
 
