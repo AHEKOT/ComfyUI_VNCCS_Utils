@@ -16,7 +16,7 @@ import time
 
 import numpy as np
 import torch
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 _DRAW_LOCK = asyncio.Lock()
@@ -85,8 +85,15 @@ def _tensor_debug(value: Any) -> dict[str, Any]:
     }
     if tensor.numel() and tensor.ndim >= 2:
         plane = tensor
-        while plane.ndim > 2:
-            plane = plane[0]
+        if tensor.ndim == 4 and tensor.shape[-1] in (1, 3, 4):
+            plane = tensor[0].amax(dim=-1)
+        elif tensor.ndim == 4 and tensor.shape[1] in (1, 3, 4, 16):
+            plane = tensor[0].amax(dim=0)
+            while plane.ndim > 2:
+                plane = plane[0]
+        else:
+            while plane.ndim > 2:
+                plane = plane[0]
         points = torch.nonzero(plane > 0.01, as_tuple=False)
         if points.numel():
             y_min = int(points[:, 0].min().item())
@@ -191,6 +198,160 @@ def _image_tensor_to_pil(images: torch.Tensor) -> Image.Image:
     image = images[0].detach().cpu().numpy()
     image = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(image)
+
+
+def _combine_mask_with_source_alpha(mask_image: Image.Image, source_rgba: Image.Image) -> Image.Image:
+    mask = np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8)
+    alpha = np.asarray(source_rgba.convert("RGBA").getchannel("A"), dtype=np.uint8)
+    alpha_mask = np.where(alpha > 8, 0, 255).astype(np.uint8)
+    combined = np.maximum(mask, alpha_mask)
+    return Image.fromarray(combined.astype(np.uint8), mode="L")
+
+
+def _gaussian_kernel(radius: int) -> torch.Tensor:
+    radius = max(0, int(radius))
+    if radius <= 0:
+        return torch.ones((1, 1), dtype=torch.float32)
+    size = radius * 2 + 1
+    sigma = max(radius / 2.5, 0.001)
+    coords = torch.arange(size, dtype=torch.float32) - radius
+    yy, xx = torch.meshgrid(coords, coords, indexing="ij")
+    dist = torch.sqrt(xx.square() + yy.square())
+    kernel = torch.exp(-0.5 * (dist / sigma).square())
+    kernel = torch.where(dist <= radius, kernel, torch.zeros_like(kernel))
+    kernel = kernel / torch.clamp(kernel.max(), min=1e-6)
+    return kernel
+
+
+def _max_filter2d_weighted(image: torch.Tensor, kernel: torch.Tensor) -> torch.Tensor:
+    height, width = kernel.shape
+    pad_y = height // 2
+    pad_x = width // 2
+    padded = torch.nn.functional.pad(image, (pad_x, pad_x, pad_y, pad_y), mode="constant", value=0)
+    result = torch.zeros_like(image)
+    for y in range(height):
+        for x in range(width):
+            weight = kernel[y, x]
+            if float(weight.item()) <= 0:
+                continue
+            region = padded[y : y + image.shape[0], x : x + image.shape[1]]
+            result = torch.maximum(result, region * weight)
+    return result
+
+
+def _make_outpaint_denoise_mask(mask_image: Image.Image, edge_radius: int, draw_id: str) -> tuple[Image.Image, Image.Image]:
+    """Comfy noise mask + expanded paste area: white/1 means denoise."""
+    hard = np.where(np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8) > 8, 255, 0).astype(np.uint8)
+    width, height = mask_image.size
+    latent_width = max(1, width // 8)
+    latent_height = max(1, height // 8)
+    latent_radius = max(0, int(edge_radius) // 8)
+    latent = Image.fromarray(hard, mode="L").resize((latent_width, latent_height), Image.Resampling.BILINEAR)
+    latent_tensor = torch.from_numpy(np.asarray(latent, dtype=np.float32) / 255.0)
+    if latent_radius > 0:
+        latent_tensor = _max_filter2d_weighted(latent_tensor, _gaussian_kernel(latent_radius))
+    denoise = Image.fromarray(np.clip(latent_tensor.numpy() * 255.0, 0, 255).astype(np.uint8), mode="L")
+    denoise = denoise.resize((width, height), Image.Resampling.BILINEAR)
+    expanded_area = Image.fromarray(np.where(np.asarray(denoise, dtype=np.uint8) > 1, 255, 0).astype(np.uint8), mode="L")
+    _uc_log(
+        draw_id,
+        "outpaint denoise mask prepared",
+        {
+            "edge_radius": edge_radius,
+            "latent_edge_radius": latent_radius,
+            "mask": _tensor_debug(torch.from_numpy(np.asarray(denoise, dtype=np.float32) / 255.0)[None,]),
+            "expanded_area": _tensor_debug(torch.from_numpy(np.asarray(expanded_area, dtype=np.float32) / 255.0)[None,]),
+        },
+    )
+    return denoise, expanded_area
+
+
+def _make_outpaint_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_id: str) -> Image.Image:
+    """Paste mask: white chooses generated pixels, black keeps the source."""
+    hard = Image.fromarray(
+        np.where(np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8) > 8, 255, 0).astype(np.uint8),
+        mode="L",
+    )
+    fade = max(0, int(fade_size_px))
+    if fade <= 0:
+        return hard
+    blurred = hard.filter(ImageFilter.GaussianBlur(radius=fade))
+    hard_np = np.asarray(hard, dtype=np.uint8)
+    blur_np = np.asarray(blurred, dtype=np.uint8)
+    paste = np.maximum(hard_np, blur_np)
+    paste_image = Image.fromarray(paste.astype(np.uint8), mode="L")
+    _uc_log(
+        draw_id,
+        "outpaint paste mask prepared",
+        {
+            "fade_size_px": fade,
+            "mask": _tensor_debug(torch.from_numpy(paste.astype(np.float32) / 255.0)[None,]),
+        },
+    )
+    return paste_image
+
+
+def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
+    rgba = source_rgba.convert("RGBA")
+    rgb = np.asarray(rgba.convert("RGB"), dtype=np.uint8).copy()
+    alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
+    mask = np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8)
+    # Invoke infill receives the RGBA initial image and fills only transparent
+    # pixels. User/inpaint masks are handled by the denoise mask, not by infill.
+    valid = alpha > 8
+
+    if not bool(valid.any()):
+        _uc_log(draw_id, "outpaint infill fallback", {"reason": "no valid source pixels"})
+        return Image.new("RGB", rgba.size, (127, 127, 127))
+
+    height, width = valid.shape
+    filled = rgb.copy()
+    valid_rows = np.flatnonzero(valid.any(axis=1))
+    for y in range(height):
+        row_valid = np.flatnonzero(valid[y])
+        if row_valid.size:
+            x = np.arange(width)
+            right_idx = np.searchsorted(row_valid, x, side="left")
+            left_idx = np.clip(right_idx - 1, 0, row_valid.size - 1)
+            right_idx = np.clip(right_idx, 0, row_valid.size - 1)
+            left_x = row_valid[left_idx]
+            right_x = row_valid[right_idx]
+            nearest_x = np.where(np.abs(x - left_x) <= np.abs(right_x - x), left_x, right_x)
+            filled[y] = rgb[y, nearest_x]
+        else:
+            nearest_row = valid_rows[np.argmin(np.abs(valid_rows - y))]
+            filled[y] = filled[nearest_row]
+
+    infilled = Image.fromarray(filled, mode="RGB").filter(ImageFilter.GaussianBlur(radius=2))
+    original = rgba.convert("RGB")
+    keep = Image.fromarray(valid.astype(np.uint8) * 255, mode="L")
+    result = Image.composite(original, infilled, keep)
+    _uc_log(
+        draw_id,
+        "outpaint source infilled",
+        {
+            "source_size": source_rgba.size,
+            "mask": _tensor_debug(torch.from_numpy(mask.astype(np.float32) / 255.0)[None,]),
+            "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
+            "valid_source_pixels": int(valid.sum()),
+        },
+    )
+    return result
+
+
+def _apply_differential_diffusion(model: Any, draw_id: str, strength: float = 1.0) -> Any:
+    try:
+        from comfy_extras.nodes_differential_diffusion import DifferentialDiffusion
+
+        model = model.clone()
+        model.set_model_denoise_mask_function(
+            lambda *args, **kwargs: DifferentialDiffusion.forward(*args, **kwargs, strength=strength)
+        )
+        _uc_log(draw_id, "DifferentialDiffusion applied", {"strength": strength})
+        return model
+    except Exception as exc:
+        _uc_log(draw_id, "DifferentialDiffusion unavailable", {"error": str(exc)})
+        return model
 
 
 def _composite_inpaint_result(
@@ -589,19 +750,22 @@ def _prepare_noise_mask_for_latent(
         size=(pixels.shape[1], pixels.shape[2]),
         mode="bilinear",
     )
+    has_soft_edges = bool(((mask > 0.001) & (mask < 0.999)).any().item())
     if pixels.shape[1] != height or pixels.shape[2] != width:
         y_offset = (pixels.shape[1] % downscale_ratio) // 2
         x_offset = (pixels.shape[2] % downscale_ratio) // 2
         pixels = pixels[:, y_offset:height + y_offset, x_offset:width + x_offset, :]
         mask = mask[:, :, y_offset:height + y_offset, x_offset:width + x_offset]
 
-    if grow_mask_by > 0:
+    if grow_mask_by > 0 and not has_soft_edges:
         kernel = torch.ones((1, 1, grow_mask_by, grow_mask_by))
         padding = math.ceil((grow_mask_by - 1) / 2)
         mask = torch.clamp(torch.nn.functional.conv2d(mask.round(), kernel, padding=padding), 0, 1)
-    else:
+    elif not has_soft_edges:
         mask = mask.round()
-    return pixels, mask[:, :, :height, :width].round()
+    else:
+        mask = torch.clamp(mask, 0, 1)
+    return pixels, torch.clamp(mask[:, :, :height, :width], 0, 1)
 
 
 def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tensor | None, grow_mask_by: int, draw_id: str = "unknown"):
@@ -629,6 +793,27 @@ def _encode_source_latent(vae: Any, image_tensor: torch.Tensor, mask: torch.Tens
         return encoded
     encoded = nodes.VAEEncode().encode(vae, image_tensor)[0]
     _uc_log(draw_id, "fallback VAEEncode returned latent", _latent_debug(encoded))
+    return encoded
+
+
+def _create_empty_generation_latent(width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+    generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
+    if generation_mode == "anima":
+        import comfy.model_management
+
+        latent = torch.zeros(
+            [1, 16, 1, height // 8, width // 8],
+            device=comfy.model_management.intermediate_device(),
+            dtype=comfy.model_management.intermediate_dtype(),
+        )
+        encoded = {"samples": latent}
+        _uc_log(draw_id, "created empty Anima/Qwen latent", _latent_debug(encoded))
+        return encoded
+
+    import nodes
+
+    encoded = nodes.EmptyLatentImage().generate(width, height, 1)[0]
+    _uc_log(draw_id, "created empty SD latent", _latent_debug(encoded))
     return encoded
 
 
@@ -729,7 +914,27 @@ def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, A
     if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
         latent_tensor = unwrap_latent_samples(latent_payload)
-        decoded = _call_node_method(["VAEDecode"], ["decode"], samples={"samples": latent_tensor}, vae=vae)
+        decode_payload = {"samples": latent_tensor}
+        try:
+            decoded = _call_node_method(
+                ["VAEDecodeTiled"],
+                ["decode"],
+                samples=decode_payload,
+                vae=vae,
+                tile_size=512,
+                tile_x=512,
+                tile_y=512,
+                overlap=64,
+                temporal_size=64,
+                temporal_overlap=8,
+            )
+            if isinstance(decoded, tuple) and decoded:
+                return decoded[0]
+            if decoded is not None:
+                return decoded
+        except Exception:
+            pass
+        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=decode_payload, vae=vae)
         if isinstance(decoded, tuple) and decoded:
             return decoded[0]
         if decoded is not None:
@@ -787,17 +992,21 @@ def _encode_prompt(clip: Any, text: str):
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
     mode = str(payload.get("mode") or "img2img")
-    if mode not in {"img2img", "inpaint"}:
-        raise ValueError("mode must be img2img or inpaint")
+    if mode not in {"txt2img", "img2img", "inpaint", "outpaint"}:
+        raise ValueError("mode must be txt2img, img2img, inpaint or outpaint")
 
     settings = _normalize_gen_settings(payload.get("settings") or {})
     seed = int(settings.get("seed", 0))
     steps = int(settings.get("steps", 24))
     cfg = float(settings.get("cfg", 7.0))
     denoise = float(settings.get("denoise", 0.65 if mode == "img2img" else 1.0))
+    if mode == "txt2img":
+        denoise = 1.0
     sampler_name = str(settings.get("sampler_name") or settings.get("sampler") or "euler")
     scheduler = str(settings.get("scheduler") or "normal")
     grow_mask_by = int(settings.get("grow_mask_by", 6))
+    mask_blur = int(settings.get("mask_blur", 16))
+    coherence_edge_size = int(settings.get("canvas_coherence_edge_size", 16))
     positive_text = str(settings.get("positive", ""))
     negative_text = str(settings.get("negative", ""))
     _uc_log(
@@ -808,6 +1017,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "bbox": payload.get("bbox"),
             "inference_size": payload.get("inference_size"),
             "output_size": payload.get("output_size"),
+            "source_empty": payload.get("source_empty"),
             "frontend_debug": payload.get("debug"),
             "generation_mode": settings.get("generation_mode"),
             "ckpt_name": settings.get("ckpt_name"),
@@ -821,15 +1031,18 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "sampler_name": sampler_name,
             "scheduler": scheduler,
             "grow_mask_by": grow_mask_by,
+            "mask_blur": mask_blur,
+            "canvas_coherence_edge_size": coherence_edge_size,
             "positive_len": len(positive_text),
             "negative_len": len(negative_text),
         },
     )
 
-    source = _decode_data_url(str(payload.get("image") or ""), "RGB")
-    image_tensor = _pil_to_image_tensor(source)
+    source_rgba = _decode_data_url(str(payload.get("image") or ""), "RGBA")
+    source = source_rgba.convert("RGB")
+    source_for_composite = source
     width, height = source.size
-    _uc_log(draw_id, "source decoded", {"size": source.size, "tensor": _tensor_debug(image_tensor)})
+    source_empty = bool(payload.get("source_empty"))
     inference_payload = payload.get("inference_size") or {}
     expected_width = int(inference_payload.get("width") or width)
     expected_height = int(inference_payload.get("height") or height)
@@ -856,12 +1069,24 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
 
         mask = None
         mask_image = None
-        if mode == "inpaint":
+        paste_mask_image = None
+        if mode in {"inpaint", "outpaint"}:
             mask_image = _decode_data_url(str(payload.get("mask") or ""), "RGBA")
             if mask_image.size != source.size:
                 _uc_log(draw_id, "mask resized to source size", {"from": mask_image.size, "to": source.size})
                 mask_image = mask_image.resize(source.size, Image.Resampling.BILINEAR)
-            mask = _pil_to_mask_tensor(mask_image)
+            if mode == "outpaint":
+                mask_image = _combine_mask_with_source_alpha(mask_image, source_rgba)
+                denoise_mask_image, expanded_mask_area = _make_outpaint_denoise_mask(
+                    mask_image, coherence_edge_size, draw_id
+                )
+                paste_mask_image = _make_outpaint_paste_mask(expanded_mask_area, mask_blur, draw_id)
+                source = _infill_masked_rgb(source_rgba, mask_image, draw_id)
+                source_for_composite = source_rgba.convert("RGB")
+                mask = _pil_to_mask_tensor(denoise_mask_image)
+            else:
+                paste_mask_image = mask_image
+                mask = _pil_to_mask_tensor(mask_image)
             mask_for_debug = _pil_to_mask_image(mask_image)
             _uc_log(
                 draw_id,
@@ -874,10 +1099,18 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             )
             source_debug = _save_temp_image(source, f"VNCCS_UniCanvas_{draw_id}_source")
             mask_debug = _save_temp_image(mask_for_debug, f"VNCCS_UniCanvas_{draw_id}_mask")
-            _uc_log(draw_id, "debug input images saved", {"source": source_debug, "mask": mask_debug})
+            paste_mask_debug = _save_temp_image(paste_mask_image, f"VNCCS_UniCanvas_{draw_id}_paste_mask") if paste_mask_image is not None else None
+            _uc_log(draw_id, "debug input images saved", {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug})
         else:
-            _uc_log(draw_id, "mask skipped", {"reason": "mode is img2img"})
-        latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
+            _uc_log(draw_id, "mask skipped", {"reason": f"mode is {mode}"})
+        image_tensor = _pil_to_image_tensor(source)
+        _uc_log(draw_id, "source prepared", {"size": source.size, "tensor": _tensor_debug(image_tensor)})
+        if mode in {"inpaint", "outpaint"} and mask is not None:
+            model = _apply_differential_diffusion(model, draw_id, strength=1.0)
+        if mode == "txt2img" or (source_empty and mask is None):
+            latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
+        else:
+            latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
         latent = _sample_generation_latent(
             model=model,
             positive=positive,
@@ -897,17 +1130,24 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         result_image = _image_tensor_to_pil(decoded)
 
     output_size = (output_width, output_height)
-    if mode == "inpaint" and mask_image is not None:
-        result_image = _composite_inpaint_result(source, result_image, mask_image, output_size, draw_id)
+    if mode in {"inpaint", "outpaint"} and mask_image is not None:
+        result_image = _composite_inpaint_result(source_for_composite, result_image, paste_mask_image or mask_image, output_size, draw_id)
     elif result_image.size != output_size:
         _uc_log(draw_id, "result resized to output size", {"from": result_image.size, "to": (output_width, output_height)})
         result_image = result_image.resize(output_size, Image.Resampling.LANCZOS)
 
     saved = _save_temp_image(result_image)
-    _uc_log(draw_id, "result saved", {"image": saved, "size": result_image.size})
+    saved_mask = None
+    if mode in {"inpaint", "outpaint"} and paste_mask_image is not None:
+        mask_to_save = paste_mask_image
+        if mask_to_save.size != output_size:
+            mask_to_save = mask_to_save.resize(output_size, Image.Resampling.BILINEAR)
+        saved_mask = _save_temp_image(mask_to_save, f"VNCCS_UniCanvas_{draw_id}_result_mask")
+    _uc_log(draw_id, "result saved", {"image": saved, "mask": saved_mask, "size": result_image.size})
     return {
         "status": "ok",
         "image": saved,
+        "mask": saved_mask,
         "width": output_width,
         "height": output_height,
         "inference_width": width,

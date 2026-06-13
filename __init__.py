@@ -38,10 +38,14 @@ import re
 import numpy as np
 import struct
 import asyncio
+import tempfile
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _CAPTURE_CACHE_MAX_IMAGES = 16
 _CAPTURE_CACHE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
+_UNICANVAS_STATE_CACHE_MAX = 10
+_UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
 _SAM3D_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 _SAM3D_MAX_PIXELS = 4096 * 4096
 _VNCCS_MORPH_DATA_BINARY = None
@@ -213,6 +217,18 @@ def _vnccs_validate_capture_payload(data):
         lighting_prompts = []
     lighting_prompts = [str(prompt)[:4096] for prompt in lighting_prompts[:_CAPTURE_CACHE_MAX_IMAGES]]
     return captured_images, lighting_prompts
+
+def _vnccs_validate_unicanvas_state_payload(data):
+    state = data.get("state")
+    if not isinstance(state, dict):
+        raise ValueError("state must be an object")
+    layers = state.get("layers", [])
+    if not isinstance(layers, list):
+        raise ValueError("state.layers must be a list")
+    raw = json.dumps(state, ensure_ascii=False)
+    if len(raw) > _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS:
+        raise ValueError("unicanvas state payload is too large")
+    return state
 
 async def _vnccs_ensure_pose_data_loaded_async():
     from .CharacterData.mh_parser import TargetParser
@@ -667,6 +683,82 @@ def _vnccs_register_capture_cache():
         return web.json_response(entry)
 
 _vnccs_register_capture_cache()
+
+
+# === UniCanvas State Cache ===
+VNCCS_UNICANVAS_STATE_CACHE = {}
+
+def _vnccs_unicanvas_state_cache_path(state_id):
+    safe_id = _vnccs_safe_id(state_id, "unicanvas")
+    return os.path.join(_UNICANVAS_STATE_CACHE_DIR, f"{safe_id}.json")
+
+def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
+    os.makedirs(_UNICANVAS_STATE_CACHE_DIR, exist_ok=True)
+    path = _vnccs_unicanvas_state_cache_path(state_id)
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(entry, handle, ensure_ascii=False)
+    os.replace(temp_path, path)
+
+def _vnccs_read_unicanvas_state_cache_file(state_id):
+    path = _vnccs_unicanvas_state_cache_path(state_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+def _vnccs_register_unicanvas_state_cache():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_upload")
+    async def vnccs_unicanvas_state_upload(request):
+        try:
+            if not _vnccs_content_length_ok(request, _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+                return web.json_response({"error": "unicanvas state payload is too large"}, status=413)
+            data = await request.json()
+            state_id = data.get("state_id")
+            if not state_id:
+                return web.json_response({"error": "missing state_id"}, status=400)
+            state_id = _vnccs_safe_id(state_id, "unicanvas")
+            try:
+                state = _vnccs_validate_unicanvas_state_payload(data)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=413)
+
+            entry = {"state": state}
+            if state_id in VNCCS_UNICANVAS_STATE_CACHE:
+                del VNCCS_UNICANVAS_STATE_CACHE[state_id]
+            VNCCS_UNICANVAS_STATE_CACHE[state_id] = entry
+            _vnccs_write_unicanvas_state_cache_file(state_id, entry)
+            while len(VNCCS_UNICANVAS_STATE_CACHE) > _UNICANVAS_STATE_CACHE_MAX:
+                oldest = next(iter(VNCCS_UNICANVAS_STATE_CACHE))
+                del VNCCS_UNICANVAS_STATE_CACHE[oldest]
+
+            return web.json_response({"status": "ok", "state_id": state_id})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas_state/{state_id}")
+    async def vnccs_unicanvas_state_get(request):
+        state_id = _vnccs_safe_id(request.match_info["state_id"], "unicanvas")
+        entry = VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
+        if not entry:
+            entry = _vnccs_read_unicanvas_state_cache_file(state_id)
+        if not entry:
+            return web.json_response({"error": "not found"}, status=404)
+        if state_id in VNCCS_UNICANVAS_STATE_CACHE:
+            del VNCCS_UNICANVAS_STATE_CACHE[state_id]
+        VNCCS_UNICANVAS_STATE_CACHE[state_id] = entry
+        while len(VNCCS_UNICANVAS_STATE_CACHE) > _UNICANVAS_STATE_CACHE_MAX:
+            oldest = next(iter(VNCCS_UNICANVAS_STATE_CACHE))
+            del VNCCS_UNICANVAS_STATE_CACHE[oldest]
+        return web.json_response(entry)
+
+_vnccs_register_unicanvas_state_cache()
 register_unicanvas_routes()
 
 
