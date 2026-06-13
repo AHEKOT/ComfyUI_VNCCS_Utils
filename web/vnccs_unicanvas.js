@@ -19,7 +19,8 @@ const STYLES = `
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
 .vnccs-uc-hud { position:absolute; left:10px; top:10px; display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
-.vnccs-uc-left, .vnccs-uc-side { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
+.vnccs-uc-left { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
+.vnccs-uc-side { width:286px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 2; border-right:1px solid var(--uc-border); }
 .vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); overflow:hidden; }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
@@ -30,6 +31,11 @@ const STYLES = `
 .vnccs-uc-section-actions .vnccs-uc-icon { width:24px; height:24px; border-radius:7px; }
 .vnccs-uc-section-actions .vnccs-uc-icon svg { width:14px; height:14px; }
 .vnccs-uc-layers { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:6px; display:flex; flex-direction:column; gap:5px; }
+.vnccs-uc-layer-subhead { padding:8px; border-bottom:1px solid var(--uc-border); display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; align-items:center; }
+.vnccs-uc-layer-subhead .vnccs-uc-select { width:100%; }
+.vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(72px,1fr) 38px; gap:7px; align-items:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-layer-opacity .vnccs-uc-range { width:100%; }
+.vnccs-uc-layer-opacity-value { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; }
 .vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
 .vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
@@ -261,6 +267,28 @@ class UniCanvasWidget {
     this.side.className = "vnccs-uc-side";
     this.layerList = document.createElement("div");
     this.layerList.className = "vnccs-uc-layers";
+    this.layerSubhead = document.createElement("div");
+    this.layerSubhead.className = "vnccs-uc-layer-subhead";
+    this.layerSubhead.innerHTML = `
+      <select class="vnccs-uc-select" data-layer-control="blendMode">
+        <option value="source-over">Normal</option>
+        <option value="multiply">Multiply</option>
+        <option value="screen">Screen</option>
+        <option value="overlay">Overlay</option>
+        <option value="darken">Darken</option>
+        <option value="lighten">Lighten</option>
+        <option value="color-dodge">Color Dodge</option>
+        <option value="color-burn">Color Burn</option>
+        <option value="hard-light">Hard Light</option>
+        <option value="soft-light">Soft Light</option>
+        <option value="difference">Difference</option>
+        <option value="exclusion">Exclusion</option>
+        <option value="hue">Hue</option>
+        <option value="saturation">Saturation</option>
+        <option value="color">Color</option>
+        <option value="luminosity">Luminosity</option>
+      </select>
+      <label class="vnccs-uc-layer-opacity">Opacity <input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" data-layer-control="opacity"><span class="vnccs-uc-layer-opacity-value"></span></label>`;
     this.layersTopActions = document.createElement("div");
     this.layersTopActions.className = "vnccs-uc-layers-top-actions";
     this.layersTopActions.append(
@@ -274,7 +302,7 @@ class UniCanvasWidget {
     );
     const layersBody = document.createElement("div");
     layersBody.className = "vnccs-uc-layers-section";
-    layersBody.append(this.layersTopActions, this.layerList, this.flattenLayersFooter);
+    layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
     const layersSection = this._section("Layers", layersBody, [
       [UI_ICONS.plus, "Add raster", () => this.addLayer("raster")],
       [UI_ICONS.mask, "Add mask", () => this.addLayer("mask")],
@@ -501,6 +529,7 @@ class UniCanvasWidget {
       visible: true,
       locked: false,
       opacity: 1,
+      blendMode: "source-over",
       canvas: this._createCanvas(),
     };
     this.invalidateLayerCaches(layer);
@@ -638,6 +667,22 @@ class UniCanvasWidget {
     window.addEventListener("beforeunload", this._flushStateBeforeUnload);
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    const onLayerSubheadChange = (e) => {
+      const target = e.target;
+      const layer = this.activeLayer;
+      if (!layer || !(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+      if (target.dataset.layerControl === "blendMode") layer.blendMode = target.value || "source-over";
+      if (target.dataset.layerControl === "opacity") {
+        layer.opacity = Number(target.value);
+        this.invalidateLayerCaches(layer);
+      }
+      this.syncActiveLayerControls();
+      this.renderLayerList();
+      this.render();
+      this.syncToNode();
+    };
+    this.layerSubhead.addEventListener("input", onLayerSubheadChange);
+    this.layerSubhead.addEventListener("change", onLayerSubheadChange);
 
     this.toolSettings.addEventListener("input", (e) => {
       const target = e.target;
@@ -1376,6 +1421,7 @@ class UniCanvasWidget {
         this.drawMaskLayer(ctx, layer);
       } else {
         ctx.globalAlpha = layer.opacity;
+        ctx.globalCompositeOperation = layer.blendMode || "source-over";
         this.drawRasterLayerVisible(ctx, layer);
       }
       ctx.restore();
@@ -1934,6 +1980,14 @@ class UniCanvasWidget {
 
   syncActiveLayerControls() {
     this.renderToolSettings();
+    const layer = this.activeLayer;
+    if (!this.layerSubhead || !layer) return;
+    const blend = this.layerSubhead.querySelector('[data-layer-control="blendMode"]');
+    const opacity = this.layerSubhead.querySelector('[data-layer-control="opacity"]');
+    const opacityValue = this.layerSubhead.querySelector(".vnccs-uc-layer-opacity-value");
+    if (blend) blend.value = layer.blendMode || "source-over";
+    if (opacity) opacity.value = layer.opacity;
+    if (opacityValue) opacityValue.textContent = `${Math.round(layer.opacity * 100)}%`;
   }
 
   deleteLayer(id) {
@@ -1955,6 +2009,7 @@ class UniCanvasWidget {
       visible: layer.visible,
       locked: false,
       opacity: layer.opacity,
+      blendMode: layer.blendMode || "source-over",
       canvas: this._createCanvas(),
     };
     this.configureImageContext(copy.canvas.getContext("2d")).drawImage(layer.canvas, 0, 0);
@@ -2005,6 +2060,7 @@ class UniCanvasWidget {
       visible: true,
       locked: false,
       opacity: 1,
+      blendMode: "source-over",
       canvas: this._createCanvas(),
     };
     const ctx = this.configureImageContext(master.canvas.getContext("2d"), false);
@@ -2014,6 +2070,7 @@ class UniCanvasWidget {
       if (!layer.visible || layer.type !== "raster") continue;
       ctx.save();
       ctx.globalAlpha = layer.opacity;
+      ctx.globalCompositeOperation = layer.blendMode || "source-over";
       if (layer.hiresCanvas && layer.hiresRect) {
         this.drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, false);
       } else {
@@ -2090,6 +2147,7 @@ class UniCanvasWidget {
       if (type === "mask" && layer.type !== "mask") continue;
       ctx.save();
       ctx.globalAlpha = type === "image" ? layer.opacity : 1;
+      ctx.globalCompositeOperation = type === "image" ? (layer.blendMode || "source-over") : "source-over";
       if (type === "image") {
         this.drawRasterLayerToWorldRect(ctx, layer, this.bbox, { x: 0, y: 0, width: out.width, height: out.height });
       } else {
@@ -2455,7 +2513,7 @@ class UniCanvasWidget {
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
           opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
           hidden: false,
-          blendMode: "normal",
+          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
           canvas,
         };
       });
@@ -2607,6 +2665,7 @@ class UniCanvasWidget {
       visible: layer.visible,
       locked: layer.locked,
       opacity: layer.opacity,
+      blendMode: layer.blendMode || "source-over",
       crop,
       dataURL: null,
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
@@ -2691,6 +2750,7 @@ class UniCanvasWidget {
           visible: item.visible !== false,
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
+          blendMode: typeof item.blendMode === "string" ? item.blendMode : "source-over",
           canvas: this._createCanvas(),
         };
         if (item.dataURL) {
@@ -2770,6 +2830,7 @@ class UniCanvasWidget {
       if (layer.type !== type || !layer.visible) continue;
       compositeCtx.save();
       compositeCtx.globalAlpha = type === "raster" ? layer.opacity : 1;
+      compositeCtx.globalCompositeOperation = type === "raster" ? (layer.blendMode || "source-over") : "source-over";
       if (type === "raster") {
         this.drawRasterLayerToWorldRect(
           compositeCtx,
