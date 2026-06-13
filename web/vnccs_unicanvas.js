@@ -24,6 +24,10 @@ const STYLES = `
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 2; border-right:1px solid var(--uc-border); }
 .vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); overflow:hidden; }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-side-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-denoise-control { display:grid; grid-template-columns:auto minmax(0,1fr) 58px; gap:8px; align-items:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
+.vnccs-uc-denoise-control .vnccs-uc-input { width:58px; box-sizing:border-box; text-align:right; }
 .vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-section-title { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -265,6 +269,13 @@ class UniCanvasWidget {
     this.left.className = "vnccs-uc-left";
     this.side = document.createElement("div");
     this.side.className = "vnccs-uc-side";
+    this.denoiseControl = document.createElement("div");
+    this.denoiseControl.className = "vnccs-uc-side-control";
+    this.denoiseControl.innerHTML = `
+      <label class="vnccs-uc-denoise-control">Denoise
+        <input class="vnccs-uc-range" data-setting="denoise" type="range" min="0" max="1" step="0.01" value="${this.settings.denoise}">
+        <input class="vnccs-uc-input" data-setting="denoise" type="number" min="0" max="1" step="0.01" value="${this.settings.denoise}">
+      </label>`;
     this.layerList = document.createElement("div");
     this.layerList.className = "vnccs-uc-layers";
     this.layerSubhead = document.createElement("div");
@@ -330,7 +341,6 @@ class UniCanvasWidget {
         <label class="vnccs-uc-field">Seed<input class="vnccs-uc-input" data-setting="seed" type="number"></label>
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" step="0.1"></label>
-        <label class="vnccs-uc-field">Denoise<input class="vnccs-uc-input" data-setting="denoise" type="number" step="0.01" min="0" max="1"></label>
       </div>`;
     this.status = document.createElement("div");
     this.status.className = "vnccs-uc-status";
@@ -343,7 +353,7 @@ class UniCanvasWidget {
     const promptSection = this._section("Draw", this.promptBox);
 
     this.left.append(promptSection);
-    this.side.append(layersSection);
+    this.side.append(this.denoiseControl, layersSection);
 
     this.bottom = document.createElement("div");
     this.bottom.className = "vnccs-uc-bottom";
@@ -410,6 +420,24 @@ class UniCanvasWidget {
       onClick?.();
     });
     return btn;
+  }
+
+  parseNumericInput(input, fallback = 0) {
+    const normalized = String(input.value ?? "").replace(",", ".");
+    if (input.value !== normalized) input.value = normalized;
+    const value = Number(normalized);
+    return Number.isFinite(value) ? value : fallback;
+  }
+
+  formatSettingNumber(value, digits = 2) {
+    if (!Number.isFinite(Number(value))) return "0";
+    return Number(value).toFixed(digits).replace(/\.?0+$/, "");
+  }
+
+  insertDecimalPoint(input) {
+    if (String(input.value).includes(".")) return;
+    input.value = `${input.value || "0"}.`;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   }
 
   promptInWidget(title, label, value = "") {
@@ -665,6 +693,12 @@ class UniCanvasWidget {
     this._flushStateBeforeUnload = () => this.flushStateUpload(true);
     window.addEventListener("pagehide", this._flushStateBeforeUnload);
     window.addEventListener("beforeunload", this._flushStateBeforeUnload);
+    this.container.addEventListener("keydown", (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement) || target.type !== "number" || e.key !== ",") return;
+      e.preventDefault();
+      this.insertDecimalPoint(target);
+    });
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     const onLayerSubheadChange = (e) => {
@@ -697,11 +731,19 @@ class UniCanvasWidget {
       if (action === "fit") this.fitView();
     });
     this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
+    this.denoiseControl.addEventListener("input", (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement) || target.dataset.setting !== "denoise") return;
+      this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
+      this.syncDenoiseControls(target);
+      this.syncToNode();
+    });
+    this.denoiseControl.addEventListener("change", () => this.syncDenoiseControls());
     this.left.addEventListener("input", (e) => {
       const target = e.target;
       const key = target?.dataset?.setting;
       if (!key) return;
-      this.settings[key] = target.type === "number" ? Number(target.value) : target.value;
+      this.settings[key] = target.type === "number" ? this.parseNumericInput(target, this.settings[key]) : target.value;
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
       if (key === "inference_scale") this.syncInferenceControls();
       this.syncToNode();
@@ -795,7 +837,16 @@ class UniCanvasWidget {
     const scaleInput = this.container.querySelector('[data-setting="inference_scale"]');
     const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
     this.settings.inference_scale = scale;
-    if (scaleInput) scaleInput.value = scale;
+    if (scaleInput) scaleInput.value = this.formatSettingNumber(scale, 3);
+  }
+
+  syncDenoiseControls(source = null) {
+    const value = Math.max(0, Math.min(1, Number(this.settings.denoise) || 0));
+    this.settings.denoise = value;
+    this.denoiseControl?.querySelectorAll('[data-setting="denoise"]').forEach((el) => {
+      if (el === source) return;
+      if (el instanceof HTMLInputElement) el.value = this.formatSettingNumber(value, 2);
+    });
   }
 
   _escape(value) {
@@ -2571,9 +2622,15 @@ class UniCanvasWidget {
     this.syncInferenceControls();
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
-      if (key in this.settings) el.value = this.settings[key];
+      if (!(key in this.settings)) return;
+      if (el instanceof HTMLInputElement && (el.type === "number" || el.type === "range")) {
+        el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
+      } else {
+        el.value = this.settings[key];
+      }
     });
     this.syncInferenceControls();
+    this.syncDenoiseControls();
   }
 
   syncToNode() {
