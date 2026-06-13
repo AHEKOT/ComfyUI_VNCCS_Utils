@@ -53,6 +53,17 @@ const STYLES = `
 }
 .vnccs-uc-staging-popover.visible { display:flex; }
 .vnccs-uc-staging-count { min-width:34px; text-align:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-modal-overlay {
+  position:absolute; inset:0; z-index:20; display:grid; place-items:center;
+  background:rgba(4,4,8,.58); pointer-events:auto;
+}
+.vnccs-uc-modal {
+  width:min(360px, calc(100% - 36px)); background:var(--uc-panel); color:var(--uc-text);
+  border:1px solid rgba(255,143,163,.34); border-radius:12px; box-shadow:0 18px 48px rgba(0,0,0,.55);
+  padding:14px; display:flex; flex-direction:column; gap:10px;
+}
+.vnccs-uc-modal-title { color:var(--uc-accent); font-weight:800; font-size:13px; }
+.vnccs-uc-modal-actions { display:flex; justify-content:flex-end; gap:8px; }
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -281,6 +292,49 @@ class UniCanvasWidget {
     return btn;
   }
 
+  promptInWidget(title, label, value = "") {
+    return new Promise((resolve) => {
+      const overlay = document.createElement("div");
+      overlay.className = "vnccs-uc-modal-overlay";
+      const modal = document.createElement("div");
+      modal.className = "vnccs-uc-modal";
+      const titleEl = document.createElement("div");
+      titleEl.className = "vnccs-uc-modal-title";
+      titleEl.textContent = title;
+      const field = document.createElement("label");
+      field.className = "vnccs-uc-field";
+      field.textContent = label;
+      const input = document.createElement("input");
+      input.className = "vnccs-uc-input";
+      input.type = "text";
+      input.value = value;
+      const actions = document.createElement("div");
+      actions.className = "vnccs-uc-modal-actions";
+      const cancel = this._button("Cancel", "vnccs-uc-btn", () => close(null), "Cancel");
+      const ok = this._button("OK", "vnccs-uc-btn primary", () => close(input.value), "OK");
+      const close = (result) => {
+        overlay.remove();
+        resolve(result);
+      };
+      field.appendChild(input);
+      actions.append(cancel, ok);
+      modal.append(titleEl, field, actions);
+      overlay.appendChild(modal);
+      overlay.addEventListener("pointerdown", (e) => {
+        if (e.target === overlay) close(null);
+      });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") close(input.value);
+        if (e.key === "Escape") close(null);
+      });
+      this.container.appendChild(overlay);
+      requestAnimationFrame(() => {
+        input.focus();
+        input.select();
+      });
+    });
+  }
+
   _toolButton(tool, label, title) {
     const btn = this._button(label, "vnccs-uc-icon vnccs-uc-tool", () => this.setTool(tool), title);
     btn.dataset.tool = tool;
@@ -332,9 +386,9 @@ class UniCanvasWidget {
 
   syncCursorStyle() {
     const cursorMap = {
-      brush: "none",
-      eraser: "none",
-      mask: "none",
+      brush: "crosshair",
+      eraser: "crosshair",
+      mask: "crosshair",
       rect: "crosshair",
       lasso: "crosshair",
       bbox: "move",
@@ -497,13 +551,13 @@ class UniCanvasWidget {
   }
 
   canvasPointFromEvent(e) {
-    const style = getComputedStyle(this.canvas);
-    const layoutW = Number.parseFloat(style.width) || this.canvas.offsetWidth || this.canvas.width;
-    const layoutH = Number.parseFloat(style.height) || this.canvas.offsetHeight || this.canvas.height;
     const rect = this.canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const scaleX = this.canvas.width / Math.max(rect.width || 1, 1);
+    const scaleY = this.canvas.height / Math.max(rect.height || 1, 1);
     return {
-      x: (e.clientX - rect.left) * (layoutW / Math.max(rect.width || 1, 1)),
-      y: (e.clientY - rect.top) * (layoutH / Math.max(rect.height || 1, 1)),
+      x: ((e.clientX - rect.left) * scaleX) / dpr,
+      y: ((e.clientY - rect.top) * scaleY) / dpr,
     };
   }
 
@@ -1220,7 +1274,7 @@ class UniCanvasWidget {
   drawToolPreview(ctx) {
     if (!this.hoverPoint || this.hoverPointerType !== "mouse" || !["brush", "eraser", "mask"].includes(this.tool)) return;
     const radius = this.brushSize / 2;
-    const point = this.alignCoordForTool(this.hoverPoint, this.brushSize);
+    const point = this.hoverPoint;
     ctx.save();
     ctx.globalAlpha = this.isPointerDown ? 0 : 0.22;
     ctx.fillStyle = this.tool === "eraser" ? "rgba(255,71,87,.65)" : this.tool === "mask" ? "rgba(255,255,255,.65)" : this.fg;
@@ -1231,11 +1285,11 @@ class UniCanvasWidget {
     ctx.lineWidth = 1 / this.view.scale;
     ctx.strokeStyle = "rgba(0,0,0,1)";
     ctx.beginPath();
-    ctx.arc(this.hoverPoint.x, this.hoverPoint.y, radius, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
     ctx.stroke();
     ctx.strokeStyle = "rgba(255,255,255,.82)";
     ctx.beginPath();
-    ctx.arc(this.hoverPoint.x, this.hoverPoint.y, radius + 1 / this.view.scale, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, radius + 1 / this.view.scale, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
   }
@@ -1277,9 +1331,9 @@ class UniCanvasWidget {
         this.activeLayerId = layer.id;
         this.renderLayerList();
       });
-      row.addEventListener("dblclick", (e) => {
+      row.addEventListener("dblclick", async (e) => {
         e.stopPropagation();
-        const next = prompt("Layer name", layer.name);
+        const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
         if (next !== null) {
           layer.name = String(next).trim() || layer.name;
           this.renderLayerList();
