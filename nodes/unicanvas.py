@@ -25,6 +25,8 @@ _DRAW_LOCK = asyncio.Lock()
 _MODEL_CACHE_LOCK = threading.Lock()
 _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
+_DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
+_DRAW_PROGRESS_LOCK = threading.Lock()
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
@@ -67,6 +69,33 @@ def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> N
     except Exception:
         payload = str(data)
     print(f"[VNCCS UniCanvas][draw:{draw_id}] {message}: {payload}", flush=True)
+
+
+def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
+    payload = {
+        "draw_id": draw_id,
+        "stage": stage,
+        "progress": max(0.0, min(1.0, float(progress))),
+        "step": max(0, int(step or 0)),
+        "steps": max(0, int(steps or 0)),
+        "message": message or stage,
+        "updated_at": time.time(),
+    }
+    with _DRAW_PROGRESS_LOCK:
+        _DRAW_PROGRESS[draw_id] = payload
+
+
+def _get_draw_progress(draw_id: str) -> dict[str, Any]:
+    with _DRAW_PROGRESS_LOCK:
+        return dict(_DRAW_PROGRESS.get(draw_id) or {
+            "draw_id": draw_id,
+            "stage": "unknown",
+            "progress": 0,
+            "step": 0,
+            "steps": 0,
+            "message": "Waiting",
+            "updated_at": time.time(),
+        })
 
 
 def _tensor_debug(value: Any) -> dict[str, Any]:
@@ -1070,6 +1099,34 @@ def _sample_generation_latent(
         },
     )
 
+    def on_step(step: int, *_args: Any) -> None:
+        current = min(max(int(step) + 1, 1), max(steps, 1))
+        _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * (current / max(steps, 1)), current, steps, f"Sampling step {current}/{steps}")
+
+    kwargs = dict(
+        model=model,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler_name=sampler_name,
+        scheduler=scheduler,
+        positive=positive,
+        negative=negative,
+        latent=latent,
+        denoise=denoise,
+    )
+    try:
+        sig = inspect.signature(nodes.common_ksampler)
+        if "callback" in sig.parameters:
+            kwargs["callback"] = on_step
+        _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
+        sampled = nodes.common_ksampler(**kwargs)[0]
+        _uc_log(draw_id, "common_ksampler output", _latent_debug(sampled))
+        return sampled
+    except Exception as exc:
+        _uc_log(draw_id, "common_ksampler with progress failed; falling back to KSampler", {"error": str(exc)})
+
+    _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
     sampled = _call_node_method(
         ["KSampler"],
         ["sample"],
@@ -1085,27 +1142,14 @@ def _sample_generation_latent(
         latent=latent,
         denoise=denoise,
     )
+    _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
     if isinstance(sampled, tuple) and sampled:
         _uc_log(draw_id, "KSampler tuple output", _latent_debug(sampled[0]))
         return sampled[0]
     if sampled is not None:
         _uc_log(draw_id, "KSampler output", _latent_debug(sampled))
         return sampled
-
-    sampled = nodes.common_ksampler(
-        model=model,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler_name=sampler_name,
-        scheduler=scheduler,
-        positive=positive,
-        negative=negative,
-        latent=latent,
-        denoise=denoise,
-    )[0]
-    _uc_log(draw_id, "common_ksampler output", _latent_debug(sampled))
-    return sampled
+    raise RuntimeError("Sampler returned no latent output")
 
 
 def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, Any]):
@@ -1203,6 +1247,7 @@ def _encode_prompt(clip: Any, text: str):
 
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
+    _set_draw_progress(draw_id, "queued", 0.01, 0, 0, "Queued")
     mode = str(payload.get("mode") or "img2img")
     if mode not in {"txt2img", "img2img", "inpaint", "outpaint"}:
         raise ValueError("mode must be txt2img, img2img, inpaint or outpaint")
@@ -1271,9 +1316,12 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("output_size is too large")
 
     with torch.inference_mode():
+        _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
         model, clip, vae = _load_generation_assets(settings)
         model, clip = _clone_model_clip(model, clip)
+        _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
         model, clip = _apply_generation_loras(model, clip, settings)
+        _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
         positive = _encode_generation_prompt(clip, positive_text, settings)
         negative = _encode_generation_prompt(clip, negative_text, settings)
         if str(settings.get("generation_mode", "illustrious")).lower() == "anima":
@@ -1282,6 +1330,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         mask = None
         mask_image = None
         paste_mask_image = None
+        _set_draw_progress(draw_id, "preparing", 0.26, 0, steps, "Preparing source")
         if mode in {"inpaint", "outpaint"}:
             mask_image = _decode_data_url(str(payload.get("mask") or ""), "RGBA")
             if mask_image.size != source.size:
@@ -1322,6 +1371,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         _uc_log(draw_id, "source prepared", {"size": source.size, "tensor": _tensor_debug(image_tensor)})
         if mode in {"inpaint", "outpaint"} and mask is not None:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
+        _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
         if mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
         elif mode in {"inpaint", "outpaint"} and mask is not None:
@@ -1350,6 +1400,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             gen_settings=settings,
             draw_id=draw_id,
         )
+        _set_draw_progress(draw_id, "decoding", 0.88, steps, steps, "Decoding")
         decoded = _decode_generation_samples(vae, latent, settings)
         _uc_log(draw_id, "decoded image tensor", _tensor_debug(decoded))
         result_image = _image_tensor_to_pil(decoded)
@@ -1372,6 +1423,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         _uc_log(draw_id, "result resized to output size", {"from": result_image.size, "to": (output_width, output_height)})
         result_image = result_image.resize(output_size, Image.Resampling.LANCZOS)
 
+    _set_draw_progress(draw_id, "saving", 0.96, steps, steps, "Saving result")
     saved = _save_temp_image(result_image)
     saved_mask = None
     if mode in {"inpaint", "outpaint"} and paste_mask_image is not None:
@@ -1380,6 +1432,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             mask_to_save = mask_to_save.resize(output_size, Image.Resampling.BILINEAR)
         saved_mask = _save_temp_image(mask_to_save, f"VNCCS_UniCanvas_{draw_id}_result_mask")
     _uc_log(draw_id, "result saved", {"image": saved, "mask": saved_mask, "size": result_image.size})
+    _set_draw_progress(draw_id, "complete", 1.0, steps, steps, "Complete")
     return {
         "status": "ok",
         "image": saved,
@@ -1422,6 +1475,7 @@ def register_unicanvas_routes() -> None:
     async def vnccs_unicanvas_draw(request):
         if not _content_length_ok(request, _MAX_UPLOAD_BYTES * 2 + 1024 * 1024):
             return web.json_response({"error": "UniCanvas draw payload is too large"}, status=413)
+        payload: dict[str, Any] = {}
         try:
             payload = await request.json()
             async with _DRAW_LOCK:
@@ -1431,7 +1485,13 @@ def register_unicanvas_routes() -> None:
             import traceback
 
             traceback.print_exc()
+            draw_id = str(payload.get("debug_id") or "unknown")
+            _set_draw_progress(draw_id, "error", 1.0, 0, 0, str(exc))
             return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/progress/{draw_id}")
+    async def vnccs_unicanvas_progress(request):
+        return web.json_response(_get_draw_progress(str(request.match_info.get("draw_id") or "")))
 
 
 NODE_CLASS_MAPPINGS = {

@@ -12,19 +12,27 @@ const STYLES = `
   --uc-danger:#ff4757; --uc-good:#00d68f; --uc-font:'Sora',-apple-system,BlinkMacSystemFont,sans-serif;
   --vnccs-uc-ui-scale:1;
   width:100%; height:100%; display:grid; grid-template-columns:auto minmax(0,1fr) auto;
-  grid-template-rows:auto minmax(0,1fr); background:var(--uc-bg); color:var(--uc-text);
+  grid-template-rows:auto 34px minmax(0,1fr); background:var(--uc-bg); color:var(--uc-text);
   font:11px var(--uc-font); overflow:hidden; border-radius:12px; pointer-events:auto; position:relative; box-sizing:border-box;
 }
-.vnccs-uc-stage-wrap { grid-column:2; grid-row:2; position:relative; min-width:0; min-height:0; overflow:hidden; border-radius:8px; }
+.vnccs-uc-stage-wrap { grid-column:2; grid-row:3; position:relative; min-width:0; min-height:0; overflow:hidden; border-radius:8px; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
 .vnccs-uc-hud { position:absolute; left:10px; top:10px; display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
+.vnccs-uc-generation-progress { grid-column:2; grid-row:2; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; padding:7px 12px; background:rgba(10,10,15,.9); border-bottom:1px solid rgba(255,143,163,.24); box-sizing:border-box; pointer-events:none; min-width:0; visibility:hidden; opacity:0; transition:opacity .16s ease; }
+.vnccs-uc-generation-progress.visible { visibility:visible; opacity:1; }
+.vnccs-uc-progress-label { color:var(--uc-text); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:700; }
+.vnccs-uc-progress-percent { color:var(--uc-muted); font-variant-numeric:tabular-nums; min-width:42px; text-align:right; }
+.vnccs-uc-progress-track { grid-column:1 / -1; height:6px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
+.vnccs-uc-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--uc-accent),var(--uc-accent-2)); border-radius:inherit; transition:width .18s ease; }
 .vnccs-uc-left { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-side { width:286px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
-.vnccs-uc-left { grid-column:1; grid-row:1 / span 2; border-right:1px solid var(--uc-border); }
-.vnccs-uc-side { grid-column:3; grid-row:1 / span 2; border-left:1px solid var(--uc-border); overflow:hidden; }
+.vnccs-uc-left { grid-column:1; grid-row:1 / span 3; border-right:1px solid var(--uc-border); }
+.vnccs-uc-side { grid-column:3; grid-row:1 / span 3; border-left:1px solid var(--uc-border); overflow:hidden; }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
 .vnccs-uc-side-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-draw-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-draw-control .vnccs-uc-btn { width:100%; height:34px; font-weight:800; }
 .vnccs-uc-denoise-control { display:grid; grid-template-columns:auto minmax(0,1fr) 58px; gap:8px; align-items:center; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
 .vnccs-uc-denoise-control .vnccs-uc-input { width:58px; box-sizing:border-box; text-align:right; }
@@ -198,6 +206,7 @@ class UniCanvasWidget {
     this.stagingItems = [];
     this.activeStagingIndex = -1;
     this.drawInProgress = false;
+    this.drawProgressTimer = null;
     this.renderQueued = false;
     this.deferredCanvasCommitTimer = null;
     this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
@@ -240,6 +249,13 @@ class UniCanvasWidget {
   }
 
   _buildDOM() {
+    this.generationProgress = document.createElement("div");
+    this.generationProgress.className = "vnccs-uc-generation-progress";
+    this.generationProgress.innerHTML = `
+      <div class="vnccs-uc-progress-label">Ready</div>
+      <div class="vnccs-uc-progress-percent">0%</div>
+      <div class="vnccs-uc-progress-track"><div class="vnccs-uc-progress-fill"></div></div>`;
+    this.container.appendChild(this.generationProgress);
     this.stageWrap = document.createElement("div");
     this.stageWrap.className = "vnccs-uc-stage-wrap";
     this.canvas = document.createElement("canvas");
@@ -346,13 +362,16 @@ class UniCanvasWidget {
     this.status.className = "vnccs-uc-status";
     this.status.textContent = "Ready";
     this.drawBtn = this._button("DRAW", "vnccs-uc-btn primary", () => this.draw());
+    this.drawControl = document.createElement("div");
+    this.drawControl.className = "vnccs-uc-draw-control";
+    this.drawControl.append(this.drawBtn);
     this.drawFooter = document.createElement("div");
     this.drawFooter.className = "vnccs-uc-draw-footer";
-    this.drawFooter.append(this.status, this.drawBtn);
+    this.drawFooter.append(this.status);
     this.promptBox.appendChild(this.drawFooter);
     const promptSection = this._section("Draw", this.promptBox);
 
-    this.left.append(promptSection);
+    this.left.append(this.drawControl, promptSection);
     this.side.append(this.denoiseControl, layersSection);
 
     this.bottom = document.createElement("div");
@@ -2409,6 +2428,8 @@ class UniCanvasWidget {
     };
     console.debug("[VNCCS UniCanvas] DRAW request", debug);
     this.setStatus(`Drawing ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
+    this.updateGenerationProgress({ progress: 0.01, message: "Starting draw", step: 0, steps: Number(this.settings.steps) || 0 }, true);
+    this.startDrawProgressPolling(debugId);
     this.drawBtn.disabled = true;
     try {
       const res = await fetch("/vnccs/unicanvas/draw", {
@@ -2455,11 +2476,17 @@ class UniCanvasWidget {
       });
       this.render();
       this.setStatus(`DRAW complete (${this.stagingItems.length} staged)`);
+      this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
       this.setStatus(`DRAW failed: ${err.message || err}`, true);
+      this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
+      this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
+      window.setTimeout(() => {
+        if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
+      }, 1800);
     }
   }
 
@@ -2616,6 +2643,43 @@ class UniCanvasWidget {
   setStatus(text, isError = false) {
     this.status.textContent = text;
     this.status.style.color = isError ? "var(--uc-danger)" : "var(--uc-muted)";
+    if (!this.drawInProgress && isError) this.updateGenerationProgress({ message: text, progress: 1, stage: "error" }, true);
+  }
+
+  updateGenerationProgress(progress, visible = this.drawInProgress) {
+    if (!this.generationProgress) return;
+    const value = Math.max(0, Math.min(1, Number(progress?.progress) || 0));
+    const step = Number(progress?.step) || 0;
+    const steps = Number(progress?.steps) || 0;
+    const message = progress?.message || progress?.stage || "Working";
+    const detail = steps > 0 ? `${message} (${step}/${steps})` : message;
+    this.generationProgress.querySelector(".vnccs-uc-progress-label").textContent = detail;
+    this.generationProgress.querySelector(".vnccs-uc-progress-percent").textContent = `${Math.round(value * 100)}%`;
+    this.generationProgress.querySelector(".vnccs-uc-progress-fill").style.width = `${value * 100}%`;
+    this.generationProgress.classList.toggle("visible", Boolean(visible));
+  }
+
+  startDrawProgressPolling(drawId) {
+    this.stopDrawProgressPolling();
+    const poll = async () => {
+      try {
+        const res = await fetch(`/vnccs/unicanvas/progress/${encodeURIComponent(drawId)}?t=${Date.now()}`);
+        if (!res.ok) return;
+        const progress = await res.json();
+        this.updateGenerationProgress(progress, true);
+      } catch (_err) {
+        // Keep the draw running; progress polling is best-effort.
+      }
+    };
+    poll();
+    this.drawProgressTimer = window.setInterval(poll, 350);
+  }
+
+  stopDrawProgressPolling() {
+    if (this.drawProgressTimer) {
+      window.clearInterval(this.drawProgressTimer);
+      this.drawProgressTimer = null;
+    }
   }
 
   syncPromptControls() {
