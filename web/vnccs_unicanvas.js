@@ -17,6 +17,7 @@ const STYLES = `
 }
 .vnccs-uc-stage-wrap { grid-column:2; grid-row:3; position:relative; min-width:0; min-height:0; overflow:hidden; border-radius:8px; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
+.vnccs-uc-preview-stage { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; z-index:4; }
 .vnccs-uc-hud { position:absolute; left:10px; top:10px; display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
 .vnccs-uc-generation-progress { grid-column:2; grid-row:2; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; padding:7px 12px; background:rgba(10,10,15,.9); border-bottom:1px solid rgba(255,143,163,.24); box-sizing:border-box; pointer-events:none; min-width:0; visibility:hidden; opacity:0; transition:opacity .16s ease; }
@@ -43,6 +44,11 @@ const STYLES = `
 .vnccs-uc-section-actions .vnccs-uc-icon { width:24px; height:24px; border-radius:7px; }
 .vnccs-uc-section-actions .vnccs-uc-icon svg { width:14px; height:14px; }
 .vnccs-uc-layers { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding:6px; display:flex; flex-direction:column; gap:5px; }
+.vnccs-uc-layer-group { display:flex; flex-direction:column; gap:5px; }
+.vnccs-uc-layer-group + .vnccs-uc-layer-group { margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,143,163,.24); }
+.vnccs-uc-layer-group-head { display:flex; align-items:center; justify-content:space-between; padding:2px 3px 4px; color:var(--uc-muted); font-weight:800; font-size:10px; letter-spacing:0; text-transform:uppercase; }
+.vnccs-uc-layer-group-head.mask { color:#ffd45c; }
+.vnccs-uc-layer-group-empty { padding:7px 8px; border:1px dashed rgba(255,255,255,.10); border-radius:8px; color:var(--uc-muted); background:rgba(255,255,255,.025); }
 .vnccs-uc-layer-subhead { padding:8px; border-bottom:1px solid var(--uc-border); display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; align-items:center; }
 .vnccs-uc-layer-subhead .vnccs-uc-select { width:100%; }
 .vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(72px,1fr) 38px; gap:7px; align-items:center; color:var(--uc-muted); font-weight:700; }
@@ -52,6 +58,8 @@ const STYLES = `
 .vnccs-uc-layers-top-actions .vnccs-uc-btn { width:100%; }
 .vnccs-uc-layer { display:grid; grid-template-columns:34px minmax(0,1fr) 28px 28px; gap:6px; align-items:center; padding:6px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.035); cursor:pointer; }
 .vnccs-uc-layer.active { border-color:rgba(255,143,163,.55); background:rgba(255,143,163,.12); }
+.vnccs-uc-layer.locked { border-color:rgba(255,193,7,.42); background:rgba(255,193,7,.08); }
+.vnccs-uc-layer.active.locked { border-color:rgba(255,193,7,.62); background:linear-gradient(90deg,rgba(255,193,7,.13),rgba(255,143,163,.10)); }
 .vnccs-uc-layer.dragging { opacity:.46; }
 .vnccs-uc-layer.drop-before { box-shadow:0 -2px 0 var(--uc-accent); }
 .vnccs-uc-layer.drop-after { box-shadow:0 2px 0 var(--uc-accent); }
@@ -76,6 +84,7 @@ const STYLES = `
 .vnccs-uc-icon svg .fill { fill:currentColor; stroke:none; }
 .vnccs-uc-icon.danger { color:var(--uc-danger); border-color:rgba(255,71,87,.38); }
 .vnccs-uc-layer .vnccs-uc-icon { width:28px; height:28px; border-radius:7px; }
+.vnccs-uc-layer .vnccs-uc-icon.locked { color:#ffd45c; border-color:rgba(255,212,92,.55); background:rgba(255,212,92,.14); }
 .vnccs-uc-tools .vnccs-uc-icon { width:66px; height:66px; border-radius:12px; font-size:18px; font-weight:800; }
 .vnccs-uc-tools svg { width:36px; height:36px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-tools svg .fill { fill:currentColor; stroke:none; }
@@ -83,6 +92,10 @@ const STYLES = `
 .vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled { opacity:.38; cursor:not-allowed; }
 .vnccs-uc-btn:disabled:hover, .vnccs-uc-icon:disabled:hover { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
+.vnccs-uc-btn.primary:disabled,
+.vnccs-uc-btn.primary:disabled:hover {
+  opacity:.72; color:#120b13; background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); border:0;
+}
 .vnccs-uc-btn.danger { color:#ffdce1; border-color:rgba(255,71,87,.35); }
 .vnccs-uc-icon.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
@@ -114,6 +127,7 @@ const STYLES = `
 .vnccs-uc-staging-popover .vnccs-uc-icon { width:44px; height:44px; border-radius:10px; }
 .vnccs-uc-staging-popover .vnccs-uc-icon svg { width:22px; height:22px; }
 .vnccs-uc-staging-count { min-width:48px; text-align:center; color:var(--uc-text); font-weight:800; font-size:14px; }
+.vnccs-uc-transform-label { min-width:92px; }
 .vnccs-uc-modal-overlay {
   position:absolute; inset:0; z-index:20; display:grid; place-items:center;
   background:rgba(4,4,8,.58); pointer-events:auto;
@@ -145,8 +159,6 @@ const STAGE_SCALE_FACTOR = 0.999;
 const STAGE_SNAP_POINTS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 5];
 const STAGE_SNAP_TOLERANCE = 0.02;
 const ZOOM_DRAG_PIXELS_PER_DOUBLING = 240;
-const MAX_LAYER_CANVAS_SIDE = 8192;
-const MAX_LAYER_CANVAS_PIXELS = 32 * 1024 * 1024;
 const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 const HISTORY_LIMIT = 20;
 const MOVE_SNAP_GRID_SIZE = 64;
@@ -362,12 +374,14 @@ class UniCanvasWidget {
     this.container.className = "vnccs-unicanvas";
     this.layers = [];
     this.activeLayerId = null;
+    this.lastHudHTML = "";
     this.tool = "move";
     this.view = { x: 0, y: 0, scale: 1 };
     this.origin = { x: -512, y: -512 };
     this.size = { width: 2048, height: 2048 };
     this.bbox = { x: 0, y: 0, width: 1024, height: 1024 };
     this.shapeDraft = null;
+    this.transformDraft = null;
     this.shapeComposite = "source-over";
     this.lassoPoints = [];
     this.hoverPoint = null;
@@ -377,10 +391,12 @@ class UniCanvasWidget {
     this.opacity = 1;
     this.fg = "#ffffff";
     this.resizeKeepAspect = false;
+    this.resizeTransformMode = "scale";
     this.isPointerDown = false;
     this.pointerMode = null;
     this.lastPoint = null;
     this.dragStart = null;
+    this.dragLayerId = null;
     this.zoomDragStart = null;
     this.intendedScale = 1;
     this.activeSnapPoint = null;
@@ -388,7 +404,8 @@ class UniCanvasWidget {
     this.snapTimeout = null;
     this.didInitialCenter = false;
     this._isRestoring = true;
-    this.stateCacheId = `vnccs_unicanvas_${this.node?.id ?? uid()}`;
+    this.stateCacheId = this.readStateCacheIdFromWidget() || this.createStateCacheId();
+    this.stateBackupKey = null;
     this.stateUploadTimer = null;
     this.lastUploadedStateJSON = "";
     this.pendingStateUpload = null;
@@ -401,6 +418,8 @@ class UniCanvasWidget {
     this.fullSyncTimer = null;
     this.thumbnailRenderQueue = [];
     this.thumbnailRenderQueued = false;
+    this.lodRenderQueue = [];
+    this.lodRenderQueued = false;
     this.deferredCanvasCommitTimer = null;
     this.undoStack = [];
     this.redoStack = [];
@@ -437,6 +456,9 @@ class UniCanvasWidget {
     this.canvas = document.createElement("canvas");
     this.canvas.className = "vnccs-uc-stage";
     this.stageWrap.appendChild(this.canvas);
+    this.previewCanvas = document.createElement("canvas");
+    this.previewCanvas.className = "vnccs-uc-preview-stage";
+    this.stageWrap.appendChild(this.previewCanvas);
     this.hud = document.createElement("div");
     this.hud.className = "vnccs-uc-hud";
     this.stageWrap.appendChild(this.hud);
@@ -456,6 +478,17 @@ class UniCanvasWidget {
       this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
     );
     this.stageWrap.appendChild(this.stagingControls);
+    this.transformControls = document.createElement("div");
+    this.transformControls.className = "vnccs-uc-staging-popover";
+    this.transformLabel = document.createElement("span");
+    this.transformLabel.className = "vnccs-uc-staging-count vnccs-uc-transform-label";
+    this.transformLabel.textContent = "Transform";
+    this.transformControls.append(
+      this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.cancelTransformDraft(), "Cancel transform"),
+      this.transformLabel,
+      this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.applyTransformDraft(), "Apply transform")
+    );
+    this.stageWrap.appendChild(this.transformControls);
 
     this.left = document.createElement("div");
     this.left.className = "vnccs-uc-left";
@@ -470,6 +503,11 @@ class UniCanvasWidget {
       </label>`;
     this.layerList = document.createElement("div");
     this.layerList.className = "vnccs-uc-layers";
+    this.maskLayerList = document.createElement("div");
+    this.maskLayerList.className = "vnccs-uc-layer-group";
+    this.rasterLayerList = document.createElement("div");
+    this.rasterLayerList.className = "vnccs-uc-layer-group";
+    this.layerList.append(this.maskLayerList, this.rasterLayerList);
     this.layerSubhead = document.createElement("div");
     this.layerSubhead.className = "vnccs-uc-layer-subhead";
     this.layerSubhead.innerHTML = `
@@ -551,7 +589,7 @@ class UniCanvasWidget {
     this.status = document.createElement("div");
     this.status.className = "vnccs-uc-status";
     this.status.textContent = "Ready";
-    this.drawBtn = this._button("DRAW", "vnccs-uc-btn primary", () => this.draw());
+    this.drawBtn = this._button("GENERATE", "vnccs-uc-btn primary", () => this.draw(), "Generate");
     this.drawControl = document.createElement("div");
     this.drawControl.className = "vnccs-uc-draw-control";
     this.drawControl.append(this.drawBtn);
@@ -559,7 +597,7 @@ class UniCanvasWidget {
     this.drawFooter.className = "vnccs-uc-draw-footer";
     this.drawFooter.append(this.status);
     this.promptBox.appendChild(this.drawFooter);
-    const promptSection = this._section("Draw", this.promptBox);
+    const promptSection = this._section("Parameters", this.promptBox);
 
     this.left.append(this.drawControl, promptSection);
     this.side.append(this.denoiseControl, layersSection);
@@ -778,7 +816,24 @@ class UniCanvasWidget {
     if (this.layers.length) return;
     this.addLayer("raster", "Base Layer");
     this.addLayer("mask", "Inpaint Mask");
-    this.activeLayerId = this.layers[0].id;
+    this.activeLayerId = this.layers.find((layer) => layer.type === "raster")?.id || this.layers[0]?.id || null;
+  }
+
+  getLayerInsertIndex(type = "raster") {
+    if (type === "mask") return 0;
+    const firstRaster = this.layers.findIndex((layer) => layer.type !== "mask");
+    return firstRaster < 0 ? this.layers.length : firstRaster;
+  }
+
+  insertLayerByType(layer) {
+    if (!layer) return;
+    this.layers.splice(this.getLayerInsertIndex(layer.type), 0, layer);
+  }
+
+  normalizeLayerOrder() {
+    const masks = this.layers.filter((layer) => layer.type === "mask");
+    const rasters = this.layers.filter((layer) => layer.type !== "mask");
+    this.layers = [...masks, ...rasters];
   }
 
   addLayer(type = "raster", name = null, recordHistory = true, deferRender = false) {
@@ -794,7 +849,7 @@ class UniCanvasWidget {
       canvas: this._createCanvas(),
     };
     this.invalidateLayerCaches(layer);
-    this.layers.unshift(layer);
+    this.insertLayerByType(layer);
     this.activeLayerId = layer.id;
     if (recordHistory) {
       this.pushHistoryEntry({ kind: "addLayer", layer, previousActiveLayerId });
@@ -803,7 +858,6 @@ class UniCanvasWidget {
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
-    this.scheduleFullSync();
     return layer;
   }
 
@@ -829,6 +883,13 @@ class UniCanvasWidget {
   invalidateLayerThumbnail(layer) {
     if (!layer) return;
     layer._thumbCache = undefined;
+  }
+
+  invalidateLayerRenderCaches(layer) {
+    if (!layer) return;
+    layer._thumbCache = undefined;
+    layer._renderLodCache = null;
+    layer._hiresRenderLodCache = null;
   }
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
@@ -873,19 +934,28 @@ class UniCanvasWidget {
     return this.layers.find((l) => l.id === this.activeLayerId) || this.layers[0] || null;
   }
 
-  setTool(tool) {
+  setTool(tool, force = false) {
+    if (this.tool === tool && !force) return;
+    const previousTool = this.tool;
     this.tool = tool;
     this.container.querySelectorAll(".vnccs-uc-tool").forEach((btn) => btn.classList.toggle("active", btn.dataset.tool === tool));
     this.syncCursorStyle();
     this.renderToolSettings();
-    this.render();
+    this.updateHud();
+    this.updateContextCursor();
+    this.updateToolPreviewOverlay();
+    if (force || this.toolNeedsCanvasRender(previousTool) || this.toolNeedsCanvasRender(tool)) this.requestRender();
+  }
+
+  toolNeedsCanvasRender(tool) {
+    return ["bbox", "resize"].includes(tool) || Boolean(this.shapeDraft) || Boolean(this.transformDraft) || this.lassoPoints.length > 0;
   }
 
   getToolSettingControls(tool = this.tool) {
     if (tool === "brush") return ["brushSize", "fg", "opacity"];
     if (tool === "eraser" || tool === "mask") return ["brushSize", "opacity"];
     if (tool === "rect" || tool === "lasso") return ["fg", "opacity"];
-    if (tool === "resize") return ["keepAspect"];
+    if (tool === "resize") return ["resizeMode", "keepAspect"];
     return [];
   }
 
@@ -912,6 +982,9 @@ class UniCanvasWidget {
     if (controls.includes("keepAspect")) {
       html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Keep ratio</span><input type="checkbox" ${this.resizeKeepAspect ? "checked" : ""} data-control="keepAspect"></label>`);
     }
+    if (controls.includes("resizeMode")) {
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Mode</span><select class="vnccs-uc-select" data-control="resizeMode"><option value="scale" ${this.resizeTransformMode === "scale" ? "selected" : ""}>Scale</option><option value="perspective" ${this.resizeTransformMode === "perspective" ? "selected" : ""}>Perspective</option></select></label>`);
+    }
     this.toolSettings.innerHTML = html.join("");
     this.toolSettings.classList.add("visible");
   }
@@ -923,12 +996,34 @@ class UniCanvasWidget {
       mask: "crosshair",
       rect: "crosshair",
       lasso: "crosshair",
-      resize: "nwse-resize",
+      resize: "default",
       bbox: "move",
       move: "move",
       pan: "grab",
     };
     this.canvas.style.cursor = cursorMap[this.tool] || "default";
+  }
+
+  updateContextCursor(point = this.hoverPoint) {
+    if (this.isPointerDown) return;
+    if (this.tool !== "resize") {
+      this.syncCursorStyle();
+      return;
+    }
+    const bounds = this.transformDraft?.bounds || this.getLayerWorldBounds();
+    const handle = point ? this.hitResizeHandle(point, bounds) : null;
+    const cursorMap = {
+      n: "ns-resize",
+      s: "ns-resize",
+      e: "ew-resize",
+      w: "ew-resize",
+      nw: "nwse-resize",
+      se: "nwse-resize",
+      ne: "nesw-resize",
+      sw: "nesw-resize",
+      rotate: "grab",
+    };
+    this.canvas.style.cursor = cursorMap[handle] || "default";
   }
 
   _attachEvents() {
@@ -993,7 +1088,6 @@ class UniCanvasWidget {
       const row = layer ? this.layerList.querySelector(`[data-layer-id="${layer.id}"]`) : null;
       if (row) this.updateLayerRow(row, layer);
       this.syncLightStateToWidget();
-      this.scheduleFullSync();
       this.clearInputHistoryMarker(e.target);
     });
 
@@ -1004,13 +1098,18 @@ class UniCanvasWidget {
       if (target.dataset.control === "fg") this.fg = target.value;
       if (target.dataset.control === "opacity") this.opacity = Number(target.value);
       if (target.dataset.control === "keepAspect") this.resizeKeepAspect = target.checked;
-      this.render();
+      if (["brushSize", "fg", "opacity"].includes(target.dataset.control)) this.updateToolPreviewOverlay();
+      else this.requestRender();
     });
     this.toolSettings.addEventListener("change", (e) => {
       const target = e.target;
       if (target instanceof HTMLInputElement && target.dataset.control === "keepAspect") {
         this.resizeKeepAspect = target.checked;
-        this.render();
+        this.requestRender();
+      }
+      if (target instanceof HTMLSelectElement && target.dataset.control === "resizeMode") {
+        this.resizeTransformMode = target.value === "perspective" ? "perspective" : "scale";
+        this.requestRender();
       }
       this.clearInputHistoryMarker(target);
     });
@@ -1057,7 +1156,7 @@ class UniCanvasWidget {
       }
       this.clearInputHistoryMarker(target);
     });
-    this.setTool(this.tool);
+    this.setTool(this.tool, true);
   }
 
   async _loadAssets() {
@@ -1231,6 +1330,12 @@ class UniCanvasWidget {
     const nextHeight = Math.max(1, Math.floor(size.height * dpr));
     if (this.canvas.width !== nextWidth) this.canvas.width = nextWidth;
     if (this.canvas.height !== nextHeight) this.canvas.height = nextHeight;
+    if (this.previewCanvas) {
+      if (this.previewCanvas.width !== nextWidth) this.previewCanvas.width = nextWidth;
+      if (this.previewCanvas.height !== nextHeight) this.previewCanvas.height = nextHeight;
+      this.previewCanvas.style.width = "100%";
+      this.previewCanvas.style.height = "100%";
+    }
     this.canvas.style.width = "100%";
     this.canvas.style.height = "100%";
     if (!this.didInitialCenter && size.width > 0 && size.height > 0) {
@@ -1246,6 +1351,40 @@ class UniCanvasWidget {
       this.renderQueued = false;
       this.render();
     });
+  }
+
+  clearToolPreviewOverlay() {
+    if (!this.previewCanvas) return;
+    const ctx = this.previewCanvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, this.previewCanvas.width / dpr, this.previewCanvas.height / dpr);
+  }
+
+  updateToolPreviewOverlay() {
+    if (!this.previewCanvas) return;
+    const ctx = this.previewCanvas.getContext("2d");
+    const dpr = window.devicePixelRatio || 1;
+    const w = this.previewCanvas.width / dpr;
+    const h = this.previewCanvas.height / dpr;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+    if (!this.hoverPoint || this.hoverPointerType !== "mouse" || !["brush", "eraser", "mask"].includes(this.tool)) return;
+    ctx.save();
+    ctx.translate(this.view.x, this.view.y);
+    ctx.scale(this.view.scale, this.view.scale);
+    this.drawToolPreview(ctx);
+    ctx.restore();
+  }
+
+  updateHud() {
+    if (!this.hud) return;
+    const inferenceSize = this.getInferenceSize();
+    const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
+    if (hudHTML !== this.lastHudHTML) {
+      this.lastHudHTML = hudHTML;
+      this.hud.innerHTML = hudHTML;
+    }
   }
 
   getStageViewportSize() {
@@ -1300,14 +1439,16 @@ class UniCanvasWidget {
   onPointerHover(e) {
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = this.worldFromEvent(e);
-    this.requestRender();
+    this.updateContextCursor(this.hoverPoint);
+    this.updateToolPreviewOverlay();
   }
 
   onPointerLeave(e) {
     if (this.isPointerDown) return;
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = null;
-    this.requestRender();
+    this.updateContextCursor(null);
+    this.clearToolPreviewOverlay();
   }
 
   onPointerDown(e) {
@@ -1320,6 +1461,7 @@ class UniCanvasWidget {
     const point = this.worldFromCanvasPoint(screen);
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = point;
+    this.clearToolPreviewOverlay();
     this.lastPoint = point;
     this.dragStart = { point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
     this.pointerMode = e.button === 1 ? "pan" : this.tool;
@@ -1332,10 +1474,16 @@ class UniCanvasWidget {
         center: screen,
       };
     }
+    if (this.transformDraft && !["pan", "zoom-drag", "resize"].includes(this.pointerMode)) {
+      this.pointerMode = "idle";
+      this.setStatus("Apply or cancel the active transform first", true);
+      this.render();
+      return;
+    }
     if (this.pointerMode === "bbox") {
       if (this.isStagingActive()) {
         this.pointerMode = "idle";
-        this.setStatus(this.drawInProgress ? "Wait for DRAW to finish before moving bbox" : "Accept or discard the staged result before moving bbox", true);
+        this.setStatus(this.drawInProgress ? "Wait for GENERATE to finish before moving bbox" : "Accept or discard the staged result before moving bbox", true);
         this.render();
         return;
       }
@@ -1349,38 +1497,63 @@ class UniCanvasWidget {
         this.pointerMode = "idle";
       }
     } else if (this.pointerMode === "rect") {
-      this.recordHistoryBefore();
+      if (this.activeLayer) {
+        this.dragStart.layerId = this.activeLayer.id;
+        this.dragStart.layerBefore = this.createLayerPixelSnapshot(this.activeLayer);
+      }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.shapeDraft = this.getRectToolRect(point, point, e);
     } else if (this.pointerMode === "lasso") {
-      this.recordHistoryBefore();
+      const layer = this.getOrCreateMaskLayer();
+      if (layer) {
+        this.dragStart.layerId = layer.id;
+        this.dragStart.layerBefore = this.createLayerPixelSnapshot(layer);
+      }
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
     } else if (this.pointerMode === "move" && !e.altKey && this.activeLayer && !this.activeLayer.locked) {
-      this.recordHistoryBefore();
       this.pointerMode = "layer-move";
-      this.dragStart.layerCanvas = this.cloneCanvas(this.activeLayer.canvas);
+      this.dragStart.layerId = this.activeLayer.id;
+      this.dragStart.layerBefore = this.createLayerPixelSnapshot(this.activeLayer);
+      this.dragStart.layerBounds = this.dragStart.layerBefore?.crop || null;
+      this.dragStart.layerCanvas = this.dragStart.layerBounds ? this.cloneCanvasCrop(this.activeLayer.canvas, this.dragStart.layerBounds) : null;
       this.dragStart.hiresRect = this.activeLayer.hiresRect ? { ...this.activeLayer.hiresRect } : null;
       this.dragStart.layerOrigin = { ...this.origin };
-      this.dragStart.layerBounds = this.getCanvasAlphaBounds(this.dragStart.layerCanvas);
     } else if (this.pointerMode === "resize") {
       const layer = this.activeLayer;
-      const bounds = this.getLayerWorldBounds(layer);
+      const activeDraft = this.transformDraft?.layerId === layer?.id ? this.transformDraft : null;
+      const bounds = activeDraft?.bounds || this.getLayerWorldBounds(layer);
       const handle = this.hitResizeHandle(point, bounds);
       if (!layer || layer.locked || !bounds || !handle) {
         this.pointerMode = "idle";
       } else {
-        this.recordHistoryBefore();
-        this.materializeRasterLayerForEditing(layer);
-        this.pointerMode = "layer-resize";
+        const source = activeDraft ? this.createTransformSourceFromDraft(activeDraft) : this.createTransformSource(layer);
+        if (!source?.canvas || !source.bounds) {
+          this.pointerMode = "idle";
+          return;
+        }
+        this.dragStart.layerBefore = source.before;
+        this.dragStart.layerId = layer.id;
+        this.pointerMode = handle === "rotate" ? "layer-rotate" : (this.resizeTransformMode === "perspective" && this.isCornerResizeHandle(handle) ? "layer-perspective" : "layer-resize");
         this.dragStart.resizeHandle = handle;
-        this.dragStart.resizeBounds = this.getLayerWorldBounds(layer);
-        this.dragStart.layerCanvas = this.cloneCanvas(layer.canvas);
+        this.dragStart.resizeBounds = { ...source.bounds };
+        this.dragStart.layerCanvas = source.canvas;
+        this.dragStart.layerCanvasCrop = source.crop ? { ...source.crop } : null;
         this.dragStart.layerOrigin = { ...this.origin };
+        this.dragStart.perspectiveQuad = source.quad || this.boundsToQuad(this.dragStart.resizeBounds);
+        const center = this.rectCenter(this.dragStart.resizeBounds);
+        this.dragStart.rotateCenter = center;
+        this.dragStart.rotateStartAngle = Math.atan2(point.y - center.y, point.x - center.x);
+        this.dragStart.rotateStartBounds = this.dragStart.resizeBounds;
+        this.updateTransformDraft(point, e);
       }
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
-      this.recordHistoryBefore();
+      const layer = this.pointerMode === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
+      if (layer) {
+        this.dragStart.layerId = layer.id;
+        this.dragStart.layerBefore = this.createLayerPixelSnapshot(layer);
+      }
       this.cancelDeferredCanvasCommit();
       const lastToolPoint = this.lastDrawPointByTool[this.pointerMode];
       if (e.shiftKey && lastToolPoint) {
@@ -1397,8 +1570,9 @@ class UniCanvasWidget {
     const point = this.worldFromCanvasPoint(screen);
     this.hoverPointerType = e.pointerType || "mouse";
     this.hoverPoint = point;
+    this.updateContextCursor(point);
     if (!this.isPointerDown || !this.lastPoint) {
-      this.requestRender();
+      this.updateToolPreviewOverlay();
       return;
     }
     e.preventDefault();
@@ -1423,9 +1597,13 @@ class UniCanvasWidget {
     } else if (this.pointerMode === "lasso") {
       this.appendLassoPoint(point);
     } else if (this.pointerMode === "layer-move") {
-      this.moveActiveLayerPixels(point.x - this.dragStart.point.x, point.y - this.dragStart.point.y);
+      this.updateLayerMovePreview(point);
     } else if (this.pointerMode === "layer-resize") {
-      this.resizeActiveLayerTo(this.getResizedBounds(point, e));
+      this.updateTransformDraft(point, e);
+    } else if (this.pointerMode === "layer-rotate") {
+      this.updateTransformDraft(point, e);
+    } else if (this.pointerMode === "layer-perspective") {
+      this.updateTransformDraft(point, e);
     } else if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       this.drawStroke(this.lastPoint, point);
     }
@@ -1438,11 +1616,15 @@ class UniCanvasWidget {
     e?.preventDefault?.();
     e?.stopPropagation?.();
     const finishedMode = this.pointerMode;
+    const finishedDragStart = this.dragStart;
     if (this.pointerMode === "rect" && this.shapeDraft) {
       this.commitRectShape();
     }
     if (this.pointerMode === "lasso" && this.lassoPoints.length > 2) {
       this.commitLassoShape();
+    }
+    if (this.pointerMode === "layer-move" && this.dragStart?.layerCanvas) {
+      this.moveActiveLayerPixels(this.dragStart.previewDx || 0, this.dragStart.previewDy || 0, true);
     }
     this.isPointerDown = false;
     this.pointerMode = null;
@@ -1453,11 +1635,30 @@ class UniCanvasWidget {
     this.lassoPoints = [];
     if (finishedMode === "bbox-resize") this.syncInferenceControls();
     this.requestRender();
+    this.updateContextCursor(this.hoverPoint);
+    this.updateToolPreviewOverlay();
+    let committedLayerId = finishedDragStart?.layerId || null;
+    if (["rect", "lasso", "brush", "eraser", "mask", "layer-move"].includes(finishedMode) && finishedDragStart?.layerBefore) {
+      const changedLayerId = finishedDragStart.layerId || this.activeLayer?.id;
+      const changedLayer = this.layers.find((layer) => layer.id === changedLayerId);
+      if (changedLayer) {
+        committedLayerId = changedLayer.id;
+        this.pushHistoryEntry({
+          kind: "layerPixels",
+          layerId: changedLayerId,
+          before: finishedDragStart.layerBefore,
+          after: this.createLayerPixelSnapshot(changedLayer),
+        });
+      }
+    }
     if (["brush", "eraser", "mask"].includes(finishedMode)) {
-      this.scheduleDeferredCanvasCommit();
-    } else if (["rect", "lasso", "layer-move", "layer-resize"].includes(finishedMode)) {
-      this.renderLayerList();
-      this.syncToNode();
+      this.scheduleDeferredCanvasCommit(committedLayerId);
+    } else if (["rect", "lasso", "layer-move"].includes(finishedMode)) {
+      this.refreshLayerRow(committedLayerId);
+      this.syncLightStateToWidget();
+      this.scheduleFullSync();
+    } else if (["layer-resize", "layer-rotate", "layer-perspective"].includes(finishedMode)) {
+      this.syncLightStateToWidget();
     } else if (["bbox-move", "bbox-resize"].includes(finishedMode)) {
       this.syncSettingsToWidget();
     } else {
@@ -1465,12 +1666,13 @@ class UniCanvasWidget {
     }
   }
 
-  scheduleDeferredCanvasCommit() {
+  scheduleDeferredCanvasCommit(layerId = null) {
     window.clearTimeout(this.deferredCanvasCommitTimer);
     this.deferredCanvasCommitTimer = window.setTimeout(() => {
       this.deferredCanvasCommitTimer = null;
-      this.renderLayerList();
-      this.syncToNode();
+      this.refreshLayerRow(layerId);
+      this.syncLightStateToWidget();
+      this.scheduleFullSync();
     }, 80);
   }
 
@@ -1582,6 +1784,96 @@ class UniCanvasWidget {
     return copy;
   }
 
+  cloneCanvasCrop(canvas, crop) {
+    const copy = document.createElement("canvas");
+    copy.width = Math.max(1, Math.round(crop?.width || 1));
+    copy.height = Math.max(1, Math.round(crop?.height || 1));
+    if (crop && crop.width > 0 && crop.height > 0) {
+      this.configureImageContext(copy.getContext("2d")).drawImage(canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
+    }
+    return copy;
+  }
+
+  createTransformSource(layer) {
+    if (!layer) return null;
+    const before = this.createLayerPixelSnapshot(layer);
+    if (layer.hiresCanvas && layer.hiresRect) {
+      return {
+        before,
+        canvas: this.cloneCanvas(layer.hiresCanvas),
+        bounds: { ...layer.hiresRect },
+        crop: before?.crop ? { ...before.crop } : null,
+      };
+    }
+    const crop = before?.crop;
+    if (!crop || !before.canvas) return null;
+    return {
+      before,
+      canvas: before.canvas,
+      bounds: {
+        x: this.origin.x + crop.x,
+        y: this.origin.y + crop.y,
+        width: crop.width,
+        height: crop.height,
+      },
+      crop: { ...crop },
+    };
+  }
+
+  createTransformSourceFromDraft(draft) {
+    if (!draft?.sourceCanvas || !draft.bounds) return null;
+    const bounds = {
+      x: Math.floor(draft.bounds.x),
+      y: Math.floor(draft.bounds.y),
+      width: Math.max(1, Math.ceil(draft.bounds.width)),
+      height: Math.max(1, Math.ceil(draft.bounds.height)),
+    };
+    const canvas = document.createElement("canvas");
+    canvas.width = bounds.width;
+    canvas.height = bounds.height;
+    const ctx = this.configureImageContext(canvas.getContext("2d"), true);
+    ctx.save();
+    ctx.translate(-bounds.x, -bounds.y);
+    this.drawTransformDraft(ctx, draft);
+    ctx.restore();
+    return {
+      before: draft.before,
+      canvas,
+      bounds,
+      crop: null,
+    };
+  }
+
+  createLayerPixelSnapshot(layer) {
+    if (!layer) return null;
+    const crop = this.getLayerAlphaBounds(layer);
+    return {
+      id: layer.id,
+      crop: crop ? { ...crop } : null,
+      origin: { ...this.origin },
+      size: { ...this.size },
+      canvas: crop ? this.cloneCanvasCrop(layer.canvas, crop) : null,
+      hiresCanvas: layer.hiresCanvas || null,
+      hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
+    };
+  }
+
+  restoreLayerPixelSnapshot(layer, snapshot) {
+    if (!layer || !snapshot) return;
+    if (snapshot.origin && (snapshot.origin.x !== this.origin.x || snapshot.origin.y !== this.origin.y || snapshot.size?.width !== this.size.width || snapshot.size?.height !== this.size.height)) {
+      this.ensureWorldBounds(snapshot.origin.x, snapshot.origin.y, 0);
+      this.ensureWorldBounds(snapshot.origin.x + (snapshot.size?.width || 0), snapshot.origin.y + (snapshot.size?.height || 0), 0);
+    }
+    const ctx = layer.canvas.getContext("2d");
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    if (snapshot.crop && snapshot.canvas) {
+      ctx.drawImage(snapshot.canvas, snapshot.crop.x + snapshot.origin.x - this.origin.x, snapshot.crop.y + snapshot.origin.y - this.origin.y);
+    }
+    layer.hiresCanvas = snapshot.hiresCanvas || null;
+    layer.hiresRect = snapshot.hiresRect ? { ...snapshot.hiresRect } : null;
+    this.invalidateLayerCaches(layer);
+  }
+
   materializeRasterLayerForEditing(layer) {
     if (!layer || layer.type !== "raster" || !layer.hiresCanvas || !layer.hiresRect) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
@@ -1590,7 +1882,14 @@ class UniCanvasWidget {
     ctx.drawImage(layer.hiresCanvas, rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
     layer.hiresCanvas = null;
     layer.hiresRect = null;
-    this.invalidateLayerCaches(layer);
+    this.sanitizeMaskLayer(layer);
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = this.clampCanvasBounds({
+      x: Math.round(rect.x - this.origin.x),
+      y: Math.round(rect.y - this.origin.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    }, layer.canvas);
   }
 
   cloneHistoryLayer(layer) {
@@ -1634,6 +1933,8 @@ class UniCanvasWidget {
       opacity: this.opacity,
       fg: this.fg,
       resizeKeepAspect: this.resizeKeepAspect,
+      resizeTransformMode: this.resizeTransformMode,
+      snapToGrid: this.snapToGrid,
       settings: JSON.parse(JSON.stringify(this.settings)),
       activeLayerId: this.activeLayerId,
       layers: clonePixels ? this.layers.map((layer) => this.cloneHistoryLayer(layer)) : this.layers,
@@ -1654,8 +1955,11 @@ class UniCanvasWidget {
     this.opacity = Number.isFinite(snapshot.opacity) ? snapshot.opacity : this.opacity;
     this.fg = snapshot.fg || this.fg;
     this.resizeKeepAspect = typeof snapshot.resizeKeepAspect === "boolean" ? snapshot.resizeKeepAspect : this.resizeKeepAspect;
+    this.resizeTransformMode = snapshot.resizeTransformMode === "perspective" ? "perspective" : "scale";
+    this.snapToGrid = typeof snapshot.snapToGrid === "boolean" ? snapshot.snapToGrid : this.snapToGrid;
     this.settings = JSON.parse(JSON.stringify(snapshot.settings || this.settings));
     this.layers = snapshot.layers || [];
+    this.normalizeLayerOrder();
     for (const layer of this.layers) this.invalidateLayerCaches(layer);
     this.activeLayerId = snapshot.activeLayerId || this.layers[0]?.id || null;
     this.stagingItems = snapshot.stagingItems || [];
@@ -1666,12 +1970,14 @@ class UniCanvasWidget {
     }
     this.activeStagingIndex = Math.max(-1, Math.min(snapshot.activeStagingIndex ?? -1, this.stagingItems.length - 1));
     this.historyRestoring = false;
-    this.setTool(this.tool);
+    this.setTool(this.tool, true);
+    this.updateSnapButton();
     this.syncPromptControls();
     this.syncActiveLayerControls();
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
   }
 
   recordHistoryBefore() {
@@ -1692,6 +1998,10 @@ class UniCanvasWidget {
 
   undo() {
     if (!this.undoStack.length) return;
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform before undo", true);
+      return;
+    }
     const previous = this.undoStack.pop();
     if (previous?.kind) {
       this.applyHistoryEntry(previous, "undo");
@@ -1710,6 +2020,10 @@ class UniCanvasWidget {
 
   redo() {
     if (!this.redoStack.length) return;
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform before redo", true);
+      return;
+    }
     const next = this.redoStack.pop();
     if (next?.kind) {
       this.applyHistoryEntry(next, "redo");
@@ -1737,7 +2051,7 @@ class UniCanvasWidget {
         this.activeStagingIndex = entry.activeStagingIndex ?? (this.stagingItems.length ? this.stagingItems.length - 1 : -1);
         this.activeLayerId = entry.previousActiveLayerId || this.layers[0]?.id || null;
       } else {
-        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.layers.unshift(entry.layer);
+        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.insertLayerByType(entry.layer);
         this.stagingItems = [];
         this.activeStagingIndex = -1;
         this.activeLayerId = entry.layer.id;
@@ -1749,17 +2063,21 @@ class UniCanvasWidget {
         this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
         this.activeLayerId = entry.previousActiveLayerId || this.layers[0]?.id || null;
       } else {
-        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.layers.unshift(entry.layer);
+        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.insertLayerByType(entry.layer);
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
+    }
+    if (entry.kind === "layerPixels") {
+      const layer = this.layers.find((item) => item.id === entry.layerId);
+      this.restoreLayerPixelSnapshot(layer, direction === "undo" ? entry.before : entry.after);
+      this.activeLayerId = layer?.id || this.activeLayerId;
     }
     this.historyRestoring = false;
     this.syncActiveLayerControls();
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
-    this.scheduleFullSync();
   }
 
   updateHistoryButtons() {
@@ -1780,7 +2098,7 @@ class UniCanvasWidget {
   getLayerWorldBounds(layer = this.activeLayer) {
     if (!layer) return null;
     if (layer.hiresCanvas && layer.hiresRect) return { ...layer.hiresRect };
-    const crop = this.getCanvasAlphaBounds(layer.canvas);
+    const crop = this.getLayerAlphaBounds(layer);
     if (!crop) return null;
     return {
       x: this.origin.x + crop.x,
@@ -1795,6 +2113,7 @@ class UniCanvasWidget {
     const { x, y, width, height } = bounds;
     const midX = x + width / 2;
     const midY = y + height / 2;
+    const rotateOffset = Math.max(32, 42 / this.view.scale);
     return [
       { handle: "nw", x, y },
       { handle: "n", x: midX, y },
@@ -1804,7 +2123,36 @@ class UniCanvasWidget {
       { handle: "s", x: midX, y: y + height },
       { handle: "sw", x, y: y + height },
       { handle: "w", x, y: midY },
+      { handle: "rotate", x: midX, y: y - rotateOffset },
     ];
+  }
+
+  isCornerResizeHandle(handle) {
+    return ["nw", "ne", "se", "sw"].includes(handle);
+  }
+
+  rectCenter(rect) {
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+  }
+
+  boundsToQuad(bounds) {
+    if (!bounds) return null;
+    return {
+      nw: { x: bounds.x, y: bounds.y },
+      ne: { x: bounds.x + bounds.width, y: bounds.y },
+      se: { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+      sw: { x: bounds.x, y: bounds.y + bounds.height },
+    };
+  }
+
+  cloneQuad(quad) {
+    if (!quad) return null;
+    return {
+      nw: { ...quad.nw },
+      ne: { ...quad.ne },
+      se: { ...quad.se },
+      sw: { ...quad.sw },
+    };
   }
 
   hitResizeHandle(point, bounds) {
@@ -1814,7 +2162,8 @@ class UniCanvasWidget {
     let bestDistance = Infinity;
     for (const item of this.getResizeHandlePoints(bounds)) {
       const distance = Math.hypot(point.x - item.x, point.y - item.y);
-      if (distance <= threshold && distance < bestDistance) {
+      const itemThreshold = item.handle === "rotate" ? Math.max(threshold, 18 / this.view.scale) : threshold;
+      if (distance <= itemThreshold && distance < bestDistance) {
         best = item.handle;
         bestDistance = distance;
       }
@@ -1864,18 +2213,18 @@ class UniCanvasWidget {
     const layer = this.activeLayer;
     const start = this.dragStart;
     if (!layer || !start?.layerCanvas || !start.resizeBounds || !bounds) return;
-    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256)) return;
-    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256)) return;
+    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
+    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
     const sourceOrigin = start.layerOrigin || this.origin;
     const source = start.resizeBounds;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
     ctx.drawImage(
       start.layerCanvas,
-      source.x - sourceOrigin.x,
-      source.y - sourceOrigin.y,
-      source.width,
-      source.height,
+      0,
+      0,
+      start.layerCanvas.width,
+      start.layerCanvas.height,
       bounds.x - this.origin.x,
       bounds.y - this.origin.y,
       bounds.width,
@@ -1883,12 +2232,270 @@ class UniCanvasWidget {
     );
     layer.hiresCanvas = null;
     layer.hiresRect = null;
-    this.invalidateLayerCaches(layer);
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = this.clampCanvasBounds({
+      x: Math.round(bounds.x - this.origin.x),
+      y: Math.round(bounds.y - this.origin.y),
+      width: Math.round(bounds.width),
+      height: Math.round(bounds.height),
+    }, layer.canvas);
+  }
+
+  updateTransformDraft(point, event = null) {
+    const start = this.dragStart;
+    if (!start?.layerCanvas || !start.resizeBounds || !start.layerId) return;
+    const base = {
+      layerId: start.layerId,
+      before: start.layerBefore,
+      sourceCanvas: start.layerCanvas,
+      sourceBounds: { ...start.resizeBounds },
+      opacity: this.layers.find((layer) => layer.id === start.layerId)?.opacity ?? 1,
+    };
+    if (this.pointerMode === "layer-rotate") {
+      const center = start.rotateCenter || this.rectCenter(start.resizeBounds);
+      const angle = Math.atan2(point.y - center.y, point.x - center.x) - (start.rotateStartAngle || 0);
+      const bounds = this.boundsFromPoints(this.boundsToPoints(start.rotateStartBounds || start.resizeBounds).map((p) => this.rotatePoint(p, center, angle)));
+      this.transformDraft = { ...base, kind: "rotate", center, angle, bounds };
+      return;
+    }
+    if (this.pointerMode === "layer-perspective" && this.isCornerResizeHandle(start.resizeHandle)) {
+      const quad = {
+        nw: { ...start.perspectiveQuad.nw },
+        ne: { ...start.perspectiveQuad.ne },
+        se: { ...start.perspectiveQuad.se },
+        sw: { ...start.perspectiveQuad.sw },
+      };
+      quad[start.resizeHandle] = { x: Math.round(point.x), y: Math.round(point.y) };
+      this.transformDraft = { ...base, kind: "perspective", quad, bounds: this.boundsFromPoints(Object.values(quad)) };
+      return;
+    }
+    this.transformDraft = { ...base, kind: "scale", bounds: this.getResizedBounds(point, event) };
+  }
+
+  getLayerTransformDraft(layer) {
+    return layer && this.transformDraft?.layerId === layer.id ? this.transformDraft : null;
+  }
+
+  drawTransformDraft(ctx, draft) {
+    if (!draft?.sourceCanvas || !draft.bounds) return;
+    ctx.save();
+    this.configureImageContext(ctx, true);
+    if (draft.kind === "rotate") {
+      const center = draft.center || this.rectCenter(draft.sourceBounds);
+      ctx.translate(center.x, center.y);
+      ctx.rotate(draft.angle || 0);
+      ctx.drawImage(draft.sourceCanvas, draft.sourceBounds.x - center.x, draft.sourceBounds.y - center.y, draft.sourceBounds.width, draft.sourceBounds.height);
+    } else if (draft.kind === "perspective" && draft.quad) {
+      this.drawWarpedCanvas(ctx, draft.sourceCanvas, draft.quad, 8);
+    } else {
+      ctx.drawImage(draft.sourceCanvas, draft.bounds.x, draft.bounds.y, draft.bounds.width, draft.bounds.height);
+    }
+    ctx.restore();
+  }
+
+  cancelTransformDraft() {
+    if (!this.transformDraft) return;
+    this.transformDraft = null;
+    this.setStatus("Transform canceled");
+    this.requestRender();
+  }
+
+  applyTransformDraft() {
+    const draft = this.transformDraft;
+    if (!draft?.sourceCanvas || !draft.bounds) return;
+    const layer = this.layers.find((item) => item.id === draft.layerId);
+    if (!layer || layer.locked) {
+      this.cancelTransformDraft();
+      return;
+    }
+    const bounds = draft.bounds;
+    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
+    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
+    const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    if (draft.kind === "rotate") {
+      const center = draft.center || this.rectCenter(draft.sourceBounds);
+      ctx.save();
+      ctx.translate(center.x - this.origin.x, center.y - this.origin.y);
+      ctx.rotate(draft.angle || 0);
+      ctx.drawImage(draft.sourceCanvas, draft.sourceBounds.x - center.x, draft.sourceBounds.y - center.y, draft.sourceBounds.width, draft.sourceBounds.height);
+      ctx.restore();
+    } else if (draft.kind === "perspective" && draft.quad) {
+      const layerQuad = {};
+      for (const key of ["nw", "ne", "se", "sw"]) {
+        layerQuad[key] = { x: draft.quad[key].x - this.origin.x, y: draft.quad[key].y - this.origin.y };
+      }
+      this.drawWarpedCanvas(ctx, draft.sourceCanvas, layerQuad, 18);
+    } else {
+      ctx.drawImage(draft.sourceCanvas, bounds.x - this.origin.x, bounds.y - this.origin.y, bounds.width, bounds.height);
+    }
+    layer.hiresCanvas = null;
+    layer.hiresRect = null;
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = this.clampCanvasBounds({
+      x: Math.floor(bounds.x - this.origin.x),
+      y: Math.floor(bounds.y - this.origin.y),
+      width: Math.ceil(bounds.width),
+      height: Math.ceil(bounds.height),
+    }, layer.canvas);
+    this.transformDraft = null;
+    this.activeLayerId = layer.id;
+    this.pushHistoryEntry({
+      kind: "layerPixels",
+      layerId: layer.id,
+      before: draft.before,
+      after: this.createLayerPixelSnapshot(layer),
+    });
+    this.refreshLayerRow(layer.id);
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
+    this.requestRender();
+  }
+
+  rotateActiveLayerTo(point) {
+    const layer = this.activeLayer;
+    const start = this.dragStart;
+    if (!layer || !start?.layerCanvas || !start.rotateCenter || !start.rotateStartBounds) return;
+    const center = start.rotateCenter;
+    const angle = Math.atan2(point.y - center.y, point.x - center.x) - start.rotateStartAngle;
+    const bounds = this.boundsFromPoints(this.boundsToPoints(start.rotateStartBounds).map((p) => this.rotatePoint(p, center, angle)));
+    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
+    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
+    const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    ctx.save();
+    ctx.translate(center.x - this.origin.x, center.y - this.origin.y);
+    ctx.rotate(angle);
+    ctx.drawImage(start.layerCanvas, start.rotateStartBounds.x - center.x, start.rotateStartBounds.y - center.y, start.rotateStartBounds.width, start.rotateStartBounds.height);
+    ctx.restore();
+    layer.hiresCanvas = null;
+    layer.hiresRect = null;
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = this.clampCanvasBounds({
+      x: Math.floor(bounds.x - this.origin.x),
+      y: Math.floor(bounds.y - this.origin.y),
+      width: Math.ceil(bounds.width),
+      height: Math.ceil(bounds.height),
+    }, layer.canvas);
+  }
+
+  boundsToPoints(bounds) {
+    return [
+      { x: bounds.x, y: bounds.y },
+      { x: bounds.x + bounds.width, y: bounds.y },
+      { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+      { x: bounds.x, y: bounds.y + bounds.height },
+    ];
+  }
+
+  rotatePoint(point, center, angle) {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    return { x: center.x + dx * cos - dy * sin, y: center.y + dx * sin + dy * cos };
+  }
+
+  boundsFromPoints(points) {
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => p.y);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return { x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y };
+  }
+
+  perspectiveActiveLayerTo(point) {
+    const layer = this.activeLayer;
+    const start = this.dragStart;
+    const handle = start?.resizeHandle;
+    if (!layer || !start?.layerCanvas || !start.perspectiveQuad || !this.isCornerResizeHandle(handle)) return;
+    const quad = {
+      nw: { ...start.perspectiveQuad.nw },
+      ne: { ...start.perspectiveQuad.ne },
+      se: { ...start.perspectiveQuad.se },
+      sw: { ...start.perspectiveQuad.sw },
+    };
+    quad[handle] = { x: Math.round(point.x), y: Math.round(point.y) };
+    const bounds = this.boundsFromPoints(Object.values(quad));
+    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256, false)) return;
+    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256, false)) return;
+    const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    const layerQuad = {};
+    for (const key of ["nw", "ne", "se", "sw"]) {
+      layerQuad[key] = { x: quad[key].x - this.origin.x, y: quad[key].y - this.origin.y };
+    }
+    this.drawWarpedCanvas(ctx, start.layerCanvas, layerQuad, 18);
+    layer.hiresCanvas = null;
+    layer.hiresRect = null;
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = this.clampCanvasBounds({
+      x: Math.floor(bounds.x - this.origin.x),
+      y: Math.floor(bounds.y - this.origin.y),
+      width: Math.ceil(bounds.width),
+      height: Math.ceil(bounds.height),
+    }, layer.canvas);
+  }
+
+  drawWarpedCanvas(ctx, sourceCanvas, quad, segments = 16) {
+    const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+    const bilerp = (u, v) => lerp(lerp(quad.nw, quad.ne, u), lerp(quad.sw, quad.se, u), v);
+    for (let y = 0; y < segments; y += 1) {
+      const v0 = y / segments;
+      const v1 = (y + 1) / segments;
+      for (let x = 0; x < segments; x += 1) {
+        const u0 = x / segments;
+        const u1 = (x + 1) / segments;
+        const p00 = bilerp(u0, v0);
+        const p10 = bilerp(u1, v0);
+        const p11 = bilerp(u1, v1);
+        const p01 = bilerp(u0, v1);
+        const s00 = { x: u0 * sourceCanvas.width, y: v0 * sourceCanvas.height };
+        const s10 = { x: u1 * sourceCanvas.width, y: v0 * sourceCanvas.height };
+        const s11 = { x: u1 * sourceCanvas.width, y: v1 * sourceCanvas.height };
+        const s01 = { x: u0 * sourceCanvas.width, y: v1 * sourceCanvas.height };
+        this.drawWarpedTriangle(ctx, sourceCanvas, s00, s10, s11, p00, p10, p11);
+        this.drawWarpedTriangle(ctx, sourceCanvas, s00, s11, s01, p00, p11, p01);
+      }
+    }
+  }
+
+  drawWarpedTriangle(ctx, sourceCanvas, s0, s1, s2, d0, d1, d2) {
+    const denom = s0.x * (s1.y - s2.y) + s1.x * (s2.y - s0.y) + s2.x * (s0.y - s1.y);
+    if (Math.abs(denom) < 1e-6) return;
+    const a = (d0.x * (s1.y - s2.y) + d1.x * (s2.y - s0.y) + d2.x * (s0.y - s1.y)) / denom;
+    const b = (d0.y * (s1.y - s2.y) + d1.y * (s2.y - s0.y) + d2.y * (s0.y - s1.y)) / denom;
+    const c = (d0.x * (s2.x - s1.x) + d1.x * (s0.x - s2.x) + d2.x * (s1.x - s0.x)) / denom;
+    const d = (d0.y * (s2.x - s1.x) + d1.y * (s0.x - s2.x) + d2.y * (s1.x - s0.x)) / denom;
+    const e = (d0.x * (s1.x * s2.y - s2.x * s1.y) + d1.x * (s2.x * s0.y - s0.x * s2.y) + d2.x * (s0.x * s1.y - s1.x * s0.y)) / denom;
+    const f = (d0.y * (s1.x * s2.y - s2.x * s1.y) + d1.y * (s2.x * s0.y - s0.x * s2.y) + d2.y * (s0.x * s1.y - s1.x * s0.y)) / denom;
+    const centroid = { x: (d0.x + d1.x + d2.x) / 3, y: (d0.y + d1.y + d2.y) / 3 };
+    const expand = (p) => {
+      const dx = p.x - centroid.x;
+      const dy = p.y - centroid.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const pad = 0.35;
+      return { x: p.x + (dx / len) * pad, y: p.y + (dy / len) * pad };
+    };
+    const c0 = expand(d0);
+    const c1 = expand(d1);
+    const c2 = expand(d2);
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(c0.x, c0.y);
+    ctx.lineTo(c1.x, c1.y);
+    ctx.lineTo(c2.x, c2.y);
+    ctx.closePath();
+    ctx.clip();
+    ctx.transform(a, b, c, d, e, f);
+    ctx.drawImage(sourceCanvas, 0, 0);
+    ctx.restore();
   }
 
   toggleSnapToGrid() {
     this.snapToGrid = !this.snapToGrid;
     this.updateSnapButton();
+    this.syncLightStateToWidget();
   }
 
   updateSnapButton() {
@@ -1930,6 +2537,33 @@ class UniCanvasWidget {
   }
 
   moveActiveLayerPixels(dx, dy) {
+    return this.commitActiveLayerMove(dx, dy, true);
+  }
+
+  updateLayerMovePreview(point) {
+    const layer = this.activeLayer;
+    const start = this.dragStart;
+    if (!layer || !start) return;
+    let dx = point.x - start.point.x;
+    let dy = point.y - start.point.y;
+    const crop = start.layerBounds;
+    const sourceOrigin = start.layerOrigin || this.origin;
+    if (this.canSnapMovedLayer(layer, crop)) {
+      ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
+    }
+    start.previewDx = dx;
+    start.previewDy = dy;
+  }
+
+  getLayerMovePreview(layer) {
+    if (this.pointerMode !== "layer-move" || !this.dragStart || layer?.id !== this.dragStart.layerId) return null;
+    return {
+      dx: this.dragStart.previewDx || 0,
+      dy: this.dragStart.previewDy || 0,
+    };
+  }
+
+  commitActiveLayerMove(dx, dy, allowExpand = true) {
     const layer = this.activeLayer;
     if (!layer || !this.dragStart?.layerCanvas) return;
     const sourceOrigin = this.dragStart.layerOrigin || this.origin;
@@ -1938,15 +2572,17 @@ class UniCanvasWidget {
       ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
     }
     if (crop) {
-      if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + dx, sourceOrigin.y + crop.y + dy, 256)) return;
-      if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + crop.width + dx, sourceOrigin.y + crop.y + crop.height + dy, 256)) return;
+      if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + dx, sourceOrigin.y + crop.y + dy, 256, allowExpand)) return;
+      if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + crop.width + dx, sourceOrigin.y + crop.y + crop.height + dy, 256, allowExpand)) return;
     }
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    const cropX = crop?.x || 0;
+    const cropY = crop?.y || 0;
     ctx.drawImage(
       this.dragStart.layerCanvas,
-      Math.round(sourceOrigin.x - this.origin.x + dx),
-      Math.round(sourceOrigin.y - this.origin.y + dy)
+      Math.round(sourceOrigin.x + cropX - this.origin.x + dx),
+      Math.round(sourceOrigin.y + cropY - this.origin.y + dy)
     );
     if (layer.hiresRect && this.dragStart.hiresRect) {
       layer.hiresRect = {
@@ -1955,7 +2591,13 @@ class UniCanvasWidget {
         y: this.dragStart.hiresRect.y + dy,
       };
     }
-    this.invalidateLayerCaches(layer);
+    this.invalidateLayerRenderCaches(layer);
+    layer._boundsCache = crop ? this.clampCanvasBounds({
+      x: Math.round(sourceOrigin.x + cropX - this.origin.x + dx),
+      y: Math.round(sourceOrigin.y + cropY - this.origin.y + dy),
+      width: Math.round(crop.width),
+      height: Math.round(crop.height),
+    }, layer.canvas) : null;
   }
 
   alignCoordForTool(point, width) {
@@ -2114,7 +2756,7 @@ class UniCanvasWidget {
     this.applyStageScale(this.intendedScale, center);
   }
 
-  ensureWorldBounds(x, y, padding = 256) {
+  ensureWorldBounds(x, y, padding = 256, allowExpand = true) {
     if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
     let left = this.origin.x;
     let top = this.origin.y;
@@ -2126,22 +2768,27 @@ class UniCanvasWidget {
     if (x > right - padding) { right = x + padding; changed = true; }
     if (y > bottom - padding) { bottom = y + padding; changed = true; }
     if (!changed) return true;
+    if (!allowExpand) return false;
     const newW = Math.ceil(right - left);
     const newH = Math.ceil(bottom - top);
-    if (
-      newW > MAX_LAYER_CANVAS_SIDE ||
-      newH > MAX_LAYER_CANVAS_SIDE ||
-      newW * newH > MAX_LAYER_CANVAS_PIXELS
-    ) {
-      this.setStatus(`Canvas backing limit reached (${newW}×${newH})`, true);
+    const nextCanvases = [];
+    try {
+      for (const layer of this.layers) {
+        const next = document.createElement("canvas");
+        next.width = newW;
+        next.height = newH;
+        const nextCtx = this.configureImageContext(next.getContext("2d"));
+        if (!nextCtx || next.width !== newW || next.height !== newH) throw new Error("browser refused canvas allocation");
+        nextCtx.drawImage(layer.canvas, this.origin.x - left, this.origin.y - top);
+        nextCanvases.push({ layer, canvas: next });
+      }
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Browser refused canvas backing expansion", { width: newW, height: newH, err });
+      this.setStatus(`Browser refused canvas expansion (${newW}×${newH})`, true);
       return false;
     }
-    for (const layer of this.layers) {
-      const next = document.createElement("canvas");
-      next.width = newW;
-      next.height = newH;
-      this.configureImageContext(next.getContext("2d")).drawImage(layer.canvas, this.origin.x - left, this.origin.y - top);
-      layer.canvas = next;
+    for (const { layer, canvas } of nextCanvases) {
+      layer.canvas = canvas;
       this.invalidateLayerCaches(layer);
     }
     this.origin = { x: left, y: top };
@@ -2152,7 +2799,7 @@ class UniCanvasWidget {
   drawStroke(a, b) {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
-    if (!this.ensureWorldBounds(b.x, b.y, this.brushSize * 2)) return;
+    if (!this.ensureWorldBounds(b.x, b.y, this.brushSize * 2, !this.isPointerDown)) return;
     this.materializeRasterLayerForEditing(layer);
     const start = this.alignCoordForTool(a, this.brushSize);
     const end = this.alignCoordForTool(b, this.brushSize);
@@ -2216,11 +2863,30 @@ class UniCanvasWidget {
       if (hideMaskOverlays && layer.type === "mask") continue;
       ctx.save();
       if (layer.type === "mask") {
-        this.drawMaskLayer(ctx, layer);
+        const transformDraft = this.getLayerTransformDraft(layer);
+        if (transformDraft) {
+          ctx.globalAlpha = 1;
+          this.drawMaskTransformDraft(ctx, transformDraft);
+        } else {
+          this.drawMaskLayer(ctx, layer);
+        }
       } else {
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = layer.blendMode || "source-over";
-        this.drawRasterLayerVisible(ctx, layer);
+        const transformDraft = this.getLayerTransformDraft(layer);
+        const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
+        const visibleWorldRect = this._visibleWorldRectForRender;
+        if (movePreview) {
+          ctx.translate(movePreview.dx, movePreview.dy);
+          this._visibleWorldRectForRender = {
+            ...visibleWorldRect,
+            x: visibleWorldRect.x - movePreview.dx,
+            y: visibleWorldRect.y - movePreview.dy,
+          };
+        }
+        if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
+        else this.drawRasterLayerVisible(ctx, layer);
+        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       }
       ctx.restore();
     }
@@ -2230,11 +2896,16 @@ class UniCanvasWidget {
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
     this.drawBbox(ctx);
-    this.drawToolPreview(ctx);
     ctx.restore();
     const inferenceSize = this.getInferenceSize();
-    this.hud.innerHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
+    const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
+    if (hudHTML !== this.lastHudHTML) {
+      this.lastHudHTML = hudHTML;
+      this.hud.innerHTML = hudHTML;
+    }
     this.updateStagingControls();
+    this.updateTransformControls();
+    this.updateToolPreviewOverlay();
   }
 
   drawBackground(ctx, w, h) {
@@ -2251,7 +2922,7 @@ class UniCanvasWidget {
 
   drawMaskLayer(ctx, layer) {
     if (this.hasOpenStagingPanel()) return;
-    const crop = this.getVisibleLayerCrop(layer.canvas, this.getLayerAlphaBounds(layer));
+    const crop = this.getVisibleLayerCrop(layer.canvas, this.getLayerRenderBounds(layer));
     if (!crop) return;
     const lod = this.getRenderLodCanvas(layer, layer.canvas, "_renderLodCache");
     const source = lod?.canvas || layer.canvas;
@@ -2271,6 +2942,36 @@ class UniCanvasWidget {
     ctx.globalAlpha = layer.opacity;
     ctx.drawImage(tint, 0, 0, tintWidth, tintHeight, crop.dx, crop.dy, crop.sw, crop.sh);
     ctx.restore();
+  }
+
+  drawMaskTransformDraft(ctx, draft) {
+    if (!draft?.bounds) return;
+    const bounds = {
+      x: Math.floor(draft.bounds.x),
+      y: Math.floor(draft.bounds.y),
+      width: Math.max(1, Math.ceil(draft.bounds.width)),
+      height: Math.max(1, Math.ceil(draft.bounds.height)),
+    };
+    if (!this._maskDraftScratch) this._maskDraftScratch = document.createElement("canvas");
+    const scratch = this._maskDraftScratch;
+    if (scratch.width !== bounds.width) scratch.width = bounds.width;
+    if (scratch.height !== bounds.height) scratch.height = bounds.height;
+    const scratchCtx = scratch.getContext("2d");
+    scratchCtx.clearRect(0, 0, scratch.width, scratch.height);
+    scratchCtx.save();
+    scratchCtx.translate(-bounds.x, -bounds.y);
+    this.drawTransformDraft(scratchCtx, draft);
+    scratchCtx.restore();
+
+    const tint = this.getMaskTintScratch(bounds.width, bounds.height);
+    const tintCtx = tint.getContext("2d");
+    tintCtx.clearRect(0, 0, tint.width, tint.height);
+    tintCtx.drawImage(scratch, 0, 0);
+    tintCtx.globalCompositeOperation = "source-in";
+    tintCtx.fillStyle = MASK_OVERLAY_COLOR;
+    tintCtx.fillRect(0, 0, tint.width, tint.height);
+    tintCtx.globalCompositeOperation = "source-over";
+    ctx.drawImage(tint, bounds.x, bounds.y, bounds.width, bounds.height);
   }
 
   getMaskTintScratch(width, height) {
@@ -2313,7 +3014,7 @@ class UniCanvasWidget {
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, true);
       return;
     }
-    this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerAlphaBounds(layer));
+    this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
@@ -2358,6 +3059,40 @@ class UniCanvasWidget {
     if (cache?.source === sourceCanvas && cache.scale === scale && cache.width === sourceCanvas.width && cache.height === sourceCanvas.height) {
       return cache;
     }
+    this.queueRenderLodBuild(layer, sourceCanvas, cacheKey, scale);
+    return null;
+  }
+
+  queueRenderLodBuild(layer, sourceCanvas, cacheKey, scale) {
+    if (!layer || !sourceCanvas || !scale || scale >= 1) return;
+    if (this.lodRenderQueue.some((item) => item.layer === layer && item.sourceCanvas === sourceCanvas && item.cacheKey === cacheKey && item.scale === scale)) return;
+    this.lodRenderQueue.push({ layer, sourceCanvas, cacheKey, scale, width: sourceCanvas.width, height: sourceCanvas.height });
+    if (this.lodRenderQueued) return;
+    this.lodRenderQueued = true;
+    const run = () => this.flushRenderLodQueue();
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 800 });
+    else window.setTimeout(run, 0);
+  }
+
+  flushRenderLodQueue() {
+    const started = performance.now();
+    while (this.lodRenderQueue.length && performance.now() - started < 10) {
+      const item = this.lodRenderQueue.shift();
+      if (!item || !this.layers.includes(item.layer) || item.sourceCanvas.width !== item.width || item.sourceCanvas.height !== item.height) continue;
+      const cache = item.layer[item.cacheKey];
+      if (cache?.source === item.sourceCanvas && cache.scale === item.scale && cache.width === item.width && cache.height === item.height) continue;
+      this.buildRenderLodCanvas(item.layer, item.sourceCanvas, item.cacheKey, item.scale);
+    }
+    if (this.lodRenderQueue.length) {
+      const run = () => this.flushRenderLodQueue();
+      if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 800 });
+      else window.setTimeout(run, 0);
+      return;
+    }
+    this.lodRenderQueued = false;
+  }
+
+  buildRenderLodCanvas(layer, sourceCanvas, cacheKey, scale) {
     const lod = document.createElement("canvas");
     lod.width = Math.max(1, Math.round(sourceCanvas.width * scale));
     lod.height = Math.max(1, Math.round(sourceCanvas.height * scale));
@@ -2376,6 +3111,20 @@ class UniCanvasWidget {
       if (targetScale >= scale) return scale;
     }
     return RENDER_LOD_LEVELS[RENDER_LOD_LEVELS.length - 1];
+  }
+
+  getLayerRenderBounds(layer) {
+    if (!layer) return null;
+    if (layer._boundsCache !== undefined) return layer._boundsCache;
+    if (layer.hiresCanvas && layer.hiresRect) {
+      return this.clampCanvasBounds({
+        x: Math.floor(layer.hiresRect.x - this.origin.x),
+        y: Math.floor(layer.hiresRect.y - this.origin.y),
+        width: Math.ceil(layer.hiresRect.width),
+        height: Math.ceil(layer.hiresRect.height),
+      }, layer.canvas);
+    }
+    return { x: 0, y: 0, width: layer.canvas.width, height: layer.canvas.height };
   }
 
   getVisibleLayerCrop(canvas, contentBounds = null) {
@@ -2498,6 +3247,23 @@ class UniCanvasWidget {
     this.stagingControls.classList.add("visible");
   }
 
+  updateTransformControls() {
+    if (!this.transformControls) return;
+    if (!this.transformDraft) {
+      this.transformControls.classList.remove("visible");
+      return;
+    }
+    const labels = { scale: "Resize", rotate: "Rotate", perspective: "Perspective" };
+    this.transformControls.style.left = "50%";
+    this.transformControls.style.right = "";
+    this.transformControls.style.top = "";
+    this.transformControls.style.bottom = "12px";
+    this.transformControls.style.width = "";
+    this.transformControls.style.transform = "translateX(-50%)";
+    if (this.transformLabel) this.transformLabel.textContent = labels[this.transformDraft.kind] || "Transform";
+    this.transformControls.classList.add("visible");
+  }
+
   getImageFitInRect(img, rect) {
     const imgW = img?.naturalWidth || img?.width || rect.width;
     const imgH = img?.naturalHeight || img?.height || rect.height;
@@ -2559,22 +3325,47 @@ class UniCanvasWidget {
   }
 
   drawResizeOverlay(ctx) {
-    if (this.tool !== "resize" && this.pointerMode !== "layer-resize") return;
-    const bounds = this.pointerMode === "layer-resize" ? this.getLayerWorldBounds(this.activeLayer) : this.getLayerWorldBounds();
+    if (this.tool !== "resize" && !["layer-resize", "layer-rotate", "layer-perspective"].includes(this.pointerMode)) return;
+    const draft = this.getLayerTransformDraft(this.activeLayer);
+    const bounds = draft?.bounds || this.getLayerWorldBounds();
     if (!bounds) return;
     ctx.save();
     ctx.strokeStyle = "rgba(212,216,234,.95)";
     ctx.lineWidth = 1.2 / this.view.scale;
     ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
-    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    if (draft?.kind === "perspective" && draft.quad) {
+      ctx.beginPath();
+      ctx.moveTo(draft.quad.nw.x, draft.quad.nw.y);
+      ctx.lineTo(draft.quad.ne.x, draft.quad.ne.y);
+      ctx.lineTo(draft.quad.se.x, draft.quad.se.y);
+      ctx.lineTo(draft.quad.sw.x, draft.quad.sw.y);
+      ctx.closePath();
+      ctx.stroke();
+    } else {
+      ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    }
     ctx.setLineDash([]);
     const size = 12 / this.view.scale;
     for (const point of this.getResizeHandlePoints(bounds)) {
-      this.roundRectPath(ctx, point.x - size / 2, point.y - size / 2, size, size, 3 / this.view.scale);
-      ctx.fillStyle = "rgba(20,16,30,.92)";
-      ctx.fill();
-      ctx.strokeStyle = "rgba(255,143,163,.95)";
-      ctx.stroke();
+      if (point.handle === "rotate") {
+        ctx.beginPath();
+        ctx.moveTo(bounds.x + bounds.width / 2, bounds.y);
+        ctx.lineTo(point.x, point.y);
+        ctx.strokeStyle = "rgba(255,212,92,.72)";
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(point.x, point.y, size * 0.55, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(255,212,92,.20)";
+        ctx.fill();
+        ctx.strokeStyle = "rgba(255,212,92,.95)";
+        ctx.stroke();
+      } else {
+        this.roundRectPath(ctx, point.x - size / 2, point.y - size / 2, size, size, 3 / this.view.scale);
+        ctx.fillStyle = this.resizeTransformMode === "perspective" && this.isCornerResizeHandle(point.handle) ? "rgba(255,212,92,.22)" : "rgba(20,16,30,.92)";
+        ctx.fill();
+        ctx.strokeStyle = this.resizeTransformMode === "perspective" && this.isCornerResizeHandle(point.handle) ? "rgba(255,212,92,.95)" : "rgba(255,143,163,.95)";
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }
@@ -2688,94 +3479,152 @@ class UniCanvasWidget {
 
   renderLayerList() {
     this.thumbnailRenderQueue = [];
-    this.layerList.innerHTML = "";
-    for (const layer of this.layers) {
-      const row = document.createElement("div");
-      row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""}`;
-      row.draggable = true;
-      row.dataset.layerId = layer.id;
-      const thumb = document.createElement("canvas");
-      thumb.className = "vnccs-uc-thumb";
-      thumb.title = layer.visible ? "Hide layer" : "Show layer";
-      thumb.width = 68;
-      thumb.height = 68;
-      this.drawLayerThumbnailPlaceholder(thumb, layer);
-      this.queueLayerThumbnailRender(thumb, layer);
-      const label = document.createElement("div");
-      label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
-      const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
-      const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
-      row.append(thumb, label, lock, del);
-      row.addEventListener("click", () => {
-        this.setActiveLayer(layer.id);
-      });
-      row.addEventListener("dragstart", (e) => {
-        this.activeLayerId = layer.id;
-        row.classList.add("dragging");
-        e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData("text/plain", layer.id);
-      });
-      row.addEventListener("dragend", () => {
-        row.classList.remove("dragging", "drop-before", "drop-after");
-        this.clearLayerDropMarkers();
-      });
-      row.addEventListener("dragover", (e) => {
-        e.preventDefault();
-        const placement = this.getLayerDropPlacement(row, e.clientY);
-        this.markLayerDropTarget(row, placement);
-        e.dataTransfer.dropEffect = "move";
-      });
-      row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
-      row.addEventListener("drop", (e) => {
-        e.preventDefault();
-        const sourceId = e.dataTransfer.getData("text/plain");
-        const placement = this.getLayerDropPlacement(row, e.clientY);
-        this.reorderLayer(sourceId, layer.id, placement);
-      });
-      row.addEventListener("dblclick", async (e) => {
-        e.stopPropagation();
-        const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
-        if (next !== null) {
-          this.recordHistoryBefore();
-          layer.name = String(next).trim() || layer.name;
-          this.renderLayerList();
-          this.syncToNode();
-        }
-      });
-      thumb.addEventListener("click", (e) => {
-        e.stopPropagation();
-        layer.visible = !layer.visible;
-        this.updateLayerRow(row, layer);
-        this.requestRender();
-        this.syncLightStateToWidget();
-        this.scheduleFullSync();
-      });
-      lock.addEventListener("click", (e) => {
-        e.stopPropagation();
-        layer.locked = !layer.locked;
-        this.updateLayerRow(row, layer);
-        this.syncLightStateToWidget();
-        this.scheduleFullSync();
-      });
-      del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
-      this.layerList.append(row);
+    this.normalizeLayerOrder();
+    if (!this.maskLayerList || !this.rasterLayerList) {
+      this.layerList.innerHTML = "";
+      this.maskLayerList = document.createElement("div");
+      this.maskLayerList.className = "vnccs-uc-layer-group";
+      this.rasterLayerList = document.createElement("div");
+      this.rasterLayerList.className = "vnccs-uc-layer-group";
+      this.layerList.append(this.maskLayerList, this.rasterLayerList);
     }
-    this.layerList.ondragover = (e) => {
-      if (!this.layers.length) return;
-      e.preventDefault();
-    };
-    this.layerList.ondrop = (e) => {
-      const sourceId = e.dataTransfer.getData("text/plain");
-      if (!sourceId || e.target !== this.layerList) return;
-      e.preventDefault();
-      this.reorderLayer(sourceId, this.layers[this.layers.length - 1]?.id, "after");
-    };
+    this.maskLayerList.innerHTML = "";
+    this.rasterLayerList.innerHTML = "";
+    const masks = this.layers.filter((layer) => layer.type === "mask");
+    const rasters = this.layers.filter((layer) => layer.type !== "mask");
+    this.maskLayerList.append(this.createLayerGroupHead("Masks", masks.length, "mask"));
+    for (const layer of masks) this.maskLayerList.append(this.createLayerRow(layer));
+    if (!masks.length) this.maskLayerList.append(this.createLayerGroupEmpty("No masks"));
+    this.rasterLayerList.append(this.createLayerGroupHead("Raster Layers", rasters.length, "raster"));
+    for (const layer of rasters) this.rasterLayerList.append(this.createLayerRow(layer));
+    if (!rasters.length) this.rasterLayerList.append(this.createLayerGroupEmpty("No raster layers"));
+    this.attachLayerGroupDrop(this.maskLayerList, "mask");
+    this.attachLayerGroupDrop(this.rasterLayerList, "raster");
     this.syncActiveLayerControls();
+  }
+
+  createLayerGroupHead(label, count, type) {
+    const head = document.createElement("div");
+    head.className = `vnccs-uc-layer-group-head ${type === "mask" ? "mask" : ""}`;
+    head.innerHTML = `<span>${this._escape(label)}</span><span>${count}</span>`;
+    return head;
+  }
+
+  createLayerGroupEmpty(label) {
+    const empty = document.createElement("div");
+    empty.className = "vnccs-uc-layer-group-empty";
+    empty.textContent = label;
+    return empty;
+  }
+
+  attachLayerGroupDrop(group, type) {
+    group.ondragover = (e) => {
+      const source = this.layers.find((layer) => layer.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
+      if (!source || source.type !== type) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+    };
+    group.ondrop = (e) => {
+      const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
+      const source = this.layers.find((layer) => layer.id === sourceId);
+      if (!source || source.type !== type) return;
+      if (e.target !== group && e.target.closest?.(".vnccs-uc-layer")) return;
+      e.preventDefault();
+      const sameTypeLayers = this.layers.filter((layer) => layer.type === type);
+      this.reorderLayer(sourceId, sameTypeLayers[sameTypeLayers.length - 1]?.id, "after");
+    };
+  }
+
+  createLayerRow(layer) {
+    const row = document.createElement("div");
+    row.className = `vnccs-uc-layer ${layer.id === this.activeLayerId ? "active" : ""} ${layer.locked ? "locked" : ""}`;
+    row.draggable = true;
+    row.dataset.layerId = layer.id;
+    row.dataset.layerType = layer.type;
+    const thumb = document.createElement("canvas");
+    thumb.className = "vnccs-uc-thumb";
+    thumb.title = layer.visible ? "Hide layer" : "Show layer";
+    thumb.width = 68;
+    thumb.height = 68;
+    this.drawLayerThumbnailPlaceholder(thumb, layer);
+    this.queueLayerThumbnailRender(thumb, layer);
+    const label = document.createElement("div");
+    label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
+    const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
+    const del = this._button(UI_ICONS.trash, "vnccs-uc-icon danger", null, "Delete layer");
+    row.append(thumb, label, lock, del);
+    row.addEventListener("click", () => this.setActiveLayer(layer.id));
+    row.addEventListener("dragstart", (e) => {
+      this.activeLayerId = layer.id;
+      this.dragLayerId = layer.id;
+      row.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", layer.id);
+    });
+    row.addEventListener("dragend", () => {
+      this.dragLayerId = null;
+      row.classList.remove("dragging", "drop-before", "drop-after");
+      this.clearLayerDropMarkers();
+    });
+    row.addEventListener("dragover", (e) => {
+      const source = this.layers.find((item) => item.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
+      if (!source || source.type !== layer.type) {
+        e.dataTransfer.dropEffect = "none";
+        return;
+      }
+      e.preventDefault();
+      const placement = this.getLayerDropPlacement(row, e.clientY);
+      this.markLayerDropTarget(row, placement);
+      e.dataTransfer.dropEffect = "move";
+    });
+    row.addEventListener("dragleave", () => row.classList.remove("drop-before", "drop-after"));
+    row.addEventListener("drop", (e) => {
+      e.preventDefault();
+      const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
+      const placement = this.getLayerDropPlacement(row, e.clientY);
+      this.reorderLayer(sourceId, layer.id, placement);
+    });
+    label.addEventListener("dblclick", async (e) => {
+      e.stopPropagation();
+      const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
+      if (next !== null) {
+        layer.name = String(next).trim() || layer.name;
+        this.updateLayerRow(row, layer);
+        this.syncLightStateToWidget();
+      }
+    });
+    thumb.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (this.transformDraft) {
+        this.setStatus("Apply or cancel the active transform first", true);
+        return;
+      }
+      layer.visible = !layer.visible;
+      this.updateLayerRow(row, layer);
+      this.requestRender();
+      this.syncLightStateToWidget();
+    });
+    thumb.addEventListener("dblclick", (e) => e.stopPropagation());
+    lock.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (this.transformDraft) {
+        this.setStatus("Apply or cancel the active transform first", true);
+        return;
+      }
+      layer.locked = !layer.locked;
+      this.updateLayerRow(row, layer);
+      this.syncLightStateToWidget();
+    });
+    lock.addEventListener("dblclick", (e) => e.stopPropagation());
+    del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
+    del.addEventListener("dblclick", (e) => e.stopPropagation());
+    return row;
   }
 
   updateLayerRow(row, layer) {
     if (!row || !layer) return;
     row.classList.toggle("active", layer.id === this.activeLayerId);
+    row.classList.toggle("locked", !!layer.locked);
     const thumb = row.querySelector(".vnccs-uc-thumb");
     if (thumb instanceof HTMLCanvasElement) {
       thumb.title = layer.visible ? "Hide layer" : "Show layer";
@@ -2791,7 +3640,15 @@ class UniCanvasWidget {
     if (lock) {
       lock.innerHTML = layer.locked ? UI_ICONS.lock : UI_ICONS.unlock;
       lock.title = layer.locked ? "Unlock layer" : "Lock layer";
+      lock.classList.toggle("locked", !!layer.locked);
     }
+  }
+
+  refreshLayerRow(layerId) {
+    if (!layerId) return;
+    const layer = this.layers.find((item) => item.id === layerId);
+    const row = this.layerList.querySelector(`[data-layer-id="${layerId}"]`);
+    if (layer && row) this.updateLayerRow(row, layer);
   }
 
   drawLayerThumbnailPlaceholder(canvas, layer) {
@@ -2810,18 +3667,24 @@ class UniCanvasWidget {
     this.thumbnailRenderQueue.push({ canvas, layer, layerId: layer.id });
     if (this.thumbnailRenderQueued) return;
     this.thumbnailRenderQueued = true;
-    window.requestAnimationFrame(() => this.flushLayerThumbnailQueue());
+    this.scheduleLayerThumbnailFlush();
+  }
+
+  scheduleLayerThumbnailFlush() {
+    const run = () => this.flushLayerThumbnailQueue();
+    if (typeof window.requestIdleCallback === "function") window.requestIdleCallback(run, { timeout: 1000 });
+    else window.setTimeout(run, 0);
   }
 
   flushLayerThumbnailQueue() {
     const started = performance.now();
-    while (this.thumbnailRenderQueue.length && performance.now() - started < 8) {
+    while (this.thumbnailRenderQueue.length && performance.now() - started < 6) {
       const item = this.thumbnailRenderQueue.shift();
       if (!item?.canvas?.isConnected || !this.layers.includes(item.layer) || item.layer.id !== item.layerId) continue;
       this.drawLayerThumbnail(item.canvas, item.layer);
     }
     if (this.thumbnailRenderQueue.length) {
-      window.requestAnimationFrame(() => this.flushLayerThumbnailQueue());
+      this.scheduleLayerThumbnailFlush();
       return;
     }
     this.thumbnailRenderQueued = false;
@@ -2829,6 +3692,10 @@ class UniCanvasWidget {
 
   setActiveLayer(layerId) {
     if (!layerId || this.activeLayerId === layerId) return;
+    if (this.transformDraft && this.transformDraft.layerId !== layerId) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     this.activeLayerId = layerId;
     this.updateLayerListActiveState();
     this.syncActiveLayerControls();
@@ -2838,6 +3705,8 @@ class UniCanvasWidget {
   updateLayerListActiveState() {
     this.layerList.querySelectorAll(".vnccs-uc-layer").forEach((row) => {
       row.classList.toggle("active", row.dataset.layerId === this.activeLayerId);
+      const layer = this.layers.find((item) => item.id === row.dataset.layerId);
+      row.classList.toggle("locked", !!layer?.locked);
     });
   }
 
@@ -2859,18 +3728,25 @@ class UniCanvasWidget {
 
   reorderLayer(sourceId, targetId, placement = "before") {
     if (!sourceId || !targetId || sourceId === targetId) return;
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     const from = this.layers.findIndex((l) => l.id === sourceId);
     const target = this.layers.findIndex((l) => l.id === targetId);
     if (from < 0 || target < 0) return;
-    this.recordHistoryBefore();
+    if (this.layers[from].type !== this.layers[target].type) {
+      this.setStatus("Masks and raster layers stay in separate sections", true);
+      return;
+    }
     const [layer] = this.layers.splice(from, 1);
     let to = this.layers.findIndex((l) => l.id === targetId);
     if (placement === "after") to += 1;
     this.layers.splice(Math.max(0, Math.min(this.layers.length, to)), 0, layer);
     this.activeLayerId = layer.id;
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
   }
 
   drawLayerThumbnail(canvas, layer) {
@@ -2958,18 +3834,26 @@ class UniCanvasWidget {
 
   deleteLayer(id) {
     if (this.layers.length <= 1) return;
-    this.recordHistoryBefore();
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     this.layers = this.layers.filter((l) => l.id !== id);
     if (this.activeLayerId === id) this.activeLayerId = this.layers[0]?.id || null;
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
   }
 
   duplicateActiveLayer() {
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     const layer = this.activeLayer;
     if (!layer) return;
-    this.recordHistoryBefore();
+    const previousActiveLayerId = this.activeLayerId;
     const copy = {
       id: uid(),
       name: `${layer.name} Copy`,
@@ -2989,25 +3873,40 @@ class UniCanvasWidget {
     const index = this.layers.findIndex((l) => l.id === layer.id);
     this.layers.splice(Math.max(0, index), 0, copy);
     this.activeLayerId = copy.id;
+    this.pushHistoryEntry({ kind: "addLayer", layer: copy, previousActiveLayerId });
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
   }
 
   moveActiveLayer(direction) {
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     const index = this.layers.findIndex((l) => l.id === this.activeLayerId);
     if (index < 0) return;
-    const nextIndex = Math.max(0, Math.min(this.layers.length - 1, index + direction));
+    const layer = this.layers[index];
+    const sameType = this.layers
+      .map((item, itemIndex) => ({ item, itemIndex }))
+      .filter((entry) => entry.item.type === layer.type);
+    const localIndex = sameType.findIndex((entry) => entry.itemIndex === index);
+    const nextLocalIndex = Math.max(0, Math.min(sameType.length - 1, localIndex + direction));
+    const nextIndex = sameType[nextLocalIndex]?.itemIndex ?? index;
     if (nextIndex === index) return;
-    this.recordHistoryBefore();
-    const [layer] = this.layers.splice(index, 1);
-    this.layers.splice(nextIndex, 0, layer);
+    const [moved] = this.layers.splice(index, 1);
+    this.layers.splice(nextIndex, 0, moved);
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
   }
 
   async confirmFlattenLayers() {
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     if (this.layers.length <= 1) {
       this.setStatus("There is only one layer");
       return;
@@ -3052,23 +3951,28 @@ class UniCanvasWidget {
     this.layers = [master];
     this.activeLayerId = master.id;
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
     this.setStatus("Layers flattened to Master Layer");
   }
 
   async importFile(file) {
     if (!file) return;
-    this.recordHistoryBefore();
+    if (this.transformDraft) {
+      this.setStatus("Apply or cancel the active transform first", true);
+      return;
+    }
     const img = await this.loadImage(URL.createObjectURL(file));
     if (!this.ensureWorldBounds(this.bbox.x + img.width, this.bbox.y + img.height, 128)) return;
     if (!this.ensureWorldBounds(this.bbox.x, this.bbox.y, 128)) return;
-    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""), false);
+    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""), true, true);
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     ctx.drawImage(img, this.bbox.x - this.origin.x, this.bbox.y - this.origin.y);
     this.invalidateLayerCaches(layer);
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
   }
 
   loadImage(src) {
@@ -3420,7 +4324,7 @@ class UniCanvasWidget {
     if ((this.settings.seed_mode || "fixed") === "randomize") {
       this.settings.seed = this.generateRandomSeed();
       this.syncPromptControls();
-      this.syncToNode();
+      this.flushSettingsToWidget();
     }
     this.drawInProgress = true;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -3456,9 +4360,9 @@ class UniCanvasWidget {
       maskInBbox: maskStats,
       exportedMask: this.getCanvasAlphaStats(maskCanvas),
     };
-    console.debug("[VNCCS UniCanvas] DRAW request", debug);
-    this.setStatus(`Drawing ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
-    this.updateGenerationProgress({ progress: 0.01, message: "Starting draw", step: 0, steps: Number(this.settings.steps) || 0 }, true);
+    console.debug("[VNCCS UniCanvas] GENERATE request", debug);
+    this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
+    this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
     this.startDrawProgressPolling(debugId);
     this.drawBtn.disabled = true;
     try {
@@ -3479,7 +4383,7 @@ class UniCanvasWidget {
         }),
       });
       const data = await res.json();
-      console.debug("[VNCCS UniCanvas] DRAW response", { debugId, data });
+      console.debug("[VNCCS UniCanvas] GENERATE response", { debugId, data });
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const url = this.imageResultToURL(data.image);
       const img = await this.loadImage(url);
@@ -3508,10 +4412,10 @@ class UniCanvasWidget {
         resultMaskCanvas,
       });
       this.render();
-      this.setStatus(`DRAW complete (${this.stagingItems.length} staged)`);
+      this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
-      this.setStatus(`DRAW failed: ${err.message || err}`, true);
+      this.setStatus(`GENERATE failed: ${err.message || err}`, true);
       this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
     } finally {
       this.stopDrawProgressPolling();
@@ -3816,6 +4720,8 @@ class UniCanvasWidget {
     state.origin = this.origin;
     state.size = this.size;
     state.bbox = this.bbox;
+    state.snapToGrid = this.snapToGrid;
+    state.resizeTransformMode = this.resizeTransformMode;
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
     const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
@@ -3844,7 +4750,13 @@ class UniCanvasWidget {
     clearTimeout(this.fullSyncTimer);
     this.fullSyncTimer = window.setTimeout(() => {
       this.fullSyncTimer = null;
-      const run = () => this.syncToNode();
+      const run = () => {
+        if (this.isPointerDown || this.drawInProgress) {
+          this.scheduleFullSync(delay);
+          return;
+        }
+        this.syncToNode();
+      };
       if (typeof window.requestIdleCallback === "function") {
         window.requestIdleCallback(run, { timeout: 2500 });
       } else {
@@ -3862,15 +4774,75 @@ class UniCanvasWidget {
       origin: this.origin,
       size: this.size,
       bbox: this.bbox,
+      snapToGrid: this.snapToGrid,
+      resizeTransformMode: this.resizeTransformMode,
       settings: this.settings,
       layers: this.layers.map((l) => this.serializeLayer(l, includeLayerData)),
       activeLayerId: this.activeLayerId,
     };
   }
 
+  readStateCacheIdFromWidget() {
+    try {
+      const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
+      const state = widget?.value && widget.value !== "{}" ? JSON.parse(widget.value) : null;
+      return typeof state?.state_id === "string" && state.state_id ? state.state_id : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  createStateCacheId() {
+    return `vnccs_unicanvas_${this.node?.id ?? "node"}_${uid()}`;
+  }
+
+  isLegacyStateCacheId(id) {
+    return /^vnccs_unicanvas_[^_]+$/.test(String(id || ""));
+  }
+
   getStateCacheId() {
-    if (!this.stateCacheId) this.stateCacheId = `vnccs_unicanvas_${this.node?.id ?? uid()}`;
+    if (!this.stateCacheId) this.stateCacheId = this.readStateCacheIdFromWidget() || this.createStateCacheId();
     return this.stateCacheId;
+  }
+
+  getStateBackupKey() {
+    if (!this.stateBackupKey) this.stateBackupKey = `vnccs_unicanvas_backup_${this.getStateCacheId()}`;
+    return this.stateBackupKey;
+  }
+
+  getLegacyStateBackupKey() {
+    return `vnccs_unicanvas_backup_${this.node?.id ?? "node"}`;
+  }
+
+  stateHasLayerPixels(state) {
+    return Array.isArray(state?.layers) && state.layers.some((layer) => Boolean(layer?.dataURL || layer?.hiresDataURL));
+  }
+
+  saveLocalStateBackup(state) {
+    if (!this.stateHasLayerPixels(state)) return;
+    try {
+      const payload = JSON.stringify({ saved_at: Date.now(), state });
+      window.localStorage?.setItem(this.getStateBackupKey(), payload);
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Local state backup failed", err);
+    }
+  }
+
+  loadLocalStateBackup() {
+    try {
+      for (const key of [this.getStateBackupKey(), this.getLegacyStateBackupKey()]) {
+        const raw = window.localStorage?.getItem(key);
+        if (!raw) continue;
+        const payload = JSON.parse(raw);
+        const state = payload?.state;
+        if (![1, 2].includes(state?.version) || !Array.isArray(state.layers) || !this.stateHasLayerPixels(state)) continue;
+        return state;
+      }
+      return null;
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Local state backup restore failed", err);
+      return null;
+    }
   }
 
   scheduleStateUpload() {
@@ -3890,6 +4862,10 @@ class UniCanvasWidget {
 
   async uploadStateSnapshot() {
     if (!this.pendingStateUpload) return;
+    if (this.isPointerDown || this.drawInProgress) {
+      this.scheduleStateUpload();
+      return;
+    }
     this.pendingStateUpload = null;
     const state = this.buildSerializedState(true);
     return this.uploadStatePayload(state, false);
@@ -3899,6 +4875,7 @@ class UniCanvasWidget {
     const payload = JSON.stringify({ state_id: this.getStateCacheId(), state });
     if (payload === this.lastUploadedStateJSON) return;
     this.lastUploadedStateJSON = payload;
+    this.saveLocalStateBackup(state);
     try {
       const safeKeepalive = keepalive && payload.length <= 60000;
       const res = await fetch("/vnccs/unicanvas_state_upload", {
@@ -3919,7 +4896,7 @@ class UniCanvasWidget {
   }
 
   serializeLayer(layer, includeData = true) {
-    const crop = this.getLayerAlphaBounds(layer);
+    const crop = includeData ? this.getLayerAlphaBounds(layer) : (layer._boundsCache === undefined ? null : layer._boundsCache);
     const payload = {
       id: layer.id,
       name: layer.name,
@@ -3945,6 +4922,15 @@ class UniCanvasWidget {
 
   getLayerAlphaBounds(layer) {
     if (layer._boundsCache !== undefined) return layer._boundsCache;
+    if (layer.hiresCanvas && layer.hiresRect) {
+      layer._boundsCache = this.clampCanvasBounds({
+        x: Math.floor(layer.hiresRect.x - this.origin.x),
+        y: Math.floor(layer.hiresRect.y - this.origin.y),
+        width: Math.ceil(layer.hiresRect.width),
+        height: Math.ceil(layer.hiresRect.height),
+      }, layer.canvas);
+      return layer._boundsCache;
+    }
     layer._boundsCache = this.getCanvasAlphaBounds(layer.canvas);
     return layer._boundsCache;
   }
@@ -3977,6 +4963,7 @@ class UniCanvasWidget {
       let state = JSON.parse(widget.value);
       if (![1, 2].includes(state?.version) || !Array.isArray(state.layers)) return;
       if (state.state_id) this.stateCacheId = state.state_id;
+      let cacheRestoreFailed = false;
       if (state.storage === "server_cache" && state.state_id) {
         try {
           const res = await fetch(`/vnccs/unicanvas_state/${encodeURIComponent(state.state_id)}`);
@@ -3987,9 +4974,25 @@ class UniCanvasWidget {
             this.stateCacheId = state.state_id || this.stateCacheId;
           }
         } catch (err) {
+          cacheRestoreFailed = true;
           console.warn("[VNCCS UniCanvas] State cache restore failed", err);
-          this.setStatus("State cache missing; restored metadata only", true);
+          this.setStatus("State cache missing; trying local backup", true);
         }
+      }
+      if (!this.stateHasLayerPixels(state)) {
+        const backup = this.loadLocalStateBackup();
+        if (backup) {
+          state = backup;
+          this.setStatus(cacheRestoreFailed ? "Restored canvas from local backup" : "Restored canvas backup");
+        } else if (cacheRestoreFailed) {
+          this.setStatus("State cache missing and no local image backup found", true);
+          return;
+        }
+      }
+      if (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state)) {
+        this.stateCacheId = this.createStateCacheId();
+        this.stateBackupKey = null;
+        state.state_id = this.stateCacheId;
       }
       await this.applySerializedState(state);
     } catch (err) {
@@ -3999,9 +5002,21 @@ class UniCanvasWidget {
 
   async applySerializedState(state) {
     try {
+      if (!this.stateHasLayerPixels(state)) {
+        const backup = this.loadLocalStateBackup();
+        if (backup && this.stateHasLayerPixels(backup)) {
+          state = backup;
+          this.setStatus("Recovered canvas images from local backup");
+        } else if (this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+          this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
+          return;
+        }
+      }
       this.origin = state.origin || this.origin;
       this.size = state.size || this.size;
       this.bbox = state.bbox || this.bbox;
+      this.snapToGrid = state.snapToGrid === true;
+      this.resizeTransformMode = state.resizeTransformMode === "perspective" ? "perspective" : "scale";
       this.settings = { ...this.settings, ...(state.settings || {}) };
       const layers = [];
       for (const item of state.layers) {
@@ -4037,9 +5052,14 @@ class UniCanvasWidget {
       }
       if (layers.length) {
         this.layers = layers;
-        this.activeLayerId = state.activeLayerId || layers[0].id;
+        this.normalizeLayerOrder();
+        this.activeLayerId = state.activeLayerId && this.layers.some((layer) => layer.id === state.activeLayerId)
+          ? state.activeLayerId
+          : this.layers.find((layer) => layer.type !== "mask")?.id || this.layers[0].id;
+        this.saveLocalStateBackup(state);
       }
       this.syncPromptControls();
+      this.updateSnapButton();
       this.renderLayerList();
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);

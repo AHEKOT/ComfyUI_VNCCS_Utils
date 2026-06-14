@@ -242,15 +242,6 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
             description="advanced sampler",
         ),
     ),
-    decode=(
-        UniCanvasNodeStep(
-            node="VAEDecode",
-            methods=("decode",),
-            inputs={"samples": "$latent", "vae": "$vae"},
-            output="image",
-            description="VAE decode",
-        ),
-    ),
 )
 
 
@@ -423,31 +414,23 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
         latent_tensor = _unwrap_latent_samples(latent_payload)
         decode_payload = {"samples": latent_tensor}
-        try:
-            decoded = _call_node_method(
-                ["VAEDecodeTiled"],
-                ["decode"],
-                samples=decode_payload,
-                vae=vae,
-                tile_size=512,
-                tile_x=512,
-                tile_y=512,
-                overlap=64,
-                temporal_size=64,
-                temporal_overlap=8,
-            )
-            if isinstance(decoded, tuple) and decoded:
-                return decoded[0]
-            if decoded is not None:
-                return decoded
-        except Exception:
-            pass
-        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=decode_payload, vae=vae)
+        decoded = _call_node_method(
+            ["VAEDecodeTiled"],
+            ["decode"],
+            samples=decode_payload,
+            vae=vae,
+            tile_size=512,
+            tile_x=512,
+            tile_y=512,
+            overlap=64,
+            temporal_size=64,
+            temporal_overlap=8,
+        )
         if isinstance(decoded, tuple) and decoded:
             return decoded[0]
         if decoded is not None:
             return decoded
-        return vae.decode(latent_tensor)
+        return vae.decode_tiled(latent_tensor, tile_x=512, tile_y=512, overlap=64)
 
 
 @dataclass(frozen=True)
@@ -559,9 +542,7 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
         return context["latent"]
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
-        context = {"latent": samples, "vae": vae}
-        _run_pipeline_steps(self.pipeline.decode, context, "flux_klein_decode")
-        return context["image"]
+        return super().decode_samples(vae, samples, _gen_settings)
 
 
 @dataclass(frozen=True)
@@ -725,11 +706,6 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
-        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=latent_payload, vae=vae)
-        if isinstance(decoded, tuple) and decoded:
-            return decoded[0]
-        if decoded is not None:
-            return decoded
         return super().decode_samples(vae, latent_payload, _gen_settings)
 
 
