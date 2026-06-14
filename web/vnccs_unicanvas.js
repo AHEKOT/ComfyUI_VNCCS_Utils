@@ -3075,6 +3075,73 @@ class UniCanvasWidget {
         data[i + 3] = 255;
       }
     }
+
+    const overlap = Math.max(
+      32,
+      Math.round((Number(this.settings.mask_blur) || 0) * 2),
+      Math.round((Number(this.settings.canvas_coherence_edge_size) || 0) * 2)
+    );
+    if (overlap > 0) {
+      const transparent = new Uint8Array(out.width * out.height);
+      for (let y = 0; y < out.height; y++) {
+        for (let x = 0; x < out.width; x++) {
+          const index = y * out.width + x;
+          transparent[index] = rasterData[index * 4 + 3] <= 8 ? 1 : 0;
+        }
+      }
+      for (let y = 0; y < out.height; y++) {
+        let leftDistance = Infinity;
+        for (let x = 0; x < out.width; x++) {
+          const index = y * out.width + x;
+          if (transparent[index]) leftDistance = 0;
+          else if (leftDistance !== Infinity) leftDistance++;
+          if (leftDistance > 0 && leftDistance <= overlap) {
+            data[index * 4] = 255;
+            data[index * 4 + 1] = 255;
+            data[index * 4 + 2] = 255;
+            data[index * 4 + 3] = 255;
+          }
+        }
+        let rightDistance = Infinity;
+        for (let x = out.width - 1; x >= 0; x--) {
+          const index = y * out.width + x;
+          if (transparent[index]) rightDistance = 0;
+          else if (rightDistance !== Infinity) rightDistance++;
+          if (rightDistance > 0 && rightDistance <= overlap) {
+            data[index * 4] = 255;
+            data[index * 4 + 1] = 255;
+            data[index * 4 + 2] = 255;
+            data[index * 4 + 3] = 255;
+          }
+        }
+      }
+      for (let x = 0; x < out.width; x++) {
+        let topDistance = Infinity;
+        for (let y = 0; y < out.height; y++) {
+          const index = y * out.width + x;
+          if (transparent[index]) topDistance = 0;
+          else if (topDistance !== Infinity) topDistance++;
+          if (topDistance > 0 && topDistance <= overlap) {
+            data[index * 4] = 255;
+            data[index * 4 + 1] = 255;
+            data[index * 4 + 2] = 255;
+            data[index * 4 + 3] = 255;
+          }
+        }
+        let bottomDistance = Infinity;
+        for (let y = out.height - 1; y >= 0; y--) {
+          const index = y * out.width + x;
+          if (transparent[index]) bottomDistance = 0;
+          else if (bottomDistance !== Infinity) bottomDistance++;
+          if (bottomDistance > 0 && bottomDistance <= overlap) {
+            data[index * 4] = 255;
+            data[index * 4 + 1] = 255;
+            data[index * 4 + 2] = 255;
+            data[index * 4 + 3] = 255;
+          }
+        }
+      }
+    }
     ctx.putImageData(maskData, 0, 0);
     return out;
   }

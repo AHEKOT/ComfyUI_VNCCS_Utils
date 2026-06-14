@@ -560,6 +560,12 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return model, clip
 
+    def uses_edit_masked_latents(self, mode: str) -> bool:
+        return mode == "outpaint"
+
+    def prepare_outpaint_reference_image(self, source_rgba: Image.Image, _mask_image: Image.Image, draw_id: str) -> Image.Image:
+        return _sample_transparent_outpaint_rgb(source_rgba, draw_id)
+
     def is_turbo_conditioning_mode(self, gen_settings: dict[str, Any]) -> tuple[bool, str]:
         model_names = (
             str(gen_settings.get("diffusion_model_name") or ""),
@@ -1465,6 +1471,64 @@ def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_i
             "mask": _tensor_debug(torch.from_numpy(mask.astype(np.float32) / 255.0)[None,]),
             "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
             "valid_source_pixels": int(valid.sum()),
+        },
+    )
+    return result
+
+
+def _sample_transparent_outpaint_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
+    rgba = source_rgba.convert("RGBA")
+    alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
+    valid = alpha > 8
+    if not bool(valid.any()):
+        _uc_log(draw_id, "outpaint sampled-fill fallback", {"reason": "no valid source pixels"})
+        return Image.new("RGB", rgba.size, (127, 127, 127))
+
+    rgb = np.asarray(rgba.convert("RGB"), dtype=np.uint8)
+    palette = rgb[valid]
+    ys, xs = np.nonzero(valid)
+    min_x = int(xs.min())
+    max_x = int(xs.max())
+    min_y = int(ys.min())
+    max_y = int(ys.max())
+    height, width = alpha.shape
+
+    grid_y, grid_x = np.indices((height, width))
+    sample_x = np.clip(grid_x, min_x, max_x)
+    sample_y = np.clip(grid_y, min_y, max_y)
+    edge_extended = rgb[sample_y, sample_x].astype(np.float32)
+
+    rng = np.random.default_rng(0)
+    sampled = np.zeros((height, width, 3), dtype=np.float32)
+    noise_layers = ((96, 0.55), (32, 0.3), (8, 0.15))
+    for cell, weight in noise_layers:
+        noise_width = max(1, int(math.ceil(width / cell)))
+        noise_height = max(1, int(math.ceil(height / cell)))
+        indices = rng.integers(0, len(palette), size=(noise_height, noise_width))
+        noise = Image.fromarray(palette[indices].astype(np.uint8), mode="RGB")
+        noise = noise.resize((width, height), Image.Resampling.BILINEAR)
+        sampled += np.asarray(noise, dtype=np.float32) * float(weight)
+
+    total_weight = sum(weight for _cell, weight in noise_layers)
+    sampled /= max(total_weight, 1e-6)
+    fill = sampled * 0.7 + edge_extended * 0.3
+    blur_radius = max(2, int(round(max(width, height) / 256)))
+    fill_image = Image.fromarray(np.clip(fill, 0, 255).astype(np.uint8), mode="RGB")
+    if blur_radius > 0:
+        fill_image = fill_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+
+    result = fill_image.convert("RGB")
+    result.paste(rgba, (0, 0), rgba.getchannel("A"))
+    _uc_log(
+        draw_id,
+        "outpaint source filled with sampled source-color static",
+        {
+            "source_size": rgba.size,
+            "valid_bbox": [min_x, min_y, max_x - min_x + 1, max_y - min_y + 1],
+            "palette_pixels": int(len(palette)),
+            "blur_radius": blur_radius,
+            "noise_layers": [{"cell": cell, "weight": weight} for cell, weight in noise_layers],
+            "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
         },
     )
     return result
