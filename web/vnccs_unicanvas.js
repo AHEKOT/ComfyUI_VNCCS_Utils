@@ -69,6 +69,7 @@ const STYLES = `
 .vnccs-uc-tool-settings .vnccs-uc-input[type="color"] { width:42px; height:28px; padding:0; border-radius:7px; }
 .vnccs-uc-settings { display:flex; align-items:center; gap:6px; min-width:0; }
 .vnccs-uc-settings { overflow:auto; flex:1 1 auto; }
+.vnccs-uc-settings-spacer { flex:1 1 auto; min-width:16px; }
 .vnccs-uc-btn, .vnccs-uc-icon { border:1px solid var(--uc-border); background:var(--uc-surface); color:var(--uc-text); border-radius:8px; height:28px; padding:0 9px; cursor:pointer; font:inherit; white-space:nowrap; }
 .vnccs-uc-icon { width:30px; padding:0; display:grid; place-items:center; }
 .vnccs-uc-icon svg { width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
@@ -83,6 +84,7 @@ const STYLES = `
 .vnccs-uc-btn:disabled:hover, .vnccs-uc-icon:disabled:hover { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
 .vnccs-uc-btn.danger { color:#ffdce1; border-color:rgba(255,71,87,.35); }
+.vnccs-uc-icon.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; }
 .vnccs-uc-textarea { height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; }
@@ -141,6 +143,7 @@ const MAX_LAYER_CANVAS_SIDE = 8192;
 const MAX_LAYER_CANVAS_PIXELS = 32 * 1024 * 1024;
 const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 const HISTORY_LIMIT = 20;
+const MOVE_SNAP_GRID_SIZE = 64;
 const TOOL_ICONS = {
   move: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg>`,
   brush: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 19 10"/><path d="M4 20c3 0 5-1 6.5-2.5L19 9a2.8 2.8 0 0 0-4-4l-8.5 8.5C5 15 4 17 4 20Z"/><path d="M6.5 13.5 10.5 17.5"/></svg>`,
@@ -162,6 +165,7 @@ const UI_ICONS = {
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg>`,
   undo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`,
   redo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>`,
+  snap: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14"/><path d="M5 12h14"/><path d="M5 19h14"/><path d="M5 5v14"/><path d="M12 5v14"/><path d="M19 5v14"/><path d="m14.5 9.5 3 3-3 3"/><path d="M8 12h9"/></svg>`,
 };
 const STAGING_ICONS = {
   discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
@@ -217,6 +221,7 @@ class UniCanvasWidget {
     this.undoStack = [];
     this.redoStack = [];
     this.historyRestoring = false;
+    this.snapToGrid = false;
     this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = {
@@ -406,8 +411,12 @@ class UniCanvasWidget {
     this.undoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undo(), "Undo");
     this.redoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo");
     this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.centerBbox(), "Fit");
-    this.settingsBar.append(this.undoBtn, this.redoBtn, this.fitBtn);
+    this.snapBtn = this._button(UI_ICONS.snap, "vnccs-uc-icon", () => this.toggleSnapToGrid(), "Snap to grid");
+    const settingsSpacer = document.createElement("div");
+    settingsSpacer.className = "vnccs-uc-settings-spacer";
+    this.settingsBar.append(this.undoBtn, this.redoBtn, this.fitBtn, settingsSpacer, this.snapBtn);
     this.updateHistoryButtons();
+    this.updateSnapButton();
     this.fileInput = document.createElement("input");
     this.fileInput.className = "vnccs-uc-file";
     this.fileInput.type = "file";
@@ -1357,11 +1366,57 @@ class UniCanvasWidget {
     if (target) target._vnccsHistoryRecorded = false;
   }
 
+  toggleSnapToGrid() {
+    this.snapToGrid = !this.snapToGrid;
+    this.updateSnapButton();
+  }
+
+  updateSnapButton() {
+    if (!this.snapBtn) return;
+    this.snapBtn.classList.toggle("active", this.snapToGrid);
+    this.snapBtn.setAttribute("aria-pressed", this.snapToGrid ? "true" : "false");
+  }
+
+  canSnapMovedLayer(layer, crop) {
+    if (!this.snapToGrid || !layer || layer.type !== "raster" || !crop) return false;
+    const width = Math.round(crop.width);
+    const height = Math.round(crop.height);
+    if (Math.min(width, height) < MOVE_SNAP_GRID_SIZE) return false;
+    return Math.abs(width - height) <= 1;
+  }
+
+  snapMovedLayerDelta(dx, dy, crop, sourceOrigin) {
+    if (!crop) return { dx, dy };
+    const left = sourceOrigin.x + crop.x + dx;
+    const top = sourceOrigin.y + crop.y + dy;
+    const right = left + crop.width;
+    const bottom = top + crop.height;
+    const snapAxis = (start, end, targets) => {
+      const candidates = [
+        { delta: this.roundToMultiple(start, MOVE_SNAP_GRID_SIZE) - start },
+        { delta: this.roundToMultiple(end, MOVE_SNAP_GRID_SIZE) - end },
+        ...targets.map((target) => ({ delta: target - start })),
+        ...targets.map((target) => ({ delta: target - end })),
+      ];
+      candidates.sort((a, b) => Math.abs(a.delta) - Math.abs(b.delta));
+      return candidates[0]?.delta || 0;
+    };
+    const bboxXTargets = [this.bbox.x, this.bbox.x + this.bbox.width];
+    const bboxYTargets = [this.bbox.y, this.bbox.y + this.bbox.height];
+    return {
+      dx: dx + snapAxis(left, right, bboxXTargets),
+      dy: dy + snapAxis(top, bottom, bboxYTargets),
+    };
+  }
+
   moveActiveLayerPixels(dx, dy) {
     const layer = this.activeLayer;
     if (!layer || !this.dragStart?.layerCanvas) return;
     const sourceOrigin = this.dragStart.layerOrigin || this.origin;
     const crop = this.dragStart.layerBounds;
+    if (this.canSnapMovedLayer(layer, crop)) {
+      ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
+    }
     if (crop) {
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + dx, sourceOrigin.y + crop.y + dy, 256)) return;
       if (!this.ensureWorldBounds(sourceOrigin.x + crop.x + crop.width + dx, sourceOrigin.y + crop.y + crop.height + dy, 256)) return;
