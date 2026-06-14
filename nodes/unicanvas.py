@@ -1254,6 +1254,45 @@ def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_i
     return result
 
 
+def _make_flux_outpaint_reference_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
+    rgba_image = source_rgba.convert("RGBA")
+    rgba = np.asarray(rgba_image, dtype=np.float32) / 255.0
+    rgb = rgba[..., :3]
+    alpha = rgba[..., 3:4]
+    valid = alpha[..., 0] > 0.03
+    if not bool(valid.any()):
+        _uc_log(draw_id, "Flux Klein outpaint reference fallback", {"reason": "no valid source pixels"})
+        return Image.new("RGB", rgba_image.size, (0, 0, 0))
+
+    mean_color = rgb[valid].mean(axis=0)
+    premul = rgb * alpha
+    width, height = rgba_image.size
+    blur_radius = max(16, min(96, int(max(width, height) / 18)))
+    premul_img = Image.fromarray(np.clip(premul * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+    alpha_img = Image.fromarray(np.clip(alpha[..., 0] * 255.0, 0, 255).astype(np.uint8), mode="L")
+    blurred_premul = np.asarray(premul_img.filter(ImageFilter.GaussianBlur(radius=blur_radius)), dtype=np.float32) / 255.0
+    blurred_alpha = np.asarray(alpha_img.filter(ImageFilter.GaussianBlur(radius=blur_radius)), dtype=np.float32)[..., None] / 255.0
+    fill = np.divide(
+        blurred_premul,
+        np.maximum(blurred_alpha, 1.0 / 255.0),
+        out=np.broadcast_to(mean_color, rgb.shape).copy(),
+        where=blurred_alpha > (1.0 / 255.0),
+    )
+    fill = np.clip(fill, 0.0, 1.0)
+    composite = rgb * alpha + fill * (1.0 - alpha)
+    result = Image.fromarray(np.clip(composite * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+    _uc_log(
+        draw_id,
+        "Flux Klein outpaint reference smooth-filled",
+        {
+            "blur_radius": blur_radius,
+            "source_size": rgba_image.size,
+            "valid_source_pixels": int(valid.sum()),
+        },
+    )
+    return result
+
+
 def _apply_differential_diffusion(model: Any, draw_id: str, strength: float = 1.0) -> Any:
     try:
         from comfy_extras.nodes_differential_diffusion import DifferentialDiffusion
@@ -2065,7 +2104,10 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                     mask_image, coherence_edge_size, draw_id
                 )
                 paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
-                source = _infill_masked_rgb(source_rgba, mask_image, draw_id)
+                if model_module.key == "flux_klein":
+                    source = _make_flux_outpaint_reference_rgb(source_rgba, draw_id)
+                else:
+                    source = _infill_masked_rgb(source_rgba, mask_image, draw_id)
                 source_for_composite = source_rgba.convert("RGB")
                 mask = _pil_to_mask_tensor(denoise_mask_image)
             else:
@@ -2107,9 +2149,9 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         if model_module.key != "flux_klein" and mode in {"inpaint", "outpaint"} and mask is not None:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
-        if model_module.key == "flux_klein" or mode == "txt2img" or (source_empty and mask is None):
+        if mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
-        elif mode in {"inpaint", "outpaint"} and mask is not None:
+        elif model_module.key != "flux_klein" and mode in {"inpaint", "outpaint"} and mask is not None:
             positive, negative, latent = _prepare_inpaint_model_conditioning(
                 positive=positive,
                 negative=negative,
