@@ -151,6 +151,7 @@ const TOOL_ICONS = {
   mask: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8c2.6-2 5.3-3 8-3s5.4 1 8 3v4c0 4.8-3.2 8-8 8s-8-3.2-8-8Z"/><path d="M12 5v15"/><path d="M7.5 12.5h2"/><path d="M14.5 12.5h2"/><path d="M9 16c1.8 1 4.2 1 6 0"/></svg>`,
   rect: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="6" width="14" height="12" rx="1.5"/><path d="M8 6v12"/><path d="M16 6v12"/></svg>`,
   lasso: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 18c-2.5-1.2-4-3.2-4-5.5C4 8.9 7.6 6 12 6s8 2.9 8 6.5S16.4 19 12 19c-1.2 0-2.3-.2-3.3-.6"/><path d="M8 18 5 21"/><path d="M5 21h5"/></svg>`,
+  resize: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/><path d="M9 9h6v6H9Z"/><path d="M5 2v3H2"/><path d="M19 2v3h3"/><path d="M5 22v-3H2"/><path d="M19 22v-3h3"/></svg>`,
   bbox: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3v4H3"/><path d="M17 3v4h4"/><path d="M7 21v-4H3"/><path d="M17 21v-4h4"/><rect x="7" y="7" width="10" height="10" rx="1.5" stroke-dasharray="3 2"/></svg>`,
   pan: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 12V7.5a1.5 1.5 0 0 1 3 0V12"/><path d="M11 11V6.5a1.5 1.5 0 0 1 3 0V12"/><path d="M14 11V8a1.5 1.5 0 0 1 3 0v5"/><path d="M8 12 6.8 10.8a1.6 1.6 0 0 0-2.2 2.3l4.7 5.1A6 6 0 0 0 19 14v-2a1.5 1.5 0 0 0-3 0"/></svg>`,
 };
@@ -197,6 +198,7 @@ class UniCanvasWidget {
     this.lastDrawPointByTool = { brush: null, eraser: null, mask: null };
     this.opacity = 1;
     this.fg = "#ffffff";
+    this.resizeKeepAspect = false;
     this.isPointerDown = false;
     this.pointerMode = null;
     this.lastPoint = null;
@@ -398,6 +400,7 @@ class UniCanvasWidget {
       ["mask", "Mask brush"],
       ["rect", "Rectangle"],
       ["lasso", "Lasso"],
+      ["resize", "Resize layer"],
       ["bbox", "Generation bbox"],
       ["pan", "Pan view"],
     ].forEach(([tool, title]) => this.tools.appendChild(this._toolButton(tool, title)));
@@ -678,6 +681,7 @@ class UniCanvasWidget {
     if (tool === "brush") return ["brushSize", "fg", "opacity"];
     if (tool === "eraser" || tool === "mask") return ["brushSize", "opacity"];
     if (tool === "rect" || tool === "lasso") return ["fg", "opacity"];
+    if (tool === "resize") return ["keepAspect"];
     return [];
   }
 
@@ -689,7 +693,7 @@ class UniCanvasWidget {
       this.toolSettings.innerHTML = "";
       return;
     }
-    const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso" };
+    const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso", resize: "Resize" };
     const title = titleMap[this.tool] || this.tool;
     const html = [`<div class="vnccs-uc-tool-settings-title">${this._escape(title)} Settings</div>`];
     if (controls.includes("brushSize")) {
@@ -700,6 +704,9 @@ class UniCanvasWidget {
     }
     if (controls.includes("opacity")) {
       html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Opacity</span><input class="vnccs-uc-range" type="range" min="0" max="1" step="0.01" value="${this.opacity}" data-control="opacity"></label>`);
+    }
+    if (controls.includes("keepAspect")) {
+      html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Keep ratio</span><input type="checkbox" ${this.resizeKeepAspect ? "checked" : ""} data-control="keepAspect"></label>`);
     }
     this.toolSettings.innerHTML = html.join("");
     this.toolSettings.classList.add("visible");
@@ -712,6 +719,7 @@ class UniCanvasWidget {
       mask: "crosshair",
       rect: "crosshair",
       lasso: "crosshair",
+      resize: "nwse-resize",
       bbox: "move",
       move: "move",
       pan: "grab",
@@ -767,9 +775,18 @@ class UniCanvasWidget {
       if (target.dataset.control === "brushSize") this.brushSize = Number(target.value);
       if (target.dataset.control === "fg") this.fg = target.value;
       if (target.dataset.control === "opacity") this.opacity = Number(target.value);
+      if (target.dataset.control === "keepAspect") this.resizeKeepAspect = target.checked;
       this.render();
     });
-    this.toolSettings.addEventListener("change", (e) => this.clearInputHistoryMarker(e.target));
+    this.toolSettings.addEventListener("change", (e) => {
+      const target = e.target;
+      if (target instanceof HTMLInputElement && target.dataset.control === "keepAspect") {
+        this.recordInputHistory(target);
+        this.resizeKeepAspect = target.checked;
+        this.render();
+      }
+      this.clearInputHistoryMarker(target);
+    });
     this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
     this.denoiseControl.addEventListener("input", (e) => {
       const target = e.target;
@@ -1041,6 +1058,21 @@ class UniCanvasWidget {
       this.dragStart.hiresRect = this.activeLayer.hiresRect ? { ...this.activeLayer.hiresRect } : null;
       this.dragStart.layerOrigin = { ...this.origin };
       this.dragStart.layerBounds = this.getCanvasAlphaBounds(this.dragStart.layerCanvas);
+    } else if (this.pointerMode === "resize") {
+      const layer = this.activeLayer;
+      const bounds = this.getLayerWorldBounds(layer);
+      const handle = this.hitResizeHandle(point, bounds);
+      if (!layer || layer.locked || !bounds || !handle) {
+        this.pointerMode = "idle";
+      } else {
+        this.recordHistoryBefore();
+        this.materializeRasterLayerForEditing(layer);
+        this.pointerMode = "layer-resize";
+        this.dragStart.resizeHandle = handle;
+        this.dragStart.resizeBounds = this.getLayerWorldBounds(layer);
+        this.dragStart.layerCanvas = this.cloneCanvas(layer.canvas);
+        this.dragStart.layerOrigin = { ...this.origin };
+      }
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       this.recordHistoryBefore();
@@ -1087,6 +1119,8 @@ class UniCanvasWidget {
       this.appendLassoPoint(point);
     } else if (this.pointerMode === "layer-move") {
       this.moveActiveLayerPixels(point.x - this.dragStart.point.x, point.y - this.dragStart.point.y);
+    } else if (this.pointerMode === "layer-resize") {
+      this.resizeActiveLayerTo(this.getResizedBounds(point, e));
     } else if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       this.drawStroke(this.lastPoint, point);
     }
@@ -1290,6 +1324,7 @@ class UniCanvasWidget {
       brushSize: this.brushSize,
       opacity: this.opacity,
       fg: this.fg,
+      resizeKeepAspect: this.resizeKeepAspect,
       settings: JSON.parse(JSON.stringify(this.settings)),
       activeLayerId: this.activeLayerId,
       layers: this.layers.map((layer) => this.cloneHistoryLayer(layer)),
@@ -1309,6 +1344,7 @@ class UniCanvasWidget {
     this.brushSize = Number.isFinite(snapshot.brushSize) ? snapshot.brushSize : this.brushSize;
     this.opacity = Number.isFinite(snapshot.opacity) ? snapshot.opacity : this.opacity;
     this.fg = snapshot.fg || this.fg;
+    this.resizeKeepAspect = typeof snapshot.resizeKeepAspect === "boolean" ? snapshot.resizeKeepAspect : this.resizeKeepAspect;
     this.settings = JSON.parse(JSON.stringify(snapshot.settings || this.settings));
     this.layers = snapshot.layers.map((layer) => this.cloneHistoryLayer(layer));
     this.activeLayerId = snapshot.activeLayerId || this.layers[0]?.id || null;
@@ -1364,6 +1400,115 @@ class UniCanvasWidget {
 
   clearInputHistoryMarker(target) {
     if (target) target._vnccsHistoryRecorded = false;
+  }
+
+  getLayerWorldBounds(layer = this.activeLayer) {
+    if (!layer) return null;
+    if (layer.hiresCanvas && layer.hiresRect) return { ...layer.hiresRect };
+    const crop = this.getCanvasAlphaBounds(layer.canvas);
+    if (!crop) return null;
+    return {
+      x: this.origin.x + crop.x,
+      y: this.origin.y + crop.y,
+      width: crop.width,
+      height: crop.height,
+    };
+  }
+
+  getResizeHandlePoints(bounds) {
+    if (!bounds) return [];
+    const { x, y, width, height } = bounds;
+    const midX = x + width / 2;
+    const midY = y + height / 2;
+    return [
+      { handle: "nw", x, y },
+      { handle: "n", x: midX, y },
+      { handle: "ne", x: x + width, y },
+      { handle: "e", x: x + width, y: midY },
+      { handle: "se", x: x + width, y: y + height },
+      { handle: "s", x: midX, y: y + height },
+      { handle: "sw", x, y: y + height },
+      { handle: "w", x, y: midY },
+    ];
+  }
+
+  hitResizeHandle(point, bounds) {
+    if (!bounds) return null;
+    const threshold = Math.max(10, 12 / this.view.scale);
+    let best = null;
+    let bestDistance = Infinity;
+    for (const item of this.getResizeHandlePoints(bounds)) {
+      const distance = Math.hypot(point.x - item.x, point.y - item.y);
+      if (distance <= threshold && distance < bestDistance) {
+        best = item.handle;
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
+  getResizedBounds(point, event) {
+    const start = this.dragStart?.resizeBounds;
+    const handle = this.dragStart?.resizeHandle || "";
+    if (!start) return null;
+    const minSize = 4;
+    let left = start.x;
+    let top = start.y;
+    let right = start.x + start.width;
+    let bottom = start.y + start.height;
+    if (handle.includes("w")) left = point.x;
+    if (handle.includes("e")) right = point.x;
+    if (handle.includes("n")) top = point.y;
+    if (handle.includes("s")) bottom = point.y;
+
+    if ((this.resizeKeepAspect || event?.shiftKey) && start.width > 0 && start.height > 0) {
+      const ratio = start.width / start.height;
+      let width = Math.max(minSize, Math.abs(right - left));
+      let height = Math.max(minSize, Math.abs(bottom - top));
+      if (!handle.includes("n") && !handle.includes("s")) height = width / ratio;
+      else if (!handle.includes("w") && !handle.includes("e")) width = height * ratio;
+      else if (width / height > ratio) width = height * ratio;
+      else height = width / ratio;
+      if (handle.includes("w")) left = right - width;
+      else right = left + width;
+      if (handle.includes("n")) top = bottom - height;
+      else bottom = top + height;
+    }
+
+    if (right < left) [left, right] = [right, left];
+    if (bottom < top) [top, bottom] = [bottom, top];
+    return {
+      x: Math.round(left),
+      y: Math.round(top),
+      width: Math.max(minSize, Math.round(right - left)),
+      height: Math.max(minSize, Math.round(bottom - top)),
+    };
+  }
+
+  resizeActiveLayerTo(bounds) {
+    const layer = this.activeLayer;
+    const start = this.dragStart;
+    if (!layer || !start?.layerCanvas || !start.resizeBounds || !bounds) return;
+    if (!this.ensureWorldBounds(bounds.x, bounds.y, 256)) return;
+    if (!this.ensureWorldBounds(bounds.x + bounds.width, bounds.y + bounds.height, 256)) return;
+    const sourceOrigin = start.layerOrigin || this.origin;
+    const source = start.resizeBounds;
+    const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
+    ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+    ctx.drawImage(
+      start.layerCanvas,
+      source.x - sourceOrigin.x,
+      source.y - sourceOrigin.y,
+      source.width,
+      source.height,
+      bounds.x - this.origin.x,
+      bounds.y - this.origin.y,
+      bounds.width,
+      bounds.height
+    );
+    layer.hiresCanvas = null;
+    layer.hiresRect = null;
+    this.invalidateLayerCaches(layer);
   }
 
   toggleSnapToGrid() {
@@ -1708,6 +1853,7 @@ class UniCanvasWidget {
     this.drawStagingOverlay(ctx);
     this.drawShapeDraft(ctx);
     this.drawLassoDraft(ctx);
+    this.drawResizeOverlay(ctx);
     this.drawBbox(ctx);
     this.drawToolPreview(ctx);
     ctx.restore();
@@ -1975,6 +2121,27 @@ class UniCanvasWidget {
     ctx.restore();
   }
 
+  drawResizeOverlay(ctx) {
+    if (this.tool !== "resize" && this.pointerMode !== "layer-resize") return;
+    const bounds = this.pointerMode === "layer-resize" ? this.getLayerWorldBounds(this.activeLayer) : this.getLayerWorldBounds();
+    if (!bounds) return;
+    ctx.save();
+    ctx.strokeStyle = "rgba(212,216,234,.95)";
+    ctx.lineWidth = 1.2 / this.view.scale;
+    ctx.setLineDash([6 / this.view.scale, 4 / this.view.scale]);
+    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+    ctx.setLineDash([]);
+    const size = 12 / this.view.scale;
+    for (const point of this.getResizeHandlePoints(bounds)) {
+      this.roundRectPath(ctx, point.x - size / 2, point.y - size / 2, size, size, 3 / this.view.scale);
+      ctx.fillStyle = "rgba(20,16,30,.92)";
+      ctx.fill();
+      ctx.strokeStyle = "rgba(255,143,163,.95)";
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   drawBboxOverlay(ctx) {
     const stage = this.visibleWorldRect();
     ctx.save();
@@ -2103,6 +2270,8 @@ class UniCanvasWidget {
       row.addEventListener("click", () => {
         this.activeLayerId = layer.id;
         this.renderLayerList();
+        this.syncActiveLayerControls();
+        this.render();
       });
       row.addEventListener("dragstart", (e) => {
         this.activeLayerId = layer.id;
