@@ -243,6 +243,34 @@ const UNICANVAS_MODEL_MODULES = {
       steps: 8,
       cfg: 1,
       aura_flow_shift: 3,
+      fun_controlnet_patch_name: "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+      fun_controlnet_strength: 1,
+      fun_controlnet_inpaint: true,
+    },
+  },
+  qwen_image_edit: {
+    key: "qwen_image_edit",
+    aliases: ["qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"],
+    label: "Qwen Edit",
+    base: "qwen_image_edit",
+    isEditModel: true,
+    detect: ["qwen-image-edit", "qwen_image_edit", "qwen-edit", "qwen"],
+    defaults: {
+      generation_mode: "qwen_image_edit",
+      model_loader: "gguf",
+      gguf_model_name: "qwen-image-edit-2511-Q5_0.gguf",
+      clip_name: "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+      vae_name: "qwen_image_vae.safetensors",
+      clip_type: "qwen_image",
+      sampler_name: "euler",
+      scheduler: "simple",
+      steps: 4,
+      cfg: 1,
+      denoise: 1,
+      qwen_lora_name: "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+      qwen_lora_strength: 1,
+      qwen_2511: true,
+      qwen_target_vl_size: 384,
     },
   },
 };
@@ -427,7 +455,7 @@ class UniCanvasWidget {
     this.redoStack = [];
     this.historyRestoring = false;
     this.snapToGrid = false;
-    this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
+    this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], model_patches: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = makeDefaultUniCanvasSettings();
 
@@ -499,7 +527,7 @@ class UniCanvasWidget {
     this.denoiseControl = document.createElement("div");
     this.denoiseControl.className = "vnccs-uc-side-control";
     this.denoiseControl.innerHTML = `
-      <label class="vnccs-uc-denoise-control">Denoise
+      <label class="vnccs-uc-denoise-control"><span data-denoise-label>Denoise</span>
         <input class="vnccs-uc-range" data-setting="denoise" type="range" min="0" max="1" step="0.01" value="${this.settings.denoise}">
         <input class="vnccs-uc-input" data-setting="denoise" type="number" lang="en-US" inputmode="decimal" min="0" max="1" step="0.01" value="${this.settings.denoise}">
       </label>`;
@@ -1124,13 +1152,15 @@ class UniCanvasWidget {
     this.denoiseControl.addEventListener("input", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.setting !== "denoise") return;
-      this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
+      const key = this.getDenoiseControlSetting();
+      this.settings[key] = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings[key])));
       this.syncDenoiseControls(target);
     });
     this.denoiseControl.addEventListener("change", (e) => {
       const target = e.target;
       if (target instanceof HTMLInputElement && target.dataset.setting === "denoise") {
-        this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
+        const key = this.getDenoiseControlSetting();
+        this.settings[key] = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings[key])));
         this.syncDenoiseControls();
         this.syncSettingsToWidget();
       }
@@ -1177,6 +1207,7 @@ class UniCanvasWidget {
         gguf_models: data.gguf_models || [],
         text_encoders: data.text_encoders || [],
         vae_models: data.vae_models || [],
+        model_patches: data.model_patches || [],
         loras: data.loras || [],
         samplers: data.samplers || [],
         schedulers: data.schedulers || [],
@@ -1317,9 +1348,17 @@ class UniCanvasWidget {
     if (scaleInput && scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
   }
 
+  getDenoiseControlSetting() {
+    return this.getModelBase() === "z_image" ? "fun_controlnet_strength" : "denoise";
+  }
+
   syncDenoiseControls(source = null) {
-    const value = Math.max(0, Math.min(1, Number(this.settings.denoise) || 0));
-    this.settings.denoise = value;
+    const key = this.getDenoiseControlSetting();
+    const fallback = key === "fun_controlnet_strength" ? 1 : 0.65;
+    const value = Math.max(0, Math.min(1, Number(this.settings[key] ?? fallback) || 0));
+    this.settings[key] = value;
+    const label = this.denoiseControl?.querySelector("[data-denoise-label]");
+    if (label) label.textContent = key === "fun_controlnet_strength" ? "ControlNet strength" : "Denoise";
     this.denoiseControl?.querySelectorAll('[data-setting="denoise"]').forEach((el) => {
       if (el === source) return;
       if (el instanceof HTMLInputElement) el.value = this.formatSettingNumber(value, 2);
@@ -1890,7 +1929,7 @@ class UniCanvasWidget {
   materializeRasterLayerForEditing(layer) {
     if (!layer || layer.type !== "raster" || !layer.hiresCanvas || !layer.hiresRect) return;
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
-    const rect = layer.hiresRect;
+    const rect = this.normalizeLayerWorldRect(layer.hiresRect);
     ctx.clearRect(rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
     ctx.drawImage(layer.hiresCanvas, rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
     layer.hiresCanvas = null;
@@ -1903,6 +1942,15 @@ class UniCanvasWidget {
       width: Math.round(rect.width),
       height: Math.round(rect.height),
     }, layer.canvas);
+  }
+
+  normalizeLayerWorldRect(rect) {
+    return {
+      x: Math.round(Number(rect?.x) || 0),
+      y: Math.round(Number(rect?.y) || 0),
+      width: Math.max(1, Math.round(Number(rect?.width) || 1)),
+      height: Math.max(1, Math.round(Number(rect?.height) || 1)),
+    };
   }
 
   cloneHistoryLayer(layer) {
@@ -2110,7 +2158,7 @@ class UniCanvasWidget {
 
   getLayerWorldBounds(layer = this.activeLayer) {
     if (!layer) return null;
-    if (layer.hiresCanvas && layer.hiresRect) return { ...layer.hiresRect };
+    if (layer.hiresCanvas && layer.hiresRect) return this.normalizeLayerWorldRect(layer.hiresRect);
     const crop = this.getLayerAlphaBounds(layer);
     if (!crop) return null;
     return {
@@ -2960,16 +3008,17 @@ class UniCanvasWidget {
     if (this.hasOpenStagingPanel()) return;
     const crop = this.getVisibleLayerCrop(layer.canvas, this.getLayerRenderBounds(layer));
     if (!crop) return;
-    const lod = this.getRenderLodCanvas(layer, layer.canvas, "_renderLodCache");
+    const lod = this.shouldUseLayerLod(layer) ? this.getRenderLodCanvas(layer, layer.canvas, "_renderLodCache") : null;
     const source = lod?.canvas || layer.canvas;
-    const scale = lod?.scale || 1;
-    const tintWidth = Math.max(1, Math.round(crop.sw * scale));
-    const tintHeight = Math.max(1, Math.round(crop.sh * scale));
+    const scaleX = lod?.scaleX || lod?.scale || 1;
+    const scaleY = lod?.scaleY || lod?.scale || 1;
+    const tintWidth = Math.max(1, Math.round(crop.sw * scaleX));
+    const tintHeight = Math.max(1, Math.round(crop.sh * scaleY));
     const tint = this.getMaskTintScratch(tintWidth, tintHeight);
     const tintCtx = tint.getContext("2d");
     tintCtx.clearRect(0, 0, tint.width, tint.height);
     tintCtx.globalCompositeOperation = "source-over";
-    tintCtx.drawImage(source, crop.sx * scale, crop.sy * scale, crop.sw * scale, crop.sh * scale, 0, 0, tintWidth, tintHeight);
+    tintCtx.drawImage(source, crop.sx * scaleX, crop.sy * scaleY, crop.sw * scaleX, crop.sh * scaleY, 0, 0, tintWidth, tintHeight);
     tintCtx.globalCompositeOperation = "source-in";
     tintCtx.fillStyle = MASK_OVERLAY_COLOR;
     tintCtx.fillRect(0, 0, tintWidth, tintHeight);
@@ -3031,12 +3080,14 @@ class UniCanvasWidget {
       ctx.drawImage(canvas, crop.sx, crop.sy, crop.sw, crop.sh, crop.dx, crop.dy, crop.sw, crop.sh);
       return;
     }
+    const scaleX = lod.scaleX || lod.scale || 1;
+    const scaleY = lod.scaleY || lod.scale || 1;
     ctx.drawImage(
       lod.canvas,
-      crop.sx * lod.scale,
-      crop.sy * lod.scale,
-      crop.sw * lod.scale,
-      crop.sh * lod.scale,
+      crop.sx * scaleX,
+      crop.sy * scaleY,
+      crop.sw * scaleX,
+      crop.sh * scaleY,
       crop.dx,
       crop.dy,
       crop.sw,
@@ -3047,15 +3098,20 @@ class UniCanvasWidget {
   drawRasterLayerVisible(ctx, layer) {
     if (layer.hiresCanvas && layer.hiresRect) {
       const visible = this.visibleWorldRect();
-      this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, true);
+      this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }
-    this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+    if (this.shouldUseLayerLod(layer)) this.drawLayerCanvasVisibleWithLod(ctx, layer, layer.canvas, this.getLayerRenderBounds(layer));
+    else this.drawLayerCanvasVisible(ctx, layer.canvas, this.getLayerRenderBounds(layer));
+  }
+
+  shouldUseLayerLod(layer) {
+    return Boolean(layer && layer.id !== this.activeLayerId && !this.getLayerMovePreview(layer) && !this.getLayerTransformDraft(layer));
   }
 
   drawRasterLayerToWorldRect(ctx, layer, worldRect, destRect, smoothing = true, useLod = false) {
     if (layer.hiresCanvas && layer.hiresRect) {
-      const rect = layer.hiresRect;
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
       const left = Math.max(worldRect.x, rect.x);
       const top = Math.max(worldRect.y, rect.y);
       const right = Math.min(worldRect.x + worldRect.width, rect.x + rect.width);
@@ -3073,7 +3129,9 @@ class UniCanvasWidget {
       ctx.save();
       this.configureImageContext(ctx, smoothing);
       if (lod) {
-        ctx.drawImage(lod.canvas, sx * lod.scale, sy * lod.scale, sw * lod.scale, sh * lod.scale, dx, dy, dw, dh);
+        const scaleX = lod.scaleX || lod.scale || 1;
+        const scaleY = lod.scaleY || lod.scale || 1;
+        ctx.drawImage(lod.canvas, sx * scaleX, sy * scaleY, sw * scaleX, sh * scaleY, dx, dy, dw, dh);
       } else {
         ctx.drawImage(layer.hiresCanvas, sx, sy, sw, sh, dx, dy, dw, dh);
       }
@@ -3084,8 +3142,9 @@ class UniCanvasWidget {
     const sx = worldRect.x - this.origin.x;
     const sy = worldRect.y - this.origin.y;
     const source = lod?.canvas || layer.canvas;
-    const scale = lod?.scale || 1;
-    ctx.drawImage(source, sx * scale, sy * scale, worldRect.width * scale, worldRect.height * scale, destRect.x, destRect.y, destRect.width, destRect.height);
+    const scaleX = lod?.scaleX || lod?.scale || 1;
+    const scaleY = lod?.scaleY || lod?.scale || 1;
+    ctx.drawImage(source, sx * scaleX, sy * scaleY, worldRect.width * scaleX, worldRect.height * scaleY, destRect.x, destRect.y, destRect.width, destRect.height);
   }
 
   getRenderLodCanvas(layer, sourceCanvas, cacheKey = "_renderLodCache") {
@@ -3135,7 +3194,15 @@ class UniCanvasWidget {
     const lodCtx = this.configureImageContext(lod.getContext("2d"), true);
     lodCtx.clearRect(0, 0, lod.width, lod.height);
     lodCtx.drawImage(sourceCanvas, 0, 0, lod.width, lod.height);
-    layer[cacheKey] = { source: sourceCanvas, scale, width: sourceCanvas.width, height: sourceCanvas.height, canvas: lod };
+    layer[cacheKey] = {
+      source: sourceCanvas,
+      scale,
+      scaleX: lod.width / sourceCanvas.width,
+      scaleY: lod.height / sourceCanvas.height,
+      width: sourceCanvas.width,
+      height: sourceCanvas.height,
+      canvas: lod,
+    };
     return layer[cacheKey];
   }
 
@@ -3153,11 +3220,12 @@ class UniCanvasWidget {
     if (!layer) return null;
     if (layer._boundsCache !== undefined) return layer._boundsCache;
     if (layer.hiresCanvas && layer.hiresRect) {
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
       return this.clampCanvasBounds({
-        x: Math.floor(layer.hiresRect.x - this.origin.x),
-        y: Math.floor(layer.hiresRect.y - this.origin.y),
-        width: Math.ceil(layer.hiresRect.width),
-        height: Math.ceil(layer.hiresRect.height),
+        x: rect.x - this.origin.x,
+        y: rect.y - this.origin.y,
+        width: rect.width,
+        height: rect.height,
       }, layer.canvas);
     }
     return { x: 0, y: 0, width: layer.canvas.width, height: layer.canvas.height };
@@ -3248,7 +3316,7 @@ class UniCanvasWidget {
   drawStagingOverlay(ctx) {
     const staging = this.activeStaging;
     if (!staging?.img || staging.visible === false) return;
-    const placement = this.getStagingImageRect();
+    const placement = this.normalizeLayerWorldRect(this.getStagingImageRect());
     const sourceWidth = Math.max(1, staging.img.naturalWidth || staging.img.width || placement.width);
     const sourceHeight = Math.max(1, staging.img.naturalHeight || staging.img.height || placement.height);
     const preview = this.makeMaskedStagingCanvas(staging, staging.img, sourceWidth, sourceHeight);
@@ -4480,7 +4548,7 @@ class UniCanvasWidget {
     const previousActiveStagingIndex = this.activeStagingIndex;
     const previousActiveLayerId = this.activeLayerId;
     const img = staging.img || await this.loadImage(staging.url);
-    const placement = this.getStagingImageRect();
+    const placement = this.normalizeLayerWorldRect(this.getStagingImageRect());
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
     const layer = this.addLayer("raster", null, false, true);
@@ -4982,11 +5050,12 @@ class UniCanvasWidget {
   getLayerAlphaBounds(layer) {
     if (layer._boundsCache !== undefined) return layer._boundsCache;
     if (layer.hiresCanvas && layer.hiresRect) {
+      const rect = this.normalizeLayerWorldRect(layer.hiresRect);
       layer._boundsCache = this.clampCanvasBounds({
-        x: Math.floor(layer.hiresRect.x - this.origin.x),
-        y: Math.floor(layer.hiresRect.y - this.origin.y),
-        width: Math.ceil(layer.hiresRect.width),
-        height: Math.ceil(layer.hiresRect.height),
+        x: rect.x - this.origin.x,
+        y: rect.y - this.origin.y,
+        width: rect.width,
+        height: rect.height,
       }, layer.canvas);
       return layer._boundsCache;
     }

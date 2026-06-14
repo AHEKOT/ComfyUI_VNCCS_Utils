@@ -27,6 +27,7 @@ _DRAW_LOCK = asyncio.Lock()
 _MODEL_CACHE_LOCK = threading.Lock()
 _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
+_MODEL_PATCH_CACHE: dict[str, Any] = {}
 _DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
 _DRAW_PROGRESS_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
@@ -92,6 +93,34 @@ Z_IMAGE_DEFAULTS = {
     "steps": 8,
     "cfg": 1.0,
     "aura_flow_shift": 3.0,
+    "fun_controlnet_patch_name": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+    "fun_controlnet_strength": 1.0,
+    "fun_controlnet_inpaint": True,
+}
+
+QWEN_IMAGE_EDIT_DEFAULTS = {
+    "generation_mode": "qwen_image_edit",
+    "model_loader": "gguf",
+    "gguf_model_name": "qwen-image-edit-2511-Q5_0.gguf",
+    "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+    "vae_name": "qwen_image_vae.safetensors",
+    "clip_type": "qwen_image",
+    "sampler": "euler",
+    "sampler_name": "euler",
+    "scheduler": "simple",
+    "steps": 4,
+    "cfg": 1.0,
+    "denoise": 1.0,
+    "qwen_lora_name": "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+    "qwen_lora_strength": 1.0,
+    "qwen_2511": True,
+    "qwen_target_vl_size": 384,
+    "qwen_instruction": (
+        "Describe the key features of the input image (color, shape, size, texture, objects, background), "
+        "then explain how the user's text instruction should alter or modify the image. Generate a new image "
+        "that meets the user's requirements while maintaining consistency with the original input where appropriate."
+    ),
+    "qwen_inpaint_prompt": "[!!!IMPORTANT!!!] Inpaint mode: draw only inside the black masked area. ",
 }
 
 
@@ -551,6 +580,213 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
 
 
 @dataclass(frozen=True)
+class QwenImageEditUniCanvasModule(UniCanvasModelModule):
+    def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
+        return model, clip
+
+    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
+        lora_name = str(gen_settings.get("qwen_lora_name") or "")
+        if lora_name:
+            model, clip = _apply_lora_cached(
+                model,
+                clip,
+                lora_name,
+                float(gen_settings.get("qwen_lora_strength", 1.0)),
+                0.0,
+            )
+        return super().apply_loras(model, clip, gen_settings)
+
+    def encode_prompt(self, clip: Any, text: str, gen_settings: dict[str, Any]):
+        image_tensor = gen_settings.get("_qwen_edit_reference_image")
+        if torch.is_tensor(image_tensor):
+            positive, negative, _latent = self._encode_qwen_edit(
+                clip=clip,
+                vae=gen_settings.get("_qwen_edit_vae"),
+                image_tensor=image_tensor,
+                prompt=text,
+                gen_settings=gen_settings,
+                draw_id=str(gen_settings.get("_draw_id") or "unknown"),
+            )
+            gen_settings["_qwen_edit_positive"] = positive
+            gen_settings["_qwen_edit_negative"] = negative
+            gen_settings["_qwen_edit_latent"] = _latent
+            return positive
+        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
+        if isinstance(encoded, tuple) and encoded:
+            return encoded[0]
+        if encoded is not None:
+            return encoded
+        return super().encode_prompt(clip, text, gen_settings)
+
+    def prepare_reference_conditioning(
+        self,
+        positive: Any,
+        negative: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        reference = image_tensor
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        mask = gen_settings.get("_qwen_edit_mask")
+        if draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
+            pixel_mask = torch.nn.functional.interpolate(
+                mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).float(),
+                size=(reference.shape[1], reference.shape[2]),
+                mode="bilinear",
+            ).squeeze(1).unsqueeze(-1).clamp(0, 1)
+            reference = reference.clone()
+            reference = reference * (1.0 - (pixel_mask > 0.01).to(reference.dtype))
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit masked reference prepared",
+                {
+                    "mode": draw_mode,
+                    "reference": _tensor_debug(reference),
+                    "mask": _tensor_debug(mask),
+                    "reason": "Qwen Image Edit 2511 uses black masked pixels plus reference latents",
+                },
+            )
+
+        positive, negative, latent = self._encode_qwen_edit(
+            clip=gen_settings.get("_qwen_edit_clip"),
+            vae=vae,
+            image_tensor=reference,
+            prompt=str(gen_settings.get("positive") or ""),
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+        )
+        gen_settings["_qwen_edit_positive"] = positive
+        gen_settings["_qwen_edit_negative"] = negative
+        gen_settings["_qwen_edit_latent"] = latent
+        _uc_log(
+            draw_id,
+            "Qwen Image Edit conditioning prepared",
+            {
+                "positive": _conditioning_debug(positive),
+                "negative": _conditioning_debug(negative),
+                "latent": _latent_debug(latent),
+            },
+        )
+        return positive, negative
+
+    def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        import comfy.model_management
+
+        latent = torch.zeros(
+            [1, 16, max(1, int(height) // 8), max(1, int(width) // 8)],
+            device=comfy.model_management.intermediate_device(),
+            dtype=comfy.model_management.intermediate_dtype(),
+        )
+        encoded = {"samples": latent}
+        _uc_log(draw_id, "created fallback empty Qwen Image latent", _latent_debug(encoded))
+        return encoded
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        qwen_latent = gen_settings.get("_qwen_edit_latent")
+        if isinstance(qwen_latent, dict):
+            latent = qwen_latent
+        return _sample_generation_latent_default(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+        )
+
+    def _encode_qwen_edit(
+        self,
+        clip: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        prompt: str,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any, dict[str, Any]]:
+        if clip is None:
+            raise ValueError("Qwen Image Edit requires a Qwen Image CLIP/VL encoder")
+        if vae is None:
+            raise ValueError("Qwen Image Edit requires a Qwen Image VAE")
+        import comfy.utils
+        import node_helpers
+
+        target_vl_size = int(gen_settings.get("qwen_target_vl_size", 384))
+        upscale_method = str(gen_settings.get("qwen_upscale_method") or "lanczos")
+        crop_method = str(gen_settings.get("qwen_crop_method") or "center")
+        instruction = str(gen_settings.get("qwen_instruction") or QWEN_IMAGE_EDIT_DEFAULTS["qwen_instruction"])
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        base_prompt = str(prompt or "")
+        if draw_mode in {"inpaint", "outpaint"}:
+            base_prompt = str(gen_settings.get("qwen_inpaint_prompt") or QWEN_IMAGE_EDIT_DEFAULTS["qwen_inpaint_prompt"]) + base_prompt
+
+        samples = image_tensor.movedim(-1, 1)
+        current_total = max(1, int(samples.shape[3] * samples.shape[2]))
+        scale_by = math.sqrt(float(target_vl_size * target_vl_size) / current_total)
+        vl_width = max(1, round(samples.shape[3] * scale_by))
+        vl_height = max(1, round(samples.shape[2] * scale_by))
+        vl_samples = comfy.utils.common_upscale(samples, vl_width, vl_height, upscale_method, crop_method)
+        vl_image = vl_samples.movedim(1, -1)
+
+        vae_width = (samples.shape[3] + 7) // 8 * 8
+        vae_height = (samples.shape[2] + 7) // 8 * 8
+        vae_samples = comfy.utils.common_upscale(samples, vae_width, vae_height, upscale_method, crop_method)
+        image_vae = vae_samples.movedim(1, -1)
+        ref_latent = vae.encode(image_vae[:, :, :, :3])
+
+        template_prefix = "<|im_start|>system\n"
+        template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
+        llama_template = template_prefix + instruction + template_suffix
+        image_prompt = "Picture 1: <|vision_start|><|image_pad|><|vision_end|>"
+        tokens = clip.tokenize(image_prompt + base_prompt, images=[vl_image], llama_template=llama_template)
+        conditioning = clip.encode_from_tokens_scheduled(tokens)
+        positive = node_helpers.conditioning_set_values(conditioning, {"reference_latents": [ref_latent]}, append=True)
+        negative = positive
+        if bool(gen_settings.get("qwen_2511", True)):
+            method = "index_timestep_zero"
+            positive = node_helpers.conditioning_set_values(positive, {"reference_latents_method": method})
+            negative = node_helpers.conditioning_set_values(negative, {"reference_latents_method": method})
+        latent = {"samples": ref_latent}
+        _uc_log(
+            draw_id,
+            "Qwen Image Edit encode",
+            {
+                "prompt_len": len(base_prompt),
+                "vl_size": [vl_width, vl_height],
+                "vae_size": [vae_width, vae_height],
+                "reference_latent": _tensor_debug(ref_latent),
+            },
+        )
+        return positive, negative, latent
+
+    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        return super().decode_samples(vae, samples, _gen_settings)
+
+
+@dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
         return model, clip
@@ -591,11 +827,19 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
     ) -> tuple[Any, Any]:
         draw_mode = str(gen_settings.get("draw_mode") or "")
         if draw_mode in {"inpaint", "outpaint"}:
+            zero_negative = _call_node_method(
+                ["ConditioningZeroOut"],
+                ["zero_out"],
+                conditioning=positive,
+            )
+            if zero_negative is not None:
+                negative = zero_negative
             _uc_log(
                 draw_id,
-                "Z-image masked mode keeps standard inpaint conditioning inputs",
+                "Z-image masked mode uses Fun ControlNet workflow conditioning",
                 {
                     "mode": draw_mode,
+                    "positive": _conditioning_debug(positive),
                     "negative": _conditioning_debug(negative),
                 },
             )
@@ -680,11 +924,10 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         width: int | None = None,
         height: int | None = None,
     ):
-        _uc_log(
-            draw_id,
-            "Z-image ModelSamplingAuraFlow patching disabled",
-            {"reason": "diagnose z-image inpaint behavior and Comfy model patcher access violations"},
-        )
+        model = self._apply_fun_controlnet_if_needed(model, gen_settings, draw_id)
+        model = self._apply_aura_flow_sampling(model, gen_settings, draw_id)
+        if str(gen_settings.get("draw_mode") or "") in {"inpaint", "outpaint"} and bool(gen_settings.get("fun_controlnet_inpaint", True)):
+            denoise = 1.0
         return super().sample_latent(
             model=model,
             positive=positive,
@@ -701,6 +944,73 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             width=width,
             height=height,
         )
+
+    def _apply_fun_controlnet_if_needed(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        if draw_mode not in {"inpaint", "outpaint"}:
+            return model
+        if not bool(gen_settings.get("fun_controlnet_inpaint", True)):
+            _uc_log(draw_id, "Z-image Fun ControlNet skipped", {"reason": "fun_controlnet_inpaint is disabled"})
+            return model
+        patch_name = str(gen_settings.get("fun_controlnet_patch_name") or "").strip()
+        if not patch_name:
+            _uc_log(draw_id, "Z-image Fun ControlNet skipped", {"reason": "no fun_controlnet_patch_name"})
+            return model
+        inpaint_image = gen_settings.get("_z_image_fun_controlnet_image")
+        mask = gen_settings.get("_z_image_fun_controlnet_mask")
+        vae = gen_settings.get("_z_image_fun_controlnet_vae")
+        if not torch.is_tensor(inpaint_image) or not torch.is_tensor(mask) or vae is None:
+            _uc_log(
+                draw_id,
+                "Z-image Fun ControlNet skipped",
+                {
+                    "reason": "missing inpaint image, mask, or VAE",
+                    "image": _tensor_debug(inpaint_image) if torch.is_tensor(inpaint_image) else None,
+                    "mask": _tensor_debug(mask) if torch.is_tensor(mask) else None,
+                    "has_vae": vae is not None,
+                },
+            )
+            return model
+
+        model_patch = _load_model_patch_cached(patch_name)
+        patched = _call_node_method(
+            ["ZImageFunControlnet"],
+            ["diffsynth_controlnet"],
+            model=model,
+            model_patch=model_patch,
+            vae=vae,
+            strength=float(gen_settings.get("fun_controlnet_strength", 1.0)),
+            inpaint_image=inpaint_image,
+            mask=mask,
+        )
+        if patched is None:
+            raise RuntimeError("ZImageFunControlnet returned no patched model")
+        _uc_log(
+            draw_id,
+            "Z-image Fun ControlNet applied",
+            {
+                "mode": draw_mode,
+                "patch": patch_name,
+                "strength": float(gen_settings.get("fun_controlnet_strength", 1.0)),
+                "image": _tensor_debug(inpaint_image),
+                "mask": _tensor_debug(mask),
+            },
+        )
+        return patched
+
+    def _apply_aura_flow_sampling(self, model: Any, gen_settings: dict[str, Any], draw_id: str) -> Any:
+        shift = float(gen_settings.get("aura_flow_shift", 3.0))
+        patched = _call_node_method(
+            ["ModelSamplingAuraFlow"],
+            ["patch_aura"],
+            model=model,
+            shift=shift,
+        )
+        if patched is None:
+            _uc_log(draw_id, "Z-image ModelSamplingAuraFlow patch skipped", {"reason": "node returned no model", "shift": shift})
+            return model
+        _uc_log(draw_id, "Z-image ModelSamplingAuraFlow applied", {"shift": shift})
+        return patched
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
@@ -923,6 +1233,14 @@ _register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), I
 _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
 _register_unicanvas_model_module(
     FluxKleinUniCanvasModule("flux_klein", ("flux-klein", "klein"), FLUX_KLEIN_DEFAULTS, is_edit_model=True)
+)
+_register_unicanvas_model_module(
+    QwenImageEditUniCanvasModule(
+        "qwen_image_edit",
+        ("qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"),
+        QWEN_IMAGE_EDIT_DEFAULTS,
+        is_edit_model=True,
+    )
 )
 _register_unicanvas_model_module(ZImageUniCanvasModule("z_image", ("z-image", "zimage", "z_image_turbo"), Z_IMAGE_DEFAULTS))
 
@@ -1307,7 +1625,19 @@ def _pil_to_mask_image(image: Image.Image) -> Image.Image:
 
 
 def _image_tensor_to_pil(images: torch.Tensor) -> Image.Image:
-    image = images[0].detach().cpu().numpy()
+    image = images.detach().cpu().numpy()
+    while image.ndim > 3 and image.shape[0] == 1:
+        image = image[0]
+    if image.ndim == 4:
+        image = image[0]
+    if image.ndim == 3 and image.shape[0] in (1, 3, 4) and image.shape[-1] not in (1, 3, 4):
+        image = np.moveaxis(image, 0, -1)
+    if image.ndim == 2:
+        image = np.repeat(image[..., None], 3, axis=-1)
+    if image.ndim != 3 or image.shape[-1] not in (1, 3, 4):
+        raise ValueError(f"Unsupported image tensor shape for PIL conversion: {tuple(images.shape)}")
+    if image.shape[-1] == 1:
+        image = np.repeat(image, 3, axis=-1)
     image = np.clip(image * 255.0, 0, 255).astype(np.uint8)
     return Image.fromarray(image)
 
@@ -1684,6 +2014,8 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
     if settings.get("gguf_model_name"):
         return "gguf"
     generation_mode = str(settings.get("generation_mode", "illustrious")).lower()
+    if generation_mode in {"qwen_image_edit", "qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"}:
+        return "gguf"
     if generation_mode in {"anima", "flux_klein", "flux-klein", "klein", "z_image", "z-image", "zimage", "z_image_turbo"} or settings.get("diffusion_model_name"):
         return "diffusion_model"
     return "checkpoint"
@@ -1850,6 +2182,25 @@ def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, c
         with _MODEL_CACHE_LOCK:
             _LORA_CACHE[lora_name] = lora
     return comfy.sd.load_lora_for_models(model, clip, lora, strength, strength if clip_strength is None else clip_strength)
+
+
+def _load_model_patch_cached(patch_name: str):
+    if not patch_name:
+        raise ValueError("Model patch name is required")
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_PATCH_CACHE.get(patch_name)
+    if cached is not None:
+        return cached
+    loaded = _call_node_method(
+        ["ModelPatchLoader"],
+        ["load_model_patch"],
+        name=patch_name,
+    )
+    if loaded is None:
+        raise ValueError(f"Model patch not found or failed to load: {patch_name}")
+    with _MODEL_CACHE_LOCK:
+        _MODEL_PATCH_CACHE[patch_name] = loaded
+    return loaded
 
 
 def _apply_generation_loras(model: Any, clip: Any, gen_settings: dict[str, Any]):
@@ -2019,7 +2370,33 @@ def _prepare_masked_generation_latent(
     mask: torch.Tensor,
     grow_mask_by: int,
     draw_id: str = "unknown",
+    gen_settings: dict[str, Any] | None = None,
 ) -> tuple[Any, Any, dict[str, Any]]:
+    if model_module.key == "qwen_image_edit":
+        _uc_log(
+            draw_id,
+            "Qwen Image Edit masked latent uses prepared reference latent",
+            {"reason": "Qwen Image Edit 2511 edits from reference_latents instead of SDXL inpaint conditioning"},
+        )
+        return positive, negative, {"samples": torch.zeros([1, 16, max(1, image_tensor.shape[1] // 8), max(1, image_tensor.shape[2] // 8)], dtype=image_tensor.dtype)}
+
+    if model_module.key == "z_image" and bool((gen_settings or {}).get("fun_controlnet_inpaint", True)):
+        latent = model_module.create_empty_latent(
+            int(image_tensor.shape[2]),
+            int(image_tensor.shape[1]),
+            gen_settings or {},
+            draw_id=draw_id,
+        )
+        _uc_log(
+            draw_id,
+            "Z-image Fun ControlNet empty latent returned",
+            {
+                "reason": "Fun ControlNet workflow uses EmptySD3LatentImage; structure comes through model patch inputs",
+                "latent": _latent_debug(latent),
+            },
+        )
+        return positive, negative, latent
+
     if mode == "inpaint":
         positive, negative, native_latent = _prepare_inpaint_model_conditioning(
             positive=positive,
@@ -2325,6 +2702,7 @@ def _get_unicanvas_assets() -> dict[str, Any]:
         "gguf_models": _get_gguf_model_names(),
         "text_encoders": _safe_filename_list("text_encoders"),
         "vae_models": _safe_filename_list("vae"),
+        "model_patches": _safe_filename_list("model_patches"),
         "loras": _safe_filename_list("loras"),
         "samplers": samplers,
         "schedulers": schedulers,
@@ -2426,12 +2804,27 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
         model, clip, vae = _load_generation_assets(settings)
         model, clip = model_module.clone_assets(model, clip)
+        settings["_draw_id"] = draw_id
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
+            settings["_qwen_edit_vae"] = vae
         _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
         model, clip = _apply_generation_loras(model, clip, settings)
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
         _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
-        positive = _encode_generation_prompt(clip, positive_text, settings)
-        negative = _encode_generation_prompt(clip, negative_text, settings)
-        model_module.validate_conditioning(positive, negative, settings)
+        if model_module.key == "qwen_image_edit":
+            positive = []
+            negative = []
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit prompt encoding deferred",
+                {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+            )
+        else:
+            positive = _encode_generation_prompt(clip, positive_text, settings)
+            negative = _encode_generation_prompt(clip, negative_text, settings)
+            model_module.validate_conditioning(positive, negative, settings)
 
         mask = None
         mask_image = None
@@ -2458,6 +2851,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
                 mask = _pil_to_mask_tensor(denoise_mask_image)
+            if model_module.key == "qwen_image_edit":
+                settings["_qwen_edit_mask"] = mask
             mask_for_debug = _pil_to_mask_image(mask_image)
             _uc_log(
                 draw_id,
@@ -2495,6 +2890,20 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 "reference_tensor": _tensor_debug(reference_image_tensor),
             },
         )
+        if model_module.key == "z_image" and mode in {"inpaint", "outpaint"} and mask is not None:
+            settings["_z_image_fun_controlnet_image"] = image_tensor
+            settings["_z_image_fun_controlnet_mask"] = mask
+            settings["_z_image_fun_controlnet_vae"] = vae
+            _uc_log(
+                draw_id,
+                "Z-image Fun ControlNet inputs prepared",
+                {
+                    "mode": mode,
+                    "image": _tensor_debug(image_tensor),
+                    "mask": _tensor_debug(mask),
+                    "patch": settings.get("fun_controlnet_patch_name"),
+                },
+            )
         positive, negative = model_module.prepare_reference_conditioning(
             positive=positive,
             negative=negative,
@@ -2524,6 +2933,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 mask=mask,
                 grow_mask_by=grow_mask_by,
                 draw_id=draw_id,
+                gen_settings=settings,
             )
         else:
             latent = _encode_source_latent(vae, image_tensor, None, grow_mask_by, draw_id=draw_id)
