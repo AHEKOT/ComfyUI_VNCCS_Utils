@@ -157,6 +157,7 @@ const UNICANVAS_MODEL_MODULES = {
     aliases: ["illustrious"],
     label: "SDXL",
     base: "sdxl",
+    isEditModel: false,
     detect: ["sdxl", "illustrious", "pony", "xl"],
     defaults: {
       generation_mode: "sdxl",
@@ -171,6 +172,7 @@ const UNICANVAS_MODEL_MODULES = {
     aliases: [],
     label: "Anima",
     base: "anima",
+    isEditModel: false,
     detect: ["anima"],
     defaults: {
       generation_mode: "anima",
@@ -192,6 +194,7 @@ const UNICANVAS_MODEL_MODULES = {
     aliases: ["flux-klein", "klein"],
     label: "Flux Klein",
     base: "flux_klein",
+    isEditModel: true,
     detect: ["klein", "flux-2", "flux2"],
     defaults: {
       generation_mode: "flux_klein",
@@ -975,11 +978,15 @@ class UniCanvasWidget {
       this.recordInputHistory(target);
       this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
       this.syncDenoiseControls(target);
-      this.syncToNode();
     });
     this.denoiseControl.addEventListener("change", (e) => {
-      this.syncDenoiseControls();
-      this.clearInputHistoryMarker(e.target);
+      const target = e.target;
+      if (target instanceof HTMLInputElement && target.dataset.setting === "denoise") {
+        this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
+        this.syncDenoiseControls();
+        this.syncToNode();
+      }
+      this.clearInputHistoryMarker(target);
     });
     this.left.addEventListener("input", (e) => {
       const target = e.target;
@@ -3015,17 +3022,8 @@ class UniCanvasWidget {
       if (!layer.visible || layer.type !== "raster") continue;
       ctx.save();
       ctx.globalAlpha = 1;
-      ctx.drawImage(
-        layer.canvas,
-        this.bbox.x - this.origin.x,
-        this.bbox.y - this.origin.y,
-        Math.max(1, Math.round(this.bbox.width)),
-        Math.max(1, Math.round(this.bbox.height)),
-        0,
-        0,
-        out.width,
-        out.height
-      );
+      ctx.globalCompositeOperation = "source-over";
+      this.drawRasterLayerToWorldRect(ctx, layer, this.bbox, { x: 0, y: 0, width: out.width, height: out.height });
       ctx.restore();
     }
     return out;

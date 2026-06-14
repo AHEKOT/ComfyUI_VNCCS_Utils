@@ -56,6 +56,20 @@ _register_unicanvas_model_module(
 )
 ```
 
+For edit models, mark the module explicitly:
+
+```python
+_register_unicanvas_model_module(
+    MyEditModule("my_edit_model", (), MY_DEFAULTS, is_edit_model=True)
+)
+```
+
+This flag changes inpaint/outpaint behavior. Edit models use an InvokeAI-style
+masked-latent path: UniCanvas VAE-encodes the source image, attaches the denoise
+mask to the latent, and lets the sampler keep unmasked areas on the original
+latent trajectory. Non-edit modules keep the SDXL/Anima path with native inpaint
+conditioning and DifferentialDiffusion.
+
 If the model uses custom inference nodes, define a `UniCanvasPipeline`.
 
 ## Declarative Pipelines
@@ -111,9 +125,24 @@ asset list from `/vnccs/unicanvas/assets`.
 
 ## Inpaint And Outpaint
 
-UniCanvas currently gives modules a full source/reference image and handles
-masked paste-back after generation. This is the recommended first integration
-path for edit models.
+UniCanvas has two inpaint/outpaint strategies:
 
-If a model has native inpaint conditioning, override the module methods and keep
-the mask semantics local to that module.
+- Non-edit modules use SDXL/Anima-style inpaint conditioning. The source is
+  encoded with inpaint metadata, DifferentialDiffusion may be applied, and the
+  generated result is pasted back through the mask.
+- Edit modules (`is_edit_model=True`) use masked source latents. The source image
+  is VAE-encoded and a `noise_mask` is attached to the latent. This mirrors
+  InvokeAI's rectified-flow edit model flow, where denoise receives both init
+  latents and a denoise mask so unmasked regions remain anchored to the original
+  image.
+
+For edit-model outpaint, the masked/empty outpaint region is flattened to black
+for inference. Do not smear, stretch, or crop the reference automatically: the
+black region is intentional context for the edit model.
+
+Outpaint requests also append `outpaint black part of image` to the positive
+prompt at runtime. The UI prompt is not changed; the suffix only helps edit
+models understand that black/empty canvas regions are targets to extend.
+
+If a model has its own native masked edit implementation, override the module
+methods and keep those mask semantics local to that module.

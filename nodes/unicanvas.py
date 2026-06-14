@@ -32,6 +32,7 @@ _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
+OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
@@ -158,8 +159,15 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
             node="VAEEncode",
             methods=("encode",),
             inputs={"pixels": "$image_tensor", "vae": "$vae"},
-            output="reference_latent",
-            description="VAEEncode reference image",
+            output="reference_latent_a",
+            description="VAEEncode reference image A",
+        ),
+        UniCanvasNodeStep(
+            node="VAEEncode",
+            methods=("encode",),
+            inputs={"pixels": "$image_tensor", "vae": "$vae"},
+            output="reference_latent_b",
+            description="VAEEncode reference image B",
         ),
         UniCanvasNodeStep(
             node="ConditioningZeroOut",
@@ -171,16 +179,30 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
         UniCanvasNodeStep(
             node="ReferenceLatent",
             methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$positive", "latent": "$reference_latent"},
-            output="positive",
-            description="attach positive reference latent",
+            inputs={"conditioning": "$positive", "latent": "$reference_latent_a"},
+            output="positive_reference_a",
+            description="attach positive reference latent A",
         ),
         UniCanvasNodeStep(
             node="ReferenceLatent",
             methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$negative_base", "latent": "$reference_latent"},
+            inputs={"conditioning": "$negative_base", "latent": "$reference_latent_a"},
+            output="negative_reference_a",
+            description="attach negative reference latent A",
+        ),
+        UniCanvasNodeStep(
+            node="ReferenceLatent",
+            methods=("append", "reference", "encode"),
+            inputs={"conditioning": "$positive_reference_a", "latent": "$reference_latent_b"},
+            output="positive",
+            description="attach positive reference latent B",
+        ),
+        UniCanvasNodeStep(
+            node="ReferenceLatent",
+            methods=("append", "reference", "encode"),
+            inputs={"conditioning": "$negative_reference_a", "latent": "$reference_latent_b"},
             output="negative",
-            description="attach negative reference latent",
+            description="attach negative reference latent B",
         ),
     ),
     sample=(
@@ -250,9 +272,21 @@ class UniCanvasModelModule:
     key: str
     aliases: tuple[str, ...]
     defaults: dict[str, Any]
+    is_edit_model: bool = False
 
     def normalize_key(self, generation_mode: str) -> bool:
         return generation_mode == self.key or generation_mode in self.aliases
+
+    def uses_edit_masked_latents(self, mode: str) -> bool:
+        return self.is_edit_model and mode in {"inpaint", "outpaint"}
+
+    def uses_empty_sampler_latent(self, mode: str) -> bool:
+        return False
+
+    def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
+        if self.is_edit_model:
+            return _make_edit_outpaint_reference_rgb(source_rgba, draw_id)
+        return _infill_masked_rgb(source_rgba, mask_image, draw_id)
 
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         lora_stack = gen_settings.get("lora_stack") or []
@@ -417,6 +451,12 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
 class FluxKleinUniCanvasModule(UniCanvasModelModule):
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
 
+    def uses_edit_masked_latents(self, mode: str) -> bool:
+        return False
+
+    def uses_empty_sampler_latent(self, mode: str) -> bool:
+        return self.is_edit_model and mode in {"inpaint", "outpaint"}
+
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
         encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
         if isinstance(encoded, tuple) and encoded:
@@ -476,7 +516,8 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             draw_id,
             "Flux Klein reference conditioning prepared",
             {
-                "positive_reference": _latent_debug(context.get("reference_latent")),
+                "positive_reference_a": _latent_debug(context.get("reference_latent_a")),
+                "positive_reference_b": _latent_debug(context.get("reference_latent_b")),
                 "positive": _conditioning_debug(context.get("positive")),
                 "negative": _conditioning_debug(context.get("negative")),
             },
@@ -741,7 +782,9 @@ def _register_unicanvas_model_module(module: UniCanvasModelModule) -> None:
 
 _register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), ILLUSTRIOUS_DEFAULTS))
 _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
-_register_unicanvas_model_module(FluxKleinUniCanvasModule("flux_klein", ("flux-klein", "klein"), FLUX_KLEIN_DEFAULTS))
+_register_unicanvas_model_module(
+    FluxKleinUniCanvasModule("flux_klein", ("flux-klein", "klein"), FLUX_KLEIN_DEFAULTS, is_edit_model=True)
+)
 
 
 def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
@@ -1014,6 +1057,18 @@ def _number(value: Any, default: float) -> float:
     return default
 
 
+def _append_prompt_suffix(prompt: str, suffix: str) -> str:
+    prompt = str(prompt or "").strip()
+    suffix = str(suffix or "").strip()
+    if not suffix:
+        return prompt
+    if suffix.lower() in prompt.lower():
+        return prompt
+    if not prompt:
+        return suffix
+    return f"{prompt}, {suffix}"
+
+
 def _rect_from_state(value: Any, default: dict[str, float]) -> dict[str, float]:
     data = value if isinstance(value, dict) else {}
     return {
@@ -1208,44 +1263,49 @@ def _make_gradient_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_i
 
 def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
     rgba = source_rgba.convert("RGBA")
-    rgb = np.asarray(rgba.convert("RGB"), dtype=np.uint8).copy()
     alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
     mask = np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8)
-    # Invoke infill receives the RGBA initial image and fills only transparent
-    # pixels. User/inpaint masks are handled by the denoise mask, not by infill.
+    np_image = np.asarray(rgba, dtype=np.uint8)
+    height, width = alpha.shape
     valid = alpha > 8
 
     if not bool(valid.any()):
         _uc_log(draw_id, "outpaint infill fallback", {"reason": "no valid source pixels"})
         return Image.new("RGB", rgba.size, (127, 127, 127))
 
-    height, width = valid.shape
-    filled = rgb.copy()
-    valid_rows = np.flatnonzero(valid.any(axis=1))
-    for y in range(height):
-        row_valid = np.flatnonzero(valid[y])
-        if row_valid.size:
-            x = np.arange(width)
-            right_idx = np.searchsorted(row_valid, x, side="left")
-            left_idx = np.clip(right_idx - 1, 0, row_valid.size - 1)
-            right_idx = np.clip(right_idx, 0, row_valid.size - 1)
-            left_x = row_valid[left_idx]
-            right_x = row_valid[right_idx]
-            nearest_x = np.where(np.abs(x - left_x) <= np.abs(right_x - x), left_x, right_x)
-            filled[y] = rgb[y, nearest_x]
-        else:
-            nearest_row = valid_rows[np.argmin(np.abs(valid_rows - y))]
-            filled[y] = filled[nearest_row]
+    mean_color = np_image[valid, :3].mean(axis=0).astype(np.float32)
+    mean_tuple = tuple(np.round(mean_color).astype(np.uint8).tolist())
+    lowfreq = Image.new("RGB", rgba.size, mean_tuple)
+    lowfreq.paste(rgba.convert("RGB"), (0, 0), rgba.getchannel("A"))
+    blur_radius = max(24, int(round(max(width, height) / 18)))
+    lowfreq = lowfreq.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    lowfreq_width = max(8, int(round(width / 32)))
+    lowfreq_height = max(8, int(round(height / 32)))
+    lowfreq = lowfreq.resize((lowfreq_width, lowfreq_height), Image.Resampling.BICUBIC)
+    lowfreq = lowfreq.resize((width, height), Image.Resampling.BICUBIC)
+    filled = np.asarray(lowfreq, dtype=np.float32)
 
-    infilled = Image.fromarray(filled, mode="RGB").filter(ImageFilter.GaussianBlur(radius=2))
-    original = rgba.convert("RGB")
-    keep = Image.fromarray(valid.astype(np.uint8) * 255, mode="L")
-    result = Image.composite(original, infilled, keep)
+    rng = np.random.default_rng(0)
+    noise_layers = ((128, 16.0), (64, 10.0), (32, 5.0))
+    for noise_cell, noise_strength in noise_layers:
+        noise_width = max(1, int(math.ceil(width / noise_cell)))
+        noise_height = max(1, int(math.ceil(height / noise_cell)))
+        noise = rng.normal(0.0, noise_strength, size=(noise_height, noise_width, 3)).astype(np.float32)
+        noise_image = Image.fromarray(np.clip(127.5 + noise, 0, 255).astype(np.uint8), mode="RGB")
+        noise_image = noise_image.resize((width, height), Image.Resampling.BILINEAR)
+        filled += np.asarray(noise_image, dtype=np.float32) - 127.5
+
+    result = Image.fromarray(np.clip(filled, 0, 255).astype(np.uint8), mode="RGB")
+    result.paste(rgba, (0, 0), rgba.getchannel("A"))
     _uc_log(
         draw_id,
-        "outpaint source infilled",
+        "outpaint source infilled with low-frequency context noise",
         {
             "source_size": source_rgba.size,
+            "mean_color": [float(v) for v in mean_color],
+            "blur_radius": blur_radius,
+            "lowfreq_size": [lowfreq_width, lowfreq_height],
+            "noise_layers": [{"cell": cell, "strength": strength} for cell, strength in noise_layers],
             "mask": _tensor_debug(torch.from_numpy(mask.astype(np.float32) / 255.0)[None,]),
             "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
             "valid_source_pixels": int(valid.sum()),
@@ -1254,41 +1314,15 @@ def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_i
     return result
 
 
-def _make_flux_outpaint_reference_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
-    rgba_image = source_rgba.convert("RGBA")
-    rgba = np.asarray(rgba_image, dtype=np.float32) / 255.0
-    rgb = rgba[..., :3]
-    alpha = rgba[..., 3:4]
-    valid = alpha[..., 0] > 0.03
-    if not bool(valid.any()):
-        _uc_log(draw_id, "Flux Klein outpaint reference fallback", {"reason": "no valid source pixels"})
-        return Image.new("RGB", rgba_image.size, (0, 0, 0))
-
-    mean_color = rgb[valid].mean(axis=0)
-    premul = rgb * alpha
-    width, height = rgba_image.size
-    blur_radius = max(16, min(96, int(max(width, height) / 18)))
-    premul_img = Image.fromarray(np.clip(premul * 255.0, 0, 255).astype(np.uint8), mode="RGB")
-    alpha_img = Image.fromarray(np.clip(alpha[..., 0] * 255.0, 0, 255).astype(np.uint8), mode="L")
-    blurred_premul = np.asarray(premul_img.filter(ImageFilter.GaussianBlur(radius=blur_radius)), dtype=np.float32) / 255.0
-    blurred_alpha = np.asarray(alpha_img.filter(ImageFilter.GaussianBlur(radius=blur_radius)), dtype=np.float32)[..., None] / 255.0
-    fill = np.divide(
-        blurred_premul,
-        np.maximum(blurred_alpha, 1.0 / 255.0),
-        out=np.broadcast_to(mean_color, rgb.shape).copy(),
-        where=blurred_alpha > (1.0 / 255.0),
-    )
-    fill = np.clip(fill, 0.0, 1.0)
-    composite = rgb * alpha + fill * (1.0 - alpha)
-    result = Image.fromarray(np.clip(composite * 255.0, 0, 255).astype(np.uint8), mode="RGB")
+def _make_edit_outpaint_reference_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
+    rgba = source_rgba.convert("RGBA")
+    background = Image.new("RGBA", rgba.size, (0, 0, 0, 255))
+    background.alpha_composite(rgba)
+    result = background.convert("RGB")
     _uc_log(
         draw_id,
-        "Flux Klein outpaint reference smooth-filled",
-        {
-            "blur_radius": blur_radius,
-            "source_size": rgba_image.size,
-            "valid_source_pixels": int(valid.sum()),
-        },
+        "edit-model outpaint reference flattened on black",
+        {"source_size": rgba.size},
     )
     return result
 
@@ -1975,6 +2009,7 @@ def _get_unicanvas_assets() -> dict[str, Any]:
                 "key": module.key,
                 "aliases": list(module.aliases),
                 "defaults": module.defaults,
+                "is_edit_model": module.is_edit_model,
             }
             for module in {module.key: module for module in UNICANVAS_MODEL_MODULES.values()}.values()
         ],
@@ -2025,6 +2060,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     mask_blur = int(settings.get("mask_blur", 16))
     coherence_edge_size = int(settings.get("canvas_coherence_edge_size", 16))
     positive_text = str(settings.get("positive", ""))
+    if mode == "outpaint":
+        positive_text = _append_prompt_suffix(positive_text, OUTPAINT_PROMPT_SUFFIX)
     negative_text = str(settings.get("negative", ""))
     _uc_log(
         draw_id,
@@ -2052,6 +2089,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "grow_mask_by": grow_mask_by,
             "mask_blur": mask_blur,
             "canvas_coherence_edge_size": coherence_edge_size,
+            "outpaint_prompt_suffix": OUTPAINT_PROMPT_SUFFIX if mode == "outpaint" else None,
             "positive_len": len(positive_text),
             "negative_len": len(negative_text),
         },
@@ -2059,6 +2097,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
 
     source_rgba = _decode_data_url(str(payload.get("image") or ""), "RGBA")
     source = source_rgba.convert("RGB")
+    reference_source = source
     source_for_composite = source
     width, height = source.size
     source_empty = bool(payload.get("source_empty"))
@@ -2104,10 +2143,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                     mask_image, coherence_edge_size, draw_id
                 )
                 paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
-                if model_module.key == "flux_klein":
-                    source = _make_flux_outpaint_reference_rgb(source_rgba, draw_id)
-                else:
-                    source = _infill_masked_rgb(source_rgba, mask_image, draw_id)
+                source = model_module.prepare_outpaint_reference_image(source_rgba, mask_image, draw_id)
+                reference_source = source
                 source_for_composite = source_rgba.convert("RGB")
                 mask = _pil_to_mask_tensor(denoise_mask_image)
             else:
@@ -2129,29 +2166,44 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             source_debug = _save_temp_image(source, f"VNCCS_UniCanvas_{draw_id}_source")
             mask_debug = _save_temp_image(mask_for_debug, f"VNCCS_UniCanvas_{draw_id}_mask")
             paste_mask_debug = _save_temp_image(paste_mask_image, f"VNCCS_UniCanvas_{draw_id}_paste_mask") if paste_mask_image is not None else None
-            _uc_log(draw_id, "debug input images saved", {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug})
+            _uc_log(
+                draw_id,
+                "debug input images saved",
+                {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug},
+            )
         else:
             _uc_log(draw_id, "mask skipped", {"reason": f"mode is {mode}"})
-        if model_module.key == "flux_klein" and (mode == "txt2img" or source_empty):
+        if model_module.is_edit_model and (mode == "txt2img" or source_empty):
             source = Image.new("RGB", (width, height), (0, 0, 0))
+            reference_source = source
             source_for_composite = source
-            _uc_log(draw_id, "Flux Klein txt2img source replaced with black reference image", {"size": source.size})
+            _uc_log(draw_id, "edit-model txt2img source replaced with black reference image", {"size": source.size})
         image_tensor = _pil_to_image_tensor(source)
-        _uc_log(draw_id, "source prepared", {"size": source.size, "tensor": _tensor_debug(image_tensor)})
+        reference_image_tensor = _pil_to_image_tensor(reference_source)
+        _uc_log(
+            draw_id,
+            "source prepared",
+            {
+                "size": source.size,
+                "tensor": _tensor_debug(image_tensor),
+                "reference_size": reference_source.size,
+                "reference_tensor": _tensor_debug(reference_image_tensor),
+            },
+        )
         positive, negative = model_module.prepare_reference_conditioning(
             positive=positive,
             negative=negative,
             vae=vae,
-            image_tensor=image_tensor,
+            image_tensor=reference_image_tensor,
             gen_settings=settings,
             draw_id=draw_id,
         )
-        if model_module.key != "flux_klein" and mode in {"inpaint", "outpaint"} and mask is not None:
+        if not model_module.is_edit_model and mode in {"inpaint", "outpaint"} and mask is not None:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
-        if mode == "txt2img" or (source_empty and mask is None):
+        if mode == "txt2img" or (source_empty and mask is None) or model_module.uses_empty_sampler_latent(mode):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
-        elif model_module.key != "flux_klein" and mode in {"inpaint", "outpaint"} and mask is not None:
+        elif not model_module.uses_edit_masked_latents(mode) and mode in {"inpaint", "outpaint"} and mask is not None:
             positive, negative, latent = _prepare_inpaint_model_conditioning(
                 positive=positive,
                 negative=negative,
