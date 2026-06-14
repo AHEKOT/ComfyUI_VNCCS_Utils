@@ -50,11 +50,11 @@ ANIMA_DEFAULTS = {
     "clip_name": "qwen_3_06b_base.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
     "clip_type": "stable_diffusion",
-    "sampler": "er_sde",
-    "sampler_name": "er_sde",
+    "sampler": "euler",
+    "sampler_name": "euler",
     "scheduler": "simple",
     "steps": 30,
-    "cfg": 4.0,
+    "cfg": 4.5,
     "turbo_enabled": False,
     "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
     "dmd_lora_strength": 1.0,
@@ -272,7 +272,13 @@ class UniCanvasModelModule:
         return generation_mode == self.key or generation_mode in self.aliases
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
-        return self.is_edit_model and mode in {"inpaint", "outpaint"}
+        return mode in {"inpaint", "outpaint"}
+
+    def uses_differential_diffusion(self, mode: str) -> bool:
+        return mode in {"inpaint", "outpaint"}
+
+    def outpaint_prompt_suffix(self) -> str:
+        return OUTPAINT_PROMPT_SUFFIX if self.is_edit_model else ""
 
     def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
         if self.is_edit_model:
@@ -376,6 +382,9 @@ class SDXLUniCanvasModule(UniCanvasModelModule):
 
 @dataclass(frozen=True)
 class AnimaUniCanvasModule(UniCanvasModelModule):
+    def uses_differential_diffusion(self, mode: str) -> bool:
+        return False
+
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         if gen_settings.get("turbo_enabled"):
             model, clip = _apply_lora_cached(
@@ -2278,8 +2287,10 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     mask_blur = int(settings.get("mask_blur", 16))
     coherence_edge_size = int(settings.get("canvas_coherence_edge_size", 16))
     positive_text = str(settings.get("positive", ""))
-    if mode == "outpaint":
-        positive_text = _append_prompt_suffix(positive_text, OUTPAINT_PROMPT_SUFFIX)
+    model_module = _get_unicanvas_model_module(str(settings.get("generation_mode", "illustrious")).lower())
+    outpaint_prompt_suffix = model_module.outpaint_prompt_suffix() if mode == "outpaint" else ""
+    if outpaint_prompt_suffix:
+        positive_text = _append_prompt_suffix(positive_text, outpaint_prompt_suffix)
     negative_text = str(settings.get("negative", ""))
     _uc_log(
         draw_id,
@@ -2311,7 +2322,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "grow_mask_by": grow_mask_by,
             "mask_blur": mask_blur,
             "canvas_coherence_edge_size": coherence_edge_size,
-            "outpaint_prompt_suffix": OUTPAINT_PROMPT_SUFFIX if mode == "outpaint" else None,
+            "outpaint_prompt_suffix": outpaint_prompt_suffix or None,
             "positive_len": len(positive_text),
             "negative_len": len(negative_text),
         },
@@ -2339,7 +2350,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("output_size is too large")
 
     with torch.inference_mode():
-        model_module = _get_unicanvas_model_module(str(settings.get("generation_mode", "illustrious")).lower())
         _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
         model, clip, vae = _load_generation_assets(settings)
         model, clip = model_module.clone_assets(model, clip)
@@ -2420,7 +2430,12 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             gen_settings=settings,
             draw_id=draw_id,
         )
-        if not model_module.is_edit_model and mode in {"inpaint", "outpaint"} and mask is not None:
+        if (
+            not model_module.is_edit_model
+            and model_module.uses_differential_diffusion(mode)
+            and mode in {"inpaint", "outpaint"}
+            and mask is not None
+        ):
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
         if mode == "txt2img" or (source_empty and mask is None):
