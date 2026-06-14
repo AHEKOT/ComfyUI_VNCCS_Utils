@@ -79,6 +79,8 @@ const STYLES = `
 .vnccs-uc-tools svg { width:36px; height:36px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-tools svg .fill { fill:currentColor; stroke:none; }
 .vnccs-uc-btn:hover, .vnccs-uc-icon:hover { background:var(--uc-hover); border-color:rgba(255,255,255,.16); }
+.vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled { opacity:.38; cursor:not-allowed; }
+.vnccs-uc-btn:disabled:hover, .vnccs-uc-icon:disabled:hover { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
 .vnccs-uc-btn.danger { color:#ffdce1; border-color:rgba(255,71,87,.35); }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
@@ -138,6 +140,7 @@ const ZOOM_DRAG_PIXELS_PER_DOUBLING = 240;
 const MAX_LAYER_CANVAS_SIDE = 8192;
 const MAX_LAYER_CANVAS_PIXELS = 32 * 1024 * 1024;
 const STATE_UPLOAD_DEBOUNCE_MS = 1200;
+const HISTORY_LIMIT = 20;
 const TOOL_ICONS = {
   move: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg>`,
   brush: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 19 10"/><path d="M4 20c3 0 5-1 6.5-2.5L19 9a2.8 2.8 0 0 0-4-4l-8.5 8.5C5 15 4 17 4 20Z"/><path d="M6.5 13.5 10.5 17.5"/></svg>`,
@@ -157,6 +160,8 @@ const UI_ICONS = {
   lock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>`,
   unlock: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 7.2-2.4"/></svg>`,
   trash: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></svg>`,
+  undo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`,
+  redo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>`,
 };
 const STAGING_ICONS = {
   discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
@@ -209,6 +214,9 @@ class UniCanvasWidget {
     this.drawProgressTimer = null;
     this.renderQueued = false;
     this.deferredCanvasCommitTimer = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.historyRestoring = false;
     this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = {
@@ -342,6 +350,8 @@ class UniCanvasWidget {
     this.promptBox = document.createElement("div");
     this.promptBox.className = "vnccs-uc-stack";
     this.promptBox.innerHTML = `
+      <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
+      <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">
         <option value="illustrious">SDXL checkpoint</option>
         <option value="anima">Anima</option>
@@ -351,8 +361,6 @@ class UniCanvasWidget {
       <label class="vnccs-uc-field">Diffusion<select class="vnccs-uc-select" data-setting="diffusion_model_name"></select></label>
       <label class="vnccs-uc-field">CLIP<select class="vnccs-uc-select" data-setting="clip_name"></select></label>
       <label class="vnccs-uc-field">VAE<select class="vnccs-uc-select" data-setting="vae_name"></select></label>
-      <label class="vnccs-uc-field">Positive<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
-      <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
       <div class="vnccs-uc-mini-grid">
         <label class="vnccs-uc-field">Seed<input class="vnccs-uc-input" data-setting="seed" type="number"></label>
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
@@ -395,8 +403,11 @@ class UniCanvasWidget {
 
     this.settingsBar = document.createElement("div");
     this.settingsBar.className = "vnccs-uc-settings";
-    this.settingsBar.innerHTML = `
-      <button class="vnccs-uc-btn" data-action="fit">Fit</button>`;
+    this.undoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undo(), "Undo");
+    this.redoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo");
+    this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.centerBbox(), "Fit");
+    this.settingsBar.append(this.undoBtn, this.redoBtn, this.fitBtn);
+    this.updateHistoryButtons();
     this.fileInput = document.createElement("input");
     this.fileInput.className = "vnccs-uc-file";
     this.fileInput.type = "file";
@@ -568,7 +579,8 @@ class UniCanvasWidget {
     this.activeLayerId = this.layers[0].id;
   }
 
-  addLayer(type = "raster", name = null) {
+  addLayer(type = "raster", name = null, recordHistory = true) {
+    if (recordHistory) this.recordHistoryBefore();
     const layer = {
       id: uid(),
       name: name || this.getNextLayerName(type),
@@ -724,6 +736,7 @@ class UniCanvasWidget {
       const target = e.target;
       const layer = this.activeLayer;
       if (!layer || !(target instanceof HTMLInputElement || target instanceof HTMLSelectElement)) return;
+      this.recordInputHistory(target);
       if (target.dataset.layerControl === "blendMode") layer.blendMode = target.value || "source-over";
       if (target.dataset.layerControl === "opacity") {
         layer.opacity = Number(target.value);
@@ -736,37 +749,42 @@ class UniCanvasWidget {
     };
     this.layerSubhead.addEventListener("input", onLayerSubheadChange);
     this.layerSubhead.addEventListener("change", onLayerSubheadChange);
+    this.layerSubhead.addEventListener("change", (e) => this.clearInputHistoryMarker(e.target));
 
     this.toolSettings.addEventListener("input", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement)) return;
+      this.recordInputHistory(target);
       if (target.dataset.control === "brushSize") this.brushSize = Number(target.value);
       if (target.dataset.control === "fg") this.fg = target.value;
       if (target.dataset.control === "opacity") this.opacity = Number(target.value);
       this.render();
     });
-    this.settingsBar.addEventListener("click", (e) => {
-      const action = e.target?.dataset?.action;
-      if (action === "fit") this.fitView();
-    });
+    this.toolSettings.addEventListener("change", (e) => this.clearInputHistoryMarker(e.target));
     this.fileInput.addEventListener("change", () => this.importFile(this.fileInput.files?.[0]));
     this.denoiseControl.addEventListener("input", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement) || target.dataset.setting !== "denoise") return;
+      this.recordInputHistory(target);
       this.settings.denoise = Math.max(0, Math.min(1, this.parseNumericInput(target, this.settings.denoise)));
       this.syncDenoiseControls(target);
       this.syncToNode();
     });
-    this.denoiseControl.addEventListener("change", () => this.syncDenoiseControls());
+    this.denoiseControl.addEventListener("change", (e) => {
+      this.syncDenoiseControls();
+      this.clearInputHistoryMarker(e.target);
+    });
     this.left.addEventListener("input", (e) => {
       const target = e.target;
       const key = target?.dataset?.setting;
       if (!key) return;
+      this.recordInputHistory(target);
       this.settings[key] = target.type === "number" ? this.parseNumericInput(target, this.settings[key]) : target.value;
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
       if (key === "inference_scale") this.syncInferenceControls();
       this.syncToNode();
     });
+    this.left.addEventListener("change", (e) => this.clearInputHistoryMarker(e.target));
     this.setTool(this.tool);
   }
 
@@ -990,20 +1008,25 @@ class UniCanvasWidget {
       }
       const bboxHandle = this.hitBboxHandle(point);
       if (bboxHandle) {
+        this.recordHistoryBefore();
         this.pointerMode = "bbox-resize";
         this.dragStart.bboxHandle = bboxHandle;
       } else if (this.isPointInBbox(point)) {
+        this.recordHistoryBefore();
         this.pointerMode = "bbox-move";
       } else {
         this.pointerMode = "idle";
       }
     } else if (this.pointerMode === "rect") {
+      this.recordHistoryBefore();
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.shapeDraft = this.getRectToolRect(point, point, e);
     } else if (this.pointerMode === "lasso") {
+      this.recordHistoryBefore();
       this.shapeComposite = e.ctrlKey || e.metaKey ? "destination-out" : "source-over";
       this.lassoPoints = [point];
     } else if (this.pointerMode === "move" && !e.altKey && this.activeLayer && !this.activeLayer.locked) {
+      this.recordHistoryBefore();
       this.pointerMode = "layer-move";
       this.dragStart.layerCanvas = this.cloneCanvas(this.activeLayer.canvas);
       this.dragStart.hiresRect = this.activeLayer.hiresRect ? { ...this.activeLayer.hiresRect } : null;
@@ -1011,6 +1034,7 @@ class UniCanvasWidget {
       this.dragStart.layerBounds = this.getCanvasAlphaBounds(this.dragStart.layerCanvas);
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
+      this.recordHistoryBefore();
       this.cancelDeferredCanvasCommit();
       const lastToolPoint = this.lastDrawPointByTool[this.pointerMode];
       if (e.shiftKey && lastToolPoint) {
@@ -1152,6 +1176,7 @@ class UniCanvasWidget {
     if (!layer || layer.locked || !rect || rect.width <= 0 || rect.height <= 0) return;
     if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, 128)) return;
     if (!this.ensureWorldBounds(rect.x, rect.y, 128)) return;
+    this.materializeRasterLayerForEditing(layer);
     const ctx = layer.canvas.getContext("2d");
     ctx.save();
     ctx.globalAlpha = this.opacity;
@@ -1203,6 +1228,133 @@ class UniCanvasWidget {
     copy.height = canvas.height;
     this.configureImageContext(copy.getContext("2d")).drawImage(canvas, 0, 0);
     return copy;
+  }
+
+  materializeRasterLayerForEditing(layer) {
+    if (!layer || layer.type !== "raster" || !layer.hiresCanvas || !layer.hiresRect) return;
+    const ctx = this.configureImageContext(layer.canvas.getContext("2d"), true);
+    const rect = layer.hiresRect;
+    ctx.clearRect(rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
+    ctx.drawImage(layer.hiresCanvas, rect.x - this.origin.x, rect.y - this.origin.y, rect.width, rect.height);
+    layer.hiresCanvas = null;
+    layer.hiresRect = null;
+    this.invalidateLayerCaches(layer);
+  }
+
+  cloneHistoryLayer(layer) {
+    const clone = {
+      id: layer.id,
+      name: layer.name,
+      type: layer.type,
+      visible: layer.visible,
+      locked: layer.locked,
+      opacity: layer.opacity,
+      blendMode: layer.blendMode || "source-over",
+      canvas: this.cloneCanvas(layer.canvas),
+    };
+    if (layer.hiresCanvas && layer.hiresRect) {
+      clone.hiresCanvas = this.cloneCanvas(layer.hiresCanvas);
+      clone.hiresRect = { ...layer.hiresRect };
+    }
+    this.invalidateLayerCaches(clone);
+    return clone;
+  }
+
+  cloneHistoryStagingItem(item) {
+    return {
+      ...item,
+      maskCanvas: item.maskCanvas ? this.cloneCanvas(item.maskCanvas) : null,
+      userMaskCanvas: item.userMaskCanvas ? this.cloneCanvas(item.userMaskCanvas) : null,
+      resultMaskCanvas: item.resultMaskCanvas ? this.cloneCanvas(item.resultMaskCanvas) : null,
+      _maskedCanvas: null,
+      _maskedSource: null,
+      _maskedMask: null,
+    };
+  }
+
+  createHistorySnapshot() {
+    return {
+      origin: { ...this.origin },
+      size: { ...this.size },
+      bbox: { ...this.bbox },
+      tool: this.tool,
+      brushSize: this.brushSize,
+      opacity: this.opacity,
+      fg: this.fg,
+      settings: JSON.parse(JSON.stringify(this.settings)),
+      activeLayerId: this.activeLayerId,
+      layers: this.layers.map((layer) => this.cloneHistoryLayer(layer)),
+      stagingItems: this.stagingItems.map((item) => this.cloneHistoryStagingItem(item)),
+      activeStagingIndex: this.activeStagingIndex,
+    };
+  }
+
+  restoreHistorySnapshot(snapshot) {
+    if (!snapshot) return;
+    this.cancelDeferredCanvasCommit();
+    this.historyRestoring = true;
+    this.origin = { ...snapshot.origin };
+    this.size = { ...snapshot.size };
+    this.bbox = { ...snapshot.bbox };
+    this.tool = snapshot.tool || this.tool;
+    this.brushSize = Number.isFinite(snapshot.brushSize) ? snapshot.brushSize : this.brushSize;
+    this.opacity = Number.isFinite(snapshot.opacity) ? snapshot.opacity : this.opacity;
+    this.fg = snapshot.fg || this.fg;
+    this.settings = JSON.parse(JSON.stringify(snapshot.settings || this.settings));
+    this.layers = snapshot.layers.map((layer) => this.cloneHistoryLayer(layer));
+    this.activeLayerId = snapshot.activeLayerId || this.layers[0]?.id || null;
+    this.stagingItems = (snapshot.stagingItems || []).map((item) => this.cloneHistoryStagingItem(item));
+    this.activeStagingIndex = Math.max(-1, Math.min(snapshot.activeStagingIndex ?? -1, this.stagingItems.length - 1));
+    this.historyRestoring = false;
+    this.setTool(this.tool);
+    this.syncPromptControls();
+    this.syncActiveLayerControls();
+    this.renderLayerList();
+    this.render();
+    this.syncToNode();
+  }
+
+  recordHistoryBefore() {
+    if (this._isRestoring || this.historyRestoring) return;
+    this.undoStack.push(this.createHistorySnapshot());
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+    this.updateHistoryButtons();
+  }
+
+  undo() {
+    if (!this.undoStack.length) return;
+    const previous = this.undoStack.pop();
+    this.redoStack.push(this.createHistorySnapshot());
+    if (this.redoStack.length > HISTORY_LIMIT) this.redoStack.shift();
+    this.restoreHistorySnapshot(previous);
+    this.updateHistoryButtons();
+    this.setStatus("Undo");
+  }
+
+  redo() {
+    if (!this.redoStack.length) return;
+    const next = this.redoStack.pop();
+    this.undoStack.push(this.createHistorySnapshot());
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.restoreHistorySnapshot(next);
+    this.updateHistoryButtons();
+    this.setStatus("Redo");
+  }
+
+  updateHistoryButtons() {
+    if (this.undoBtn) this.undoBtn.disabled = !this.undoStack.length;
+    if (this.redoBtn) this.redoBtn.disabled = !this.redoStack.length;
+  }
+
+  recordInputHistory(target) {
+    if (!target || target._vnccsHistoryRecorded) return;
+    this.recordHistoryBefore();
+    target._vnccsHistoryRecorded = true;
+  }
+
+  clearInputHistoryMarker(target) {
+    if (target) target._vnccsHistoryRecorded = false;
   }
 
   moveActiveLayerPixels(dx, dy) {
@@ -1426,6 +1578,7 @@ class UniCanvasWidget {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
     if (!this.ensureWorldBounds(b.x, b.y, this.brushSize * 2)) return;
+    this.materializeRasterLayerForEditing(layer);
     const start = this.alignCoordForTool(a, this.brushSize);
     const end = this.alignCoordForTool(b, this.brushSize);
     const strokeBounds = this.getStrokeCanvasBounds(layer, start, end, this.brushSize);
@@ -1465,7 +1618,7 @@ class UniCanvasWidget {
 
   getOrCreateMaskLayer() {
     let layer = this.activeLayer?.type === "mask" ? this.activeLayer : this.layers.find((l) => l.type === "mask");
-    if (!layer) layer = this.addLayer("mask");
+    if (!layer) layer = this.addLayer("mask", null, false);
     return layer;
   }
 
@@ -1923,6 +2076,7 @@ class UniCanvasWidget {
         e.stopPropagation();
         const next = await this.promptInWidget("Rename Layer", "Layer name", layer.name);
         if (next !== null) {
+          this.recordHistoryBefore();
           layer.name = String(next).trim() || layer.name;
           this.renderLayerList();
           this.syncToNode();
@@ -1930,13 +2084,14 @@ class UniCanvasWidget {
       });
       thumb.addEventListener("click", (e) => {
         e.stopPropagation();
+        this.recordHistoryBefore();
         layer.visible = !layer.visible;
         this.renderLayerList();
         this.render();
         this.syncToNode();
         void this.flushStateUpload(false);
       });
-      lock.addEventListener("click", (e) => { e.stopPropagation(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
+      lock.addEventListener("click", (e) => { e.stopPropagation(); this.recordHistoryBefore(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
       del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
       this.layerList.append(row);
     }
@@ -1974,6 +2129,7 @@ class UniCanvasWidget {
     const from = this.layers.findIndex((l) => l.id === sourceId);
     const target = this.layers.findIndex((l) => l.id === targetId);
     if (from < 0 || target < 0) return;
+    this.recordHistoryBefore();
     const [layer] = this.layers.splice(from, 1);
     let to = this.layers.findIndex((l) => l.id === targetId);
     if (placement === "after") to += 1;
@@ -2069,6 +2225,7 @@ class UniCanvasWidget {
 
   deleteLayer(id) {
     if (this.layers.length <= 1) return;
+    this.recordHistoryBefore();
     this.layers = this.layers.filter((l) => l.id !== id);
     if (this.activeLayerId === id) this.activeLayerId = this.layers[0]?.id || null;
     this.renderLayerList();
@@ -2079,6 +2236,7 @@ class UniCanvasWidget {
   duplicateActiveLayer() {
     const layer = this.activeLayer;
     if (!layer) return;
+    this.recordHistoryBefore();
     const copy = {
       id: uid(),
       name: `${layer.name} Copy`,
@@ -2108,6 +2266,7 @@ class UniCanvasWidget {
     if (index < 0) return;
     const nextIndex = Math.max(0, Math.min(this.layers.length - 1, index + direction));
     if (nextIndex === index) return;
+    this.recordHistoryBefore();
     const [layer] = this.layers.splice(index, 1);
     this.layers.splice(nextIndex, 0, layer);
     this.renderLayerList();
@@ -2130,6 +2289,7 @@ class UniCanvasWidget {
   }
 
   flattenLayersToMaster() {
+    this.recordHistoryBefore();
     const master = {
       id: uid(),
       name: "Master Layer",
@@ -2166,10 +2326,11 @@ class UniCanvasWidget {
 
   async importFile(file) {
     if (!file) return;
+    this.recordHistoryBefore();
     const img = await this.loadImage(URL.createObjectURL(file));
     if (!this.ensureWorldBounds(this.bbox.x + img.width, this.bbox.y + img.height, 128)) return;
     if (!this.ensureWorldBounds(this.bbox.x, this.bbox.y, 128)) return;
-    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""));
+    const layer = this.addLayer("raster", file.name.replace(/\.[^.]+$/, ""), false);
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     ctx.drawImage(img, this.bbox.x - this.origin.x, this.bbox.y - this.origin.y);
     this.invalidateLayerCaches(layer);
@@ -2268,7 +2429,7 @@ class UniCanvasWidget {
     ctx.putImageData(imageData, 0, 0);
   }
 
-  makeAlphaMaskCanvasFromImage(img, width, height) {
+  makeAlphaMaskCanvasFromImage(img, width, height, options = {}) {
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(width));
     canvas.height = Math.max(1, Math.round(height));
@@ -2279,13 +2440,81 @@ class UniCanvasWidget {
     for (let i = 0; i < data.length; i += 4) {
       const alpha = data[i + 3];
       const luminance = Math.max(data[i], data[i + 1], data[i + 2]);
+      const maskAlpha = alpha < 255 ? alpha : luminance;
       data[i] = 255;
       data[i + 1] = 255;
       data[i + 2] = 255;
-      data[i + 3] = alpha < 255 ? alpha : luminance;
+      data[i + 3] = maskAlpha > 8 ? maskAlpha : 0;
     }
     ctx.putImageData(imageData, 0, 0);
+    if (options.clearEdgeConnected) this.clearEdgeConnectedMaskAlpha(canvas, options.preserveCanvas || null);
     return canvas;
+  }
+
+  clearEdgeConnectedMaskAlpha(canvas, preserveCanvas = null) {
+    const ctx = canvas.getContext("2d");
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data, width, height } = imageData;
+    const total = width * height;
+    const visited = new Uint8Array(total);
+    let preserveData = null;
+    if (preserveCanvas) {
+      const preserve = document.createElement("canvas");
+      preserve.width = width;
+      preserve.height = height;
+      const preserveCtx = this.configureImageContext(preserve.getContext("2d"));
+      preserveCtx.drawImage(preserveCanvas, 0, 0, width, height);
+      preserveData = preserveCtx.getImageData(0, 0, width, height).data;
+    }
+    const seeds = [];
+    const alphaAt = (index) => data[index * 4 + 3];
+    const preserveAlphaAt = (index) => preserveData ? preserveData[index * 4 + 3] : 0;
+    const pushSeed = (x, y) => {
+      if (x < 0 || y < 0 || x >= width || y >= height) return;
+      const index = y * width + x;
+      if (alphaAt(index) > 8) seeds.push(index);
+    };
+
+    for (let x = 0; x < width; x += 1) {
+      pushSeed(x, 0);
+      pushSeed(x, height - 1);
+    }
+    for (let y = 1; y < height - 1; y += 1) {
+      pushSeed(0, y);
+      pushSeed(width - 1, y);
+    }
+
+    while (seeds.length) {
+      const component = [];
+      let hasPreservedPixels = false;
+      const start = seeds.pop();
+      if (visited[start] || alphaAt(start) <= 8) continue;
+      visited[start] = 1;
+      const componentStack = [start];
+      while (componentStack.length) {
+        const index = componentStack.pop();
+        component.push(index);
+        if (preserveAlphaAt(index) > 8) hasPreservedPixels = true;
+        const x = index % width;
+        const y = Math.floor(index / width);
+        const pushNeighbor = (nx, ny) => {
+          if (nx < 0 || ny < 0 || nx >= width || ny >= height) return;
+          const next = ny * width + nx;
+          if (visited[next] || alphaAt(next) <= 8) return;
+          visited[next] = 1;
+          componentStack.push(next);
+        };
+        pushNeighbor(x + 1, y);
+        pushNeighbor(x - 1, y);
+        pushNeighbor(x, y + 1);
+        pushNeighbor(x, y - 1);
+      }
+      if (!hasPreservedPixels) {
+        for (const index of component) data[index * 4 + 3] = 0;
+      }
+    }
+
+    ctx.putImageData(imageData, 0, 0);
   }
 
   sanitizeMaskLayer(layer) {
@@ -2465,9 +2694,13 @@ class UniCanvasWidget {
       if (data.mask) {
         const maskUrl = this.imageResultToURL(data.mask);
         const maskImg = await this.loadImage(maskUrl);
-        resultMaskCanvas = this.makeAlphaMaskCanvasFromImage(maskImg, outputSize.width, outputSize.height);
+        resultMaskCanvas = this.makeAlphaMaskCanvasFromImage(maskImg, outputSize.width, outputSize.height, {
+          clearEdgeConnected: mode === "inpaint",
+          preserveCanvas: stagingMaskCanvas,
+        });
       }
       const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
+      this.recordHistoryBefore();
       this.addStagingItem({
         url,
         bbox: { ...requestBbox },
@@ -2510,11 +2743,12 @@ class UniCanvasWidget {
   async acceptStaging() {
     const staging = this.activeStaging;
     if (!staging) return;
+    this.recordHistoryBefore();
     const img = staging.img || await this.loadImage(staging.url);
     const placement = this.getStagingImageRect();
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
-    const layer = this.addLayer("raster");
+    const layer = this.addLayer("raster", null, false);
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     const hiresWidth = Math.max(1, img.naturalWidth || img.width || placement.width);
     const hiresHeight = Math.max(1, img.naturalHeight || img.height || placement.height);
@@ -2532,6 +2766,7 @@ class UniCanvasWidget {
   }
 
   discardStaging() {
+    this.recordHistoryBefore();
     this.removeActiveStagingItem();
     this.render();
     this.setStatus(this.stagingItems.length ? `Staging discarded (${this.stagingItems.length} left)` : "Staging discarded");
@@ -2540,6 +2775,7 @@ class UniCanvasWidget {
   toggleStagingVisibility() {
     const staging = this.activeStaging;
     if (!staging) return;
+    this.recordHistoryBefore();
     staging.visible = staging.visible === false;
     this.render();
   }
