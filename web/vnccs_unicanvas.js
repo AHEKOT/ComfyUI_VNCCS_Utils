@@ -209,6 +209,27 @@ const UNICANVAS_MODEL_MODULES = {
       cfg: 1,
     },
   },
+  z_image: {
+    key: "z_image",
+    aliases: ["z-image", "zimage", "z_image_turbo"],
+    label: "Z-image",
+    base: "z_image",
+    isEditModel: false,
+    detect: ["z_image", "z-image", "zimage", "z_image_turbo"],
+    defaults: {
+      generation_mode: "z_image",
+      model_loader: "diffusion_model",
+      diffusion_model_name: "z_image_turbo_bf16.safetensors",
+      clip_name: "qwen_3_4b.safetensors",
+      vae_name: "ae.safetensors",
+      clip_type: "lumina2",
+      sampler_name: "res_multistep",
+      scheduler: "simple",
+      steps: 8,
+      cfg: 1,
+      aura_flow_shift: 3,
+    },
+  },
 };
 const UNICANVAS_MODEL_LOADERS = {
   checkpoint: {
@@ -1076,7 +1097,11 @@ class UniCanvasWidget {
   applyInferenceModuleDefaults(mode) {
     const module = getUniCanvasModelModule(mode);
     const preserved = {};
-    for (const key of MODEL_SELECTION_SETTINGS) preserved[key] = this.settings[key];
+    for (const key of MODEL_SELECTION_SETTINGS) {
+      if (!Object.prototype.hasOwnProperty.call(module.defaults, key) || module.defaults[key] === "") {
+        preserved[key] = this.settings[key];
+      }
+    }
     this.settings = { ...this.settings, ...module.defaults, ...preserved, generation_mode: module.key };
     return module;
   }

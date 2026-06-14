@@ -75,6 +75,21 @@ FLUX_KLEIN_DEFAULTS = {
     "cfg": 1.0,
 }
 
+Z_IMAGE_DEFAULTS = {
+    "generation_mode": "z_image",
+    "model_loader": "diffusion_model",
+    "diffusion_model_name": "z_image_turbo_bf16.safetensors",
+    "clip_name": "qwen_3_4b.safetensors",
+    "vae_name": "ae.safetensors",
+    "clip_type": "lumina2",
+    "sampler": "res_multistep",
+    "sampler_name": "res_multistep",
+    "scheduler": "simple",
+    "steps": 8,
+    "cfg": 1.0,
+    "aura_flow_shift": 3.0,
+}
+
 
 @dataclass(frozen=True)
 class UniCanvasNodeStep:
@@ -159,15 +174,8 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
             node="VAEEncode",
             methods=("encode",),
             inputs={"pixels": "$image_tensor", "vae": "$vae"},
-            output="reference_latent_a",
-            description="VAEEncode reference image A",
-        ),
-        UniCanvasNodeStep(
-            node="VAEEncode",
-            methods=("encode",),
-            inputs={"pixels": "$image_tensor", "vae": "$vae"},
-            output="reference_latent_b",
-            description="VAEEncode reference image B",
+            output="reference_latent",
+            description="VAEEncode reference image",
         ),
         UniCanvasNodeStep(
             node="ConditioningZeroOut",
@@ -179,30 +187,16 @@ FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
         UniCanvasNodeStep(
             node="ReferenceLatent",
             methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$positive", "latent": "$reference_latent_a"},
-            output="positive_reference_a",
-            description="attach positive reference latent A",
-        ),
-        UniCanvasNodeStep(
-            node="ReferenceLatent",
-            methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$negative_base", "latent": "$reference_latent_a"},
-            output="negative_reference_a",
-            description="attach negative reference latent A",
-        ),
-        UniCanvasNodeStep(
-            node="ReferenceLatent",
-            methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$positive_reference_a", "latent": "$reference_latent_b"},
+            inputs={"conditioning": "$positive", "latent": "$reference_latent"},
             output="positive",
-            description="attach positive reference latent B",
+            description="attach positive reference latent",
         ),
         UniCanvasNodeStep(
             node="ReferenceLatent",
             methods=("append", "reference", "encode"),
-            inputs={"conditioning": "$negative_reference_a", "latent": "$reference_latent_b"},
+            inputs={"conditioning": "$negative_base", "latent": "$reference_latent"},
             output="negative",
-            description="attach negative reference latent B",
+            description="attach negative reference latent",
         ),
     ),
     sample=(
@@ -280,9 +274,6 @@ class UniCanvasModelModule:
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return self.is_edit_model and mode in {"inpaint", "outpaint"}
 
-    def uses_empty_sampler_latent(self, mode: str) -> bool:
-        return False
-
     def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
         if self.is_edit_model:
             return _make_edit_outpaint_reference_rgb(source_rgba, draw_id)
@@ -313,6 +304,9 @@ class UniCanvasModelModule:
 
     def validate_conditioning(self, _positive: Any, _negative: Any, _gen_settings: dict[str, Any]) -> None:
         return None
+
+    def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
+        return _clone_model_clip(model, clip)
 
     def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
         import nodes
@@ -451,12 +445,6 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
 class FluxKleinUniCanvasModule(UniCanvasModelModule):
     pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
 
-    def uses_edit_masked_latents(self, mode: str) -> bool:
-        return False
-
-    def uses_empty_sampler_latent(self, mode: str) -> bool:
-        return self.is_edit_model and mode in {"inpaint", "outpaint"}
-
     def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
         encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
         if isinstance(encoded, tuple) and encoded:
@@ -516,8 +504,7 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             draw_id,
             "Flux Klein reference conditioning prepared",
             {
-                "positive_reference_a": _latent_debug(context.get("reference_latent_a")),
-                "positive_reference_b": _latent_debug(context.get("reference_latent_b")),
+                "positive_reference": _latent_debug(context.get("reference_latent")),
                 "positive": _conditioning_debug(context.get("positive")),
                 "negative": _conditioning_debug(context.get("negative")),
             },
@@ -566,6 +553,172 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
         context = {"latent": samples, "vae": vae}
         _run_pipeline_steps(self.pipeline.decode, context, "flux_klein_decode")
         return context["image"]
+
+
+@dataclass(frozen=True)
+class ZImageUniCanvasModule(UniCanvasModelModule):
+    def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
+        return model, clip
+
+    def is_turbo_conditioning_mode(self, gen_settings: dict[str, Any]) -> tuple[bool, str]:
+        model_names = (
+            str(gen_settings.get("diffusion_model_name") or ""),
+            str(gen_settings.get("gguf_model_name") or ""),
+        )
+        if any("turbo" in name.lower() for name in model_names if name):
+            return True, "model name contains turbo"
+        try:
+            if abs(float(gen_settings.get("cfg", 0.0)) - 1.0) < 1e-6:
+                return True, "cfg is 1"
+        except Exception:
+            pass
+        return False, "non-turbo model and cfg is not 1"
+
+    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
+        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
+        if isinstance(encoded, tuple) and encoded:
+            return encoded[0]
+        if encoded is not None:
+            return encoded
+        return super().encode_prompt(clip, text, _gen_settings)
+
+    def prepare_reference_conditioning(
+        self,
+        positive: Any,
+        negative: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        if draw_mode in {"inpaint", "outpaint"}:
+            _uc_log(
+                draw_id,
+                "Z-image masked mode keeps standard inpaint conditioning inputs",
+                {
+                    "mode": draw_mode,
+                    "negative": _conditioning_debug(negative),
+                },
+            )
+            return positive, negative
+
+        use_turbo_conditioning, reason = self.is_turbo_conditioning_mode(gen_settings)
+        if not use_turbo_conditioning:
+            _uc_log(
+                draw_id,
+                "Z-image full negative prompt conditioning kept",
+                {
+                    "reason": reason,
+                    "negative": _conditioning_debug(negative),
+                },
+            )
+            return positive, negative
+
+        _uc_log(draw_id, "Z-image turbo positive conditioning before zero negative", _conditioning_debug(positive))
+        zero_negative = _call_node_method(
+            ["ConditioningZeroOut"],
+            ["zero_out"],
+            conditioning=positive,
+        )
+        if zero_negative is not None:
+            negative = zero_negative
+            _uc_log(
+                draw_id,
+                "Z-image turbo negative conditioning zeroed",
+                {
+                    "reason": reason,
+                    "negative": _conditioning_debug(negative),
+                },
+            )
+        return positive, negative
+
+    def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        encoded = _call_node_method(
+            ["EmptySD3LatentImage"],
+            ["generate"],
+            width=width,
+            height=height,
+            batch_size=1,
+        )
+        if isinstance(encoded, tuple) and encoded:
+            _uc_log(draw_id, "created empty Z-image/SD3 latent", _latent_debug(encoded[0]))
+            return encoded[0]
+        if isinstance(encoded, dict):
+            _uc_log(draw_id, "created empty Z-image/SD3 latent", _latent_debug(encoded))
+            return encoded
+        import comfy.model_management
+
+        latent = torch.zeros(
+            [1, 16, max(1, int(height) // 8), max(1, int(width) // 8)],
+            device=comfy.model_management.intermediate_device(),
+            dtype=comfy.model_management.intermediate_dtype(),
+        )
+        encoded = {"samples": latent}
+        _uc_log(
+            draw_id,
+            "created fallback empty Z-image/SD3 latent",
+            {
+                **_latent_debug(encoded),
+                "reason": "EmptySD3LatentImage did not return a latent through direct node call",
+            },
+        )
+        return encoded
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        shift = float(gen_settings.get("aura_flow_shift", 3.0))
+        patched_model = _call_node_method(
+            ["ModelSamplingAuraFlow"],
+            ["patch", "apply", "model_sampling"],
+            model=model,
+            shift=shift,
+        )
+        if patched_model is not None:
+            model = patched_model
+            _uc_log(draw_id, "Z-image ModelSamplingAuraFlow applied", {"shift": shift})
+        else:
+            _uc_log(draw_id, "Z-image ModelSamplingAuraFlow unavailable; sampling with unpatched model", {"shift": shift})
+        return super().sample_latent(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+            width=width,
+            height=height,
+        )
+
+    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
+        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=latent_payload, vae=vae)
+        if isinstance(decoded, tuple) and decoded:
+            return decoded[0]
+        if decoded is not None:
+            return decoded
+        return super().decode_samples(vae, latent_payload, _gen_settings)
 
 
 @dataclass(frozen=True)
@@ -785,6 +938,7 @@ _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULT
 _register_unicanvas_model_module(
     FluxKleinUniCanvasModule("flux_klein", ("flux-klein", "klein"), FLUX_KLEIN_DEFAULTS, is_edit_model=True)
 )
+_register_unicanvas_model_module(ZImageUniCanvasModule("z_image", ("z-image", "zimage", "z_image_turbo"), Z_IMAGE_DEFAULTS))
 
 
 def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
@@ -913,10 +1067,12 @@ def _conditioning_debug(conditioning: Any) -> dict[str, Any]:
     entries = []
     for item in conditioning[:2]:
         entry: dict[str, Any] = {"type": type(item).__name__}
+        if isinstance(item, (list, tuple)) and item:
+            entry["conditioning"] = _tensor_debug(item[0])
         if isinstance(item, (list, tuple)) and len(item) > 1 and isinstance(item[1], dict):
             metadata = item[1]
             entry["keys"] = sorted(str(key) for key in metadata.keys())
-            for key in ("concat_latent_image", "concat_mask"):
+            for key in ("attention_mask", "concat_latent_image", "concat_mask", "pooled_output"):
                 if key in metadata:
                     entry[key] = _tensor_debug(metadata.get(key))
         entries.append(entry)
@@ -1484,7 +1640,7 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
     if settings.get("gguf_model_name"):
         return "gguf"
     generation_mode = str(settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode in {"anima", "flux_klein", "flux-klein", "klein"} or settings.get("diffusion_model_name"):
+    if generation_mode in {"anima", "flux_klein", "flux-klein", "klein", "z_image", "z-image", "zimage", "z_image_turbo"} or settings.get("diffusion_model_name"):
         return "diffusion_model"
     return "checkpoint"
 
@@ -2048,6 +2204,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("mode must be txt2img, img2img, inpaint or outpaint")
 
     settings = _normalize_gen_settings(payload.get("settings") or {})
+    settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))
     steps = int(settings.get("steps", 24))
     cfg = float(settings.get("cfg", 7.0))
@@ -2079,7 +2236,11 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "diffusion_model_name": settings.get("diffusion_model_name"),
             "gguf_model_name": settings.get("gguf_model_name"),
             "clip_name": settings.get("clip_name"),
+            "clip_type": settings.get("clip_type"),
             "vae_name": settings.get("vae_name"),
+            "lora_stack_count": len(settings.get("lora_stack") or []) if isinstance(settings.get("lora_stack"), list) else None,
+            "mode_settings_keys": sorted(str(key) for key in settings.get("mode_settings", {}).keys()) if isinstance(settings.get("mode_settings"), dict) else None,
+            "turbo_enabled": settings.get("turbo_enabled"),
             "seed": seed,
             "steps": steps,
             "cfg": cfg,
@@ -2120,7 +2281,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         model_module = _get_unicanvas_model_module(str(settings.get("generation_mode", "illustrious")).lower())
         _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
         model, clip, vae = _load_generation_assets(settings)
-        model, clip = _clone_model_clip(model, clip)
+        model, clip = model_module.clone_assets(model, clip)
         _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
         model, clip = _apply_generation_loras(model, clip, settings)
         _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
@@ -2201,7 +2362,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         if not model_module.is_edit_model and mode in {"inpaint", "outpaint"} and mask is not None:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
-        if mode == "txt2img" or (source_empty and mask is None) or model_module.uses_empty_sampler_latent(mode):
+        if mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
         elif not model_module.uses_edit_masked_latents(mode) and mode in {"inpaint", "outpaint"} and mask is not None:
             positive, negative, latent = _prepare_inpaint_model_conditioning(

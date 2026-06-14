@@ -107,6 +107,20 @@ Flux Klein is the reference implementation. Its pipeline is declared as
 - `sample`: Flux2 scheduler + guider + sampler graph.
 - `decode`: VAE decode.
 
+Z-image Turbo is implemented as `ZImageUniCanvasModule`. It uses the standard
+`Diffusion Model` loader with the official defaults from
+`image_z_image_turbo.json`: `z_image_turbo_bf16.safetensors`,
+`qwen_3_4b.safetensors` as `lumina2`, `ae.safetensors`,
+`EmptySD3LatentImage`, `ModelSamplingAuraFlow` shift `3`, and
+`res_multistep/simple` sampling. It is a non-edit module, so inpaint/outpaint
+reuse the same SDXL/Anima inpaint conditioning path.
+
+Z-image negative conditioning has one exception: turbo mode uses the official
+workflow's `ConditioningZeroOut` negative conditioning. Turbo mode is selected
+when the diffusion/GGUF model filename contains `turbo`, or when the user sets
+`cfg` to `1`. Otherwise, the negative prompt remains the full `CLIPTextEncode`
+conditioning so non-turbo Z-image models can use negative prompts normally.
+
 ## Frontend Registration
 
 The frontend registry in `web/vnccs_unicanvas.js` must include the mode label,
