@@ -1,4 +1,4 @@
-"""VNCCS UniCanvas - in-node canvas editor with direct SDXL draw actions."""
+"""VNCCS UniCanvas - in-node canvas editor with direct modular draw actions."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ import ntpath
 import time
 import tempfile
 import re
+from dataclasses import dataclass
 
 import numpy as np
 import torch
@@ -58,6 +59,269 @@ ANIMA_DEFAULTS = {
     "dmd_lora_strength": 1.0,
     "lora_stack": [],
 }
+
+
+@dataclass(frozen=True)
+class UniCanvasModelModule:
+    """Backend adapter for one UniCanvas model family.
+
+    The frontend cannot rely on graph connections for model objects because the
+    draw action runs inside the widget before a workflow execution starts. Each
+    model family therefore owns its own loader contract and generation quirks.
+    """
+
+    key: str
+    aliases: tuple[str, ...]
+    defaults: dict[str, Any]
+
+    def normalize_key(self, generation_mode: str) -> bool:
+        return generation_mode == self.key or generation_mode in self.aliases
+
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        raise NotImplementedError
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        raise NotImplementedError
+
+    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
+        lora_stack = gen_settings.get("lora_stack") or []
+        if isinstance(lora_stack, list):
+            for item in lora_stack:
+                if not isinstance(item, dict):
+                    continue
+                lora_name = str(item.get("name") or item.get("lora_name") or "")
+                strength = float(item.get("strength", item.get("model_strength", 1.0)))
+                clip_strength = item.get("clip_strength", None)
+                model, clip = _apply_lora_cached(
+                    model,
+                    clip,
+                    lora_name,
+                    strength,
+                    None if clip_strength is None else float(clip_strength),
+                )
+        return model, clip
+
+    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
+        tokens = clip.tokenize(text or "")
+        cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
+        return [[cond, {"pooled_output": pooled}]]
+
+    def validate_conditioning(self, _positive: Any, _negative: Any, _gen_settings: dict[str, Any]) -> None:
+        return None
+
+    def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        import nodes
+
+        encoded = nodes.EmptyLatentImage().generate(width, height, 1)[0]
+        _uc_log(draw_id, "created empty SD latent", _latent_debug(encoded))
+        return encoded
+
+    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        latent_samples = _unwrap_latent_samples(samples)
+        return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
+
+
+@dataclass(frozen=True)
+class SDXLUniCanvasModule(UniCanvasModelModule):
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (self.key, str(gen_settings.get("ckpt_name") or ""))
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        ckpt_name = str(gen_settings.get("ckpt_name") or "")
+        if not ckpt_name:
+            raise ValueError("Checkpoint is required")
+        ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
+        if not ckpt_path:
+            raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
+        out = comfy.sd.load_checkpoint_guess_config(
+            ckpt_path,
+            output_vae=True,
+            output_clip=True,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+        assets = out[:3]
+        if any(item is None for item in assets):
+            raise ValueError(f"Failed to load checkpoint assets from '{ckpt_name}'")
+        return assets
+
+    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
+        for key in ("dmd_lora_name", "age_lora_name"):
+            lora_name = str(gen_settings.get(key) or "")
+            if lora_name:
+                strength_key = key.replace("_name", "_strength")
+                model, clip = _apply_lora_cached(model, clip, lora_name, float(gen_settings.get(strength_key, 1.0)))
+        return super().apply_loras(model, clip, gen_settings)
+
+
+@dataclass(frozen=True)
+class AnimaUniCanvasModule(UniCanvasModelModule):
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            self.key,
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+        )
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        diffusion_model_name = gen_settings.get("diffusion_model_name")
+        clip_name = gen_settings.get("clip_name")
+        vae_name = gen_settings.get("vae_name")
+        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
+
+        if not diffusion_model_name:
+            raise ValueError("No Diffusion Model selected for UniCanvas ANIMA mode")
+        if not clip_name:
+            raise ValueError("No CLIP selected for UniCanvas ANIMA mode")
+        if not vae_name:
+            raise ValueError("No VAE selected for UniCanvas ANIMA mode")
+
+        model = _call_loader_node(
+            ["UNETLoader", "Load Diffusion Model"],
+            ["load_unet", "load_model", "load_diffusion_model"],
+            unet_name=diffusion_model_name,
+            model_name=diffusion_model_name,
+            diffusion_model_name=diffusion_model_name,
+            weight_dtype="default",
+        )
+        if model is None and hasattr(comfy.sd, "load_diffusion_model"):
+            diffusion_model_path = _get_full_path_agnostic(folder_paths, "diffusion_models", diffusion_model_name)
+            if diffusion_model_path:
+                model = comfy.sd.load_diffusion_model(diffusion_model_path)
+
+        clip = _call_loader_node(
+            ["CLIPLoader", "Load CLIP"],
+            ["load_clip", "load_model"],
+            clip_name=clip_name,
+            model_name=clip_name,
+            type=clip_type_name,
+            device="default",
+        )
+        if clip is None and hasattr(comfy.sd, "load_clip"):
+            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
+            if clip_path:
+                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+                if clip_type is None:
+                    raise ValueError(
+                        f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
+                        "ANIMA expects CLIPLoader type 'stable_diffusion'."
+                    )
+                clip = comfy.sd.load_clip(
+                    ckpt_paths=[clip_path],
+                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    clip_type=clip_type,
+                )
+
+        vae = _call_loader_node(
+            ["VAELoader", "Load VAE"],
+            ["load_vae", "load_model"],
+            vae_name=vae_name,
+            model_name=vae_name,
+        )
+        if vae is None and hasattr(comfy.sd, "load_vae"):
+            vae_path = _get_full_path_agnostic(folder_paths, "vae", vae_name)
+            if vae_path:
+                vae = comfy.sd.load_vae(vae_path)
+
+        if model is None:
+            raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
+        if clip is None:
+            raise ValueError(f"Failed to load CLIP '{clip_name}'")
+        if vae is None:
+            raise ValueError(f"Failed to load VAE '{vae_name}'")
+        return model, clip, vae
+
+    def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
+        if gen_settings.get("turbo_enabled"):
+            model, clip = _apply_lora_cached(
+                model,
+                clip,
+                str(gen_settings.get("dmd_lora_name") or ""),
+                float(gen_settings.get("dmd_lora_strength", 1.0)),
+                0.0,
+            )
+        return super().apply_loras(model, clip, gen_settings)
+
+    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
+        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
+        if isinstance(encoded, tuple) and encoded:
+            return encoded[0]
+        if encoded is not None:
+            return encoded
+        return super().encode_prompt(clip, text, _gen_settings)
+
+    def validate_conditioning(self, positive: Any, negative: Any, gen_settings: dict[str, Any]) -> None:
+        _validate_anima_conditioning(positive, negative, str(gen_settings.get("clip_name") or ""))
+
+    def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        import comfy.model_management
+
+        latent = torch.zeros(
+            [1, 16, 1, height // 8, width // 8],
+            device=comfy.model_management.intermediate_device(),
+            dtype=comfy.model_management.intermediate_dtype(),
+        )
+        encoded = {"samples": latent}
+        _uc_log(draw_id, "created empty Anima/Qwen latent", _latent_debug(encoded))
+        return encoded
+
+    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
+        latent_tensor = _unwrap_latent_samples(latent_payload)
+        decode_payload = {"samples": latent_tensor}
+        try:
+            decoded = _call_node_method(
+                ["VAEDecodeTiled"],
+                ["decode"],
+                samples=decode_payload,
+                vae=vae,
+                tile_size=512,
+                tile_x=512,
+                tile_y=512,
+                overlap=64,
+                temporal_size=64,
+                temporal_overlap=8,
+            )
+            if isinstance(decoded, tuple) and decoded:
+                return decoded[0]
+            if decoded is not None:
+                return decoded
+        except Exception:
+            pass
+        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=decode_payload, vae=vae)
+        if isinstance(decoded, tuple) and decoded:
+            return decoded[0]
+        if decoded is not None:
+            return decoded
+        return vae.decode(latent_tensor)
+
+
+UNICANVAS_MODEL_MODULES: dict[str, UniCanvasModelModule] = {}
+
+
+def _register_unicanvas_model_module(module: UniCanvasModelModule) -> None:
+    UNICANVAS_MODEL_MODULES[module.key] = module
+    for alias in module.aliases:
+        UNICANVAS_MODEL_MODULES[alias] = module
+
+
+_register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), ILLUSTRIOUS_DEFAULTS))
+_register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
+
+
+def _get_unicanvas_model_module(generation_mode: str | None) -> UniCanvasModelModule:
+    key = str(generation_mode or "illustrious").lower()
+    module = UNICANVAS_MODEL_MODULES.get(key)
+    if module is None:
+        supported = sorted({module.key for module in UNICANVAS_MODEL_MODULES.values()})
+        raise ValueError(f"Unsupported UniCanvas model mode '{key}'. Supported modes: {', '.join(supported)}")
+    return module
 
 
 def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> None:
@@ -669,13 +933,17 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(gen_settings or {})
     generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
     mode_settings = normalized.get("mode_settings", {})
-    mode_profile = mode_settings.get(generation_mode, {}) if isinstance(mode_settings, dict) else {}
-    defaults = ANIMA_DEFAULTS if generation_mode == "anima" else ILLUSTRIOUS_DEFAULTS
+    module = _get_unicanvas_model_module(generation_mode)
+    mode_profile = {}
+    if isinstance(mode_settings, dict):
+        mode_profile = mode_settings.get(generation_mode) or mode_settings.get(module.key) or {}
+    defaults = module.defaults
     merged = dict(defaults)
     merged.update(normalized)
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
-    merged["generation_mode"] = generation_mode
+    merged["generation_mode"] = module.key
+    merged["generation_mode_alias"] = generation_mode
     if "sampler" in merged and "sampler_name" not in merged:
         merged["sampler_name"] = merged["sampler"]
     if "sampler_name" in merged:
@@ -724,120 +992,14 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
     return None
 
 
-def _load_anima_assets(gen_settings: dict[str, Any]):
-    import comfy.sd
-    import folder_paths
-
-    diffusion_model_name = gen_settings.get("diffusion_model_name")
-    clip_name = gen_settings.get("clip_name")
-    vae_name = gen_settings.get("vae_name")
-    clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
-
-    if not diffusion_model_name:
-        raise ValueError("No Diffusion Model selected for UniCanvas ANIMA mode")
-    if not clip_name:
-        raise ValueError("No CLIP selected for UniCanvas ANIMA mode")
-    if not vae_name:
-        raise ValueError("No VAE selected for UniCanvas ANIMA mode")
-
-    model = _call_loader_node(
-        ["UNETLoader", "Load Diffusion Model"],
-        ["load_unet", "load_model", "load_diffusion_model"],
-        unet_name=diffusion_model_name,
-        model_name=diffusion_model_name,
-        diffusion_model_name=diffusion_model_name,
-        weight_dtype="default",
-    )
-    if model is None and hasattr(comfy.sd, "load_diffusion_model"):
-        diffusion_model_path = _get_full_path_agnostic(folder_paths, "diffusion_models", diffusion_model_name)
-        if diffusion_model_path:
-            model = comfy.sd.load_diffusion_model(diffusion_model_path)
-
-    clip = _call_loader_node(
-        ["CLIPLoader", "Load CLIP"],
-        ["load_clip", "load_model"],
-        clip_name=clip_name,
-        model_name=clip_name,
-        type=clip_type_name,
-        device="default",
-    )
-    if clip is None and hasattr(comfy.sd, "load_clip"):
-        clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
-        if clip_path:
-            clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
-            if clip_type is None:
-                raise ValueError(
-                    f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
-                    "ANIMA expects CLIPLoader type 'stable_diffusion'."
-                )
-            clip = comfy.sd.load_clip(
-                ckpt_paths=[clip_path],
-                embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                clip_type=clip_type,
-            )
-
-    vae = _call_loader_node(
-        ["VAELoader", "Load VAE"],
-        ["load_vae", "load_model"],
-        vae_name=vae_name,
-        model_name=vae_name,
-    )
-    if vae is None and hasattr(comfy.sd, "load_vae"):
-        vae_path = _get_full_path_agnostic(folder_paths, "vae", vae_name)
-        if vae_path:
-            vae = comfy.sd.load_vae(vae_path)
-
-    if model is None:
-        raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
-    if clip is None:
-        raise ValueError(f"Failed to load CLIP '{clip_name}'")
-    if vae is None:
-        raise ValueError(f"Failed to load VAE '{vae_name}'")
-    return model, clip, vae
-
-
 def _load_generation_assets(gen_settings: dict[str, Any]):
-    import comfy.sd
-    import folder_paths
-
-    generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode == "anima":
-        asset_key = (
-            generation_mode,
-            gen_settings.get("diffusion_model_name", ""),
-            gen_settings.get("clip_name", ""),
-            gen_settings.get("vae_name", ""),
-        )
-        with _MODEL_CACHE_LOCK:
-            cached = _MODEL_CACHE.get(asset_key)
-            if cached is not None:
-                return cached
-        assets = _load_anima_assets(gen_settings)
-        with _MODEL_CACHE_LOCK:
-            _MODEL_CACHE[asset_key] = assets
-        return assets
-
-    ckpt_name = str(gen_settings.get("ckpt_name") or "")
-    if not ckpt_name:
-        raise ValueError("Checkpoint is required")
-    asset_key = (generation_mode, ckpt_name)
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    asset_key = module.cache_key(gen_settings)
     with _MODEL_CACHE_LOCK:
         cached = _MODEL_CACHE.get(asset_key)
         if cached is not None:
             return cached
-
-    ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
-    if not ckpt_path:
-        raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
-    out = comfy.sd.load_checkpoint_guess_config(
-        ckpt_path,
-        output_vae=True,
-        output_clip=True,
-        embedding_directory=folder_paths.get_folder_paths("embeddings"),
-    )
-    assets = out[:3]
-    if any(item is None for item in assets):
-        raise ValueError(f"Failed to load checkpoint assets from '{ckpt_name}'")
+    assets = module.load_assets(gen_settings)
     with _MODEL_CACHE_LOCK:
         _MODEL_CACHE[asset_key] = assets
     return assets
@@ -872,51 +1034,13 @@ def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, c
 
 
 def _apply_generation_loras(model: Any, clip: Any, gen_settings: dict[str, Any]):
-    generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode == "anima" and gen_settings.get("turbo_enabled"):
-        model, clip = _apply_lora_cached(
-            model,
-            clip,
-            str(gen_settings.get("dmd_lora_name") or ""),
-            float(gen_settings.get("dmd_lora_strength", 1.0)),
-            0.0,
-        )
-    elif generation_mode != "anima":
-        for key in ("dmd_lora_name", "age_lora_name"):
-            lora_name = str(gen_settings.get(key) or "")
-            if lora_name:
-                strength_key = key.replace("_name", "_strength")
-                model, clip = _apply_lora_cached(model, clip, lora_name, float(gen_settings.get(strength_key, 1.0)))
-
-    lora_stack = gen_settings.get("lora_stack") or []
-    if isinstance(lora_stack, list):
-        for item in lora_stack:
-            if not isinstance(item, dict):
-                continue
-            lora_name = str(item.get("name") or item.get("lora_name") or "")
-            strength = float(item.get("strength", item.get("model_strength", 1.0)))
-            clip_strength = item.get("clip_strength", None)
-            model, clip = _apply_lora_cached(
-                model,
-                clip,
-                lora_name,
-                strength,
-                None if clip_strength is None else float(clip_strength),
-            )
-    return model, clip
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    return module.apply_loras(model, clip, gen_settings)
 
 
 def _encode_generation_prompt(clip: Any, text: str, gen_settings: dict[str, Any]):
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
-        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
-        if isinstance(encoded, tuple) and encoded:
-            return encoded[0]
-        if encoded is not None:
-            return encoded
-
-    tokens = clip.tokenize(text or "")
-    cond, pooled = clip.encode_from_tokens(tokens, return_pooled=True)
-    return [[cond, {"pooled_output": pooled}]]
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    return module.encode_prompt(clip, text, gen_settings)
 
 
 def _validate_anima_conditioning(positive: Any, negative: Any, clip_name: str) -> None:
@@ -1067,24 +1191,8 @@ def _prepare_inpaint_model_conditioning(
 
 
 def _create_empty_generation_latent(width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
-    generation_mode = str(gen_settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode == "anima":
-        import comfy.model_management
-
-        latent = torch.zeros(
-            [1, 16, 1, height // 8, width // 8],
-            device=comfy.model_management.intermediate_device(),
-            dtype=comfy.model_management.intermediate_dtype(),
-        )
-        encoded = {"samples": latent}
-        _uc_log(draw_id, "created empty Anima/Qwen latent", _latent_debug(encoded))
-        return encoded
-
-    import nodes
-
-    encoded = nodes.EmptyLatentImage().generate(width, height, 1)[0]
-    _uc_log(draw_id, "created empty SD latent", _latent_debug(encoded))
-    return encoded
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    return module.create_empty_latent(width, height, gen_settings, draw_id=draw_id)
 
 
 def _ensure_direct_sampling_prompt_context(prompt_id: str = "unicanvas_draw") -> None:
@@ -1181,53 +1289,24 @@ def _sample_generation_latent(
     raise RuntimeError("Sampler returned no latent output")
 
 
-def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, Any]):
-    def unwrap_latent_samples(value):
+def _unwrap_latent_samples(value: Any):
+    while isinstance(value, (list, tuple)) and value:
+        value = value[0]
+    seen_ids = set()
+    while isinstance(value, dict) and "samples" in value:
+        value_id = id(value)
+        if value_id in seen_ids:
+            break
+        seen_ids.add(value_id)
+        value = value["samples"]
         while isinstance(value, (list, tuple)) and value:
             value = value[0]
-        seen_ids = set()
-        while isinstance(value, dict) and "samples" in value:
-            value_id = id(value)
-            if value_id in seen_ids:
-                break
-            seen_ids.add(value_id)
-            value = value["samples"]
-            while isinstance(value, (list, tuple)) and value:
-                value = value[0]
-        return value
+    return value
 
-    if str(gen_settings.get("generation_mode", "illustrious")).lower() == "anima":
-        latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
-        latent_tensor = unwrap_latent_samples(latent_payload)
-        decode_payload = {"samples": latent_tensor}
-        try:
-            decoded = _call_node_method(
-                ["VAEDecodeTiled"],
-                ["decode"],
-                samples=decode_payload,
-                vae=vae,
-                tile_size=512,
-                tile_x=512,
-                tile_y=512,
-                overlap=64,
-                temporal_size=64,
-                temporal_overlap=8,
-            )
-            if isinstance(decoded, tuple) and decoded:
-                return decoded[0]
-            if decoded is not None:
-                return decoded
-        except Exception:
-            pass
-        decoded = _call_node_method(["VAEDecode"], ["decode"], samples=decode_payload, vae=vae)
-        if isinstance(decoded, tuple) and decoded:
-            return decoded[0]
-        if decoded is not None:
-            return decoded
-        return vae.decode(latent_tensor)
 
-    latent_samples = unwrap_latent_samples(samples)
-    return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
+def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, Any]):
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    return module.decode_samples(vae, samples, gen_settings)
 
 
 def _save_temp_image(image: Image.Image, prefix: str = "VNCCS_UniCanvas") -> dict[str, str]:
@@ -1256,6 +1335,14 @@ def _get_unicanvas_assets() -> dict[str, Any]:
         samplers = []
         schedulers = []
     return {
+        "model_modules": [
+            {
+                "key": module.key,
+                "aliases": list(module.aliases),
+                "defaults": module.defaults,
+            }
+            for module in {module.key: module for module in UNICANVAS_MODEL_MODULES.values()}.values()
+        ],
         "checkpoints": _safe_filename_list("checkpoints"),
         "diffusion_models": _safe_filename_list("diffusion_models"),
         "text_encoders": _safe_filename_list("text_encoders"),
@@ -1345,6 +1432,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("output_size is too large")
 
     with torch.inference_mode():
+        model_module = _get_unicanvas_model_module(str(settings.get("generation_mode", "illustrious")).lower())
         _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
         model, clip, vae = _load_generation_assets(settings)
         model, clip = _clone_model_clip(model, clip)
@@ -1353,8 +1441,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
         positive = _encode_generation_prompt(clip, positive_text, settings)
         negative = _encode_generation_prompt(clip, negative_text, settings)
-        if str(settings.get("generation_mode", "illustrious")).lower() == "anima":
-            _validate_anima_conditioning(positive, negative, str(settings.get("clip_name") or ""))
+        model_module.validate_conditioning(positive, negative, settings)
 
         mask = None
         mask_image = None

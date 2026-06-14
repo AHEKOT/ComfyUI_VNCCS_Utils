@@ -144,6 +144,87 @@ const MAX_LAYER_CANVAS_PIXELS = 32 * 1024 * 1024;
 const STATE_UPLOAD_DEBOUNCE_MS = 1200;
 const HISTORY_LIMIT = 20;
 const MOVE_SNAP_GRID_SIZE = 64;
+const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise"]);
+const UNICANVAS_MODEL_MODULES = {
+  sdxl: {
+    key: "sdxl",
+    aliases: ["illustrious"],
+    label: "SDXL checkpoint",
+    base: "sdxl",
+    defaults: {
+      generation_mode: "sdxl",
+      sampler_name: "euler",
+      scheduler: "normal",
+      steps: 24,
+      cfg: 7,
+    },
+    fields: [
+      { setting: "ckpt_name", label: "Checkpoint", asset: "checkpoints" },
+    ],
+    validate(settings) {
+      return settings.ckpt_name ? null : "Select a checkpoint first";
+    },
+  },
+  anima: {
+    key: "anima",
+    aliases: [],
+    label: "Anima",
+    base: "anima",
+    defaults: {
+      generation_mode: "anima",
+      diffusion_model_name: "",
+      clip_name: "qwen_3_06b_base.safetensors",
+      vae_name: "qwen_image_vae.safetensors",
+      clip_type: "stable_diffusion",
+      sampler_name: "er_sde",
+      scheduler: "simple",
+      steps: 30,
+      cfg: 4,
+      turbo_enabled: false,
+      dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
+      dmd_lora_strength: 1,
+    },
+    fields: [
+      { setting: "diffusion_model_name", label: "Diffusion", asset: "diffusion_models" },
+      { setting: "clip_name", label: "CLIP", asset: "text_encoders" },
+      { setting: "vae_name", label: "VAE", asset: "vae_models" },
+    ],
+    validate(settings) {
+      return settings.diffusion_model_name && settings.clip_name && settings.vae_name
+        ? null
+        : "Select Anima diffusion, CLIP and VAE first";
+    },
+  },
+};
+const UNICANVAS_MODEL_ALIASES = Object.fromEntries(
+  Object.values(UNICANVAS_MODEL_MODULES).flatMap((module) => [[module.key, module.key], ...(module.aliases || []).map((alias) => [alias, module.key])])
+);
+
+function getUniCanvasModelModule(mode) {
+  const key = UNICANVAS_MODEL_ALIASES[String(mode || "sdxl").toLowerCase()] || "sdxl";
+  return UNICANVAS_MODEL_MODULES[key] || UNICANVAS_MODEL_MODULES.sdxl;
+}
+
+function makeDefaultUniCanvasSettings() {
+  return {
+    ...UNICANVAS_MODEL_MODULES.sdxl.defaults,
+    ckpt_name: "",
+    diffusion_model_name: "",
+    clip_name: UNICANVAS_MODEL_MODULES.anima.defaults.clip_name,
+    vae_name: UNICANVAS_MODEL_MODULES.anima.defaults.vae_name,
+    clip_type: UNICANVAS_MODEL_MODULES.anima.defaults.clip_type,
+    turbo_enabled: false,
+    dmd_lora_name: UNICANVAS_MODEL_MODULES.anima.defaults.dmd_lora_name,
+    dmd_lora_strength: 1,
+    lora_stack: [],
+    inference_scale: 1,
+    positive: "",
+    negative: "",
+    seed: 0,
+    denoise: 0.65,
+    grow_mask_by: 6,
+  };
+}
 const TOOL_ICONS = {
   move: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg>`,
   brush: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 19 10"/><path d="M4 20c3 0 5-1 6.5-2.5L19 9a2.8 2.8 0 0 0-4-4l-8.5 8.5C5 15 4 17 4 20Z"/><path d="M6.5 13.5 10.5 17.5"/></svg>`,
@@ -226,28 +307,7 @@ class UniCanvasWidget {
     this.snapToGrid = false;
     this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
-    this.settings = {
-      generation_mode: "illustrious",
-      ckpt_name: "",
-      diffusion_model_name: "",
-      clip_name: "qwen_3_06b_base.safetensors",
-      vae_name: "qwen_image_vae.safetensors",
-      clip_type: "stable_diffusion",
-      turbo_enabled: false,
-      dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
-      dmd_lora_strength: 1,
-      lora_stack: [],
-      inference_scale: 1,
-      positive: "",
-      negative: "",
-      seed: 0,
-      steps: 24,
-      cfg: 7,
-      denoise: 0.65,
-      sampler_name: "euler",
-      scheduler: "normal",
-      grow_mask_by: 6,
-    };
+    this.settings = makeDefaultUniCanvasSettings();
 
     this._buildDOM();
     this._createInitialLayers();
@@ -305,7 +365,7 @@ class UniCanvasWidget {
     this.denoiseControl.innerHTML = `
       <label class="vnccs-uc-denoise-control">Denoise
         <input class="vnccs-uc-range" data-setting="denoise" type="range" min="0" max="1" step="0.01" value="${this.settings.denoise}">
-        <input class="vnccs-uc-input" data-setting="denoise" type="number" min="0" max="1" step="0.01" value="${this.settings.denoise}">
+        <input class="vnccs-uc-input" data-setting="denoise" type="number" lang="en-US" inputmode="decimal" min="0" max="1" step="0.01" value="${this.settings.denoise}">
       </label>`;
     this.layerList = document.createElement("div");
     this.layerList.className = "vnccs-uc-layers";
@@ -356,22 +416,25 @@ class UniCanvasWidget {
 
     this.promptBox = document.createElement("div");
     this.promptBox.className = "vnccs-uc-stack";
+    const modelModeOptions = Object.values(UNICANVAS_MODEL_MODULES)
+      .map((module) => `<option value="${this._escape(module.key)}">${this._escape(module.label)}</option>`)
+      .join("");
+    const modelFields = Object.values(UNICANVAS_MODEL_MODULES).flatMap((module) =>
+      (module.fields || []).map((field) => `
+        <label class="vnccs-uc-field" data-model-field="${this._escape(module.key)}">
+          ${this._escape(field.label)}<select class="vnccs-uc-select" data-setting="${this._escape(field.setting)}"></select>
+        </label>`)
+    ).join("");
     this.promptBox.innerHTML = `
       <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
-      <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">
-        <option value="illustrious">SDXL checkpoint</option>
-        <option value="anima">Anima</option>
-      </select></label>
-      <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" min="0.125" step="0.125"></label>
-      <label class="vnccs-uc-field">Checkpoint<select class="vnccs-uc-select" data-setting="ckpt_name"></select></label>
-      <label class="vnccs-uc-field">Diffusion<select class="vnccs-uc-select" data-setting="diffusion_model_name"></select></label>
-      <label class="vnccs-uc-field">CLIP<select class="vnccs-uc-select" data-setting="clip_name"></select></label>
-      <label class="vnccs-uc-field">VAE<select class="vnccs-uc-select" data-setting="vae_name"></select></label>
+      <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
+      <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+      ${modelFields}
       <div class="vnccs-uc-mini-grid">
         <label class="vnccs-uc-field">Seed<input class="vnccs-uc-input" data-setting="seed" type="number"></label>
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
-        <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" step="0.1"></label>
+        <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" lang="en-US" inputmode="decimal" step="0.1"></label>
       </div>`;
     this.status = document.createElement("div");
     this.status.className = "vnccs-uc-status";
@@ -465,10 +528,19 @@ class UniCanvasWidget {
   }
 
   parseNumericInput(input, fallback = 0) {
-    const normalized = String(input.value ?? "").replace(",", ".");
-    if (input.value !== normalized) input.value = normalized;
+    const normalized = this.normalizeNumericInputValue(input);
     const value = Number(normalized);
     return Number.isFinite(value) ? value : fallback;
+  }
+
+  normalizeNumericInputValue(input) {
+    const normalized = String(input.value ?? "").replaceAll(",", ".");
+    if (input.value !== normalized) {
+      input.value = normalized;
+    }
+    input.lang = "en-US";
+    input.inputMode = "decimal";
+    return normalized;
   }
 
   formatSettingNumber(value, digits = 2) {
@@ -743,10 +815,23 @@ class UniCanvasWidget {
     window.addEventListener("beforeunload", this._flushStateBeforeUnload);
     this.container.addEventListener("keydown", (e) => {
       const target = e.target;
-      if (!(target instanceof HTMLInputElement) || target.type !== "number" || e.key !== ",") return;
+      if (!(target instanceof HTMLInputElement) || !NUMERIC_SETTINGS.has(target.dataset.setting) || e.key !== ",") return;
       e.preventDefault();
       this.insertDecimalPoint(target);
     });
+    const normalizeNumericEvent = (e) => {
+      const target = e.target;
+      if (!(target instanceof HTMLInputElement) || !target.dataset.setting) return;
+      if (!NUMERIC_SETTINGS.has(target.dataset.setting)) return;
+      this.normalizeNumericInputValue(target);
+    };
+    this.container.addEventListener("focusin", normalizeNumericEvent);
+    this.container.addEventListener("input", normalizeNumericEvent);
+    this.container.addEventListener("paste", () => window.setTimeout(() => {
+      this.container.querySelectorAll("input[data-setting]").forEach((input) => {
+        if (NUMERIC_SETTINGS.has(input.dataset.setting)) this.normalizeNumericInputValue(input);
+      });
+    }, 0));
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     const onLayerSubheadChange = (e) => {
@@ -805,12 +890,22 @@ class UniCanvasWidget {
       const key = target?.dataset?.setting;
       if (!key) return;
       this.recordInputHistory(target);
-      this.settings[key] = target.type === "number" ? this.parseNumericInput(target, this.settings[key]) : target.value;
+      this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
-      if (key === "inference_scale") this.syncInferenceControls();
+      if (key === "inference_scale") this.syncInferenceControls(target);
       this.syncToNode();
     });
-    this.left.addEventListener("change", (e) => this.clearInputHistoryMarker(e.target));
+    this.left.addEventListener("change", (e) => {
+      const target = e.target;
+      const key = target?.dataset?.setting;
+      if (target instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
+        this.settings[key] = this.parseNumericInput(target, this.settings[key]);
+        target.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
+        if (key === "inference_scale") this.syncInferenceControls(target);
+        this.syncToNode();
+      }
+      this.clearInputHistoryMarker(target);
+    });
     this.setTool(this.tool);
   }
 
@@ -828,14 +923,16 @@ class UniCanvasWidget {
         schedulers: data.schedulers || [],
       };
       this.checkpoints = this.assets.checkpoints;
-      this.fillSelect("ckpt_name", this.assets.checkpoints);
-      this.fillSelect("diffusion_model_name", this.assets.diffusion_models);
-      this.fillSelect("clip_name", this.assets.text_encoders);
-      this.fillSelect("vae_name", this.assets.vae_models);
+      for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
+        for (const field of module.fields || []) {
+          this.fillSelect(field.setting, this.assets[field.asset] || []);
+        }
+      }
       if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
       if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
       if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
       if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
+      this.normalizeGenerationMode();
       this.syncPromptControls();
     } catch (err) {
       this.setStatus(`Asset list failed: ${err.message || err}`, true);
@@ -848,27 +945,29 @@ class UniCanvasWidget {
     select.innerHTML = (values || []).map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
   }
 
+  normalizeGenerationMode() {
+    const module = getUniCanvasModelModule(this.settings.generation_mode);
+    this.settings.generation_mode = module.key;
+    for (const field of module.fields || []) {
+      const values = this.assets[field.asset] || [];
+      if (!this.settings[field.setting] && values[0]) this.settings[field.setting] = values[0];
+    }
+    return module;
+  }
+
   applyGenerationModeDefaults(mode) {
-    if (mode === "anima") {
-      this.settings.sampler_name = "er_sde";
-      this.settings.scheduler = "simple";
-      this.settings.steps = 30;
-      this.settings.cfg = 4;
-      if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
-      if (!this.settings.clip_name) this.settings.clip_name = "qwen_3_06b_base.safetensors";
-      if (!this.settings.vae_name) this.settings.vae_name = "qwen_image_vae.safetensors";
-    } else {
-      this.settings.sampler_name = "euler";
-      this.settings.scheduler = "normal";
-      this.settings.steps = 24;
-      this.settings.cfg = 7;
+    const module = getUniCanvasModelModule(mode);
+    this.settings = { ...this.settings, ...module.defaults, generation_mode: module.key };
+    for (const field of module.fields || []) {
+      const values = this.assets[field.asset] || [];
+      if (!this.settings[field.setting] && values[0]) this.settings[field.setting] = values[0];
     }
     this.syncInferenceControls();
     this.syncPromptControls();
   }
 
   getModelBase() {
-    return (this.settings.generation_mode || "illustrious") === "anima" ? "anima" : "sdxl";
+    return getUniCanvasModelModule(this.settings.generation_mode).base;
   }
 
   getGridSize() {
@@ -896,11 +995,11 @@ class UniCanvasWidget {
     };
   }
 
-  syncInferenceControls() {
+  syncInferenceControls(source = null) {
     const scaleInput = this.container.querySelector('[data-setting="inference_scale"]');
     const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
     this.settings.inference_scale = scale;
-    if (scaleInput) scaleInput.value = this.formatSettingNumber(scale, 3);
+    if (scaleInput && scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
   }
 
   syncDenoiseControls(source = null) {
@@ -2843,13 +2942,10 @@ class UniCanvasWidget {
   }
 
   async draw() {
-    const generationMode = this.settings.generation_mode || "illustrious";
-    if (generationMode !== "anima" && !this.settings.ckpt_name) {
-      this.setStatus("Select a checkpoint first", true);
-      return;
-    }
-    if (generationMode === "anima" && (!this.settings.diffusion_model_name || !this.settings.clip_name || !this.settings.vae_name)) {
-      this.setStatus("Select Anima diffusion, CLIP and VAE first", true);
+    const modelModule = this.normalizeGenerationMode();
+    const validationError = modelModule.validate?.(this.settings);
+    if (validationError) {
+      this.setStatus(validationError, true);
       return;
     }
     this.drawInProgress = true;
@@ -3150,11 +3246,15 @@ class UniCanvasWidget {
   }
 
   syncPromptControls() {
+    const activeModule = this.normalizeGenerationMode();
     this.syncInferenceControls();
+    this.container.querySelectorAll("[data-model-field]").forEach((el) => {
+      el.style.display = el.dataset.modelField === activeModule.key ? "" : "none";
+    });
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
       if (!(key in this.settings)) return;
-      if (el instanceof HTMLInputElement && (el.type === "number" || el.type === "range")) {
+      if (el instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
         el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
       } else {
         el.value = this.settings[key];
