@@ -685,7 +685,7 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         shift = float(gen_settings.get("aura_flow_shift", 3.0))
         patched_model = _call_node_method(
             ["ModelSamplingAuraFlow"],
-            ["patch", "apply", "model_sampling"],
+            ["patch_aura"],
             model=model,
             shift=shift,
         )
