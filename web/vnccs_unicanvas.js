@@ -398,6 +398,9 @@ class UniCanvasWidget {
     this.drawProgressTimer = null;
     this.renderQueued = false;
     this.settingsSyncTimer = null;
+    this.fullSyncTimer = null;
+    this.thumbnailRenderQueue = [];
+    this.thumbnailRenderQueued = false;
     this.deferredCanvasCommitTimer = null;
     this.undoStack = [];
     this.redoStack = [];
@@ -778,8 +781,8 @@ class UniCanvasWidget {
     this.activeLayerId = this.layers[0].id;
   }
 
-  addLayer(type = "raster", name = null, recordHistory = true) {
-    if (recordHistory) this.recordHistoryBefore();
+  addLayer(type = "raster", name = null, recordHistory = true, deferRender = false) {
+    const previousActiveLayerId = this.activeLayerId;
     const layer = {
       id: uid(),
       name: name || this.getNextLayerName(type),
@@ -793,9 +796,14 @@ class UniCanvasWidget {
     this.invalidateLayerCaches(layer);
     this.layers.unshift(layer);
     this.activeLayerId = layer.id;
+    if (recordHistory) {
+      this.pushHistoryEntry({ kind: "addLayer", layer, previousActiveLayerId });
+    }
+    if (deferRender) return layer;
     this.renderLayerList();
-    this.render();
-    this.syncToNode();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
     return layer;
   }
 
@@ -981,8 +989,11 @@ class UniCanvasWidget {
     this.layerSubhead.addEventListener("input", onLayerSubheadChange);
     this.layerSubhead.addEventListener("change", (e) => {
       onLayerSubheadChange(e);
-      this.renderLayerList();
-      this.syncToNode();
+      const layer = this.activeLayer;
+      const row = layer ? this.layerList.querySelector(`[data-layer-id="${layer.id}"]`) : null;
+      if (row) this.updateLayerRow(row, layer);
+      this.syncLightStateToWidget();
+      this.scheduleFullSync();
       this.clearInputHistoryMarker(e.target);
     });
 
@@ -1613,7 +1624,7 @@ class UniCanvasWidget {
     };
   }
 
-  createHistorySnapshot() {
+  createHistorySnapshot(clonePixels = true) {
     return {
       origin: { ...this.origin },
       size: { ...this.size },
@@ -1625,8 +1636,8 @@ class UniCanvasWidget {
       resizeKeepAspect: this.resizeKeepAspect,
       settings: JSON.parse(JSON.stringify(this.settings)),
       activeLayerId: this.activeLayerId,
-      layers: this.layers.map((layer) => this.cloneHistoryLayer(layer)),
-      stagingItems: this.stagingItems.map((item) => this.cloneHistoryStagingItem(item)),
+      layers: clonePixels ? this.layers.map((layer) => this.cloneHistoryLayer(layer)) : this.layers,
+      stagingItems: clonePixels ? this.stagingItems.map((item) => this.cloneHistoryStagingItem(item)) : this.stagingItems,
       activeStagingIndex: this.activeStagingIndex,
     };
   }
@@ -1644,9 +1655,15 @@ class UniCanvasWidget {
     this.fg = snapshot.fg || this.fg;
     this.resizeKeepAspect = typeof snapshot.resizeKeepAspect === "boolean" ? snapshot.resizeKeepAspect : this.resizeKeepAspect;
     this.settings = JSON.parse(JSON.stringify(snapshot.settings || this.settings));
-    this.layers = snapshot.layers.map((layer) => this.cloneHistoryLayer(layer));
+    this.layers = snapshot.layers || [];
+    for (const layer of this.layers) this.invalidateLayerCaches(layer);
     this.activeLayerId = snapshot.activeLayerId || this.layers[0]?.id || null;
-    this.stagingItems = (snapshot.stagingItems || []).map((item) => this.cloneHistoryStagingItem(item));
+    this.stagingItems = snapshot.stagingItems || [];
+    for (const item of this.stagingItems) {
+      item._maskedCanvas = null;
+      item._maskedSource = null;
+      item._maskedMask = null;
+    }
     this.activeStagingIndex = Math.max(-1, Math.min(snapshot.activeStagingIndex ?? -1, this.stagingItems.length - 1));
     this.historyRestoring = false;
     this.setTool(this.tool);
@@ -1665,10 +1682,26 @@ class UniCanvasWidget {
     this.updateHistoryButtons();
   }
 
+  pushHistoryEntry(entry) {
+    if (this._isRestoring || this.historyRestoring || !entry) return;
+    this.undoStack.push(entry);
+    if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+    this.redoStack = [];
+    this.updateHistoryButtons();
+  }
+
   undo() {
     if (!this.undoStack.length) return;
     const previous = this.undoStack.pop();
-    this.redoStack.push(this.createHistorySnapshot());
+    if (previous?.kind) {
+      this.applyHistoryEntry(previous, "undo");
+      this.redoStack.push(previous);
+      if (this.redoStack.length > HISTORY_LIMIT) this.redoStack.shift();
+      this.updateHistoryButtons();
+      this.setStatus("Undo");
+      return;
+    }
+    this.redoStack.push(this.createHistorySnapshot(false));
     if (this.redoStack.length > HISTORY_LIMIT) this.redoStack.shift();
     this.restoreHistorySnapshot(previous);
     this.updateHistoryButtons();
@@ -1678,11 +1711,55 @@ class UniCanvasWidget {
   redo() {
     if (!this.redoStack.length) return;
     const next = this.redoStack.pop();
-    this.undoStack.push(this.createHistorySnapshot());
+    if (next?.kind) {
+      this.applyHistoryEntry(next, "redo");
+      this.undoStack.push(next);
+      if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
+      this.updateHistoryButtons();
+      this.setStatus("Redo");
+      return;
+    }
+    this.undoStack.push(this.createHistorySnapshot(false));
     if (this.undoStack.length > HISTORY_LIMIT) this.undoStack.shift();
     this.restoreHistorySnapshot(next);
     this.updateHistoryButtons();
     this.setStatus("Redo");
+  }
+
+  applyHistoryEntry(entry, direction) {
+    if (!entry?.kind) return;
+    this.cancelDeferredCanvasCommit();
+    this.historyRestoring = true;
+    if (entry.kind === "acceptStaging") {
+      if (direction === "undo") {
+        this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
+        this.stagingItems = entry.stagingItems || [];
+        this.activeStagingIndex = entry.activeStagingIndex ?? (this.stagingItems.length ? this.stagingItems.length - 1 : -1);
+        this.activeLayerId = entry.previousActiveLayerId || this.layers[0]?.id || null;
+      } else {
+        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.layers.unshift(entry.layer);
+        this.stagingItems = [];
+        this.activeStagingIndex = -1;
+        this.activeLayerId = entry.layer.id;
+      }
+      this.invalidateLayerCaches(entry.layer);
+    }
+    if (entry.kind === "addLayer") {
+      if (direction === "undo") {
+        this.layers = this.layers.filter((layer) => layer.id !== entry.layer.id);
+        this.activeLayerId = entry.previousActiveLayerId || this.layers[0]?.id || null;
+      } else {
+        if (!this.layers.some((layer) => layer.id === entry.layer.id)) this.layers.unshift(entry.layer);
+        this.activeLayerId = entry.layer.id;
+      }
+      this.invalidateLayerCaches(entry.layer);
+    }
+    this.historyRestoring = false;
+    this.syncActiveLayerControls();
+    this.renderLayerList();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
   }
 
   updateHistoryButtons() {
@@ -2610,6 +2687,7 @@ class UniCanvasWidget {
   }
 
   renderLayerList() {
+    this.thumbnailRenderQueue = [];
     this.layerList.innerHTML = "";
     for (const layer of this.layers) {
       const row = document.createElement("div");
@@ -2621,7 +2699,8 @@ class UniCanvasWidget {
       thumb.title = layer.visible ? "Hide layer" : "Show layer";
       thumb.width = 68;
       thumb.height = 68;
-      this.drawLayerThumbnail(thumb, layer);
+      this.drawLayerThumbnailPlaceholder(thumb, layer);
+      this.queueLayerThumbnailRender(thumb, layer);
       const label = document.createElement("div");
       label.innerHTML = `<div class="vnccs-uc-layer-name">${this._escape(layer.name)}</div><div class="vnccs-uc-layer-type">${layer.type}${layer.visible ? "" : " hidden"}</div>`;
       const lock = this._button(layer.locked ? UI_ICONS.lock : UI_ICONS.unlock, "vnccs-uc-icon", null, layer.locked ? "Unlock layer" : "Lock layer");
@@ -2665,14 +2744,19 @@ class UniCanvasWidget {
       });
       thumb.addEventListener("click", (e) => {
         e.stopPropagation();
-        this.recordHistoryBefore();
         layer.visible = !layer.visible;
-        this.renderLayerList();
-        this.render();
-        this.syncToNode();
-        void this.flushStateUpload(false);
+        this.updateLayerRow(row, layer);
+        this.requestRender();
+        this.syncLightStateToWidget();
+        this.scheduleFullSync();
       });
-      lock.addEventListener("click", (e) => { e.stopPropagation(); this.recordHistoryBefore(); layer.locked = !layer.locked; this.renderLayerList(); this.syncToNode(); });
+      lock.addEventListener("click", (e) => {
+        e.stopPropagation();
+        layer.locked = !layer.locked;
+        this.updateLayerRow(row, layer);
+        this.syncLightStateToWidget();
+        this.scheduleFullSync();
+      });
       del.addEventListener("click", (e) => { e.stopPropagation(); this.deleteLayer(layer.id); });
       this.layerList.append(row);
     }
@@ -2687,6 +2771,60 @@ class UniCanvasWidget {
       this.reorderLayer(sourceId, this.layers[this.layers.length - 1]?.id, "after");
     };
     this.syncActiveLayerControls();
+  }
+
+  updateLayerRow(row, layer) {
+    if (!row || !layer) return;
+    row.classList.toggle("active", layer.id === this.activeLayerId);
+    const thumb = row.querySelector(".vnccs-uc-thumb");
+    if (thumb instanceof HTMLCanvasElement) {
+      thumb.title = layer.visible ? "Hide layer" : "Show layer";
+      this.drawLayerThumbnailPlaceholder(thumb, layer);
+      this.queueLayerThumbnailRender(thumb, layer);
+    }
+    const name = row.querySelector(".vnccs-uc-layer-name");
+    if (name) name.textContent = layer.name;
+    const type = row.querySelector(".vnccs-uc-layer-type");
+    if (type) type.textContent = `${layer.type}${layer.visible ? "" : " hidden"}`;
+    const buttons = row.querySelectorAll(".vnccs-uc-icon");
+    const lock = buttons[0];
+    if (lock) {
+      lock.innerHTML = layer.locked ? UI_ICONS.lock : UI_ICONS.unlock;
+      lock.title = layer.locked ? "Unlock layer" : "Lock layer";
+    }
+  }
+
+  drawLayerThumbnailPlaceholder(canvas, layer) {
+    const ctx = canvas.getContext("2d");
+    const size = canvas.width;
+    ctx.clearRect(0, 0, size, size);
+    this.drawCheckerboard(ctx, size, 5);
+    ctx.fillStyle = layer.type === "mask" ? "rgba(255,143,163,.28)" : "rgba(255,255,255,.12)";
+    ctx.beginPath();
+    ctx.arc(size / 2, size / 2, size * 0.16, 0, Math.PI * 2);
+    ctx.fill();
+    if (!layer.visible) this.drawHiddenSlash(ctx, size);
+  }
+
+  queueLayerThumbnailRender(canvas, layer) {
+    this.thumbnailRenderQueue.push({ canvas, layer, layerId: layer.id });
+    if (this.thumbnailRenderQueued) return;
+    this.thumbnailRenderQueued = true;
+    window.requestAnimationFrame(() => this.flushLayerThumbnailQueue());
+  }
+
+  flushLayerThumbnailQueue() {
+    const started = performance.now();
+    while (this.thumbnailRenderQueue.length && performance.now() - started < 8) {
+      const item = this.thumbnailRenderQueue.shift();
+      if (!item?.canvas?.isConnected || !this.layers.includes(item.layer) || item.layer.id !== item.layerId) continue;
+      this.drawLayerThumbnail(item.canvas, item.layer);
+    }
+    if (this.thumbnailRenderQueue.length) {
+      window.requestAnimationFrame(() => this.flushLayerThumbnailQueue());
+      return;
+    }
+    this.thumbnailRenderQueued = false;
   }
 
   setActiveLayer(layerId) {
@@ -3356,7 +3494,6 @@ class UniCanvasWidget {
         });
       }
       const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
-      this.recordHistoryBefore();
       this.addStagingItem({
         url,
         bbox: { ...requestBbox },
@@ -3399,12 +3536,14 @@ class UniCanvasWidget {
   async acceptStaging() {
     const staging = this.activeStaging;
     if (!staging) return;
-    this.recordHistoryBefore();
+    const previousStagingItems = this.stagingItems;
+    const previousActiveStagingIndex = this.activeStagingIndex;
+    const previousActiveLayerId = this.activeLayerId;
     const img = staging.img || await this.loadImage(staging.url);
     const placement = this.getStagingImageRect();
     if (!this.ensureWorldBounds(placement.x + placement.width, placement.y + placement.height, 128)) return;
     if (!this.ensureWorldBounds(placement.x, placement.y, 128)) return;
-    const layer = this.addLayer("raster", null, false);
+    const layer = this.addLayer("raster", null, false, true);
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     const hiresWidth = Math.max(1, img.naturalWidth || img.width || placement.width);
     const hiresHeight = Math.max(1, img.naturalHeight || img.height || placement.height);
@@ -3415,25 +3554,31 @@ class UniCanvasWidget {
     this.invalidateLayerCaches(layer);
     this.stagingItems = [];
     this.activeStagingIndex = -1;
-    this.render();
+    this.pushHistoryEntry({
+      kind: "acceptStaging",
+      layer,
+      stagingItems: previousStagingItems,
+      activeStagingIndex: previousActiveStagingIndex,
+      previousActiveLayerId,
+    });
+    this.requestRender();
     this.renderLayerList();
-    this.syncToNode();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
     this.setStatus("Staging accepted; remaining results discarded");
   }
 
   discardStaging() {
-    this.recordHistoryBefore();
     this.removeActiveStagingItem();
-    this.render();
+    this.requestRender();
     this.setStatus(this.stagingItems.length ? `Staging discarded (${this.stagingItems.length} left)` : "Staging discarded");
   }
 
   toggleStagingVisibility() {
     const staging = this.activeStaging;
     if (!staging) return;
-    this.recordHistoryBefore();
     staging.visible = staging.visible === false;
-    this.render();
+    this.requestRender();
   }
 
   async loadAgPsd() {
@@ -3619,6 +3764,8 @@ class UniCanvasWidget {
     if (this._isRestoring) return;
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
+    clearTimeout(this.fullSyncTimer);
+    this.fullSyncTimer = null;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
     const state = this.buildSerializedState(false);
@@ -3635,16 +3782,22 @@ class UniCanvasWidget {
   syncSettingsToWidget() {
     if (this._isRestoring) return;
     clearTimeout(this.settingsSyncTimer);
-    this.settingsSyncTimer = window.setTimeout(() => this.writeSettingsToWidget(), 250);
+    this.settingsSyncTimer = window.setTimeout(() => this.writeLightStateToWidget(), 250);
   }
 
   flushSettingsToWidget() {
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
-    this.writeSettingsToWidget();
+    this.writeLightStateToWidget();
   }
 
-  writeSettingsToWidget() {
+  syncLightStateToWidget() {
+    if (this._isRestoring) return;
+    clearTimeout(this.settingsSyncTimer);
+    this.settingsSyncTimer = window.setTimeout(() => this.writeLightStateToWidget(), 80);
+  }
+
+  writeLightStateToWidget() {
     if (this._isRestoring) return;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
@@ -3665,8 +3818,10 @@ class UniCanvasWidget {
     state.bbox = this.bbox;
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
-    if (!Array.isArray(state.layers)) {
-      state.layers = this.layers.map((layer) => ({
+    const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
+    state.layers = this.layers.map((layer) => {
+      const previous = previousById.get(layer.id) || {};
+      return {
         id: layer.id,
         name: layer.name,
         type: layer.type,
@@ -3674,14 +3829,28 @@ class UniCanvasWidget {
         locked: layer.locked,
         opacity: layer.opacity,
         blendMode: layer.blendMode || "source-over",
-        crop: null,
+        crop: previous.crop ?? null,
         dataURL: null,
-        cached: true,
+        cached: previous.cached ?? true,
         hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
         hiresDataURL: null,
-      }));
-    }
+      };
+    });
     widget.value = JSON.stringify(state);
+  }
+
+  scheduleFullSync(delay = 900) {
+    if (this._isRestoring) return;
+    clearTimeout(this.fullSyncTimer);
+    this.fullSyncTimer = window.setTimeout(() => {
+      this.fullSyncTimer = null;
+      const run = () => this.syncToNode();
+      if (typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(run, { timeout: 2500 });
+      } else {
+        window.setTimeout(run, 0);
+      }
+    }, delay);
   }
 
   buildSerializedState(includeLayerData) {
