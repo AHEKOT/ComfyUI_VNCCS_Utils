@@ -93,6 +93,11 @@ const STYLES = `
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
 .vnccs-uc-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
+.vnccs-uc-seed-row { display:grid; grid-template-columns:minmax(0,1fr) 42px; gap:6px; align-items:stretch; }
+.vnccs-uc-seed-row .vnccs-uc-input { width:100%; box-sizing:border-box; }
+.vnccs-uc-seed-dice { height:28px; border-radius:8px; }
+.vnccs-uc-seed-dice svg { width:17px; height:17px; }
+.vnccs-uc-seed-dice.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; box-shadow:0 0 0 1px rgba(255,143,163,.14) inset; }
 .vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
 .vnccs-uc-status { min-height:16px; color:var(--uc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layers-footer { padding:6px; border-top:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
@@ -221,6 +226,7 @@ function makeDefaultUniCanvasSettings() {
     positive: "",
     negative: "",
     seed: 0,
+    seed_mode: "fixed",
     denoise: 0.65,
     grow_mask_by: 6,
   };
@@ -248,6 +254,7 @@ const UI_ICONS = {
   undo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>`,
   redo: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 7 5 5-5 5"/><path d="M4 18v-2a4 4 0 0 1 4-4h12"/></svg>`,
   snap: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14"/><path d="M5 12h14"/><path d="M5 19h14"/><path d="M5 5v14"/><path d="M12 5v14"/><path d="M19 5v14"/><path d="m14.5 9.5 3 3-3 3"/><path d="M8 12h9"/></svg>`,
+  dice: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" class="fill"/><circle cx="15.5" cy="8.5" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="8.5" cy="15.5" r="1.4" class="fill"/><circle cx="15.5" cy="15.5" r="1.4" class="fill"/></svg>`,
 };
 const STAGING_ICONS = {
   discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
@@ -431,8 +438,13 @@ class UniCanvasWidget {
       <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
       <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
       ${modelFields}
+      <label class="vnccs-uc-field">Seed
+        <span class="vnccs-uc-seed-row">
+          <input class="vnccs-uc-input" data-setting="seed" type="number" min="0">
+          <button class="vnccs-uc-icon vnccs-uc-seed-dice" type="button" data-action="seed-mode" title="Random seed">${UI_ICONS.dice}</button>
+        </span>
+      </label>
       <div class="vnccs-uc-mini-grid">
-        <label class="vnccs-uc-field">Seed<input class="vnccs-uc-input" data-setting="seed" type="number"></label>
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" lang="en-US" inputmode="decimal" step="0.1"></label>
       </div>`;
@@ -552,6 +564,12 @@ class UniCanvasWidget {
     if (String(input.value).includes(".")) return;
     input.value = `${input.value || "0"}.`;
     input.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  generateRandomSeed() {
+    const hi = Math.floor(Math.random() * 0x200000);
+    const lo = Math.floor(Math.random() * 0x100000000);
+    return hi * 0x100000000 + lo || 1;
   }
 
   promptInWidget(title, label, value = "") {
@@ -832,6 +850,15 @@ class UniCanvasWidget {
         if (NUMERIC_SETTINGS.has(input.dataset.setting)) this.normalizeNumericInputValue(input);
       });
     }, 0));
+    this.container.addEventListener("click", (e) => {
+      const btn = e.target?.closest?.('[data-action="seed-mode"]');
+      if (!(btn instanceof HTMLElement)) return;
+      e.preventDefault();
+      this.recordHistoryBefore();
+      this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+      this.syncSeedModeControl();
+      this.syncToNode();
+    });
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
     this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     const onLayerSubheadChange = (e) => {
@@ -2948,6 +2975,11 @@ class UniCanvasWidget {
       this.setStatus(validationError, true);
       return;
     }
+    if ((this.settings.seed_mode || "fixed") === "randomize") {
+      this.settings.seed = this.generateRandomSeed();
+      this.syncPromptControls();
+      this.syncToNode();
+    }
     this.drawInProgress = true;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestBbox = { ...this.bbox };
@@ -3262,6 +3294,16 @@ class UniCanvasWidget {
     });
     this.syncInferenceControls();
     this.syncDenoiseControls();
+    this.syncSeedModeControl();
+  }
+
+  syncSeedModeControl() {
+    const btn = this.container.querySelector('[data-action="seed-mode"]');
+    if (!btn) return;
+    const randomMode = (this.settings.seed_mode || "fixed") === "randomize";
+    btn.classList.toggle("active", randomMode);
+    btn.title = randomMode ? "Random seed" : "Fixed seed";
+    btn.setAttribute("aria-pressed", randomMode ? "true" : "false");
   }
 
   syncToNode() {
