@@ -100,7 +100,7 @@ const STYLES = `
 .vnccs-uc-icon.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; }
-.vnccs-uc-textarea { height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; }
+.vnccs-uc-textarea { min-height:54px; height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; overflow:hidden; line-height:1.28; }
 .vnccs-uc-field { display:flex; flex-direction:column; gap:4px; min-width:62px; color:var(--uc-muted); }
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
@@ -1141,6 +1141,7 @@ class UniCanvasWidget {
       const key = target?.dataset?.setting;
       if (!key) return;
       this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
+      if (target instanceof HTMLTextAreaElement) this.resizeTextareaToContent(target);
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
       if (key === "model_loader") this.applyModelLoaderDefaults(target.value);
       if (["ckpt_name", "diffusion_model_name", "gguf_model_name"].includes(key)) {
@@ -4688,6 +4689,17 @@ class UniCanvasWidget {
     this.syncInferenceControls();
     this.syncDenoiseControls();
     this.syncSeedModeControl();
+    this.autoResizePromptTextareas();
+  }
+
+  resizeTextareaToContent(textarea) {
+    if (!(textarea instanceof HTMLTextAreaElement)) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.max(54, textarea.scrollHeight)}px`;
+  }
+
+  autoResizePromptTextareas() {
+    this.container.querySelectorAll(".vnccs-uc-textarea").forEach((textarea) => this.resizeTextareaToContent(textarea));
   }
 
   syncSeedModeControl() {
