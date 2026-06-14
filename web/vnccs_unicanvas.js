@@ -91,6 +91,7 @@ const STYLES = `
 .vnccs-uc-field { display:flex; flex-direction:column; gap:4px; min-width:62px; color:var(--uc-muted); }
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
+.vnccs-uc-mode-loader-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
 .vnccs-uc-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
 .vnccs-uc-seed-row { display:grid; grid-template-columns:minmax(0,1fr) 42px; gap:6px; align-items:stretch; }
@@ -154,7 +155,7 @@ const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
     aliases: ["illustrious"],
-    label: "SDXL checkpoint",
+    label: "SDXL",
     base: "sdxl",
     defaults: {
       generation_mode: "sdxl",
@@ -162,12 +163,6 @@ const UNICANVAS_MODEL_MODULES = {
       scheduler: "normal",
       steps: 24,
       cfg: 7,
-    },
-    fields: [
-      { setting: "ckpt_name", label: "Checkpoint", asset: "checkpoints" },
-    ],
-    validate(settings) {
-      return settings.ckpt_name ? null : "Select a checkpoint first";
     },
   },
   anima: {
@@ -189,20 +184,58 @@ const UNICANVAS_MODEL_MODULES = {
       dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
       dmd_lora_strength: 1,
     },
+  },
+};
+const UNICANVAS_MODEL_LOADERS = {
+  checkpoint: {
+    key: "checkpoint",
+    label: "Checkpoint",
+    forcedMode: "sdxl",
+    defaults: { model_loader: "checkpoint" },
     fields: [
-      { setting: "diffusion_model_name", label: "Diffusion", asset: "diffusion_models" },
+      { setting: "ckpt_name", label: "Checkpoint", asset: "checkpoints" },
+    ],
+    validate(settings) {
+      return settings.ckpt_name ? null : "Select a checkpoint first";
+    },
+  },
+  diffusion_model: {
+    key: "diffusion_model",
+    aliases: ["unet", "diffusion"],
+    label: "Diffusion Model",
+    defaults: { model_loader: "diffusion_model" },
+    fields: [
+      { setting: "diffusion_model_name", label: "Diffusion Model", asset: "diffusion_models" },
       { setting: "clip_name", label: "CLIP", asset: "text_encoders" },
       { setting: "vae_name", label: "VAE", asset: "vae_models" },
     ],
     validate(settings) {
       return settings.diffusion_model_name && settings.clip_name && settings.vae_name
         ? null
-        : "Select Anima diffusion, CLIP and VAE first";
+        : "Select diffusion model, CLIP and VAE first";
+    },
+  },
+  gguf: {
+    key: "gguf",
+    label: "GGUF",
+    defaults: { model_loader: "gguf" },
+    fields: [
+      { setting: "gguf_model_name", label: "GGUF Model", asset: "gguf_models" },
+      { setting: "clip_name", label: "CLIP", asset: "text_encoders" },
+      { setting: "vae_name", label: "VAE", asset: "vae_models" },
+    ],
+    validate(settings) {
+      return settings.gguf_model_name && settings.clip_name && settings.vae_name
+        ? null
+        : "Select GGUF model, CLIP and VAE first";
     },
   },
 };
 const UNICANVAS_MODEL_ALIASES = Object.fromEntries(
   Object.values(UNICANVAS_MODEL_MODULES).flatMap((module) => [[module.key, module.key], ...(module.aliases || []).map((alias) => [alias, module.key])])
+);
+const UNICANVAS_LOADER_ALIASES = Object.fromEntries(
+  Object.values(UNICANVAS_MODEL_LOADERS).flatMap((loader) => [[loader.key, loader.key], ...(loader.aliases || []).map((alias) => [alias, loader.key])])
 );
 
 function getUniCanvasModelModule(mode) {
@@ -210,11 +243,18 @@ function getUniCanvasModelModule(mode) {
   return UNICANVAS_MODEL_MODULES[key] || UNICANVAS_MODEL_MODULES.sdxl;
 }
 
+function getUniCanvasModelLoader(loaderType) {
+  const key = UNICANVAS_LOADER_ALIASES[String(loaderType || "checkpoint").toLowerCase()] || "checkpoint";
+  return UNICANVAS_MODEL_LOADERS[key] || UNICANVAS_MODEL_LOADERS.checkpoint;
+}
+
 function makeDefaultUniCanvasSettings() {
   return {
     ...UNICANVAS_MODEL_MODULES.sdxl.defaults,
+    model_loader: "checkpoint",
     ckpt_name: "",
     diffusion_model_name: "",
+    gguf_model_name: "",
     clip_name: UNICANVAS_MODEL_MODULES.anima.defaults.clip_name,
     vae_name: UNICANVAS_MODEL_MODULES.anima.defaults.vae_name,
     clip_type: UNICANVAS_MODEL_MODULES.anima.defaults.clip_type,
@@ -231,6 +271,8 @@ function makeDefaultUniCanvasSettings() {
     grow_mask_by: 6,
   };
 }
+
+const MODEL_SELECTION_SETTINGS = new Set(["ckpt_name", "diffusion_model_name", "gguf_model_name", "clip_name", "vae_name"]);
 const TOOL_ICONS = {
   move: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg>`,
   brush: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 19 10"/><path d="M4 20c3 0 5-1 6.5-2.5L19 9a2.8 2.8 0 0 0-4-4l-8.5 8.5C5 15 4 17 4 20Z"/><path d="M6.5 13.5 10.5 17.5"/></svg>`,
@@ -312,7 +354,7 @@ class UniCanvasWidget {
     this.redoStack = [];
     this.historyRestoring = false;
     this.snapToGrid = false;
-    this.assets = { checkpoints: [], diffusion_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
+    this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = makeDefaultUniCanvasSettings();
 
@@ -426,18 +468,24 @@ class UniCanvasWidget {
     const modelModeOptions = Object.values(UNICANVAS_MODEL_MODULES)
       .map((module) => `<option value="${this._escape(module.key)}">${this._escape(module.label)}</option>`)
       .join("");
-    const modelFields = Object.values(UNICANVAS_MODEL_MODULES).flatMap((module) =>
-      (module.fields || []).map((field) => `
-        <label class="vnccs-uc-field" data-model-field="${this._escape(module.key)}">
+    const modelLoaderOptions = Object.values(UNICANVAS_MODEL_LOADERS)
+      .map((loader) => `<option value="${this._escape(loader.key)}">${this._escape(loader.label)}</option>`)
+      .join("");
+    const loaderFields = Object.values(UNICANVAS_MODEL_LOADERS).flatMap((loader) =>
+      (loader.fields || []).map((field) => `
+        <label class="vnccs-uc-field" data-loader-field="${this._escape(loader.key)}">
           ${this._escape(field.label)}<select class="vnccs-uc-select" data-setting="${this._escape(field.setting)}"></select>
         </label>`)
     ).join("");
     this.promptBox.innerHTML = `
       <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
-      <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
+      <div class="vnccs-uc-mode-loader-row">
+        <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
+        <label class="vnccs-uc-field">Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
+      </div>
       <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
-      ${modelFields}
+      ${loaderFields}
       <label class="vnccs-uc-field">Seed
         <span class="vnccs-uc-seed-row">
           <input class="vnccs-uc-input" data-setting="seed" type="number" min="0">
@@ -919,6 +967,11 @@ class UniCanvasWidget {
       this.recordInputHistory(target);
       this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
+      if (key === "model_loader") this.applyModelLoaderDefaults(target.value);
+      if (["ckpt_name", "diffusion_model_name", "gguf_model_name"].includes(key)) {
+        this.autoDetectGenerationModeFromModel();
+        this.syncPromptControls();
+      }
       if (key === "inference_scale") this.syncInferenceControls(target);
       this.syncToNode();
     });
@@ -943,6 +996,7 @@ class UniCanvasWidget {
       this.assets = {
         checkpoints: data.checkpoints || [],
         diffusion_models: data.diffusion_models || [],
+        gguf_models: data.gguf_models || [],
         text_encoders: data.text_encoders || [],
         vae_models: data.vae_models || [],
         loras: data.loras || [],
@@ -950,16 +1004,17 @@ class UniCanvasWidget {
         schedulers: data.schedulers || [],
       };
       this.checkpoints = this.assets.checkpoints;
-      for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
-        for (const field of module.fields || []) {
+      for (const loader of Object.values(UNICANVAS_MODEL_LOADERS)) {
+        for (const field of loader.fields || []) {
           this.fillSelect(field.setting, this.assets[field.asset] || []);
         }
       }
       if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
       if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
+      if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
       if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
       if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
-      this.normalizeGenerationMode();
+      this.normalizeGenerationSettings();
       this.syncPromptControls();
     } catch (err) {
       this.setStatus(`Asset list failed: ${err.message || err}`, true);
@@ -967,30 +1022,82 @@ class UniCanvasWidget {
   }
 
   fillSelect(setting, values) {
-    const select = this.container.querySelector(`[data-setting="${setting}"]`);
-    if (!select) return;
-    select.innerHTML = (values || []).map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
+    const selects = this.container.querySelectorAll(`[data-setting="${setting}"]`);
+    if (!selects.length) return;
+    const options = (values || []).map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
+    selects.forEach((select) => {
+      select.innerHTML = options;
+    });
   }
 
-  normalizeGenerationMode() {
+  normalizeGenerationSettings() {
+    const loader = getUniCanvasModelLoader(this.settings.model_loader);
+    this.settings.model_loader = loader.key;
+    for (const field of loader.fields || []) {
+      const values = this.assets[field.asset] || [];
+      if (values.length && !values.includes(this.settings[field.setting])) {
+        this.settings[field.setting] = values[0];
+      }
+    }
+    if (loader.forcedMode) this.settings.generation_mode = loader.forcedMode;
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
-    for (const field of module.fields || []) {
-      const values = this.assets[field.asset] || [];
-      if (!this.settings[field.setting] && values[0]) this.settings[field.setting] = values[0];
-    }
+    return { module, loader };
+  }
+
+  applyInferenceModuleDefaults(mode) {
+    const module = getUniCanvasModelModule(mode);
+    const preserved = {};
+    for (const key of MODEL_SELECTION_SETTINGS) preserved[key] = this.settings[key];
+    this.settings = { ...this.settings, ...module.defaults, ...preserved, generation_mode: module.key };
     return module;
   }
 
   applyGenerationModeDefaults(mode) {
-    const module = getUniCanvasModelModule(mode);
-    this.settings = { ...this.settings, ...module.defaults, generation_mode: module.key };
-    for (const field of module.fields || []) {
-      const values = this.assets[field.asset] || [];
-      if (!this.settings[field.setting] && values[0]) this.settings[field.setting] = values[0];
-    }
+    this.applyInferenceModuleDefaults(mode);
     this.syncInferenceControls();
     this.syncPromptControls();
+  }
+
+  applyModelLoaderDefaults(loaderType) {
+    const loader = getUniCanvasModelLoader(loaderType);
+    this.settings = { ...this.settings, ...loader.defaults, model_loader: loader.key };
+    for (const field of loader.fields || []) {
+      const values = this.assets[field.asset] || [];
+      if (values.length && !values.includes(this.settings[field.setting])) {
+        this.settings[field.setting] = values[0];
+      }
+    }
+    if (loader.forcedMode) {
+      this.applyInferenceModuleDefaults(loader.forcedMode);
+    } else {
+      this.autoDetectGenerationModeFromModel();
+    }
+    this.syncPromptControls();
+  }
+
+  getSelectedModelNameForLoader() {
+    const loader = getUniCanvasModelLoader(this.settings.model_loader);
+    if (loader.key === "checkpoint") return this.settings.ckpt_name || "";
+    if (loader.key === "gguf") return this.settings.gguf_model_name || "";
+    return this.settings.diffusion_model_name || "";
+  }
+
+  autoDetectGenerationModeFromModel() {
+    const loader = getUniCanvasModelLoader(this.settings.model_loader);
+    if (loader.forcedMode) {
+      this.applyInferenceModuleDefaults(loader.forcedMode);
+      return;
+    }
+    const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
+    if (!name) return;
+    if (name.includes("anima")) {
+      this.applyInferenceModuleDefaults("anima");
+      return;
+    }
+    if (name.includes("sdxl") || name.includes("illustrious") || name.includes("pony") || name.includes("xl")) {
+      this.applyInferenceModuleDefaults("sdxl");
+    }
   }
 
   getModelBase() {
@@ -2969,8 +3076,8 @@ class UniCanvasWidget {
   }
 
   async draw() {
-    const modelModule = this.normalizeGenerationMode();
-    const validationError = modelModule.validate?.(this.settings);
+    const { loader } = this.normalizeGenerationSettings();
+    const validationError = loader.validate?.(this.settings);
     if (validationError) {
       this.setStatus(validationError, true);
       return;
@@ -3278,11 +3385,16 @@ class UniCanvasWidget {
   }
 
   syncPromptControls() {
-    const activeModule = this.normalizeGenerationMode();
+    const { loader } = this.normalizeGenerationSettings();
     this.syncInferenceControls();
-    this.container.querySelectorAll("[data-model-field]").forEach((el) => {
-      el.style.display = el.dataset.modelField === activeModule.key ? "" : "none";
+    this.container.querySelectorAll("[data-loader-field]").forEach((el) => {
+      el.style.display = el.dataset.loaderField === loader.key ? "" : "none";
     });
+    const modeSelect = this.container.querySelector('[data-setting="generation_mode"]');
+    if (modeSelect) {
+      modeSelect.disabled = Boolean(loader.forcedMode);
+      modeSelect.title = loader.forcedMode ? "Checkpoint loader always uses SDXL" : "";
+    }
     this.container.querySelectorAll("[data-setting]").forEach((el) => {
       const key = el.dataset.setting;
       if (!(key in this.settings)) return;

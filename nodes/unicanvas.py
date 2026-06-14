@@ -77,12 +77,6 @@ class UniCanvasModelModule:
     def normalize_key(self, generation_mode: str) -> bool:
         return generation_mode == self.key or generation_mode in self.aliases
 
-    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
-        raise NotImplementedError
-
-    def load_assets(self, gen_settings: dict[str, Any]):
-        raise NotImplementedError
-
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         lora_stack = gen_settings.get("lora_stack") or []
         if isinstance(lora_stack, list):
@@ -123,30 +117,6 @@ class UniCanvasModelModule:
 
 @dataclass(frozen=True)
 class SDXLUniCanvasModule(UniCanvasModelModule):
-    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
-        return (self.key, str(gen_settings.get("ckpt_name") or ""))
-
-    def load_assets(self, gen_settings: dict[str, Any]):
-        import comfy.sd
-        import folder_paths
-
-        ckpt_name = str(gen_settings.get("ckpt_name") or "")
-        if not ckpt_name:
-            raise ValueError("Checkpoint is required")
-        ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
-        if not ckpt_path:
-            raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
-        out = comfy.sd.load_checkpoint_guess_config(
-            ckpt_path,
-            output_vae=True,
-            output_clip=True,
-            embedding_directory=folder_paths.get_folder_paths("embeddings"),
-        )
-        assets = out[:3]
-        if any(item is None for item in assets):
-            raise ValueError(f"Failed to load checkpoint assets from '{ckpt_name}'")
-        return assets
-
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         for key in ("dmd_lora_name", "age_lora_name"):
             lora_name = str(gen_settings.get(key) or "")
@@ -158,85 +128,6 @@ class SDXLUniCanvasModule(UniCanvasModelModule):
 
 @dataclass(frozen=True)
 class AnimaUniCanvasModule(UniCanvasModelModule):
-    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
-        return (
-            self.key,
-            gen_settings.get("diffusion_model_name", ""),
-            gen_settings.get("clip_name", ""),
-            gen_settings.get("vae_name", ""),
-        )
-
-    def load_assets(self, gen_settings: dict[str, Any]):
-        import comfy.sd
-        import folder_paths
-
-        diffusion_model_name = gen_settings.get("diffusion_model_name")
-        clip_name = gen_settings.get("clip_name")
-        vae_name = gen_settings.get("vae_name")
-        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
-
-        if not diffusion_model_name:
-            raise ValueError("No Diffusion Model selected for UniCanvas ANIMA mode")
-        if not clip_name:
-            raise ValueError("No CLIP selected for UniCanvas ANIMA mode")
-        if not vae_name:
-            raise ValueError("No VAE selected for UniCanvas ANIMA mode")
-
-        model = _call_loader_node(
-            ["UNETLoader", "Load Diffusion Model"],
-            ["load_unet", "load_model", "load_diffusion_model"],
-            unet_name=diffusion_model_name,
-            model_name=diffusion_model_name,
-            diffusion_model_name=diffusion_model_name,
-            weight_dtype="default",
-        )
-        if model is None and hasattr(comfy.sd, "load_diffusion_model"):
-            diffusion_model_path = _get_full_path_agnostic(folder_paths, "diffusion_models", diffusion_model_name)
-            if diffusion_model_path:
-                model = comfy.sd.load_diffusion_model(diffusion_model_path)
-
-        clip = _call_loader_node(
-            ["CLIPLoader", "Load CLIP"],
-            ["load_clip", "load_model"],
-            clip_name=clip_name,
-            model_name=clip_name,
-            type=clip_type_name,
-            device="default",
-        )
-        if clip is None and hasattr(comfy.sd, "load_clip"):
-            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
-            if clip_path:
-                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
-                if clip_type is None:
-                    raise ValueError(
-                        f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
-                        "ANIMA expects CLIPLoader type 'stable_diffusion'."
-                    )
-                clip = comfy.sd.load_clip(
-                    ckpt_paths=[clip_path],
-                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
-                    clip_type=clip_type,
-                )
-
-        vae = _call_loader_node(
-            ["VAELoader", "Load VAE"],
-            ["load_vae", "load_model"],
-            vae_name=vae_name,
-            model_name=vae_name,
-        )
-        if vae is None and hasattr(comfy.sd, "load_vae"):
-            vae_path = _get_full_path_agnostic(folder_paths, "vae", vae_name)
-            if vae_path:
-                vae = comfy.sd.load_vae(vae_path)
-
-        if model is None:
-            raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
-        if clip is None:
-            raise ValueError(f"Failed to load CLIP '{clip_name}'")
-        if vae is None:
-            raise ValueError(f"Failed to load VAE '{vae_name}'")
-        return model, clip, vae
-
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         if gen_settings.get("turbo_enabled"):
             model, clip = _apply_lora_cached(
@@ -302,7 +193,210 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         return vae.decode(latent_tensor)
 
 
+@dataclass(frozen=True)
+class UniCanvasModelLoader:
+    key: str
+    aliases: tuple[str, ...]
+    forced_mode: str | None = None
+
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        raise NotImplementedError
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class CheckpointUniCanvasLoader(UniCanvasModelLoader):
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (self.key, str(gen_settings.get("ckpt_name") or ""))
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        ckpt_name = str(gen_settings.get("ckpt_name") or "")
+        if not ckpt_name:
+            raise ValueError("Checkpoint is required")
+        ckpt_path = _get_full_path_agnostic(folder_paths, "checkpoints", ckpt_name, require_exists=True)
+        if not ckpt_path:
+            raise ValueError(f"Checkpoint path not found for '{ckpt_name}'")
+        out = comfy.sd.load_checkpoint_guess_config(
+            ckpt_path,
+            output_vae=True,
+            output_clip=True,
+            embedding_directory=folder_paths.get_folder_paths("embeddings"),
+        )
+        assets = out[:3]
+        if any(item is None for item in assets):
+            raise ValueError(f"Failed to load checkpoint assets from '{ckpt_name}'")
+        return assets
+
+
+@dataclass(frozen=True)
+class DiffusionModelUniCanvasLoader(UniCanvasModelLoader):
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            self.key,
+            gen_settings.get("diffusion_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+            gen_settings.get("clip_type", ""),
+        )
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        diffusion_model_name = gen_settings.get("diffusion_model_name")
+        clip_name = gen_settings.get("clip_name")
+        vae_name = gen_settings.get("vae_name")
+        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
+
+        if not diffusion_model_name:
+            raise ValueError("No Diffusion Model selected for UniCanvas")
+        if not clip_name:
+            raise ValueError("No CLIP selected for UniCanvas")
+        if not vae_name:
+            raise ValueError("No VAE selected for UniCanvas")
+
+        model = _call_loader_node(
+            ["UNETLoader", "Load Diffusion Model"],
+            ["load_unet", "load_model", "load_diffusion_model"],
+            unet_name=diffusion_model_name,
+            model_name=diffusion_model_name,
+            diffusion_model_name=diffusion_model_name,
+            weight_dtype="default",
+        )
+        if model is None and hasattr(comfy.sd, "load_diffusion_model"):
+            diffusion_model_path = _get_full_path_agnostic(folder_paths, "diffusion_models", diffusion_model_name)
+            if diffusion_model_path:
+                model = comfy.sd.load_diffusion_model(diffusion_model_path)
+
+        clip = _call_loader_node(
+            ["CLIPLoader", "Load CLIP"],
+            ["load_clip", "load_model"],
+            clip_name=clip_name,
+            model_name=clip_name,
+            type=clip_type_name,
+            device="default",
+        )
+        if clip is None and hasattr(comfy.sd, "load_clip"):
+            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
+            if clip_path:
+                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+                if clip_type is None:
+                    raise ValueError(
+                        f"ComfyUI CLIPType.{clip_type_name.upper()} is not available. "
+                        "ANIMA expects CLIPLoader type 'stable_diffusion'."
+                    )
+                clip = comfy.sd.load_clip(
+                    ckpt_paths=[clip_path],
+                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    clip_type=clip_type,
+                )
+
+        vae = _call_loader_node(
+            ["VAELoader", "Load VAE"],
+            ["load_vae", "load_model"],
+            vae_name=vae_name,
+            model_name=vae_name,
+        )
+        if vae is None and hasattr(comfy.sd, "load_vae"):
+            vae_path = _get_full_path_agnostic(folder_paths, "vae", vae_name)
+            if vae_path:
+                vae = comfy.sd.load_vae(vae_path)
+
+        if model is None:
+            raise ValueError(f"Failed to load Diffusion Model '{diffusion_model_name}'")
+        if clip is None:
+            raise ValueError(f"Failed to load CLIP '{clip_name}'")
+        if vae is None:
+            raise ValueError(f"Failed to load VAE '{vae_name}'")
+        return model, clip, vae
+
+
+@dataclass(frozen=True)
+class GGUFUniCanvasLoader(DiffusionModelUniCanvasLoader):
+    def cache_key(self, gen_settings: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            self.key,
+            gen_settings.get("gguf_model_name", ""),
+            gen_settings.get("clip_name", ""),
+            gen_settings.get("vae_name", ""),
+            gen_settings.get("clip_type", ""),
+        )
+
+    def load_assets(self, gen_settings: dict[str, Any]):
+        import comfy.sd
+        import folder_paths
+
+        gguf_model_name = gen_settings.get("gguf_model_name")
+        clip_name = gen_settings.get("clip_name")
+        vae_name = gen_settings.get("vae_name")
+        clip_type_name = str(gen_settings.get("clip_type", "stable_diffusion") or "stable_diffusion").lower()
+
+        if not gguf_model_name:
+            raise ValueError("No GGUF model selected for UniCanvas")
+        if not clip_name:
+            raise ValueError("No CLIP selected for UniCanvas")
+        if not vae_name:
+            raise ValueError("No VAE selected for UniCanvas")
+
+        model = _call_loader_node(
+            ["UnetLoaderGGUF", "UNETLoaderGGUF", "GGUF Loader"],
+            ["load_unet", "load_model", "load_diffusion_model"],
+            unet_name=gguf_model_name,
+            model_name=gguf_model_name,
+            diffusion_model_name=gguf_model_name,
+            weight_dtype="default",
+        )
+        if model is None:
+            raise ValueError(
+                "Failed to load GGUF model. Install/enable a GGUF loader node such as ComfyUI-GGUF "
+                f"and select a valid GGUF model; current model is '{gguf_model_name}'."
+            )
+
+        clip = _call_loader_node(
+            ["CLIPLoader", "Load CLIP"],
+            ["load_clip", "load_model"],
+            clip_name=clip_name,
+            model_name=clip_name,
+            type=clip_type_name,
+            device="default",
+        )
+        if clip is None and hasattr(comfy.sd, "load_clip"):
+            clip_path = _get_full_path_agnostic(folder_paths, "text_encoders", clip_name)
+            if clip_path:
+                clip_type = getattr(comfy.sd.CLIPType, clip_type_name.upper(), None)
+                if clip_type is None:
+                    raise ValueError(f"ComfyUI CLIPType.{clip_type_name.upper()} is not available.")
+                clip = comfy.sd.load_clip(
+                    ckpt_paths=[clip_path],
+                    embedding_directory=folder_paths.get_folder_paths("embeddings"),
+                    clip_type=clip_type,
+                )
+
+        vae = _call_loader_node(
+            ["VAELoader", "Load VAE"],
+            ["load_vae", "load_model"],
+            vae_name=vae_name,
+            model_name=vae_name,
+        )
+        if vae is None and hasattr(comfy.sd, "load_vae"):
+            vae_path = _get_full_path_agnostic(folder_paths, "vae", vae_name)
+            if vae_path:
+                vae = comfy.sd.load_vae(vae_path)
+
+        if clip is None:
+            raise ValueError(f"Failed to load CLIP '{clip_name}'")
+        if vae is None:
+            raise ValueError(f"Failed to load VAE '{vae_name}'")
+        return model, clip, vae
+
+
 UNICANVAS_MODEL_MODULES: dict[str, UniCanvasModelModule] = {}
+UNICANVAS_MODEL_LOADERS: dict[str, UniCanvasModelLoader] = {}
 
 
 def _register_unicanvas_model_module(module: UniCanvasModelModule) -> None:
@@ -315,6 +409,17 @@ _register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), I
 _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
 
 
+def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
+    UNICANVAS_MODEL_LOADERS[loader.key] = loader
+    for alias in loader.aliases:
+        UNICANVAS_MODEL_LOADERS[alias] = loader
+
+
+_register_unicanvas_model_loader(CheckpointUniCanvasLoader("checkpoint", ("ckpt",), forced_mode="sdxl"))
+_register_unicanvas_model_loader(DiffusionModelUniCanvasLoader("diffusion_model", ("unet", "diffusion"), forced_mode=None))
+_register_unicanvas_model_loader(GGUFUniCanvasLoader("gguf", (), forced_mode=None))
+
+
 def _get_unicanvas_model_module(generation_mode: str | None) -> UniCanvasModelModule:
     key = str(generation_mode or "illustrious").lower()
     module = UNICANVAS_MODEL_MODULES.get(key)
@@ -322,6 +427,15 @@ def _get_unicanvas_model_module(generation_mode: str | None) -> UniCanvasModelMo
         supported = sorted({module.key for module in UNICANVAS_MODEL_MODULES.values()})
         raise ValueError(f"Unsupported UniCanvas model mode '{key}'. Supported modes: {', '.join(supported)}")
     return module
+
+
+def _get_unicanvas_model_loader(loader_type: str | None) -> UniCanvasModelLoader:
+    key = str(loader_type or "checkpoint").lower()
+    loader = UNICANVAS_MODEL_LOADERS.get(key)
+    if loader is None:
+        supported = sorted({loader.key for loader in UNICANVAS_MODEL_LOADERS.values()})
+        raise ValueError(f"Unsupported UniCanvas model loader '{key}'. Supported loaders: {', '.join(supported)}")
+    return loader
 
 
 def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> None:
@@ -929,9 +1043,48 @@ def _safe_filename_list(category: str) -> list[str]:
         return []
 
 
+def _get_node_combo_values(class_names: list[str], input_name: str) -> list[str]:
+    try:
+        import nodes
+
+        mappings = getattr(nodes, "NODE_CLASS_MAPPINGS", {}) or {}
+        for class_name in class_names:
+            node_cls = mappings.get(class_name)
+            if node_cls is None or not hasattr(node_cls, "INPUT_TYPES"):
+                continue
+            input_types = node_cls.INPUT_TYPES()
+            if not isinstance(input_types, dict):
+                continue
+            for section_name in ("required", "optional"):
+                section = input_types.get(section_name) or {}
+                if not isinstance(section, dict) or input_name not in section:
+                    continue
+                spec = section.get(input_name)
+                if isinstance(spec, (list, tuple)) and spec:
+                    values = spec[0]
+                    if isinstance(values, (list, tuple)):
+                        return [str(value) for value in values]
+    except Exception:
+        return []
+    return []
+
+
+def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
+    explicit = str(settings.get("model_loader") or settings.get("loader_type") or "").lower()
+    if explicit:
+        return explicit
+    if settings.get("gguf_model_name"):
+        return "gguf"
+    generation_mode = str(settings.get("generation_mode", "illustrious")).lower()
+    if generation_mode == "anima" or settings.get("diffusion_model_name"):
+        return "diffusion_model"
+    return "checkpoint"
+
+
 def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(gen_settings or {})
-    generation_mode = str(normalized.get("generation_mode", "illustrious")).lower()
+    loader = _get_unicanvas_model_loader(_infer_unicanvas_loader_type(normalized))
+    generation_mode = loader.forced_mode or str(normalized.get("generation_mode", "illustrious")).lower()
     mode_settings = normalized.get("mode_settings", {})
     module = _get_unicanvas_model_module(generation_mode)
     mode_profile = {}
@@ -944,6 +1097,9 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
         merged.update(mode_profile)
     merged["generation_mode"] = module.key
     merged["generation_mode_alias"] = generation_mode
+    merged["model_loader"] = loader.key
+    if loader.forced_mode:
+        merged["loader_forced_generation_mode"] = loader.forced_mode
     if "sampler" in merged and "sampler_name" not in merged:
         merged["sampler_name"] = merged["sampler"]
     if "sampler_name" in merged:
@@ -993,13 +1149,13 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
 
 
 def _load_generation_assets(gen_settings: dict[str, Any]):
-    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
-    asset_key = module.cache_key(gen_settings)
+    loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
+    asset_key = loader.cache_key(gen_settings)
     with _MODEL_CACHE_LOCK:
         cached = _MODEL_CACHE.get(asset_key)
         if cached is not None:
             return cached
-    assets = module.load_assets(gen_settings)
+    assets = loader.load_assets(gen_settings)
     with _MODEL_CACHE_LOCK:
         _MODEL_CACHE[asset_key] = assets
     return assets
@@ -1325,6 +1481,21 @@ def _get_checkpoint_names() -> list[str]:
     return _safe_filename_list("checkpoints")
 
 
+def _get_diffusion_model_names() -> list[str]:
+    return [name for name in _safe_filename_list("diffusion_models") if not str(name).lower().endswith(".gguf")]
+
+
+def _get_gguf_model_names() -> list[str]:
+    names = _get_node_combo_values(["UnetLoaderGGUF", "UNETLoaderGGUF", "GGUF Loader"], "unet_name")
+    if names:
+        return names
+    for category in ("diffusion_models", "unet"):
+        for name in _safe_filename_list(category):
+            if str(name).lower().endswith(".gguf") and name not in names:
+                names.append(name)
+    return names
+
+
 def _get_unicanvas_assets() -> dict[str, Any]:
     try:
         import comfy.samplers
@@ -1343,8 +1514,17 @@ def _get_unicanvas_assets() -> dict[str, Any]:
             }
             for module in {module.key: module for module in UNICANVAS_MODEL_MODULES.values()}.values()
         ],
+        "model_loaders": [
+            {
+                "key": loader.key,
+                "aliases": list(loader.aliases),
+                "forced_mode": loader.forced_mode,
+            }
+            for loader in {loader.key: loader for loader in UNICANVAS_MODEL_LOADERS.values()}.values()
+        ],
         "checkpoints": _safe_filename_list("checkpoints"),
-        "diffusion_models": _safe_filename_list("diffusion_models"),
+        "diffusion_models": _get_diffusion_model_names(),
+        "gguf_models": _get_gguf_model_names(),
         "text_encoders": _safe_filename_list("text_encoders"),
         "vae_models": _safe_filename_list("vae"),
         "loras": _safe_filename_list("loras"),
@@ -1393,8 +1573,10 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "source_empty": payload.get("source_empty"),
             "frontend_debug": payload.get("debug"),
             "generation_mode": settings.get("generation_mode"),
+            "model_loader": settings.get("model_loader"),
             "ckpt_name": settings.get("ckpt_name"),
             "diffusion_model_name": settings.get("diffusion_model_name"),
+            "gguf_model_name": settings.get("gguf_model_name"),
             "clip_name": settings.get("clip_name"),
             "vae_name": settings.get("vae_name"),
             "seed": seed,
