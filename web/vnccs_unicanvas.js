@@ -157,6 +157,7 @@ const UNICANVAS_MODEL_MODULES = {
     aliases: ["illustrious"],
     label: "SDXL",
     base: "sdxl",
+    detect: ["sdxl", "illustrious", "pony", "xl"],
     defaults: {
       generation_mode: "sdxl",
       sampler_name: "euler",
@@ -170,6 +171,7 @@ const UNICANVAS_MODEL_MODULES = {
     aliases: [],
     label: "Anima",
     base: "anima",
+    detect: ["anima"],
     defaults: {
       generation_mode: "anima",
       diffusion_model_name: "",
@@ -183,6 +185,25 @@ const UNICANVAS_MODEL_MODULES = {
       turbo_enabled: false,
       dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
       dmd_lora_strength: 1,
+    },
+  },
+  flux_klein: {
+    key: "flux_klein",
+    aliases: ["flux-klein", "klein"],
+    label: "Flux Klein",
+    base: "flux_klein",
+    detect: ["klein", "flux-2", "flux2"],
+    defaults: {
+      generation_mode: "flux_klein",
+      model_loader: "diffusion_model",
+      diffusion_model_name: "flux-2-klein-9b-fp8.safetensors",
+      clip_name: "qwen_3_8b_fp8mixed.safetensors",
+      vae_name: "full_encoder_small_decoder.safetensors",
+      clip_type: "flux2",
+      sampler_name: "euler",
+      scheduler: "flux2",
+      steps: 4,
+      cfg: 1,
     },
   },
 };
@@ -1091,12 +1112,11 @@ class UniCanvasWidget {
     }
     const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
     if (!name) return;
-    if (name.includes("anima")) {
-      this.applyInferenceModuleDefaults("anima");
-      return;
-    }
-    if (name.includes("sdxl") || name.includes("illustrious") || name.includes("pony") || name.includes("xl")) {
-      this.applyInferenceModuleDefaults("sdxl");
+    for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
+      if ((module.detect || []).some((pattern) => name.includes(pattern))) {
+        this.applyInferenceModuleDefaults(module.key);
+        return;
+      }
     }
   }
 
@@ -2263,9 +2283,12 @@ class UniCanvasWidget {
     const staging = this.activeStaging;
     if (!staging?.img || staging.visible === false) return;
     const placement = this.getStagingImageRect();
+    const sourceWidth = Math.max(1, staging.img.naturalWidth || staging.img.width || placement.width);
+    const sourceHeight = Math.max(1, staging.img.naturalHeight || staging.img.height || placement.height);
+    const preview = this.makeMaskedStagingCanvas(staging, staging.img, sourceWidth, sourceHeight);
     ctx.save();
     ctx.globalAlpha = 1;
-    ctx.drawImage(staging.img, placement.x, placement.y, placement.width, placement.height);
+    ctx.drawImage(preview, placement.x, placement.y, placement.width, placement.height);
     ctx.restore();
   }
 

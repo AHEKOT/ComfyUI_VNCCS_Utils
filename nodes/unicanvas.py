@@ -60,6 +60,183 @@ ANIMA_DEFAULTS = {
     "lora_stack": [],
 }
 
+FLUX_KLEIN_DEFAULTS = {
+    "generation_mode": "flux_klein",
+    "model_loader": "diffusion_model",
+    "diffusion_model_name": "flux-2-klein-9b-fp8.safetensors",
+    "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+    "vae_name": "full_encoder_small_decoder.safetensors",
+    "clip_type": "flux2",
+    "sampler": "euler",
+    "sampler_name": "euler",
+    "scheduler": "flux2",
+    "steps": 4,
+    "cfg": 1.0,
+}
+
+
+@dataclass(frozen=True)
+class UniCanvasNodeStep:
+    """One declarative Comfy node invocation inside a UniCanvas pipeline.
+
+    Inputs may reference values in the pipeline context with "$name". The node is
+    called through ComfyUI's NODE_CLASS_MAPPINGS and its FUNCTION metadata, so
+    contributors do not need to know Python method names for most core nodes.
+    """
+
+    node: str | tuple[str, ...]
+    inputs: dict[str, Any]
+    output: str
+    methods: tuple[str, ...] = ()
+    output_index: int = 0
+    optional: bool = False
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class UniCanvasPipeline:
+    """Declarative inference graph for model modules with non-standard nodes."""
+
+    reference: tuple[UniCanvasNodeStep, ...] = ()
+    sample: tuple[UniCanvasNodeStep, ...] = ()
+    decode: tuple[UniCanvasNodeStep, ...] = ()
+
+
+def _pipeline_ref_path(context: dict[str, Any], path: str) -> Any:
+    value: Any = context
+    for part in path.split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        else:
+            value = getattr(value, part)
+    return value
+
+
+def _resolve_pipeline_value(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, str) and value.startswith("$"):
+        return _pipeline_ref_path(context, value[1:])
+    if isinstance(value, dict):
+        return {key: _resolve_pipeline_value(item, context) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_resolve_pipeline_value(item, context) for item in value)
+    return value
+
+
+def _select_pipeline_output(result: Any, output_index: int) -> Any:
+    if _is_comfy_node_output(result):
+        result = _unwrap_comfy_node_output(result)
+    if isinstance(result, tuple):
+        if not result:
+            return None
+        return result[min(max(int(output_index), 0), len(result) - 1)]
+    return result
+
+
+def _run_pipeline_step(step: UniCanvasNodeStep, context: dict[str, Any], draw_id: str) -> Any:
+    node_names = list(step.node if isinstance(step.node, tuple) else (step.node,))
+    inputs = {key: _resolve_pipeline_value(value, context) for key, value in step.inputs.items()}
+    result = _call_node_method(node_names, list(step.methods), **inputs)
+    selected = _select_pipeline_output(result, step.output_index)
+    if selected is None and not step.optional:
+        label = step.description or step.node
+        raise RuntimeError(f"{label} is unavailable or returned no output")
+    context[step.output] = selected
+    if step.description:
+        _uc_log(draw_id, f"pipeline step {step.description}", {"output": step.output, "type": type(selected).__name__})
+    return selected
+
+
+def _run_pipeline_steps(steps: tuple[UniCanvasNodeStep, ...], context: dict[str, Any], draw_id: str) -> dict[str, Any]:
+    for step in steps:
+        _run_pipeline_step(step, context, draw_id)
+    return context
+
+
+FLUX_KLEIN_PIPELINE = UniCanvasPipeline(
+    reference=(
+        UniCanvasNodeStep(
+            node="VAEEncode",
+            methods=("encode",),
+            inputs={"pixels": "$image_tensor", "vae": "$vae"},
+            output="reference_latent",
+            description="VAEEncode reference image",
+        ),
+        UniCanvasNodeStep(
+            node="ConditioningZeroOut",
+            methods=("zero_out",),
+            inputs={"conditioning": "$positive"},
+            output="negative_base",
+            description="zero negative conditioning",
+        ),
+        UniCanvasNodeStep(
+            node="ReferenceLatent",
+            methods=("append", "reference", "encode"),
+            inputs={"conditioning": "$positive", "latent": "$reference_latent"},
+            output="positive",
+            description="attach positive reference latent",
+        ),
+        UniCanvasNodeStep(
+            node="ReferenceLatent",
+            methods=("append", "reference", "encode"),
+            inputs={"conditioning": "$negative_base", "latent": "$reference_latent"},
+            output="negative",
+            description="attach negative reference latent",
+        ),
+    ),
+    sample=(
+        UniCanvasNodeStep(
+            node="RandomNoise",
+            methods=("get_noise", "generate"),
+            inputs={"noise_seed": "$seed", "seed": "$seed"},
+            output="noise",
+            description="noise",
+        ),
+        UniCanvasNodeStep(
+            node="KSamplerSelect",
+            methods=("get_sampler", "sample"),
+            inputs={"sampler_name": "$sampler_name"},
+            output="sampler",
+            description="sampler",
+        ),
+        UniCanvasNodeStep(
+            node="Flux2Scheduler",
+            methods=("get_sigmas", "schedule"),
+            inputs={"steps": "$steps", "width": "$width", "height": "$height"},
+            output="sigmas",
+            description="Flux2 sigmas",
+        ),
+        UniCanvasNodeStep(
+            node="CFGGuider",
+            methods=("get_guider", "append"),
+            inputs={"model": "$model", "positive": "$positive", "negative": "$negative", "cfg": "$cfg"},
+            output="guider",
+            description="CFG guider",
+        ),
+        UniCanvasNodeStep(
+            node="SamplerCustomAdvanced",
+            methods=("sample",),
+            inputs={
+                "noise": "$noise",
+                "guider": "$guider",
+                "sampler": "$sampler",
+                "sigmas": "$sigmas",
+                "latent_image": "$latent",
+            },
+            output="latent",
+            description="advanced sampler",
+        ),
+    ),
+    decode=(
+        UniCanvasNodeStep(
+            node="VAEDecode",
+            methods=("decode",),
+            inputs={"samples": "$latent", "vae": "$vae"},
+            output="image",
+            description="VAE decode",
+        ),
+    ),
+)
+
 
 @dataclass(frozen=True)
 class UniCanvasModelModule:
@@ -113,6 +290,49 @@ class UniCanvasModelModule:
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         latent_samples = _unwrap_latent_samples(samples)
         return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
+
+    def prepare_reference_conditioning(
+        self,
+        positive: Any,
+        negative: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        return positive, negative
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        return _sample_generation_latent_default(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -191,6 +411,120 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         if decoded is not None:
             return decoded
         return vae.decode(latent_tensor)
+
+
+@dataclass(frozen=True)
+class FluxKleinUniCanvasModule(UniCanvasModelModule):
+    pipeline: UniCanvasPipeline = FLUX_KLEIN_PIPELINE
+
+    def encode_prompt(self, clip: Any, text: str, _gen_settings: dict[str, Any]):
+        encoded = _call_node_method(["CLIPTextEncode"], ["encode"], clip=clip, text=text or "")
+        if isinstance(encoded, tuple) and encoded:
+            return encoded[0]
+        if encoded is not None:
+            return encoded
+        return super().encode_prompt(clip, text, _gen_settings)
+
+    def create_empty_latent(self, width: int, height: int, _gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
+        encoded = _call_node_method(
+            ["EmptyFlux2LatentImage"],
+            ["generate"],
+            width=width,
+            height=height,
+            batch_size=1,
+        )
+        if isinstance(encoded, tuple) and encoded:
+            _uc_log(draw_id, "created empty Flux2 latent", _latent_debug(encoded[0]))
+            return encoded[0]
+        if isinstance(encoded, dict):
+            _uc_log(draw_id, "created empty Flux2 latent", _latent_debug(encoded))
+            return encoded
+        import comfy.model_management
+
+        latent = torch.zeros(
+            [1, 128, max(1, int(height) // 16), max(1, int(width) // 16)],
+            device=comfy.model_management.intermediate_device(),
+        )
+        encoded = {"samples": latent}
+        _uc_log(
+            draw_id,
+            "created fallback empty Flux2 latent",
+            {
+                **_latent_debug(encoded),
+                "reason": "EmptyFlux2LatentImage did not return a latent through direct node call",
+            },
+        )
+        return encoded
+
+    def prepare_reference_conditioning(
+        self,
+        positive: Any,
+        negative: Any,
+        vae: Any,
+        image_tensor: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+    ) -> tuple[Any, Any]:
+        context = {
+            "positive": positive,
+            "negative": negative,
+            "vae": vae,
+            "image_tensor": image_tensor,
+        }
+        _run_pipeline_steps(self.pipeline.reference, context, draw_id)
+        _uc_log(
+            draw_id,
+            "Flux Klein reference conditioning prepared",
+            {
+                "positive_reference": _latent_debug(context.get("reference_latent")),
+                "positive": _conditioning_debug(context.get("positive")),
+                "negative": _conditioning_debug(context.get("negative")),
+            },
+        )
+        return context["positive"], context["negative"]
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        _ensure_direct_sampling_prompt_context()
+        width = int(width or 1024)
+        height = int(height or 1024)
+        _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
+        context = {
+            "model": model,
+            "positive": positive,
+            "negative": negative,
+            "latent": latent,
+            "seed": seed,
+            "steps": steps,
+            "cfg": cfg,
+            "sampler_name": sampler_name,
+            "width": width,
+            "height": height,
+        }
+        _run_pipeline_steps(self.pipeline.sample, context, draw_id)
+        _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
+        _uc_log(draw_id, "SamplerCustomAdvanced output", _latent_debug(context.get("latent")))
+        return context["latent"]
+
+    def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
+        context = {"latent": samples, "vae": vae}
+        _run_pipeline_steps(self.pipeline.decode, context, "flux_klein_decode")
+        return context["image"]
 
 
 @dataclass(frozen=True)
@@ -407,6 +741,7 @@ def _register_unicanvas_model_module(module: UniCanvasModelModule) -> None:
 
 _register_unicanvas_model_module(SDXLUniCanvasModule("sdxl", ("illustrious",), ILLUSTRIOUS_DEFAULTS))
 _register_unicanvas_model_module(AnimaUniCanvasModule("anima", (), ANIMA_DEFAULTS))
+_register_unicanvas_model_module(FluxKleinUniCanvasModule("flux_klein", ("flux-klein", "klein"), FLUX_KLEIN_DEFAULTS))
 
 
 def _register_unicanvas_model_loader(loader: UniCanvasModelLoader) -> None:
@@ -1076,7 +1411,7 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
     if settings.get("gguf_model_name"):
         return "gguf"
     generation_mode = str(settings.get("generation_mode", "illustrious")).lower()
-    if generation_mode == "anima" or settings.get("diffusion_model_name"):
+    if generation_mode in {"anima", "flux_klein", "flux-klein", "klein"} or settings.get("diffusion_model_name"):
         return "diffusion_model"
     return "checkpoint"
 
@@ -1116,17 +1451,69 @@ def _call_loader_node(class_names: list[str], method_names: list[str], **kwargs)
         if loader_cls is None:
             continue
         loader = loader_cls()
-        for method_name in method_names:
+        candidate_method_names = list(method_names)
+        function_name = getattr(loader_cls, "FUNCTION", None)
+        if function_name and function_name not in candidate_method_names:
+            candidate_method_names.append(function_name)
+        for method_name in candidate_method_names:
             method = getattr(loader, method_name, None)
             if method is None:
                 continue
-            signature = inspect.signature(method)
-            accepted_kwargs = {key: value for key, value in kwargs.items() if key in signature.parameters}
+            accepted_kwargs = _filter_node_kwargs(loader_cls, method, kwargs)
             result = method(**accepted_kwargs)
-            if isinstance(result, tuple):
-                return result[0]
-            return result
+            return _unwrap_single_node_result(result)
     return None
+
+
+def _is_comfy_node_output(value: Any) -> bool:
+    return hasattr(value, "result") and hasattr(value, "args") and type(value).__name__ == "NodeOutput"
+
+
+def _unwrap_comfy_node_output(value: Any) -> Any:
+    if not _is_comfy_node_output(value):
+        return value
+    block_execution = getattr(value, "block_execution", None)
+    if block_execution:
+        raise RuntimeError(str(block_execution))
+    return getattr(value, "result", None)
+
+
+def _unwrap_single_node_result(result: Any) -> Any:
+    result = _unwrap_comfy_node_output(result)
+    if isinstance(result, tuple):
+        if not result:
+            return None
+        return result[0]
+    return result
+
+
+def _node_input_names(node_cls: Any) -> set[str]:
+    input_types_fn = getattr(node_cls, "INPUT_TYPES", None)
+    if input_types_fn is None:
+        return set()
+    try:
+        input_types = input_types_fn()
+    except Exception:
+        return set()
+    names: set[str] = set()
+    if not isinstance(input_types, dict):
+        return names
+    for section_name in ("required", "optional", "hidden"):
+        section = input_types.get(section_name)
+        if isinstance(section, dict):
+            names.update(str(key) for key in section.keys())
+    return names
+
+
+def _filter_node_kwargs(node_cls: Any, method: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    signature = inspect.signature(method)
+    has_var_keyword = any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values())
+    input_names = _node_input_names(node_cls)
+    if input_names:
+        return {key: value for key, value in kwargs.items() if key in input_names}
+    if has_var_keyword:
+        return dict(kwargs)
+    return {key: value for key, value in kwargs.items() if key in signature.parameters}
 
 
 def _call_node_method(class_names: list[str], method_names: list[str], **kwargs):
@@ -1138,13 +1525,16 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
         if node_cls is None:
             continue
         node_instance = node_cls()
-        for method_name in method_names:
+        candidate_method_names = list(method_names)
+        function_name = getattr(node_cls, "FUNCTION", None)
+        if function_name and function_name not in candidate_method_names:
+            candidate_method_names.append(function_name)
+        for method_name in candidate_method_names:
             method = getattr(node_instance, method_name, None)
             if method is None:
                 continue
-            signature = inspect.signature(method)
-            accepted_kwargs = {key: value for key, value in kwargs.items() if key in signature.parameters}
-            return method(**accepted_kwargs)
+            accepted_kwargs = _filter_node_kwargs(node_cls, method, kwargs)
+            return _unwrap_single_node_result(method(**accepted_kwargs))
     return None
 
 
@@ -1361,7 +1751,7 @@ def _ensure_direct_sampling_prompt_context(prompt_id: str = "unicanvas_draw") ->
         pass
 
 
-def _sample_generation_latent(
+def _sample_generation_latent_default(
     model: Any,
     positive: Any,
     negative: Any,
@@ -1443,6 +1833,41 @@ def _sample_generation_latent(
         _uc_log(draw_id, "KSampler output", _latent_debug(sampled))
         return sampled
     raise RuntimeError("Sampler returned no latent output")
+
+
+def _sample_generation_latent(
+    model: Any,
+    positive: Any,
+    negative: Any,
+    latent: Any,
+    seed: int,
+    steps: int,
+    cfg: float,
+    sampler_name: str,
+    scheduler: str,
+    denoise: float,
+    gen_settings: dict[str, Any],
+    draw_id: str = "unknown",
+    width: int | None = None,
+    height: int | None = None,
+):
+    module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
+    return module.sample_latent(
+        model=model,
+        positive=positive,
+        negative=negative,
+        latent=latent,
+        seed=seed,
+        steps=steps,
+        cfg=cfg,
+        sampler_name=sampler_name,
+        scheduler=scheduler,
+        denoise=denoise,
+        gen_settings=gen_settings,
+        draw_id=draw_id,
+        width=width,
+        height=height,
+    )
 
 
 def _unwrap_latent_samples(value: Any):
@@ -1665,12 +2090,24 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             _uc_log(draw_id, "debug input images saved", {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug})
         else:
             _uc_log(draw_id, "mask skipped", {"reason": f"mode is {mode}"})
+        if model_module.key == "flux_klein" and (mode == "txt2img" or source_empty):
+            source = Image.new("RGB", (width, height), (0, 0, 0))
+            source_for_composite = source
+            _uc_log(draw_id, "Flux Klein txt2img source replaced with black reference image", {"size": source.size})
         image_tensor = _pil_to_image_tensor(source)
         _uc_log(draw_id, "source prepared", {"size": source.size, "tensor": _tensor_debug(image_tensor)})
-        if mode in {"inpaint", "outpaint"} and mask is not None:
+        positive, negative = model_module.prepare_reference_conditioning(
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            image_tensor=image_tensor,
+            gen_settings=settings,
+            draw_id=draw_id,
+        )
+        if model_module.key != "flux_klein" and mode in {"inpaint", "outpaint"} and mask is not None:
             model = _apply_differential_diffusion(model, draw_id, strength=1.0)
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
-        if mode == "txt2img" or (source_empty and mask is None):
+        if model_module.key == "flux_klein" or mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
         elif mode in {"inpaint", "outpaint"} and mask is not None:
             positive, negative, latent = _prepare_inpaint_model_conditioning(
@@ -1697,6 +2134,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             denoise=denoise,
             gen_settings=settings,
             draw_id=draw_id,
+            width=width,
+            height=height,
         )
         _set_draw_progress(draw_id, "decoding", 0.88, steps, steps, "Decoding")
         decoded = _decode_generation_samples(vae, latent, settings)
