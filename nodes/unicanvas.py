@@ -277,7 +277,7 @@ class UniCanvasModelModule:
     def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
         if self.is_edit_model:
             return _make_edit_outpaint_reference_rgb(source_rgba, draw_id)
-        return _infill_masked_rgb(source_rgba, mask_image, draw_id)
+        return _sample_transparent_outpaint_rgb(source_rgba, draw_id)
 
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         lora_stack = gen_settings.get("lora_stack") or []
@@ -562,9 +562,6 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode == "outpaint"
-
-    def prepare_outpaint_reference_image(self, source_rgba: Image.Image, _mask_image: Image.Image, draw_id: str) -> Image.Image:
-        return _sample_transparent_outpaint_rgb(source_rgba, draw_id)
 
     def is_turbo_conditioning_mode(self, gen_settings: dict[str, Any]) -> tuple[bool, str]:
         model_names = (
