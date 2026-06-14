@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import inspect
@@ -28,6 +29,9 @@ _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
 _DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
 _DRAW_PROGRESS_LOCK = threading.Lock()
+_COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
+_COMFY_PROGRESS_PATCHED = False
+_COMFY_PROGRESS_LOCAL = threading.local()
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
@@ -536,7 +540,8 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             "width": width,
             "height": height,
         }
-        _run_pipeline_steps(self.pipeline.sample, context, draw_id)
+        with _suppress_direct_sampling_comfy_progress():
+            _run_pipeline_steps(self.pipeline.sample, context, draw_id)
         _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
         _uc_log(draw_id, "SamplerCustomAdvanced output", _latent_debug(context.get("latent")))
         return context["latent"]
@@ -675,18 +680,11 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
         width: int | None = None,
         height: int | None = None,
     ):
-        shift = float(gen_settings.get("aura_flow_shift", 3.0))
-        patched_model = _call_node_method(
-            ["ModelSamplingAuraFlow"],
-            ["patch_aura"],
-            model=model,
-            shift=shift,
+        _uc_log(
+            draw_id,
+            "Z-image ModelSamplingAuraFlow patching disabled",
+            {"reason": "diagnose z-image inpaint behavior and Comfy model patcher access violations"},
         )
-        if patched_model is not None:
-            model = patched_model
-            _uc_log(draw_id, "Z-image ModelSamplingAuraFlow applied", {"shift": shift})
-        else:
-            _uc_log(draw_id, "Z-image ModelSamplingAuraFlow unavailable; sampling with unpatched model", {"shift": shift})
         return super().sample_latent(
             model=model,
             positive=positive,
@@ -2011,6 +2009,54 @@ def _prepare_inpaint_model_conditioning(
     return positive, negative, latent
 
 
+def _prepare_masked_generation_latent(
+    model_module: "UniCanvasModelModule",
+    mode: str,
+    positive: Any,
+    negative: Any,
+    vae: Any,
+    image_tensor: torch.Tensor,
+    mask: torch.Tensor,
+    grow_mask_by: int,
+    draw_id: str = "unknown",
+) -> tuple[Any, Any, dict[str, Any]]:
+    if mode == "inpaint":
+        positive, negative, native_latent = _prepare_inpaint_model_conditioning(
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            image_tensor=image_tensor,
+            mask=mask,
+            grow_mask_by=grow_mask_by,
+            draw_id=draw_id,
+        )
+        source_latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
+        _uc_log(
+            draw_id,
+            "hybrid inpaint latent returned",
+            {
+                "reason": "keep native InpaintModelConditioning concat context while using source-preserving encoded latent",
+                "native_latent": _latent_debug(native_latent),
+                "source_latent": _latent_debug(source_latent),
+            },
+        )
+        return positive, negative, source_latent
+
+    if not model_module.uses_edit_masked_latents(mode):
+        return _prepare_inpaint_model_conditioning(
+            positive=positive,
+            negative=negative,
+            vae=vae,
+            image_tensor=image_tensor,
+            mask=mask,
+            grow_mask_by=grow_mask_by,
+            draw_id=draw_id,
+        )
+
+    latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
+    return positive, negative, latent
+
+
 def _create_empty_generation_latent(width: int, height: int, gen_settings: dict[str, Any], draw_id: str = "unknown") -> dict[str, Any]:
     module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
     return module.create_empty_latent(width, height, gen_settings, draw_id=draw_id)
@@ -2024,6 +2070,55 @@ def _ensure_direct_sampling_prompt_context(prompt_id: str = "unicanvas_draw") ->
             PromptServer.instance.last_prompt_id = prompt_id
     except Exception:
         pass
+
+
+def _install_direct_sampling_progress_suppressor() -> None:
+    global _COMFY_PROGRESS_PATCHED
+    if _COMFY_PROGRESS_PATCHED:
+        return
+    with _COMFY_PROGRESS_PATCH_LOCK:
+        if _COMFY_PROGRESS_PATCHED:
+            return
+        try:
+            from server import PromptServer
+
+            instance = PromptServer.instance
+            original_send_sync = getattr(instance, "send_sync", None)
+            if not callable(original_send_sync):
+                _COMFY_PROGRESS_PATCHED = True
+                return
+            if getattr(original_send_sync, "_vnccs_unicanvas_progress_guard", False):
+                _COMFY_PROGRESS_PATCHED = True
+                return
+
+            def guarded_send_sync(*args: Any, **kwargs: Any):
+                event = args[0] if args else kwargs.get("event")
+                if event == "progress" and getattr(_COMFY_PROGRESS_LOCAL, "suppress", 0):
+                    return None
+                return original_send_sync(*args, **kwargs)
+
+            guarded_send_sync._vnccs_unicanvas_progress_guard = True  # type: ignore[attr-defined]
+            setattr(instance, "send_sync", guarded_send_sync)
+        except Exception:
+            pass
+        _COMFY_PROGRESS_PATCHED = True
+
+
+@contextlib.contextmanager
+def _suppress_direct_sampling_comfy_progress():
+    _install_direct_sampling_progress_suppressor()
+    depth = int(getattr(_COMFY_PROGRESS_LOCAL, "suppress", 0) or 0)
+    _COMFY_PROGRESS_LOCAL.suppress = depth + 1
+    try:
+        yield
+    finally:
+        if depth:
+            _COMFY_PROGRESS_LOCAL.suppress = depth
+        else:
+            try:
+                delattr(_COMFY_PROGRESS_LOCAL, "suppress")
+            except AttributeError:
+                pass
 
 
 def _sample_generation_latent_default(
@@ -2078,28 +2173,30 @@ def _sample_generation_latent_default(
         if "callback" in sig.parameters:
             kwargs["callback"] = on_step
         _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
-        sampled = nodes.common_ksampler(**kwargs)[0]
+        with _suppress_direct_sampling_comfy_progress():
+            sampled = nodes.common_ksampler(**kwargs)[0]
         _uc_log(draw_id, "common_ksampler output", _latent_debug(sampled))
         return sampled
     except Exception as exc:
         _uc_log(draw_id, "common_ksampler with progress failed; falling back to KSampler", {"error": str(exc)})
 
     _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
-    sampled = _call_node_method(
-        ["KSampler"],
-        ["sample"],
-        model=model,
-        seed=seed,
-        steps=steps,
-        cfg=cfg,
-        sampler_name=sampler_name,
-        scheduler=scheduler,
-        positive=positive,
-        negative=negative,
-        latent_image=latent,
-        latent=latent,
-        denoise=denoise,
-    )
+    with _suppress_direct_sampling_comfy_progress():
+        sampled = _call_node_method(
+            ["KSampler"],
+            ["sample"],
+            model=model,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            positive=positive,
+            negative=negative,
+            latent_image=latent,
+            latent=latent,
+            denoise=denoise,
+        )
     _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
     if isinstance(sampled, tuple) and sampled:
         _uc_log(draw_id, "KSampler tuple output", _latent_debug(sampled[0]))
@@ -2416,8 +2513,10 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         _set_draw_progress(draw_id, "latent", 0.32, 0, steps, "Preparing latent")
         if mode == "txt2img" or (source_empty and mask is None):
             latent = _create_empty_generation_latent(width, height, settings, draw_id=draw_id)
-        elif not model_module.uses_edit_masked_latents(mode) and mode in {"inpaint", "outpaint"} and mask is not None:
-            positive, negative, latent = _prepare_inpaint_model_conditioning(
+        elif mode in {"inpaint", "outpaint"} and mask is not None:
+            positive, negative, latent = _prepare_masked_generation_latent(
+                model_module=model_module,
+                mode=mode,
                 positive=positive,
                 negative=negative,
                 vae=vae,
@@ -2427,7 +2526,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 draw_id=draw_id,
             )
         else:
-            latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
+            latent = _encode_source_latent(vae, image_tensor, None, grow_mask_by, draw_id=draw_id)
         latent = _sample_generation_latent(
             model=model,
             positive=positive,

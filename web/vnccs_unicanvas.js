@@ -409,6 +409,8 @@ class UniCanvasWidget {
     this.stateUploadTimer = null;
     this.lastUploadedStateJSON = "";
     this.pendingStateUpload = null;
+    this.localStateBackupDisabled = false;
+    this.localStateBackupWarned = false;
     this.stagingItems = [];
     this.activeStagingIndex = -1;
     this.drawInProgress = false;
@@ -798,10 +800,11 @@ class UniCanvasWidget {
     return btn;
   }
 
-  _createCanvas() {
+  _createCanvas(width = this.size.width, height = this.size.height, options = { readFrequently: true }) {
     const c = document.createElement("canvas");
-    c.width = this.size.width;
-    c.height = this.size.height;
+    c.width = Math.max(1, Math.round(width));
+    c.height = Math.max(1, Math.round(height));
+    if (options?.readFrequently) c.getContext("2d", { willReadFrequently: true });
     return c;
   }
 
@@ -810,6 +813,10 @@ class UniCanvasWidget {
     ctx.imageSmoothingEnabled = smoothing;
     if (smoothing) ctx.imageSmoothingQuality = "high";
     return ctx;
+  }
+
+  getReadbackContext(canvas, smoothing = true) {
+    return this.configureImageContext(canvas.getContext("2d", { willReadFrequently: true }), smoothing);
   }
 
   _createInitialLayers() {
@@ -1549,6 +1556,11 @@ class UniCanvasWidget {
       }
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
+      if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) {
+        this.pointerMode = "idle";
+        this.isPointerDown = false;
+        return;
+      }
       const layer = this.pointerMode === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
       if (layer) {
         this.dragStart.layerId = layer.id;
@@ -2796,13 +2808,25 @@ class UniCanvasWidget {
     return true;
   }
 
+  ensureWorldRectBounds(rect, padding = 256, allowExpand = true) {
+    if (!rect) return false;
+    if (!this.ensureWorldBounds(rect.x, rect.y, padding, allowExpand)) return false;
+    if (!this.ensureWorldBounds(rect.x + rect.width, rect.y + rect.height, padding, allowExpand)) return false;
+    return true;
+  }
+
+  ensureVisibleWorldBounds(padding = 256) {
+    return this.ensureWorldRectBounds(this.visibleWorldRect(), padding, true);
+  }
+
   drawStroke(a, b) {
     const layer = this.tool === "mask" ? this.getOrCreateMaskLayer() : this.activeLayer;
     if (!layer || layer.locked) return;
-    if (!this.ensureWorldBounds(b.x, b.y, this.brushSize * 2, !this.isPointerDown)) return;
-    this.materializeRasterLayerForEditing(layer);
+    if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) return;
     const start = this.alignCoordForTool(a, this.brushSize);
     const end = this.alignCoordForTool(b, this.brushSize);
+    if (!this.ensureStrokeWorldBounds(start, end, this.brushSize)) return;
+    this.materializeRasterLayerForEditing(layer);
     const strokeBounds = this.getStrokeCanvasBounds(layer, start, end, this.brushSize);
     const ctx = layer.canvas.getContext("2d");
     ctx.save();
@@ -2827,6 +2851,17 @@ class UniCanvasWidget {
     ctx.restore();
     this.markLayerPixelsChanged(layer, strokeBounds, this.tool !== "eraser");
     if (this.tool in this.lastDrawPointByTool) this.lastDrawPointByTool[this.tool] = { x: b.x, y: b.y };
+  }
+
+  ensureStrokeWorldBounds(start, end, width) {
+    const pad = width / 2 + 4;
+    const left = Math.min(start.x, end.x) - pad;
+    const top = Math.min(start.y, end.y) - pad;
+    const right = Math.max(start.x, end.x) + pad;
+    const bottom = Math.max(start.y, end.y) + pad;
+    if (!this.ensureWorldBounds(left, top, Math.max(128, width * 2), true)) return false;
+    if (!this.ensureWorldBounds(right, bottom, Math.max(128, width * 2), true)) return false;
+    return true;
   }
 
   getStrokeCanvasBounds(layer, start, end, width) {
@@ -4011,7 +4046,7 @@ class UniCanvasWidget {
     const out = document.createElement("canvas");
     out.width = Math.max(64, Math.round(inferenceSize.width));
     out.height = Math.max(64, Math.round(inferenceSize.height));
-    const ctx = this.configureImageContext(out.getContext("2d"));
+    const ctx = this.getReadbackContext(out);
     if (type === "image" && options.fillBackground) {
       ctx.fillStyle = "#000";
       ctx.fillRect(0, 0, out.width, out.height);
@@ -4053,7 +4088,7 @@ class UniCanvasWidget {
   }
 
   sanitizeMaskCanvas(canvas) {
-    const ctx = this.configureImageContext(canvas.getContext("2d"));
+    const ctx = this.getReadbackContext(canvas);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
     for (let i = 0; i < data.length; i += 4) {
@@ -4070,7 +4105,7 @@ class UniCanvasWidget {
     const canvas = document.createElement("canvas");
     canvas.width = Math.max(1, Math.round(width));
     canvas.height = Math.max(1, Math.round(height));
-    const ctx = this.configureImageContext(canvas.getContext("2d"));
+    const ctx = this.getReadbackContext(canvas);
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const data = imageData.data;
@@ -4089,7 +4124,7 @@ class UniCanvasWidget {
   }
 
   clearEdgeConnectedMaskAlpha(canvas, preserveCanvas = null) {
-    const ctx = canvas.getContext("2d");
+    const ctx = this.getReadbackContext(canvas, false);
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const { data, width, height } = imageData;
     const total = width * height;
@@ -4099,7 +4134,7 @@ class UniCanvasWidget {
       const preserve = document.createElement("canvas");
       preserve.width = width;
       preserve.height = height;
-      const preserveCtx = this.configureImageContext(preserve.getContext("2d"));
+      const preserveCtx = this.getReadbackContext(preserve);
       preserveCtx.drawImage(preserveCanvas, 0, 0, width, height);
       preserveData = preserveCtx.getImageData(0, 0, width, height).data;
     }
@@ -4167,7 +4202,7 @@ class UniCanvasWidget {
     const out = document.createElement("canvas");
     out.width = Math.max(64, Math.round(inferenceSize.width));
     out.height = Math.max(64, Math.round(inferenceSize.height));
-    const ctx = this.configureImageContext(out.getContext("2d"));
+    const ctx = this.getReadbackContext(out);
     for (const layer of [...this.layers].reverse()) {
       if (!layer.visible || layer.type !== "raster") continue;
       ctx.save();
@@ -4183,13 +4218,13 @@ class UniCanvasWidget {
     const out = document.createElement("canvas");
     out.width = Math.max(64, Math.round(inferenceSize.width));
     out.height = Math.max(64, Math.round(inferenceSize.height));
-    const ctx = this.configureImageContext(out.getContext("2d"));
+    const ctx = this.getReadbackContext(out);
     if (userMaskCanvas) ctx.drawImage(userMaskCanvas, 0, 0, out.width, out.height);
     this.sanitizeMaskCanvas(out);
 
     const rasterAlpha = this.makeRasterAlphaCanvas(inferenceSize);
     const maskData = ctx.getImageData(0, 0, out.width, out.height);
-    const rasterData = rasterAlpha.getContext("2d").getImageData(0, 0, out.width, out.height).data;
+    const rasterData = this.getReadbackContext(rasterAlpha, false).getImageData(0, 0, out.width, out.height).data;
     const data = maskData.data;
     for (let i = 0; i < data.length; i += 4) {
       const rasterA = rasterData[i + 3];
@@ -4272,7 +4307,7 @@ class UniCanvasWidget {
   }
 
   getCanvasAlphaStats(canvas) {
-    const data = canvas.getContext("2d").getImageData(0, 0, canvas.width, canvas.height).data;
+    const data = this.getReadbackContext(canvas, false).getImageData(0, 0, canvas.width, canvas.height).data;
     let minX = canvas.width;
     let minY = canvas.height;
     let maxX = -1;
@@ -4819,12 +4854,24 @@ class UniCanvasWidget {
   }
 
   saveLocalStateBackup(state) {
-    if (!this.stateHasLayerPixels(state)) return;
+    if (this.localStateBackupDisabled || !this.stateHasLayerPixels(state)) return;
     try {
       const payload = JSON.stringify({ saved_at: Date.now(), state });
+      if (payload.length > 4_000_000) {
+        this.localStateBackupDisabled = true;
+        if (!this.localStateBackupWarned) {
+          this.localStateBackupWarned = true;
+          console.info("[VNCCS UniCanvas] Local backup skipped: state is too large for browser localStorage; server cache remains active.");
+        }
+        return;
+      }
       window.localStorage?.setItem(this.getStateBackupKey(), payload);
     } catch (err) {
-      console.warn("[VNCCS UniCanvas] Local state backup failed", err);
+      this.localStateBackupDisabled = true;
+      if (!this.localStateBackupWarned) {
+        this.localStateBackupWarned = true;
+        console.info("[VNCCS UniCanvas] Local backup disabled: browser localStorage quota is not enough; server cache remains active.");
+      }
     }
   }
 
@@ -4936,7 +4983,7 @@ class UniCanvasWidget {
   }
 
   getCanvasAlphaBounds(canvas) {
-    const ctx = canvas.getContext("2d");
+    const ctx = this.getReadbackContext(canvas, false);
     const { width, height } = canvas;
     const data = ctx.getImageData(0, 0, width, height).data;
     let minX = width;
@@ -5069,7 +5116,7 @@ class UniCanvasWidget {
   hasMaskContent() {
     for (const layer of this.layers) {
       if (layer.type !== "mask" || !layer.visible) continue;
-      const ctx = layer.canvas.getContext("2d");
+      const ctx = this.getReadbackContext(layer.canvas, false);
       const data = ctx.getImageData(0, 0, layer.canvas.width, layer.canvas.height).data;
       for (let i = 3; i < data.length; i += 4) {
         if (data[i] > 8) return true;
@@ -5107,7 +5154,7 @@ class UniCanvasWidget {
     const composite = document.createElement("canvas");
     composite.width = width;
     composite.height = height;
-    const compositeCtx = this.configureImageContext(composite.getContext("2d"));
+    const compositeCtx = this.getReadbackContext(composite);
     for (const layer of [...this.layers].reverse()) {
       if (layer.type !== type || !layer.visible) continue;
       compositeCtx.save();
