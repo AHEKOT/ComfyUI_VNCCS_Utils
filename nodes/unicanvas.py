@@ -718,6 +718,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
                 clip=clip,
                 vae=gen_settings.get("_qwen_edit_vae"),
                 image_tensor=image_tensor,
+                image_tensors=None,
                 prompt=text,
                 gen_settings=gen_settings,
                 draw_id=str(gen_settings.get("_draw_id") or "unknown"),
@@ -743,6 +744,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         draw_id: str = "unknown",
     ) -> tuple[Any, Any]:
         reference = image_tensor
+        vl_references = [image_tensor]
         draw_mode = str(gen_settings.get("draw_mode") or "")
         mask = gen_settings.get("_qwen_edit_mask")
         if draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
@@ -753,14 +755,16 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
             ).squeeze(1).unsqueeze(-1).clamp(0, 1)
             reference = reference.clone()
             reference = reference * (1.0 - (pixel_mask > 0.01).to(reference.dtype))
+            vl_references = [reference, image_tensor]
             _uc_log(
                 draw_id,
-                "Qwen Image Edit masked reference prepared",
+                "Qwen Image Edit multi-image masked references prepared",
                 {
                     "mode": draw_mode,
-                    "reference": _tensor_debug(reference),
+                    "first_masked_reference": _tensor_debug(reference),
+                    "second_unmasked_reference": _tensor_debug(image_tensor),
                     "mask": _tensor_debug(mask),
-                    "reason": "Qwen Image Edit 2511 uses black masked pixels plus reference latents",
+                    "reason": "Qwen Image Edit 2511 gets masked image as image 1 and original image as image 2",
                 },
             )
 
@@ -768,6 +772,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
             clip=gen_settings.get("_qwen_edit_clip"),
             vae=vae,
             image_tensor=reference,
+            image_tensors=vl_references,
             prompt=str(gen_settings.get("positive") or ""),
             gen_settings=gen_settings,
             draw_id=draw_id,
@@ -851,6 +856,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         clip: Any,
         vae: Any,
         image_tensor: torch.Tensor,
+        image_tensors: list[torch.Tensor] | None,
         prompt: str,
         gen_settings: dict[str, Any],
         draw_id: str = "unknown",
@@ -871,14 +877,23 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         if draw_mode in {"inpaint", "outpaint"}:
             base_prompt = str(gen_settings.get("qwen_inpaint_prompt") or QWEN_IMAGE_EDIT_DEFAULTS["qwen_inpaint_prompt"]) + base_prompt
 
-        samples = image_tensor.movedim(-1, 1)
-        current_total = max(1, int(samples.shape[3] * samples.shape[2]))
-        scale_by = math.sqrt(float(target_vl_size * target_vl_size) / current_total)
-        vl_width = max(1, round(samples.shape[3] * scale_by))
-        vl_height = max(1, round(samples.shape[2] * scale_by))
-        vl_samples = comfy.utils.common_upscale(samples, vl_width, vl_height, upscale_method, crop_method)
-        vl_image = vl_samples.movedim(1, -1)
+        reference_tensors = [tensor for tensor in (image_tensors or [image_tensor]) if torch.is_tensor(tensor)]
+        if not reference_tensors:
+            reference_tensors = [image_tensor]
 
+        vl_images = []
+        vl_sizes = []
+        for reference_tensor in reference_tensors:
+            samples = reference_tensor.movedim(-1, 1)
+            current_total = max(1, int(samples.shape[3] * samples.shape[2]))
+            scale_by = math.sqrt(float(target_vl_size * target_vl_size) / current_total)
+            vl_width = max(1, round(samples.shape[3] * scale_by))
+            vl_height = max(1, round(samples.shape[2] * scale_by))
+            vl_samples = comfy.utils.common_upscale(samples, vl_width, vl_height, upscale_method, crop_method)
+            vl_images.append(vl_samples.movedim(1, -1))
+            vl_sizes.append([vl_width, vl_height])
+
+        samples = image_tensor.movedim(-1, 1)
         vae_width = (samples.shape[3] + 7) // 8 * 8
         vae_height = (samples.shape[2] + 7) // 8 * 8
         vae_samples = comfy.utils.common_upscale(samples, vae_width, vae_height, upscale_method, crop_method)
@@ -888,8 +903,11 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         template_prefix = "<|im_start|>system\n"
         template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
         llama_template = template_prefix + instruction + template_suffix
-        image_prompt = "Picture 1: <|vision_start|><|image_pad|><|vision_end|>"
-        tokens = clip.tokenize(image_prompt + base_prompt, images=[vl_image], llama_template=llama_template)
+        image_prompt = "".join(
+            f"Picture {index + 1}: <|vision_start|><|image_pad|><|vision_end|>\n"
+            for index in range(len(vl_images))
+        )
+        tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
         positive = node_helpers.conditioning_set_values(conditioning, {"reference_latents": [ref_latent]}, append=True)
         negative = positive
@@ -903,7 +921,8 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
             "Qwen Image Edit encode",
             {
                 "prompt_len": len(base_prompt),
-                "vl_size": [vl_width, vl_height],
+                "vl_sizes": vl_sizes,
+                "vl_image_count": len(vl_images),
                 "vae_size": [vae_width, vae_height],
                 "reference_latent": _tensor_debug(ref_latent),
             },
