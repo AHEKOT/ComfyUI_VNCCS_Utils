@@ -868,6 +868,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         import comfy.utils
         import node_helpers
 
+        target_size = int(gen_settings.get("qwen_target_size", image_tensor.shape[1]))
         target_vl_size = int(gen_settings.get("qwen_target_vl_size", 384))
         upscale_method = str(gen_settings.get("qwen_upscale_method") or "lanczos")
         crop_method = str(gen_settings.get("qwen_crop_method") or "center")
@@ -883,51 +884,99 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 
         vl_images = []
         vl_sizes = []
+        ref_latents = []
+        ref_sizes = []
         for reference_tensor in reference_tensors:
-            samples = reference_tensor.movedim(-1, 1)
-            current_total = max(1, int(samples.shape[3] * samples.shape[2]))
-            scale_by = math.sqrt(float(target_vl_size * target_vl_size) / current_total)
-            vl_width = max(1, round(samples.shape[3] * scale_by))
-            vl_height = max(1, round(samples.shape[2] * scale_by))
-            vl_samples = comfy.utils.common_upscale(samples, vl_width, vl_height, upscale_method, crop_method)
-            vl_images.append(vl_samples.movedim(1, -1))
-            vl_sizes.append([vl_width, vl_height])
+            prepared = self._prepare_qwen_encoder_image(reference_tensor)
+            ref_image = self._process_qwen_encoder_image(prepared, target_size, upscale_method, crop_method)
+            ref_latents.append(vae.encode(ref_image[:, :, :, :3]))
+            ref_sizes.append([int(ref_image.shape[2]), int(ref_image.shape[1])])
 
-        samples = image_tensor.movedim(-1, 1)
-        vae_width = (samples.shape[3] + 7) // 8 * 8
-        vae_height = (samples.shape[2] + 7) // 8 * 8
-        vae_samples = comfy.utils.common_upscale(samples, vae_width, vae_height, upscale_method, crop_method)
-        image_vae = vae_samples.movedim(1, -1)
-        ref_latent = vae.encode(image_vae[:, :, :, :3])
+            vl_image = self._process_qwen_encoder_image(prepared, target_vl_size, upscale_method, crop_method)
+            vl_images.append(vl_image)
+            vl_sizes.append([int(vl_image.shape[2]), int(vl_image.shape[1])])
 
         template_prefix = "<|im_start|>system\n"
         template_suffix = "<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n"
         llama_template = template_prefix + instruction + template_suffix
         image_prompt = "".join(
-            f"Picture {index + 1}: <|vision_start|><|image_pad|><|vision_end|>\n"
+            f"Picture {index + 1}: <|vision_start|><|image_pad|><|vision_end|>"
             for index in range(len(vl_images))
         )
         tokens = clip.tokenize(image_prompt + base_prompt, images=vl_images, llama_template=llama_template)
         conditioning = clip.encode_from_tokens_scheduled(tokens)
-        positive = node_helpers.conditioning_set_values(conditioning, {"reference_latents": [ref_latent]}, append=True)
-        negative = positive
         if bool(gen_settings.get("qwen_2511", True)):
             method = "index_timestep_zero"
-            positive = node_helpers.conditioning_set_values(positive, {"reference_latents_method": method})
-            negative = node_helpers.conditioning_set_values(negative, {"reference_latents_method": method})
+            conditioning = node_helpers.conditioning_set_values(conditioning, {"reference_latents_method": method})
+        positive = conditioning
+        if ref_latents:
+            weights = [float(gen_settings.get(f"qwen_ref_weight_{index + 1}", 1.0) or 0.0) for index in range(len(ref_latents))]
+            weighted_ref_latents = [(weight ** 2) * latent for weight, latent in zip(weights, ref_latents) if weight > 0]
+            if weighted_ref_latents:
+                positive = node_helpers.conditioning_set_values(positive, {"reference_latents": weighted_ref_latents}, append=True)
+        negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
+        latent_index = max(1, int(gen_settings.get("qwen_latent_image_index", 1) or 1))
+        ref_latent = ref_latents[min(latent_index - 1, len(ref_latents) - 1)] if ref_latents else torch.zeros(1, 4, 128, 128)
         latent = {"samples": ref_latent}
         _uc_log(
             draw_id,
             "Qwen Image Edit encode",
             {
                 "prompt_len": len(base_prompt),
+                "target_size": target_size,
                 "vl_sizes": vl_sizes,
-                "vl_image_count": len(vl_images),
-                "vae_size": [vae_width, vae_height],
+                "ref_sizes": ref_sizes,
+                "image_count": len(vl_images),
                 "reference_latent": _tensor_debug(ref_latent),
             },
         )
         return positive, negative, latent
+
+    def _prepare_qwen_encoder_image(self, image: torch.Tensor) -> torch.Tensor:
+        if image.ndim == 3:
+            image = image.unsqueeze(0)
+        if not torch.is_floating_point(image):
+            image = image.float()
+        if image.numel() and image.detach().max() > 1.5:
+            image = image / 255.0
+        image = image.clamp(0.0, 1.0)
+        channels = int(image.shape[-1])
+        if channels == 1:
+            return image.repeat(1, 1, 1, 3)
+        if channels < 4:
+            return image
+        rgb = image[..., :3]
+        alpha = image[..., 3:4].clamp(0.0, 1.0)
+        if bool((alpha < 0.999).any().item()):
+            background = torch.ones((1, 1, 1, 3), dtype=rgb.dtype, device=rgb.device)
+            rgb = rgb * alpha + background * (1.0 - alpha)
+        return rgb.clamp(0.0, 1.0)
+
+    def _process_qwen_encoder_image(self, image: torch.Tensor, target_size: int, upscale_method: str, crop_method: str) -> torch.Tensor:
+        import comfy.utils
+
+        samples = image.movedim(-1, 1)
+        current_total = max(1, int(samples.shape[3] * samples.shape[2]))
+        scale_by = math.sqrt(float(target_size * target_size) / current_total)
+        if crop_method == "pad":
+            crop = "center"
+            scaled_width = round(samples.shape[3] * scale_by)
+            scaled_height = round(samples.shape[2] * scale_by)
+            canvas_width = max(8, math.ceil(scaled_width / 8.0) * 8)
+            canvas_height = max(8, math.ceil(scaled_height / 8.0) * 8)
+            canvas = torch.zeros(
+                (samples.shape[0], samples.shape[1], canvas_height, canvas_width),
+                dtype=samples.dtype,
+                device=samples.device,
+            )
+            resized = comfy.utils.common_upscale(samples, scaled_width, scaled_height, upscale_method, crop)
+            canvas[:, :, : resized.shape[2], : resized.shape[3]] = resized
+            processed = canvas
+        else:
+            width = max(8, round(samples.shape[3] * scale_by / 8.0) * 8)
+            height = max(8, round(samples.shape[2] * scale_by / 8.0) * 8)
+            processed = comfy.utils.common_upscale(samples, width, height, upscale_method, crop_method)
+        return processed.movedim(1, -1)
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         return super().decode_samples(vae, samples, _gen_settings)
@@ -3506,6 +3555,13 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 grow_mask_by=grow_mask_by,
                 draw_id=draw_id,
                 gen_settings=settings,
+            )
+        elif model_module.key == "qwen_image_edit" and isinstance(settings.get("_qwen_edit_latent"), dict):
+            latent = settings["_qwen_edit_latent"]
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit uses encoder reference latent",
+                {"reason": "matches VNCCS_QWEN_Encoder output latent", "latent": _latent_debug(latent)},
             )
         else:
             latent = _encode_source_latent(vae, image_tensor, None, grow_mask_by, draw_id=draw_id)

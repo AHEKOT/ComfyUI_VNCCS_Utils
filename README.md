@@ -1,16 +1,6 @@
 # ComfyUI VNCCS Utils
 
-A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, with **VNCCS Pose Studio** as the main node of the package.
-
-
-
-## VNCCS Pose Studio
-
-<p align="center">
-  <img src="images/pose-studio-logo.png" alt="VNCCS Pose Studio logo" width="360">
-</p>
-
----
+A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
 
 <table>
 <tr>
@@ -28,6 +18,31 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 </table>
 
 ---
+
+## VNCCS UniCanvas
+
+<p align="center">
+  <img src="images/uni-canvas-logo.png" alt="VNCCS UniCanvas logo" width="360">
+</p>
+
+**VNCCS UniCanvas** is an integrated infinite-canvas image generation and editing workspace inside ComfyUI. It is designed for freeform creative work: generate anywhere, edit any region, build results across layers, and keep refining without being locked to a single fixed image boundary.
+
+### Key Features
+
+*   **Infinite Canvas Workflow**: Work beyond a single image frame and place generations wherever the composition needs them.
+*   **Layer-Based Editing**: Build images from separate raster and mask layers with visibility, opacity, selection, movement, and compositing controls.
+*   **Generation Anywhere**: Use a selected region as the generation target for new images, image edits, inpaint, outpaint, and full-area transformations.
+*   **Mask and Object Tools**: Paint masks, refine selections, and use SAM-powered object selection to isolate or remove parts of an image.
+*   **Preset and Custom Models**: Switch between built-in presets or use manual model selection for supported generation backends.
+*   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
+*   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
+*   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
+
+## VNCCS Pose Studio
+
+<p align="center">
+  <img src="images/pose-studio-logo.png" alt="VNCCS Pose Studio logo" width="360">
+</p>
 
 **Example Workflows:** [QWEN](workflows/VNCCS_Utils%20Pose%20Studio%20QWEN.json) · [Klein9b](workflows/VNCCS_Utils%20Pose%20Studio%20Klein9b.json)
 

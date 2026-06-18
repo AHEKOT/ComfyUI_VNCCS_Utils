@@ -5349,7 +5349,9 @@ class UniCanvasWidget {
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const url = this.imageResultToURL(data.image);
       const img = await this.loadImage(url);
-      const stagingMaskCanvas = mode === "inpaint" || mode === "outpaint" ? maskCanvas : null;
+      const hasResultMask = Boolean(data.mask);
+      const stagingMode = hasResultMask ? mode : (mode === "inpaint" || mode === "outpaint" ? "img2img" : mode);
+      const stagingMaskCanvas = hasResultMask && (mode === "inpaint" || mode === "outpaint") ? maskCanvas : null;
       let resultMaskCanvas = null;
       if (data.mask) {
         const maskUrl = this.imageResultToURL(data.mask);
@@ -5368,7 +5370,7 @@ class UniCanvasWidget {
         image: data.image,
         img,
         visible: true,
-        mode,
+        mode: stagingMode,
         maskCanvas: acceptMaskCanvas,
         userMaskCanvas: stagingMaskCanvas,
         resultMaskCanvas,
