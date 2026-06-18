@@ -1,3 +1,20 @@
+# Version 0.5.0
+## VNCCS UniCanvas Initial Release and Model Workflow Updates
+
+### New Features
+
+*   **VNCCS UniCanvas**: Added the first public release of the integrated canvas workflow for layer-based generation, editing, masking, and object-focused image work directly inside ComfyUI.
+    *   Supports prompt-driven generation, inpaint/outpaint workflows, mask editing, object selection, layer compositing, undo/redo, snapping, resizing, and draw progress feedback.
+    *   Includes model presets and custom model selection for SDXL/Illustrious, Anima, Flux Klein, Z-Image, and Qwen Image Edit 2511 workflows.
+    *   Adds Turbo LoRA support, LoRA Stack controls, sampler/scheduler controls, and automatic model asset download for bundled presets.
+    *   Includes SAM-based object mask tooling with first-use model download.
+
+### Improvements
+
+*   **UniCanvas model workflow support**: Added dedicated handling for Anima, Anima LLLite inpainting, Z-Image Fun ControlNet, Flux Klein edit/outpaint, and Qwen Image Edit 2511 reference-latent workflows.
+*   **Configuration and asset management**: Added local UniCanvas preset configuration and cleaned up obsolete workflow/config files used during development.
+*   **Project maintenance**: Added safer private JSON writes for user configuration paths used by the Pose Library and Model Manager.
+
 # Version 0.4.29
 ## Pose Studio Live Morph Performance and Pose Manager Stability
 

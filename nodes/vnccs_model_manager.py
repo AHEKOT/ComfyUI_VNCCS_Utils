@@ -378,16 +378,26 @@ def get_vnccs_config():
             return {}
     return {}
 
+def write_private_json(path, data):
+    tmp_path = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    fd = os.open(tmp_path, flags, 0o600)
+    try:
+        with os.fdopen(fd, 'w') as f:
+            json.dump(data, f, indent=4)
+        os.replace(tmp_path, path)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise
+
 def save_vnccs_config(new_data):
     config_path = resolve_path("vnccs_user_config.json")
     data = get_vnccs_config()
     data.update(new_data)
-    with open(config_path, 'w') as f:
-        json.dump(data, f, indent=4)
-    try:
-        os.chmod(config_path, 0o600)
-    except Exception:
-        pass
+    write_private_json(config_path, data)
 
 @server.PromptServer.instance.routes.post("/vnccs/manager/save_token")
 async def save_api_token(request):

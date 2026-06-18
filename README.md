@@ -1,15 +1,42 @@
 # ComfyUI VNCCS Utils
 
-A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, with **VNCCS Pose Studio** as the main node of the package.
+A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
+
+<table>
+<tr>
+<td width="50%" align="center">
+<strong>Join The Community</strong><br>
+Share results, ask questions, and follow VNCCS updates.<br><br>
+<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="images/VNCCS_Discord_Button.png" alt="Join our Discord"></a>
+</td>
+<td width="50%" align="center">
+<strong>Support VNCCS</strong><br>
+VNCCS is developed independently. Support helps keep the project moving.<br><br>
+<a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="images/VNCCS_Donate_Button.png" alt="Support VNCCS"></a>
+</td>
+</tr>
+</table>
 
 ---
-<a href="https://discord.com/invite/9Dacp4wvQw" target="_blank"><img src="https://img.shields.io/badge/Join%20our%20Discord-7289DA?style=for-the-badge&logo=discord&logoColor=white" style="height: 60px !important;"></a>
 
----
+## VNCCS UniCanvas
 
-## **If you find my project useful, please consider supporting it! I work on it completely on my own, and your support will allow me to continue maintaining it and adding even more cool features!**
+<p align="center">
+  <img src="images/uni-canvas-logo.png" alt="VNCCS UniCanvas logo" width="360">
+</p>
 
-<a href="https://www.buymeacoffee.com/MIUProject" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 60px !important;width: 217px !important;" ></a>
+**VNCCS UniCanvas** is an integrated infinite-canvas image generation and editing workspace inside ComfyUI. It is designed for freeform creative work: generate anywhere, edit any region, build results across layers, and keep refining without being locked to a single fixed image boundary.
+
+### Key Features
+
+*   **Infinite Canvas Workflow**: Work beyond a single image frame and place generations wherever the composition needs them.
+*   **Layer-Based Editing**: Build images from separate raster and mask layers with visibility, opacity, selection, movement, and compositing controls.
+*   **Generation Anywhere**: Use a selected region as the generation target for new images, image edits, inpaint, outpaint, and full-area transformations.
+*   **Mask and Object Tools**: Paint masks, refine selections, and use SAM-powered object selection to isolate or remove parts of an image.
+*   **Preset and Custom Models**: Switch between built-in presets or use manual model selection for supported generation backends.
+*   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
+*   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
+*   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
 
 ## VNCCS Pose Studio
 
