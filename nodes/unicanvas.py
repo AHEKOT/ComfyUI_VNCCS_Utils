@@ -40,6 +40,8 @@ _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
 ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
 ANIMA_LLLITE_INPAINT_FILENAME = "anima-lllite-inpainting-v2.safetensors"
+Z_IMAGE_FUN_CONTROLNET_REPO_ID = "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1"
+Z_IMAGE_FUN_CONTROLNET_FILENAME = "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
@@ -98,7 +100,7 @@ Z_IMAGE_DEFAULTS = {
     "steps": 8,
     "cfg": 1.0,
     "aura_flow_shift": 3.0,
-    "fun_controlnet_patch_name": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+    "fun_controlnet_patch_name": Z_IMAGE_FUN_CONTROLNET_FILENAME,
     "fun_controlnet_strength": 1.0,
     "fun_controlnet_inpaint": True,
 }
@@ -1063,6 +1065,7 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             )
             return model
 
+        patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
         model_patch = _load_model_patch_cached(patch_name)
         patched = _call_node_method(
             ["ZImageFunControlnet"],
@@ -2292,6 +2295,65 @@ def _load_model_patch_cached(patch_name: str):
     with _MODEL_CACHE_LOCK:
         _MODEL_PATCH_CACHE[patch_name] = loaded
     return loaded
+
+
+def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknown") -> str:
+    import folder_paths
+
+    requested = str(patch_name or Z_IMAGE_FUN_CONTROLNET_FILENAME).replace("\\", "/").strip()
+    basename = os.path.basename(requested) or Z_IMAGE_FUN_CONTROLNET_FILENAME
+    if basename != Z_IMAGE_FUN_CONTROLNET_FILENAME:
+        return patch_name
+
+    found = _get_full_path_agnostic(folder_paths, "model_patches", requested, require_exists=True)
+    if found:
+        return patch_name
+    found = _get_full_path_agnostic(folder_paths, "model_patches", basename, require_exists=True)
+    if found:
+        return basename
+
+    folders = _safe_get_folder_paths(folder_paths, "model_patches")
+    if folders:
+        target_dir = folders[0]
+    else:
+        models_dir = os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(os.getcwd(), "models")))
+        target_dir = os.path.join(models_dir, "model_patches")
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = os.path.join(target_dir, basename)
+    if os.path.isfile(target_path):
+        return basename
+
+    _uc_log(
+        draw_id,
+        "Z-image Fun ControlNet model download started",
+        {
+            "repo": Z_IMAGE_FUN_CONTROLNET_REPO_ID,
+            "filename": Z_IMAGE_FUN_CONTROLNET_FILENAME,
+            "target": target_path,
+        },
+    )
+    try:
+        import shutil
+        from huggingface_hub import hf_hub_download
+
+        cached_path = hf_hub_download(
+            repo_id=Z_IMAGE_FUN_CONTROLNET_REPO_ID,
+            filename=Z_IMAGE_FUN_CONTROLNET_FILENAME,
+            repo_type="model",
+            local_files_only=False,
+        )
+        tmp_path = target_path + ".tmp"
+        shutil.copy2(cached_path, tmp_path)
+        os.replace(tmp_path, target_path)
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            os.remove(target_path + ".tmp")
+        raise RuntimeError(
+            f"Failed to download Z-image Fun ControlNet model from {Z_IMAGE_FUN_CONTROLNET_REPO_ID}: {exc}"
+        ) from exc
+
+    _uc_log(draw_id, "Z-image Fun ControlNet model downloaded", {"path": target_path})
+    return basename
 
 
 def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> str:
