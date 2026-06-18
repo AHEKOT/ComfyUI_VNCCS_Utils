@@ -1,0 +1,243 @@
+{
+  "presets": [
+    {
+      "id": "sdxl",
+      "label": "SDXL",
+      "title": "Illustrious ILFlatMix",
+      "description": "ILFlatMix",
+      "settings": {
+        "generation_mode": "sdxl",
+        "model_loader": "checkpoint",
+        "ckpt_name": "Illustrious/ILFlatMix.safetensors",
+        "sampler_name": "euler",
+        "scheduler": "normal",
+        "steps": 24,
+        "cfg": 7
+      },
+      "assets": [
+        {
+          "role": "checkpoint",
+          "name": "ILFlatMix",
+          "hf_repo": "MIUProject/VNCCS_v3.0",
+          "hf_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
+          "local_path": "models/checkpoints/Illustrious/ILFlatMix.safetensors",
+          "description": "VNCCS Illustrious checkpoint."
+        }
+      ],
+      "turbo": {
+        "setting": "dmd_lora_name",
+        "strength_setting": "dmd_lora_strength",
+        "enable_setting": "turbo_enabled",
+        "asset": {
+          "role": "lora",
+          "name": "DMD2 SDXL Lightning",
+          "hf_repo": "MIUProject/VNCCS_v3.0",
+          "hf_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
+          "local_path": "models/loras/DMD2/dmd2_sdxl_4step_lora_fp16.safetensors",
+          "description": "4-step turbo LoRA for SDXL."
+        }
+      }
+    },
+    {
+      "id": "anima",
+      "label": "Anima",
+      "title": "Anima Base v1.0",
+      "description": "Anima base diffusion model with matching Qwen 0.6B CLIP and VAE.",
+      "settings": {
+        "generation_mode": "anima",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "anima-base-v1.0.safetensors",
+        "clip_name": "qwen_3_06b_base.safetensors",
+        "vae_name": "qwen_image_vae.safetensors",
+        "clip_type": "stable_diffusion",
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 30,
+        "cfg": 4.5
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Anima Base v1.0",
+          "hf_repo": "circlestone-labs/Anima",
+          "hf_path": "split_files/diffusion_models/anima-base-v1.0.safetensors",
+          "local_path": "models/diffusion_models/anima-base-v1.0.safetensors",
+          "description": "Anima base diffusion model v1.0."
+        },
+        {
+          "role": "clip",
+          "name": "Anima Qwen 3 0.6B Text Encoder",
+          "hf_repo": "circlestone-labs/Anima",
+          "hf_path": "split_files/text_encoders/qwen_3_06b_base.safetensors",
+          "local_path": "models/text_encoders/qwen_3_06b_base.safetensors",
+          "description": "Text encoder for Anima v1.0."
+        },
+        {
+          "role": "vae",
+          "name": "Anima VAE",
+          "hf_repo": "circlestone-labs/Anima",
+          "hf_path": "split_files/vae/qwen_image_vae.safetensors",
+          "local_path": "models/vae/qwen_image_vae.safetensors",
+          "description": "VAE for Anima v1.0."
+        }
+      ],
+      "turbo": {
+        "setting": "dmd_lora_name",
+        "strength_setting": "dmd_lora_strength",
+        "enable_setting": "turbo_enabled",
+        "asset": {
+          "role": "lora",
+          "name": "Anima Turbo LoRA",
+          "hf_repo": "MIUProject/VNCCS_v3.0",
+          "hf_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
+          "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
+          "description": "Turbo LoRA for Anima."
+        }
+      }
+    },
+    {
+      "id": "flux_klein",
+      "label": "Flux Klein9b",
+      "title": "Flux Klein 9B FP8",
+      "description": "Flux Klein edit model preset.",
+      "settings": {
+        "generation_mode": "flux_klein",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "flux-2-klein-9b-fp8.safetensors",
+        "clip_name": "qwen_3_8b_fp8mixed.safetensors",
+        "vae_name": "full_encoder_small_decoder.safetensors",
+        "clip_type": "flux2",
+        "sampler_name": "euler",
+        "scheduler": "flux2",
+        "steps": 4,
+        "cfg": 1
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "FLUX.2 Klein 9B FP8",
+          "hf_repo": "black-forest-labs/FLUX.2-klein-9b-fp8",
+          "hf_path": "flux-2-klein-9b-fp8.safetensors",
+          "local_path": "models/diffusion_models/flux-2-klein-9b-fp8.safetensors",
+          "description": "Official FLUX.2 Klein 9B FP8 diffusion model."
+        },
+        {
+          "role": "clip",
+          "name": "FLUX.2 Klein Qwen 3 8B FP8 Mixed Text Encoder",
+          "hf_repo": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+          "hf_path": "split_files/text_encoders/qwen_3_8b_fp8mixed.safetensors",
+          "local_path": "models/text_encoders/qwen_3_8b_fp8mixed.safetensors",
+          "description": "Text encoder for FLUX.2 Klein 9B."
+        },
+        {
+          "role": "vae",
+          "name": "FLUX.2 Small Decoder VAE",
+          "hf_repo": "black-forest-labs/FLUX.2-small-decoder",
+          "hf_path": "full_encoder_small_decoder.safetensors",
+          "local_path": "models/vae/full_encoder_small_decoder.safetensors",
+          "description": "Official FLUX.2 full encoder small decoder VAE."
+        }
+      ]
+    },
+    {
+      "id": "z_image",
+      "label": "Z-image",
+      "title": "Z-Image Turbo",
+      "description": "Z-Image Turbo with Qwen 3 4B CLIP and AE VAE.",
+      "settings": {
+        "generation_mode": "z_image",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "z_image_turbo_bf16.safetensors",
+        "clip_name": "qwen_3_4b.safetensors",
+        "vae_name": "ae.safetensors",
+        "clip_type": "lumina2",
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "steps": 8,
+        "cfg": 1
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Z-Image Turbo BF16",
+          "hf_repo": "Comfy-Org/z_image_turbo",
+          "hf_path": "split_files/diffusion_models/z_image_turbo_bf16.safetensors",
+          "local_path": "models/diffusion_models/z_image_turbo_bf16.safetensors",
+          "description": "ComfyUI split-file Z-Image Turbo BF16 model."
+        },
+        {
+          "role": "clip",
+          "name": "Z-Image Qwen 3 4B Text Encoder",
+          "hf_repo": "Comfy-Org/z_image_turbo",
+          "hf_path": "split_files/text_encoders/qwen_3_4b.safetensors",
+          "local_path": "models/text_encoders/qwen_3_4b.safetensors",
+          "description": "Text encoder for Z-Image Turbo."
+        },
+        {
+          "role": "vae",
+          "name": "Z-Image AE VAE",
+          "hf_repo": "Comfy-Org/z_image_turbo",
+          "hf_path": "split_files/vae/ae.safetensors",
+          "local_path": "models/vae/ae.safetensors",
+          "description": "AE VAE for Z-Image Turbo."
+        }
+      ]
+    },
+    {
+      "id": "qwen_image_edit",
+      "label": "QIE2511",
+      "title": "Qwen Image Edit 2511 Q5",
+      "description": "Qwen Image Edit 2511 GGUF Q5 preset with matching CLIP and VAE.",
+      "settings": {
+        "generation_mode": "qwen_image_edit",
+        "model_loader": "gguf",
+        "gguf_model_name": "qwen-image-edit-2511-Q5_0.gguf",
+        "clip_name": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+        "vae_name": "qwen_image_vae.safetensors",
+        "clip_type": "qwen_image",
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 4,
+        "cfg": 1
+      },
+      "assets": [
+        {
+          "role": "gguf",
+          "name": "Qwen-Image-Edit-2511-GGUF-Q5",
+          "hf_repo": "unsloth/Qwen-Image-Edit-2511-GGUF",
+          "hf_path": "qwen-image-edit-2511-Q5_0.gguf",
+          "local_path": "models/unet/qwen-image-edit-2511-Q5_0.gguf",
+          "description": "Q5 GGUF model for QIE2511."
+        },
+        {
+          "role": "clip",
+          "name": "QIE2511 Text Encoder",
+          "hf_repo": "f5aiteam/CLIP",
+          "hf_path": "qwen_2.5_vl_7b_fp8_scaled.safetensors",
+          "local_path": "models/text_encoders/qwen_2.5_vl_7b_fp8_scaled.safetensors",
+          "description": "Text encoder for Qwen Image Edit 2511."
+        },
+        {
+          "role": "vae",
+          "name": "QIE2511 VAE",
+          "hf_repo": "Comfy-Org/Qwen-Image_ComfyUI",
+          "hf_path": "split_files/vae/qwen_image_vae.safetensors",
+          "local_path": "models/vae/qwen_image_vae.safetensors",
+          "description": "Official Qwen Image VAE."
+        }
+      ],
+      "turbo": {
+        "setting": "qwen_lora_name",
+        "strength_setting": "qwen_lora_strength",
+        "asset": {
+          "role": "lora",
+          "name": "Qwen Image Edit 2511 Lightning",
+          "hf_repo": "MIUProject/VNCCS_v3.0",
+          "hf_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+          "local_path": "models/loras/qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
+          "description": "4-step lightning LoRA for QIE2511."
+        }
+      }
+    }
+  ]
+}

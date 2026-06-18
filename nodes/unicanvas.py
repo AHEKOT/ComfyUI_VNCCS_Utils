@@ -8,6 +8,8 @@ import contextlib
 import io
 import json
 import inspect
+import queue
+import shutil
 import threading
 from typing import Any
 import math
@@ -25,6 +27,8 @@ from PIL import Image, ImageFilter
 
 _DRAW_LOCK = asyncio.Lock()
 _MODEL_CACHE_LOCK = threading.Lock()
+_COMFY_MODEL_OP_LOCK = threading.RLock()
+_MODEL_CACHE_MAX_ENTRIES = 1
 _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
 _MODEL_PATCH_CACHE: dict[str, Any] = {}
@@ -34,6 +38,12 @@ _DRAW_PROGRESS_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCHED = False
 _COMFY_PROGRESS_LOCAL = threading.local()
+_PRESET_DOWNLOAD_STATUS: dict[str, dict[str, Any]] = {}
+_PRESET_DOWNLOAD_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
+_PRESET_DOWNLOAD_TIMEOUT = (10, 60)
+_PRESET_MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
+_PRESET_MIN_MODEL_FILE_SIZE = 1024
+_PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
@@ -87,7 +97,7 @@ FLUX_KLEIN_DEFAULTS = {
     "clip_type": "flux2",
     "sampler": "euler",
     "sampler_name": "euler",
-    "scheduler": "flux2",
+    "scheduler": "simple",
     "steps": 4,
     "cfg": 1.0,
 }
@@ -2251,14 +2261,17 @@ def _call_node_method(class_names: list[str], method_names: list[str], **kwargs)
 def _load_generation_assets(gen_settings: dict[str, Any]):
     loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
     asset_key = loader.cache_key(gen_settings)
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_CACHE.get(asset_key)
-        if cached is not None:
-            return cached
-    assets = loader.load_assets(gen_settings)
-    with _MODEL_CACHE_LOCK:
-        _MODEL_CACHE[asset_key] = assets
-    return assets
+    with _COMFY_MODEL_OP_LOCK:
+        with _MODEL_CACHE_LOCK:
+            cached = _MODEL_CACHE.get(asset_key)
+            if cached is not None:
+                return cached
+            if len(_MODEL_CACHE) >= _MODEL_CACHE_MAX_ENTRIES:
+                _MODEL_CACHE.clear()
+        assets = loader.load_assets(gen_settings)
+        with _MODEL_CACHE_LOCK:
+            _MODEL_CACHE[asset_key] = assets
+        return assets
 
 
 def _clone_model_clip(model: Any, clip: Any) -> tuple[Any, Any]:
@@ -2907,6 +2920,248 @@ def _get_gguf_model_names() -> list[str]:
     return names
 
 
+def _unicanvas_presets_path() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "config", "unicanvas_presets.json"))
+
+
+def _unicanvas_models_root() -> str:
+    try:
+        import folder_paths
+
+        base = getattr(folder_paths, "base_path", os.getcwd())
+        return os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(base, "models")))
+    except Exception:
+        return os.path.abspath(os.path.join(os.getcwd(), "models"))
+
+
+def _unicanvas_temp_dir() -> str:
+    try:
+        import folder_paths
+
+        base = getattr(folder_paths, "base_path", os.getcwd())
+        temp_dir = getattr(folder_paths, "get_temp_directory", lambda: os.path.join(base, "temp"))()
+        return os.path.abspath(temp_dir)
+    except Exception:
+        return os.path.abspath(tempfile.gettempdir())
+
+
+def _unicanvas_max_download_bytes() -> int:
+    return _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES
+
+
+def _unicanvas_validate_model_filename(path: str) -> None:
+    ext = os.path.splitext(str(path or ""))[1].lower()
+    if ext not in _PRESET_MODEL_FILE_EXTENSIONS:
+        allowed = ", ".join(sorted(_PRESET_MODEL_FILE_EXTENSIONS))
+        raise ValueError(f"Unsupported model file extension '{ext}'. Allowed: {allowed}")
+
+
+def _unicanvas_resolve_local_model_path(local_path: str) -> str:
+    normalized = str(local_path or "").strip().replace("\\", "/")
+    if not normalized:
+        raise ValueError("Preset asset local_path is required")
+    if _is_absolute_any_os(normalized):
+        raise ValueError("Preset asset local_path must be relative")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 3 or parts[0] != "models":
+        raise ValueError("Preset asset local_path must use 'models/<folder>/<file>'")
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError("Preset asset local_path contains path traversal")
+    _unicanvas_validate_model_filename(parts[-1])
+    root = _unicanvas_models_root()
+    target = os.path.abspath(os.path.join(root, *parts[1:]))
+    if os.path.commonpath([root, target]) != root:
+        raise ValueError("Preset asset local_path escapes ComfyUI models directory")
+    return target
+
+
+def _unicanvas_asset_rel_name(local_path: str) -> str:
+    normalized = str(local_path or "").strip().replace("\\", "/")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 3 or parts[0] != "models":
+        return os.path.basename(normalized)
+    folder = parts[1]
+    tail = "/".join(parts[2:])
+    if folder in {"checkpoints", "loras"}:
+        return tail
+    return os.path.basename(tail)
+
+
+def _unicanvas_load_preset_registry() -> dict[str, Any]:
+    path = _unicanvas_presets_path()
+    with open(path, "r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    presets = data.get("presets") if isinstance(data, dict) else None
+    if not isinstance(presets, list):
+        raise ValueError("unicanvas_presets.json must contain a presets array")
+    return {"presets": presets}
+
+
+def _unicanvas_enrich_asset(entry: dict[str, Any], download_key: str) -> dict[str, Any]:
+    enriched = dict(entry)
+    local_path = str(enriched.get("local_path") or "")
+    target_path = _unicanvas_resolve_local_model_path(local_path) if local_path else ""
+    status = _PRESET_DOWNLOAD_STATUS.get(download_key) or {}
+    enriched["download_key"] = download_key
+    enriched["relative_name"] = _unicanvas_asset_rel_name(local_path)
+    enriched["installed"] = bool(target_path and os.path.exists(target_path))
+    enriched["status"] = status.get("status") or ("installed" if enriched["installed"] else "missing")
+    enriched["message"] = status.get("message") or ("Installed" if enriched["installed"] else "Missing")
+    if "progress" in status:
+        enriched["progress"] = status.get("progress")
+    return enriched
+
+
+def _get_unicanvas_presets() -> dict[str, Any]:
+    registry = _unicanvas_load_preset_registry()
+    presets = []
+    for raw_preset in registry.get("presets", []):
+        if not isinstance(raw_preset, dict):
+            continue
+        preset = dict(raw_preset)
+        preset_id = str(preset.get("id") or "")
+        assets = []
+        for index, raw_asset in enumerate(preset.get("assets") or []):
+            if isinstance(raw_asset, dict):
+                assets.append(_unicanvas_enrich_asset(raw_asset, f"{preset_id}:asset:{index}"))
+        preset["assets"] = assets
+        turbo = preset.get("turbo")
+        if isinstance(turbo, dict) and isinstance(turbo.get("asset"), dict):
+            turbo = dict(turbo)
+            turbo["asset"] = _unicanvas_enrich_asset(turbo["asset"], f"{preset_id}:turbo")
+            preset["turbo"] = turbo
+        preset["installed"] = bool(assets) and all(bool(asset.get("installed")) for asset in assets)
+        if not assets:
+            preset["installed"] = False
+            preset["status"] = "manual"
+            preset["message"] = "Preset only"
+        elif any(asset.get("status") in {"queued", "downloading"} for asset in assets):
+            preset["status"] = "downloading"
+            preset["message"] = "Downloading"
+        elif preset["installed"]:
+            preset["status"] = "installed"
+            preset["message"] = "Installed"
+        else:
+            preset["status"] = "missing"
+            preset["message"] = "Missing"
+        presets.append(preset)
+    return {"presets": presets, "downloads": dict(_PRESET_DOWNLOAD_STATUS)}
+
+
+def _unicanvas_find_preset_asset(preset_id: str, asset_kind: str, asset_index: int = 0) -> tuple[str, dict[str, Any]]:
+    registry = _unicanvas_load_preset_registry()
+    for preset in registry.get("presets", []):
+        if not isinstance(preset, dict) or str(preset.get("id") or "") != preset_id:
+            continue
+        if asset_kind == "turbo":
+            turbo = preset.get("turbo")
+            asset = turbo.get("asset") if isinstance(turbo, dict) else None
+            if isinstance(asset, dict):
+                return f"{preset_id}:turbo", asset
+            raise ValueError("Preset has no turbo asset")
+        assets = preset.get("assets") or []
+        if asset_index < 0 or asset_index >= len(assets) or not isinstance(assets[asset_index], dict):
+            raise ValueError("Preset asset not found")
+        return f"{preset_id}:asset:{asset_index}", assets[asset_index]
+    raise ValueError(f"Preset '{preset_id}' not found")
+
+
+def _unicanvas_validate_download_response(response: Any, expected_name: str) -> tuple[int, int]:
+    url = str(getattr(response, "url", "") or "")
+    if not url.startswith("https://"):
+        raise ValueError("Preset download URL must use HTTPS")
+    total_size = int(response.headers.get("content-length", 0) or 0)
+    max_bytes = _unicanvas_max_download_bytes()
+    if total_size > max_bytes:
+        raise ValueError(
+            f"{expected_name} is too large to download safely "
+            f"({total_size / (1024 * 1024 * 1024):.1f} GB, limit {max_bytes / (1024 * 1024 * 1024):.1f} GB)"
+        )
+    return total_size, max_bytes
+
+
+def _unicanvas_validate_downloaded_file(path: str, expected_name: str) -> None:
+    size = os.path.getsize(path)
+    if size < _PRESET_MIN_MODEL_FILE_SIZE:
+        raise ValueError(f"{expected_name} is too small to be a valid model file ({size} bytes)")
+    _unicanvas_validate_model_filename(expected_name)
+
+
+def _unicanvas_download_worker_loop() -> None:
+    while True:
+        download_key, asset = _PRESET_DOWNLOAD_QUEUE.get()
+        temp_path = ""
+        try:
+            target_path = _unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))
+            if os.path.exists(target_path):
+                _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
+                continue
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Initializing", "progress": 0}
+            if asset.get("url"):
+                url = str(asset.get("url") or "")
+            else:
+                from huggingface_hub import hf_hub_url
+
+                repo_id = str(asset.get("hf_repo") or "")
+                filename = str(asset.get("hf_path") or "")
+                if not repo_id or not filename:
+                    raise ValueError("Preset asset needs hf_repo and hf_path")
+                if filename.startswith(f"{repo_id}/"):
+                    filename = filename[len(repo_id) + 1 :]
+                url = hf_hub_url(repo_id, filename)
+
+            if not url.startswith("https://"):
+                raise ValueError("Preset download URL must use HTTPS")
+
+            import requests
+
+            response = requests.get(url, stream=True, allow_redirects=True, timeout=_PRESET_DOWNLOAD_TIMEOUT)
+            response.raise_for_status()
+            expected_name = os.path.basename(target_path)
+            total_size, max_bytes = _unicanvas_validate_download_response(response, expected_name)
+            temp_dir = _unicanvas_temp_dir()
+            os.makedirs(temp_dir, exist_ok=True)
+            temp_path = os.path.join(temp_dir, f"vnccs_unicanvas_{re.sub(r'[^A-Za-z0-9]+', '_', download_key)}.tmp")
+            downloaded = 0
+            with open(temp_path, "wb") as handle:
+                for chunk in response.iter_content(chunk_size=1024 * 1024):
+                    if not chunk:
+                        continue
+                    handle.write(chunk)
+                    downloaded += len(chunk)
+                    if downloaded > max_bytes:
+                        raise ValueError(f"{expected_name} exceeded max download size")
+                    mb_done = downloaded / (1024 * 1024)
+                    if total_size > 0:
+                        mb_total = total_size / (1024 * 1024)
+                        _PRESET_DOWNLOAD_STATUS[download_key] = {
+                            "status": "downloading",
+                            "message": f"{mb_done:.1f}/{mb_total:.1f} MB",
+                            "progress": (downloaded / total_size) * 100,
+                        }
+                    else:
+                        _PRESET_DOWNLOAD_STATUS[download_key] = {
+                            "status": "downloading",
+                            "message": f"{mb_done:.1f} MB",
+                            "progress": 0,
+                        }
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Validating", "progress": 99}
+            _unicanvas_validate_downloaded_file(temp_path, expected_name)
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            shutil.move(temp_path, target_path)
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
+        except Exception as exc:
+            if temp_path and os.path.exists(temp_path):
+                with contextlib.suppress(Exception):
+                    os.remove(temp_path)
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "error", "message": str(exc)}
+        finally:
+            _PRESET_DOWNLOAD_QUEUE.task_done()
+
+
+threading.Thread(target=_unicanvas_download_worker_loop, daemon=True).start()
+
+
 def _get_unicanvas_assets() -> dict[str, Any]:
     try:
         import comfy.samplers
@@ -3037,31 +3292,34 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     if output_width * output_height > _MAX_PIXELS:
         raise ValueError("output_size is too large")
 
-    with torch.inference_mode():
-        _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
-        model, clip, vae = _load_generation_assets(settings)
-        model, clip = model_module.clone_assets(model, clip)
-        settings["_draw_id"] = draw_id
-        if model_module.key == "qwen_image_edit":
-            settings["_qwen_edit_clip"] = clip
-            settings["_qwen_edit_vae"] = vae
-        _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
-        model, clip = _apply_generation_loras(model, clip, settings)
-        if model_module.key == "qwen_image_edit":
-            settings["_qwen_edit_clip"] = clip
-        _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
-        if model_module.key == "qwen_image_edit":
-            positive = []
-            negative = []
-            _uc_log(
-                draw_id,
-                "Qwen Image Edit prompt encoding deferred",
-                {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
-            )
-        else:
-            positive = _encode_generation_prompt(clip, positive_text, settings)
-            negative = _encode_generation_prompt(clip, negative_text, settings)
-            model_module.validate_conditioning(positive, negative, settings)
+    with contextlib.ExitStack() as _model_stack:
+        _model_stack.enter_context(_COMFY_MODEL_OP_LOCK)
+        _model_stack.enter_context(torch.inference_mode())
+        if True:
+            _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
+            model, clip, vae = _load_generation_assets(settings)
+            model, clip = model_module.clone_assets(model, clip)
+            settings["_draw_id"] = draw_id
+            if model_module.key == "qwen_image_edit":
+                settings["_qwen_edit_clip"] = clip
+                settings["_qwen_edit_vae"] = vae
+            _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
+            model, clip = _apply_generation_loras(model, clip, settings)
+            if model_module.key == "qwen_image_edit":
+                settings["_qwen_edit_clip"] = clip
+            _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
+            if model_module.key == "qwen_image_edit":
+                positive = []
+                negative = []
+                _uc_log(
+                    draw_id,
+                    "Qwen Image Edit prompt encoding deferred",
+                    {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+                )
+            else:
+                positive = _encode_generation_prompt(clip, positive_text, settings)
+                negative = _encode_generation_prompt(clip, negative_text, settings)
+                model_module.validate_conditioning(positive, negative, settings)
 
         mask = None
         mask_image = None
@@ -3364,26 +3622,27 @@ def _run_unicanvas_segment(payload: dict[str, Any]) -> dict[str, Any]:
     if not points:
         raise ValueError("SAM points are outside the layer crop")
 
-    model, processor, device = _load_sam_model(model_key)
-    if model_key == "sam1_huge":
-        processor_points = [points]
-        processor_labels = [labels]
-    else:
-        processor_points = [[points]]
-        processor_labels = [[labels]]
-    inputs = processor(
-        images=image,
-        input_points=processor_points,
-        input_labels=processor_labels,
-        return_tensors="pt",
-    )
-    if hasattr(inputs, "to"):
-        inputs = inputs.to(device)
-    else:
-        inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+    with _COMFY_MODEL_OP_LOCK:
+        model, processor, device = _load_sam_model(model_key)
+        if model_key == "sam1_huge":
+            processor_points = [points]
+            processor_labels = [labels]
+        else:
+            processor_points = [[points]]
+            processor_labels = [[labels]]
+        inputs = processor(
+            images=image,
+            input_points=processor_points,
+            input_labels=processor_labels,
+            return_tensors="pt",
+        )
+        if hasattr(inputs, "to"):
+            inputs = inputs.to(device)
+        else:
+            inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
 
-    with torch.inference_mode():
-        outputs = model(**inputs)
+        with torch.inference_mode():
+            outputs = model(**inputs)
 
     pred_masks = getattr(outputs, "pred_masks", None)
     if pred_masks is None:
@@ -3423,6 +3682,51 @@ def register_unicanvas_routes() -> None:
     async def vnccs_unicanvas_assets(_request):
         try:
             return web.json_response(_get_unicanvas_assets())
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/presets")
+    async def vnccs_unicanvas_presets(_request):
+        try:
+            return web.json_response(_get_unicanvas_presets())
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/presets/status")
+    async def vnccs_unicanvas_presets_status(_request):
+        return web.json_response(dict(_PRESET_DOWNLOAD_STATUS))
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/presets/download")
+    async def vnccs_unicanvas_presets_download(request):
+        try:
+            payload = await request.json()
+            preset_id = str(payload.get("preset_id") or "")
+            kind = str(payload.get("kind") or "assets")
+            queued: list[str] = []
+            if kind == "turbo":
+                download_key, asset = _unicanvas_find_preset_asset(preset_id, "turbo")
+                if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
+                    _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "queued", "message": "Queued", "progress": 0}
+                    _PRESET_DOWNLOAD_QUEUE.put((download_key, asset))
+                queued.append(download_key)
+            else:
+                registry = _unicanvas_load_preset_registry()
+                found = None
+                for preset in registry.get("presets", []):
+                    if isinstance(preset, dict) and str(preset.get("id") or "") == preset_id:
+                        found = preset
+                        break
+                if found is None:
+                    raise ValueError(f"Preset '{preset_id}' not found")
+                for index, asset in enumerate(found.get("assets") or []):
+                    if not isinstance(asset, dict):
+                        continue
+                    download_key = f"{preset_id}:asset:{index}"
+                    if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
+                        _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "queued", "message": "Queued", "progress": 0}
+                        _PRESET_DOWNLOAD_QUEUE.put((download_key, asset))
+                    queued.append(download_key)
+            return web.json_response({"status": "queued", "queued": queued})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
 

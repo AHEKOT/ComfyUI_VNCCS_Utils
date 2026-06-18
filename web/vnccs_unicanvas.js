@@ -26,7 +26,7 @@ const STYLES = `
 .vnccs-uc-progress-percent { color:var(--uc-muted); font-variant-numeric:tabular-nums; min-width:42px; text-align:right; }
 .vnccs-uc-progress-track { grid-column:1 / -1; height:6px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
 .vnccs-uc-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--uc-accent),var(--uc-accent-2)); border-radius:inherit; transition:width .18s ease; }
-.vnccs-uc-left { width:238px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
+.vnccs-uc-left { width:320px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; max-height:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; }
 .vnccs-uc-side { width:286px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 3; border-right:1px solid var(--uc-border); }
 .vnccs-uc-side { grid-column:3; grid-row:1 / span 3; border-left:1px solid var(--uc-border); overflow:hidden; }
@@ -113,15 +113,57 @@ const STYLES = `
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
 .vnccs-uc-range { width:82px; accent-color:var(--uc-accent); }
 .vnccs-uc-mode-loader-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:6px; }
-.vnccs-uc-mini-grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
+.vnccs-uc-generation-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:10px 8px; padding-top:2px; }
+.vnccs-uc-generation-grid .wide { grid-column:1 / -1; }
 .vnccs-uc-stack { display:flex; flex-direction:column; gap:6px; padding:8px; }
+.vnccs-uc-model-tabs { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.vnccs-uc-model-tab { height:30px; border:1px solid var(--uc-border); border-radius:8px; background:var(--uc-surface); color:var(--uc-muted); font:inherit; font-weight:800; text-transform:uppercase; cursor:pointer; }
+.vnccs-uc-model-tab.active { border-color:rgba(255,143,163,.72); background:rgba(255,143,163,.18); color:#ffdce5; box-shadow:0 0 0 1px rgba(255,143,163,.12) inset; }
+.vnccs-uc-model-panel { display:flex; flex-direction:column; gap:6px; }
+.vnccs-uc-model-card-list { display:flex; flex-direction:column; gap:7px; }
+.vnccs-uc-model-picker { display:flex; flex-direction:column; gap:8px; }
+.vnccs-uc-model-picker-menu { display:none; flex-direction:column; gap:9px; padding:8px; border:1px solid rgba(255,143,163,.18); border-radius:10px; background:rgba(8,8,12,.48); }
+.vnccs-uc-model-picker.open .vnccs-uc-model-picker-menu { display:flex; }
+.vnccs-uc-model-picker-group { display:flex; flex-direction:column; gap:7px; }
+.vnccs-uc-model-picker-group-title { color:#ffdce5; font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-model-card { display:flex; flex-direction:column; gap:5px; padding:10px 11px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:pointer; min-width:0; }
+.vnccs-uc-model-card.head { min-height:58px; }
+.vnccs-uc-model-card.turbo { min-height:0; height:34px; padding:0 8px; justify-content:center; border-color:rgba(255,143,163,.76); background:rgba(255,143,163,.14); }
+.vnccs-uc-model-card:hover { border-color:rgba(0,214,143,.44); background:rgba(0,214,143,.08); }
+.vnccs-uc-model-card.turbo:hover { border-color:rgba(255,143,163,.82); background:rgba(255,143,163,.17); }
+.vnccs-uc-model-card.selected { border-color:rgba(255,143,163,.76); background:rgba(255,143,163,.14); box-shadow:0 0 0 1px rgba(255,143,163,.14) inset; }
+.vnccs-uc-model-card.missing { border-color:rgba(255,143,163,.32); background:rgba(255,143,163,.055); }
+.vnccs-uc-model-card.turbo.missing { border-color:rgba(255,143,163,.52); background:rgba(255,143,163,.08); }
+.vnccs-uc-model-card.progress { border-color:rgba(184,169,232,.46); background:rgba(184,169,232,.08); }
+.vnccs-uc-model-card-top { display:flex; align-items:center; gap:7px; min-width:0; }
+.vnccs-uc-model-card-badge { width:12px; height:12px; border-radius:50%; flex:0 0 auto; background:var(--uc-danger); }
+.vnccs-uc-model-card-badge.ok { background:var(--uc-good); }
+.vnccs-uc-model-card-badge.progress { background:var(--uc-accent-2); }
+.vnccs-uc-model-card-name { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--uc-text); font-size:13px; font-weight:800; line-height:1.2; }
+.vnccs-uc-model-card-status { flex:0 0 auto; color:var(--uc-danger); font-size:10px; font-weight:800; text-transform:uppercase; }
+.vnccs-uc-model-card-status.ok { color:var(--uc-good); }
+.vnccs-uc-model-card-status.progress { color:var(--uc-accent-2); }
+.vnccs-uc-model-card-desc { color:var(--uc-muted); font-size:11px; line-height:1.35; }
+.vnccs-uc-model-card-actions { display:flex; align-items:center; gap:7px; }
+.vnccs-uc-model-card-download { width:100%; height:27px; border:1px solid rgba(255,143,163,.36); border-radius:8px; background:rgba(255,143,163,.1); color:#ffdce5; font:inherit; font-size:10px; font-weight:800; text-transform:uppercase; cursor:pointer; }
+.vnccs-uc-model-card-download:disabled { opacity:.55; cursor:not-allowed; }
+.vnccs-uc-turbo-section { display:flex; flex-direction:column; gap:6px; padding-top:2px; }
+.vnccs-uc-turbo-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-toggle { position:relative; flex:0 0 auto; width:42px; height:22px; border:1px solid rgba(255,143,163,.5); border-radius:999px; background:rgba(255,143,163,.16); }
+.vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
+.vnccs-uc-toggle.active::after { left:23px; background:var(--uc-accent); }
+.vnccs-uc-lora-stack { display:flex; flex-direction:column; gap:7px; padding-top:4px; }
+.vnccs-uc-lora-stack-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-lora-item { display:grid; grid-template-columns:minmax(0,2fr) minmax(64px,1fr); gap:7px; padding:8px; border:1px solid rgba(255,255,255,.07); border-radius:8px; background:rgba(255,255,255,.025); }
+.vnccs-uc-lora-item.empty { opacity:.62; }
+.vnccs-uc-lora-item .vnccs-uc-select,
+.vnccs-uc-lora-item .vnccs-uc-input { width:100%; box-sizing:border-box; }
 .vnccs-uc-seed-row { display:grid; grid-template-columns:minmax(0,1fr) 42px; gap:6px; align-items:stretch; }
 .vnccs-uc-seed-row .vnccs-uc-input { width:100%; box-sizing:border-box; }
 .vnccs-uc-seed-dice { height:28px; border-radius:8px; }
 .vnccs-uc-seed-dice svg { width:17px; height:17px; }
 .vnccs-uc-seed-dice.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; box-shadow:0 0 0 1px rgba(255,143,163,.14) inset; }
 .vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
-.vnccs-uc-status { min-height:16px; color:var(--uc-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layers-footer { padding:6px; border-top:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-footer .vnccs-uc-btn { width:100%; }
 .vnccs-uc-file { display:none; }
@@ -230,7 +272,7 @@ const UNICANVAS_MODEL_MODULES = {
       vae_name: "full_encoder_small_decoder.safetensors",
       clip_type: "flux2",
       sampler_name: "euler",
-      scheduler: "flux2",
+      scheduler: "simple",
       steps: 4,
       cfg: 1,
     },
@@ -350,6 +392,8 @@ function getUniCanvasModelLoader(loaderType) {
 function makeDefaultUniCanvasSettings() {
   return {
     ...UNICANVAS_MODEL_MODULES.sdxl.defaults,
+    model_selection_mode: "presets",
+    selected_preset_id: "sdxl",
     model_loader: "checkpoint",
     ckpt_name: "",
     diffusion_model_name: "",
@@ -469,6 +513,10 @@ class UniCanvasWidget {
     this.snapToGrid = false;
     this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], model_patches: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
+    this.presets = [];
+    this.presetDownloads = {};
+    this.presetDownloadTimer = null;
+    this.presetPickerOpen = false;
     this.settings = makeDefaultUniCanvasSettings();
     this.sam = {
       model: "sam2_large",
@@ -648,33 +696,40 @@ class UniCanvasWidget {
     this.promptBox.innerHTML = `
       <label class="vnccs-uc-field">Prompt<textarea class="vnccs-uc-textarea" data-setting="positive" placeholder="positive prompt"></textarea></label>
       <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
-      <div class="vnccs-uc-mode-loader-row">
-        <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
-        <label class="vnccs-uc-field">Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
+      <div class="vnccs-uc-model-tabs">
+        <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="presets">Presets</button>
+        <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="custom">Custom</button>
       </div>
-      <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
-      ${loaderFields}
-      <label class="vnccs-uc-field">Seed
-        <span class="vnccs-uc-seed-row">
-          <input class="vnccs-uc-input" data-setting="seed" type="number" min="0">
-          <button class="vnccs-uc-icon vnccs-uc-seed-dice" type="button" data-action="seed-mode" title="Random seed">${UI_ICONS.dice}</button>
-        </span>
-      </label>
-      <div class="vnccs-uc-mini-grid">
+      <div class="vnccs-uc-model-panel" data-model-panel="presets">
+        <div data-preset-card-list></div>
+        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+      </div>
+      <div class="vnccs-uc-model-panel" data-model-panel="custom">
+        <div class="vnccs-uc-mode-loader-row">
+          <label class="vnccs-uc-field">Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
+          <label class="vnccs-uc-field">Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
+        </div>
+        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+        ${loaderFields}
+      </div>
+      <div class="vnccs-uc-turbo-section" data-turbo-panel></div>
+      <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
+        <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
         <label class="vnccs-uc-field">CFG<input class="vnccs-uc-input" data-setting="cfg" type="number" lang="en-US" inputmode="decimal" step="0.1"></label>
-      </div>`;
-    this.status = document.createElement("div");
-    this.status.className = "vnccs-uc-status";
-    this.status.textContent = "Ready";
+        <label class="vnccs-uc-field">Scheduler<select class="vnccs-uc-select" data-setting="scheduler"></select></label>
+        <label class="vnccs-uc-field wide">Seed
+          <span class="vnccs-uc-seed-row">
+            <input class="vnccs-uc-input" data-setting="seed" type="number" min="0">
+            <button class="vnccs-uc-icon vnccs-uc-seed-dice" type="button" data-action="seed-mode" title="Random seed">${UI_ICONS.dice}</button>
+          </span>
+        </label>
+      </div>
+      <div class="vnccs-uc-lora-stack" data-lora-stack></div>`;
     this.drawBtn = this._button("GENERATE", "vnccs-uc-btn primary", () => this.draw(), "Generate");
     this.drawControl = document.createElement("div");
     this.drawControl.className = "vnccs-uc-draw-control";
     this.drawControl.append(this.drawBtn);
-    this.drawFooter = document.createElement("div");
-    this.drawFooter.className = "vnccs-uc-draw-footer";
-    this.drawFooter.append(this.status);
-    this.promptBox.appendChild(this.drawFooter);
     const promptSection = this._section("Parameters", this.promptBox);
 
     this.left.append(this.drawControl, promptSection);
@@ -1175,14 +1230,38 @@ class UniCanvasWidget {
       });
     }, 0));
     this.container.addEventListener("click", (e) => {
-      const btn = e.target?.closest?.('[data-action="seed-mode"]');
+      const btn = e.target?.closest?.("[data-action], [data-model-selection-mode], [data-preset-picker-toggle], [data-preset-id], [data-preset-download], [data-turbo-download], [data-turbo-toggle]");
       if (!(btn instanceof HTMLElement)) return;
-      e.preventDefault();
-      this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
-      this.syncSeedModeControl();
-      this.syncSettingsToWidget();
+      if (btn.dataset.action === "seed-mode") {
+        e.preventDefault();
+        this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+        this.syncSeedModeControl();
+        this.syncSettingsToWidget();
+      } else if (btn.dataset.modelSelectionMode) {
+        e.preventDefault();
+        this.settings.model_selection_mode = btn.dataset.modelSelectionMode === "custom" ? "custom" : "presets";
+        this.renderModelSelectionControls();
+        this.syncSettingsToWidget();
+      } else if (btn.dataset.presetPickerToggle) {
+        e.preventDefault();
+        this.presetPickerOpen = !this.presetPickerOpen;
+        this.renderModelSelectionControls();
+      } else if (btn.dataset.presetId) {
+        e.preventDefault();
+        this.selectPreset(btn.dataset.presetId);
+      } else if (btn.dataset.presetDownload) {
+        e.preventDefault();
+        this.downloadPreset(btn.dataset.presetDownload, "assets");
+      } else if (btn.dataset.turboDownload) {
+        e.preventDefault();
+        this.downloadPreset(btn.dataset.turboDownload, "turbo");
+      } else if (btn.dataset.turboToggle) {
+        e.preventDefault();
+        this.togglePresetTurbo(btn.dataset.turboToggle);
+      }
     });
     this.canvas.addEventListener("wheel", (e) => this.onWheel(e), { passive: false });
+    this.left.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     this.layerList.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
     const onLayerSubheadChange = (e) => {
       const target = e.target;
@@ -1248,6 +1327,11 @@ class UniCanvasWidget {
     });
     this.left.addEventListener("input", (e) => {
       const target = e.target;
+      if (target?.dataset?.loraStackIndex !== undefined) {
+        this.updateLoraStackFromControl(target);
+        this.syncSettingsToWidget();
+        return;
+      }
       const key = target?.dataset?.setting;
       if (!key) return;
       this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
@@ -1263,6 +1347,13 @@ class UniCanvasWidget {
     });
     this.left.addEventListener("change", (e) => {
       const target = e.target;
+      if (target?.dataset?.loraStackIndex !== undefined) {
+        this.updateLoraStackFromControl(target);
+        this.renderLoraStackControls();
+        this.syncSettingsToWidget();
+        this.clearInputHistoryMarker(target);
+        return;
+      }
       const key = target?.dataset?.setting;
       if (target instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
         this.settings[key] = this.parseNumericInput(target, this.settings[key]);
@@ -1298,34 +1389,432 @@ class UniCanvasWidget {
           this.fillSelect(field.setting, this.assets[field.asset] || []);
         }
       }
+      this.fillSelect("sampler_name", this.assets.samplers || []);
+      this.fillSelect("scheduler", this.assets.schedulers || []);
+      this.renderLoraStackControls();
       if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
       if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
       if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
       if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
       if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
       this.normalizeGenerationSettings();
+      await this.loadPresets();
       this.syncPromptControls();
     } catch (err) {
       this.setStatus(`Asset list failed: ${err.message || err}`, true);
     }
   }
 
+  async loadPresets() {
+    try {
+      const res = await fetch(`/vnccs/unicanvas/presets?t=${Date.now()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Preset list failed");
+      this.presets = Array.isArray(data.presets) ? data.presets : [];
+      this.presetDownloads = data.downloads || {};
+    } catch (err) {
+      this.presets = [];
+      this.presetDownloads = {};
+      this.setStatus(`Preset list failed: ${err.message || err}`, true);
+    }
+  }
+
   fillSelect(setting, values) {
     const selects = this.container.querySelectorAll(`[data-setting="${setting}"]`);
     if (!selects.length) return;
-    const options = (values || []).map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
+    const optionValues = [...(values || [])];
+    const current = this.settings?.[setting];
+    if (setting !== "scheduler" && current && !optionValues.includes(current)) optionValues.unshift(current);
+    const options = optionValues.map((name) => `<option value="${this._escape(name)}">${this._escape(name)}</option>`).join("");
     selects.forEach((select) => {
       select.innerHTML = options;
     });
   }
 
+  ensureSelectOption(select, value) {
+    if (!(select instanceof HTMLSelectElement) || !value) return;
+    const valueString = String(value);
+    for (const option of select.options) {
+      if (option.value === valueString) return;
+    }
+    const option = document.createElement("option");
+    option.value = valueString;
+    option.textContent = valueString;
+    select.prepend(option);
+  }
+
+  normalizeLoraStack() {
+    if (!Array.isArray(this.settings.lora_stack)) this.settings.lora_stack = [];
+    while (this.settings.lora_stack.length < 5) {
+      this.settings.lora_stack.push({ name: "", strength: 1 });
+    }
+    this.settings.lora_stack = this.settings.lora_stack.slice(0, 5).map((item) => ({
+      name: String(item?.name || item?.lora_name || ""),
+      strength: Number.isFinite(Number(item?.strength)) ? Number(item.strength) : 1,
+    }));
+    return this.settings.lora_stack;
+  }
+
+  filteredLoraStack() {
+    return this.normalizeLoraStack()
+      .filter((item) => item.name && item.name !== "None" && Number(item.strength) !== 0)
+      .map((item) => ({ name: item.name, strength: Number(item.strength) }));
+  }
+
+  makeSettingsPayload() {
+    const settings = JSON.parse(JSON.stringify(this.settings));
+    settings.lora_stack = this.filteredLoraStack();
+    return settings;
+  }
+
+  renderLoraStackControls() {
+    const container = this.container.querySelector("[data-lora-stack]");
+    if (!container) return;
+    const stack = this.normalizeLoraStack();
+    const loraOptions = ["", ...(this.assets.loras || [])];
+    const optionHTML = loraOptions.map((name) => {
+      const label = name || "None";
+      return `<option value="${this._escape(name)}">${this._escape(label)}</option>`;
+    }).join("");
+    container.innerHTML = `<div class="vnccs-uc-lora-stack-title">LoRA Stack</div>`;
+    stack.forEach((item, index) => {
+      const row = document.createElement("div");
+      row.className = `vnccs-uc-lora-item ${item.name ? "" : "empty"}`;
+      row.innerHTML = `
+        <select class="vnccs-uc-select" data-lora-stack-index="${index}" data-lora-stack-field="name">${optionHTML}</select>
+        <input class="vnccs-uc-input" data-lora-stack-index="${index}" data-lora-stack-field="strength" type="number" lang="en-US" inputmode="decimal" step="0.05">`;
+      const select = row.querySelector("select");
+      const strength = row.querySelector("input");
+      if (select) select.value = item.name || "";
+      if (strength) strength.value = this.formatSettingNumber(item.strength, 2);
+      container.appendChild(row);
+    });
+  }
+
+  updateLoraStackFromControl(target) {
+    const index = Number(target?.dataset?.loraStackIndex);
+    const field = target?.dataset?.loraStackField;
+    if (!Number.isInteger(index) || index < 0 || index >= 5 || !field) return;
+    const stack = this.normalizeLoraStack();
+    if (field === "name") stack[index].name = target.value || "";
+    if (field === "strength") stack[index].strength = this.parseNumericInput(target, stack[index].strength);
+  }
+
+  normalizeRelName(value) {
+    return String(value || "").replace(/\\/g, "/").toLowerCase();
+  }
+
+  getPresetById(id) {
+    return (this.presets || []).find((preset) => preset.id === id) || null;
+  }
+
+  getActivePreset() {
+    const mode = getUniCanvasModelModule(this.settings.generation_mode).key;
+    const byId = this.getPresetById(this.settings.selected_preset_id);
+    if (byId && getUniCanvasModelModule(byId.settings?.generation_mode).key === mode) return byId;
+    return (this.presets || []).find((preset) => preset.settings?.generation_mode === mode || preset.id === mode) || null;
+  }
+
+  presetAssetStatus(asset) {
+    const status = this.presetDownloads?.[asset?.download_key] || {};
+    const state = status.status || asset?.status || (asset?.installed ? "installed" : "missing");
+    const progress = ["queued", "downloading"].includes(state);
+    return {
+      state,
+      progress,
+      installed: asset?.installed || state === "success" || state === "installed",
+      message: status.message || asset?.message || (asset?.installed ? "Installed" : "Missing"),
+      progressValue: status.progress ?? asset?.progress ?? 0,
+    };
+  }
+
+  presetStatus(preset) {
+    const assets = Array.isArray(preset?.assets) ? preset.assets : [];
+    if (!assets.length) return { state: "missing", installed: false, progress: false, message: "Missing" };
+    const assetStates = assets.map((asset) => this.presetAssetStatus(asset));
+    const progress = assetStates.some((item) => item.progress);
+    const installed = assetStates.every((item) => item.installed);
+    const error = assetStates.find((item) => item.state === "error");
+    if (progress) return { state: "progress", installed: false, progress: true, message: "Downloading" };
+    if (installed) return { state: "installed", installed: true, progress: false, message: "Installed" };
+    if (error) return { state: "missing", installed: false, progress: false, message: error.message || "Error" };
+    return { state: "missing", installed: false, progress: false, message: "Missing" };
+  }
+
+  buildPresetCard(preset, turbo = false, head = false) {
+    const asset = turbo ? preset?.turbo?.asset : null;
+    const status = turbo ? this.presetAssetStatus(asset) : this.presetStatus(preset);
+    const selected = turbo ? this.isPresetTurboEnabled(preset) : this.settings.selected_preset_id === preset.id;
+    const card = document.createElement("div");
+    card.role = "button";
+    card.tabIndex = 0;
+    card.className = `vnccs-uc-model-card ${turbo ? "turbo" : ""} ${head ? "head" : ""} ${selected ? "selected" : ""} ${status.progress ? "progress" : status.installed ? "installed" : "missing"}`;
+    if (turbo) {
+      card.dataset.turboToggle = preset.id;
+    } else if (head) {
+      card.dataset.presetPickerToggle = "1";
+    } else {
+      card.dataset.presetId = preset.id;
+    }
+    const statusClass = status.progress ? "progress" : status.installed ? "ok" : "missing";
+    const statusText = status.progress ? (status.message || "Downloading") : status.installed ? "Installed" : "Download";
+    const title = turbo ? preset.turbo?.asset?.name : preset.title;
+    const desc = turbo ? preset.turbo?.asset?.description : preset.description;
+    const downloadAttrs = turbo ? `data-turbo-download="${this._escape(preset.id)}"` : `data-preset-download="${this._escape(preset.id)}"`;
+    const downloadButton = turbo || status.installed || status.progress
+      ? ""
+      : `<div class="vnccs-uc-model-card-actions"><button type="button" class="vnccs-uc-model-card-download" ${downloadAttrs}>Download</button></div>`;
+    const toggle = turbo ? `<span class="vnccs-uc-toggle ${selected ? "active" : ""}" aria-hidden="true"></span>` : "";
+    const statusNode = `<span class="vnccs-uc-model-card-status ${statusClass}">${this._escape(statusText)}</span>`;
+    card.innerHTML = `
+      <span class="vnccs-uc-model-card-top">
+        <span class="vnccs-uc-model-card-badge ${statusClass}"></span>
+        <span class="vnccs-uc-model-card-name">${this._escape(title || preset.label || preset.id)}</span>
+        ${turbo ? `${statusNode}${toggle}` : statusNode}
+      </span>
+      ${turbo ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
+      ${downloadButton}`;
+    return card;
+  }
+
+  getPresetGroupLabel(preset) {
+    const raw = String(preset?.group || preset?.label || preset?.id || "Model");
+    const map = {
+      sdxl: "SDXL",
+      illustrious: "SDXL",
+      anima: "Anima",
+      flux_klein: "Flux",
+      "flux klein9b": "Flux",
+      "z-image": "Z-image",
+      "z_image": "Z-image",
+      qie2511: "QIE2511",
+      qwen_image_edit: "QIE2511",
+    };
+    return map[raw.toLowerCase()] || raw;
+  }
+
+  groupPresetsByType() {
+    const groups = new Map();
+    for (const preset of this.presets || []) {
+      const label = this.getPresetGroupLabel(preset);
+      if (!groups.has(label)) groups.set(label, []);
+      groups.get(label).push(preset);
+    }
+    return groups;
+  }
+
+  renderModelSelectionControls() {
+    const mode = this.settings.model_selection_mode === "custom" ? "custom" : "presets";
+    this.container.querySelectorAll("[data-model-selection-mode]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.modelSelectionMode === mode);
+    });
+    this.container.querySelectorAll("[data-model-panel]").forEach((panel) => {
+      panel.style.display = panel.dataset.modelPanel === mode ? "" : "none";
+    });
+    const presetPanel = this.container.querySelector("[data-preset-card-list]");
+    if (presetPanel) {
+      presetPanel.innerHTML = "";
+      const picker = document.createElement("div");
+      picker.className = `vnccs-uc-model-picker ${this.presetPickerOpen ? "open" : ""}`;
+      const activePreset = this.getActivePreset() || (this.presets || [])[0];
+      if (activePreset && this.settings.model_selection_mode === "presets") this.settings.selected_preset_id = activePreset.id;
+      if (activePreset) {
+        picker.appendChild(this.buildPresetCard(activePreset, false, true));
+      }
+      const menu = document.createElement("div");
+      menu.className = "vnccs-uc-model-picker-menu";
+      for (const [groupLabel, groupPresets] of this.groupPresetsByType()) {
+        const group = document.createElement("div");
+        group.className = "vnccs-uc-model-picker-group";
+        const title = document.createElement("div");
+        title.className = "vnccs-uc-model-picker-group-title";
+        title.textContent = groupLabel;
+        group.appendChild(title);
+        for (const preset of groupPresets) {
+          group.appendChild(this.buildPresetCard(preset));
+        }
+        menu.appendChild(group);
+      }
+      picker.appendChild(menu);
+      presetPanel.appendChild(picker);
+    }
+    const turboPanel = this.container.querySelector("[data-turbo-panel]");
+    if (turboPanel) {
+      turboPanel.innerHTML = "";
+      const preset = this.getActivePreset();
+      if (preset?.turbo?.asset) {
+        const title = document.createElement("div");
+        title.className = "vnccs-uc-turbo-title";
+        title.textContent = "Turbo LoRA";
+        turboPanel.append(title, this.buildPresetCard(preset, true));
+        turboPanel.style.display = "";
+      } else {
+        turboPanel.style.display = "none";
+      }
+    }
+  }
+
+  applyPresetSettings(preset) {
+    if (!preset?.settings) return;
+    this.settings = {
+      ...this.settings,
+      ...preset.settings,
+      model_selection_mode: "presets",
+      selected_preset_id: preset.id,
+    };
+    const module = getUniCanvasModelModule(this.settings.generation_mode);
+    this.settings.generation_mode = module.key;
+    this.syncInferenceControls();
+  }
+
+  selectPreset(presetId) {
+    const preset = this.getPresetById(presetId);
+    if (!preset) return;
+    this.applyPresetSettings(preset);
+    this.presetPickerOpen = false;
+    const status = this.presetStatus(preset);
+    if (!status.installed && !status.progress) this.downloadPreset(preset.id, "assets");
+    this.syncPromptControls();
+    this.syncSettingsToWidget();
+  }
+
+  isPresetTurboEnabled(preset) {
+    const turbo = preset?.turbo;
+    if (!turbo?.asset) return false;
+    const setting = turbo.setting || "dmd_lora_name";
+    const strengthSetting = turbo.strength_setting || "dmd_lora_strength";
+    if (turbo.enable_setting && this.settings[turbo.enable_setting] !== true) return false;
+    return this.normalizeRelName(this.settings[setting]) === this.normalizeRelName(turbo.asset.relative_name)
+      && Number(this.settings[strengthSetting] ?? 0) > 0;
+  }
+
+  getPresetTurboPreviousKey(preset) {
+    const turbo = preset?.turbo;
+    return turbo?.enable_setting ? "turbo_previous_settings" : `${preset?.id || "preset"}_turbo_previous_settings`;
+  }
+
+  getPresetTurboSettings(preset) {
+    const fallbackTurboSettings = {
+      sdxl: { steps: 4, cfg: 1 },
+      anima: { steps: 12, cfg: 1 },
+      qwen_image_edit: { steps: 4, cfg: 1 },
+    };
+    return {
+      ...(fallbackTurboSettings[preset.id] || fallbackTurboSettings[preset.settings?.generation_mode] || {}),
+      ...(preset?.turbo?.turbo_settings || {}),
+    };
+  }
+
+  applyPresetTurboParameterProfile(preset) {
+    if (!preset?.turbo?.asset) return;
+    const previousKey = this.getPresetTurboPreviousKey(preset);
+    const turboSettings = this.getPresetTurboSettings(preset);
+    if (!this.settings[previousKey]) {
+      this.settings[previousKey] = {
+        steps: this.settings.steps,
+        cfg: this.settings.cfg,
+        sampler_name: this.settings.sampler_name,
+        scheduler: this.settings.scheduler,
+      };
+    }
+    if (Number.isFinite(Number(turboSettings.steps))) this.settings.steps = Number(turboSettings.steps);
+    if (Number.isFinite(Number(turboSettings.cfg))) this.settings.cfg = Number(turboSettings.cfg);
+    if (turboSettings.sampler_name) this.settings.sampler_name = turboSettings.sampler_name;
+    if (turboSettings.scheduler) this.settings.scheduler = turboSettings.scheduler;
+  }
+
+  restorePresetTurboParameterProfile(preset) {
+    if (!preset?.turbo?.asset) return;
+    const previousKey = this.getPresetTurboPreviousKey(preset);
+    const previous = this.settings[previousKey];
+    if (previous && typeof previous === "object") {
+      if (Number.isFinite(Number(previous.steps))) this.settings.steps = Number(previous.steps);
+      if (Number.isFinite(Number(previous.cfg))) this.settings.cfg = Number(previous.cfg);
+      if (previous.sampler_name) this.settings.sampler_name = previous.sampler_name;
+      if (previous.scheduler) this.settings.scheduler = previous.scheduler;
+    }
+    this.settings[previousKey] = null;
+  }
+
+  togglePresetTurbo(presetId) {
+    const preset = this.getPresetById(presetId);
+    const turbo = preset?.turbo;
+    if (!turbo?.asset) return;
+    const setting = turbo.setting || "dmd_lora_name";
+    const strengthSetting = turbo.strength_setting || "dmd_lora_strength";
+    const enableSetting = turbo.enable_setting;
+    const enabled = !this.isPresetTurboEnabled(preset);
+    this.settings[setting] = enabled ? (turbo.asset.relative_name || this.settings[setting] || "") : "";
+    this.settings[strengthSetting] = enabled ? 1 : 0;
+    if (enableSetting) this.settings[enableSetting] = enabled;
+    if (enabled) {
+      this.applyPresetTurboParameterProfile(preset);
+    } else {
+      this.restorePresetTurboParameterProfile(preset);
+    }
+    if (enabled && !this.presetAssetStatus(turbo.asset).installed) this.downloadPreset(preset.id, "turbo");
+    this.syncPromptControls();
+    this.renderModelSelectionControls();
+    this.syncSettingsToWidget();
+  }
+
+  async downloadPreset(presetId, kind = "assets") {
+    try {
+      const res = await fetch("/vnccs/unicanvas/presets/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preset_id: presetId, kind }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Download failed");
+      for (const key of data.queued || []) {
+        this.presetDownloads[key] = { status: "queued", message: "Queued", progress: 0 };
+      }
+      this.renderModelSelectionControls();
+      this.startPresetDownloadPolling();
+    } catch (err) {
+      this.setStatus(`Preset download failed: ${err.message || err}`, true);
+    }
+  }
+
+  startPresetDownloadPolling() {
+    if (this.presetDownloadTimer) return;
+    this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 2000);
+    this.refreshPresetDownloadStatus();
+  }
+
+  async refreshPresetDownloadStatus() {
+    try {
+      const res = await fetch(`/vnccs/unicanvas/presets/status?t=${Date.now()}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Status failed");
+      this.presetDownloads = data || {};
+      await this.loadPresets();
+      this.renderModelSelectionControls();
+      const active = Object.values(this.presetDownloads).some((item) => ["queued", "downloading"].includes(item?.status));
+      if (!active && this.presetDownloadTimer) {
+        window.clearInterval(this.presetDownloadTimer);
+        this.presetDownloadTimer = null;
+        await this._loadAssets();
+      }
+    } catch (err) {
+      if (this.presetDownloadTimer) {
+        window.clearInterval(this.presetDownloadTimer);
+        this.presetDownloadTimer = null;
+      }
+      this.setStatus(`Preset status failed: ${err.message || err}`, true);
+    }
+  }
+
   normalizeGenerationSettings() {
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
-    for (const field of loader.fields || []) {
-      const values = this.assets[field.asset] || [];
-      if (values.length && !values.includes(this.settings[field.setting])) {
-        this.settings[field.setting] = values[0];
+    if (this.settings.model_selection_mode !== "presets") {
+      for (const field of loader.fields || []) {
+        const values = this.assets[field.asset] || [];
+        if (values.length && !values.includes(this.settings[field.setting])) {
+          this.settings[field.setting] = values[0];
+        }
       }
     }
     if (loader.forcedMode) this.settings.generation_mode = loader.forcedMode;
@@ -2020,8 +2509,7 @@ class UniCanvasWidget {
   setSamStatus(text, isError = false) {
     this.sam.status = text;
     this.renderSamPanel();
-    this.status.textContent = text;
-    this.status.style.color = isError ? "var(--uc-danger)" : "var(--uc-muted)";
+    if (isError) this.updateGenerationProgress({ message: text, progress: 1, stage: "error" }, true);
   }
 
   clearSamMask(update = true) {
@@ -4804,7 +5292,7 @@ class UniCanvasWidget {
           bbox: requestBbox,
           inference_size: inferenceSize,
           output_size: outputSize,
-          settings: this.settings,
+          settings: this.makeSettingsPayload(),
           debug,
         }),
       });
@@ -5015,9 +5503,7 @@ class UniCanvasWidget {
   }
 
   setStatus(text, isError = false) {
-    this.status.textContent = text;
-    this.status.style.color = isError ? "var(--uc-danger)" : "var(--uc-muted)";
-    if (!this.drawInProgress && isError) this.updateGenerationProgress({ message: text, progress: 1, stage: "error" }, true);
+    if (!this.drawInProgress) this.updateGenerationProgress({ message: text, progress: isError ? 1 : 0, stage: isError ? "error" : "status" }, isError);
   }
 
   updateGenerationProgress(progress, visible = this.drawInProgress) {
@@ -5072,6 +5558,12 @@ class UniCanvasWidget {
       if (!(key in this.settings)) return;
       if (el instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
         el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
+      } else if (el instanceof HTMLSelectElement) {
+        if (key !== "scheduler") this.ensureSelectOption(el, this.settings[key]);
+        if (key === "scheduler" && this.settings[key] && !Array.from(el.options).some((option) => option.value === String(this.settings[key]))) {
+          this.settings[key] = Array.from(el.options).some((option) => option.value === "simple") ? "simple" : (el.options[0]?.value || "");
+        }
+        el.value = this.settings[key];
       } else {
         el.value = this.settings[key];
       }
@@ -5079,6 +5571,8 @@ class UniCanvasWidget {
     this.syncInferenceControls();
     this.syncDenoiseControls();
     this.syncSeedModeControl();
+    this.renderModelSelectionControls();
+    this.renderLoraStackControls();
     this.autoResizePromptTextareas();
   }
 
@@ -5159,6 +5653,7 @@ class UniCanvasWidget {
     state.bbox = this.bbox;
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
+    this.normalizeLoraStack();
     state.settings = { ...this.settings };
     state.activeLayerId = this.activeLayerId;
     const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
