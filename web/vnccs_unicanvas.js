@@ -78,6 +78,13 @@ const STYLES = `
 .vnccs-uc-settings { display:flex; align-items:center; gap:6px; min-width:0; }
 .vnccs-uc-settings { overflow:auto; flex:1 1 auto; }
 .vnccs-uc-settings-spacer { flex:1 1 auto; min-width:16px; }
+.vnccs-uc-sam-panel { display:none; flex:0 0 auto; align-items:center; gap:7px; min-width:0; }
+.vnccs-uc-sam-panel.visible { display:flex; }
+.vnccs-uc-sam-points { min-width:78px; color:var(--uc-muted); font-variant-numeric:tabular-nums; white-space:nowrap; }
+.vnccs-uc-sam-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:4px; vertical-align:-1px; background:var(--uc-good); }
+.vnccs-uc-sam-dot.bg { background:var(--uc-danger); }
+.vnccs-uc-sam-status { max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--uc-muted); }
+.vnccs-uc-sam-mode { min-width:42px; }
 .vnccs-uc-btn, .vnccs-uc-icon { border:1px solid var(--uc-border); background:var(--uc-surface); color:var(--uc-text); border-radius:8px; height:28px; padding:0 9px; cursor:pointer; font:inherit; white-space:nowrap; }
 .vnccs-uc-icon { width:30px; padding:0; display:grid; place-items:center; }
 .vnccs-uc-icon svg { width:16px; height:16px; display:block; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
@@ -98,6 +105,7 @@ const STYLES = `
 }
 .vnccs-uc-btn.danger { color:#ffdce1; border-color:rgba(255,71,87,.35); }
 .vnccs-uc-icon.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
+.vnccs-uc-btn.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; }
 .vnccs-uc-textarea { min-height:54px; height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; overflow:hidden; line-height:1.28; }
@@ -368,7 +376,8 @@ const TOOL_ICONS = {
   move: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18"/><path d="M3 12h18"/><path d="m8 7 4-4 4 4"/><path d="m8 17 4 4 4-4"/><path d="m7 8-4 4 4 4"/><path d="m17 8 4 4-4 4"/></svg>`,
   brush: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5 19 10"/><path d="M4 20c3 0 5-1 6.5-2.5L19 9a2.8 2.8 0 0 0-4-4l-8.5 8.5C5 15 4 17 4 20Z"/><path d="M6.5 13.5 10.5 17.5"/></svg>`,
   eraser: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 15 8-8a3 3 0 0 1 4.2 0l3.8 3.8a3 3 0 0 1 0 4.2l-5 5H9Z"/><path d="m9 20-5-5"/><path d="m10.5 8.5 6 6"/><path d="M14 20h7"/></svg>`,
-  mask: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8c2.6-2 5.3-3 8-3s5.4 1 8 3v4c0 4.8-3.2 8-8 8s-8-3.2-8-8Z"/><path d="M12 5v15"/><path d="M7.5 12.5h2"/><path d="M14.5 12.5h2"/><path d="M9 16c1.8 1 4.2 1 6 0"/></svg>`,
+  mask: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8.5c2.2-1.7 4.5-2.5 7-2.5s4.8.8 7 2.5V12c0 4.2-2.8 7-7 7s-7-2.8-7-7Z"/><path d="M12 6v13"/><path d="M8.1 11.8h2"/><path d="M13.9 11.8h2"/><path d="M9.2 15.4c1.6.8 4 .8 5.6 0"/></svg>`,
+  sam: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5l7 16 2-7 7-2Z"/><path d="M13 14l5 5"/><path d="M17 3v3"/><path d="M20 6h-3"/><path d="M6 3l1.2 2.2L9.5 6.5 7.2 7.8 6 10 4.8 7.8 2.5 6.5l2.3-1.3Z"/></svg>`,
   rect: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="6" width="14" height="12" rx="1.5"/><path d="M8 6v12"/><path d="M16 6v12"/></svg>`,
   lasso: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 18c-2.5-1.2-4-3.2-4-5.5C4 8.9 7.6 6 12 6s8 2.9 8 6.5S16.4 19 12 19c-1.2 0-2.3-.2-3.3-.6"/><path d="M8 18 5 21"/><path d="M5 21h5"/></svg>`,
   resize: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="1.5"/><path d="M9 9h6v6H9Z"/><path d="M5 2v3H2"/><path d="M19 2v3h3"/><path d="M5 22v-3H2"/><path d="M19 22v-3h3"/></svg>`,
@@ -461,6 +470,17 @@ class UniCanvasWidget {
     this.assets = { checkpoints: [], diffusion_models: [], gguf_models: [], text_encoders: [], vae_models: [], model_patches: [], loras: [], samplers: [], schedulers: [] };
     this.checkpoints = [];
     this.settings = makeDefaultUniCanvasSettings();
+    this.sam = {
+      model: "sam2_large",
+      mode: "add",
+      invert: false,
+      points: [],
+      maskCanvas: null,
+      crop: null,
+      layerId: null,
+      busy: false,
+      status: "",
+    };
 
     this._buildDOM();
     this._createInitialLayers();
@@ -522,6 +542,31 @@ class UniCanvasWidget {
       this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.applyTransformDraft(), "Apply transform")
     );
     this.stageWrap.appendChild(this.transformControls);
+    this.samPanel = document.createElement("div");
+    this.samPanel.className = "vnccs-uc-staging-popover vnccs-uc-sam-panel";
+    this.samModelSelect = document.createElement("select");
+    this.samModelSelect.className = "vnccs-uc-select";
+    this.samModelSelect.innerHTML = `
+      <option value="sam2_large">SAM2 Large</option>
+      <option value="sam1_huge">SAM1 Huge</option>`;
+    this.samModelSelect.value = this.sam.model;
+    this.samModelSelect.addEventListener("change", () => {
+      this.sam.model = this.samModelSelect.value;
+      this.clearSamMask(false);
+      this.renderSamPanel();
+    });
+    this.samAddBtn = this._button("+", "vnccs-uc-btn vnccs-uc-sam-mode", () => this.setSamMode("add"), "Add foreground points");
+    this.samSubtractBtn = this._button("-", "vnccs-uc-btn vnccs-uc-sam-mode", () => this.setSamMode("subtract"), "Subtract background points");
+    this.samInvertBtn = this._button("Invert", "vnccs-uc-btn", () => this.toggleSamInvert(), "Invert mask");
+    this.samPointsLabel = document.createElement("span");
+    this.samPointsLabel.className = "vnccs-uc-sam-points";
+    this.samSegmentBtn = this._button("Segment", "vnccs-uc-btn primary", () => this.segmentSamMask(), "Build SAM mask");
+    this.samApplyBtn = this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.applySamMask(), "Apply mask to selected layer");
+    this.samClearBtn = this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.clearSamPrompt(), "Clear SAM points and mask");
+    this.samStatus = document.createElement("span");
+    this.samStatus.className = "vnccs-uc-sam-status";
+    this.samPanel.append(this.samClearBtn, this.samModelSelect, this.samAddBtn, this.samSubtractBtn, this.samInvertBtn, this.samPointsLabel, this.samSegmentBtn, this.samApplyBtn, this.samStatus);
+    this.stageWrap.appendChild(this.samPanel);
 
     this.left = document.createElement("div");
     this.left.className = "vnccs-uc-left";
@@ -644,6 +689,7 @@ class UniCanvasWidget {
       ["brush", "Brush"],
       ["eraser", "Eraser"],
       ["mask", "Mask brush"],
+      ["sam", "SAM object mask"],
       ["rect", "Rectangle"],
       ["lasso", "Lasso"],
       ["resize", "Resize layer"],
@@ -979,6 +1025,8 @@ class UniCanvasWidget {
     this.container.querySelectorAll(".vnccs-uc-tool").forEach((btn) => btn.classList.toggle("active", btn.dataset.tool === tool));
     this.syncCursorStyle();
     this.renderToolSettings();
+    this.renderSamPanel();
+    this.updateSamControls();
     this.updateHud();
     this.updateContextCursor();
     this.updateToolPreviewOverlay();
@@ -1027,6 +1075,34 @@ class UniCanvasWidget {
     this.toolSettings.classList.add("visible");
   }
 
+  renderSamPanel() {
+    if (!this.samPanel) return;
+    const fgCount = this.sam.points.filter((point) => point.label > 0).length;
+    const bgCount = this.sam.points.length - fgCount;
+    this.samPointsLabel.innerHTML = `<span class="vnccs-uc-sam-dot"></span>${fgCount} <span class="vnccs-uc-sam-dot bg"></span>${bgCount}`;
+    this.samModelSelect.value = this.sam.model;
+    this.samAddBtn.classList.toggle("active", this.sam.mode === "add");
+    this.samSubtractBtn.classList.toggle("active", this.sam.mode === "subtract");
+    this.samInvertBtn.classList.toggle("active", this.sam.invert);
+    this.samSegmentBtn.disabled = this.sam.busy || !this.sam.points.length;
+    this.samApplyBtn.disabled = this.sam.busy || !this.sam.maskCanvas;
+    this.samClearBtn.disabled = this.sam.busy || (!this.sam.points.length && !this.sam.maskCanvas);
+    this.samStatus.textContent = this.sam.busy ? "Segmenting..." : (this.sam.status || "");
+  }
+
+  setSamMode(mode) {
+    this.sam.mode = mode === "subtract" ? "subtract" : "add";
+    this.renderSamPanel();
+    this.setStatus(this.sam.mode === "subtract" ? "SAM subtract mode" : "SAM add mode");
+  }
+
+  toggleSamInvert() {
+    this.sam.invert = !this.sam.invert;
+    this.renderSamPanel();
+    this.updateToolPreviewOverlay();
+    this.setStatus(this.sam.invert ? "SAM invert on" : "SAM invert off");
+  }
+
   syncCursorStyle() {
     const cursorMap = {
       brush: "crosshair",
@@ -1034,6 +1110,7 @@ class UniCanvasWidget {
       mask: "crosshair",
       rect: "crosshair",
       lasso: "crosshair",
+      sam: "crosshair",
       resize: "default",
       bbox: "move",
       move: "move",
@@ -1421,12 +1498,60 @@ class UniCanvasWidget {
     const h = this.previewCanvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    if (this.tool === "sam" || this.sam.maskCanvas) {
+      ctx.save();
+      ctx.translate(this.view.x, this.view.y);
+      ctx.scale(this.view.scale, this.view.scale);
+      this.drawSamPreview(ctx);
+      ctx.restore();
+    }
     if (!this.hoverPoint || this.hoverPointerType !== "mouse" || !["brush", "eraser", "mask"].includes(this.tool)) return;
     ctx.save();
     ctx.translate(this.view.x, this.view.y);
     ctx.scale(this.view.scale, this.view.scale);
     this.drawToolPreview(ctx);
     ctx.restore();
+  }
+
+  drawSamPreview(ctx) {
+    if (this.sam.maskCanvas && this.sam.crop) {
+      const maskCanvas = this.getSamMaskCanvasForCurrentMode();
+      ctx.save();
+      ctx.globalAlpha = 0.72;
+      ctx.drawImage(maskCanvas, this.origin.x + this.sam.crop.x, this.origin.y + this.sam.crop.y, this.sam.crop.width, this.sam.crop.height);
+      ctx.globalCompositeOperation = "source-in";
+      ctx.fillStyle = MASK_OVERLAY_COLOR;
+      ctx.fillRect(this.origin.x + this.sam.crop.x, this.origin.y + this.sam.crop.y, this.sam.crop.width, this.sam.crop.height);
+      ctx.restore();
+    }
+    const radius = Math.max(4, 7 / Math.max(this.view.scale, 0.001));
+    for (const point of this.sam.points) {
+      ctx.save();
+      ctx.fillStyle = point.label > 0 ? "rgba(0,214,143,.95)" : "rgba(255,71,87,.95)";
+      ctx.strokeStyle = "rgba(8,8,12,.95)";
+      ctx.lineWidth = Math.max(1.5, 2 / Math.max(this.view.scale, 0.001));
+      ctx.beginPath();
+      ctx.arc(point.x, point.y, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  getSamMaskCanvasForCurrentMode() {
+    if (!this.sam.maskCanvas || !this.sam.invert) return this.sam.maskCanvas;
+    if (!this._samInvertScratch) this._samInvertScratch = document.createElement("canvas");
+    const scratch = this._samInvertScratch;
+    if (scratch.width !== this.sam.maskCanvas.width) scratch.width = this.sam.maskCanvas.width;
+    if (scratch.height !== this.sam.maskCanvas.height) scratch.height = this.sam.maskCanvas.height;
+    const ctx = scratch.getContext("2d");
+    ctx.clearRect(0, 0, scratch.width, scratch.height);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, scratch.width, scratch.height);
+    ctx.globalCompositeOperation = "destination-out";
+    ctx.drawImage(this.sam.maskCanvas, 0, 0);
+    ctx.globalCompositeOperation = "source-over";
+    return scratch;
   }
 
   updateHud() {
@@ -1504,7 +1629,7 @@ class UniCanvasWidget {
   }
 
   onPointerDown(e) {
-    if (![0, 1].includes(e.button)) return;
+    if (![0, 1].includes(e.button) && !(this.tool === "sam" && e.button === 2)) return;
     e.preventDefault();
     e.stopPropagation();
     this.canvas.setPointerCapture?.(e.pointerId);
@@ -1599,6 +1724,15 @@ class UniCanvasWidget {
         this.dragStart.rotateStartBounds = this.dragStart.resizeBounds;
         this.updateTransformDraft(point, e);
       }
+    } else if (this.pointerMode === "sam") {
+      this.addSamPoint(point, e);
+      this.isPointerDown = false;
+      this.pointerMode = null;
+      this.dragStart = null;
+      this.lastPoint = null;
+      this.updateToolPreviewOverlay();
+      this.renderSamPanel();
+      return;
     }
     if (["brush", "eraser", "mask"].includes(this.pointerMode)) {
       if (!this.ensureVisibleWorldBounds(Math.max(128, this.brushSize * 2))) {
@@ -1849,6 +1983,172 @@ class UniCanvasWidget {
       this.configureImageContext(copy.getContext("2d")).drawImage(canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
     }
     return copy;
+  }
+
+  expandCanvasCrop(crop, canvas, padding = 0) {
+    if (!crop || !canvas) return null;
+    return this.clampCanvasBounds({
+      x: crop.x - padding,
+      y: crop.y - padding,
+      width: crop.width + padding * 2,
+      height: crop.height + padding * 2,
+    }, canvas);
+  }
+
+  addSamPoint(point, event) {
+    const layer = this.activeLayer;
+    if (!layer || layer.type !== "raster") {
+      this.setSamStatus("Select a raster layer", true);
+      return;
+    }
+    if (layer.locked) {
+      this.setSamStatus("Layer is locked", true);
+      return;
+    }
+    const bounds = this.getLayerWorldBounds(layer);
+    if (!bounds || point.x < bounds.x || point.y < bounds.y || point.x > bounds.x + bounds.width || point.y > bounds.y + bounds.height) {
+      this.setSamStatus("Click inside selected layer", true);
+      return;
+    }
+    const label = event.button === 2 || event.altKey || event.ctrlKey || event.metaKey || this.sam.mode === "subtract" ? 0 : 1;
+    this.sam.points.push({ x: point.x, y: point.y, label });
+    this.clearSamMask(false);
+    this.sam.status = label > 0 ? "Foreground point" : "Background point";
+    this.requestRender();
+  }
+
+  setSamStatus(text, isError = false) {
+    this.sam.status = text;
+    this.renderSamPanel();
+    this.status.textContent = text;
+    this.status.style.color = isError ? "var(--uc-danger)" : "var(--uc-muted)";
+  }
+
+  clearSamMask(update = true) {
+    this.sam.maskCanvas = null;
+    this.sam.crop = null;
+    this.sam.layerId = null;
+    if (update) {
+      this.renderSamPanel();
+      this.updateToolPreviewOverlay();
+    }
+  }
+
+  clearSamPrompt() {
+    this.sam.points = [];
+    this.clearSamMask(false);
+    this.sam.status = "SAM cleared";
+    this.renderSamPanel();
+    this.requestRender();
+    this.setStatus("SAM cleared");
+  }
+
+  async segmentSamMask() {
+    const layer = this.activeLayer;
+    if (!layer || layer.type !== "raster") {
+      this.setSamStatus("Select a raster layer", true);
+      return;
+    }
+    if (layer.locked) {
+      this.setSamStatus("Layer is locked", true);
+      return;
+    }
+    if (!this.sam.points.length) {
+      this.setSamStatus("Add foreground point", true);
+      return;
+    }
+    const alphaCrop = this.getLayerAlphaBounds(layer);
+    const crop = this.expandCanvasCrop(alphaCrop, layer.canvas, 24);
+    if (!crop) {
+      this.setSamStatus("Layer is empty", true);
+      return;
+    }
+    const points = this.sam.points
+      .filter((point) => point.x >= this.origin.x + crop.x && point.y >= this.origin.y + crop.y && point.x <= this.origin.x + crop.x + crop.width && point.y <= this.origin.y + crop.y + crop.height)
+      .map((point) => ({
+        x: point.x - this.origin.x - crop.x,
+        y: point.y - this.origin.y - crop.y,
+        label: point.label > 0 ? 1 : 0,
+      }));
+    if (!points.length) {
+      this.setSamStatus("SAM points are outside crop", true);
+      return;
+    }
+    const source = this.cloneCanvasCrop(layer.canvas, crop);
+    this.sam.busy = true;
+    this.sam.status = "Segmenting...";
+    this.renderSamPanel();
+    this.setStatus("SAM segmenting...");
+    try {
+      const res = await fetch("/vnccs/unicanvas/segment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: this.sam.model,
+          image: source.toDataURL("image/png"),
+          points,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      const img = await this.loadImage(data.mask);
+      const maskCanvas = document.createElement("canvas");
+      maskCanvas.width = crop.width;
+      maskCanvas.height = crop.height;
+      this.configureImageContext(maskCanvas.getContext("2d")).drawImage(img, 0, 0, crop.width, crop.height);
+      this.sam.maskCanvas = maskCanvas;
+      this.sam.crop = { ...crop };
+      this.sam.layerId = layer.id;
+      this.sam.status = "Mask ready";
+      this.setStatus("SAM mask ready");
+    } catch (err) {
+      this.sam.status = `SAM failed: ${err.message || err}`;
+      this.setSamStatus(this.sam.status, true);
+    } finally {
+      this.sam.busy = false;
+      this.renderSamPanel();
+      this.requestRender();
+    }
+  }
+
+  applySamMask() {
+    const layer = this.layers.find((item) => item.id === this.sam.layerId) || this.activeLayer;
+    if (!layer || layer.type !== "raster" || !this.sam.maskCanvas || !this.sam.crop) {
+      this.setSamStatus("No SAM mask to apply", true);
+      return;
+    }
+    if (layer.locked) {
+      this.setSamStatus("Layer is locked", true);
+      return;
+    }
+    const before = this.createLayerPixelSnapshot(layer);
+    this.materializeRasterLayerForEditing(layer);
+    const crop = this.clampCanvasBounds(this.sam.crop, layer.canvas);
+    if (!crop) {
+      this.setSamStatus("SAM crop is outside layer", true);
+      return;
+    }
+    const ctx = layer.canvas.getContext("2d");
+    const maskCanvas = this.getSamMaskCanvasForCurrentMode();
+    ctx.save();
+    ctx.globalCompositeOperation = "destination-in";
+    ctx.drawImage(maskCanvas, 0, 0, maskCanvas.width, maskCanvas.height, crop.x, crop.y, crop.width, crop.height);
+    ctx.restore();
+    this.markLayerPixelsChanged(layer, crop, false);
+    this.pushHistoryEntry({
+      kind: "layerPixels",
+      layerId: layer.id,
+      before,
+      after: this.createLayerPixelSnapshot(layer),
+    });
+    this.clearSamMask(false);
+    this.sam.status = "Mask applied";
+    this.renderSamPanel();
+    this.refreshLayerRow(layer.id);
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
+    this.setStatus("SAM mask applied");
   }
 
   createTransformSource(layer) {
@@ -2994,6 +3294,7 @@ class UniCanvasWidget {
     }
     this.updateStagingControls();
     this.updateTransformControls();
+    this.updateSamControls();
     this.updateToolPreviewOverlay();
   }
 
@@ -3371,6 +3672,22 @@ class UniCanvasWidget {
     this.transformControls.style.transform = "translateX(-50%)";
     if (this.transformLabel) this.transformLabel.textContent = labels[this.transformDraft.kind] || "Transform";
     this.transformControls.classList.add("visible");
+  }
+
+  updateSamControls() {
+    if (!this.samPanel) return;
+    if (this.tool !== "sam" || this.activeStaging || this.transformDraft) {
+      this.samPanel.classList.remove("visible");
+      return;
+    }
+    this.samPanel.style.left = "50%";
+    this.samPanel.style.right = "";
+    this.samPanel.style.top = "";
+    this.samPanel.style.bottom = "12px";
+    this.samPanel.style.width = "";
+    this.samPanel.style.transform = "translateX(-50%)";
+    this.renderSamPanel();
+    this.samPanel.classList.add("visible");
   }
 
   getImageFitInRect(img, rect) {
