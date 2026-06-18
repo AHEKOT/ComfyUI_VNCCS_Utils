@@ -3395,26 +3395,41 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 paste_mask_image = _make_gradient_paste_mask(expanded_mask_area, mask_blur, draw_id)
                 mask = _pil_to_mask_tensor(denoise_mask_image)
-            if model_module.key == "qwen_image_edit":
+            if mask is not None and float(mask.sum().item()) <= 0.0:
+                _uc_log(
+                    draw_id,
+                    "empty masked-mode mask converted to img2img",
+                    {
+                        "from_mode": mode,
+                        "reason": "masked generation with an empty mask produces an empty paste mask and applies zero result pixels",
+                    },
+                )
+                mode = "img2img"
+                settings["draw_mode"] = mode
+                mask = None
+                mask_image = None
+                paste_mask_image = None
+            if model_module.key == "qwen_image_edit" and mask is not None:
                 settings["_qwen_edit_mask"] = mask
-            mask_for_debug = _pil_to_mask_image(mask_image)
-            _uc_log(
-                draw_id,
-                "mask decoded",
-                {
-                    "full_mask_size": mask_image.size,
-                    "note": "active_bbox_gt_0_01 is only the non-zero mask area inside the full inference image",
-                    "tensor": _tensor_debug(mask),
-                },
-            )
-            source_debug = _save_temp_image(source, f"VNCCS_UniCanvas_{draw_id}_source")
-            mask_debug = _save_temp_image(mask_for_debug, f"VNCCS_UniCanvas_{draw_id}_mask")
-            paste_mask_debug = _save_temp_image(paste_mask_image, f"VNCCS_UniCanvas_{draw_id}_paste_mask") if paste_mask_image is not None else None
-            _uc_log(
-                draw_id,
-                "debug input images saved",
-                {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug},
-            )
+            if mask_image is not None:
+                mask_for_debug = _pil_to_mask_image(mask_image)
+                _uc_log(
+                    draw_id,
+                    "mask decoded",
+                    {
+                        "full_mask_size": mask_image.size,
+                        "note": "active_bbox_gt_0_01 is only the non-zero mask area inside the full inference image",
+                        "tensor": _tensor_debug(mask),
+                    },
+                )
+                source_debug = _save_temp_image(source, f"VNCCS_UniCanvas_{draw_id}_source")
+                mask_debug = _save_temp_image(mask_for_debug, f"VNCCS_UniCanvas_{draw_id}_mask")
+                paste_mask_debug = _save_temp_image(paste_mask_image, f"VNCCS_UniCanvas_{draw_id}_paste_mask") if paste_mask_image is not None else None
+                _uc_log(
+                    draw_id,
+                    "debug input images saved",
+                    {"source": source_debug, "mask": mask_debug, "paste_mask": paste_mask_debug},
+                )
         else:
             _uc_log(draw_id, "mask skipped", {"reason": f"mode is {mode}"})
         if model_module.is_edit_model and (mode == "txt2img" or source_empty):
