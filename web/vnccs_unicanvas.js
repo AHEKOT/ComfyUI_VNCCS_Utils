@@ -165,7 +165,7 @@ const MOVE_SNAP_GRID_SIZE = 64;
 const RENDER_LOD_MIN_CANVAS_SIDE = 1024;
 const RENDER_LOD_LEVELS = [0.5, 0.25, 0.125, 0.0625];
 const RENDER_LOD_OVERSAMPLE = 2.25;
-const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise"]);
+const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "anima_lllite_strength", "fun_controlnet_strength"]);
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
@@ -202,6 +202,9 @@ const UNICANVAS_MODEL_MODULES = {
       turbo_enabled: false,
       dmd_lora_name: "anima\\anima-turbo-lora-v0.1.safetensors",
       dmd_lora_strength: 1,
+      anima_lllite_inpaint: true,
+      anima_lllite_name: "anima-lllite-inpainting-v2.safetensors",
+      anima_lllite_strength: 1,
     },
   },
   flux_klein: {
@@ -1349,16 +1352,18 @@ class UniCanvasWidget {
   }
 
   getDenoiseControlSetting() {
-    return this.getModelBase() === "z_image" ? "fun_controlnet_strength" : "denoise";
+    if (this.getModelBase() === "z_image") return "fun_controlnet_strength";
+    if (this.getModelBase() === "anima") return "anima_lllite_strength";
+    return "denoise";
   }
 
   syncDenoiseControls(source = null) {
     const key = this.getDenoiseControlSetting();
-    const fallback = key === "fun_controlnet_strength" ? 1 : 0.65;
+    const fallback = key === "fun_controlnet_strength" || key === "anima_lllite_strength" ? 1 : 0.65;
     const value = Math.max(0, Math.min(1, Number(this.settings[key] ?? fallback) || 0));
     this.settings[key] = value;
     const label = this.denoiseControl?.querySelector("[data-denoise-label]");
-    if (label) label.textContent = key === "fun_controlnet_strength" ? "ControlNet strength" : "Denoise";
+    if (label) label.textContent = key === "fun_controlnet_strength" || key === "anima_lllite_strength" ? "ControlNet strength" : "Denoise";
     this.denoiseControl?.querySelectorAll('[data-setting="denoise"]').forEach((el) => {
       if (el === source) return;
       if (el instanceof HTMLInputElement) el.value = this.formatSettingNumber(value, 2);

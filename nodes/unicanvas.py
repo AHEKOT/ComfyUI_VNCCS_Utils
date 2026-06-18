@@ -38,6 +38,8 @@ _MAX_PIXELS = 4096 * 4096
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
+ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
+ANIMA_LLLITE_INPAINT_FILENAME = "anima-lllite-inpainting-v2.safetensors"
 
 ILLUSTRIOUS_DEFAULTS = {
     "generation_mode": "illustrious",
@@ -63,6 +65,9 @@ ANIMA_DEFAULTS = {
     "turbo_enabled": False,
     "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
     "dmd_lora_strength": 1.0,
+    "anima_lllite_inpaint": True,
+    "anima_lllite_name": ANIMA_LLLITE_INPAINT_FILENAME,
+    "anima_lllite_strength": 1.0,
     "lora_stack": [],
 }
 
@@ -435,13 +440,99 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         import comfy.model_management
 
         latent = torch.zeros(
-            [1, 16, 1, height // 8, width // 8],
+            [1, 16, max(1, int(height) // 8), max(1, int(width) // 8)],
             device=comfy.model_management.intermediate_device(),
             dtype=comfy.model_management.intermediate_dtype(),
         )
         encoded = {"samples": latent}
-        _uc_log(draw_id, "created empty Anima/Qwen latent", _latent_debug(encoded))
+        _uc_log(draw_id, "created empty Anima latent", _latent_debug(encoded))
         return encoded
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        if draw_mode in {"inpaint", "outpaint"} and bool(gen_settings.get("anima_lllite_inpaint", True)):
+            image = gen_settings.get("_anima_lllite_image")
+            mask = gen_settings.get("_anima_lllite_mask")
+            if torch.is_tensor(image) and torch.is_tensor(mask):
+                model = self._apply_inpaint_lllite(model, image, mask, gen_settings, draw_id)
+                denoise = 1.0
+            else:
+                _uc_log(
+                    draw_id,
+                    "Anima LLLite inpaint skipped",
+                    {
+                        "reason": "missing image or mask tensor",
+                        "image": _tensor_debug(image) if torch.is_tensor(image) else None,
+                        "mask": _tensor_debug(mask) if torch.is_tensor(mask) else None,
+                    },
+                )
+        return super().sample_latent(
+            model=model,
+            positive=positive,
+            negative=negative,
+            latent=latent,
+            seed=seed,
+            steps=steps,
+            cfg=cfg,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            denoise=denoise,
+            gen_settings=gen_settings,
+            draw_id=draw_id,
+            width=width,
+            height=height,
+        )
+
+    def _apply_inpaint_lllite(
+        self,
+        model: Any,
+        image: torch.Tensor,
+        mask: torch.Tensor,
+        gen_settings: dict[str, Any],
+        draw_id: str,
+    ) -> Any:
+        try:
+            from .anima_lllite_internal import apply_anima_lllite_inpaint
+        except ImportError:
+            from anima_lllite_internal import apply_anima_lllite_inpaint
+
+        lllite_name = str(gen_settings.get("anima_lllite_name") or ANIMA_LLLITE_INPAINT_FILENAME).strip()
+        weights_path = _ensure_anima_lllite_model(lllite_name, draw_id)
+        strength = float(gen_settings.get("anima_lllite_strength", 1.0))
+        patched = apply_anima_lllite_inpaint(
+            model=model,
+            weights_path=weights_path,
+            image=image,
+            mask=mask,
+            strength=strength,
+        )
+        _uc_log(
+            draw_id,
+            "Anima LLLite inpaint applied",
+            {
+                "weights": os.path.basename(weights_path),
+                "strength": strength,
+                "image": _tensor_debug(image),
+                "mask": _tensor_debug(mask),
+            },
+        )
+        return patched
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         latent_payload = samples if isinstance(samples, dict) else {"samples": samples}
@@ -2203,6 +2294,62 @@ def _load_model_patch_cached(patch_name: str):
     return loaded
 
 
+def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> str:
+    import folder_paths
+
+    requested = str(lllite_name or ANIMA_LLLITE_INPAINT_FILENAME).replace("\\", "/").strip()
+    basename = os.path.basename(requested) or ANIMA_LLLITE_INPAINT_FILENAME
+    if basename != ANIMA_LLLITE_INPAINT_FILENAME:
+        raise ValueError(
+            f"Unsupported bundled Anima LLLite model: {lllite_name}. "
+            f"Expected {ANIMA_LLLITE_INPAINT_FILENAME} from {ANIMA_LLLITE_REPO_ID}."
+        )
+
+    found = _get_full_path_agnostic(folder_paths, "controlnet", requested, require_exists=True)
+    if found:
+        return found
+    found = _get_full_path_agnostic(folder_paths, "controlnet", basename, require_exists=True)
+    if found:
+        return found
+
+    folders = _safe_get_folder_paths(folder_paths, "controlnet")
+    if folders:
+        target_dir = folders[0]
+    else:
+        models_dir = os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(os.getcwd(), "models")))
+        target_dir = os.path.join(models_dir, "controlnet")
+    os.makedirs(target_dir, exist_ok=True)
+    target_path = os.path.join(target_dir, basename)
+    if os.path.isfile(target_path):
+        return target_path
+
+    _uc_log(
+        draw_id,
+        "Anima LLLite model download started",
+        {"repo": ANIMA_LLLITE_REPO_ID, "filename": ANIMA_LLLITE_INPAINT_FILENAME, "target": target_path},
+    )
+    try:
+        import shutil
+        from huggingface_hub import hf_hub_download
+
+        cached_path = hf_hub_download(
+            repo_id=ANIMA_LLLITE_REPO_ID,
+            filename=ANIMA_LLLITE_INPAINT_FILENAME,
+            repo_type="model",
+            local_files_only=False,
+        )
+        tmp_path = target_path + ".tmp"
+        shutil.copy2(cached_path, tmp_path)
+        os.replace(tmp_path, target_path)
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            os.remove(target_path + ".tmp")
+        raise RuntimeError(f"Failed to download Anima LLLite inpaint model from {ANIMA_LLLITE_REPO_ID}: {exc}") from exc
+
+    _uc_log(draw_id, "Anima LLLite model downloaded", {"path": target_path})
+    return target_path
+
+
 def _apply_generation_loras(model: Any, clip: Any, gen_settings: dict[str, Any]):
     module = _get_unicanvas_model_module(str(gen_settings.get("generation_mode", "illustrious")).lower())
     return module.apply_loras(model, clip, gen_settings)
@@ -2392,6 +2539,23 @@ def _prepare_masked_generation_latent(
             "Z-image Fun ControlNet empty latent returned",
             {
                 "reason": "Fun ControlNet workflow uses EmptySD3LatentImage; structure comes through model patch inputs",
+                "latent": _latent_debug(latent),
+            },
+        )
+        return positive, negative, latent
+
+    if model_module.key == "anima" and bool((gen_settings or {}).get("anima_lllite_inpaint", True)):
+        latent = model_module.create_empty_latent(
+            int(image_tensor.shape[2]),
+            int(image_tensor.shape[1]),
+            gen_settings or {},
+            draw_id=draw_id,
+        )
+        _uc_log(
+            draw_id,
+            "Anima LLLite empty latent returned",
+            {
+                "reason": "Anima LLLite inpaint workflow uses an empty latent; structure comes through the bundled LLLite model wrapper",
                 "latent": _latent_debug(latent),
             },
         )
@@ -2902,6 +3066,19 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                     "image": _tensor_debug(image_tensor),
                     "mask": _tensor_debug(mask),
                     "patch": settings.get("fun_controlnet_patch_name"),
+                },
+            )
+        if model_module.key == "anima" and mode in {"inpaint", "outpaint"} and mask is not None and bool(settings.get("anima_lllite_inpaint", True)):
+            settings["_anima_lllite_image"] = image_tensor
+            settings["_anima_lllite_mask"] = mask
+            _uc_log(
+                draw_id,
+                "Anima LLLite inputs prepared",
+                {
+                    "mode": mode,
+                    "image": _tensor_debug(image_tensor),
+                    "mask": _tensor_debug(mask),
+                    "weights": settings.get("anima_lllite_name"),
                 },
             )
         positive, negative = model_module.prepare_reference_conditioning(
