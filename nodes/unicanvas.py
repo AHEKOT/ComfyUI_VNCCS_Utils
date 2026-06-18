@@ -53,6 +53,9 @@ ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
 ANIMA_LLLITE_INPAINT_FILENAME = "anima-lllite-inpainting-v2.safetensors"
 Z_IMAGE_FUN_CONTROLNET_REPO_ID = "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1"
 Z_IMAGE_FUN_CONTROLNET_FILENAME = "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors"
+SDXL_TURBO_LORA_NAME = "DMD2/dmd2_sdxl_4step_lora_fp16.safetensors"
+ANIMA_TURBO_LORA_NAME = "anima/anima-turbo-lora-v0.1.safetensors"
+QWEN_IMAGE_EDIT_TURBO_LORA_NAME = "qwen/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
 SAM_MODEL_IDS = {
     "sam2_large": "facebook/sam2.1-hiera-large",
     "sam1_huge": "facebook/sam-vit-huge",
@@ -80,7 +83,7 @@ ANIMA_DEFAULTS = {
     "steps": 30,
     "cfg": 4.5,
     "turbo_enabled": False,
-    "dmd_lora_name": "anima\\anima-turbo-lora-v0.1.safetensors",
+    "dmd_lora_name": ANIMA_TURBO_LORA_NAME,
     "dmd_lora_strength": 1.0,
     "anima_lllite_inpaint": True,
     "anima_lllite_name": ANIMA_LLLITE_INPAINT_FILENAME,
@@ -133,8 +136,8 @@ QWEN_IMAGE_EDIT_DEFAULTS = {
     "steps": 4,
     "cfg": 1.0,
     "denoise": 1.0,
-    "qwen_lora_name": "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-    "qwen_lora_strength": 1.0,
+    "qwen_lora_name": "",
+    "qwen_lora_strength": 0.0,
     "qwen_2511": True,
     "qwen_target_vl_size": 384,
     "qwen_instruction": (
@@ -418,11 +421,14 @@ class UniCanvasModelModule:
 @dataclass(frozen=True)
 class SDXLUniCanvasModule(UniCanvasModelModule):
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        for key in ("dmd_lora_name", "age_lora_name"):
-            lora_name = str(gen_settings.get(key) or "")
-            if lora_name:
-                strength_key = key.replace("_name", "_strength")
-                model, clip = _apply_lora_cached(model, clip, lora_name, float(gen_settings.get(strength_key, 1.0)))
+        lora_name = str(gen_settings.get("dmd_lora_name") or "")
+        if gen_settings.get("turbo_enabled") and _lora_name_matches(lora_name, SDXL_TURBO_LORA_NAME):
+            model, clip = _apply_lora_cached(
+                model,
+                clip,
+                lora_name,
+                float(gen_settings.get("dmd_lora_strength", 1.0)),
+            )
         return super().apply_loras(model, clip, gen_settings)
 
 
@@ -432,11 +438,12 @@ class AnimaUniCanvasModule(UniCanvasModelModule):
         return False
 
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
-        if gen_settings.get("turbo_enabled"):
+        lora_name = str(gen_settings.get("dmd_lora_name") or "")
+        if gen_settings.get("turbo_enabled") and _lora_name_matches(lora_name, ANIMA_TURBO_LORA_NAME):
             model, clip = _apply_lora_cached(
                 model,
                 clip,
-                str(gen_settings.get("dmd_lora_name") or ""),
+                lora_name,
                 float(gen_settings.get("dmd_lora_strength", 1.0)),
                 0.0,
             )
@@ -694,7 +701,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 
     def apply_loras(self, model: Any, clip: Any, gen_settings: dict[str, Any]):
         lora_name = str(gen_settings.get("qwen_lora_name") or "")
-        if lora_name:
+        if _lora_name_matches(lora_name, QWEN_IMAGE_EDIT_TURBO_LORA_NAME) and float(gen_settings.get("qwen_lora_strength", 0.0) or 0.0) > 0:
             model, clip = _apply_lora_cached(
                 model,
                 clip,
@@ -811,6 +818,19 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         qwen_latent = gen_settings.get("_qwen_edit_latent")
         if isinstance(qwen_latent, dict):
             latent = qwen_latent
+        draw_mode = str(gen_settings.get("draw_mode") or "")
+        if draw_mode in {"inpaint", "outpaint"} and float(denoise) < 1.0:
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit masked denoise forced",
+                {
+                    "reason": "masked reference contains black pixels; partial denoise preserves the black mask",
+                    "from": float(denoise),
+                    "to": 1.0,
+                    "mode": draw_mode,
+                },
+            )
+            denoise = 1.0
         return _sample_generation_latent_default(
             model=model,
             positive=positive,
@@ -2276,6 +2296,16 @@ def _load_generation_assets(gen_settings: dict[str, Any]):
 
 def _clone_model_clip(model: Any, clip: Any) -> tuple[Any, Any]:
     return (model.clone() if hasattr(model, "clone") else model, clip.clone() if hasattr(clip, "clone") else clip)
+
+
+def _normalize_lora_name(value: Any) -> str:
+    return str(value or "").replace("\\", "/").strip().lower()
+
+
+def _lora_name_matches(value: Any, expected: str) -> bool:
+    normalized = _normalize_lora_name(value)
+    expected_normalized = _normalize_lora_name(expected)
+    return normalized == expected_normalized or os.path.basename(normalized) == os.path.basename(expected_normalized)
 
 
 def _get_lora_full_path(lora_name: str) -> str:

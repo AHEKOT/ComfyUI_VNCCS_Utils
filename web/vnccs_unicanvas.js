@@ -320,8 +320,8 @@ const UNICANVAS_MODEL_MODULES = {
       steps: 4,
       cfg: 1,
       denoise: 1,
-      qwen_lora_name: "qwen\\Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors",
-      qwen_lora_strength: 1,
+      qwen_lora_name: "",
+      qwen_lora_strength: 0,
       qwen_2511: true,
       qwen_target_vl_size: 384,
     },
@@ -518,6 +518,9 @@ class UniCanvasWidget {
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
     this.settings = makeDefaultUniCanvasSettings();
+    if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
+      this.settings.preset_runtime_settings = {};
+    }
     this.sam = {
       model: "sam2_large",
       mode: "add",
@@ -1654,14 +1657,58 @@ class UniCanvasWidget {
     }
   }
 
+  presetRuntimeSettingKeys(preset) {
+    const keys = [
+      "steps",
+      "cfg",
+      "sampler_name",
+      "scheduler",
+      "inference_scale",
+      "denoise",
+      "turbo_enabled",
+      "dmd_lora_name",
+      "dmd_lora_strength",
+      "qwen_lora_name",
+      "qwen_lora_strength",
+    ];
+    const previousKey = this.getPresetTurboPreviousKey(preset);
+    if (previousKey) keys.push(previousKey);
+    return keys;
+  }
+
+  presetRuntimeSettingsStore() {
+    if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
+      this.settings.preset_runtime_settings = {};
+    }
+    return this.settings.preset_runtime_settings;
+  }
+
+  snapshotPresetRuntimeSettings(preset) {
+    if (!preset?.id) return;
+    const snapshot = {};
+    for (const key of this.presetRuntimeSettingKeys(preset)) {
+      if (this.settings[key] !== undefined) snapshot[key] = this.settings[key];
+    }
+    this.presetRuntimeSettingsStore()[preset.id] = snapshot;
+  }
+
+  restorePresetRuntimeSettings(preset) {
+    if (!preset?.id) return {};
+    const saved = this.presetRuntimeSettingsStore()[preset.id];
+    return saved && typeof saved === "object" ? saved : {};
+  }
+
   applyPresetSettings(preset) {
     if (!preset?.settings) return;
+    const savedRuntimeSettings = this.restorePresetRuntimeSettings(preset);
     this.settings = {
       ...this.settings,
       ...preset.settings,
+      ...savedRuntimeSettings,
       model_selection_mode: "presets",
       selected_preset_id: preset.id,
     };
+    this.presetRuntimeSettingsStore();
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
     this.syncInferenceControls();
@@ -1670,6 +1717,8 @@ class UniCanvasWidget {
   selectPreset(presetId) {
     const preset = this.getPresetById(presetId);
     if (!preset) return;
+    const currentPreset = this.getActivePreset();
+    if (currentPreset?.id && currentPreset.id !== preset.id) this.snapshotPresetRuntimeSettings(currentPreset);
     this.applyPresetSettings(preset);
     this.presetPickerOpen = false;
     const status = this.presetStatus(preset);
@@ -1689,8 +1738,7 @@ class UniCanvasWidget {
   }
 
   getPresetTurboPreviousKey(preset) {
-    const turbo = preset?.turbo;
-    return turbo?.enable_setting ? "turbo_previous_settings" : `${preset?.id || "preset"}_turbo_previous_settings`;
+    return `${preset?.id || "preset"}_turbo_previous_settings`;
   }
 
   getPresetTurboSettings(preset) {
