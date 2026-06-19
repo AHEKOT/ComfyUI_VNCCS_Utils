@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import gc
 import io
 import json
 import inspect
@@ -372,7 +373,10 @@ class UniCanvasModelModule:
 
     def decode_samples(self, vae: Any, samples: Any, _gen_settings: dict[str, Any]):
         latent_samples = _unwrap_latent_samples(samples)
-        return vae.decode_tiled(latent_samples, tile_x=512, tile_y=512)
+        tile_size = 256 if str((_gen_settings or {}).get("generation_mode") or "").lower() in {"z_image", "z-image", "zimage", "z_image_turbo"} else 512
+        overlap = min(64, max(32, tile_size // 4))
+        _uc_log(str((_gen_settings or {}).get("_draw_id") or "unknown"), "VAE tiled decode", {"tile_size": tile_size, "overlap": overlap})
+        return vae.decode_tiled(latent_samples, tile_x=tile_size, tile_y=tile_size, overlap=overlap)
 
     def prepare_reference_conditioning(
         self,
@@ -1169,7 +1173,7 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             return model
 
         patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
-        model_patch = _load_model_patch_cached(patch_name)
+        model_patch = _load_model_patch(patch_name)
         patched = _call_node_method(
             ["ZImageFunControlnet"],
             ["diffsynth_controlnet"],
@@ -1180,6 +1184,7 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             inpaint_image=inpaint_image,
             mask=mask,
         )
+        model_patch = None
         if patched is None:
             raise RuntimeError("ZImageFunControlnet returned no patched model")
         _uc_log(
@@ -2400,13 +2405,9 @@ def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, c
     return comfy.sd.load_lora_for_models(model, clip, lora, strength, strength if clip_strength is None else clip_strength)
 
 
-def _load_model_patch_cached(patch_name: str):
+def _load_model_patch(patch_name: str):
     if not patch_name:
         raise ValueError("Model patch name is required")
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_PATCH_CACHE.get(patch_name)
-    if cached is not None:
-        return cached
     loaded = _call_node_method(
         ["ModelPatchLoader"],
         ["load_model_patch"],
@@ -2414,9 +2415,20 @@ def _load_model_patch_cached(patch_name: str):
     )
     if loaded is None:
         raise ValueError(f"Model patch not found or failed to load: {patch_name}")
+    return loaded
+
+
+def _load_model_patch_cached(patch_name: str):
+    if not patch_name:
+        raise ValueError("Model patch name is required")
+    with _MODEL_CACHE_LOCK:
+        cached = _MODEL_PATCH_CACHE.get(patch_name)
+    if cached is not None:
+        return cached.clone() if hasattr(cached, "clone") else cached
+    loaded = _load_model_patch(patch_name)
     with _MODEL_CACHE_LOCK:
         _MODEL_PATCH_CACHE[patch_name] = loaded
-    return loaded
+    return loaded.clone() if hasattr(loaded, "clone") else loaded
 
 
 def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknown") -> str:
@@ -2987,6 +2999,97 @@ def _decode_generation_samples(vae: Any, samples: Any, gen_settings: dict[str, A
     return module.decode_samples(vae, samples, gen_settings)
 
 
+def _preload_vae_for_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
+    generation_mode = str((gen_settings or {}).get("generation_mode") or "").lower()
+    draw_mode = str((gen_settings or {}).get("draw_mode") or "").lower()
+    if generation_mode not in {"z_image", "z-image", "zimage", "z_image_turbo"} or draw_mode not in {"inpaint", "outpaint"}:
+        return
+
+    patcher = getattr(vae, "patcher", None)
+    if patcher is None:
+        _uc_log(draw_id, "VAE preload skipped", {"reason": "VAE has no patcher"})
+        return
+
+    try:
+        import comfy.model_management as model_management
+
+        load_models_gpu = getattr(model_management, "load_models_gpu", None)
+        if not callable(load_models_gpu):
+            _uc_log(draw_id, "VAE preload skipped", {"reason": "model_management.load_models_gpu is unavailable"})
+            return
+
+        kwargs = {}
+        with contextlib.suppress(Exception):
+            sig = inspect.signature(load_models_gpu)
+            if "memory_required" in sig.parameters:
+                kwargs["memory_required"] = 0
+        load_models_gpu([patcher], **kwargs)
+        _uc_log(draw_id, "VAE preloaded before Z-image sampling", {"kwargs": kwargs})
+    except Exception as exc:
+        _uc_log(draw_id, "VAE preload failed", {"error": str(exc)})
+
+
+def _unload_vae_after_direct_decode(vae: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
+    generation_mode = str((gen_settings or {}).get("generation_mode") or "").lower()
+    draw_mode = str((gen_settings or {}).get("draw_mode") or "").lower()
+    if generation_mode not in {"z_image", "z-image", "zimage", "z_image_turbo"} or draw_mode not in {"inpaint", "outpaint"}:
+        return
+
+    patcher = getattr(vae, "patcher", None)
+    if patcher is None:
+        return
+
+    try:
+        import comfy.model_management as model_management
+
+        loaded_models = getattr(model_management, "current_loaded_models", None)
+        if not isinstance(loaded_models, list):
+            _uc_log(draw_id, "VAE post-decode unload skipped", {"reason": "current_loaded_models is unavailable"})
+            return
+
+        unloaded = 0
+        for index in range(len(loaded_models) - 1, -1, -1):
+            loaded_model = loaded_models[index]
+            if getattr(loaded_model, "model", None) is not patcher:
+                continue
+            try:
+                loaded_model.model_unload(1e30)
+            finally:
+                loaded_models.pop(index)
+            unloaded += 1
+
+        gc.collect()
+        with contextlib.suppress(Exception):
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        _uc_log(draw_id, "VAE unloaded after direct decode", {"unloaded": unloaded})
+    except Exception as exc:
+        _uc_log(draw_id, "VAE post-decode unload failed", {"error": str(exc)})
+
+
+def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str = "unknown") -> None:
+    released_keys = []
+    for key in (
+        "_z_image_fun_controlnet_image",
+        "_z_image_fun_controlnet_mask",
+        "_z_image_fun_controlnet_vae",
+        "_anima_lllite_image",
+        "_anima_lllite_mask",
+        "_qwen_edit_reference_image",
+        "_qwen_edit_mask",
+        "_qwen_edit_latent",
+    ):
+        if key in gen_settings:
+            gen_settings.pop(key, None)
+            released_keys.append(key)
+    gc.collect()
+    with contextlib.suppress(Exception):
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    if released_keys:
+        _uc_log(draw_id, "released sampling-only references before VAE decode", {"keys": released_keys})
+
+
 def _save_temp_image(image: Image.Image, prefix: str = "VNCCS_UniCanvas") -> dict[str, str]:
     import folder_paths
 
@@ -3398,6 +3501,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             model, clip, vae = _load_generation_assets(settings)
             model, clip = model_module.clone_assets(model, clip)
             settings["_draw_id"] = draw_id
+            _preload_vae_for_direct_decode(vae, settings, draw_id)
             if model_module.key == "qwen_image_edit":
                 settings["_qwen_edit_clip"] = clip
                 settings["_qwen_edit_vae"] = vae
@@ -3581,10 +3685,19 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             width=width,
             height=height,
         )
+        model = None
+        clip = None
+        positive = None
+        negative = None
+        image_tensor = None
+        reference_image_tensor = None
+        mask = None
+        _release_generation_sampling_refs(settings, draw_id)
         _set_draw_progress(draw_id, "decoding", 0.88, steps, steps, "Decoding")
         decoded = _decode_generation_samples(vae, latent, settings)
         _uc_log(draw_id, "decoded image tensor", _tensor_debug(decoded))
         result_image = _image_tensor_to_pil(decoded)
+        _unload_vae_after_direct_decode(vae, settings, draw_id)
 
     output_size = (output_width, output_height)
     if mode in {"inpaint", "outpaint"} and mask_image is not None:
