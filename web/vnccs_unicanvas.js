@@ -4,6 +4,8 @@
 
 import { app } from "../../scripts/app.js";
 
+const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
+
 const STYLES = `
 .vnccs-unicanvas {
   --uc-bg:#0a0a0f; --uc-panel:rgba(20,16,30,.82); --uc-surface:rgba(30,28,44,.9);
@@ -26,14 +28,19 @@ const STYLES = `
 .vnccs-uc-progress-percent { color:var(--uc-muted); font-variant-numeric:tabular-nums; min-width:42px; text-align:right; }
 .vnccs-uc-progress-track { grid-column:1 / -1; height:6px; border-radius:999px; background:rgba(255,255,255,.12); overflow:hidden; }
 .vnccs-uc-progress-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--uc-accent),var(--uc-accent-2)); border-radius:inherit; transition:width .18s ease; }
-.vnccs-uc-left { width:320px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; max-height:100%; box-sizing:border-box; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; }
+.vnccs-uc-left { width:320px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; max-height:100%; box-sizing:border-box; overflow:hidden; }
 .vnccs-uc-side { width:286px; zoom:var(--vnccs-uc-ui-scale); display:flex; flex-direction:column; gap:8px; padding:8px; background:rgba(6,5,12,.72); min-height:0; box-sizing:border-box; overflow:auto; }
 .vnccs-uc-left { grid-column:1; grid-row:1 / span 3; border-right:1px solid var(--uc-border); }
 .vnccs-uc-side { grid-column:3; grid-row:1 / span 3; border-left:1px solid var(--uc-border); overflow:hidden; }
 .vnccs-uc-section { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; overflow:hidden; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-parameters-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-parameters-section > .vnccs-uc-stack { flex:1 1 auto; min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding-bottom:14px; }
 .vnccs-uc-side-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
-.vnccs-uc-draw-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
+.vnccs-uc-draw-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:7px; align-items:stretch; }
 .vnccs-uc-draw-control .vnccs-uc-btn { width:100%; height:34px; font-weight:800; }
+.vnccs-uc-draw-control .vnccs-uc-batch-input { width:46px; height:34px; box-sizing:border-box; text-align:center; font-weight:800; align-self:stretch; }
+.vnccs-uc-donate-link { flex:0 0 auto; display:block; width:100%; padding:0 4px 4px; box-sizing:border-box; z-index:3; background:rgba(6,5,12,.92); box-shadow:0 -8px 18px rgba(6,5,12,.82); }
+.vnccs-uc-donate-link img { display:block; width:100%; height:auto; border-radius:10px; }
 .vnccs-uc-denoise-control { display:grid; grid-template-columns:auto minmax(0,1fr) 58px; gap:8px; align-items:center; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
 .vnccs-uc-denoise-control .vnccs-uc-input { width:58px; box-sizing:border-box; text-align:right; }
@@ -407,7 +414,7 @@ const RENDER_LOD_LEVELS = [0.5, 0.25, 0.125, 0.0625];
 const RENDER_LOD_OVERSAMPLE = 2.25;
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
-const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "anima_lllite_strength", "fun_controlnet_strength"]);
+const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength"]);
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
@@ -613,6 +620,7 @@ function makeDefaultUniCanvasSettings() {
     negative: "",
     seed: 0,
     seed_mode: "fixed",
+    batch_size: 1,
     denoise: 0.65,
     grow_mask_by: 6,
   };
@@ -936,12 +944,31 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-lora-stack" data-lora-stack></div>`;
     this.drawBtn = this._button("GENERATE", "vnccs-uc-btn primary", () => this.draw(), "Generate");
+    this.batchInput = document.createElement("input");
+    this.batchInput.className = "vnccs-uc-input vnccs-uc-batch-input";
+    this.batchInput.type = "number";
+    this.batchInput.min = "1";
+    this.batchInput.max = "99";
+    this.batchInput.step = "1";
+    this.batchInput.inputMode = "numeric";
+    this.batchInput.dataset.setting = "batch_size";
+    this.batchInput.title = "Images";
     this.drawControl = document.createElement("div");
     this.drawControl.className = "vnccs-uc-draw-control";
-    this.drawControl.append(this.drawBtn);
+    this.drawControl.append(this.drawBtn, this.batchInput);
     const promptSection = this._section("Parameters", this.promptBox);
+    promptSection.classList.add("vnccs-uc-parameters-section");
+    this.donateLink = document.createElement("a");
+    this.donateLink.className = "vnccs-uc-donate-link";
+    this.donateLink.href = "https://www.buymeacoffee.com/MIUProject";
+    this.donateLink.target = "_blank";
+    this.donateLink.rel = "noopener noreferrer";
+    this.donateLink.title = "Support MIUProject";
+    this.donateLink.innerHTML = `<img src="${VNCCS_DONATE_BANNER_URL}" alt="Support MIUProject">`;
+    this.donateLink.addEventListener("pointerdown", (e) => e.stopPropagation());
+    this.donateLink.addEventListener("click", (e) => e.stopPropagation());
 
-    this.left.append(this.drawControl, promptSection);
+    this.left.append(this.drawControl, promptSection, this.donateLink);
     this.side.append(this.denoiseControl, layersSection);
 
     this.bottom = document.createElement("div");
@@ -1563,6 +1590,7 @@ class UniCanvasWidget {
       const key = target?.dataset?.setting;
       if (!key) return;
       this.settings[key] = NUMERIC_SETTINGS.has(key) ? this.parseNumericInput(target, this.settings[key]) : target.value;
+      if (key === "batch_size") this.settings[key] = Math.max(1, Math.min(99, Math.round(Number(this.settings[key]) || 1)));
       if (target instanceof HTMLTextAreaElement) this.resizeTextareaToContent(target);
       if (key === "generation_mode") this.applyGenerationModeDefaults(target.value);
       if (key === "model_loader") this.applyModelLoaderDefaults(target.value);
@@ -1585,6 +1613,7 @@ class UniCanvasWidget {
       const key = target?.dataset?.setting;
       if (target instanceof HTMLInputElement && NUMERIC_SETTINGS.has(key)) {
         this.settings[key] = this.parseNumericInput(target, this.settings[key]);
+        if (key === "batch_size") this.settings[key] = Math.max(1, Math.min(99, Math.round(Number(this.settings[key]) || 1)));
         target.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
         if (key === "inference_scale") this.syncInferenceControls(target);
         this.syncSettingsToWidget();
@@ -4632,23 +4661,27 @@ class UniCanvasWidget {
 
   drawBbox(ctx) {
     ctx.save();
-    ctx.strokeStyle = this.tool === "bbox" ? "rgba(212,216,234,1)" : "rgba(255,143,163,.85)";
-    ctx.lineWidth = 1 / this.view.scale;
-    ctx.setLineDash([5 / this.view.scale, 5 / this.view.scale]);
+    const dash = [7 / this.view.scale, 5 / this.view.scale];
+    ctx.setLineDash(dash);
+    ctx.strokeStyle = "rgba(3,3,8,.92)";
+    ctx.lineWidth = 3.5 / this.view.scale;
+    ctx.strokeRect(this.bbox.x, this.bbox.y, this.bbox.width, this.bbox.height);
+    ctx.strokeStyle = this.tool === "bbox" ? "rgba(255,245,252,1)" : "rgba(255,143,163,1)";
+    ctx.lineWidth = 1.6 / this.view.scale;
     ctx.strokeRect(this.bbox.x, this.bbox.y, this.bbox.width, this.bbox.height);
     if (this.tool !== "bbox") {
       ctx.restore();
       return;
     }
     ctx.setLineDash([]);
-    ctx.fillStyle = "rgba(212,216,234,1)";
+    ctx.fillStyle = "rgba(6,5,12,.94)";
     const size = 12 / this.view.scale;
     for (const point of this.bboxHandlePoints()) {
       this.roundRectPath(ctx, point.x - size / 2, point.y - size / 2, size, size, 3 / this.view.scale);
       ctx.fill();
     }
-    ctx.strokeStyle = "rgb(42,42,42)";
-    ctx.lineWidth = 1 / this.view.scale;
+    ctx.strokeStyle = "rgba(255,245,252,1)";
+    ctx.lineWidth = 1.8 / this.view.scale;
     for (const point of this.bboxHandlePoints()) {
       this.roundRectPath(ctx, point.x - size / 2, point.y - size / 2, size, size, 3 / this.view.scale);
       ctx.stroke();
@@ -5706,10 +5739,13 @@ class UniCanvasWidget {
       exportedMask: this.getCanvasAlphaStats(maskCanvas),
     };
     console.debug("[VNCCS UniCanvas] GENERATE request", debug);
-    this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}...`);
+    const batchSize = Math.max(1, Math.min(99, Math.round(Number(this.settings.batch_size) || 1)));
+    this.settings.batch_size = batchSize;
+    this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
     this.startDrawProgressPolling(debugId);
     this.drawBtn.disabled = true;
+    if (this.batchInput) this.batchInput.disabled = true;
     try {
       const res = await fetch("/vnccs/unicanvas/draw", {
         method: "POST",
@@ -5730,8 +5766,8 @@ class UniCanvasWidget {
       const data = await res.json();
       console.debug("[VNCCS UniCanvas] GENERATE response", { debugId, data });
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
-      const url = this.imageResultToURL(data.image);
-      const img = await this.loadImage(url);
+      const resultImages = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
+      if (!resultImages.length) throw new Error("Generation returned no images");
       const hasResultMask = Boolean(data.mask);
       const stagingMode = hasResultMask ? mode : (mode === "inpaint" || mode === "outpaint" ? "img2img" : mode);
       const stagingMaskCanvas = hasResultMask && (mode === "inpaint" || mode === "outpaint") ? maskCanvas : null;
@@ -5745,19 +5781,23 @@ class UniCanvasWidget {
         });
       }
       const acceptMaskCanvas = resultMaskCanvas || stagingMaskCanvas;
-      this.addStagingItem({
-        url,
-        bbox: { ...requestBbox },
-        displaySize: outputSize,
-        inferenceSize,
-        image: data.image,
-        img,
-        visible: true,
-        mode: stagingMode,
-        maskCanvas: acceptMaskCanvas,
-        userMaskCanvas: stagingMaskCanvas,
-        resultMaskCanvas,
-      });
+      for (const image of resultImages) {
+        const url = this.imageResultToURL(image);
+        const img = await this.loadImage(url);
+        this.addStagingItem({
+          url,
+          bbox: { ...requestBbox },
+          displaySize: outputSize,
+          inferenceSize,
+          image,
+          img,
+          visible: true,
+          mode: stagingMode,
+          maskCanvas: acceptMaskCanvas,
+          userMaskCanvas: stagingMaskCanvas,
+          resultMaskCanvas,
+        });
+      }
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
@@ -5768,6 +5808,7 @@ class UniCanvasWidget {
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
+      if (this.batchInput) this.batchInput.disabled = false;
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
