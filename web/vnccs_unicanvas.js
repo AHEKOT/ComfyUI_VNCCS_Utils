@@ -209,6 +209,187 @@ if (!document.getElementById("vnccs-unicanvas-styles")) {
   document.head.appendChild(style);
 }
 
+function enableUniCanvasGraphNavigationForwarding(root) {
+  if (!root || root._vnccsUniCanvasGraphNavigationForwarding) return;
+  root._vnccsUniCanvasGraphNavigationForwarding = true;
+
+  const graphCanvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+  let panning = false;
+
+  const markForwarded = (event) => {
+    Object.defineProperty(event, "_vnccsUniCanvasForwardedGraphInput", { value: true });
+    return event;
+  };
+
+  const cloneMouseEvent = (type, source, buttons = source.buttons) => markForwarded(new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    detail: source.detail,
+    screenX: source.screenX,
+    screenY: source.screenY,
+    clientX: source.clientX,
+    clientY: source.clientY,
+    ctrlKey: source.ctrlKey,
+    altKey: source.altKey,
+    shiftKey: source.shiftKey,
+    metaKey: source.metaKey,
+    button: source.button,
+    buttons,
+  }));
+
+  const clonePointerEvent = (type, source, buttons = source.buttons) => {
+    const EventCtor = window.PointerEvent || window.MouseEvent;
+    return markForwarded(new EventCtor(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      detail: source.detail,
+      screenX: source.screenX,
+      screenY: source.screenY,
+      clientX: source.clientX,
+      clientY: source.clientY,
+      ctrlKey: source.ctrlKey,
+      altKey: source.altKey,
+      shiftKey: source.shiftKey,
+      metaKey: source.metaKey,
+      button: 1,
+      buttons,
+      pointerId: source.pointerId || 1,
+      pointerType: source.pointerType || "mouse",
+      isPrimary: source.isPrimary !== false,
+    }));
+  };
+
+  const cloneWheelEvent = (source) => markForwarded(new WheelEvent("wheel", {
+    bubbles: true,
+    cancelable: true,
+    view: window,
+    detail: source.detail,
+    screenX: source.screenX,
+    screenY: source.screenY,
+    clientX: source.clientX,
+    clientY: source.clientY,
+    ctrlKey: source.ctrlKey,
+    altKey: source.altKey,
+    shiftKey: source.shiftKey,
+    metaKey: source.metaKey,
+    deltaX: source.deltaX,
+    deltaY: source.deltaY,
+    deltaZ: source.deltaZ,
+    deltaMode: source.deltaMode,
+  }));
+
+  const forwardMouse = (type, event, buttons) => {
+    const canvasEl = graphCanvas();
+    if (!canvasEl) return false;
+    const pointerType = type === "mousedown" ? "pointerdown" : type === "mousemove" ? "pointermove" : "pointerup";
+    canvasEl.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+    canvasEl.dispatchEvent(cloneMouseEvent(type, event, buttons));
+    return true;
+  };
+
+  const forwardWheel = (event) => {
+    const canvasEl = graphCanvas();
+    if (!canvasEl) return false;
+    canvasEl.dispatchEvent(cloneWheelEvent(event));
+    return true;
+  };
+
+  const hasOwnWheelHandler = (target) => {
+    for (let el = target; el && el !== root; el = el.parentElement) {
+      if (typeof el.onwheel === "function") return true;
+    }
+    return false;
+  };
+
+  const hasScrollableAncestor = (target) => {
+    for (let el = target; el && el !== root; el = el.parentElement) {
+      if (!(el instanceof HTMLElement)) continue;
+      const style = getComputedStyle(el);
+      const scrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
+      const scrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth + 1;
+      if (scrollY || scrollX) return true;
+    }
+    return false;
+  };
+
+  const hasInteractiveTarget = (target) => {
+    if (!(target instanceof Element)) return true;
+    return Boolean(target.closest([
+      "button",
+      "input",
+      "textarea",
+      "select",
+      "label",
+      "a",
+      "canvas",
+      "[contenteditable='true']",
+      "[role='button']",
+      ".vnccs-uc-tools",
+      ".vnccs-uc-tool-settings",
+      ".vnccs-uc-select-menu",
+      ".vnccs-uc-staging-popover",
+      ".vnccs-uc-modal-overlay",
+      ".vnccs-uc-layers",
+      ".vnccs-uc-layer",
+    ].join(",")));
+  };
+
+  const canForwardFrom = (target) => {
+    if (hasInteractiveTarget(target)) return false;
+    if (hasOwnWheelHandler(target)) return false;
+    if (hasScrollableAncestor(target)) return false;
+    return true;
+  };
+
+  const finishPan = (event) => {
+    if (event._vnccsUniCanvasForwardedGraphInput) return;
+    if (!panning) return;
+    panning = false;
+    event.preventDefault();
+    event.stopPropagation();
+    forwardMouse("mouseup", event, 0);
+    window.removeEventListener("mousemove", movePan, true);
+    window.removeEventListener("mouseup", finishPan, true);
+  };
+
+  const movePan = (event) => {
+    if (event._vnccsUniCanvasForwardedGraphInput) return;
+    if (!panning) return;
+    event.preventDefault();
+    event.stopPropagation();
+    forwardMouse("mousemove", event, event.buttons || 4);
+  };
+
+  root.addEventListener("mousedown", (event) => {
+    if (event._vnccsUniCanvasForwardedGraphInput) return;
+    if (event.button !== 1) return;
+    if (!canForwardFrom(event.target)) return;
+    if (!forwardMouse("mousedown", event, 4)) return;
+    panning = true;
+    event.preventDefault();
+    event.stopPropagation();
+    window.addEventListener("mousemove", movePan, true);
+    window.addEventListener("mouseup", finishPan, true);
+  }, true);
+
+  root.addEventListener("auxclick", (event) => {
+    if (event.button !== 1) return;
+    if (!canForwardFrom(event.target)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
+
+  root.addEventListener("wheel", (event) => {
+    if (event._vnccsUniCanvasForwardedGraphInput) return;
+    if (!canForwardFrom(event.target)) return;
+    if (!forwardWheel(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, { capture: true, passive: false });
+}
+
 const uid = () => `uc_${Math.random().toString(36).slice(2, 10)}`;
 const MASK_OVERLAY_COLOR = "rgba(255, 143, 163, 0.48)";
 const STAGE_MIN_SCALE = 0.1;
@@ -1225,6 +1406,7 @@ class UniCanvasWidget {
   }
 
   _attachEvents() {
+    enableUniCanvasGraphNavigationForwarding(this.container);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.container);
     this.resizeObserver.observe(this.stageWrap);
@@ -2298,8 +2480,11 @@ class UniCanvasWidget {
   }
 
   fitInitialView() {
+    const size = this.getStageViewportSize();
+    if (!size.width || !size.height) return false;
     this.centerBbox(true);
     this.didInitialCenter = true;
+    return true;
   }
 
   updateMainUIScale() {
@@ -5140,18 +5325,31 @@ class UniCanvasWidget {
   centerBbox(allowZoomOut = false) {
     const size = this.getStageViewportSize();
     if (!size.width || !size.height) return;
+    let safeLeft = STAGE_FIT_PADDING_PX;
+    const safeRight = STAGE_FIT_PADDING_PX;
+    const safeTop = STAGE_FIT_PADDING_PX;
+    const safeBottom = STAGE_FIT_PADDING_PX;
+    const stageRect = this.stageWrap?.getBoundingClientRect?.();
+    const toolsRect = this.tools?.getBoundingClientRect?.();
+    if (stageRect?.width && toolsRect?.width) {
+      const stageScaleX = size.width / stageRect.width;
+      const toolsRight = (toolsRect.right - stageRect.left) * stageScaleX;
+      safeLeft = Math.max(safeLeft, toolsRight + STAGE_FIT_PADDING_PX);
+    }
+    const safeWidth = Math.max(1, size.width - safeLeft - safeRight);
+    const safeHeight = Math.max(1, size.height - safeTop - safeBottom);
     if (allowZoomOut) {
       const fitScale = Math.min(
-        (size.width - STAGE_FIT_PADDING_PX * 2) / this.bbox.width,
-        (size.height - STAGE_FIT_PADDING_PX * 2) / this.bbox.height,
+        safeWidth / this.bbox.width,
+        safeHeight / this.bbox.height,
         1
       );
       this.view.scale = this.constrainStageScale(fitScale);
       this.intendedScale = this.view.scale;
       this.activeSnapPoint = null;
     }
-    this.view.x = size.width / 2 - (this.bbox.x + this.bbox.width / 2) * this.view.scale;
-    this.view.y = size.height / 2 - (this.bbox.y + this.bbox.height / 2) * this.view.scale;
+    this.view.x = safeLeft + safeWidth / 2 - (this.bbox.x + this.bbox.width / 2) * this.view.scale;
+    this.view.y = safeTop + safeHeight / 2 - (this.bbox.y + this.bbox.height / 2) * this.view.scale;
   }
 
   makeExportCanvas(type, inferenceSize = this.getInferenceSize(), options = {}) {
@@ -6369,7 +6567,7 @@ app.registerExtension({
     const onCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
       onCreated?.apply(this, arguments);
-      this.setSize([1280, 720]);
+      this.setSize([1280, 1280]);
       this.uniCanvasWidget = new UniCanvasWidget(this);
       const domWidget = this.addDOMWidget("unicanvas_ui", "ui", this.uniCanvasWidget.container, {
         serialize: false,
@@ -6385,7 +6583,11 @@ app.registerExtension({
         stateWidget.computeSize = () => [0, -4];
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
-      setTimeout(() => this.uniCanvasWidget?.resize(), 50);
+      setTimeout(() => {
+        this.uniCanvasWidget?.resize();
+        this.uniCanvasWidget?.fitInitialView();
+        this.uniCanvasWidget?.render();
+      }, 50);
     };
 
     nodeType.prototype.onResize = function () {
