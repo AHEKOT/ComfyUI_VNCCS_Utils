@@ -2804,17 +2804,12 @@ def _prepare_masked_generation_latent(
         }
 
     if model_module.key == "z_image" and bool((gen_settings or {}).get("fun_controlnet_inpaint", True)):
-        latent = model_module.create_empty_latent(
-            int(image_tensor.shape[2]),
-            int(image_tensor.shape[1]),
-            gen_settings or {},
-            draw_id=draw_id,
-        )
+        latent = _encode_source_latent(vae, image_tensor, mask, grow_mask_by, draw_id=draw_id)
         _uc_log(
             draw_id,
-            "Z-image Fun ControlNet empty latent returned",
+            "Z-image Fun ControlNet source latent returned",
             {
-                "reason": "Fun ControlNet workflow uses EmptySD3LatentImage; structure comes through model patch inputs",
+                "reason": "Fun ControlNet workflow uses VAE-encoded current source latent instead of an empty latent",
                 "latent": _latent_debug(latent),
             },
         )
