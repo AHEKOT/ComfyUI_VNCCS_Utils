@@ -1,3 +1,31 @@
+# Version 0.5.2
+## UniCanvas Batch Generation, Z-Image Latent Flow, and VAE Memory Handling
+
+### New Features
+
+*   **UniCanvas batch generation**: Added a batch-size control next to the Generate button.
+    *   Batch size is persisted in UniCanvas settings and clamped to the supported `1-99` range.
+    *   Empty latents for SDXL, Anima, Flux Klein, Qwen Image Edit, and Z-Image now respect the selected batch size.
+    *   Source latents, `noise_mask`, reference latents, concat masks, and other conditioning metadata are repeated for batch generation when needed.
+    *   Draw responses can now return multiple generated images, and the frontend stages every returned image as a separate candidate.
+    *   Generation status now displays the batch multiplier during active draws.
+
+### Improvements
+
+*   **Z-Image Fun ControlNet latent source**: In z-image inpaint/outpaint, Fun ControlNet now starts from the current VAE-encoded source latent instead of an empty SD3 latent.
+    *   The encoded latent keeps the denoise mask attached, improving masked workflows that should remain anchored to the current canvas content.
+    *   Fun ControlNet image, mask, and VAE patch inputs remain in place for structure guidance.
+
+*   **Z-Image VAE handling**: Improved direct z-image masked generation memory behavior.
+    *   Preloads the VAE before z-image masked sampling when ComfyUI exposes the needed model-management hook.
+    *   Releases sampling-only references before decode to reduce retained tensors.
+    *   Unloads the directly used VAE after decode and clears available CUDA cache.
+    *   Uses smaller tiled VAE decode tiles for z-image modes to reduce peak memory.
+
+*   **Model asset cloning safety**: Z-Image now uses the shared model/CLIP clone helper before applying runtime patches.
+    *   Cached model patches now return clones when possible.
+    *   Fun ControlNet patch loading avoids keeping the patch object cached in the direct inpaint/outpaint path.
+
 # Version 0.5.1
 ## UniCanvas Layout, Model Selection, and Interaction Fixes
 
