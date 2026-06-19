@@ -1,6 +1,6 @@
 [project]
 name = "vnccs-utils"
-description = "VNCCS - Collection of utility nodes. VNCCS Visual Camera Control for Qwen-Image-Edit-2511-Multiple-Angles LoRa. VNCCS QWEN Detailer - For spot corrections in images of any size. VNCCS Pose Studio - Combined mesh editor and multi-pose generator. "
+description = "VNCCS - Collection of utility nodes. VNCCS Pose Studio. VNCCS UniCanvas."
 version = "0.5.2"
 license = {file = "LICENSE"} 
 
