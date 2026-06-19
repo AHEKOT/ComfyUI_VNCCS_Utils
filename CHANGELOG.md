@@ -1,3 +1,29 @@
+# Version 0.5.1
+## UniCanvas Layout, Model Selection, and Interaction Fixes
+
+### Improvements
+
+*   **UniCanvas responsive layout stabilization**: Reworked UniCanvas UI scaling so the widget keeps consistent proportions across node resize and canvas zoom.
+    *   Added layout diagnostics for measuring panel, stage, toolbar, and control proportions during resize.
+    *   Added a square default node size for new UniCanvas nodes.
+    *   Improved initial fit behavior so the generation bbox is centered after the DOM stage has real dimensions.
+    *   Fit now accounts for the floating tool palette so the generation square does not sit underneath the tools.
+
+*   **UniCanvas dropdown usability**: Replaced unreliable native select popups with a controlled DOM dropdown for UniCanvas selectors.
+    *   Dropdowns now use the widget's dark styling, readable font sizing, active selection highlighting, and viewport-aware positioning.
+    *   Long option values are no longer clipped to the select field width.
+    *   Re-clicking the active selector closes the dropdown.
+
+*   **ComfyUI canvas navigation passthrough**: Added PoseStudio-style wheel and middle-mouse forwarding from empty UniCanvas DOM areas to the main ComfyUI graph canvas.
+    *   Background wheel/trackpad gestures can zoom/pan the ComfyUI canvas through the widget.
+    *   Interactive controls, scrollable panels, the drawing canvas, tool palette, modals, and dropdown menus keep their own input handling.
+
+### Fixes
+
+*   **Custom model selection detection**: Fixed model auto-detection so Qwen/GGUF custom selections are not incorrectly overridden by WAN/Anima matches.
+*   **Flux Klein VAE default**: Updated the Flux Klein preset/default VAE selection to use `flux2-vae.safetensors`.
+*   **Fit button behavior**: Restored the Fit button to use the full fit-view path.
+
 # Version 0.5.0
 ## VNCCS UniCanvas Initial Release and Model Workflow Updates
 
