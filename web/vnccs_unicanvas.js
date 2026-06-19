@@ -107,7 +107,10 @@ const STYLES = `
 .vnccs-uc-icon.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-btn.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
-.vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; }
+.vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; color-scheme:dark; }
+.vnccs-uc-select option { background:#171320; color:#e8e8f0; }
+.vnccs-uc-select option:checked,
+.vnccs-uc-select option:hover { background:#3a2a3d; color:#ffdce5; }
 .vnccs-uc-textarea { min-height:54px; height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; overflow:hidden; line-height:1.28; }
 .vnccs-uc-field { display:flex; flex-direction:column; gap:4px; min-width:62px; color:var(--uc-muted); }
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
@@ -269,7 +272,7 @@ const UNICANVAS_MODEL_MODULES = {
       model_loader: "diffusion_model",
       diffusion_model_name: "flux-2-klein-9b-fp8.safetensors",
       clip_name: "qwen_3_8b_fp8mixed.safetensors",
-      vae_name: "full_encoder_small_decoder.safetensors",
+      vae_name: "flux2-vae.safetensors",
       clip_type: "flux2",
       sampler_name: "euler",
       scheduler: "simple",
@@ -378,6 +381,17 @@ const UNICANVAS_MODEL_ALIASES = Object.fromEntries(
 const UNICANVAS_LOADER_ALIASES = Object.fromEntries(
   Object.values(UNICANVAS_MODEL_LOADERS).flatMap((loader) => [[loader.key, loader.key], ...(loader.aliases || []).map((alias) => [alias, loader.key])])
 );
+
+function uniCanvasModelDetectMatches(name, pattern) {
+  const source = String(name || "").toLowerCase();
+  const token = String(pattern || "").toLowerCase();
+  if (!source || !token) return false;
+  if (/^[a-z0-9]+$/.test(token)) {
+    const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`(^|[\\s_./\\\\-])${escaped}($|[\\s_./\\\\-])`, "i").test(source);
+  }
+  return source.includes(token);
+}
 
 function getUniCanvasModelModule(mode) {
   const key = UNICANVAS_MODEL_ALIASES[String(mode || "sdxl").toLowerCase()] || "sdxl";
@@ -763,7 +777,7 @@ class UniCanvasWidget {
     this.settingsBar.className = "vnccs-uc-settings";
     this.undoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undo(), "Undo");
     this.redoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo");
-    this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.centerBbox(), "Fit");
+    this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.fitView(), "Fit");
     this.snapBtn = this._button(UI_ICONS.snap, "vnccs-uc-icon", () => this.toggleSnapToGrid(), "Snap to grid");
     const settingsSpacer = document.createElement("div");
     settingsSpacer.className = "vnccs-uc-settings-spacer";
@@ -1871,11 +1885,12 @@ class UniCanvasWidget {
     return { module, loader };
   }
 
-  applyInferenceModuleDefaults(mode) {
+  applyInferenceModuleDefaults(mode, options = {}) {
     const module = getUniCanvasModelModule(mode);
+    const preserveModelSelection = Boolean(options.preserveModelSelection);
     const preserved = {};
     for (const key of MODEL_SELECTION_SETTINGS) {
-      if (!Object.prototype.hasOwnProperty.call(module.defaults, key) || module.defaults[key] === "") {
+      if (preserveModelSelection || !Object.prototype.hasOwnProperty.call(module.defaults, key) || module.defaults[key] === "") {
         preserved[key] = this.settings[key];
       }
     }
@@ -1922,8 +1937,8 @@ class UniCanvasWidget {
     const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
     if (!name) return;
     for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
-      if ((module.detect || []).some((pattern) => name.includes(pattern))) {
-        this.applyInferenceModuleDefaults(module.key);
+      if ((module.detect || []).some((pattern) => uniCanvasModelDetectMatches(name, pattern))) {
+        this.applyInferenceModuleDefaults(module.key, { preserveModelSelection: true });
         return;
       }
     }

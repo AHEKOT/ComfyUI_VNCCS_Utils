@@ -96,7 +96,7 @@ FLUX_KLEIN_DEFAULTS = {
     "model_loader": "diffusion_model",
     "diffusion_model_name": "flux-2-klein-9b-fp8.safetensors",
     "clip_name": "qwen_3_8b_fp8mixed.safetensors",
-    "vae_name": "full_encoder_small_decoder.safetensors",
+    "vae_name": "flux2-vae.safetensors",
     "clip_type": "flux2",
     "sampler": "euler",
     "sampler_name": "euler",

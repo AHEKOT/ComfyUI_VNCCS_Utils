@@ -113,7 +113,7 @@
         "model_loader": "diffusion_model",
         "diffusion_model_name": "flux-2-klein-9b-fp8.safetensors",
         "clip_name": "qwen_3_8b_fp8mixed.safetensors",
-        "vae_name": "full_encoder_small_decoder.safetensors",
+        "vae_name": "flux2-vae.safetensors",
         "clip_type": "flux2",
         "sampler_name": "euler",
         "scheduler": "simple",
@@ -139,11 +139,11 @@
         },
         {
           "role": "vae",
-          "name": "FLUX.2 Small Decoder VAE",
-          "hf_repo": "black-forest-labs/FLUX.2-small-decoder",
-          "hf_path": "full_encoder_small_decoder.safetensors",
-          "local_path": "models/vae/full_encoder_small_decoder.safetensors",
-          "description": "Official FLUX.2 full encoder small decoder VAE."
+          "name": "FLUX.2 VAE",
+          "hf_repo": "black-forest-labs/FLUX.2-klein-9B",
+          "hf_path": "vae/diffusion_pytorch_model.safetensors",
+          "local_path": "models/vae/flux2-vae.safetensors",
+          "description": "Official FLUX.2 VAE for FLUX.2 Klein 9B."
         }
       ]
     },
