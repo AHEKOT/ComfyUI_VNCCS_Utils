@@ -985,7 +985,7 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
 @dataclass(frozen=True)
 class ZImageUniCanvasModule(UniCanvasModelModule):
     def clone_assets(self, model: Any, clip: Any) -> tuple[Any, Any]:
-        return model, clip
+        return _clone_model_clip(model, clip)
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode == "outpaint"
