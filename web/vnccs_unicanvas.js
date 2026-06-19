@@ -18,7 +18,7 @@ const STYLES = `
 .vnccs-uc-stage-wrap { grid-column:2; grid-row:3; position:relative; min-width:0; min-height:0; overflow:hidden; border-radius:8px; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
 .vnccs-uc-preview-stage { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; z-index:4; }
-.vnccs-uc-hud { position:absolute; left:10px; top:10px; display:flex; gap:6px; align-items:center; pointer-events:none; }
+.vnccs-uc-hud { position:absolute; left:10px; top:10px; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:6px; align-items:center; pointer-events:none; }
 .vnccs-uc-chip { background:rgba(10,10,15,.72); border:1px solid var(--uc-border); border-radius:8px; padding:5px 8px; color:var(--uc-muted); }
 .vnccs-uc-generation-progress { grid-column:2; grid-row:2; display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; padding:7px 12px; background:rgba(10,10,15,.9); border-bottom:1px solid rgba(255,143,163,.24); box-sizing:border-box; pointer-events:none; min-width:0; visibility:hidden; opacity:0; transition:opacity .16s ease; }
 .vnccs-uc-generation-progress.visible { visibility:visible; opacity:1; }
@@ -67,8 +67,8 @@ const STYLES = `
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
 .vnccs-uc-bottom { grid-column:2; grid-row:1; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
-.vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
-.vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+.vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
+.vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
 .vnccs-uc-tool-settings.visible { display:flex; }
 .vnccs-uc-tool-settings-title { color:var(--uc-accent); font-weight:800; font-size:14px; }
 .vnccs-uc-tool-setting { display:grid; grid-template-columns:72px minmax(0,1fr); align-items:center; gap:10px; color:var(--uc-muted); font-weight:700; }
@@ -172,7 +172,7 @@ const STYLES = `
 .vnccs-uc-file { display:none; }
 .vnccs-uc-row { display:flex; gap:6px; align-items:center; }
 .vnccs-uc-staging-popover {
-  position:absolute; display:none; gap:8px; align-items:center; justify-content:center; z-index:5;
+  position:absolute; zoom:var(--vnccs-uc-ui-scale); display:none; gap:8px; align-items:center; justify-content:center; z-index:5;
   padding:10px; background:rgba(10,10,15,.9); border:1px solid rgba(255,255,255,.16);
   border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto;
 }
@@ -218,6 +218,8 @@ const MOVE_SNAP_GRID_SIZE = 64;
 const RENDER_LOD_MIN_CANVAS_SIDE = 1024;
 const RENDER_LOD_LEVELS = [0.5, 0.25, 0.125, 0.0625];
 const RENDER_LOD_OVERSAMPLE = 2.25;
+const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
+const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
 const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "anima_lllite_strength", "fun_controlnet_strength"]);
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
@@ -516,6 +518,7 @@ class UniCanvasWidget {
     this.renderQueued = false;
     this.settingsSyncTimer = null;
     this.fullSyncTimer = null;
+    this.layoutLogTimer = null;
     this.thumbnailRenderQueue = [];
     this.thumbnailRenderQueued = false;
     this.lodRenderQueue = [];
@@ -2023,6 +2026,75 @@ class UniCanvasWidget {
       this.fitInitialView();
     }
     this.render();
+    this.scheduleUILayoutLog("resize");
+  }
+
+  scheduleUILayoutLog(reason = "layout") {
+    clearTimeout(this.layoutLogTimer);
+    this.layoutLogTimer = setTimeout(() => {
+      this.layoutLogTimer = null;
+      this.logUILayout(reason);
+    }, 120);
+  }
+
+  logUILayout(reason = "layout") {
+    if (!this.container || !this.stageWrap) return;
+    const containerRect = this.container.getBoundingClientRect();
+    const stageRect = this.stageWrap.getBoundingClientRect();
+    const nodeWidth = Number(this.node?.size?.[0]) || 0;
+    const nodeHeight = Number(this.node?.size?.[1]) || 0;
+    const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
+    const pct = (value, base) => base ? round((value / base) * 100) : 0;
+    const localRect = (el, parentRect = containerRect) => {
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      return {
+        x: round(rect.left - parentRect.left),
+        y: round(rect.top - parentRect.top),
+        width: round(rect.width),
+        height: round(rect.height),
+        right: round(rect.right - parentRect.left),
+        bottom: round(rect.bottom - parentRect.top),
+        widthPctOfContainer: pct(rect.width, containerRect.width),
+        heightPctOfContainer: pct(rect.height, containerRect.height),
+        widthPctOfStage: pct(rect.width, stageRect.width),
+        heightPctOfStage: pct(rect.height, stageRect.height),
+      };
+    };
+    const toolButtons = Array.from(this.tools?.querySelectorAll(".vnccs-uc-tool") || []);
+    const payload = {
+      reason,
+      nodeSize: { width: round(nodeWidth), height: round(nodeHeight) },
+      containerClient: { width: this.container.clientWidth, height: this.container.clientHeight },
+      containerRect: {
+        x: round(containerRect.left),
+        y: round(containerRect.top),
+        width: round(containerRect.width),
+        height: round(containerRect.height),
+      },
+      graphScaleFromNodeToScreen: {
+        x: nodeWidth ? round(containerRect.width / nodeWidth) : 0,
+        y: nodeHeight ? round(containerRect.height / nodeHeight) : 0,
+      },
+      cssUiScale: this.container.style.getPropertyValue("--vnccs-uc-ui-scale") || "unset",
+      parts: {
+        left: localRect(this.left),
+        stage: localRect(this.stageWrap),
+        right: localRect(this.side),
+        topBar: localRect(this.bottom),
+        toolbarInContainer: localRect(this.tools),
+        toolbarInStage: localRect(this.tools, stageRect),
+        firstTool: localRect(toolButtons[0], stageRect),
+        lastTool: localRect(toolButtons[toolButtons.length - 1], stageRect),
+      },
+      counts: {
+        toolButtons: toolButtons.length,
+      },
+    };
+    console.groupCollapsed("VNCCS UniCanvas layout");
+    console.log(payload);
+    console.table(payload.parts);
+    console.groupEnd();
   }
 
   requestRender() {
@@ -2136,7 +2208,7 @@ class UniCanvasWidget {
     if (!this.container) return;
     const width = this.container.clientWidth || this.node?.size?.[0] || 1040;
     const height = this.container.clientHeight || this.node?.size?.[1] || 720;
-    const scale = Math.max(0.78, Math.min(1.45, Math.min(width / 1040, height / 720)));
+    const scale = Math.max(0.35, Math.min(2.5, Math.min(width / UNICANVAS_LAYOUT_BASE_WIDTH, height / UNICANVAS_LAYOUT_BASE_HEIGHT)));
     const next = scale.toFixed(3);
     if (this.container.style.getPropertyValue("--vnccs-uc-ui-scale") !== next) {
       this.container.style.setProperty("--vnccs-uc-ui-scale", next);
