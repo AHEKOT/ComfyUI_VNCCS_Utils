@@ -108,9 +108,15 @@ const STYLES = `
 .vnccs-uc-btn.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-tool.active { border-color:rgba(255,143,163,.7); background:rgba(255,143,163,.18); color:#ffdce5; }
 .vnccs-uc-input, .vnccs-uc-select, .vnccs-uc-textarea { background:rgba(255,255,255,.045); border:1px solid var(--uc-border); color:var(--uc-text); border-radius:8px; height:28px; padding:0 8px; font:inherit; min-width:0; color-scheme:dark; }
-.vnccs-uc-select option { background:#171320; color:#e8e8f0; }
+.vnccs-uc-select option { background:#171320; color:#e8e8f0; font-size:14px; line-height:1.35; }
 .vnccs-uc-select option:checked,
 .vnccs-uc-select option:hover { background:#3a2a3d; color:#ffdce5; }
+.vnccs-uc-select-menu { position:fixed; z-index:999999; max-height:min(70vh, 520px); overflow:auto; overscroll-behavior:contain; padding:6px; border:1px solid rgba(255,143,163,.34); border-radius:12px; background:#171320; color:#e8e8f0; box-shadow:0 16px 44px rgba(0,0,0,.58); box-sizing:border-box; pointer-events:auto; }
+.vnccs-uc-select-menu-option { min-height:32px; display:flex; align-items:center; gap:8px; padding:6px 10px; border:0; border-radius:8px; background:transparent; color:inherit; font:inherit; text-align:left; width:100%; cursor:pointer; box-sizing:border-box; }
+.vnccs-uc-select-menu-option:hover,
+.vnccs-uc-select-menu-option.active { background:rgba(255,143,163,.18); color:#ffdce5; }
+.vnccs-uc-select-menu-check { width:18px; flex:0 0 18px; color:#ff8fa3; font-weight:900; }
+.vnccs-uc-select-menu-label { flex:1 1 auto; min-width:0; overflow:visible; text-overflow:clip; white-space:nowrap; }
 .vnccs-uc-textarea { min-height:54px; height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; overflow:hidden; line-height:1.28; }
 .vnccs-uc-field { display:flex; flex-direction:column; gap:4px; min-width:62px; color:var(--uc-muted); }
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
@@ -519,6 +525,8 @@ class UniCanvasWidget {
     this.settingsSyncTimer = null;
     this.fullSyncTimer = null;
     this.layoutLogTimer = null;
+    this.customSelectMenu = null;
+    this.customSelectSource = null;
     this.thumbnailRenderQueue = [];
     this.thumbnailRenderQueued = false;
     this.lodRenderQueue = [];
@@ -1249,6 +1257,24 @@ class UniCanvasWidget {
         if (NUMERIC_SETTINGS.has(input.dataset.setting)) this.normalizeNumericInputValue(input);
       });
     }, 0));
+    this.container.addEventListener("pointerdown", (e) => {
+      const select = e.target?.closest?.("select.vnccs-uc-select");
+      if (!(select instanceof HTMLSelectElement) || select.disabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      this.openCustomSelect(select);
+    }, true);
+    window.addEventListener("pointerdown", (e) => {
+      if (!this.customSelectMenu) return;
+      if (this.customSelectMenu.contains(e.target) || e.target === this.customSelectSource) return;
+      this.closeCustomSelect();
+    }, true);
+    window.addEventListener("keydown", (e) => {
+      if (!this.customSelectMenu || e.key !== "Escape") return;
+      e.preventDefault();
+      this.closeCustomSelect();
+    }, true);
+    window.addEventListener("resize", () => this.closeCustomSelect(), { passive: true });
     this.container.addEventListener("click", (e) => {
       const btn = e.target?.closest?.("[data-action], [data-model-selection-mode], [data-preset-picker-toggle], [data-preset-id], [data-preset-download], [data-turbo-download], [data-turbo-toggle]");
       if (!(btn instanceof HTMLElement)) return;
@@ -2095,6 +2121,78 @@ class UniCanvasWidget {
     console.log(payload);
     console.table(payload.parts);
     console.groupEnd();
+  }
+
+  openCustomSelect(select) {
+    if (this.customSelectMenu && this.customSelectSource === select) {
+      this.closeCustomSelect();
+      return;
+    }
+    this.closeCustomSelect();
+    const options = Array.from(select.options || []);
+    if (!options.length) return;
+    const rect = select.getBoundingClientRect();
+    const selectFontSize = Number.parseFloat(getComputedStyle(select).fontSize) || 14;
+    const menu = document.createElement("div");
+    menu.className = "vnccs-uc-select-menu";
+    const viewportGap = 8;
+    const longestOptionChars = options.reduce((max, option) => Math.max(max, (option.textContent || option.value || "").length), 0);
+    const desiredWidth = Math.max(rect.width, Math.min(520, 64 + longestOptionChars * Math.max(7, selectFontSize * 0.62)));
+    const menuWidth = Math.min(desiredWidth, window.innerWidth - viewportGap * 2);
+    const menuLeft = Math.min(Math.max(viewportGap, rect.left), window.innerWidth - viewportGap - menuWidth);
+    menu.style.left = `${Math.round(menuLeft)}px`;
+    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+    menu.style.width = `${Math.round(menuWidth)}px`;
+    menu.style.fontSize = `${Math.round(selectFontSize * 100) / 100}px`;
+    const availableBelow = window.innerHeight - rect.bottom - viewportGap;
+    const availableAbove = rect.top - viewportGap;
+    const maxHeight = Math.max(140, Math.min(520, Math.max(availableBelow, availableAbove)));
+    menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+    if (availableBelow < 180 && availableAbove > availableBelow) {
+      menu.style.top = "";
+      menu.style.bottom = `${Math.round(window.innerHeight - rect.top + 4)}px`;
+    }
+    for (const option of options) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "vnccs-uc-select-menu-option";
+      if (option.value === select.value) row.classList.add("active");
+      row.dataset.value = option.value;
+      row.innerHTML = `<span class="vnccs-uc-select-menu-check">${option.value === select.value ? "✓" : ""}</span><span class="vnccs-uc-select-menu-label"></span>`;
+      row.querySelector(".vnccs-uc-select-menu-label").textContent = option.textContent || option.value;
+      row.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      });
+      row.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        this.chooseCustomSelectValue(select, option.value);
+      });
+      menu.appendChild(row);
+    }
+    menu.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
+    document.body.appendChild(menu);
+    this.customSelectMenu = menu;
+    this.customSelectSource = select;
+    const active = menu.querySelector(".vnccs-uc-select-menu-option.active");
+    if (active) active.scrollIntoView({ block: "nearest" });
+  }
+
+  chooseCustomSelectValue(select, value) {
+    if (!(select instanceof HTMLSelectElement)) return;
+    if (select.value !== value) {
+      select.value = value;
+      select.dispatchEvent(new Event("input", { bubbles: true }));
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    }
+    this.closeCustomSelect();
+  }
+
+  closeCustomSelect() {
+    if (this.customSelectMenu) this.customSelectMenu.remove();
+    this.customSelectMenu = null;
+    this.customSelectSource = null;
   }
 
   requestRender() {
