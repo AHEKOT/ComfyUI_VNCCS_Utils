@@ -1,7 +1,7 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS - Collection of utility nodes. VNCCS Pose Studio. VNCCS UniCanvas."
-version = "0.5.2"
+version = "0.5.3"
 license = {file = "LICENSE"} 
 
 dependencies = [

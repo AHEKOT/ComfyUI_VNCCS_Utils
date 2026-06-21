@@ -1,3 +1,19 @@
+# Version 0.5.3
+## Z-Image Fun ControlNet Crash Mitigation
+
+### Fixes
+
+*   **Z-Image masked generation stability**: Moved Fun ControlNet patch loading earlier in the UniCanvas draw pipeline for z-image inpaint/outpaint.
+    *   The patch is now loaded before prompt encoding, VAE preload, source-latent encoding, and batch expansion, reducing peak memory pressure at the start of sampling.
+    *   The direct Fun ControlNet path still avoids global patch caching, preserving the model asset cloning and memory-safety behavior introduced in `0.5.2`.
+    *   A compatibility fallback remains for cases where the preloaded patch is unavailable, with an explicit debug log entry.
+
+### Improvements
+
+*   **Z-Image memory cleanup**: Added the preloaded Fun ControlNet patch object to UniCanvas sampling-reference cleanup.
+    *   Empty masked-mode requests that are converted to `img2img` now release the preloaded patch immediately and clear available CUDA cache.
+    *   This keeps the `0.5.2` source-latent, VAE preload/unload, batch generation, and smaller tiled decode fixes intact while avoiding a late high-memory patch allocation that could crash ComfyUI on Windows.
+
 # Version 0.5.2
 ## UniCanvas Batch Generation, Z-Image Latent Flow, and VAE Memory Handling
 

@@ -1177,8 +1177,18 @@ class ZImageUniCanvasModule(UniCanvasModelModule):
             )
             return model
 
-        patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
-        model_patch = _load_model_patch(patch_name)
+        model_patch = gen_settings.pop("_z_image_fun_controlnet_patch_model", None)
+        if model_patch is None:
+            _uc_log(
+                draw_id,
+                "Z-image Fun ControlNet patch loaded late",
+                {
+                    "patch": patch_name,
+                    "reason": "preloaded patch was unavailable; using compatibility fallback",
+                },
+            )
+            patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
+            model_patch = _load_model_patch(patch_name)
         patched = _call_node_method(
             ["ZImageFunControlnet"],
             ["diffsynth_controlnet"],
@@ -2505,6 +2515,30 @@ def _load_model_patch_cached(patch_name: str):
     return loaded.clone() if hasattr(loaded, "clone") else loaded
 
 
+def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown") -> None:
+    if str(gen_settings.get("generation_mode") or "").lower() != "z_image":
+        return
+    if mode not in {"inpaint", "outpaint"}:
+        return
+    if not bool(gen_settings.get("fun_controlnet_inpaint", True)):
+        return
+    patch_name = str(gen_settings.get("fun_controlnet_patch_name") or "").strip()
+    if not patch_name:
+        return
+    patch_name = _ensure_z_image_fun_controlnet_model(patch_name, draw_id)
+    gen_settings["fun_controlnet_patch_name"] = patch_name
+    gen_settings["_z_image_fun_controlnet_patch_model"] = _load_model_patch(patch_name)
+    _uc_log(
+        draw_id,
+        "Z-image Fun ControlNet patch preloaded",
+        {
+            "mode": mode,
+            "patch": patch_name,
+            "reason": "load before prompt/VAE/latent preparation to avoid late high-memory patch allocation",
+        },
+    )
+
+
 def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknown") -> str:
     import folder_paths
 
@@ -3148,6 +3182,7 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         "_z_image_fun_controlnet_image",
         "_z_image_fun_controlnet_mask",
         "_z_image_fun_controlnet_vae",
+        "_z_image_fun_controlnet_patch_model",
         "_anima_lllite_image",
         "_anima_lllite_mask",
         "_qwen_edit_reference_image",
@@ -3579,6 +3614,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             model, clip, vae = _load_generation_assets(settings)
             model, clip = model_module.clone_assets(model, clip)
             settings["_draw_id"] = draw_id
+            _preload_z_image_fun_controlnet_patch(settings, mode, draw_id)
             _preload_vae_for_direct_decode(vae, settings, draw_id)
             if model_module.key == "qwen_image_edit":
                 settings["_qwen_edit_clip"] = clip
@@ -3637,6 +3673,16 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 )
                 mode = "img2img"
                 settings["draw_mode"] = mode
+                if settings.pop("_z_image_fun_controlnet_patch_model", None) is not None:
+                    gc.collect()
+                    with contextlib.suppress(Exception):
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                    _uc_log(
+                        draw_id,
+                        "Z-image Fun ControlNet patch released after empty mask mode switch",
+                        {"to_mode": mode},
+                    )
                 mask = None
                 mask_image = None
                 paste_mask_image = None
