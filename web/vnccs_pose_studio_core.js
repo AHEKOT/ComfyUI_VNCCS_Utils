@@ -6717,11 +6717,12 @@ export class PoseViewerCore {
         return true;
     }
 
-    fitMannequinToHMR2(shoulderYOffset = 0) {
+    fitMannequinToHMR2(shoulderYOffset = 0, options = {}) {
         if (!this._hmr2WorldKps || !this.bones || !this.ikController || !this.skinnedMesh) return;
 
         const THREE = this.THREE;
         const worldKps = this._hmr2WorldKps;
+        const includeHead = options.includeHead !== false;
 
         this.recordState();
         for (const bone of this.boneList) {

@@ -163,7 +163,12 @@ let loaderPromise = null;
 function normalizeBoneName(name) {
     if (!name) return '';
     const shortName = name.includes(':') ? name.split(':').pop() : name;
-    return shortName.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    // Strip Blender-style duplicate-name suffixes (e.g. "Head.001") before
+    // stripping non-alphanumeric chars, so they normalize the same as the
+    // unsuffixed name. Only a dot followed by digits at the end qualifies -
+    // this must not touch legitimate trailing digits like "Spine1".
+    const dedupedName = shortName.replace(/\.\d+$/, '');
+    return dedupedName.replace(/[^a-z0-9]/gi, '').toLowerCase();
 }
 
 async function loadMixamoModules() {
@@ -241,8 +246,7 @@ function buildFrameRotationMap(sourceBones, targetTHREE) {
             }
         }
         if (!sourceBone) {
-            // debug: log which candidates were tried for this bone name
-            // console.debug(`[vnccs_mixamo_import] no source bone for ${mixamoName}, tried:`, candidates);
+            console.warn(`[vnccs_mixamo_import] no source bone found for ${mixamoName}, tried:`, candidates);
         }
         if (!sourceBone) continue;
 
@@ -288,6 +292,16 @@ function findSourceBone(sourceBones, mixamoName) {
 
     for (const normalizedName of normalizedCandidates) {
         if (sourceBones?.normalizedBones?.[normalizedName]) return sourceBones.normalizedBones[normalizedName];
+    }
+
+    // Fallback: some source names collide with other objects and get suffixed
+    // in ways normalizeBoneName can't predict. Look for a normalized bone name
+    // that contains the target as a substring, but only if exactly one match
+    // exists - otherwise this is too ambiguous to trust.
+    const target = normalizeBoneName(mixamoName);
+    if (target && sourceBones?.normalizedBones) {
+        const matches = Object.keys(sourceBones.normalizedBones).filter((n) => n.includes(target));
+        if (matches.length === 1) return sourceBones.normalizedBones[matches[0]];
     }
 
     return null;
