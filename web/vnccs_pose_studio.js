@@ -8,18 +8,19 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
-import { importMixamoFBXAsPoses } from "./vnccs_mixamo_import.js";
+import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 import {
     MODEL_ROTATION_TRACK,
     PoseAnimationTimeline,
+    createAnimationStateFromPoses,
     createDefaultAnimationState,
     evaluateAnimationFrame,
     findChangedPoseTracks,
     getPoseTrackEuler,
     isAnimationEmpty,
     normalizeAnimationState,
-    retimeAnimationFrameCount,
+    retimeAnimationTiming,
     sampleAnimationFrames,
     setTrackKeyframeFromEuler,
 } from "./vnccs_pose_animation.mjs";
@@ -4123,11 +4124,9 @@ class PoseStudioWidget {
         this.syncToNode(fullCapture);
     }
 
-    updateAnimationSettings({ frameCount, duration, loop, autoKey } = {}) {
-        if (frameCount !== undefined) retimeAnimationFrameCount(this.animationState, frameCount);
-        if (duration !== undefined) {
-            const value = Number(duration);
-            if (Number.isFinite(value)) this.animationState.duration = Math.max(0.1, Math.min(600, value));
+    updateAnimationSettings({ fps, duration, loop, autoKey } = {}) {
+        if (fps !== undefined || duration !== undefined) {
+            retimeAnimationTiming(this.animationState, { fps, duration });
         }
         if (loop !== undefined) this.animationState.loop = !!loop;
         if (autoKey !== undefined) this.animationState.autoKey = !!autoKey;
@@ -4137,29 +4136,25 @@ class PoseStudioWidget {
     }
 
     replaceAnimationFromPoses(poses, { duration = null } = {}) {
-        const frames = Array.isArray(poses) ? poses.filter(pose => pose && typeof pose === "object") : [];
-        if (!frames.length) throw new Error("Animation contains no pose frames.");
-        if (frames.length === 1) frames.push(JSON.parse(JSON.stringify(frames[0])));
-
-        const clipDuration = Number.isFinite(Number(duration)) && Number(duration) > 0
-            ? Number(duration)
-            : frames.length / 12;
-        const state = createDefaultAnimationState(frames[0], {
-            frameCount: Math.min(600, frames.length),
-            duration: clipDuration,
-            defaultInterpolation: "linear",
+        const previousPrompt = this.getPosePrompt(this.activeTab);
+        const state = createAnimationStateFromPoses(poses, {
+            duration,
+            fps: 12,
+            interpolation: "linear",
         });
-        const boneNames = new Set();
-        for (const pose of frames) {
-            for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
-        }
-        for (let frame = 0; frame < state.frameCount; frame++) {
-            const pose = frames[frame];
-            for (const boneName of boneNames) {
-                setTrackKeyframeFromEuler(state, boneName, frame, getPoseTrackEuler(pose, boneName), "linear");
-            }
-            setTrackKeyframeFromEuler(state, MODEL_ROTATION_TRACK, frame, getPoseTrackEuler(pose, MODEL_ROTATION_TRACK), "linear");
-        }
+        state.basePose.prompt = String(state.basePose.prompt || previousPrompt || "");
+
+        // An imported clip is one animated pose, not a pose tab per sampled
+        // frame. Keep a single image-mode fallback at frame zero as well.
+        const frameZeroPose = evaluateAnimationFrame(state, 0);
+        frameZeroPose.prompt = state.basePose.prompt || "";
+        this.poses = [frameZeroPose];
+        this.posePrompts = [frameZeroPose.prompt];
+        this.poseCaptures = [];
+        this.lightingPrompts = [];
+        this.activeTab = 0;
+        this.updateTabs();
+        this.syncPromptFieldToActiveTab();
 
         this.animationState = state;
         this._animationInitialized = true;
@@ -4385,6 +4380,9 @@ class PoseStudioWidget {
         const prompt = String(value ?? "");
         this.posePrompts[index] = prompt;
         if (this.poses[index]) this.poses[index].prompt = prompt;
+        if (this.isAnimationMode() && this._animationInitialized && this.animationState?.basePose) {
+            this.animationState.basePose.prompt = prompt;
+        }
         if (index === this.activeTab) this.exportParams.user_prompt = prompt;
     }
 
@@ -6889,13 +6887,13 @@ class PoseStudioWidget {
                 try {
                     this.clearSAMCameraMode();
                     this.resetCameraParams();
-                    const result = await importMixamoFBXAsPoses(file, this.viewer, {
+                    const result = await importMixamoFBXAnimation(file, this.viewer, {
                         fps: 12,
                         maxFrames: 48,
                     });
-                    this.replaceAnimationFromPoses(result.poses, { duration: result.duration });
+                    this.replaceAnimationFromPoses(result.poseSamples, { duration: result.duration });
                     this.updateCaptureCameraPreview();
-                    this.showMessage(`Mixamo FBX imported as an animation: ${result.poses.length} frames from ${result.clipName}.`);
+                    this.showMessage(`Mixamo FBX imported as one animation: ${result.poseSamples.length} keyed frames from ${result.clipName}.`);
                 } catch (err) {
                     console.error('Error importing Mixamo FBX:', err);
                     this.showMessage(`Failed to import FBX animation: ${err?.message || err}`, true);
@@ -8280,9 +8278,9 @@ class PoseStudioWidget {
             field.append(label, input);
             return { field, input };
         };
-        const framesSetting = makeAnimationNumber("Frames", this.animationState.frameCount, 2, 600, 1);
-        const durationSetting = makeAnimationNumber("Duration (sec)", this.animationState.duration, 0.1, 600, 0.1);
-        animationNumbers.append(framesSetting.field, durationSetting.field);
+        const fpsSetting = makeAnimationNumber("Frame rate (FPS)", this.animationState.fps, 1, 120, 0.001);
+        const durationSetting = makeAnimationNumber("Duration (sec)", this.animationState.duration, 0.1, 600, 0.001);
+        animationNumbers.append(fpsSetting.field, durationSetting.field);
         animationSettings.appendChild(animationNumbers);
 
         const fpsInfo = document.createElement("div");
@@ -8322,11 +8320,13 @@ class PoseStudioWidget {
             imageModeBtn.classList.toggle("active", !animation);
             animationModeBtn.classList.toggle("active", animation);
             animationSettings.style.display = animation ? "block" : "none";
-            framesSetting.input.value = String(this.animationState.frameCount);
+            fpsSetting.input.value = String(Number(this.animationState.fps.toFixed(3)));
+            durationSetting.input.min = String(2 / this.animationState.fps);
+            durationSetting.input.max = String(600 / this.animationState.fps);
             durationSetting.input.value = String(Number(this.animationState.duration.toFixed(3)));
             autoKeySetting.checkbox.checked = this.animationState.autoKey;
             loopSetting.checkbox.checked = this.animationState.loop;
-            fpsInfo.textContent = `Effective frame rate: ${(this.animationState.frameCount / this.animationState.duration).toFixed(3)} fps · frames 0–${this.animationState.frameCount - 1}`;
+            fpsInfo.textContent = `${this.animationState.frameCount} frames will be generated · frames 0–${this.animationState.frameCount - 1}`;
         };
         imageModeBtn.onclick = () => {
             this.setEditorMode("image");
@@ -8337,8 +8337,8 @@ class PoseStudioWidget {
             refreshEditorSettings();
             updateInterfaceUI?.();
         };
-        framesSetting.input.addEventListener("change", () => {
-            this.updateAnimationSettings({ frameCount: framesSetting.input.value });
+        fpsSetting.input.addEventListener("change", () => {
+            this.updateAnimationSettings({ fps: fpsSetting.input.value });
             refreshEditorSettings();
         });
         durationSetting.input.addEventListener("change", () => {

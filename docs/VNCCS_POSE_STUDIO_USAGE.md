@@ -50,7 +50,21 @@ Important backend behavior:
 
 ## Main Modes
 
-Pose Studio has three practical interface states:
+Pose Studio has two independent mode selectors. `interface_mode` chooses Studio
+or Pose Manager, while `editor_mode` chooses static images or animation.
+
+| Editor mode | Purpose |
+| --- | --- |
+| Image | Existing pose tabs; every tab is an independent output image. |
+| Animation | One animated pose with a per-bone dope sheet, playhead, transport controls, Auto-Key, and interpolation presets. |
+
+The animation timeline exposes **FPS** and **Seconds**. FPS defaults to 12. The
+internal frame count is calculated automatically as `round(seconds × FPS)` and
+is not independently editable. Changing FPS does not overwrite the requested
+duration. The dope-sheet ruler and playhead use frame numbers (`0…N-1`), and
+playback advances exactly FPS frames per real-time second.
+
+Pose Studio also has three practical interface states:
 
 | Mode | Purpose |
 | --- | --- |
@@ -59,6 +73,30 @@ Pose Studio has three practical interface states:
 | Manager Detail | Focused edit/detail view opened from Pose Manager. It is still manager context, so `pose_image` remains disabled. |
 
 The mode is stored in `pose_data.export.interface_mode`.
+
+## Animation and Mixamo FBX Import
+
+Choose **Settings → Editing Mode → Animation** to open the timeline below the
+3D viewport. Each rig bone has its own track. Double-click a track or use its
+diamond button to create/update a key at the playhead. Keys can be dragged to a
+new frame, deleted, and assigned Hold, Linear, Ease In, Ease Out, Easy Ease, or
+Smooth interpolation. Rotation keys are stored as local quaternions and use
+shortest-path interpolation.
+
+Importing a Mixamo `.fbx` file always switches Pose Studio to Animation mode.
+The importer retargets the clip onto the current mannequin and converts the
+sampled frames into one animation clip:
+
+- frame zero becomes the single base/fallback pose;
+- each affected bone receives keys across the timeline;
+- missing sparse bone values are explicitly keyed back to rest rotation;
+- no pose tab is created for each FBX frame;
+- the clip duration and sample count configure the timeline automatically.
+
+In Animation mode, LIST output returns one image per animation frame. Short
+clips may use exact browser captures; longer clips are evaluated from the sparse
+animation data by the backend rather than being embedded as base64 images in the
+workflow.
 
 ## Quick Start
 

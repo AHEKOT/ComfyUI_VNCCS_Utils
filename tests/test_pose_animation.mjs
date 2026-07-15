@@ -3,12 +3,15 @@ import test from "node:test";
 
 import {
     MODEL_ROTATION_TRACK,
+    createAnimationStateFromPoses,
     createDefaultAnimationState,
     eulerDegreesToQuaternion,
     evaluateAnimationFrame,
     findChangedPoseTracks,
     normalizeAnimationState,
+    playbackFrameForElapsed,
     retimeAnimationFrameCount,
+    retimeAnimationTiming,
     setTrackKeyframeFromEuler,
 } from "../web/vnccs_pose_animation.mjs";
 
@@ -39,12 +42,63 @@ test("first late key creates an implicit frame-zero baseline", () => {
 });
 
 test("retiming preserves normalized key positions", () => {
-    const state = createDefaultAnimationState({}, { frameCount: 11 });
+    const state = createDefaultAnimationState({}, { frameCount: 11, duration: 1, fps: 11 });
     setTrackKeyframeFromEuler(state, "head", 0, [0, 0, 0]);
     setTrackKeyframeFromEuler(state, "head", 5, [45, 0, 0]);
     setTrackKeyframeFromEuler(state, "head", 10, [90, 0, 0]);
     retimeAnimationFrameCount(state, 21);
     assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 10, 20]);
+    assert.equal(state.duration, 1);
+});
+
+test("seconds and FPS always retime the internal frame count together", () => {
+    const state = createDefaultAnimationState({}, { frameCount: 24, duration: 2 });
+    retimeAnimationTiming(state, { duration: 25 });
+    assert.equal(state.fps, 12);
+    assert.equal(state.frameCount, 300);
+    assert.equal(state.duration, 25);
+
+    retimeAnimationTiming(state, { duration: 2.082 });
+    assert.equal(state.fps, 12);
+    assert.equal(state.frameCount, 25);
+    assert.equal(state.duration, 2.082);
+
+    retimeAnimationTiming(state, { duration: 10 });
+    retimeAnimationTiming(state, { fps: 30 });
+    assert.equal(state.fps, 30);
+    assert.equal(state.frameCount, 300);
+    assert.equal(state.duration, 10);
+});
+
+test("playback advances exactly FPS timeline frames per second", () => {
+    assert.equal(playbackFrameForElapsed(0, 12), 0);
+    assert.equal(playbackFrameForElapsed(250, 12), 3);
+    assert.equal(playbackFrameForElapsed(1000, 12), 12);
+    assert.equal(playbackFrameForElapsed(2082, 12), 24);
+});
+
+test("legacy derived FPS is migrated to the 12 FPS default", () => {
+    const state = normalizeAnimationState({
+        schemaVersion: 1,
+        frameCount: 5,
+        duration: 2.082,
+        fps: 2.401,
+        currentFrame: 3,
+        tracks: {
+            head: {
+                keys: [
+                    { frame: 0, rotation: [0, 0, 0] },
+                    { frame: 4, rotation: [0, 45, 0] },
+                ],
+            },
+        },
+    });
+
+    assert.equal(state.fps, 12);
+    assert.equal(state.duration, 2.082);
+    assert.equal(state.frameCount, 25);
+    assert.equal(state.currentFrame, 18);
+    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 24]);
 });
 
 test("pose diff reports changed bones and model rotation only", () => {
@@ -68,8 +122,28 @@ test("normalization accepts snake_case and drops invalid duplicate data", () => 
             },
         },
     });
-    assert.equal(state.frameCount, 5);
-    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 4]);
+    assert.equal(state.fps, 12);
+    assert.equal(state.frameCount, 24);
+    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 23]);
     assert.equal(state.tracks.head.keys[0].id, "new");
 });
 
+test("Mixamo-style pose samples become one keyed animation clip", () => {
+    const poses = [
+        { bones: { head: [0, 0, 0] }, modelRotation: [0, 0, 0] },
+        { bones: { head: [0, 20, 0], upperarm_l: [10, 0, 0] }, modelRotation: [0, 5, 0] },
+        { bones: { head: [0, 0, 0] }, modelRotation: [0, 10, 0] },
+    ];
+    const state = createAnimationStateFromPoses(poses, { duration: 0.25, fps: 12 });
+
+    assert.equal(state.frameCount, 3);
+    assert.equal(state.duration, 0.25);
+    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 1, 2]);
+    assert.deepEqual(state.tracks.upperarm_l.keys.map(key => key.frame), [0, 1, 2]);
+    assert.deepEqual(state.tracks[MODEL_ROTATION_TRACK].keys.map(key => key.frame), [0, 1, 2]);
+
+    const lastFrame = evaluateAnimationFrame(state, 2);
+    assert.ok(angleDistance(lastFrame.bones.head[1], 0) < 1e-6);
+    assert.ok(angleDistance(lastFrame.bones.upperarm_l[0], 0) < 1e-6);
+    assert.ok(angleDistance(lastFrame.modelRotation[1], 10) < 1e-6);
+});

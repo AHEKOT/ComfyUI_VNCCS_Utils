@@ -7,10 +7,13 @@
  * avoids the common +179 -> -179 full-spin interpolation bug.
  */
 
-export const POSE_ANIMATION_SCHEMA_VERSION = 1;
+export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
 export const MIN_FRAME_COUNT = 2;
 export const MAX_FRAME_COUNT = 600;
+export const MIN_ANIMATION_FPS = 1;
+export const MAX_ANIMATION_FPS = 120;
+export const DEFAULT_ANIMATION_FPS = 12;
 
 export const INTERPOLATION_PRESETS = Object.freeze([
     { value: "hold", label: "Hold / Step" },
@@ -155,7 +158,7 @@ export function getPoseTrackEuler(pose, trackName) {
     return (pose?.bones?.[trackName] || [0, 0, 0]).slice(0, 3).map(value => finiteNumber(value));
 }
 
-function normalizeKeyframe(key, lastFrame) {
+function normalizeKeyframe(key, lastFrame, sourceLastFrame = lastFrame) {
     if (!key || typeof key !== "object") return null;
     const rawFrame = Number(key.frame);
     if (!Number.isFinite(rawFrame)) return null;
@@ -164,17 +167,21 @@ function normalizeKeyframe(key, lastFrame) {
     if (!Array.isArray(value) || value.length < 4) return null;
     return {
         id: String(key.id || createKeyId()),
-        frame: clamp(Math.round(rawFrame), 0, lastFrame),
+        frame: clamp(
+            Math.round((rawFrame / Math.max(1, sourceLastFrame)) * Math.max(1, lastFrame)),
+            0,
+            lastFrame,
+        ),
         value: normalizeQuaternion(value),
         interpolation: INTERPOLATION_NAMES.has(key.interpolation) ? key.interpolation : "linear",
     };
 }
 
-function normalizeTrack(track, lastFrame) {
+function normalizeTrack(track, lastFrame, sourceLastFrame = lastFrame) {
     const sourceKeys = Array.isArray(track) ? track : (track?.keys || track?.keyframes || []);
     const byFrame = new Map();
     for (const sourceKey of sourceKeys) {
-        const key = normalizeKeyframe(sourceKey, lastFrame);
+        const key = normalizeKeyframe(sourceKey, lastFrame, sourceLastFrame);
         if (key) byFrame.set(key.frame, key);
     }
     return {
@@ -186,8 +193,9 @@ function normalizeTrack(track, lastFrame) {
 export function createDefaultAnimationState(basePose = {}, overrides = {}) {
     return normalizeAnimationState({
         schemaVersion: POSE_ANIMATION_SCHEMA_VERSION,
-        frameCount: 48,
+        frameCount: 24,
         duration: 2,
+        fps: DEFAULT_ANIMATION_FPS,
         currentFrame: 0,
         loop: true,
         autoKey: true,
@@ -201,13 +209,36 @@ export function createDefaultAnimationState(basePose = {}, overrides = {}) {
 
 export function normalizeAnimationState(source = {}, fallbackPose = {}) {
     const raw = source && typeof source === "object" ? source : {};
-    const frameCount = clamp(Math.round(finiteNumber(raw.frameCount ?? raw.frame_count, 48)), MIN_FRAME_COUNT, MAX_FRAME_COUNT);
-    const duration = clamp(finiteNumber(raw.duration ?? raw.duration_seconds, 2), 0.1, 600);
+    const sourceFrameCount = clamp(Math.round(finiteNumber(raw.frameCount ?? raw.frame_count, 24)), MIN_FRAME_COUNT, MAX_FRAME_COUNT);
+    const schemaVersion = Math.round(finiteNumber(raw.schemaVersion ?? raw.schema_version, 1));
+    const rawFps = Number(raw.fps ?? raw.frame_rate);
+    const hasCurrentTiming = schemaVersion >= POSE_ANIMATION_SCHEMA_VERSION
+        && Number.isFinite(rawFps)
+        && rawFps >= MIN_ANIMATION_FPS;
+    const fps = hasCurrentTiming
+        ? clamp(rawFps, MIN_ANIMATION_FPS, MAX_ANIMATION_FPS)
+        : DEFAULT_ANIMATION_FPS;
+    const minDuration = MIN_FRAME_COUNT / fps;
+    const maxDuration = MAX_FRAME_COUNT / fps;
+    const duration = clamp(finiteNumber(raw.duration ?? raw.duration_seconds, 2), minDuration, maxDuration);
+    const frameCount = clamp(Math.round(duration * fps), MIN_FRAME_COUNT, MAX_FRAME_COUNT);
+    const sourceLastFrame = hasCurrentTiming ? frameCount - 1 : sourceFrameCount - 1;
+    const currentFrame = hasCurrentTiming
+        ? clamp(Math.round(finiteNumber(raw.currentFrame ?? raw.current_frame, 0)), 0, frameCount - 1)
+        : clamp(
+            Math.round(
+                (finiteNumber(raw.currentFrame ?? raw.current_frame, 0) / Math.max(1, sourceLastFrame))
+                * Math.max(1, frameCount - 1),
+            ),
+            0,
+            frameCount - 1,
+        );
     const state = {
         schemaVersion: POSE_ANIMATION_SCHEMA_VERSION,
         frameCount,
         duration,
-        currentFrame: clamp(Math.round(finiteNumber(raw.currentFrame ?? raw.current_frame, 0)), 0, frameCount - 1),
+        fps,
+        currentFrame,
         loop: raw.loop !== false && raw.loop_mode !== "once",
         autoKey: raw.autoKey !== false && raw.auto_key !== false,
         snap: raw.snap !== false,
@@ -223,7 +254,7 @@ export function normalizeAnimationState(source = {}, fallbackPose = {}) {
         : (raw.tracks || {});
     if (sourceTracks && typeof sourceTracks === "object") {
         for (const [trackName, track] of Object.entries(sourceTracks)) {
-            const normalized = normalizeTrack(track, frameCount - 1);
+            const normalized = normalizeTrack(track, frameCount - 1, sourceLastFrame);
             if (normalized.keys.length) state.tracks[trackName] = normalized;
         }
     }
@@ -278,6 +309,58 @@ export function sampleAnimationFrames(state) {
         frames.push(evaluateAnimationFrame(state, frame));
     }
     return frames;
+}
+
+/**
+ * Convert a sampled pose sequence (for example a retargeted Mixamo clip) into
+ * one animation clip. Missing sparse Euler values are keyed as zero so a bone
+ * can also return to its rest rotation later in the animation.
+ */
+export function createAnimationStateFromPoses(poses, options = {}) {
+    const frames = Array.isArray(poses)
+        ? poses.filter(pose => pose && typeof pose === "object").map(pose => normalizePose(pose))
+        : [];
+    if (!frames.length) throw new Error("Animation contains no pose frames.");
+    if (frames.length === 1) frames.push(normalizePose(frames[0]));
+
+    const frameCount = Math.min(MAX_FRAME_COUNT, frames.length);
+    const requestedDuration = Number(options.duration);
+    const fallbackFps = Math.max(1, finiteNumber(options.fps, 12));
+    const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
+        ? requestedDuration
+        : frameCount / fallbackFps;
+    const state = createDefaultAnimationState(frames[0], {
+        frameCount,
+        duration,
+        fps: frameCount / duration,
+        currentFrame: 0,
+        defaultInterpolation: options.interpolation || "linear",
+    });
+
+    const boneNames = new Set();
+    for (const pose of frames.slice(0, frameCount)) {
+        for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
+    }
+    for (let frame = 0; frame < frameCount; frame++) {
+        const pose = frames[frame];
+        for (const boneName of boneNames) {
+            setTrackKeyframeFromEuler(
+                state,
+                boneName,
+                frame,
+                getPoseTrackEuler(pose, boneName),
+                state.defaultInterpolation,
+            );
+        }
+        setTrackKeyframeFromEuler(
+            state,
+            MODEL_ROTATION_TRACK,
+            frame,
+            getPoseTrackEuler(pose, MODEL_ROTATION_TRACK),
+            state.defaultInterpolation,
+        );
+    }
+    return state;
 }
 
 export function setTrackKeyframe(state, trackName, frameValue, quaternionValue, interpolation) {
@@ -370,6 +453,51 @@ export function retimeAnimationFrameCount(state, nextFrameCountValue) {
     return state;
 }
 
+export function getAnimationFPS(state) {
+    return clamp(
+        finiteNumber(state?.fps, DEFAULT_ANIMATION_FPS),
+        MIN_ANIMATION_FPS,
+        MAX_ANIMATION_FPS,
+    );
+}
+
+export function playbackFrameForElapsed(elapsedMilliseconds, fpsValue) {
+    const fps = clamp(
+        finiteNumber(fpsValue, DEFAULT_ANIMATION_FPS),
+        MIN_ANIMATION_FPS,
+        MAX_ANIMATION_FPS,
+    );
+    return Math.floor((Math.max(0, finiteNumber(elapsedMilliseconds)) / 1000) * fps);
+}
+
+/**
+ * Keep duration, frame rate, and the internal integer frame count in sync.
+ * Duration is quantized to a whole frame so the three values can never
+ * describe different timelines.
+ */
+export function retimeAnimationTiming(state, { duration, fps } = {}) {
+    if (!state) return state;
+    const previousFps = getAnimationFPS(state);
+    const requestedFps = fps === undefined
+        ? previousFps
+        : clamp(finiteNumber(fps, previousFps), MIN_ANIMATION_FPS, MAX_ANIMATION_FPS);
+    const minDuration = MIN_FRAME_COUNT / requestedFps;
+    const maxDuration = MAX_FRAME_COUNT / requestedFps;
+    const requestedDuration = duration === undefined
+        ? clamp(finiteNumber(state.duration, 2), minDuration, maxDuration)
+        : clamp(finiteNumber(duration, state.duration), minDuration, maxDuration);
+    const nextFrameCount = clamp(
+        Math.round(requestedDuration * requestedFps),
+        MIN_FRAME_COUNT,
+        MAX_FRAME_COUNT,
+    );
+    retimeAnimationFrameCount(state, nextFrameCount);
+    state.fps = requestedFps;
+    state.duration = requestedDuration;
+    state.schemaVersion = POSE_ANIMATION_SCHEMA_VERSION;
+    return state;
+}
+
 function shortestAngleDelta(a, b) {
     return ((b - a + 540) % 360) - 180;
 }
@@ -459,6 +587,7 @@ export class PoseAnimationTimeline {
         this.frameInput.className = "vnccs-ps-tl-number current-frame";
         this.frameInput.type = "number";
         this.frameInput.min = "0";
+        this.frameInput.title = "Current frame number";
         this.frameInput.addEventListener("change", () => this.setFrame(this.frameInput.value));
 
         this.status = document.createElement("span");
@@ -501,18 +630,19 @@ export class PoseAnimationTimeline {
             this.onStateChange({ type: "loop" });
         }, "toggle");
 
-        this.frameCountInput = document.createElement("input");
-        this.frameCountInput.type = "number";
-        this.frameCountInput.className = "vnccs-ps-tl-number config";
-        this.frameCountInput.min = String(MIN_FRAME_COUNT);
-        this.frameCountInput.max = String(MAX_FRAME_COUNT);
-        this.frameCountInput.title = "Total frame count";
-        this.frameCountInput.addEventListener("change", () => {
-            retimeAnimationFrameCount(this.state, this.frameCountInput.value);
+        this.fpsInput = document.createElement("input");
+        this.fpsInput.type = "number";
+        this.fpsInput.className = "vnccs-ps-tl-number config";
+        this.fpsInput.min = String(MIN_ANIMATION_FPS);
+        this.fpsInput.max = String(MAX_ANIMATION_FPS);
+        this.fpsInput.step = "0.001";
+        this.fpsInput.title = "Animation frame rate";
+        this.fpsInput.addEventListener("change", () => {
+            retimeAnimationTiming(this.state, { fps: this.fpsInput.value });
             this.selectedKey = null;
             this.render();
             this.onFrameChange(this.state.currentFrame, { settings: true });
-            this.onStateChange({ type: "frameCount" });
+            this.onStateChange({ type: "timing" });
         });
 
         this.durationInput = document.createElement("input");
@@ -520,17 +650,19 @@ export class PoseAnimationTimeline {
         this.durationInput.className = "vnccs-ps-tl-number config";
         this.durationInput.min = "0.1";
         this.durationInput.max = "600";
-        this.durationInput.step = "0.1";
+        this.durationInput.step = "0.001";
         this.durationInput.title = "Animation duration in seconds";
         this.durationInput.addEventListener("change", () => {
-            this.state.duration = clamp(finiteNumber(this.durationInput.value, this.state.duration), 0.1, 600);
+            retimeAnimationTiming(this.state, { duration: this.durationInput.value });
+            this.selectedKey = null;
             this.render();
-            this.onStateChange({ type: "duration" });
+            this.onFrameChange(this.state.currentFrame, { settings: true });
+            this.onStateChange({ type: "timing" });
         });
 
-        const framesLabel = document.createElement("label");
-        framesLabel.className = "vnccs-ps-tl-compact-label";
-        framesLabel.append("Frames ", this.frameCountInput);
+        const fpsLabel = document.createElement("label");
+        fpsLabel.className = "vnccs-ps-tl-compact-label";
+        fpsLabel.append("FPS ", this.fpsInput);
         const durationLabel = document.createElement("label");
         durationLabel.className = "vnccs-ps-tl-compact-label";
         durationLabel.append("Seconds ", this.durationInput);
@@ -554,7 +686,7 @@ export class PoseAnimationTimeline {
             this.frameInput, this.status,
             this.addKeyButton, this.deleteKeyButton, this.interpolationSelect,
             this.autoKeyButton, this.loopButton,
-            framesLabel, durationLabel,
+            fpsLabel, durationLabel,
             this.searchInput, this.keyedButton,
         );
 
@@ -616,13 +748,18 @@ export class PoseAnimationTimeline {
 
     startPlayback() {
         if (this._playing) return;
+        if (finiteNumber(this.state?.schemaVersion, 1) < POSE_ANIMATION_SCHEMA_VERSION) {
+            retimeAnimationTiming(this.state, { fps: DEFAULT_ANIMATION_FPS });
+            this.render();
+            this.onStateChange({ type: "timingMigration" });
+        }
         this._playing = true;
-        const fps = this.state.frameCount / this.state.duration;
+        const fps = getAnimationFPS(this.state);
         const startFrame = this.state.currentFrame >= this.state.frameCount - 1 ? 0 : this.state.currentFrame;
         const startedAt = performance.now() - (startFrame / fps) * 1000;
         const tick = now => {
             if (!this._playing) return;
-            const absoluteFrame = Math.floor(((now - startedAt) / 1000) * fps);
+            const absoluteFrame = playbackFrameForElapsed(now - startedAt, fps);
             let nextFrame = absoluteFrame;
             if (this.state.loop) nextFrame %= this.state.frameCount;
             else if (nextFrame >= this.state.frameCount) {
@@ -663,12 +800,14 @@ export class PoseAnimationTimeline {
 
     updateToolbar() {
         if (!this.state) return;
-        const fps = this.state.frameCount / this.state.duration;
+        const fps = getAnimationFPS(this.state);
         this.frameInput.max = String(this.state.frameCount - 1);
         this.frameInput.value = String(this.state.currentFrame);
-        this.frameCountInput.value = String(this.state.frameCount);
+        this.fpsInput.value = String(Number(fps.toFixed(3)));
+        this.durationInput.min = String(MIN_FRAME_COUNT / fps);
+        this.durationInput.max = String(MAX_FRAME_COUNT / fps);
         this.durationInput.value = String(Number(this.state.duration.toFixed(3)));
-        this.status.textContent = `${(this.state.currentFrame / fps).toFixed(2)}s · ${fps.toFixed(2)} fps`;
+        this.status.textContent = `Frame ${this.state.currentFrame} · ${(this.state.currentFrame / fps).toFixed(2)}s`;
         this.playButton.textContent = this._playing ? "❚❚" : "▶";
         this.playButton.classList.toggle("active", this._playing);
         this.autoKeyButton.classList.toggle("active", !!this.state.autoKey);
@@ -821,7 +960,7 @@ export class PoseAnimationTimeline {
         rulerRow.className = "vnccs-ps-tl-row ruler";
         const rulerLabel = document.createElement("div");
         rulerLabel.className = "vnccs-ps-tl-track-label ruler";
-        rulerLabel.textContent = "Dope Sheet";
+        rulerLabel.textContent = "Dope Sheet · Frames";
         rulerRow.append(rulerLabel, this._makeLane(null, true));
         this.content.appendChild(rulerRow);
 
@@ -865,4 +1004,3 @@ export class PoseAnimationTimeline {
         this.updateToolbar();
     }
 }
-

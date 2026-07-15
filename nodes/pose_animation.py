@@ -126,7 +126,9 @@ def _pose_track_euler(pose: Mapping[str, Any], track_name: str) -> List[float]:
     return [_finite(component) for component in values[:3]]
 
 
-def _normalize_keys(source: Any, last_frame: int) -> List[Dict[str, Any]]:
+def _normalize_keys(source: Any, last_frame: int, source_last_frame: int = None) -> List[Dict[str, Any]]:
+    if source_last_frame is None:
+        source_last_frame = last_frame
     if isinstance(source, Mapping):
         source = source.get("keys", source.get("keyframes", []))
     if not isinstance(source, Iterable) or isinstance(source, (str, bytes, Mapping)):
@@ -146,7 +148,11 @@ def _normalize_keys(source: Any, last_frame: int) -> List[Dict[str, Any]]:
             value = euler_degrees_to_quaternion(value)
         if not isinstance(value, Sequence) or isinstance(value, (str, bytes)) or len(value) < 4:
             continue
-        frame = int(_clamp(round(raw_frame), 0, last_frame))
+        frame = int(_clamp(
+            round((raw_frame / max(1, source_last_frame)) * max(1, last_frame)),
+            0,
+            last_frame,
+        ))
         interpolation = raw.get("interpolation", "linear")
         if interpolation not in INTERPOLATIONS:
             interpolation = "linear"
@@ -160,8 +166,18 @@ def _normalize_keys(source: Any, last_frame: int) -> List[Dict[str, Any]]:
 
 def normalize_animation_state(source: Any, fallback_pose: Any = None) -> Dict[str, Any]:
     raw = source if isinstance(source, Mapping) else {}
-    frame_count = int(_clamp(round(_finite(raw.get("frameCount", raw.get("frame_count", 48)), 48)), MIN_FRAME_COUNT, MAX_FRAME_COUNT))
-    duration = _clamp(_finite(raw.get("duration", raw.get("duration_seconds", 2.0)), 2.0), 0.1, 600.0)
+    source_frame_count = int(_clamp(round(_finite(raw.get("frameCount", raw.get("frame_count", 24)), 24)), MIN_FRAME_COUNT, MAX_FRAME_COUNT))
+    schema_version = int(round(_finite(raw.get("schemaVersion", raw.get("schema_version", 1)), 1)))
+    raw_fps = _finite(raw.get("fps", raw.get("frame_rate")), float("nan"))
+    has_current_timing = schema_version >= 2 and math.isfinite(raw_fps) and raw_fps >= 1.0
+    fps = _clamp(raw_fps, 1.0, 120.0) if has_current_timing else 12.0
+    duration = _clamp(
+        _finite(raw.get("duration", raw.get("duration_seconds", 2.0)), 2.0),
+        MIN_FRAME_COUNT / fps,
+        MAX_FRAME_COUNT / fps,
+    )
+    frame_count = int(_clamp(round(duration * fps), MIN_FRAME_COUNT, MAX_FRAME_COUNT))
+    source_last_frame = frame_count - 1 if has_current_timing else source_frame_count - 1
     base_pose = copy.deepcopy(raw.get("basePose", raw.get("base_pose", fallback_pose or {})))
     if not isinstance(base_pose, dict):
         base_pose = {}
@@ -179,14 +195,15 @@ def normalize_animation_state(source: Any, fallback_pose: Any = None) -> Dict[st
     tracks: Dict[str, Dict[str, Any]] = {}
     if isinstance(raw_tracks, Mapping):
         for track_name, raw_track in raw_tracks.items():
-            keys = _normalize_keys(raw_track, frame_count - 1)
+            keys = _normalize_keys(raw_track, frame_count - 1, source_last_frame)
             if keys:
                 tracks[str(track_name)] = {"valueType": "quaternion", "keys": keys}
 
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "frameCount": frame_count,
         "duration": duration,
+        "fps": fps,
         "basePose": base_pose,
         "tracks": tracks,
     }
@@ -230,4 +247,3 @@ def evaluate_animation_frame(state: Mapping[str, Any], frame_value: Any) -> Dict
 def sample_animation_frames(source: Any, fallback_pose: Any = None) -> List[Dict[str, Any]]:
     state = normalize_animation_state(source, fallback_pose)
     return [evaluate_animation_frame(state, frame) for frame in range(state["frameCount"])]
-

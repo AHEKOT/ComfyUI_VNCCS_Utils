@@ -53,6 +53,8 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 *   **Interactive 3D Viewport**: Pose the mannequin directly in the node with selectable joints, bone manipulation, transform controls, and full **Undo/Redo** support.
 *   **Dynamic Body Generator**: Fine-tune the character shape with sliders for Age, Gender blending, Weight, Muscle, and Height.
 *   **Multi-Pose Tabs**: Create multiple independent pose states inside one node, making batch outputs and pose sequences easier to build.
+*   **Keyframe Animation Mode**: Switch Pose Studio from static images to a dope-sheet timeline with per-bone tracks, playback, Auto-Key, draggable keys, easing presets, and deterministic frame output.
+*   **Mixamo FBX Animation Import**: Import a Mixamo clip as one animated pose; Pose Studio switches to Animation mode and converts retargeted samples into bone keyframes instead of creating pose tabs.
 *   **Pose Copy/Paste**: Transfer complex poses between tabs without rebuilding them from scratch.
 *   **Modal Pose Gallery**: Save, browse, load, and delete poses in a focused full-screen gallery instead of cluttering the main workspace.
 *   **Pose Import/Export**: Batch save and load pose data via JSON for reuse across workflows or projects.

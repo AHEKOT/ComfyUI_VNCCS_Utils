@@ -19,8 +19,10 @@ def angle_distance(a, b):
 class PoseAnimationTests(unittest.TestCase):
     def make_state(self, interpolation="linear"):
         return normalize_animation_state({
+            "schemaVersion": 2,
             "frameCount": 11,
             "duration": 1.0,
+            "fps": 11,
             "basePose": {"bones": {}, "modelRotation": [0, 0, 0]},
             "tracks": {
                 "upperarm_l": {
@@ -73,14 +75,18 @@ class PoseAnimationTests(unittest.TestCase):
             },
         })
         keys = state["tracks"]["head"]["keys"]
-        self.assertEqual([key["frame"] for key in keys], [0, 4])
+        self.assertEqual(state["fps"], 12)
+        self.assertEqual(state["frameCount"], 24)
+        self.assertEqual([key["frame"] for key in keys], [0, 23])
         self.assertEqual(keys[0]["interpolation"], "linear")
         self.assertEqual(keys[1]["interpolation"], "hold")
 
     def test_sampling_exact_frame_count_and_strips_solver_hints(self):
         raw = {
+            "schemaVersion": 2,
             "frameCount": 7,
             "duration": 1,
+            "fps": 7,
             "basePose": {
                 "bones": {},
                 "modelRotation": [0, 0, 0],
@@ -105,7 +111,18 @@ class PoseAnimationTests(unittest.TestCase):
             self.assertNotIn("poleTargetPositions", frame)
             self.assertNotIn("hipBonePosition", frame)
 
+    def test_normalization_keeps_fps_duration_and_frames_consistent(self):
+        state = normalize_animation_state({
+            "schemaVersion": 2,
+            "frameCount": 600,
+            "duration": 25,
+            "fps": 24,
+            "basePose": {},
+        })
+        self.assertEqual(state["frameCount"], 600)
+        self.assertEqual(state["duration"], 25)
+        self.assertEqual(state["fps"], 24)
+
 
 if __name__ == "__main__":
     unittest.main()
-

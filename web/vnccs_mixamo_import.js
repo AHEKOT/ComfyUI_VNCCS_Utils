@@ -622,7 +622,7 @@ function buildSampleTimes(duration, fps, maxFrames) {
     return times;
 }
 
-export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
+export async function importMixamoFBXAnimation(file, viewer, options = {}) {
     if (!file) throw new Error('No FBX file was selected.');
     if (!viewer?.isInitialized?.() || !viewer.THREE) throw new Error('Pose viewer is not ready.');
 
@@ -798,6 +798,8 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
         }
 
         return {
+            poseSamples: poses,
+            // Backward-compatible alias for integrations using the old helper.
             poses,
             clipName: clip.name || file.name,
             duration: Math.max(Number(clip.duration) || 0, sampleTimes[sampleTimes.length - 1] || 0),
@@ -807,3 +809,5 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
         URL.revokeObjectURL(fileUrl);
     }
 }
+
+export const importMixamoFBXAsPoses = importMixamoFBXAnimation;
