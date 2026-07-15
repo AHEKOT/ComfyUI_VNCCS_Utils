@@ -21,11 +21,10 @@ from ..CharacterData.mh_parser import TargetParser, HumanSolver
 from ..CharacterData.obj_loader import load_obj
 from ..CharacterData import matrix
 from ..CharacterData.mh_skeleton import Skeleton
-from .pose_animation import sample_animation_frames
 import threading
 import types
 _CACHE_LOCK = threading.Lock()
-_CAPTURED_IMAGE_MAX_COUNT = 16
+_CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_PIXELS = 4096 * 4096
@@ -160,34 +159,23 @@ class VNCCS_PoseStudio:
     @classmethod
     def IS_CHANGED(cls, pose_data: str = "{}", pose_image=None, unique_id: str = None):
         # Force re-execution if Debug Mode is enabled
-        change_token = pose_data
         try:
             data = json.loads(pose_data)
             export = data.get("export", {})
-            editor_mode = export.get("editor_mode", export.get("content_mode", "image"))
-            if export.get("debugMode", False) and editor_mode != "animation":
+            if export.get("debugMode", False):
                 return float("NaN")
-            if editor_mode == "animation":
-                # The playhead is editor-only state; scrubbing must not invalidate
-                # a render whose complete frame sequence is otherwise unchanged.
-                animation = data.get("animation")
-                if isinstance(animation, dict):
-                    animation.pop("currentFrame", None)
-                    animation.pop("current_frame", None)
-                data.pop("animation_ui", None)
-                change_token = json.dumps(data, sort_keys=True, separators=(",", ":"))
         except Exception:
             pass
         if pose_image is None:
-            return change_token
+            return pose_data
         try:
             tensor = pose_image.detach().cpu()
             arr = tensor.numpy()
             sample = arr.flat[::max(1, arr.size // 1000)]
             digest = hashlib.sha256(bytes(sample)).hexdigest()
-            return f"{change_token}|pose_image:{digest}"
+            return f"{pose_data}|pose_image:{digest}"
         except Exception:
-            return f"{change_token}|pose_image:{id(pose_image)}"
+            return f"{pose_data}|pose_image:{id(pose_image)}"
 
     def _wait_for_frontend_sync(self, unique_id, start_time, timeout=15.0):
         import time
@@ -277,7 +265,12 @@ class VNCCS_PoseStudio:
                     from server import PromptServer
                     import time
                     PromptServer.instance.send_sync("vnccs_req_pose_sync", {"node_id": unique_id})
-                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=5.0)
+                    sync_timeout = 5.0
+                    if export_settings.get("editor_mode", export_settings.get("content_mode")) == "animation":
+                        animation = data.get("animation") if isinstance(data.get("animation"), dict) else {}
+                        frame_count = max(1, int(animation.get("frameCount", animation.get("frame_count", 1)) or 1))
+                        sync_timeout = min(120.0, max(15.0, 5.0 + frame_count * 0.25))
+                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=sync_timeout)
                     if synced:
                         data = synced
                 except Exception as e:
@@ -334,13 +327,7 @@ class VNCCS_PoseStudio:
         
         poses = data.get("poses", [{}])
         editor_mode = export.get("editor_mode", export.get("content_mode", "image"))
-        if editor_mode == "animation" and isinstance(data.get("animation"), dict):
-            fallback_pose = None
-            image_poses = data.get("image_poses")
-            if isinstance(image_poses, list) and image_poses:
-                fallback_pose = image_poses[min(int(data.get("activeTab", 0) or 0), len(image_poses) - 1)]
-            poses = sample_animation_frames(data["animation"], fallback_pose)
-        elif not poses:
+        if not poses and editor_mode != "animation":
             poses = [{}]
             
         # === 1. Try Client-Side Rendered Images (CSR) ===
@@ -380,6 +367,12 @@ class VNCCS_PoseStudio:
                     # For grid, return only the first prompt (conceptually the "main" prompt)
                     combined_prompt = lighting_prompts[0] if lighting_prompts else ""
                     return ([grid_tensor], [combined_prompt])
+
+        if editor_mode == "animation":
+            raise RuntimeError(
+                "Pose Studio animation frames were not captured by the widget; "
+                "backend animation rendering is intentionally disabled."
+            )
         
         # === 2. Fallback to Python Rendering ===
         
@@ -423,14 +416,8 @@ class VNCCS_PoseStudio:
         if output_mode == "LIST":
             # Return list of individual images
             tensor_list = [t.unsqueeze(0) for t in tensors]
-            # Lighting is clip-static in animation v1. Preserve the clip prompt
-            # so downstream nodes receive one value per rendered frame.
-            base_prompt = ""
-            if editor_mode == "animation" and isinstance(data.get("animation"), dict):
-                base_pose = data["animation"].get("basePose", data["animation"].get("base_pose", {}))
-                if isinstance(base_pose, dict):
-                    base_prompt = str(base_pose.get("prompt", ""))
-            prompts = [base_prompt] * len(tensor_list)
+            # Fallback prompts (empty strings since python renderer doesn't generate them yet)
+            prompts = [""] * len(tensor_list)
             return (tensor_list, prompts)
         else:
             # GRID mode - concatenate into single image

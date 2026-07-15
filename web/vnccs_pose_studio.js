@@ -20,6 +20,7 @@ import {
     getPoseTrackEuler,
     isAnimationEmpty,
     normalizeAnimationState,
+    resolveCaptureCameraParams,
     retimeAnimationTiming,
     sampleAnimationFrames,
     setTrackKeyframeFromEuler,
@@ -1280,6 +1281,20 @@ const STYLES = `
     border-bottom: 1px solid rgba(255,255,255,0.035);
 }
 
+.vnccs-ps-tl-virtual-tracks {
+    position: relative;
+    width: 100%;
+    contain: layout style;
+}
+
+.vnccs-ps-tl-row.virtual {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 25px;
+    contain: layout paint style;
+}
+
 .vnccs-ps-tl-row:hover .vnccs-ps-tl-lane,
 .vnccs-ps-tl-row:hover .vnccs-ps-tl-track-label {
     background-color: rgba(255,143,163,0.035);
@@ -1359,6 +1374,7 @@ const STYLES = `
 
 .vnccs-ps-tl-playhead {
     position: absolute;
+    left: 0;
     z-index: 3;
     top: 0;
     bottom: 0;
@@ -1402,29 +1418,25 @@ const STYLES = `
 
 .vnccs-ps-tl-tick.end { transform: translateX(-100%); }
 
-.vnccs-ps-tl-key {
+.vnccs-ps-tl-keys-canvas {
     position: absolute;
-    z-index: 5;
-    top: 50%;
-    width: 10px;
-    height: 10px;
-    padding: 0;
-    border: 1px solid rgba(255,255,255,.3);
-    border-radius: 1px;
-    transform: translate(-50%, -50%) rotate(45deg);
-    background: #c5b7ef;
-    box-shadow: 0 0 4px rgba(184,169,232,.25);
-    cursor: grab;
+    z-index: 4;
+    inset: 0;
+    width: 100%;
+    height: 25px;
+    pointer-events: none;
 }
 
-.vnccs-ps-tl-key:hover,
-.vnccs-ps-tl-key.selected {
-    background: var(--ps-accent);
-    border-color: #fff;
-    box-shadow: 0 0 7px var(--ps-accent-glow);
+.vnccs-ps-tl-selection-box {
+    position: fixed;
+    z-index: 100000;
+    display: none;
+    box-sizing: border-box;
+    border: 1px solid rgba(255,143,163,.95);
+    background: rgba(255,143,163,.16);
+    box-shadow: 0 0 8px rgba(255,73,107,.22);
+    pointer-events: none;
 }
-
-.vnccs-ps-tl-key:active { cursor: grabbing; }
 
 .vnccs-ps-tl-empty {
     position: sticky;
@@ -3934,7 +3946,10 @@ class PoseStudioWidget {
             state: this.animationState,
             boneNames: [],
             onFrameChange: (frame, options = {}) => {
-                this.applyAnimationFrame(frame, { transient: options.playback || options.scrub });
+                this.applyAnimationFrame(frame, {
+                    transient: options.playback || options.scrub,
+                    updateTimeline: false,
+                });
             },
             onStateChange: (change = {}) => {
                 if (change.transient) return;
@@ -4003,7 +4018,7 @@ class PoseStudioWidget {
         this.animationTimeline?.setBoneNames(names);
     }
 
-    applyAnimationFrame(frame, { transient = false } = {}) {
+    applyAnimationFrame(frame, { transient = false, updateTimeline = true } = {}) {
         if (!this.isAnimationMode() || !this.animationState) return;
         const nextFrame = Math.max(0, Math.min(this.animationState.frameCount - 1, Math.round(Number(frame) || 0)));
         this.animationState.currentFrame = nextFrame;
@@ -4014,7 +4029,7 @@ class PoseStudioWidget {
             this.updateRotationSliders();
             this._applyingAnimationPose = false;
         }
-        this.animationTimeline?.updatePlayheads();
+        if (updateTimeline) this.animationTimeline?.updatePlayheads();
         if (!transient) this.syncToNode(false, { skipCapture: true });
     }
 
@@ -4344,6 +4359,10 @@ class PoseStudioWidget {
     }
 
     persistActivePoseCameraParams() {
+        if (this.isAnimationMode() && this.animationState?.basePose) {
+            this.animationState.basePose.cameraParams = this.currentCameraParams();
+            return;
+        }
         if (!this.poses || this.activeTab == null) return;
 
         const currentPose = this.poses[this.activeTab] || {};
@@ -9679,8 +9698,11 @@ class PoseStudioWidget {
         this._isSyncing = true;
         const animationMode = this.isAnimationMode();
         if (animationMode && !this._applyingAnimationPose) this.captureAnimationEdits();
+        if (animationMode && this.animationState?.basePose) {
+            this.animationState.basePose.cameraParams = this.currentCameraParams();
+        }
         if (animationMode && !options.skipAnimationHistory) this.commitAnimationHistory();
-        const animationCanCapture = animationMode && fullCapture && this.animationState.frameCount <= 16;
+        const animationCanCapture = animationMode && fullCapture;
         const skipCapture = options.skipCapture === true
             || (animationMode && !animationCanCapture)
             || (options.skipCapture !== false && this.interfaceMode === "manager" && !fullCapture);
@@ -9706,8 +9728,8 @@ class PoseStudioWidget {
         if (!this.lightingPrompts) this.lightingPrompts = [];
         this.ensurePosePrompts();
 
-        // Any animation edit invalidates the previous rendered sequence. Long
-        // clips are evaluated by the backend instead of being cached as PNGs.
+        // Any animation edit invalidates the previous widget-rendered sequence.
+        // A fresh full capture always renders every frame through viewer.capture().
         if (animationMode && !animationCanCapture) {
             this.poseCaptures = [];
             this.lightingPrompts = [];
@@ -9731,6 +9753,7 @@ class PoseStudioWidget {
             const isDebug = !animationMode && this.exportParams.debugMode;
             const isOriginalLighting = this.exportParams.keepOriginalLighting;
             const userLights = JSON.parse(JSON.stringify(this.lightParams));
+            const currentCaptureCamera = this.currentCameraParams();
 
             if (fullCapture) {
                 const originalTab = this.activeTab;
@@ -9778,12 +9801,16 @@ class PoseStudioWidget {
                         this._applyingAnimationPose = animationMode;
                         this.viewer.setPose(capturePoses[i], true);
                         this._applyingAnimationPose = false;
-                        const poseCam = capturePoses[i].cameraParams || {};
-                        const z = poseCam.zoom || this.exportParams.cam_zoom || 1.0;
-                        const oX = (poseCam.offset_x !== undefined ? poseCam.offset_x : this.exportParams.cam_offset_x) || 0;
-                        const oY = (poseCam.offset_y !== undefined ? poseCam.offset_y : this.exportParams.cam_offset_y) || 0;
-                        const yaw = (poseCam.yaw_deg !== undefined ? poseCam.yaw_deg : this.exportParams.cam_yaw_deg) || 0;
-                        const pitch = (poseCam.pitch_deg !== undefined ? poseCam.pitch_deg : this.exportParams.cam_pitch_deg) || 0;
+                        const poseCam = resolveCaptureCameraParams(
+                            capturePoses[i].cameraParams,
+                            currentCaptureCamera,
+                            animationMode,
+                        );
+                        const z = poseCam.zoom;
+                        const oX = poseCam.offset_x;
+                        const oY = poseCam.offset_y;
+                        const yaw = poseCam.yaw_deg;
+                        const pitch = poseCam.pitch_deg;
 
                         // Lighting Toggle
                         if (isOriginalLighting) {

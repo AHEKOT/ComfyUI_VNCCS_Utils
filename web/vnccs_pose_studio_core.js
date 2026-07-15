@@ -4494,30 +4494,49 @@ export class PoseViewerCore {
         };
     }
 
-    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
-        const worldKps = this._samMeshOverlayWorldKps;
-        if (!worldKps?.pelvis || !this.bones || !this.skinnedMesh) return false;
+    /**
+     * Apply already-normalized world-space body landmarks through the same
+     * alignment stages used by the current image-pose importer. This is also
+     * the canonical entry point for skeletal sources such as Mixamo FBX.
+     */
+    applyWorldKeypointImport(worldKps, options = {}) {
+        if (!worldKps?.pelvis || !this.bones || !this.skinnedMesh || !this.ikController) return false;
 
         const importTargets = this._buildSAM3DImportTargetsFromWorldKps(worldKps);
         if (!importTargets) return false;
 
-        this._hmr2WorldKps = worldKps;
-        this._drawHMR2Figure(worldKps);
-        this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
+        if (options.drawFigure !== false) {
+            this._hmr2WorldKps = worldKps;
+            this._drawHMR2Figure(worldKps);
+        }
+        this._applyImportPelvisAndTorso(worldKps, options.shoulderYOffset || 0);
         this._applySAM3DTargetIK(importTargets, {
-            normalizeLimbs: false,
-            drawNormalizedFigure: false,
+            includeSpine: options.includeSpine !== false,
+            normalizeLimbs: options.normalizeLimbs !== false,
+            drawNormalizedFigure: options.drawFigure !== false,
         });
-        this._applySAM3DHeadLineRetarget(worldKps);
-        this._applySAM3DHandPointRetarget(worldKps);
-        this._applySAM3DFootPointRetarget(worldKps);
+
+        const alignedWorldKps = importTargets.worldKps || worldKps;
+        if (options.alignHead !== false) this._applySAM3DHeadLineRetarget(alignedWorldKps);
+        if (options.alignHands !== false) this._applySAM3DHandPointRetarget(alignedWorldKps);
+        if (options.alignFeet !== false) this._applySAM3DFootPointRetarget(alignedWorldKps);
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);
-        this.updateMarkers();
+        this.updateIKEffectorPositions?.();
+        if (options.updateMarkers !== false) this.updateMarkers();
         this.requestRender();
-        this.dispatchPoseChange();
+        if (options.dispatchPoseChange !== false) this.dispatchPoseChange();
         return true;
+    }
+
+    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
+        const worldKps = this._samMeshOverlayWorldKps;
+        return this.applyWorldKeypointImport(worldKps, {
+            shoulderYOffset,
+            normalizeLimbs: false,
+            drawFigure: true,
+        });
     }
 
     _estimateCurrentModelHeight() {
@@ -6289,7 +6308,6 @@ export class PoseViewerCore {
         if (!worldKps || !this.THREE || !this.bones || !this.skinnedMesh) return;
 
         const THREE = this.THREE;
-        const includeHead = options.includeHead !== false;
         const pelvisBone = this.bones.pelvis || this.bones.spine_01;
         if (pelvisBone && worldKps.pelvis) {
             const localTarget = worldKps.pelvis.clone();
@@ -6645,19 +6663,14 @@ export class PoseViewerCore {
         const usedRotationImport = this._applySAM3DRotationImport(data);
 
         if (worldKps?.pelvis) {
-            this._hmr2WorldKps = worldKps;
-            this._drawHMR2Figure(worldKps);
+            return this.applyWorldKeypointImport(worldKps, {
+                shoulderYOffset,
+                includeSpine: !usedRotationImport,
+                normalizeLimbs: true,
+            });
         }
 
         if (usedRotationImport) {
-            this._applyImportPelvisAndTorso(worldKps, shoulderYOffset, { includeHead: false });
-            this._applySAM3DTargetIK(importTargets, {
-                includeSpine: false,
-                normalizeLimbs: true,
-            });
-            this._applySAM3DHeadLineRetarget(importTargets.worldKps || worldKps);
-            this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
-            this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
             if (this.skeleton) this.skeleton.update();
             this.skinnedMesh.updateMatrixWorld(true);
             this.updateMarkers();
@@ -6665,24 +6678,7 @@ export class PoseViewerCore {
             this.dispatchPoseChange();
             return true;
         }
-        if (!worldKps || !worldKps.pelvis) return false;
-
-        this._hmr2WorldKps = worldKps;
-        this._drawHMR2Figure(worldKps);
-        this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
-
-        this._applySAM3DTargetIK(importTargets, {
-            normalizeLimbs: true,
-        });
-        this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
-        this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
-
-        if (this.skeleton) this.skeleton.update();
-        this.skinnedMesh.updateMatrixWorld(true);
-        this.updateMarkers();
-        this.requestRender();
-        this.dispatchPoseChange();
-        return true;
+        return false;
     }
 
     applyHMR2v1Import(data, smplRefHeight = 1.45, shoulderYOffset = 0) {
@@ -6819,22 +6815,20 @@ export class PoseViewerCore {
             applyFK('spine_03', '_s2', 'neck');
         }
 
-        if (includeHead) {
-            const rightEar = worldKps.right_ear;
-            const leftEar = worldKps.left_ear;
-            if (rightEar && leftEar) {
-                worldKps._earMid = new THREE.Vector3(
-                    (rightEar.x + leftEar.x) / 2,
-                    (rightEar.y + leftEar.y) / 2,
-                    (rightEar.z + leftEar.z) / 2,
-                );
-            }
-            if (worldKps._earMid) {
-                applyFK('neck_01', 'neck', '_earMid');
-                if (worldKps.nose) applyFK('head', '_earMid', 'nose');
-            } else {
-                applyFK('neck_01', 'neck', 'nose');
-            }
+        const rightEar = worldKps.right_ear;
+        const leftEar = worldKps.left_ear;
+        if (rightEar && leftEar) {
+            worldKps._earMid = new THREE.Vector3(
+                (rightEar.x + leftEar.x) / 2,
+                (rightEar.y + leftEar.y) / 2,
+                (rightEar.z + leftEar.z) / 2,
+            );
+        }
+        if (worldKps._earMid) {
+            applyFK('neck_01', 'neck', '_earMid');
+            if (worldKps.nose) applyFK('head', '_earMid', 'nose');
+        } else {
+            applyFK('neck_01', 'neck', 'nose');
         }
 
         if (shoulderYOffset !== 0) {
