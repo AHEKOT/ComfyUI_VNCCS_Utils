@@ -5,6 +5,7 @@ import {
     MODEL_ROTATION_TRACK,
     copyKeyframeSelection,
     createAnimationStateFromPoses,
+    createClearedAnimationState,
     createDefaultAnimationState,
     computeVirtualTrackRange,
     computeVisibleFrameRange,
@@ -18,8 +19,10 @@ import {
     playbackFrameForElapsed,
     pasteKeyframeSelection,
     resolveCaptureCameraParams,
+    restoreAnimationStateSnapshot,
     retimeAnimationFrameCount,
     retimeAnimationTiming,
+    serializeAnimationStateSnapshot,
     setTrackKeyframeFromEuler,
 } from "../web/vnccs_pose_animation.mjs";
 
@@ -186,6 +189,50 @@ test("copied key groups paste at the playhead with values and interpolation", ()
     assert.deepEqual(pasted.map(item => item.frame), [7, 10]);
     assert.equal(state.tracks.head.keys.find(key => key.frame === 7).interpolation, "easeIn");
     assert.equal(state.tracks.arm.keys.find(key => key.frame === 10).interpolation, "easeOut");
+});
+
+test("animation reset clears every track while preserving timeline settings", () => {
+    const state = createDefaultAnimationState({ bones: { head: [5, 0, 0] }, prompt: "keep" }, {
+        duration: 4,
+        fps: 12,
+        loop: false,
+        autoKey: false,
+    });
+    setTrackKeyframeFromEuler(state, "head", 0, [5, 0, 0], "linear");
+    setTrackKeyframeFromEuler(state, "head", 20, [30, 0, 0], "easeIn");
+    setTrackKeyframeFromEuler(state, "arm", 10, [0, 15, 0], "easeOut");
+
+    const cleared = createClearedAnimationState(state, {
+        bones: {},
+        modelRotation: [0, 0, 0],
+        prompt: "keep",
+    });
+    assert.deepEqual(cleared.tracks, {});
+    assert.deepEqual(cleared.basePose.bones, {});
+    assert.deepEqual(cleared.basePose.modelRotation, [0, 0, 0]);
+    assert.equal(cleared.currentFrame, 0);
+    assert.equal(cleared.frameCount, state.frameCount);
+    assert.equal(cleared.duration, state.duration);
+    assert.equal(cleared.fps, state.fps);
+    assert.equal(cleared.loop, false);
+    assert.equal(cleared.autoKey, false);
+});
+
+test("one history snapshot restores all keys removed by a grouped delete or reset", () => {
+    const state = createDefaultAnimationState({}, { duration: 2, fps: 12 });
+    setTrackKeyframeFromEuler(state, "head", 0, [0, 0, 0], "linear");
+    setTrackKeyframeFromEuler(state, "head", 12, [0, 30, 0], "easeIn");
+    setTrackKeyframeFromEuler(state, "arm", 3, [15, 0, 0], "easeOut");
+    setTrackKeyframeFromEuler(state, "arm", 18, [45, 0, 0], "hold");
+    setTrackKeyframeFromEuler(state, MODEL_ROTATION_TRACK, 6, [0, 20, 0], "smooth");
+    const expectedTracks = JSON.parse(JSON.stringify(state.tracks));
+    const snapshot = serializeAnimationStateSnapshot(state);
+
+    state.tracks = {};
+    const restored = restoreAnimationStateSnapshot(snapshot, { currentFrame: 7 });
+    assert.deepEqual(restored.tracks, expectedTracks);
+    assert.equal(restored.currentFrame, 7);
+    assert.equal(Object.values(restored.tracks).reduce((sum, track) => sum + track.keys.length, 0), 7);
 });
 
 test("pose diff reports changed bones and model rotation only", () => {

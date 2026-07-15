@@ -11,8 +11,21 @@ import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 import {
+    MAX_VIDEO_POSE_SAMPLES,
+    canvasToBlob,
+    clampVideoTimelineViewport,
+    computeVideoSamplePlan,
+    drawVideoCover,
+    fitVideoTimelineSelection,
+    isLikelyVideoFile,
+    seekVideo,
+    waitForVideoMetadata,
+    zoomVideoTimelineViewport,
+} from "./vnccs_video_import.mjs";
+import {
     MODEL_ROTATION_TRACK,
     PoseAnimationTimeline,
+    createClearedAnimationState,
     createAnimationStateFromPoses,
     createDefaultAnimationState,
     evaluateAnimationFrame,
@@ -22,7 +35,9 @@ import {
     normalizeAnimationState,
     resolveCaptureCameraParams,
     retimeAnimationTiming,
+    restoreAnimationStateSnapshot,
     sampleAnimationFrames,
+    serializeAnimationStateSnapshot,
     setTrackKeyframeFromEuler,
 } from "./vnccs_pose_animation.mjs";
 
@@ -2015,6 +2030,246 @@ const STYLES = `
     background: rgba(255, 255, 255, 0.06);
 }
 
+/* === Video pose capture === */
+.vnccs-ps-video-modal {
+    width: min(920px, calc(100% - 28px));
+    max-height: calc(100% - 28px);
+    background: rgba(12, 10, 20, 0.98);
+}
+
+.vnccs-ps-video-modal .vnccs-ps-modal-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.vnccs-ps-video-file-name {
+    color: var(--ps-text-muted);
+    font-size: 10px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-ps-video-content {
+    gap: 10px;
+    overflow: auto;
+    min-height: 0;
+}
+
+.vnccs-ps-video-preview-wrap {
+    min-height: 180px;
+    max-height: min(46vh, 430px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: #050508;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    overflow: hidden;
+}
+
+.vnccs-ps-video-preview {
+    display: block;
+    width: 100%;
+    height: 100%;
+    max-height: min(46vh, 430px);
+    object-fit: contain;
+    background: #050508;
+}
+
+.vnccs-ps-video-timeline-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.vnccs-ps-video-timeline-toolbar button {
+    height: 26px;
+    padding: 0 9px;
+    border: 1px solid var(--ps-border);
+    border-radius: 6px;
+    background: rgba(255,255,255,.04);
+    color: var(--ps-text);
+    font: 700 9px/1 var(--ps-font);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.vnccs-ps-video-timeline-toolbar button:hover {
+    border-color: var(--ps-accent-border);
+    color: var(--ps-accent);
+}
+.vnccs-ps-video-timeline-toolbar button:disabled { opacity: .4; cursor: default; }
+.vnccs-ps-video-zoom-range {
+    width: min(220px, 24vw);
+    accent-color: var(--ps-accent);
+}
+.vnccs-ps-video-view-label {
+    margin-left: auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ps-text-muted);
+    font: 600 9px/1 var(--ps-font);
+    text-align: right;
+}
+
+.vnccs-ps-video-timeline {
+    position: relative;
+    height: 92px;
+    min-height: 92px;
+    overflow: hidden;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    background: #080710;
+    cursor: crosshair;
+    touch-action: none;
+    user-select: none;
+}
+
+.vnccs-ps-video-thumbnails {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
+.vnccs-ps-video-dim,
+.vnccs-ps-video-selection,
+.vnccs-ps-video-playhead {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    pointer-events: none;
+}
+
+.vnccs-ps-video-dim { background: rgba(4, 3, 8, 0.72); }
+.vnccs-ps-video-dim--left { left: 0; }
+.vnccs-ps-video-dim--right { right: 0; }
+.vnccs-ps-video-selection {
+    border-top: 2px solid var(--ps-accent);
+    border-bottom: 2px solid var(--ps-accent);
+    box-sizing: border-box;
+}
+.vnccs-ps-video-playhead {
+    width: 2px;
+    background: #ff5f82;
+    box-shadow: 0 0 8px rgba(255, 95, 130, 0.8);
+}
+
+.vnccs-ps-video-handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 14px;
+    z-index: 3;
+    cursor: ew-resize;
+    transform: translateX(-7px);
+    touch-action: none;
+}
+.vnccs-ps-video-handle::before {
+    content: '';
+    position: absolute;
+    left: 5px;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    background: var(--ps-accent);
+    box-shadow: 0 0 9px var(--ps-accent-glow);
+}
+.vnccs-ps-video-handle::after {
+    position: absolute;
+    top: 4px;
+    left: -1px;
+    min-width: 14px;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background: var(--ps-accent);
+    color: #21141a;
+    font: 800 8px/1 var(--ps-font);
+    text-align: center;
+}
+.vnccs-ps-video-handle--in::after { content: 'IN'; }
+.vnccs-ps-video-handle--out::after { content: 'OUT'; }
+
+.vnccs-ps-video-pan-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ps-text-muted);
+    font: 700 8px/1 var(--ps-font);
+}
+.vnccs-ps-video-pan {
+    flex: 1;
+    min-width: 0;
+    accent-color: var(--ps-accent);
+}
+.vnccs-ps-video-pan:disabled { opacity: .3; }
+
+.vnccs-ps-video-controls {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+.vnccs-ps-video-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--ps-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .4px;
+}
+.vnccs-ps-video-field input {
+    min-width: 0;
+    box-sizing: border-box;
+    width: 100%;
+    padding: 8px 9px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    outline: none;
+    background: rgba(255,255,255,.04);
+    color: var(--ps-text);
+    font: 600 11px/1 var(--ps-font);
+}
+.vnccs-ps-video-field input:focus { border-color: var(--ps-accent); }
+.vnccs-ps-video-summary {
+    min-height: 18px;
+    color: var(--ps-text-muted);
+    font-size: 10px;
+}
+.vnccs-ps-video-summary.is-limited { color: #ffd28f; }
+.vnccs-ps-video-progress { display: none; }
+.vnccs-ps-video-progress.is-active { display: block; }
+.vnccs-ps-video-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+.vnccs-ps-video-actions .vnccs-ps-modal-btn {
+    justify-content: center;
+    min-width: 120px;
+}
+.vnccs-ps-video-actions .primary {
+    background: var(--ps-accent);
+    border-color: var(--ps-accent);
+    color: #21141a;
+    font-weight: 800;
+}
+.vnccs-ps-video-actions button:disabled {
+    opacity: .45;
+    cursor: default;
+}
+
+@media (max-width: 680px) {
+    .vnccs-ps-video-controls { grid-template-columns: 1fr; }
+    .vnccs-ps-video-timeline { height: 72px; min-height: 72px; }
+    .vnccs-ps-video-view-label { display: none; }
+    .vnccs-ps-video-timeline-toolbar button { padding: 0 6px; }
+}
+
 /* === Pose Library Panel === */
 .vnccs-ps-library-btn {
     position: absolute;
@@ -3853,6 +4108,7 @@ class PoseStudioWidget {
         const resetBtn = document.createElement("button");
         resetBtn.className = "vnccs-ps-btn";
         resetBtn.innerHTML = '<span class="vnccs-ps-btn-icon">↺</span> Reset';
+        resetBtn.title = "Reset pose; in Animation mode clear the entire animation and all keyframes";
         resetBtn.addEventListener("click", () => this.resetCurrentPose());
 
         const snapBtn = document.createElement("button");
@@ -3929,7 +4185,9 @@ class PoseStudioWidget {
 
         // Hidden file inputs
         const fileInput = document.createElement("input");
-        fileInput.type = "file"; fileInput.accept = ".json,.fbx,.png,.jpg,.jpeg,.webp,image/*"; fileInput.style.display = "none";
+        fileInput.type = "file";
+        fileInput.accept = ".json,.fbx,.png,.jpg,.jpeg,.webp,.mp4,.m4v,.webm,.mov,.ogv,.ogg,.avi,.mkv,image/*,video/*";
+        fileInput.style.display = "none";
         fileInput.addEventListener("change", (e) => this.handleFileImport(e));
         this.fileImportInput = fileInput;
         this.container.appendChild(fileInput);
@@ -4071,10 +4329,7 @@ class PoseStudioWidget {
     }
 
     animationSnapshot(state = this.animationState) {
-        const snapshot = JSON.parse(JSON.stringify(state || {}));
-        delete snapshot.currentFrame;
-        delete snapshot.current_frame;
-        return JSON.stringify(snapshot);
+        return serializeAnimationStateSnapshot(state);
     }
 
     resetAnimationHistory() {
@@ -4098,9 +4353,10 @@ class PoseStudioWidget {
     restoreAnimationSnapshot(snapshot) {
         if (!snapshot) return;
         const currentFrame = this.animationState.currentFrame;
-        const restored = JSON.parse(snapshot);
-        restored.currentFrame = currentFrame;
-        this.animationState = normalizeAnimationState(restored, this.animationState.basePose || {});
+        this.animationState = restoreAnimationStateSnapshot(snapshot, {
+            currentFrame,
+            fallbackPose: this.animationState.basePose || {},
+        });
         this._animationInitialized = true;
         this.animationTimeline?.setState(this.animationState);
         this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
@@ -6383,6 +6639,10 @@ class PoseStudioWidget {
 
 
     resetCurrentPose() {
+        if (this.isAnimationMode()) {
+            this.resetCurrentAnimation();
+            return;
+        }
         this.clearSAMCameraMode();
         this.resetCameraParams();
         if (this.viewer) {
@@ -6391,13 +6651,55 @@ class PoseStudioWidget {
             this.updateRotationSliders();
             this.applyCameraToViewer(true);
         }
-        if (this.isAnimationMode()) {
-            this.commitViewerPoseToCurrentEditor();
-            return;
-        }
         this.poses[this.activeTab] = {};
         this.setPosePrompt(this.activeTab, "");
         this.syncToNode(false);
+    }
+
+    resetCurrentAnimation() {
+        this.ensureAnimationInitialized();
+        this.animationTimeline?.stopPlayback?.();
+
+        // Capture any pending edit first. The following reset is then committed
+        // once, so one Undo restores the complete pre-reset clip and all keys.
+        this.commitAnimationHistory();
+        const previous = this.animationState;
+        const prompt = String(previous?.basePose?.prompt || this.getPosePrompt(this.activeTab) || "");
+
+        this.clearSAMCameraMode();
+        this.resetCameraParams();
+        this._applyingAnimationPose = true;
+        try {
+            if (this.viewer?.isInitialized?.()) {
+                this.viewer.resetPose();
+                this.applyCameraToViewer(true);
+                this.viewer.setCameraParams?.(this.currentCameraParams());
+            }
+        } finally {
+            this._applyingAnimationPose = false;
+        }
+
+        const neutralPose = this.viewer?.isInitialized?.()
+            ? this.viewer.getPose()
+            : { bones: {}, modelRotation: [0, 0, 0] };
+        neutralPose.bones = {};
+        neutralPose.modelRotation = [0, 0, 0];
+        neutralPose.cameraParams = this.currentCameraParams();
+        neutralPose.prompt = prompt;
+
+        this.animationState = createClearedAnimationState(previous, neutralPose);
+        this._animationInitialized = true;
+        this.poses = [JSON.parse(JSON.stringify(neutralPose))];
+        this.posePrompts = [prompt];
+        this.poseCaptures = [];
+        this.lightingPrompts = [];
+        this.activeTab = 0;
+        this.animationTimeline?.setState(this.animationState);
+        this.updateTabs();
+        this.syncPromptFieldToActiveTab();
+        this.updateRotationSliders();
+        this.updateCaptureCameraPreview();
+        this.syncToNode(false, { skipCapture: true });
     }
 
     resetSelectedBone() {
@@ -6652,6 +6954,26 @@ class PoseStudioWidget {
         };
     }
 
+    async requestSAM3DPoseForImage(image, { taskId = null, signal = null, fileName = null } = {}) {
+        const resolvedTaskId = taskId || (
+            globalThis.crypto?.randomUUID?.()
+            || `sam3d-${Date.now()}-${Math.random().toString(16).slice(2)}`
+        );
+        const form = new FormData();
+        form.append("task_id", resolvedTaskId);
+        form.append("image", image, fileName || image?.name || "pose_image.jpg");
+        const response = await api.fetchApi("/vnccs/sam3d/process_image_to_pose_json", {
+            method: "POST",
+            body: form,
+            signal,
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+        const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
+        if (!poseData) throw new Error("SAM 3D Body returned empty pose JSON.");
+        return poseData;
+    }
+
     async importSAM3DImageAsPose(file) {
         if (!this.viewer || !this.viewer.isInitialized()) {
             throw new Error("Pose viewer is not ready.");
@@ -6675,30 +6997,16 @@ class PoseStudioWidget {
         try {
             progress.setProgress(1);
             progress.setText("Step 1/6: Uploading image to SAM 3D Body...");
-            const form = new FormData();
-            form.append("task_id", taskId);
-            form.append("image", file, file.name || "pose_image.png");
-
             progress.setText("Step 1/6: Waiting for SAM 3D Body to start processing...");
             pollTimer = setInterval(pollStatus, 700);
-            const response = await api.fetchApi("/vnccs/sam3d/process_image_to_pose_json", {
-                method: "POST",
-                body: form,
+            const poseData = await this.requestSAM3DPoseForImage(file, {
+                taskId,
+                fileName: file.name || "pose_image.png",
             });
             await pollStatus();
 
-            const result = await response.json();
-            if (!response.ok) {
-                throw new Error(result?.error || `HTTP ${response.status}`);
-            }
-
             progress.setProgress(92);
             progress.setText("Step 6/6: Building SAM render fit...");
-            const poseData = result.pose_data || (result.pose_json ? JSON.parse(result.pose_json) : null);
-            if (!poseData) {
-                throw new Error("SAM 3D Body returned empty pose JSON.");
-            }
-
             const fitData = await this.prepareSAM3DRenderFit(poseData);
             const poseForImport = fitData?.poseData || poseData;
 
@@ -6755,7 +7063,7 @@ class PoseStudioWidget {
         }
     }
 
-    async fetchSAM3DRenderMesh(poseData) {
+    async fetchSAM3DRenderMesh(poseData, { signal = null } = {}) {
         const response = await api.fetchApi("/vnccs/sam3d/render_mesh_overlay", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -6764,6 +7072,7 @@ class PoseStudioWidget {
                 body_preset: {},
                 pose_adjust: 0.0,
             }),
+            signal,
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
@@ -6780,16 +7089,17 @@ class PoseStudioWidget {
         };
     }
 
-    async prepareSAM3DRenderFit(poseData) {
+    async prepareSAM3DRenderFit(poseData, { signal = null, reportError = true } = {}) {
         try {
-            const meshData = await this.fetchSAM3DRenderMesh(poseData);
+            const meshData = await this.fetchSAM3DRenderMesh(poseData, { signal });
             return {
                 meshData,
                 poseData: this.buildSAM3DFittedPoseData(poseData, meshData),
             };
         } catch (err) {
+            if (err?.name === "AbortError") throw err;
             console.error("[VNCCS] Failed to build SAM render fit:", err);
-            this.showMessage?.(`Failed to build SAM render fit: ${err?.message || err}`, true);
+            if (reportError) this.showMessage?.(`Failed to build SAM render fit: ${err?.message || err}`, true);
             return null;
         }
     }
@@ -6888,6 +7198,555 @@ class PoseStudioWidget {
         return true;
     }
 
+    formatVideoTime(seconds) {
+        const value = Math.max(0, Number(seconds) || 0);
+        const hours = Math.floor(value / 3600);
+        const minutes = Math.floor((value % 3600) / 60);
+        const secs = value % 60;
+        const tail = secs.toFixed(2).padStart(5, "0");
+        return hours > 0
+            ? `${hours}:${String(minutes).padStart(2, "0")}:${tail}`
+            : `${minutes}:${tail}`;
+    }
+
+    async renderVideoImportThumbnails(video, canvas, startTime, endTime, signal) {
+        const width = 960;
+        const height = 90;
+        const count = 20;
+        const visibleDuration = Math.max(0, endTime - startTime);
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext("2d", { alpha: false });
+        context.fillStyle = "#080710";
+        context.fillRect(0, 0, width, height);
+        for (let index = 0; index < count; index++) {
+            if (signal?.aborted) throw new DOMException("Cancelled", "AbortError");
+            const time = startTime + (visibleDuration * index) / Math.max(1, count - 1);
+            await seekVideo(video, time, signal);
+            const x = Math.round((index * width) / count);
+            const nextX = Math.round(((index + 1) * width) / count);
+            drawVideoCover(context, video, x, 0, nextX - x, height);
+            if (index % 3 === 2) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+        }
+    }
+
+    async captureVideoFrameBlob(video, time, canvas, signal) {
+        await seekVideo(video, time, signal);
+        const sourceWidth = Math.max(1, video.videoWidth || 1);
+        const sourceHeight = Math.max(1, video.videoHeight || 1);
+        const scale = Math.min(1, 1280 / Math.max(sourceWidth, sourceHeight));
+        const width = Math.max(2, Math.round(sourceWidth * scale));
+        const height = Math.max(2, Math.round(sourceHeight * scale));
+        if (canvas.width !== width) canvas.width = width;
+        if (canvas.height !== height) canvas.height = height;
+        const context = canvas.getContext("2d", { alpha: false });
+        context.drawImage(video, 0, 0, width, height);
+        return canvasToBlob(canvas, "image/jpeg", 0.9);
+    }
+
+    async importVideoPoseSegment(video, plan, { signal = null, onProgress = null } = {}) {
+        if (!this.viewer?.isInitialized?.()) throw new Error("Pose viewer is not ready.");
+        if (!plan || plan.duration <= 0 || !plan.times?.length) throw new Error("Select a non-empty video segment.");
+
+        const originalPose = this.viewer.getPose();
+        const originalCameraParams = this.currentCameraParams();
+        const prompt = this.getPosePrompt(this.activeTab);
+        const captureCanvas = document.createElement("canvas");
+        const poses = [];
+        let lastPoseData = null;
+        let lastMeshData = null;
+
+        try {
+            video.pause();
+            for (let index = 0; index < plan.times.length; index++) {
+                if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+                const time = plan.times[index];
+                onProgress?.({
+                    index,
+                    count: plan.sampleCount,
+                    time,
+                    progress: (index / plan.sampleCount) * 100,
+                    phase: "capture",
+                });
+                const frameBlob = await this.captureVideoFrameBlob(video, time, captureCanvas, signal);
+                const taskId = `video-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
+                onProgress?.({
+                    index,
+                    count: plan.sampleCount,
+                    time,
+                    progress: ((index + 0.15) / plan.sampleCount) * 100,
+                    phase: "pose",
+                });
+                const poseData = await this.requestSAM3DPoseForImage(frameBlob, {
+                    taskId,
+                    signal,
+                    fileName: `video_frame_${String(index).padStart(5, "0")}.jpg`,
+                });
+                const fitData = await this.prepareSAM3DRenderFit(poseData, {
+                    signal,
+                    reportError: false,
+                });
+                const poseForImport = fitData?.poseData || poseData;
+                const applied = this.viewer.applySAM3DImport(
+                    poseForImport,
+                    this._shoulderYOffset || 0
+                );
+                if (!applied) throw new Error(`Failed to apply captured pose at ${this.formatVideoTime(time)}.`);
+                if (fitData?.meshData) this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
+
+                const capturedPose = this.viewer.getPose();
+                capturedPose.cameraParams = { ...originalCameraParams };
+                if (originalPose.camera) capturedPose.camera = { ...originalPose.camera };
+                capturedPose.prompt = prompt;
+                poses.push(capturedPose);
+                lastPoseData = poseForImport;
+                lastMeshData = fitData?.meshData || null;
+                onProgress?.({
+                    index: index + 1,
+                    count: plan.sampleCount,
+                    time,
+                    progress: ((index + 1) / plan.sampleCount) * 100,
+                    phase: "complete",
+                });
+
+                // Let layout, controls and cancellation paint between expensive frames.
+                await new Promise(resolve => (
+                    typeof requestAnimationFrame === "function"
+                        ? requestAnimationFrame(() => resolve())
+                        : setTimeout(resolve, 0)
+                ));
+            }
+
+            if (poses.length < 2) throw new Error("Video capture produced fewer than two pose frames.");
+            this._lastSAM3DPoseData = lastPoseData;
+            this._lastSAM3DMeshData = lastMeshData;
+            this.syncMeshProportionSlidersFromViewer();
+            this.replaceAnimationFromPoses(poses, { duration: plan.duration });
+            this.updateRotationSliders();
+            this.updateCaptureCameraPreview();
+            return poses.length;
+        } catch (error) {
+            if (this.container?.isConnected && this.viewer?.isInitialized?.()) {
+                this.viewer.setPose?.(originalPose);
+                this.applyCameraToViewer(true);
+                this.viewer.setCameraParams?.(originalCameraParams);
+            }
+            throw error;
+        }
+    }
+
+    async showVideoImportModal(file) {
+        if (!this.viewer?.isInitialized?.()) throw new Error("Pose viewer is not ready.");
+        this._activeVideoImportClose?.();
+
+        const objectUrl = URL.createObjectURL(file);
+        const mediaController = new AbortController();
+        let thumbnailRenderController = null;
+        let thumbnailRenderTimer = null;
+        let importController = null;
+        let processing = false;
+        let closed = false;
+        let duration = 0;
+        let inTime = 0;
+        let outTime = 0;
+        let viewStart = 0;
+        let viewEnd = 0;
+
+        const overlay = document.createElement("div");
+        overlay.className = "vnccs-ps-modal-overlay";
+        const modal = document.createElement("div");
+        modal.className = "vnccs-ps-modal vnccs-ps-video-modal";
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">
+                <span>Video Pose Capture</span>
+                <span class="vnccs-ps-video-file-name"></span>
+            </div>
+            <div class="vnccs-ps-modal-content vnccs-ps-video-content">
+                <div class="vnccs-ps-video-preview-wrap">
+                    <video class="vnccs-ps-video-preview" controls playsinline preload="metadata"></video>
+                </div>
+                <div class="vnccs-ps-video-timeline-toolbar">
+                    <button class="vnccs-ps-video-view-full" type="button">FULL</button>
+                    <button class="vnccs-ps-video-view-selection" type="button">FIT SELECTION</button>
+                    <button class="vnccs-ps-video-zoom-out" type="button" title="Zoom out">−</button>
+                    <input class="vnccs-ps-video-zoom-range" type="range" min="0" max="100" step="1" value="0" title="Timeline zoom">
+                    <button class="vnccs-ps-video-zoom-in" type="button" title="Zoom in">+</button>
+                    <span class="vnccs-ps-video-view-label">Full video</span>
+                </div>
+                <div class="vnccs-ps-video-timeline" title="Click to seek. Drag IN and OUT. Mouse wheel zooms around the cursor.">
+                    <canvas class="vnccs-ps-video-thumbnails"></canvas>
+                    <div class="vnccs-ps-video-dim vnccs-ps-video-dim--left"></div>
+                    <div class="vnccs-ps-video-dim vnccs-ps-video-dim--right"></div>
+                    <div class="vnccs-ps-video-selection"></div>
+                    <div class="vnccs-ps-video-playhead"></div>
+                    <div class="vnccs-ps-video-handle vnccs-ps-video-handle--in"></div>
+                    <div class="vnccs-ps-video-handle vnccs-ps-video-handle--out"></div>
+                </div>
+                <div class="vnccs-ps-video-pan-row"><span>PAN</span><input class="vnccs-ps-video-pan" type="range" min="0" value="0" disabled></div>
+                <div class="vnccs-ps-video-controls">
+                    <label class="vnccs-ps-video-field">IN (SECONDS)<input class="vnccs-ps-video-in" type="number" min="0" step="0.01"></label>
+                    <label class="vnccs-ps-video-field">OUT (SECONDS)<input class="vnccs-ps-video-out" type="number" min="0" step="0.01"></label>
+                    <label class="vnccs-ps-video-field">CAPTURE FPS<input class="vnccs-ps-video-fps" type="number" min="0.01" max="60" step="1" value="12"></label>
+                </div>
+                <div class="vnccs-ps-video-summary">Reading video metadata…</div>
+                <div class="vnccs-ps-video-progress">
+                    <div class="vnccs-ps-import-progress"><div class="vnccs-ps-import-progress-fill"></div></div>
+                    <div class="vnccs-ps-import-progress-percent">0%</div>
+                </div>
+                <div class="vnccs-ps-video-actions">
+                    <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+                    <button class="vnccs-ps-modal-btn primary" disabled>Capture animation</button>
+                </div>
+            </div>`;
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+
+        const preview = modal.querySelector(".vnccs-ps-video-preview");
+        const timeline = modal.querySelector(".vnccs-ps-video-timeline");
+        const thumbnails = modal.querySelector(".vnccs-ps-video-thumbnails");
+        const leftDim = modal.querySelector(".vnccs-ps-video-dim--left");
+        const rightDim = modal.querySelector(".vnccs-ps-video-dim--right");
+        const selection = modal.querySelector(".vnccs-ps-video-selection");
+        const playhead = modal.querySelector(".vnccs-ps-video-playhead");
+        const inHandle = modal.querySelector(".vnccs-ps-video-handle--in");
+        const outHandle = modal.querySelector(".vnccs-ps-video-handle--out");
+        const inInput = modal.querySelector(".vnccs-ps-video-in");
+        const outInput = modal.querySelector(".vnccs-ps-video-out");
+        const fpsInput = modal.querySelector(".vnccs-ps-video-fps");
+        const fullViewButton = modal.querySelector(".vnccs-ps-video-view-full");
+        const selectionViewButton = modal.querySelector(".vnccs-ps-video-view-selection");
+        const zoomOutButton = modal.querySelector(".vnccs-ps-video-zoom-out");
+        const zoomInButton = modal.querySelector(".vnccs-ps-video-zoom-in");
+        const zoomRange = modal.querySelector(".vnccs-ps-video-zoom-range");
+        const panRange = modal.querySelector(".vnccs-ps-video-pan");
+        const viewLabel = modal.querySelector(".vnccs-ps-video-view-label");
+        const summary = modal.querySelector(".vnccs-ps-video-summary");
+        const progressWrap = modal.querySelector(".vnccs-ps-video-progress");
+        const progressFill = modal.querySelector(".vnccs-ps-import-progress-fill");
+        const progressPercent = modal.querySelector(".vnccs-ps-import-progress-percent");
+        const cancelButton = modal.querySelector(".cancel");
+        const importButton = modal.querySelector(".primary");
+        modal.querySelector(".vnccs-ps-video-file-name").textContent = file.name || "video";
+
+        const thumbnailVideo = document.createElement("video");
+        thumbnailVideo.muted = true;
+        thumbnailVideo.playsInline = true;
+        thumbnailVideo.preload = "metadata";
+        preview.src = objectUrl;
+        thumbnailVideo.src = objectUrl;
+
+        const close = ({ abort = true } = {}) => {
+            if (closed) return;
+            closed = true;
+            mediaController.abort();
+            thumbnailRenderController?.abort();
+            if (thumbnailRenderTimer) clearTimeout(thumbnailRenderTimer);
+            if (abort) importController?.abort();
+            preview.pause();
+            preview.removeAttribute("src");
+            thumbnailVideo.removeAttribute("src");
+            preview.load();
+            thumbnailVideo.load();
+            URL.revokeObjectURL(objectUrl);
+            overlay.remove();
+            if (this._activeVideoImportClose === close) this._activeVideoImportClose = null;
+        };
+        this._activeVideoImportClose = close;
+
+        const minimumViewDuration = 0.25;
+        const visibleDuration = () => Math.max(0, viewEnd - viewStart);
+        const viewPercentage = time => visibleDuration() > 0
+            ? ((time - viewStart) / visibleDuration()) * 100
+            : 0;
+        const clampPercent = value => Math.max(0, Math.min(100, value));
+        const currentPlan = () => computeVideoSamplePlan({
+            inTime,
+            outTime,
+            targetFps: Number(fpsInput.value) || 12,
+            maxSamples: MAX_VIDEO_POSE_SAMPLES,
+        });
+        const scheduleThumbnailRender = (delay = 100) => {
+            if (closed || processing || duration <= 0 || visibleDuration() <= 0) return;
+            if (thumbnailRenderTimer) clearTimeout(thumbnailRenderTimer);
+            thumbnailRenderTimer = setTimeout(() => {
+                thumbnailRenderTimer = null;
+                thumbnailRenderController?.abort();
+                thumbnailRenderController = new AbortController();
+                this.renderVideoImportThumbnails(
+                    thumbnailVideo,
+                    thumbnails,
+                    viewStart,
+                    viewEnd,
+                    thumbnailRenderController.signal
+                ).catch(error => {
+                    if (error?.name !== "AbortError") console.warn("[VNCCS] Video thumbnails failed:", error);
+                });
+            }, delay);
+        };
+        const updateViewportControls = () => {
+            const span = visibleDuration();
+            const zoom = span > 0 ? duration / span : 1;
+            const maximumZoom = Math.max(1, duration / Math.min(duration, minimumViewDuration));
+            const sliderValue = maximumZoom > 1
+                ? (Math.log(Math.max(1, zoom)) / Math.log(maximumZoom)) * 100
+                : 0;
+            zoomRange.value = String(Math.max(0, Math.min(100, sliderValue)));
+            const maximumPan = Math.max(0, duration - span);
+            panRange.max = String(maximumPan);
+            panRange.step = String(Math.max(0.001, span / 200));
+            panRange.value = String(Math.min(maximumPan, viewStart));
+            panRange.disabled = processing || maximumPan < 0.001;
+            const zoomText = zoom < 10 ? zoom.toFixed(1) : String(Math.round(zoom));
+            viewLabel.textContent = `${zoomText}× · ${this.formatVideoTime(viewStart)} – ${this.formatVideoTime(viewEnd)}`;
+            fullViewButton.disabled = processing || zoom <= 1.0001;
+            selectionViewButton.disabled = processing || outTime <= inTime;
+            zoomOutButton.disabled = processing || zoom <= 1.0001;
+            zoomInButton.disabled = processing || span <= minimumViewDuration + 0.0001;
+        };
+        const updateSelectionUI = () => {
+            const rawInPercent = viewPercentage(inTime);
+            const rawOutPercent = viewPercentage(outTime);
+            const inPercent = clampPercent(rawInPercent);
+            const outPercent = clampPercent(rawOutPercent);
+            inHandle.style.left = `${inPercent}%`;
+            outHandle.style.left = `${outPercent}%`;
+            inHandle.style.display = rawInPercent >= 0 && rawInPercent <= 100 ? "block" : "none";
+            outHandle.style.display = rawOutPercent >= 0 && rawOutPercent <= 100 ? "block" : "none";
+            leftDim.style.width = `${inPercent}%`;
+            rightDim.style.width = `${100 - outPercent}%`;
+            const selectionVisible = rawOutPercent >= 0 && rawInPercent <= 100;
+            selection.style.left = `${inPercent}%`;
+            selection.style.width = `${selectionVisible ? Math.max(0, outPercent - inPercent) : 0}%`;
+            inInput.value = String(Number(inTime.toFixed(3)));
+            outInput.value = String(Number(outTime.toFixed(3)));
+            const plan = currentPlan();
+            summary.classList.toggle("is-limited", plan.limited);
+            const effective = Number(plan.effectiveFps.toFixed(3));
+            summary.textContent = plan.limited
+                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · effective ${effective} FPS (limited from ${plan.requestedSamples})`
+                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS`;
+            importButton.disabled = processing || plan.duration <= 0;
+            updateViewportControls();
+        };
+        const updatePlayhead = () => {
+            const rawPercent = viewPercentage(preview.currentTime);
+            playhead.style.left = `${clampPercent(rawPercent)}%`;
+            playhead.style.display = rawPercent >= 0 && rawPercent <= 100 ? "block" : "none";
+        };
+        const setViewport = (nextViewport, { thumbnails: refreshThumbnails = true } = {}) => {
+            const clamped = clampVideoTimelineViewport({
+                duration,
+                start: nextViewport?.start,
+                end: nextViewport?.end,
+                minDuration: minimumViewDuration,
+            });
+            viewStart = clamped.start;
+            viewEnd = clamped.end;
+            updateSelectionUI();
+            updatePlayhead();
+            if (refreshThumbnails) scheduleThumbnailRender();
+        };
+        const zoomAround = (factor, centerTime) => {
+            setViewport(zoomVideoTimelineViewport(
+                { start: viewStart, end: viewEnd },
+                factor,
+                centerTime,
+                { duration, minDuration: minimumViewDuration }
+            ));
+        };
+        const preferredZoomCenter = () => {
+            if (preview.currentTime >= viewStart && preview.currentTime <= viewEnd) return preview.currentTime;
+            return (inTime + outTime) / 2;
+        };
+        const setBoundary = (which, rawTime, seek = true) => {
+            const minimumGap = Math.min(0.04, Math.max(0.001, duration));
+            const value = Math.max(0, Math.min(duration, Number(rawTime) || 0));
+            if (which === "in") inTime = Math.min(value, Math.max(0, outTime - minimumGap));
+            else outTime = Math.max(value, Math.min(duration, inTime + minimumGap));
+            if (seek) preview.currentTime = which === "in" ? inTime : outTime;
+            updateSelectionUI();
+            updatePlayhead();
+        };
+        const timeFromPointer = event => {
+            const rect = timeline.getBoundingClientRect();
+            const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+            return viewStart + visibleDuration() * ratio;
+        };
+
+        let dragging = null;
+        let dragPointerId = null;
+        const scrubPlayhead = rawTime => {
+            const time = Math.max(0, Math.min(duration, Number(rawTime) || 0));
+            preview.currentTime = time;
+            updatePlayhead();
+        };
+        const startHandleDrag = (which, event) => {
+            if (processing) return;
+            event.preventDefault();
+            event.stopPropagation();
+            dragging = which;
+            dragPointerId = event.pointerId;
+            timeline.setPointerCapture?.(event.pointerId);
+            setBoundary(which, timeFromPointer(event));
+        };
+        inHandle.addEventListener("pointerdown", event => startHandleDrag("in", event));
+        outHandle.addEventListener("pointerdown", event => startHandleDrag("out", event));
+        timeline.addEventListener("pointermove", event => {
+            if (dragging === "playhead") scrubPlayhead(timeFromPointer(event));
+            else if (dragging) setBoundary(dragging, timeFromPointer(event));
+        });
+        const finishTimelineDrag = event => {
+            if (dragging === "playhead" && event.type === "pointerup") scrubPlayhead(timeFromPointer(event));
+            if (dragPointerId !== null && timeline.hasPointerCapture?.(dragPointerId)) {
+                timeline.releasePointerCapture(dragPointerId);
+            }
+            dragging = null;
+            dragPointerId = null;
+        };
+        timeline.addEventListener("pointerup", finishTimelineDrag);
+        timeline.addEventListener("pointercancel", finishTimelineDrag);
+        timeline.addEventListener("pointerdown", event => {
+            if (processing || event.target === inHandle || event.target === outHandle) return;
+            event.preventDefault();
+            event.stopPropagation();
+            preview.pause();
+            dragging = "playhead";
+            dragPointerId = event.pointerId;
+            timeline.setPointerCapture?.(event.pointerId);
+            scrubPlayhead(timeFromPointer(event));
+        });
+        inInput.addEventListener("change", () => setBoundary("in", inInput.value));
+        outInput.addEventListener("change", () => setBoundary("out", outInput.value));
+        fpsInput.addEventListener("input", updateSelectionUI);
+        fullViewButton.addEventListener("click", () => {
+            if (!processing) setViewport({ start: 0, end: duration });
+        });
+        selectionViewButton.addEventListener("click", () => {
+            if (!processing) setViewport(fitVideoTimelineSelection(duration, inTime, outTime, {
+                minDuration: minimumViewDuration,
+            }));
+        });
+        zoomOutButton.addEventListener("click", () => {
+            if (!processing) zoomAround(0.5, preferredZoomCenter());
+        });
+        zoomInButton.addEventListener("click", () => {
+            if (!processing) zoomAround(2, preferredZoomCenter());
+        });
+        zoomRange.addEventListener("input", () => {
+            if (processing || duration <= 0) return;
+            const maximumZoom = Math.max(1, duration / Math.min(duration, minimumViewDuration));
+            const targetZoom = maximumZoom ** (Number(zoomRange.value) / 100);
+            const currentZoom = duration / Math.max(minimumViewDuration, visibleDuration());
+            zoomAround(targetZoom / currentZoom, preferredZoomCenter());
+        });
+        panRange.addEventListener("input", () => {
+            if (processing) return;
+            const span = visibleDuration();
+            const start = Number(panRange.value) || 0;
+            setViewport({ start, end: start + span });
+        });
+        timeline.addEventListener("wheel", event => {
+            if (processing || duration <= 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            if (event.shiftKey) {
+                const span = visibleDuration();
+                const shift = Math.sign(event.deltaY || event.deltaX) * span * 0.15;
+                setViewport({ start: viewStart + shift, end: viewEnd + shift });
+                return;
+            }
+            zoomAround(event.deltaY < 0 ? 1.5 : (1 / 1.5), timeFromPointer(event));
+        }, { passive: false });
+        preview.addEventListener("timeupdate", () => {
+            if (preview.currentTime >= outTime && !preview.paused) {
+                preview.pause();
+                preview.currentTime = inTime;
+            }
+            updatePlayhead();
+        });
+        preview.addEventListener("play", () => {
+            if (preview.currentTime < inTime || preview.currentTime >= outTime) preview.currentTime = inTime;
+        });
+
+        cancelButton.addEventListener("click", () => close());
+        importButton.addEventListener("click", async () => {
+            if (processing) return;
+            const plan = currentPlan();
+            if (plan.duration <= 0) return;
+            processing = true;
+            thumbnailRenderController?.abort();
+            if (thumbnailRenderTimer) clearTimeout(thumbnailRenderTimer);
+            importController = new AbortController();
+            importButton.disabled = true;
+            fpsInput.disabled = true;
+            inInput.disabled = true;
+            outInput.disabled = true;
+            zoomRange.disabled = true;
+            updateViewportControls();
+            progressWrap.classList.add("is-active");
+            cancelButton.textContent = "Cancel import";
+            summary.classList.remove("is-limited");
+            try {
+                const poseCount = await this.importVideoPoseSegment(preview, plan, {
+                    signal: importController.signal,
+                    onProgress: status => {
+                        if (closed) return;
+                        const value = Math.max(0, Math.min(100, status.progress || 0));
+                        progressFill.style.width = `${value}%`;
+                        progressPercent.textContent = `${Math.round(value)}%`;
+                        const action = status.phase === "pose" ? "Capturing pose" : "Reading frame";
+                        summary.textContent = `${action} ${Math.min(status.index + 1, status.count)}/${status.count} · ${this.formatVideoTime(status.time)}`;
+                    },
+                });
+                if (closed) return;
+                progressFill.style.width = "100%";
+                progressPercent.textContent = "100%";
+                this.showMessage(`Video imported as one animation with ${poseCount} keyed frames.`);
+                close({ abort: false });
+            } catch (error) {
+                if (closed || error?.name === "AbortError") return;
+                console.error("Error importing video animation:", error);
+                summary.textContent = `Import failed: ${error?.message || error}`;
+                summary.classList.add("is-limited");
+                this.showMessage(`Failed to import video animation: ${error?.message || error}`, true);
+                processing = false;
+                importController = null;
+                importButton.disabled = false;
+                fpsInput.disabled = false;
+                inInput.disabled = false;
+                outInput.disabled = false;
+                zoomRange.disabled = false;
+                updateViewportControls();
+                cancelButton.textContent = "Cancel";
+            }
+        });
+
+        try {
+            await Promise.all([
+                waitForVideoMetadata(preview, mediaController.signal),
+                waitForVideoMetadata(thumbnailVideo, mediaController.signal),
+            ]);
+            if (closed) return;
+            duration = Number(preview.duration);
+            if (!Number.isFinite(duration) || duration <= 0) throw new Error("Video has no readable duration.");
+            inTime = 0;
+            outTime = duration;
+            viewStart = 0;
+            viewEnd = duration;
+            inInput.max = String(duration);
+            outInput.max = String(duration);
+            setViewport({ start: 0, end: duration });
+            importButton.disabled = false;
+        } catch (error) {
+            if (closed || error?.name === "AbortError") return;
+            summary.textContent = error?.message || String(error);
+            summary.classList.add("is-limited");
+            importButton.disabled = true;
+        }
+    }
+
     clearImportedDebugFigures() {
         if (!this.viewer?._clearImportedFigureGroup) return;
         this.viewer._clearImportedFigureGroup('_hmr2FigureGroup');
@@ -6916,6 +7775,22 @@ class PoseStudioWidget {
                 } catch (err) {
                     console.error('Error importing Mixamo FBX:', err);
                     this.showMessage(`Failed to import FBX animation: ${err?.message || err}`, true);
+                } finally {
+                    input.value = '';
+                }
+            })();
+            return;
+        }
+
+        // Videos stay local: the browser decodes only preview/sample frames and
+        // each selected frame is sent through the same SAM pose pipeline as an image.
+        if (isLikelyVideoFile(file)) {
+            (async () => {
+                try {
+                    await this.showVideoImportModal(file);
+                } catch (err) {
+                    console.error("Error opening video import:", err);
+                    this.showMessage(`Failed to open video: ${err?.message || err}`, true);
                 } finally {
                     input.value = '';
                 }
@@ -10491,6 +11366,7 @@ app.registerExtension({
             window.__vnccsPoseStudioCharacterCreatorSync?.unregisterStudio(this.studioWidget);
             if (onRemoved) onRemoved.apply(this, arguments);
             if (this.studioWidget) {
+                this.studioWidget._activeVideoImportClose?.();
                 this.studioWidget.animationTimeline?.stopPlayback?.();
                 if (this.studioWidget._containerResizeObserver) {
                     this.studioWidget._containerResizeObserver.disconnect();

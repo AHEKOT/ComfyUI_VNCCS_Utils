@@ -11,7 +11,10 @@ export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
 export const MIN_FRAME_COUNT = 2;
 export const MAX_FRAME_COUNT = 600;
-export const MIN_ANIMATION_FPS = 1;
+// Long video imports may be intentionally sampled below one pose per second.
+// Keeping a small positive minimum lets a 600-key timeline retain the real
+// duration of multi-hour source clips instead of silently truncating it.
+export const MIN_ANIMATION_FPS = 0.001;
 export const MAX_ANIMATION_FPS = 120;
 export const DEFAULT_ANIMATION_FPS = 12;
 
@@ -208,6 +211,34 @@ export function createDefaultAnimationState(basePose = {}, overrides = {}) {
         tracks: {},
         ...overrides,
     }, basePose);
+}
+
+export function createClearedAnimationState(previousState, neutralPose = {}) {
+    const previous = previousState || {};
+    return createDefaultAnimationState(neutralPose, {
+        frameCount: previous.frameCount,
+        duration: previous.duration,
+        fps: getAnimationFPS(previous),
+        currentFrame: 0,
+        loop: previous.loop,
+        autoKey: previous.autoKey,
+        snap: previous.snap,
+        defaultInterpolation: previous.defaultInterpolation,
+        tracks: {},
+    });
+}
+
+export function serializeAnimationStateSnapshot(state) {
+    const snapshot = cloneJSON(state, {});
+    delete snapshot.currentFrame;
+    delete snapshot.current_frame;
+    return JSON.stringify(snapshot);
+}
+
+export function restoreAnimationStateSnapshot(snapshot, { currentFrame = 0, fallbackPose = {} } = {}) {
+    const restored = typeof snapshot === "string" ? JSON.parse(snapshot) : cloneJSON(snapshot, {});
+    restored.currentFrame = currentFrame;
+    return normalizeAnimationState(restored, fallbackPose);
 }
 
 export function normalizeAnimationState(source = {}, fallbackPose = {}) {
