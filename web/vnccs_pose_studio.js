@@ -15,10 +15,12 @@ import {
     canvasToBlob,
     clampVideoTimelineViewport,
     computeVideoSamplePlan,
+    countVideoKeyedFrames,
     drawVideoCover,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
     seekVideo,
+    stabilizeVideoPoseSequence,
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./vnccs_video_import.mjs";
@@ -2210,7 +2212,7 @@ const STYLES = `
 
 .vnccs-ps-video-controls {
     display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 8px;
 }
 .vnccs-ps-video-field {
@@ -2222,7 +2224,8 @@ const STYLES = `
     font-weight: 700;
     letter-spacing: .4px;
 }
-.vnccs-ps-video-field input {
+.vnccs-ps-video-field input,
+.vnccs-ps-video-field select {
     min-width: 0;
     box-sizing: border-box;
     width: 100%;
@@ -2234,7 +2237,8 @@ const STYLES = `
     color: var(--ps-text);
     font: 600 11px/1 var(--ps-font);
 }
-.vnccs-ps-video-field input:focus { border-color: var(--ps-accent); }
+.vnccs-ps-video-field input:focus,
+.vnccs-ps-video-field select:focus { border-color: var(--ps-accent); }
 .vnccs-ps-video-summary {
     min-height: 18px;
     color: var(--ps-text-muted);
@@ -4406,12 +4410,13 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true });
     }
 
-    replaceAnimationFromPoses(poses, { duration = null } = {}) {
+    replaceAnimationFromPoses(poses, { duration = null, keyframeStep = 1 } = {}) {
         const previousPrompt = this.getPosePrompt(this.activeTab);
         const state = createAnimationStateFromPoses(poses, {
             duration,
             fps: 12,
             interpolation: "linear",
+            keyframeStep,
         });
         state.basePose.prompt = String(state.basePose.prompt || previousPrompt || "");
 
@@ -7246,7 +7251,12 @@ class PoseStudioWidget {
         return canvasToBlob(canvas, "image/jpeg", 0.9);
     }
 
-    async importVideoPoseSegment(video, plan, { signal = null, onProgress = null } = {}) {
+    async importVideoPoseSegment(video, plan, {
+        signal = null,
+        onProgress = null,
+        stabilization = "medium",
+        keyframeStep = 2,
+    } = {}) {
         if (!this.viewer?.isInitialized?.()) throw new Error("Pose viewer is not ready.");
         if (!plan || plan.duration <= 0 || !plan.times?.length) throw new Error("Select a non-empty video segment.");
 
@@ -7267,7 +7277,7 @@ class PoseStudioWidget {
                     index,
                     count: plan.sampleCount,
                     time,
-                    progress: (index / plan.sampleCount) * 100,
+                    progress: (index / plan.sampleCount) * 95,
                     phase: "capture",
                 });
                 const frameBlob = await this.captureVideoFrameBlob(video, time, captureCanvas, signal);
@@ -7276,7 +7286,7 @@ class PoseStudioWidget {
                     index,
                     count: plan.sampleCount,
                     time,
-                    progress: ((index + 0.15) / plan.sampleCount) * 100,
+                    progress: ((index + 0.15) / plan.sampleCount) * 95,
                     phase: "pose",
                 });
                 const poseData = await this.requestSAM3DPoseForImage(frameBlob, {
@@ -7307,7 +7317,7 @@ class PoseStudioWidget {
                     index: index + 1,
                     count: plan.sampleCount,
                     time,
-                    progress: ((index + 1) / plan.sampleCount) * 100,
+                    progress: ((index + 1) / plan.sampleCount) * 95,
                     phase: "complete",
                 });
 
@@ -7320,13 +7330,29 @@ class PoseStudioWidget {
             }
 
             if (poses.length < 2) throw new Error("Video capture produced fewer than two pose frames.");
+            onProgress?.({
+                index: poses.length,
+                count: poses.length,
+                time: plan.outTime,
+                progress: 97,
+                phase: "stabilize",
+            });
+            const stabilizedPoses = stabilization === "off"
+                ? poses
+                : stabilizeVideoPoseSequence(poses, stabilization);
             this._lastSAM3DPoseData = lastPoseData;
             this._lastSAM3DMeshData = lastMeshData;
             this.syncMeshProportionSlidersFromViewer();
-            this.replaceAnimationFromPoses(poses, { duration: plan.duration });
+            this.replaceAnimationFromPoses(stabilizedPoses, {
+                duration: plan.duration,
+                keyframeStep,
+            });
             this.updateRotationSliders();
             this.updateCaptureCameraPreview();
-            return poses.length;
+            return {
+                sampleCount: poses.length,
+                keyedFrameCount: countVideoKeyedFrames(poses.length, keyframeStep),
+            };
         } catch (error) {
             if (this.container?.isConnected && this.viewer?.isInitialized?.()) {
                 this.viewer.setPose?.(originalPose);
@@ -7389,6 +7415,8 @@ class PoseStudioWidget {
                     <label class="vnccs-ps-video-field">IN (SECONDS)<input class="vnccs-ps-video-in" type="number" min="0" step="0.01"></label>
                     <label class="vnccs-ps-video-field">OUT (SECONDS)<input class="vnccs-ps-video-out" type="number" min="0" step="0.01"></label>
                     <label class="vnccs-ps-video-field">CAPTURE FPS<input class="vnccs-ps-video-fps" type="number" min="0.01" max="60" step="1" value="12"></label>
+                    <label class="vnccs-ps-video-field">KEY EVERY N FRAMES<input class="vnccs-ps-video-key-step" type="number" min="1" max="60" step="1" value="2"></label>
+                    <label class="vnccs-ps-video-field">STABILIZATION<select class="vnccs-ps-video-stabilization"><option value="off">Off</option><option value="light">Light</option><option value="medium" selected>Medium</option><option value="strong">Strong</option></select></label>
                 </div>
                 <div class="vnccs-ps-video-summary">Reading video metadata…</div>
                 <div class="vnccs-ps-video-progress">
@@ -7415,6 +7443,8 @@ class PoseStudioWidget {
         const inInput = modal.querySelector(".vnccs-ps-video-in");
         const outInput = modal.querySelector(".vnccs-ps-video-out");
         const fpsInput = modal.querySelector(".vnccs-ps-video-fps");
+        const keyframeStepInput = modal.querySelector(".vnccs-ps-video-key-step");
+        const stabilizationSelect = modal.querySelector(".vnccs-ps-video-stabilization");
         const fullViewButton = modal.querySelector(".vnccs-ps-video-view-full");
         const selectionViewButton = modal.querySelector(".vnccs-ps-video-view-selection");
         const zoomOutButton = modal.querySelector(".vnccs-ps-video-zoom-out");
@@ -7522,11 +7552,13 @@ class PoseStudioWidget {
             inInput.value = String(Number(inTime.toFixed(3)));
             outInput.value = String(Number(outTime.toFixed(3)));
             const plan = currentPlan();
+            const keyframeStep = Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2));
+            const keyedFrameCount = countVideoKeyedFrames(plan.sampleCount, keyframeStep);
             summary.classList.toggle("is-limited", plan.limited);
             const effective = Number(plan.effectiveFps.toFixed(3));
             summary.textContent = plan.limited
-                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · effective ${effective} FPS (limited from ${plan.requestedSamples})`
-                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS`;
+                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · ${keyedFrameCount} keyed frames · effective ${effective} FPS (limited from ${plan.requestedSamples})`
+                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS · ${keyedFrameCount} keyed frames`;
             importButton.disabled = processing || plan.duration <= 0;
             updateViewportControls();
         };
@@ -7620,6 +7652,12 @@ class PoseStudioWidget {
         inInput.addEventListener("change", () => setBoundary("in", inInput.value));
         outInput.addEventListener("change", () => setBoundary("out", outInput.value));
         fpsInput.addEventListener("input", updateSelectionUI);
+        keyframeStepInput.addEventListener("input", updateSelectionUI);
+        keyframeStepInput.addEventListener("change", () => {
+            keyframeStepInput.value = String(Math.max(1, Math.min(60, Math.floor(Number(keyframeStepInput.value) || 2))));
+            updateSelectionUI();
+        });
+        stabilizationSelect.addEventListener("change", updateSelectionUI);
         fullViewButton.addEventListener("click", () => {
             if (!processing) setViewport({ start: 0, end: duration });
         });
@@ -7683,27 +7721,33 @@ class PoseStudioWidget {
             fpsInput.disabled = true;
             inInput.disabled = true;
             outInput.disabled = true;
+            keyframeStepInput.disabled = true;
+            stabilizationSelect.disabled = true;
             zoomRange.disabled = true;
             updateViewportControls();
             progressWrap.classList.add("is-active");
             cancelButton.textContent = "Cancel import";
             summary.classList.remove("is-limited");
             try {
-                const poseCount = await this.importVideoPoseSegment(preview, plan, {
+                const result = await this.importVideoPoseSegment(preview, plan, {
                     signal: importController.signal,
+                    stabilization: stabilizationSelect.value,
+                    keyframeStep: Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2)),
                     onProgress: status => {
                         if (closed) return;
                         const value = Math.max(0, Math.min(100, status.progress || 0));
                         progressFill.style.width = `${value}%`;
                         progressPercent.textContent = `${Math.round(value)}%`;
-                        const action = status.phase === "pose" ? "Capturing pose" : "Reading frame";
+                        const action = status.phase === "stabilize"
+                            ? "Stabilizing captured poses"
+                            : (status.phase === "pose" ? "Capturing pose" : "Reading frame");
                         summary.textContent = `${action} ${Math.min(status.index + 1, status.count)}/${status.count} · ${this.formatVideoTime(status.time)}`;
                     },
                 });
                 if (closed) return;
                 progressFill.style.width = "100%";
                 progressPercent.textContent = "100%";
-                this.showMessage(`Video imported as one animation with ${poseCount} keyed frames.`);
+                this.showMessage(`Video imported: ${result.sampleCount} captured poses, ${result.keyedFrameCount} keyed frames.`);
                 close({ abort: false });
             } catch (error) {
                 if (closed || error?.name === "AbortError") return;
@@ -7717,6 +7761,8 @@ class PoseStudioWidget {
                 fpsInput.disabled = false;
                 inInput.disabled = false;
                 outInput.disabled = false;
+                keyframeStepInput.disabled = false;
+                stabilizationSelect.disabled = false;
                 zoomRange.disabled = false;
                 updateViewportControls();
                 cancelButton.textContent = "Cancel";

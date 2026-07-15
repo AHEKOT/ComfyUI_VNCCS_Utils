@@ -5,8 +5,10 @@ import {
     MAX_VIDEO_POSE_SAMPLES,
     clampVideoTimelineViewport,
     computeVideoSamplePlan,
+    countVideoKeyedFrames,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
+    stabilizeVideoPoseSequence,
     zoomVideoTimelineViewport,
 } from "../web/vnccs_video_import.mjs";
 import { createAnimationStateFromPoses } from "../web/vnccs_pose_animation.mjs";
@@ -82,4 +84,58 @@ test("timeline pan and extreme zoom stay inside video bounds", () => {
         minDuration: 0.25,
     });
     assert.deepEqual(maximum, { start: 0, end: 0.25, duration: 0.25, zoom: 400 });
+});
+
+test("video keyframe interval defaults to every second frame and scales predictably", () => {
+    assert.equal(countVideoKeyedFrames(100), 51);
+    assert.equal(countVideoKeyedFrames(100, 4), 26);
+    assert.equal(countVideoKeyedFrames(100, 10), 11);
+    assert.equal(countVideoKeyedFrames(101, 10), 11);
+});
+
+test("quaternion stabilization suppresses an isolated wrist jump", () => {
+    const poses = [0, 0, 80, 0, 0].map(y => ({
+        bones: { wrist_l: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "medium");
+    assert.equal(stabilized[0].bones.wrist_l[1], 0);
+    assert.ok(Math.abs(stabilized[2].bones.wrist_l[1]) < 1e-9);
+    assert.equal(stabilized[4].bones.wrist_l[1], 0);
+    assert.equal(poses[2].bones.wrist_l[1], 80, "source poses must not be mutated");
+});
+
+test("quaternion medoid preserves steady motion and can be disabled", () => {
+    const poses = [0, 10, 20, 30, 40].map(y => ({
+        bones: { wrist_l: [0, y, 0] },
+        modelRotation: [0, y, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "strong");
+    assert.deepEqual(stabilized.map(pose => pose.bones.wrist_l[1]), [0, 10, 20, 30, 40]);
+    assert.deepEqual(stabilized.map(pose => pose.modelRotation[1]), [0, 10, 20, 30, 40]);
+    assert.deepEqual(stabilizeVideoPoseSequence(poses, "off"), poses);
+});
+
+test("quaternion stabilization removes a one-frame body flip", () => {
+    const poses = Array.from({ length: 5 }, (_, frame) => ({
+        bones: {
+            pelvis: frame === 2 ? [180, 0, 0] : [0, 0, 0],
+            spine_01: frame === 2 ? [0, 180, 0] : [0, 0, 0],
+        },
+        modelRotation: frame === 2 ? [0, 0, 180] : [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "medium");
+    assert.ok(stabilized[2].bones.pelvis.every(value => Math.abs(value) < 1e-6));
+    assert.ok(stabilized[2].bones.spine_01.every(value => Math.abs(value) < 1e-6));
+    assert.ok(stabilized[2].modelRotation.every(value => Math.abs(value) < 1e-6));
+});
+
+test("equivalent Euler representations are not mistaken for rotation jumps", () => {
+    const poses = [
+        { bones: { pelvis: [0, 180, 0] }, modelRotation: [0, 0, 0] },
+        { bones: { pelvis: [180, 0, 180] }, modelRotation: [0, 0, 0] },
+        { bones: { pelvis: [0, 180, 0] }, modelRotation: [0, 0, 0] },
+    ];
+    const stabilized = stabilizeVideoPoseSequence(poses, "strong");
+    assert.deepEqual(stabilized[1].bones.pelvis, [180, 0, 180]);
 });

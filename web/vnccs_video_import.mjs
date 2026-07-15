@@ -1,8 +1,21 @@
+import {
+    eulerDegreesToQuaternion,
+    quaternionToEulerDegrees,
+    slerpQuaternion,
+} from "./vnccs_pose_animation.mjs";
+
 export const VIDEO_FILE_EXTENSIONS = new Set([
     "mp4", "m4v", "webm", "mov", "ogv", "ogg", "avi", "mkv",
 ]);
 
 export const MAX_VIDEO_POSE_SAMPLES = 600;
+
+export const VIDEO_STABILIZATION_PRESETS = Object.freeze({
+    off: Object.freeze({ radius: 0, strength: 0, thresholdDegrees: Infinity }),
+    light: Object.freeze({ radius: 1, strength: 0.5, thresholdDegrees: 4 }),
+    medium: Object.freeze({ radius: 2, strength: 0.75, thresholdDegrees: 2 }),
+    strong: Object.freeze({ radius: 3, strength: 0.9, thresholdDegrees: 0.75 }),
+});
 
 function finiteNumber(value, fallback = 0) {
     const number = Number(value);
@@ -52,6 +65,97 @@ export function computeVideoSamplePlan({
         limited: requestedSamples > sampleCount,
         times,
     };
+}
+
+export function countVideoKeyedFrames(frameCountValue, keyframeStepValue = 2) {
+    const frameCount = Math.max(0, Math.floor(finiteNumber(frameCountValue)));
+    if (!frameCount) return 0;
+    const step = Math.max(1, Math.floor(finiteNumber(keyframeStepValue, 2)));
+    const regularKeys = Math.floor((frameCount - 1) / step) + 1;
+    return (frameCount - 1) % step === 0 ? regularKeys : regularKeys + 1;
+}
+
+function quaternionAngularDistanceDegrees(a, b) {
+    const dot = Math.abs(
+        a[0] * b[0]
+        + a[1] * b[1]
+        + a[2] * b[2]
+        + a[3] * b[3]
+    );
+    return 2 * Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+}
+
+function quaternionMedoid(quaternions) {
+    if (!quaternions.length) return [0, 0, 0, 1];
+    let best = quaternions[0];
+    let bestCost = Infinity;
+    for (const candidate of quaternions) {
+        let cost = 0;
+        for (const other of quaternions) cost += quaternionAngularDistanceDegrees(candidate, other);
+        if (cost < bestCost) {
+            best = candidate;
+            bestCost = cost;
+        }
+    }
+    return best;
+}
+
+function stabilizeEulerRotationSeries(values, preset) {
+    const source = values.map(value => Array.isArray(value) ? value.slice(0, 3) : [0, 0, 0]);
+    const quaternions = source.map(eulerDegreesToQuaternion);
+    if (source.length < 3 || preset.radius < 1 || preset.strength <= 0) return source;
+    return source.map((value, index) => {
+        // Keep the selected segment boundaries exact.
+        if (index === 0 || index === source.length - 1) return value;
+        const localRadius = Math.min(preset.radius, index, source.length - 1 - index);
+        const neighborhood = quaternions.slice(index - localRadius, index + localRadius + 1);
+        const medoid = quaternionMedoid(neighborhood);
+        const residual = quaternionAngularDistanceDegrees(quaternions[index], medoid);
+        if (residual <= preset.thresholdDegrees) return value;
+
+        // A one-frame quarter/full turn is never normal capture jitter. Replace
+        // catastrophic flips completely; use the selected strength for smaller
+        // deviations so legitimate fast motion is not flattened.
+        const correction = residual >= 60 ? 1 : preset.strength;
+        return quaternionToEulerDegrees(slerpQuaternion(quaternions[index], medoid, correction));
+    });
+}
+
+/**
+ * Suppress isolated pose-estimation jitter without averaging away steady
+ * motion. Rotations are compared and blended as quaternions, so Euler axis
+ * ambiguity cannot synthesize a flipped orientation.
+ */
+export function stabilizeVideoPoseSequence(poses, presetName = "medium") {
+    const frames = Array.isArray(poses)
+        ? poses.filter(pose => pose && typeof pose === "object").map(pose => JSON.parse(JSON.stringify(pose)))
+        : [];
+    const preset = VIDEO_STABILIZATION_PRESETS[presetName] || VIDEO_STABILIZATION_PRESETS.medium;
+    if (frames.length < 3 || preset.strength <= 0 || preset.radius <= 0) return frames;
+
+    const boneNames = new Set();
+    for (const pose of frames) {
+        for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
+    }
+    for (const boneName of boneNames) {
+        const stabilized = stabilizeEulerRotationSeries(
+            frames.map(pose => pose.bones?.[boneName] || [0, 0, 0]),
+            preset,
+        );
+        for (let frame = 0; frame < frames.length; frame++) {
+            frames[frame].bones ||= {};
+            frames[frame].bones[boneName] = stabilized[frame];
+        }
+    }
+
+    const stabilizedModelRotation = stabilizeEulerRotationSeries(
+        frames.map(pose => pose.modelRotation || [0, 0, 0]),
+        preset,
+    );
+    for (let frame = 0; frame < frames.length; frame++) {
+        frames[frame].modelRotation = stabilizedModelRotation[frame];
+    }
+    return frames;
 }
 
 export function clampVideoTimelineViewport({

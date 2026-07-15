@@ -388,12 +388,16 @@ export function createAnimationStateFromPoses(poses, options = {}) {
         currentFrame: 0,
         defaultInterpolation: options.interpolation || "linear",
     });
+    const keyframeStep = Math.max(1, Math.floor(finiteNumber(options.keyframeStep, 1)));
+    const keyedFrames = [];
+    for (let frame = 0; frame < frameCount; frame += keyframeStep) keyedFrames.push(frame);
+    if (keyedFrames.at(-1) !== frameCount - 1) keyedFrames.push(frameCount - 1);
 
     const boneNames = new Set();
     for (const pose of frames.slice(0, frameCount)) {
         for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
     }
-    for (let frame = 0; frame < frameCount; frame++) {
+    for (const frame of keyedFrames) {
         const pose = frames[frame];
         for (const boneName of boneNames) {
             setTrackKeyframeFromEuler(

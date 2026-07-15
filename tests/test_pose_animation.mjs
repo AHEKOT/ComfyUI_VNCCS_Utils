@@ -281,3 +281,18 @@ test("Mixamo-style pose samples become one keyed animation clip", () => {
     assert.ok(angleDistance(lastFrame.bones.upperarm_l[0], 0) < 1e-6);
     assert.ok(angleDistance(lastFrame.modelRotation[1], 10) < 1e-6);
 });
+
+test("pose imports can key only every Nth animation frame", () => {
+    const poses = Array.from({ length: 100 }, (_, frame) => ({
+        bones: { wrist_l: [0, frame, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const state = createAnimationStateFromPoses(poses, {
+        duration: 100 / 12,
+        fps: 12,
+        keyframeStep: 10,
+    });
+    assert.equal(state.frameCount, 100);
+    assert.deepEqual(state.tracks.wrist_l.keys.map(key => key.frame), [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 99]);
+    assert.equal(state.tracks[MODEL_ROTATION_TRACK].keys.length, 11);
+});
