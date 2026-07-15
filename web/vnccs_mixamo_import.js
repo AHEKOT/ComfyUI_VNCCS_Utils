@@ -800,6 +800,8 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
         return {
             poses,
             clipName: clip.name || file.name,
+            duration: Math.max(Number(clip.duration) || 0, sampleTimes[sampleTimes.length - 1] || 0),
+            sampleTimes,
         };
     } finally {
         URL.revokeObjectURL(fileUrl);
