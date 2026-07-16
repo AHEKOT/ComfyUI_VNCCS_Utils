@@ -478,6 +478,7 @@ test("pose imports can key only every Nth animation frame", () => {
     const state = createAnimationStateFromPoses(poses, {
         duration: 100 / 12,
         fps: 12,
+        frameCount: null,
         keyframeStep: 10,
     });
     assert.equal(state.frameCount, 100);

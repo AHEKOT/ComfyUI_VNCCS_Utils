@@ -14,6 +14,7 @@ import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
     clampVideoTimelineViewport,
+    computeVideoCaptureSchedule,
     computeVideoSamplePlan,
     countVideoKeyedFrames,
     drawVideoCover,
@@ -4611,6 +4612,8 @@ class PoseStudioWidget {
         duration = null,
         keyframeStep = 1,
         trackKeyframes = null,
+        frameCount = null,
+        poseFrameIndices = null,
     } = {}) {
         const previousPrompt = this.getPosePrompt(this.activeTab);
         const state = createAnimationStateFromPoses(poses, {
@@ -4619,6 +4622,8 @@ class PoseStudioWidget {
             interpolation: "linear",
             keyframeStep,
             trackKeyframes,
+            frameCount,
+            poseFrameIndices,
         });
         state.basePose.prompt = String(state.basePose.prompt || previousPrompt || "");
 
@@ -7477,32 +7482,40 @@ class PoseStudioWidget {
         const poses = [];
         let lastPoseData = null;
         let lastMeshData = null;
+        const fixedStep = Math.max(1, Math.floor(Number(keyframeStep) || 2));
+        // Adaptive reduction needs the dense source motion to decide which
+        // joints/frames are redundant. Fixed-step mode can skip parsing every
+        // source frame that will not become a key.
+        const captureStep = keyReduction === "off" ? fixedStep : 1;
+        const captureSchedule = computeVideoCaptureSchedule(plan, captureStep);
+        if (captureSchedule.sampleCount < 2) throw new Error("Video capture requires at least two pose samples.");
 
         try {
             video.pause();
-            for (let index = 0; index < plan.times.length; index++) {
+            for (let index = 0; index < captureSchedule.times.length; index++) {
                 if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
-                const time = plan.times[index];
+                const time = captureSchedule.times[index];
+                const sourceFrame = captureSchedule.frameIndices[index];
                 onProgress?.({
                     index,
-                    count: plan.sampleCount,
+                    count: captureSchedule.sampleCount,
                     time,
-                    progress: (index / plan.sampleCount) * 95,
+                    progress: (index / captureSchedule.sampleCount) * 95,
                     phase: "capture",
                 });
                 const frameBlob = await this.captureVideoFrameBlob(video, time, captureCanvas, signal);
                 const taskId = `video-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`;
                 onProgress?.({
                     index,
-                    count: plan.sampleCount,
+                    count: captureSchedule.sampleCount,
                     time,
-                    progress: ((index + 0.15) / plan.sampleCount) * 95,
+                    progress: ((index + 0.15) / captureSchedule.sampleCount) * 95,
                     phase: "pose",
                 });
                 const poseData = await this.requestSAM3DPoseForImage(frameBlob, {
                     taskId,
                     signal,
-                    fileName: `video_frame_${String(index).padStart(5, "0")}.jpg`,
+                    fileName: `video_frame_${String(sourceFrame).padStart(5, "0")}.jpg`,
                 });
                 const fitData = await this.prepareSAM3DRenderFit(poseData, {
                     signal,
@@ -7525,9 +7538,9 @@ class PoseStudioWidget {
                 lastMeshData = fitData?.meshData || null;
                 onProgress?.({
                     index: index + 1,
-                    count: plan.sampleCount,
+                    count: captureSchedule.sampleCount,
                     time,
-                    progress: ((index + 1) / plan.sampleCount) * 95,
+                    progress: ((index + 1) / captureSchedule.sampleCount) * 95,
                     phase: "complete",
                 });
 
@@ -7550,7 +7563,7 @@ class PoseStudioWidget {
             const stabilizedPoses = stabilization === "off"
                 ? poses
                 : stabilizeVideoPoseSequence(poses, stabilization, {
-                    sampleFps: plan.effectiveFps,
+                    sampleFps: captureSchedule.effectiveFps,
                 });
             if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
             onProgress?.({
@@ -7566,13 +7579,16 @@ class PoseStudioWidget {
             this.syncMeshProportionSlidersFromViewer();
             this.replaceAnimationFromPoses(stabilizedPoses, {
                 duration: plan.duration,
-                keyframeStep,
+                keyframeStep: 1,
                 trackKeyframes: reduction?.trackKeyframes || null,
+                frameCount: captureSchedule.timelineFrameCount,
+                poseFrameIndices: captureSchedule.frameIndices,
             });
             this.updateRotationSliders();
             this.updateCaptureCameraPreview();
             return {
                 sampleCount: poses.length,
+                timelineFrameCount: captureSchedule.timelineFrameCount,
                 keyedFrameCount: Object.values(this.animationState.tracks || {}).reduce(
                     (sum, track) => sum + (track.keys?.length || 0),
                     0,
@@ -7784,15 +7800,17 @@ class PoseStudioWidget {
             const keyframeStep = Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2));
             const keyedFrameCount = countVideoKeyedFrames(plan.sampleCount, keyframeStep);
             const adaptiveReduction = keyReductionSelect.value !== "off";
+            const captureSchedule = computeVideoCaptureSchedule(plan, adaptiveReduction ? 1 : keyframeStep);
             keyframeStepInput.disabled = processing || adaptiveReduction;
             summary.classList.toggle("is-limited", plan.limited);
             const effective = Number(plan.effectiveFps.toFixed(3));
             const keySummary = adaptiveReduction
                 ? `adaptive ${keyReductionSelect.value} keys after capture`
                 : `${keyedFrameCount} fixed key positions per track`;
+            const captureSummary = `${captureSchedule.sampleCount} pose parses · ${plan.sampleCount} timeline frames`;
             summary.textContent = plan.limited
-                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · ${keySummary} · effective ${effective} FPS (limited from ${plan.requestedSamples})`
-                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS · ${keySummary}`;
+                ? `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} · ${keySummary} · effective ${effective} FPS (limited from ${plan.requestedSamples})`
+                : `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} at ${effective} FPS · ${keySummary}`;
             importButton.disabled = processing || plan.duration <= 0;
             updateViewportControls();
         };

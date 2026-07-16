@@ -4,12 +4,14 @@ import test from "node:test";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     clampVideoTimelineViewport,
+    computeVideoCaptureSchedule,
     computeVideoSamplePlan,
     countVideoKeyedFrames,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
     reduceVideoPoseKeyframes,
     stabilizeVideoPoseSequence,
+    videoKeyedFrameIndices,
     zoomVideoTimelineViewport,
 } from "../web/vnccs_video_import.mjs";
 import {
@@ -103,6 +105,30 @@ test("video keyframe interval defaults to every second frame and scales predicta
     assert.equal(countVideoKeyedFrames(100, 4), 26);
     assert.equal(countVideoKeyedFrames(100, 10), 11);
     assert.equal(countVideoKeyedFrames(101, 10), 11);
+    assert.deepEqual(videoKeyedFrameIndices(24, 4), [0, 4, 8, 12, 16, 20, 23]);
+});
+
+test("fixed video key intervals skip pose parsing but preserve the full timeline", () => {
+    const plan = computeVideoSamplePlan({ inTime: 0, outTime: 2, targetFps: 12 });
+    const capture = computeVideoCaptureSchedule(plan, 4);
+    assert.equal(plan.sampleCount, 24);
+    assert.equal(capture.sampleCount, 7);
+    assert.deepEqual(capture.frameIndices, [0, 4, 8, 12, 16, 20, 23]);
+    assert.deepEqual(capture.times, capture.frameIndices.map(frame => frame / 12));
+
+    const poses = capture.frameIndices.map(frame => ({
+        bones: { wrist_l: [0, frame, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const state = createAnimationStateFromPoses(poses, {
+        duration: plan.duration,
+        frameCount: capture.timelineFrameCount,
+        poseFrameIndices: capture.frameIndices,
+    });
+    assert.equal(state.frameCount, 24);
+    assert.equal(state.fps, 12);
+    assert.deepEqual(state.tracks.wrist_l.keys.map(key => key.frame), capture.frameIndices);
+    assert.ok(quaternionDistanceDegrees(evaluateAnimationFrame(state, 23).bones.wrist_l, [0, 23, 0]) < 1e-6);
 });
 
 test("quaternion stabilization suppresses an isolated wrist jump", () => {

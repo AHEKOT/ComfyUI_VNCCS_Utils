@@ -397,7 +397,21 @@ export function createAnimationStateFromPoses(poses, options = {}) {
     if (!frames.length) throw new Error("Animation contains no pose frames.");
     if (frames.length === 1) frames.push(normalizePose(frames[0]));
 
-    const frameCount = Math.min(MAX_FRAME_COUNT, frames.length);
+    const explicitPoseFrameIndices = Array.isArray(options.poseFrameIndices)
+        && options.poseFrameIndices.length === frames.length
+        ? options.poseFrameIndices.map(frame => Math.max(0, Math.round(finiteNumber(frame))))
+        : null;
+    const inferredFrameCount = explicitPoseFrameIndices?.length
+        ? Math.max(...explicitPoseFrameIndices) + 1
+        : frames.length;
+    const requestedFrameCount = options.frameCount === null || options.frameCount === undefined || options.frameCount === ""
+        ? NaN
+        : Number(options.frameCount);
+    const frameCount = clamp(
+        Number.isFinite(requestedFrameCount) ? Math.round(requestedFrameCount) : inferredFrameCount,
+        MIN_FRAME_COUNT,
+        MAX_FRAME_COUNT,
+    );
     const requestedDuration = Number(options.duration);
     const fallbackFps = Math.max(1, finiteNumber(options.fps, 12));
     const duration = Number.isFinite(requestedDuration) && requestedDuration > 0
@@ -411,9 +425,19 @@ export function createAnimationStateFromPoses(poses, options = {}) {
         defaultInterpolation: options.interpolation || "linear",
     });
     const keyframeStep = Math.max(1, Math.floor(finiteNumber(options.keyframeStep, 1)));
-    const keyedFrames = [];
-    for (let frame = 0; frame < frameCount; frame += keyframeStep) keyedFrames.push(frame);
-    if (keyedFrames.at(-1) !== frameCount - 1) keyedFrames.push(frameCount - 1);
+    const keyedFrames = explicitPoseFrameIndices
+        ? Array.from(new Set(explicitPoseFrameIndices.map(frame => clamp(frame, 0, frameCount - 1)))).sort((a, b) => a - b)
+        : [];
+    if (!explicitPoseFrameIndices) {
+        for (let frame = 0; frame < frameCount; frame += keyframeStep) keyedFrames.push(frame);
+        if (keyedFrames.at(-1) !== frameCount - 1) keyedFrames.push(frameCount - 1);
+    }
+    const poseByTimelineFrame = explicitPoseFrameIndices
+        ? new Map(explicitPoseFrameIndices.map((frame, index) => [clamp(frame, 0, frameCount - 1), frames[index]]))
+        : null;
+    const poseAtFrame = frame => (
+        poseByTimelineFrame ? poseByTimelineFrame.get(frame) : frames[frame]
+    );
     const perTrackKeyframes = options.trackKeyframes && typeof options.trackKeyframes === "object"
         ? options.trackKeyframes
         : null;
@@ -432,7 +456,8 @@ export function createAnimationStateFromPoses(poses, options = {}) {
     }
     for (const boneName of boneNames) {
         for (const frame of framesForTrack(boneName)) {
-            const pose = frames[frame];
+            const pose = poseAtFrame(frame);
+            if (!pose) continue;
             setTrackKeyframeFromEuler(
                 state,
                 boneName,
@@ -443,7 +468,8 @@ export function createAnimationStateFromPoses(poses, options = {}) {
         }
     }
     for (const frame of framesForTrack(MODEL_ROTATION_TRACK)) {
-        const pose = frames[frame];
+        const pose = poseAtFrame(frame);
+        if (!pose) continue;
         setTrackKeyframeFromEuler(
             state,
             MODEL_ROTATION_TRACK,

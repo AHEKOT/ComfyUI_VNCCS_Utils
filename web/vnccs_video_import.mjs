@@ -75,12 +75,45 @@ export function computeVideoSamplePlan({
     };
 }
 
-export function countVideoKeyedFrames(frameCountValue, keyframeStepValue = 2) {
+export function videoKeyedFrameIndices(frameCountValue, keyframeStepValue = 2) {
     const frameCount = Math.max(0, Math.floor(finiteNumber(frameCountValue)));
-    if (!frameCount) return 0;
+    if (!frameCount) return [];
     const step = Math.max(1, Math.floor(finiteNumber(keyframeStepValue, 2)));
-    const regularKeys = Math.floor((frameCount - 1) / step) + 1;
-    return (frameCount - 1) % step === 0 ? regularKeys : regularKeys + 1;
+    const indices = [];
+    for (let frame = 0; frame < frameCount; frame += step) indices.push(frame);
+    if (indices.at(-1) !== frameCount - 1) indices.push(frameCount - 1);
+    return indices;
+}
+
+export function countVideoKeyedFrames(frameCountValue, keyframeStepValue = 2) {
+    return videoKeyedFrameIndices(frameCountValue, keyframeStepValue).length;
+}
+
+/**
+ * Select only the source frames that will become fixed timeline keys. The
+ * animation keeps the original timeline frame count/FPS; this schedule merely
+ * prevents the expensive pose parser from processing frames that interpolation
+ * will replace anyway.
+ */
+export function computeVideoCaptureSchedule(plan, keyframeStepValue = 1) {
+    const sourceTimes = Array.isArray(plan?.times) ? plan.times : [];
+    const timelineFrameCount = Math.min(
+        Math.max(0, Math.floor(finiteNumber(plan?.sampleCount, sourceTimes.length))),
+        sourceTimes.length,
+    );
+    const frameIndices = videoKeyedFrameIndices(timelineFrameCount, keyframeStepValue);
+    const times = frameIndices.map(frame => sourceTimes[frame]);
+    const elapsed = times.length > 1 ? times.at(-1) - times[0] : 0;
+    const effectiveFps = elapsed > 0
+        ? (times.length - 1) / elapsed
+        : Math.max(0.001, finiteNumber(plan?.effectiveFps, 12));
+    return {
+        timelineFrameCount,
+        frameIndices,
+        times,
+        sampleCount: times.length,
+        effectiveFps,
+    };
 }
 
 function quaternionAngularDistanceDegrees(a, b) {
