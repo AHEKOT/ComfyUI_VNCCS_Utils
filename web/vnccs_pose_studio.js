@@ -7581,29 +7581,17 @@ class PoseStudioWidget {
         if (!this.exportParams.samApplyCamera) {
             this.viewer?.setSAMProjectionCameraFrame?.(null);
             this._samCameraModeActive = false;
-            const fallbackParams = this.viewer?.computeSAM3DFrameCameraParams?.(
+            const fallbackParams = this.viewer?.fitSAM3DToStandardCamera?.(
                 poseData,
                 this.exportParams.view_width || 1024,
                 this.exportParams.view_height || 1024,
-                meshData,
-                true // forceFallback: skip sam_projection, compute bbox zoom/offset + camera angles
+                meshData
             );
             if (fallbackParams) {
                 this.exportParams.cam_zoom = fallbackParams.zoom;
                 this.exportParams.cam_offset_x = fallbackParams.offset_x;
                 this.exportParams.cam_offset_y = fallbackParams.offset_y;
-                // Apply inverse SAM camera angles as model rotation
-                const yaw = fallbackParams.yaw_deg || 0;
-                const pitch = fallbackParams.pitch_deg || 0;
-                if (Math.abs(yaw) > 0.5 || Math.abs(pitch) > 0.5) {
-                    const curRot = this.viewer.getPose?.()?.modelRotation || [0, 0, 0];
-                    this.viewer.setModelRotation(
-                        curRot[0] - pitch,
-                        curRot[1] - yaw,
-                        curRot[2]
-                    );
-                    this.updateRotationSliders();
-                }
+                this.updateRotationSliders();
             }
             this.syncCameraWidgets();
             this.applyCameraToViewer(true);

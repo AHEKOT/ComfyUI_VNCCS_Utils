@@ -33,6 +33,101 @@ const ThreeModuleLoader = {
     }
 };
 
+export function computeSAMProjectionFrameFit({
+    modelBounds,
+    desiredBounds,
+    fov,
+    aspect,
+    modelShoulderY = null,
+    desiredShoulderY = null,
+    desiredBottomY = null,
+    safety = 1,
+    minZoom = 0.1,
+    maxZoom = 16,
+} = {}) {
+    const values = [
+        modelBounds?.width,
+        modelBounds?.height,
+        modelBounds?.centerX,
+        modelBounds?.centerY,
+        modelBounds?.depth,
+        desiredBounds?.width,
+        desiredBounds?.height,
+        desiredBounds?.centerX,
+        desiredBounds?.centerY,
+        fov,
+        aspect,
+    ].map(Number);
+    if (!values.every(Number.isFinite)) return null;
+
+    const [
+        modelWidth,
+        modelHeight,
+        modelCenterX,
+        modelCenterY,
+        modelDepth,
+        desiredWidth,
+        desiredHeight,
+        desiredCenterX,
+        desiredCenterY,
+        fovDegrees,
+        cameraAspect,
+    ] = values;
+    if (
+        modelWidth <= 1e-5
+        || modelHeight <= 1e-5
+        || modelDepth <= 1e-5
+        || desiredWidth <= 1e-5
+        || desiredHeight <= 1e-5
+        || fovDegrees <= 0
+        || cameraAspect <= 0
+    ) return null;
+
+    const modelBottomY = modelCenterY - modelHeight * 0.5;
+    const useShoulderAnchor = [
+        modelShoulderY,
+        desiredShoulderY,
+        desiredBottomY,
+    ].every(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    const modelVerticalSpan = useShoulderAnchor
+        ? Number(modelShoulderY) - modelBottomY
+        : modelHeight;
+    const desiredVerticalSpan = useShoulderAnchor
+        ? Number(desiredShoulderY) - Number(desiredBottomY)
+        : desiredHeight;
+    if (modelVerticalSpan <= 1e-5 || desiredVerticalSpan <= 1e-5) return null;
+
+    const safeScale = Math.max(0.5, Math.min(1.5, Number(safety) || 1));
+    const zoom = Math.max(
+        Number(minZoom) || 0.1,
+        Math.min(
+            Number(maxZoom) || 16,
+            // Shoulder-to-sole height is stable across different head shapes.
+            (desiredVerticalSpan / modelVerticalSpan) * safeScale,
+        ),
+    );
+    const visibleHeight = 2 * modelDepth * Math.tan((fovDegrees * Math.PI / 180) * 0.5) / zoom;
+    const visibleWidth = visibleHeight * cameraAspect;
+    const scaledCenterX = modelCenterX * zoom;
+    const scaledAnchorY = (
+        useShoulderAnchor ? Number(modelShoulderY) : modelCenterY
+    ) * zoom;
+    const targetAnchorY = useShoulderAnchor
+        ? Number(desiredShoulderY)
+        : desiredCenterY;
+
+    return {
+        zoom,
+        offset_x: -(scaledCenterX - desiredCenterX) * visibleWidth * 0.5,
+        offset_y: -(scaledAnchorY - targetAnchorY) * visibleHeight * 0.5,
+    };
+}
+
+export function clampTwoBoneReachDistance(targetDistance, totalLength) {
+    const target = Math.max(0, Number(targetDistance) || 0);
+    const total = Math.max(0, Number(totalLength) || 0);
+    return Math.min(target, total);
+}
 
 // === IK Chain Definitions ===
 const IK_CHAINS = {
@@ -366,7 +461,7 @@ const SAM3D_TO_MH_BONE_MAP = {
 };
 
 // === Analytic 2-Bone IK Solver ===
-class AnalyticIKSolver {
+export class AnalyticIKSolver {
     constructor(THREE) {
         this.THREE = THREE;
     }
@@ -390,7 +485,7 @@ class AnalyticIKSolver {
 
         // Clamp to reachable range
         const totalLen = upperLen + lowerLen;
-        const reachDist = Math.min(targetDist, totalLen * 0.999);
+        const reachDist = clampTwoBoneReachDistance(targetDist, totalLen);
 
         // Law of cosines to find the bend angle at the middle joint
         // cos(A) = (a² + b² - c²) / (2ab)
@@ -4043,6 +4138,21 @@ export class PoseViewerCore {
         const sourceCamera = flattenNumbers(frame?.camera || data?.camera).slice(0, 3);
         const focalRaw = flattenNumbers(frame?.focal_length ?? data?.focal_length)[0] ?? Number(data?.focal_length);
         const sourceFocal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
+        const projectSAMMeshPoint = (point) => {
+            if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
+            const x = Number(point[0]) + sourceCamera[0];
+            const y = -Number(point[1]) + sourceCamera[1];
+            const z = -Number(point[2]) + sourceCamera[2];
+            if (![x, y, z].every(Number.isFinite) || z <= 1e-5) return null;
+            const px = x * sourceFocal / z + imageW * 0.5;
+            const py = y * sourceFocal / z + imageH * 0.5;
+            return {
+                px,
+                py,
+                ndcX: (px / imageW - 0.5) * 2,
+                ndcY: (0.5 - py / imageH) * 2,
+            };
+        };
         const sourceFrame = this._samMeshOverlaySourceFrame;
         const samProjectionFrame = (() => {
             if (!sourceFrame?.pelvisWorld || !Array.isArray(sourceFrame?.pelvisSource)) return null;
@@ -4078,18 +4188,6 @@ export class PoseViewerCore {
             return { yaw_deg: yaw, pitch_deg: pitch };
         })();
 
-        // NOTE: forceFallback=true skips the SAM projection path and forces bbox-based zoom/offset
-        // computation. Used when the user has disabled the SAM camera override (samApplyCamera=false).
-        if (samProjectionFrame && !forceFallback) {
-            return {
-                zoom: 1.0,
-                offset_x: 0,
-                offset_y: 0,
-                yaw_deg: 0,
-                pitch_deg: 0,
-                sam_projection: samProjectionFrame,
-            };
-        }
         const projectSourcePoint = (point) => {
             if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
             const x = Number(point[0]);
@@ -4108,6 +4206,33 @@ export class PoseViewerCore {
 
         let hasRenderFrameBounds = false;
         const projectedSourceBounds = (() => {
+            // Read the exact postprocessed SAM mesh without modifying it.
+            if (Array.isArray(meshData?.vertices) && meshData.vertices.length >= 16) {
+                let count = 0;
+                let minX = Infinity;
+                let minY = Infinity;
+                let maxX = -Infinity;
+                let maxY = -Infinity;
+                for (const vertex of meshData.vertices) {
+                    const point = projectSAMMeshPoint(vertex);
+                    if (!point) continue;
+                    count += 1;
+                    minX = Math.min(minX, point.px);
+                    minY = Math.min(minY, point.py);
+                    maxX = Math.max(maxX, point.px);
+                    maxY = Math.max(maxY, point.py);
+                }
+                if (count >= 16) {
+                    hasRenderFrameBounds = true;
+                    return {
+                        x1: minX,
+                        y1: minY,
+                        x2: maxX,
+                        y2: maxY,
+                    };
+                }
+            }
+
             const frameBounds = frame?.projected_bounds;
             if (frameBounds) {
                 const fx1 = Number(frameBounds.x1);
@@ -4156,12 +4281,11 @@ export class PoseViewerCore {
             if (xs.length < 2 || ys.length < 2) return null;
             xs.sort((a, b) => a - b);
             ys.sort((a, b) => a - b);
-            const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
             return {
-                x1: pick(xs, 0.01),
-                y1: pick(ys, 0.01),
-                x2: pick(xs, 0.99),
-                y2: pick(ys, 0.99),
+                x1: xs[0],
+                y1: ys[0],
+                x2: xs[xs.length - 1],
+                y2: ys[ys.length - 1],
             };
         })();
         let x1;
@@ -4195,13 +4319,20 @@ export class PoseViewerCore {
         const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
         const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
         const sourceShoulderFrame = (() => {
-            if (hasRenderFrameBounds) return null;
             if (typeof this._buildSAM3DNamedPoints !== 'function') return null;
             const named = this._buildSAM3DNamedPoints(data);
-            const projected = [
-                projectSourcePoint(named.raw_left_shoulder || named.canonical_left_shoulder),
-                projectSourcePoint(named.raw_right_shoulder || named.canonical_right_shoulder),
-            ].filter(Boolean);
+            const fittedCoordinates = Array.isArray(data?.joint_coords);
+            const projectShoulder = (side) => {
+                if (fittedCoordinates) {
+                    const fitted = named[`${side}_shoulder`];
+                    const projected = projectSAMMeshPoint(fitted);
+                    if (projected) return projected;
+                }
+                return projectSourcePoint(
+                    named[`raw_${side}_shoulder`] || named[`canonical_${side}_shoulder`],
+                );
+            };
+            const projected = [projectShoulder('left'), projectShoulder('right')].filter(Boolean);
             if (!projected.length) return null;
             const py = projected.reduce((sum, point) => sum + point.py, 0) / projected.length;
             const ndcY = projected.reduce((sum, point) => sum + point.ndcY, 0) / projected.length;
@@ -4226,6 +4357,7 @@ export class PoseViewerCore {
 
             const xs = [];
             const ys = [];
+            const depths = [];
 
             const collectMesh = (mesh) => {
                 const geometry = mesh?.geometry;
@@ -4234,34 +4366,34 @@ export class PoseViewerCore {
 
                 mesh.updateMatrixWorld(true);
                 const point = new this.THREE.Vector3();
-                const step = Math.max(1, Math.ceil(position.count / 8000));
-                for (let index = 0; index < position.count; index += step) {
+                const cameraPoint = new this.THREE.Vector3();
+                for (let index = 0; index < position.count; index++) {
                     point.fromBufferAttribute(position, index);
                     if (typeof mesh.applyBoneTransform === 'function') {
                         mesh.applyBoneTransform(index, point);
                     }
-                    point.applyMatrix4(mesh.matrixWorld).project(camera);
+                    point.applyMatrix4(mesh.matrixWorld);
+                    cameraPoint.copy(point).applyMatrix4(camera.matrixWorldInverse);
+                    if (!Number.isFinite(cameraPoint.z) || cameraPoint.z >= -1e-5) continue;
+                    depths.push(-cameraPoint.z);
+                    point.project(camera);
                     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
                     xs.push(point.x);
                     ys.push(point.y);
                 }
             };
 
-            if (this._samMeshOverlayGroup) {
-                this._samMeshOverlayGroup.traverse((object) => {
-                    if (object?.isMesh) collectMesh(object);
-                });
-            }
-            if (xs.length < 16 && this.skinnedMesh) {
-                collectMesh(this.skinnedMesh);
-            }
+            // Capture/export contains the mannequin, not the debug SAM overlay.
+            // Always frame the geometry that will actually be rendered.
+            if (this.skinnedMesh) collectMesh(this.skinnedMesh);
 
-            if (xs.length < 16 || ys.length < 16) return null;
+            if (xs.length < 16 || ys.length < 16 || depths.length < 16) return null;
             xs.sort((a, b) => a - b);
             ys.sort((a, b) => a - b);
+            depths.sort((a, b) => a - b);
             const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
-            const min = new this.THREE.Vector2(pick(xs, 0.01), pick(ys, 0.01));
-            const max = new this.THREE.Vector2(pick(xs, 0.99), pick(ys, 0.99));
+            const min = new this.THREE.Vector2(xs[0], ys[0]);
+            const max = new this.THREE.Vector2(xs[xs.length - 1], ys[ys.length - 1]);
             if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) return null;
             return {
                 min,
@@ -4270,6 +4402,7 @@ export class PoseViewerCore {
                 height: Math.max(1e-5, max.y - min.y),
                 centerX: (min.x + max.x) * 0.5,
                 centerY: (min.y + max.y) * 0.5,
+                depth: pick(depths, 0.5),
             };
         };
         const projectedBoneCenterY = (camera, boneNames) => {
@@ -4288,6 +4421,60 @@ export class PoseViewerCore {
             return values.reduce((sum, value) => sum + value, 0) / values.length;
         };
 
+        // Preserve SAM's camera direction, then match the complete mannequin to
+        // the source person's exact head-to-sole interval. Horizontal body width
+        // must not reduce character height.
+        if (samProjectionFrame && !forceFallback) {
+            const projectionCamera = new this.THREE.PerspectiveCamera(
+                samProjectionFrame.fov,
+                (Number(width) || 1024) / Math.max(1, Number(height) || 1024),
+                this.captureCamera.near,
+                this.captureCamera.far,
+            );
+            projectionCamera.zoom = 1.0;
+            projectionCamera.up.set(0, 1, 0);
+            projectionCamera.position.set(
+                Number(samProjectionFrame.cameraPosition.x) || 0,
+                Number(samProjectionFrame.cameraPosition.y) || 0,
+                Number(samProjectionFrame.cameraPosition.z) || 0,
+            );
+            projectionCamera.lookAt(new this.THREE.Vector3(
+                projectionCamera.position.x,
+                projectionCamera.position.y,
+                projectionCamera.position.z - 1,
+            ));
+            projectionCamera.updateMatrixWorld(true);
+            projectionCamera.updateProjectionMatrix();
+
+            const modelBounds = projectedBounds(projectionCamera);
+            const modelShoulderY = projectedBoneCenterY(
+                projectionCamera,
+                ['upperarm_l', 'upperarm_r'],
+            );
+            const fit = computeSAMProjectionFrameFit({
+                modelBounds,
+                desiredBounds: {
+                    width: desiredW * 2,
+                    height: desiredH * 2,
+                    centerX: desiredCenterX,
+                    centerY: desiredCenterY,
+                },
+                fov: projectionCamera.fov,
+                aspect: projectionCamera.aspect,
+                modelShoulderY,
+                desiredShoulderY: sourceShoulderFrame?.ndcY,
+                desiredBottomY: desiredCenterY - desiredH,
+            });
+            return {
+                zoom: fit?.zoom ?? 0.96,
+                offset_x: fit?.offset_x ?? 0,
+                offset_y: fit?.offset_y ?? 0,
+                yaw_deg: 0,
+                pitch_deg: 0,
+                sam_projection: samProjectionFrame,
+            };
+        }
+
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         const dist = 45;
         const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
@@ -4298,6 +4485,31 @@ export class PoseViewerCore {
         this.updateCaptureCamera(width, height, 1.0, 0, 0);
         const baseBounds = projectedBounds(this.captureCamera);
         if (baseBounds) {
+            if (forceFallback) {
+                const modelShoulderY = projectedBoneCenterY(
+                    this.captureCamera,
+                    ['upperarm_l', 'upperarm_r'],
+                );
+                const fit = computeSAMProjectionFrameFit({
+                    modelBounds: baseBounds,
+                    desiredBounds: {
+                        width: desiredW * 2,
+                        height: desiredH * 2,
+                        centerX: desiredCenterX,
+                        centerY: desiredCenterY,
+                    },
+                    fov: this.captureCamera.fov,
+                    aspect: this.captureCamera.aspect,
+                    modelShoulderY,
+                    desiredShoulderY: sourceShoulderFrame?.ndcY,
+                    desiredBottomY: desiredCenterY - desiredH,
+                });
+                if (fit) {
+                    this.updateCaptureCamera(width, height, fit.zoom, fit.offset_x, fit.offset_y);
+                    return { ...fit, ...samCameraAngles };
+                }
+            }
+
             const desiredNdcW = desiredW * 2;
             const desiredNdcH = desiredH * 2;
             const zoomForW = desiredNdcW / baseBounds.width;
@@ -4347,6 +4559,26 @@ export class PoseViewerCore {
             offset_y: baseTarget.y - targetY,
             ...samCameraAngles,
         };
+    }
+
+    fitSAM3DToStandardCamera(data, width = 1024, height = 1024, meshData = null) {
+        const angleParams = this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
+        if (!angleParams) return null;
+
+        const yaw = Number(angleParams.yaw_deg) || 0;
+        const pitch = Number(angleParams.pitch_deg) || 0;
+        if (Math.abs(yaw) > 0.5 || Math.abs(pitch) > 0.5) {
+            const currentRotation = this.getPose?.()?.modelRotation || [0, 0, 0];
+            this.setModelRotation(
+                (Number(currentRotation[0]) || 0) - pitch,
+                (Number(currentRotation[1]) || 0) - yaw,
+                Number(currentRotation[2]) || 0,
+            );
+        }
+
+        // Rotation changes the projected head/sole positions, especially for
+        // high- and low-angle images. Measure again only after it is applied.
+        return this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
     }
 
     capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
@@ -4775,6 +5007,8 @@ export class PoseViewerCore {
         this._applySAM3DTargetIK(importTargets, {
             includeSpine: options.includeSpine !== false,
             normalizeLimbs: options.normalizeLimbs !== false,
+            normalizeArms: options.normalizeArms !== false,
+            normalizeLegs: options.normalizeLegs !== false,
             drawNormalizedFigure: options.drawFigure !== false,
         });
 
@@ -4794,11 +5028,67 @@ export class PoseViewerCore {
 
     fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
         const worldKps = this._samMeshOverlayWorldKps;
+        this.fitSAM3DArmLengthsToWorldKps(worldKps);
         return this.applyWorldKeypointImport(worldKps, {
             shoulderYOffset,
-            normalizeLimbs: false,
+            // The overlay is a pose-direction reference, not a set of hard
+            // hip/ankle pins. Preserve the mannequin's fitted segment lengths
+            // so a small scale mismatch cannot be converted into bent knees.
+            normalizeLimbs: true,
+            normalizeArms: true,
+            normalizeLegs: true,
             drawFigure: true,
         });
+    }
+
+    fitSAM3DArmLengthsToWorldKps(worldKps) {
+        if (!worldKps || !this.bones || !this.skinnedMesh) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        const measuredBaseLength = (rootBoneName, endBoneName, group) => {
+            const root = this._getBoneWorldPositionForImport(rootBoneName);
+            const end = this._getBoneWorldPositionForImport(endBoneName);
+            const currentLength = root && end ? root.distanceTo(end) : 0;
+            const currentSlider = Number(this.boneLengthParams?.[group]);
+            const currentScale = this._lengthSliderToScale(
+                Number.isFinite(currentSlider) ? currentSlider : 0.5,
+            );
+            if (currentLength <= 1e-5 || currentScale <= 1e-5) return 0;
+            return currentLength / currentScale;
+        };
+        const sliderValue = (targetLength, baseWorldLength) => {
+            if (targetLength <= 1e-5 || baseWorldLength <= 1e-5) return null;
+            const targetScale = targetLength / baseWorldLength;
+            return Math.max(0, Math.min(1, targetScale - 0.5));
+        };
+
+        const fitted = {};
+        const fitSide = (side) => {
+            const prefix = side === 'l' ? 'left' : 'right';
+            const shoulder = worldKps[`${prefix}_shoulder`];
+            const elbow = worldKps[`${prefix}_elbow`];
+            const wrist = worldKps[`${prefix}_wrist`];
+            if (!shoulder || !elbow || !wrist) return;
+
+            const targetUpper = shoulder.distanceTo(elbow);
+            const targetLower = elbow.distanceTo(wrist);
+            const upperGroup = `upper_arm_${side}`;
+            const lowerGroup = `forearm_${side}`;
+            const baseUpper = measuredBaseLength(`upperarm_${side}`, `lowerarm_${side}`, upperGroup);
+            const baseLower = measuredBaseLength(`lowerarm_${side}`, `hand_${side}`, lowerGroup);
+            const upperValue = sliderValue(targetUpper, baseUpper);
+            const lowerValue = sliderValue(targetLower, baseLower);
+            if (upperValue !== null) fitted[upperGroup] = upperValue;
+            if (lowerValue !== null) fitted[lowerGroup] = lowerValue;
+        };
+
+        fitSide('l');
+        fitSide('r');
+        for (const [group, value] of Object.entries(fitted)) {
+            this.updateBoneLengthScale(group, value);
+        }
+        return Object.keys(fitted).length ? fitted : null;
     }
 
     _estimateCurrentModelHeight() {
@@ -5435,6 +5725,18 @@ export class PoseViewerCore {
         return { left, right };
     }
 
+    _relocateSAM3DEyeTargetsToHead(worldKps, target, currentHeadPivot) {
+        if (!this.THREE || !target?.left || !target?.right || !currentHeadPivot) return target;
+        const sourceHeadPivot = worldKps?.head || worldKps?.neck_tail || worldKps?.neck;
+        if (!sourceHeadPivot) return target;
+
+        const translation = currentHeadPivot.clone().sub(sourceHeadPivot);
+        return {
+            left: target.left.clone().add(translation),
+            right: target.right.clone().add(translation),
+        };
+    }
+
     _faceBasisQuaternion(points) {
         if (!this.THREE || !points?.left || !points?.right || !points?.nose) return null;
         const basis = this._buildFaceBasis(points.left, points.right, points.nose);
@@ -5508,10 +5810,15 @@ export class PoseViewerCore {
             const current = this._getCurrentMHFaceLandmarkPoints();
             if (!current?.left || !current?.right) break;
 
-            const targetMid = target.left.clone().add(target.right).multiplyScalar(0.5);
             const currentMid = current.left.clone().add(current.right).multiplyScalar(0.5);
             const headPivot = new this.THREE.Vector3();
             head.getWorldPosition(headPivot);
+            const relocatedTarget = this._relocateSAM3DEyeTargetsToHead(
+                worldKps,
+                target,
+                headPivot,
+            );
+            const targetMid = relocatedTarget.left.clone().add(relocatedTarget.right).multiplyScalar(0.5);
 
             const currentLook = currentMid.clone().sub(headPivot);
             const targetLook = targetMid.clone().sub(headPivot);
@@ -5532,7 +5839,7 @@ export class PoseViewerCore {
             rollAxis.normalize();
 
             const currentEyeAxis = afterLook.right.clone().sub(afterLook.left);
-            const targetEyeAxis = target.right.clone().sub(target.left);
+            const targetEyeAxis = relocatedTarget.right.clone().sub(relocatedTarget.left);
             currentEyeAxis.sub(rollAxis.clone().multiplyScalar(currentEyeAxis.dot(rollAxis)));
             targetEyeAxis.sub(rollAxis.clone().multiplyScalar(targetEyeAxis.dot(rollAxis)));
             if (currentEyeAxis.lengthSq() <= 1e-8 || targetEyeAxis.lengthSq() <= 1e-8) continue;
@@ -5546,13 +5853,14 @@ export class PoseViewerCore {
             const check = this._getCurrentMHFaceLandmarkPoints();
             if (!check?.left || !check?.right) continue;
             const checkMid = check.left.clone().add(check.right).multiplyScalar(0.5);
-            const midError = checkMid.distanceTo(targetMid);
+            const checkLook = checkMid.clone().sub(headPivot);
+            const lookError = (
+                checkLook.lengthSq() > 1e-8 && targetLook.lengthSq() > 1e-8
+                    ? 1 - Math.max(-1, Math.min(1, checkLook.normalize().dot(targetLook.clone().normalize())))
+                    : Number.POSITIVE_INFINITY
+            );
             const axisError = 1 - Math.max(-1, Math.min(1, check.right.clone().sub(check.left).normalize().dot(targetEyeAxis)));
-            if (midError < 0.02 && axisError < 0.002) break;
-        }
-
-        if (applied) {
-            this._applySAM3DEyeLinePitchTrim(1);
+            if (lookError < 0.002 && axisError < 0.002) break;
         }
 
         return applied;
@@ -6454,15 +6762,9 @@ export class PoseViewerCore {
             return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
         };
         const distWorld = (a, b) => (a && b ? a.distanceTo(b) : 0);
-        const avg = (...values) => {
-            const valid = values.filter((value) => Number.isFinite(value) && value > 1e-5);
-            if (!valid.length) return 0;
-            return valid.reduce((sum, value) => sum + value, 0) / valid.length;
-        };
-        const sliderFromScale = (scale, minScale = 0.75, maxScale = 1.25) => {
+        const sliderFromScale = (scale) => {
             if (!Number.isFinite(scale)) return 0.5;
-            const clamped = Math.max(minScale, Math.min(maxScale, scale));
-            return Math.max(0, Math.min(1, clamped - 0.5));
+            return Math.max(0, Math.min(1, scale - 0.5));
         };
 
         const rest = {
@@ -6499,18 +6801,17 @@ export class PoseViewerCore {
             const sourceLower = distArray(sourceMid, sourceEnd);
             const restUpper = distWorld(restRoot, restMid);
             const restLower = distWorld(restMid, restEnd);
-            const sourceTotal = sourceUpper + sourceLower;
-            const restTotal = restUpper + restLower;
-            if (sourceTotal <= 1e-5 || restTotal <= 1e-5 || restUpper <= 1e-5 || restLower <= 1e-5) {
+            if (
+                sourceUpper <= 1e-5
+                || sourceLower <= 1e-5
+                || restUpper <= 1e-5
+                || restLower <= 1e-5
+            ) {
                 return [0.5, 0.5];
             }
-            const targetTotal = Math.max(restTotal * 0.55, Math.min(restTotal * 1.35, sourceTotal * worldScale));
-            const upperRatio = Math.max(0.30, Math.min(0.70, sourceUpper / sourceTotal));
-            const targetUpper = targetTotal * upperRatio;
-            const targetLower = targetTotal - targetUpper;
             return [
-                sliderFromScale(targetUpper / restUpper, 0.55, 1.35),
-                sliderFromScale(targetLower / restLower, 0.55, 1.35),
+                sliderFromScale((sourceUpper * worldScale) / restUpper),
+                sliderFromScale((sourceLower * worldScale) / restLower),
             ];
         };
 
@@ -6741,6 +7042,8 @@ export class PoseViewerCore {
 
         const includeSpine = options.includeSpine !== false;
         const normalizeLimbs = options.normalizeLimbs !== false;
+        const normalizeArms = normalizeLimbs && options.normalizeArms !== false;
+        const normalizeLegs = normalizeLimbs && options.normalizeLegs !== false;
         const setEffectorTarget = (name, target) => {
             const effector = this.ikController?.effectors?.[name];
             if (effector && target) effector.position.copy(target);
@@ -6831,50 +7134,54 @@ export class PoseViewerCore {
         }
 
         if (normalizeLimbs) {
-            normalizeChain({
-                chainKey: 'rightArm',
-                rootBone: 'upperarm_r',
-                midBone: 'lowerarm_r',
-                endBone: 'hand_r',
-                rootKp: 'right_shoulder',
-                midKp: 'right_elbow',
-                endKp: 'right_wrist',
-                effectorName: 'hand_r',
-                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_r')),
-            });
-            normalizeChain({
-                chainKey: 'leftArm',
-                rootBone: 'upperarm_l',
-                midBone: 'lowerarm_l',
-                endBone: 'hand_l',
-                rootKp: 'left_shoulder',
-                midKp: 'left_elbow',
-                endKp: 'left_wrist',
-                effectorName: 'hand_l',
-                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_l')),
-            });
-            normalizeChain({
-                chainKey: 'rightLeg',
-                rootBone: 'thigh_r',
-                midBone: 'calf_r',
-                endBone: 'foot_r',
-                rootKp: 'right_hip',
-                midKp: 'right_knee',
-                endKp: 'right_ankle',
-                effectorName: 'foot_r',
-                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('right_')),
-            });
-            normalizeChain({
-                chainKey: 'leftLeg',
-                rootBone: 'thigh_l',
-                midBone: 'calf_l',
-                endBone: 'foot_l',
-                rootKp: 'left_hip',
-                midKp: 'left_knee',
-                endKp: 'left_ankle',
-                effectorName: 'foot_l',
-                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('left_')),
-            });
+            if (normalizeArms) {
+                normalizeChain({
+                    chainKey: 'rightArm',
+                    rootBone: 'upperarm_r',
+                    midBone: 'lowerarm_r',
+                    endBone: 'hand_r',
+                    rootKp: 'right_shoulder',
+                    midKp: 'right_elbow',
+                    endKp: 'right_wrist',
+                    effectorName: 'hand_r',
+                    attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_r')),
+                });
+                normalizeChain({
+                    chainKey: 'leftArm',
+                    rootBone: 'upperarm_l',
+                    midBone: 'lowerarm_l',
+                    endBone: 'hand_l',
+                    rootKp: 'left_shoulder',
+                    midKp: 'left_elbow',
+                    endKp: 'left_wrist',
+                    effectorName: 'hand_l',
+                    attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_l')),
+                });
+            }
+            if (normalizeLegs) {
+                normalizeChain({
+                    chainKey: 'rightLeg',
+                    rootBone: 'thigh_r',
+                    midBone: 'calf_r',
+                    endBone: 'foot_r',
+                    rootKp: 'right_hip',
+                    midKp: 'right_knee',
+                    endKp: 'right_ankle',
+                    effectorName: 'foot_r',
+                    attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('right_')),
+                });
+                normalizeChain({
+                    chainKey: 'leftLeg',
+                    rootBone: 'thigh_l',
+                    midBone: 'calf_l',
+                    endBone: 'foot_l',
+                    rootKp: 'left_hip',
+                    midKp: 'left_knee',
+                    endKp: 'left_ankle',
+                    effectorName: 'foot_l',
+                    attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('left_')),
+                });
+            }
             if (normalizedTargets.worldKps) {
                 importTargets.worldKps = normalizedTargets.worldKps;
                 if (options.drawNormalizedFigure !== false) {
@@ -6919,6 +7226,11 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 
+        // Match the mannequin's limb proportions to the fitted SAM skeleton
+        // before building IK targets. Position/scale differences should be
+        // handled by body proportions and camera framing, not knee flexion.
+        this.autoFitSAM3DBoneLengths(data);
+
         const importTargets = this._buildSAM3DImportTargets(data);
         const worldKps = importTargets?.worldKps;
 
@@ -6929,6 +7241,8 @@ export class PoseViewerCore {
                 shoulderYOffset,
                 includeSpine: !usedRotationImport,
                 normalizeLimbs: true,
+                normalizeArms: true,
+                normalizeLegs: true,
             });
         }
 
