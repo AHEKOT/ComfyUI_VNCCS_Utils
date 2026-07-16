@@ -73,7 +73,7 @@ class VNCCS_VisualPositionControl(VNCCS_PositionControl):
         return {
             "required": {
                 # The JS widget submits a JSON string here.
-                # format: {"azimuth": 0, "elevation": 0, "distance": "medium shot", "include_trigger": true}
+                # format: {"azimuth": 0, "elevation": 0, "distance": "medium shot", "include_trigger": true, "random": false}
                 "camera_data": ("STRING", {"default": "{}", "hidden": True}), 
             }
         }
@@ -86,7 +86,7 @@ class VNCCS_VisualPositionControl(VNCCS_PositionControl):
     def generate_prompt_from_json(self, camera_data):
         try:
             data = json.loads(camera_data)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, TypeError):
             # Fallback defaults
             data = {"azimuth": 0, "elevation": 0, "distance": "medium shot", "include_trigger": True}
         

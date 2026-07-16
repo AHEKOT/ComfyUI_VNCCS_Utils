@@ -132,6 +132,29 @@ def _ensure_data_loaded():
 
 # === Main Node Class ===
 
+def _hydrate_cached_pose_animation(data):
+    if not isinstance(data, dict):
+        return data
+    reference = data.get("animation")
+    if not isinstance(reference, dict) or reference.get("storage") != "server_cache":
+        return data
+    cache_id = reference.get("cacheId", reference.get("cache_id"))
+    if not cache_id:
+        return data
+    try:
+        from .. import vnccs_get_pose_animation_cache
+        entry = vnccs_get_pose_animation_cache(cache_id)
+        animation = entry.get("animation") if isinstance(entry, dict) else None
+        if isinstance(animation, dict):
+            hydrated = dict(data)
+            hydrated["animation"] = animation
+            return hydrated
+        print(f"[VNCCS Pose Studio] Animation cache is missing (id={cache_id})")
+    except Exception as exc:
+        print(f"[VNCCS Pose Studio] Animation cache fallback failed: {exc}")
+    return data
+
+
 class VNCCS_PoseStudio:
     """Pose Studio with mesh editing and multiple pose generation."""
     
@@ -246,6 +269,7 @@ class VNCCS_PoseStudio:
         # Parse pose data
         try:
             data = json.loads(pose_data) if pose_data else {}
+            data = _hydrate_cached_pose_animation(data)
             pose_image_synced = False
             export_settings = data.get("export", {}) if isinstance(data, dict) else {}
             if isinstance(export_settings, dict) and export_settings.get("interface_mode") == "manager":
@@ -254,7 +278,7 @@ class VNCCS_PoseStudio:
             if pose_image is not None:
                 synced = self._apply_pose_image_via_frontend(pose_image, unique_id)
                 if isinstance(synced, dict):
-                    data = synced
+                    data = _hydrate_cached_pose_animation(synced)
                     pose_image_synced = True
             
             # --- LIVE SYNC with Frontend ---
@@ -272,7 +296,7 @@ class VNCCS_PoseStudio:
                         sync_timeout = min(120.0, max(15.0, 5.0 + frame_count * 0.25))
                     synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=sync_timeout)
                     if synced:
-                        data = synced
+                        data = _hydrate_cached_pose_animation(synced)
                 except Exception as e:
                     print(f"[VNCCS Pose Studio] Sync error: {e}")
             # ---------------------------------------------

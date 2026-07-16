@@ -7,6 +7,7 @@ import {
     aggregateTimelineKeyFrames,
     buildTimelineRows,
     copyKeyframeSelection,
+    createAnimationCacheReference,
     createAnimationStateFromPoses,
     createClearedAnimationState,
     createDefaultAnimationState,
@@ -20,6 +21,7 @@ import {
     findKeyframesInTimelineRows,
     groupTimelineTracks,
     humanizeBoneName,
+    isAnimationCacheReference,
     moveKeyframeSelection,
     normalizeAnimationState,
     playbackFrameForElapsed,
@@ -427,6 +429,31 @@ test("pose diff reports changed bones and model rotation only", () => {
     const expected = { bones: { head: [0, 0, 0] }, modelRotation: [0, 0, 0] };
     const actual = { bones: { head: [0, 12, 0], arm: [0, 0, 0] }, modelRotation: [0, 5, 0] };
     assert.deepEqual(findChangedPoseTracks(expected, actual).sort(), [MODEL_ROTATION_TRACK, "head"].sort());
+});
+
+test("animation cache references keep dense keyframes out of the workflow widget", () => {
+    const state = createDefaultAnimationState({}, {
+        frameCount: 100,
+        duration: 100 / 12,
+        fps: 12,
+    });
+    for (let bone = 0; bone < 40; bone++) {
+        for (let frame = 0; frame < 100; frame++) {
+            setTrackKeyframeFromEuler(state, `bone_${bone}`, frame, [frame, bone, 0]);
+        }
+    }
+    const fullJSON = JSON.stringify(state);
+    const reference = createAnimationCacheReference(state, {
+        cacheId: "vnccs_pose_animation_7_test",
+        revision: 42,
+    });
+    const referenceJSON = JSON.stringify(reference);
+    assert.equal(isAnimationCacheReference(reference), true);
+    assert.equal(reference.revision, 42);
+    assert.equal(reference.frameCount, 100);
+    assert.equal(reference.trackCount, 40);
+    assert.equal("tracks" in reference, false);
+    assert.ok(referenceJSON.length < fullJSON.length * 0.02);
 });
 
 test("normalization accepts snake_case and drops invalid duplicate data", () => {

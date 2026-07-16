@@ -43,6 +43,10 @@ import tempfile
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _CAPTURE_CACHE_MAX_IMAGES = 600
 _CAPTURE_CACHE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
+_POSE_ANIMATION_CACHE_MAX = 24
+_POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS = 48 * 1024 * 1024
+_POSE_ANIMATION_CACHE_MAX_KEYS = 300_000
+_POSE_ANIMATION_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_pose_animation_cache")
 _UNICANVAS_STATE_CACHE_MAX = 10
 _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
@@ -217,6 +221,32 @@ def _vnccs_validate_capture_payload(data):
         lighting_prompts = []
     lighting_prompts = [str(prompt)[:4096] for prompt in lighting_prompts[:_CAPTURE_CACHE_MAX_IMAGES]]
     return captured_images, lighting_prompts
+
+def _vnccs_validate_pose_animation_payload(data):
+    animation = data.get("animation")
+    if not isinstance(animation, dict):
+        raise ValueError("animation must be an object")
+    tracks = animation.get("tracks", {})
+    if not isinstance(tracks, dict):
+        raise ValueError("animation.tracks must be an object")
+    total_keys = 0
+    for track in tracks.values():
+        if not isinstance(track, dict):
+            continue
+        keys = track.get("keys", [])
+        if not isinstance(keys, list):
+            raise ValueError("animation track keys must be a list")
+        total_keys += len(keys)
+        if total_keys > _POSE_ANIMATION_CACHE_MAX_KEYS:
+            raise ValueError(f"animation key limit is {_POSE_ANIMATION_CACHE_MAX_KEYS}")
+    raw = json.dumps(animation, ensure_ascii=False, separators=(",", ":"))
+    if len(raw) > _POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS:
+        raise ValueError("animation payload is too large")
+    try:
+        revision = max(0, int(data.get("revision", 0) or 0))
+    except (TypeError, ValueError):
+        revision = 0
+    return animation, revision
 
 def _vnccs_validate_unicanvas_state_payload(data):
     state = data.get("state")
@@ -683,6 +713,106 @@ def _vnccs_register_capture_cache():
         return web.json_response(entry)
 
 _vnccs_register_capture_cache()
+
+
+# === Pose Studio Animation Cache ===
+VNCCS_POSE_ANIMATION_CACHE = {}
+
+def _vnccs_pose_animation_cache_path(animation_id):
+    safe_id = _vnccs_safe_id(animation_id, "pose_animation")
+    return os.path.join(_POSE_ANIMATION_CACHE_DIR, f"{safe_id}.json")
+
+def _vnccs_write_pose_animation_cache_file(animation_id, entry):
+    os.makedirs(_POSE_ANIMATION_CACHE_DIR, exist_ok=True)
+    path = _vnccs_pose_animation_cache_path(animation_id)
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(entry, handle, ensure_ascii=False, separators=(",", ":"))
+    os.replace(temp_path, path)
+
+def _vnccs_read_pose_animation_cache_file(animation_id):
+    path = _vnccs_pose_animation_cache_path(animation_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as handle:
+        entry = json.load(handle)
+    return entry if isinstance(entry, dict) else None
+
+def vnccs_get_pose_animation_cache(animation_id):
+    animation_id = _vnccs_safe_id(animation_id, "pose_animation")
+    entry = VNCCS_POSE_ANIMATION_CACHE.get(animation_id)
+    if entry is None:
+        entry = _vnccs_read_pose_animation_cache_file(animation_id)
+    if not isinstance(entry, dict):
+        return None
+    if animation_id in VNCCS_POSE_ANIMATION_CACHE:
+        del VNCCS_POSE_ANIMATION_CACHE[animation_id]
+    VNCCS_POSE_ANIMATION_CACHE[animation_id] = entry
+    while len(VNCCS_POSE_ANIMATION_CACHE) > _POSE_ANIMATION_CACHE_MAX:
+        oldest = next(iter(VNCCS_POSE_ANIMATION_CACHE))
+        del VNCCS_POSE_ANIMATION_CACHE[oldest]
+    return entry
+
+def _vnccs_register_pose_animation_cache():
+    try:
+        from server import PromptServer
+        from aiohttp import web
+    except Exception:
+        return
+
+    @PromptServer.instance.routes.post("/vnccs/pose_animation_upload")
+    async def vnccs_pose_animation_upload(request):
+        try:
+            if not _vnccs_content_length_ok(request, _POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS + 1024 * 1024):
+                return web.json_response({"error": "animation payload is too large"}, status=413)
+            data = await request.json()
+            animation_id = data.get("animation_id")
+            if not animation_id:
+                return web.json_response({"error": "missing animation_id"}, status=400)
+            animation_id = _vnccs_safe_id(animation_id, "pose_animation")
+            try:
+                animation, revision = _vnccs_validate_pose_animation_payload(data)
+            except ValueError as exc:
+                return web.json_response({"error": str(exc)}, status=413)
+
+            previous = vnccs_get_pose_animation_cache(animation_id)
+            previous_revision = int(previous.get("revision", -1)) if isinstance(previous, dict) else -1
+            if previous_revision > revision:
+                return web.json_response({
+                    "status": "stale_ignored",
+                    "animation_id": animation_id,
+                    "revision": previous_revision,
+                })
+
+            entry = {
+                "animation": animation,
+                "revision": revision,
+            }
+            if animation_id in VNCCS_POSE_ANIMATION_CACHE:
+                del VNCCS_POSE_ANIMATION_CACHE[animation_id]
+            VNCCS_POSE_ANIMATION_CACHE[animation_id] = entry
+            _vnccs_write_pose_animation_cache_file(animation_id, entry)
+            while len(VNCCS_POSE_ANIMATION_CACHE) > _POSE_ANIMATION_CACHE_MAX:
+                oldest = next(iter(VNCCS_POSE_ANIMATION_CACHE))
+                del VNCCS_POSE_ANIMATION_CACHE[oldest]
+
+            return web.json_response({
+                "status": "ok",
+                "animation_id": animation_id,
+                "revision": revision,
+            })
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/pose_animation/{animation_id}")
+    async def vnccs_pose_animation_get(request):
+        animation_id = _vnccs_safe_id(request.match_info["animation_id"], "pose_animation")
+        entry = vnccs_get_pose_animation_cache(animation_id)
+        if not entry:
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response(entry, headers={"Cache-Control": "no-store"})
+
+_vnccs_register_pose_animation_cache()
 
 
 # === UniCanvas State Cache ===

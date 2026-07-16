@@ -80,13 +80,16 @@ JSON into that hidden input:
   "azimuth": 0,
   "elevation": 0,
   "distance": "medium shot",
-  "include_trigger": true
+  "include_trigger": true,
+  "random": false
 }
 ```
 
 The output is the same `prompt` string as `VNCCS Position Control`.
 
 Use this node when you prefer an interactive camera UI instead of raw sliders.
+Enable `Random` to choose a different azimuth, elevation, and distance for
+every queued generation, including every item in a batched queue.
 If the hidden JSON is missing or invalid, the node falls back to front,
 eye-level, medium shot, with `<sks>` enabled.
 

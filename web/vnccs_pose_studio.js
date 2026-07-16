@@ -13,10 +13,12 @@ import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, r
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
+    clampVideoCaptureFps,
     clampVideoTimelineViewport,
     computeVideoCaptureSchedule,
     computeVideoSamplePlan,
     countVideoKeyedFrames,
+    detectVideoFrameRate,
     drawVideoCover,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
@@ -29,12 +31,14 @@ import {
 import {
     MODEL_ROTATION_TRACK,
     PoseAnimationTimeline,
+    createAnimationCacheReference,
     createClearedAnimationState,
     createAnimationStateFromPoses,
     createDefaultAnimationState,
     evaluateAnimationFrame,
     findChangedPoseTracks,
     getPoseTrackEuler,
+    isAnimationCacheReference,
     isAnimationEmpty,
     normalizeAnimationState,
     resolveCaptureCameraParams,
@@ -2402,6 +2406,22 @@ const STYLES = `
     font-weight: 700;
     letter-spacing: .4px;
 }
+.vnccs-ps-video-source-fps {
+    color: var(--ps-accent);
+    font-size: 8px;
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+}
+.vnccs-ps-video-fps-probe {
+    position: absolute;
+    left: -2px;
+    bottom: -2px;
+    width: 1px;
+    height: 1px;
+    opacity: 0.001;
+    pointer-events: none;
+}
 .vnccs-ps-video-field input,
 .vnccs-ps-video-field select {
     min-width: 0;
@@ -3472,6 +3492,16 @@ class PoseStudioWidget {
         this._animationUndoStack = [];
         this._animationRedoStack = [];
         this._animationCommittedSnapshot = this.animationSnapshot();
+        this._animationCacheId = null;
+        this._animationCacheRevision = 0;
+        this._animationCacheRestoreToken = 0;
+        this._animationCacheRestorePending = false;
+        this._animationCacheRestorePromise = null;
+        this._animationCacheUploadTimer = null;
+        this._animationCacheUploadPromise = null;
+        this._lastUploadedAnimationCacheId = null;
+        this._lastUploadedAnimationCacheRevision = -1;
+        this._animationCacheUploadWarned = false;
         this._passthroughPoseData = {};
         this.ikMode = true; // IK mode toggle (false = FK, true = IK)
         this.interfaceMode = "studio"; // studio | manager | managerDetail
@@ -4532,6 +4562,172 @@ class PoseStudioWidget {
 
     animationSnapshot(state = this.animationState) {
         return serializeAnimationStateSnapshot(state);
+    }
+
+    animationCacheNodePrefix() {
+        const nodeId = String(this.node?.id ?? "node").replace(/[^A-Za-z0-9_-]+/g, "_");
+        return `vnccs_pose_animation_${nodeId}_`;
+    }
+
+    animationCacheIdBelongsToNode(cacheId) {
+        return typeof cacheId === "string" && cacheId.startsWith(this.animationCacheNodePrefix());
+    }
+
+    createAnimationCacheId() {
+        const random = globalThis.crypto?.randomUUID?.().replace(/-/g, "")
+            || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`;
+        return `${this.animationCacheNodePrefix()}${random}`;
+    }
+
+    getAnimationCacheId() {
+        if (!this.animationCacheIdBelongsToNode(this._animationCacheId)) {
+            this._animationCacheId = this.createAnimationCacheId();
+            this._lastUploadedAnimationCacheId = null;
+            this._lastUploadedAnimationCacheRevision = -1;
+        }
+        return this._animationCacheId;
+    }
+
+    scheduleAnimationCacheUpload() {
+        if (!this._animationInitialized || this._animationCacheRestorePending) return;
+        clearTimeout(this._animationCacheUploadTimer);
+        this._animationCacheUploadTimer = setTimeout(() => {
+            this._animationCacheUploadTimer = null;
+            void this.uploadAnimationCacheState(
+                this.getAnimationCacheId(),
+                this._animationCacheRevision,
+            );
+        }, 250);
+    }
+
+    async uploadAnimationCacheState(cacheId, revision) {
+        if (!this._animationInitialized || !cacheId) return true;
+        if (
+            this._lastUploadedAnimationCacheId === cacheId
+            && this._lastUploadedAnimationCacheRevision >= revision
+        ) return true;
+
+        const run = async () => {
+            try {
+                const animationJSON = JSON.stringify(this.animationState);
+                const body = `{"animation_id":${JSON.stringify(cacheId)},"revision":${Math.max(0, Math.floor(Number(revision) || 0))},"animation":${animationJSON}}`;
+                const response = await fetch("/vnccs/pose_animation_upload", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body,
+                });
+                if (!response.ok) {
+                    const result = await response.json().catch(() => ({}));
+                    throw new Error(result.error || `HTTP ${response.status}`);
+                }
+                this._lastUploadedAnimationCacheId = cacheId;
+                this._lastUploadedAnimationCacheRevision = Math.max(
+                    this._lastUploadedAnimationCacheRevision,
+                    revision,
+                );
+                this._animationCacheUploadWarned = false;
+                return true;
+            } catch (error) {
+                console.warn("[VNCCS PoseStudio] Animation cache upload failed:", error);
+                if (!this._animationCacheUploadWarned) {
+                    this._animationCacheUploadWarned = true;
+                    this.showMessage?.("Animation cache upload failed. Restart ComfyUI before saving this workflow.", true);
+                }
+                return false;
+            }
+        };
+
+        const previous = this._animationCacheUploadPromise?.catch?.(() => false);
+        const promise = previous ? previous.then(run) : run();
+        this._animationCacheUploadPromise = promise;
+        try {
+            return await promise;
+        } finally {
+            if (this._animationCacheUploadPromise === promise) {
+                this._animationCacheUploadPromise = null;
+            }
+        }
+    }
+
+    flushAnimationCacheUpload() {
+        clearTimeout(this._animationCacheUploadTimer);
+        this._animationCacheUploadTimer = null;
+        if (this._animationCacheRestorePending && this._animationCacheRestorePromise) {
+            return this._animationCacheRestorePromise.then(restored => (
+                restored ? this.flushAnimationCacheUpload() : false
+            ));
+        }
+        if (!this._animationInitialized || this._animationCacheRestorePending) {
+            return Promise.resolve(!this._animationCacheRestorePending);
+        }
+        return this.uploadAnimationCacheState(
+            this.getAnimationCacheId(),
+            this._animationCacheRevision,
+        );
+    }
+
+    async restoreAnimationFromCache(reference, fallbackPose = {}) {
+        const sourceCacheId = reference?.cacheId;
+        if (!sourceCacheId) return false;
+        const token = ++this._animationCacheRestoreToken;
+        this._animationCacheRestorePending = true;
+        try {
+            const response = await fetch(
+                `/vnccs/pose_animation/${encodeURIComponent(sourceCacheId)}`,
+                { cache: "no-store" },
+            );
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const payload = await response.json();
+            if (token !== this._animationCacheRestoreToken) return false;
+            if (!payload?.animation || typeof payload.animation !== "object") {
+                throw new Error("Animation cache response is empty.");
+            }
+            const restored = normalizeAnimationState(payload.animation, fallbackPose);
+            restored.currentFrame = Math.max(
+                0,
+                Math.min(
+                    restored.frameCount - 1,
+                    Math.round(Number(reference.currentFrame ?? restored.currentFrame) || 0),
+                ),
+            );
+            const cacheBelongsToNode = this.animationCacheIdBelongsToNode(sourceCacheId);
+            this._animationCacheId = cacheBelongsToNode ? sourceCacheId : null;
+            this._animationCacheRevision = Math.max(
+                0,
+                Math.floor(Number(reference.revision ?? payload.revision) || 0),
+            );
+            this._lastUploadedAnimationCacheId = cacheBelongsToNode ? sourceCacheId : null;
+            this._lastUploadedAnimationCacheRevision = cacheBelongsToNode
+                ? Math.floor(Number(payload.revision) || this._animationCacheRevision)
+                : -1;
+            this.animationState = restored;
+            this._animationInitialized = true;
+            this.animationTimeline?.setState(this.animationState);
+            this.resetAnimationHistory();
+            if (this.isAnimationMode() && this.viewer?.isInitialized?.()) {
+                this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+            }
+            if (!cacheBelongsToNode) {
+                setTimeout(() => {
+                    if (token !== this._animationCacheRestoreToken) return;
+                    this.syncToNode(false, {
+                        skipCapture: true,
+                        skipAnimationHistory: true,
+                    });
+                }, 0);
+            }
+            return true;
+        } catch (error) {
+            if (token === this._animationCacheRestoreToken) {
+                console.warn("[VNCCS PoseStudio] Animation cache restore failed:", error);
+                this.showMessage?.("Animation cache is missing. The workflow contains only the compact animation reference.", true);
+            }
+            return false;
+        } finally {
+            if (token === this._animationCacheRestoreToken) {
+                this._animationCacheRestorePending = false;
+            }
+        }
     }
 
     resetAnimationHistory() {
@@ -7622,6 +7818,7 @@ class PoseStudioWidget {
         let outTime = 0;
         let viewStart = 0;
         let viewEnd = 0;
+        let sourceFrameRate = null;
 
         const overlay = document.createElement("div");
         overlay.className = "vnccs-ps-modal-overlay";
@@ -7657,7 +7854,7 @@ class PoseStudioWidget {
                 <div class="vnccs-ps-video-controls">
                     <label class="vnccs-ps-video-field">IN (SECONDS)<input class="vnccs-ps-video-in" type="number" min="0" step="0.01"></label>
                     <label class="vnccs-ps-video-field">OUT (SECONDS)<input class="vnccs-ps-video-out" type="number" min="0" step="0.01"></label>
-                    <label class="vnccs-ps-video-field">CAPTURE FPS<input class="vnccs-ps-video-fps" type="number" min="0.01" max="60" step="1" value="12"></label>
+                    <label class="vnccs-ps-video-field">CAPTURE FPS<span class="vnccs-ps-video-source-fps">Detecting source FPS…</span><input class="vnccs-ps-video-fps" type="number" min="0.01" max="60" step="0.001" value="12"></label>
                     <label class="vnccs-ps-video-field">KEY EVERY N FRAMES<input class="vnccs-ps-video-key-step" type="number" min="1" max="60" step="1" value="2"></label>
                     <label class="vnccs-ps-video-field">STABILIZATION<select class="vnccs-ps-video-stabilization"><option value="off">Off</option><option value="light">Light</option><option value="medium" selected>Medium</option><option value="strong">Strong</option></select></label>
                     <label class="vnccs-ps-video-field">ADAPTIVE KEY REDUCTION<select class="vnccs-ps-video-key-reduction"><option value="off" selected>Off (fixed interval)</option><option value="conservative">Conservative (≤0.35°)</option><option value="balanced">Balanced (≤1°)</option><option value="aggressive">Aggressive (≤2.5°)</option></select></label>
@@ -7687,6 +7884,7 @@ class PoseStudioWidget {
         const inInput = modal.querySelector(".vnccs-ps-video-in");
         const outInput = modal.querySelector(".vnccs-ps-video-out");
         const fpsInput = modal.querySelector(".vnccs-ps-video-fps");
+        const sourceFpsLabel = modal.querySelector(".vnccs-ps-video-source-fps");
         const keyframeStepInput = modal.querySelector(".vnccs-ps-video-key-step");
         const stabilizationSelect = modal.querySelector(".vnccs-ps-video-stabilization");
         const keyReductionSelect = modal.querySelector(".vnccs-ps-video-key-reduction");
@@ -7706,11 +7904,13 @@ class PoseStudioWidget {
         modal.querySelector(".vnccs-ps-video-file-name").textContent = file.name || "video";
 
         const thumbnailVideo = document.createElement("video");
+        thumbnailVideo.className = "vnccs-ps-video-fps-probe";
         thumbnailVideo.muted = true;
         thumbnailVideo.playsInline = true;
         thumbnailVideo.preload = "metadata";
         preview.src = objectUrl;
         thumbnailVideo.src = objectUrl;
+        modal.appendChild(thumbnailVideo);
 
         const close = ({ abort = true } = {}) => {
             if (closed) return;
@@ -7736,10 +7936,16 @@ class PoseStudioWidget {
             ? ((time - viewStart) / visibleDuration()) * 100
             : 0;
         const clampPercent = value => Math.max(0, Math.min(100, value));
+        const normalizedCaptureFps = () => clampVideoCaptureFps(fpsInput.value, sourceFrameRate);
+        const applyCaptureFpsLimit = () => {
+            const value = normalizedCaptureFps();
+            fpsInput.value = String(Number(value.toFixed(3)));
+            return value;
+        };
         const currentPlan = () => computeVideoSamplePlan({
             inTime,
             outTime,
-            targetFps: Number(fpsInput.value) || 12,
+            targetFps: normalizedCaptureFps(),
             maxSamples: MAX_VIDEO_POSE_SAMPLES,
         });
         const scheduleThumbnailRender = (delay = 100) => {
@@ -7804,13 +8010,16 @@ class PoseStudioWidget {
             keyframeStepInput.disabled = processing || adaptiveReduction;
             summary.classList.toggle("is-limited", plan.limited);
             const effective = Number(plan.effectiveFps.toFixed(3));
+            const sourceSummary = sourceFrameRate
+                ? ` · source ${Number(sourceFrameRate.toFixed(3))} FPS`
+                : "";
             const keySummary = adaptiveReduction
                 ? `adaptive ${keyReductionSelect.value} keys after capture`
                 : `${keyedFrameCount} fixed key positions per track`;
             const captureSummary = `${captureSchedule.sampleCount} pose parses · ${plan.sampleCount} timeline frames`;
             summary.textContent = plan.limited
-                ? `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} · ${keySummary} · effective ${effective} FPS (limited from ${plan.requestedSamples})`
-                : `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} at ${effective} FPS · ${keySummary}`;
+                ? `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} · ${keySummary} · effective ${effective} FPS${sourceSummary} (limited from ${plan.requestedSamples})`
+                : `${this.formatVideoTime(plan.duration)} selected · ${captureSummary} at ${effective} FPS · ${keySummary}${sourceSummary}`;
             importButton.disabled = processing || plan.duration <= 0;
             updateViewportControls();
         };
@@ -7903,7 +8112,17 @@ class PoseStudioWidget {
         });
         inInput.addEventListener("change", () => setBoundary("in", inInput.value));
         outInput.addEventListener("change", () => setBoundary("out", outInput.value));
-        fpsInput.addEventListener("input", updateSelectionUI);
+        fpsInput.addEventListener("input", () => {
+            const maximum = sourceFrameRate ? clampVideoCaptureFps(60, sourceFrameRate) : 60;
+            if (Number(fpsInput.value) > maximum) {
+                fpsInput.value = String(Number(maximum.toFixed(3)));
+            }
+            updateSelectionUI();
+        });
+        fpsInput.addEventListener("change", () => {
+            applyCaptureFpsLimit();
+            updateSelectionUI();
+        });
         keyframeStepInput.addEventListener("input", updateSelectionUI);
         keyframeStepInput.addEventListener("change", () => {
             keyframeStepInput.value = String(Math.max(1, Math.min(60, Math.floor(Number(keyframeStepInput.value) || 2))));
@@ -7964,6 +8183,7 @@ class PoseStudioWidget {
         cancelButton.addEventListener("click", () => close());
         importButton.addEventListener("click", async () => {
             if (processing) return;
+            applyCaptureFpsLimit();
             const plan = currentPlan();
             if (plan.duration <= 0) return;
             processing = true;
@@ -8041,6 +8261,25 @@ class PoseStudioWidget {
             viewEnd = duration;
             inInput.max = String(duration);
             outInput.max = String(duration);
+            sourceFpsLabel.textContent = "Detecting source FPS…";
+            summary.textContent = "Analyzing decoded video frames to detect the source FPS…";
+            fpsInput.disabled = true;
+            const detectedFrameRate = await detectVideoFrameRate(thumbnailVideo, {
+                signal: mediaController.signal,
+            });
+            if (closed) return;
+            if (detectedFrameRate) {
+                sourceFrameRate = detectedFrameRate;
+                const maximumCaptureFps = clampVideoCaptureFps(60, sourceFrameRate);
+                fpsInput.max = String(Number(maximumCaptureFps.toFixed(3)));
+                applyCaptureFpsLimit();
+                sourceFpsLabel.textContent = `Source: ${Number(sourceFrameRate.toFixed(3))} FPS · capture ≤ source`;
+                fpsInput.title = `Capture FPS cannot exceed the detected source rate of ${Number(sourceFrameRate.toFixed(3))} FPS.`;
+            } else {
+                sourceFpsLabel.textContent = "Source FPS could not be measured";
+                fpsInput.title = "Source FPS detection was unavailable for this codec.";
+            }
+            fpsInput.disabled = false;
             setViewport({ start: 0, end: duration });
             importButton.disabled = false;
         } catch (error) {
@@ -10873,7 +11112,7 @@ class PoseStudioWidget {
     }
 
     syncToNode(fullCapture = false, options = {}) {
-        if (this._isSyncing) return;
+        if (this._isSyncing || this._animationCacheRestorePending) return;
         this._isSyncing = true;
         const animationMode = this.isAnimationMode();
         if (animationMode && !this._applyingAnimationPose) this.captureAnimationEdits();
@@ -11076,8 +11315,9 @@ class PoseStudioWidget {
         }
 
         // Update hidden pose_data widget
-        // Exclude background_url and captured_images from widget to avoid inflating workflow size.
-        // Captures are uploaded to server-side LRU cache; only the capture_id is stored in widget.
+        // Exclude background_url, captured images, and dense animation tracks
+        // from the widget to avoid inflating workflow drafts. Heavy data is
+        // uploaded separately and the widget stores compact cache references.
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
 
@@ -11091,6 +11331,15 @@ class PoseStudioWidget {
         const captureId = animationMode
             ? (hasCompleteCaptures ? `vnccs_capture_${this.node.id}_animation` : null)
             : `vnccs_capture_${this.node.id}`;
+        let animationToSave;
+        if (this._animationInitialized) {
+            this._animationCacheRevision = Math.max(0, this._animationCacheRevision) + 1;
+            animationToSave = createAnimationCacheReference(this.animationState, {
+                cacheId: this.getAnimationCacheId(),
+                revision: this._animationCacheRevision,
+            });
+            this.scheduleAnimationCacheUpload();
+        }
 
         const data = {
             ...this._passthroughPoseData,
@@ -11099,7 +11348,7 @@ class PoseStudioWidget {
             export: exportToSave,
             poses: animationMode ? [] : this.poses,
             image_poses: animationMode ? this.poses : undefined,
-            animation: this._animationInitialized ? this.animationState : undefined,
+            animation: animationToSave,
             lights: this.lightParams,
             activeTab: this.activeTab,
             capture_id: captureId,
@@ -11263,15 +11512,40 @@ class PoseStudioWidget {
                 this.posePrompts = []; // rebuild from pose.prompt on next ensurePosePrompts() call
             }
 
-            if (data.animation && typeof data.animation === "object") {
+            let cachedAnimationReference = null;
+            if (isAnimationCacheReference(data.animation)) {
+                cachedAnimationReference = data.animation;
+                this._animationCacheId = this.animationCacheIdBelongsToNode(data.animation.cacheId)
+                    ? data.animation.cacheId
+                    : null;
+                this._animationCacheRevision = Math.max(0, Math.floor(Number(data.animation.revision) || 0));
+                this.animationState = normalizeAnimationState(data.animation, this.poses[this.activeTab] || {});
+                this._animationInitialized = true;
+            } else if (data.animation && typeof data.animation === "object") {
+                ++this._animationCacheRestoreToken;
+                this._animationCacheRestorePending = false;
+                this._animationCacheRestorePromise = null;
+                this._animationCacheId = null;
+                this._animationCacheRevision = 0;
                 this.animationState = normalizeAnimationState(data.animation, this.poses[this.activeTab] || {});
                 this._animationInitialized = true;
             } else {
+                ++this._animationCacheRestoreToken;
+                this._animationCacheRestorePending = false;
+                this._animationCacheRestorePromise = null;
+                this._animationCacheId = null;
+                this._animationCacheRevision = 0;
                 this.animationState = createDefaultAnimationState(this.poses[this.activeTab] || {});
                 this._animationInitialized = false;
             }
             this.animationTimeline?.setState(this.animationState);
             this.resetAnimationHistory();
+            if (cachedAnimationReference) {
+                this._animationCacheRestorePromise = this.restoreAnimationFromCache(
+                    cachedAnimationReference,
+                    this.poses[this.activeTab] || {},
+                );
+            }
 
             // Restore background image if present
             const bgUrl = data.background_url || this.exportParams.background_url;
@@ -11444,9 +11718,16 @@ app.registerExtension({
             const poseWidget = node.widgets.find(w => w.name === "pose_data");
             if (!poseWidget) return;
             const widgetData = JSON.parse(poseWidget.value);
+            const animationCacheReady = await node.studioWidget.flushAnimationCacheUpload();
             const payload = {
                 ...widgetData,
                 node_id: nodeId,
+                // Normal execution stays compact and lets Python hydrate the
+                // server cache. If the cache upload failed, include the live
+                // state once so execution still cannot lose the animation.
+                animation: animationCacheReady
+                    ? widgetData.animation
+                    : node.studioWidget.animationState,
                 captured_images: node.studioWidget.poseCaptures || [],
                 lighting_prompts: node.studioWidget.lightingPrompts || []
             };
@@ -11463,6 +11744,10 @@ app.registerExtension({
             const node = app.graph.getNodeById(nodeId);
             if (node && node.studioWidget) {
                 try {
+                    if (node.studioWidget._animationCacheRestorePending) {
+                        const restored = await node.studioWidget._animationCacheRestorePromise;
+                        if (!restored) throw new Error("Animation cache could not be restored before execution.");
+                    }
                     // Safe mode: ensure viewer is initialized
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.isInitialized()) {
                         await node.studioWidget.loadModel();
@@ -11671,6 +11956,7 @@ app.registerExtension({
             if (onRemoved) onRemoved.apply(this, arguments);
             if (this.studioWidget) {
                 this.studioWidget._activeVideoImportClose?.();
+                void this.studioWidget.flushAnimationCacheUpload?.();
                 this.studioWidget.animationTimeline?.destroy?.();
                 if (this.studioWidget._containerResizeObserver) {
                     this.studioWidget._containerResizeObserver.disconnect();

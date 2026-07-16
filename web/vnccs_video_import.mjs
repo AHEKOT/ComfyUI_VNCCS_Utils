@@ -116,6 +116,54 @@ export function computeVideoCaptureSchedule(plan, keyframeStepValue = 1) {
     };
 }
 
+const COMMON_VIDEO_FRAME_RATES = Object.freeze([
+    1, 2, 5, 8, 10, 12, 15, 18, 20,
+    23.976, 24, 25, 29.97, 30,
+    48, 50, 59.94, 60,
+]);
+
+export function estimateVideoFrameRate(samples = []) {
+    const rates = [];
+    for (let index = 1; index < samples.length; index++) {
+        const previous = samples[index - 1] || {};
+        const current = samples[index] || {};
+        const elapsed = finiteNumber(current.mediaTime) - finiteNumber(previous.mediaTime);
+        if (elapsed <= 1 / 300 || elapsed > 2) continue;
+        const previousFrames = finiteNumber(previous.presentedFrames, NaN);
+        const currentFrames = finiteNumber(current.presentedFrames, NaN);
+        const frameDelta = Number.isFinite(previousFrames)
+            && Number.isFinite(currentFrames)
+            && currentFrames > previousFrames
+            ? currentFrames - previousFrames
+            : 1;
+        const rate = frameDelta / elapsed;
+        if (rate >= 0.5 && rate <= 240) rates.push(rate);
+    }
+    if (!rates.length) return null;
+    rates.sort((a, b) => a - b);
+    const middle = Math.floor(rates.length / 2);
+    const median = rates.length % 2
+        ? rates[middle]
+        : (rates[middle - 1] + rates[middle]) / 2;
+    const common = COMMON_VIDEO_FRAME_RATES.reduce((nearest, candidate) => (
+        Math.abs(candidate - median) < Math.abs(nearest - median) ? candidate : nearest
+    ), COMMON_VIDEO_FRAME_RATES[0]);
+    const estimated = Math.abs(common - median) / Math.max(1, common) <= 0.02
+        ? Math.min(common, median)
+        : median;
+    // Be conservative: measurement rounding must never produce a limit above
+    // the rate actually observed in the source.
+    return Number(estimated.toFixed(3));
+}
+
+export function clampVideoCaptureFps(requestedFps, sourceFps = null) {
+    const detectedLimit = finiteNumber(sourceFps, NaN);
+    const maximum = Number.isFinite(detectedLimit) && detectedLimit > 0
+        ? Math.min(60, detectedLimit)
+        : 60;
+    return Math.min(maximum, Math.max(0.01, finiteNumber(requestedFps, Math.min(12, maximum))));
+}
+
 function quaternionAngularDistanceDegrees(a, b) {
     const dot = Math.abs(
         a[0] * b[0]
@@ -527,6 +575,109 @@ export async function seekVideo(video, time, signal) {
             cleanup();
             reject(error);
         }
+    });
+}
+
+/**
+ * Measure decoded source frames rather than trusting a nominal UI value.
+ * presentedFrames compensates for callbacks skipped by a busy compositor.
+ */
+export async function detectVideoFrameRate(video, {
+    signal = null,
+    maxFrames = 20,
+    timeoutMs = 1800,
+} = {}) {
+    if (!video || signal?.aborted) {
+        if (signal?.aborted) throw abortError();
+        return null;
+    }
+    await waitForVideoMetadata(video, signal);
+
+    const saved = {
+        currentTime: finiteNumber(video.currentTime),
+        muted: !!video.muted,
+        playbackRate: finiteNumber(video.playbackRate, 1),
+        loop: !!video.loop,
+    };
+    const duration = Math.max(0, finiteNumber(video.duration));
+    const sampleWindow = Math.min(1.5, duration);
+    const sampleStart = duration > sampleWindow
+        ? Math.min(duration - sampleWindow, duration * 0.1)
+        : 0;
+    await seekVideo(video, sampleStart, signal);
+
+    const qualityStart = video.getVideoPlaybackQuality?.();
+    const qualityFrameStart = finiteNumber(qualityStart?.totalVideoFrames, NaN);
+    const mediaTimeStart = finiteNumber(video.currentTime);
+    const samples = [];
+
+    return new Promise((resolve, reject) => {
+        let callbackId = null;
+        let timeoutId = null;
+        let settled = false;
+
+        const cleanup = () => {
+            if (callbackId !== null) video.cancelVideoFrameCallback?.(callbackId);
+            if (timeoutId !== null) clearTimeout(timeoutId);
+            video.removeEventListener("ended", onEnded);
+            signal?.removeEventListener("abort", onAbort);
+            video.pause();
+            video.muted = saved.muted;
+            video.playbackRate = saved.playbackRate;
+            video.loop = saved.loop;
+            try {
+                video.currentTime = Math.min(saved.currentTime, Math.max(0, duration - 0.001));
+            } catch (_) {}
+        };
+        const finish = error => {
+            if (settled) return;
+            settled = true;
+            const qualityEnd = video.getVideoPlaybackQuality?.();
+            const decodedFrames = finiteNumber(qualityEnd?.totalVideoFrames, NaN) - qualityFrameStart;
+            const decodedDuration = finiteNumber(video.currentTime) - mediaTimeStart;
+            cleanup();
+            if (error) {
+                reject(error);
+                return;
+            }
+            let frameRate = estimateVideoFrameRate(samples);
+            if (
+                !frameRate
+                && Number.isFinite(decodedFrames)
+                && decodedFrames > 0
+                && decodedDuration > 0
+            ) {
+                frameRate = estimateVideoFrameRate([
+                    { mediaTime: 0, presentedFrames: 0 },
+                    { mediaTime: decodedDuration, presentedFrames: decodedFrames },
+                ]);
+            }
+            resolve(frameRate);
+        };
+        const onAbort = () => finish(abortError());
+        const onEnded = () => finish();
+        const onFrame = (_now, metadata = {}) => {
+            samples.push({
+                mediaTime: finiteNumber(metadata.mediaTime, video.currentTime),
+                presentedFrames: finiteNumber(metadata.presentedFrames, NaN),
+            });
+            if (samples.length >= Math.max(2, Math.floor(finiteNumber(maxFrames, 20)))) {
+                finish();
+                return;
+            }
+            callbackId = video.requestVideoFrameCallback(onFrame);
+        };
+
+        signal?.addEventListener("abort", onAbort, { once: true });
+        video.addEventListener("ended", onEnded, { once: true });
+        video.muted = true;
+        video.loop = false;
+        video.playbackRate = 1;
+        if (typeof video.requestVideoFrameCallback === "function") {
+            callbackId = video.requestVideoFrameCallback(onFrame);
+        }
+        timeoutId = setTimeout(() => finish(), Math.max(300, finiteNumber(timeoutMs, 1800)));
+        Promise.resolve(video.play()).catch(() => finish());
     });
 }
 

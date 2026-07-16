@@ -3,10 +3,12 @@ import test from "node:test";
 
 import {
     MAX_VIDEO_POSE_SAMPLES,
+    clampVideoCaptureFps,
     clampVideoTimelineViewport,
     computeVideoCaptureSchedule,
     computeVideoSamplePlan,
     countVideoKeyedFrames,
+    estimateVideoFrameRate,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
     reduceVideoPoseKeyframes,
@@ -43,6 +45,26 @@ test("short segments retain requested 12 FPS sampling", () => {
     assert.equal(plan.limited, false);
     assert.equal(plan.times[0], 2);
     assert.ok(Math.abs(plan.times.at(-1) - (7 - 1 / 12)) < 1e-12);
+});
+
+test("source video FPS detection handles fractional rates and skipped callbacks", () => {
+    const fractional = Array.from({ length: 12 }, (_, frame) => ({
+        mediaTime: frame / 29.97,
+        presentedFrames: frame + 1,
+    }));
+    assert.equal(estimateVideoFrameRate(fractional), 29.97);
+    assert.equal(estimateVideoFrameRate([
+        { mediaTime: 0, presentedFrames: 10 },
+        { mediaTime: 2 / 30, presentedFrames: 12 },
+        { mediaTime: 4 / 30, presentedFrames: 14 },
+    ]), 30);
+});
+
+test("capture FPS never exceeds the detected source rate", () => {
+    assert.equal(clampVideoCaptureFps(60, 24), 24);
+    assert.equal(clampVideoCaptureFps(12, 24), 12);
+    assert.equal(clampVideoCaptureFps(12, 8), 8);
+    assert.equal(clampVideoCaptureFps(120, 120), 60);
 });
 
 test("two hour videos keep real duration while bounding pose work and memory", () => {

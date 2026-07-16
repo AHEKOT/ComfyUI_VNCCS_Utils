@@ -9,6 +9,7 @@
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
+export const POSE_ANIMATION_CACHE_STORAGE = "server_cache";
 export const MIN_FRAME_COUNT = 2;
 export const MAX_FRAME_COUNT = 600;
 // Long video imports may be intentionally sampled below one pose per second.
@@ -255,6 +256,39 @@ export function serializeAnimationStateSnapshot(state) {
     delete snapshot.currentFrame;
     delete snapshot.current_frame;
     return JSON.stringify(snapshot);
+}
+
+export function isAnimationCacheReference(value) {
+    return !!value
+        && typeof value === "object"
+        && value.storage === POSE_ANIMATION_CACHE_STORAGE
+        && typeof value.cacheId === "string"
+        && value.cacheId.length > 0;
+}
+
+export function createAnimationCacheReference(state, {
+    cacheId,
+    revision = 0,
+} = {}) {
+    const source = state && typeof state === "object" ? state : {};
+    return {
+        schemaVersion: POSE_ANIMATION_SCHEMA_VERSION,
+        storage: POSE_ANIMATION_CACHE_STORAGE,
+        cacheId: String(cacheId || ""),
+        revision: Math.max(0, Math.floor(finiteNumber(revision))),
+        frameCount: clamp(Math.round(finiteNumber(source.frameCount, 24)), MIN_FRAME_COUNT, MAX_FRAME_COUNT),
+        duration: Math.max(0.001, finiteNumber(source.duration, 2)),
+        fps: getAnimationFPS(source),
+        currentFrame: Math.max(0, Math.round(finiteNumber(source.currentFrame))),
+        loop: !!source.loop,
+        autoKey: !!source.autoKey,
+        snap: source.snap !== false,
+        defaultInterpolation: INTERPOLATION_NAMES.has(source.defaultInterpolation)
+            ? source.defaultInterpolation
+            : "linear",
+        basePose: cloneJSON(source.basePose, {}),
+        trackCount: Object.keys(source.tracks || {}).length,
+    };
 }
 
 export function restoreAnimationStateSnapshot(snapshot, { currentFrame = 0, fallbackPose = {} } = {}) {
