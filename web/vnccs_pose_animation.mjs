@@ -17,6 +17,28 @@ export const MAX_FRAME_COUNT = 600;
 export const MIN_ANIMATION_FPS = 0.001;
 export const MAX_ANIMATION_FPS = 120;
 export const DEFAULT_ANIMATION_FPS = 12;
+export const TIMELINE_ROW_HEIGHT = 22;
+export const TIMELINE_RULER_HEIGHT = 26;
+
+export const TIMELINE_TRACK_GROUPS = Object.freeze([
+    { id: "scene", label: "Scene" },
+    { id: "torso", label: "Torso & Head" },
+    { id: "leftArm", label: "Left Arm" },
+    { id: "rightArm", label: "Right Arm" },
+    { id: "leftLeg", label: "Left Leg" },
+    { id: "rightLeg", label: "Right Leg" },
+    { id: "leftHand", label: "Left Hand" },
+    { id: "rightHand", label: "Right Hand" },
+    { id: "other", label: "Other" },
+]);
+
+export const TIMELINE_FINGER_GROUPS = Object.freeze([
+    { id: "thumb", label: "Thumb" },
+    { id: "index", label: "Index Finger" },
+    { id: "middle", label: "Middle Finger" },
+    { id: "ring", label: "Ring Finger" },
+    { id: "little", label: "Little Finger" },
+]);
 
 export const INTERPOLATION_PRESETS = Object.freeze([
     { value: "hold", label: "Hold / Step" },
@@ -392,14 +414,25 @@ export function createAnimationStateFromPoses(poses, options = {}) {
     const keyedFrames = [];
     for (let frame = 0; frame < frameCount; frame += keyframeStep) keyedFrames.push(frame);
     if (keyedFrames.at(-1) !== frameCount - 1) keyedFrames.push(frameCount - 1);
+    const perTrackKeyframes = options.trackKeyframes && typeof options.trackKeyframes === "object"
+        ? options.trackKeyframes
+        : null;
+    const framesForTrack = trackName => {
+        if (!perTrackKeyframes) return keyedFrames;
+        const source = perTrackKeyframes[trackName];
+        if (!Array.isArray(source)) return [];
+        return Array.from(new Set(source.map(frame => (
+            clamp(Math.round(finiteNumber(frame)), 0, frameCount - 1)
+        )))).sort((a, b) => a - b);
+    };
 
     const boneNames = new Set();
     for (const pose of frames.slice(0, frameCount)) {
         for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
     }
-    for (const frame of keyedFrames) {
-        const pose = frames[frame];
-        for (const boneName of boneNames) {
+    for (const boneName of boneNames) {
+        for (const frame of framesForTrack(boneName)) {
+            const pose = frames[frame];
             setTrackKeyframeFromEuler(
                 state,
                 boneName,
@@ -408,6 +441,9 @@ export function createAnimationStateFromPoses(poses, options = {}) {
                 state.defaultInterpolation,
             );
         }
+    }
+    for (const frame of framesForTrack(MODEL_ROTATION_TRACK)) {
+        const pose = frames[frame];
         setTrackKeyframeFromEuler(
             state,
             MODEL_ROTATION_TRACK,
@@ -719,12 +755,336 @@ export function findChangedPoseTracks(expectedPose, actualPose, epsilon = 0.01) 
     return changed;
 }
 
+const TIMELINE_GROUP_BY_ID = new Map(TIMELINE_TRACK_GROUPS.map(group => [group.id, group]));
+
+function cleanBoneName(name) {
+    return String(name || "")
+        .replace(/^.*[|:]/, "")
+        .replace(/^mixamorig/i, "")
+        .replace(/([a-z\d])([A-Z])/g, "$1 $2")
+        .replace(/[.\-]+/g, "_")
+        .replace(/\s+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_|_$/g, "");
+}
+
+function trackSide(name) {
+    const clean = cleanBoneName(name).toLowerCase();
+    if (/(^|_)left($|_)/.test(clean) || /(^|_)l($|_)/.test(clean) || /_l\d*$/.test(clean)) return "left";
+    if (/(^|_)right($|_)/.test(clean) || /(^|_)r($|_)/.test(clean) || /_r\d*$/.test(clean)) return "right";
+    return null;
+}
+
+export function timelineGroupIdForTrack(name) {
+    if (name === MODEL_ROTATION_TRACK) return "scene";
+    const clean = cleanBoneName(name).toLowerCase();
+    const side = trackSide(clean);
+    const isHand = /(hand|wrist|thumb|index|middle|ring|pinky|little|finger|digit)/.test(clean);
+    const isArm = /(clavicle|collar|shoulder|upper_?arm|lower_?arm|forearm|elbow|arm)/.test(clean);
+    const isLeg = /(upper_?leg|lower_?leg|thigh|calf|shin|knee|ankle|foot|toe|leg)/.test(clean);
+    const isTorso = /(root|hips?|pelvis|spine|chest|torso|neck|head|jaw|eye)/.test(clean);
+    if (isHand && side) return side === "left" ? "leftHand" : "rightHand";
+    if (isArm && side) return side === "left" ? "leftArm" : "rightArm";
+    if (isLeg && side) return side === "left" ? "leftLeg" : "rightLeg";
+    if (isTorso) return "torso";
+    return "other";
+}
+
+export function timelineFingerGroupIdForTrack(name) {
+    const clean = cleanBoneName(name).toLowerCase();
+    if (/thumb/.test(clean)) return "thumb";
+    if (/(^|_)index(?:_|\d|$)/.test(clean)) return "index";
+    if (/middle/.test(clean)) return "middle";
+    if (/(^|_)ring(?:_|\d|$)/.test(clean)) return "ring";
+    if (/(pinky|little)/.test(clean)) return "little";
+    return null;
+}
+
+function timelineExpansionIdsForTrack(trackName) {
+    const groupId = timelineGroupIdForTrack(trackName);
+    const ids = [groupId];
+    const fingerId = timelineFingerGroupIdForTrack(trackName);
+    if (fingerId && (groupId === "leftHand" || groupId === "rightHand")) {
+        ids.push(`${groupId}:${fingerId}`);
+    }
+    return ids;
+}
+
+function sidePrefix(name) {
+    const side = trackSide(name);
+    return side === "left" ? "Left " : side === "right" ? "Right " : "";
+}
+
+function numberedPartLabel(base, number) {
+    if (!number) return base;
+    const normalized = Number(number);
+    if (normalized === 1) return `${base} — Base`;
+    if (normalized === 2) return `${base} — Middle`;
+    if (normalized === 3) return `${base} — Tip`;
+    return `${base} ${String(number).padStart(2, "0")}`;
+}
+
 export function humanizeBoneName(name) {
     if (name === MODEL_ROTATION_TRACK) return "Model Rotation";
-    return String(name || "")
+    const raw = cleanBoneName(name);
+    const lower = raw.toLowerCase();
+    const side = sidePrefix(raw);
+    const withoutSide = lower
+        .replace(/(^|_)(left|right|l|r)(?=_|$)/g, "_")
+        .replace(/_(left|right|l|r)$/g, "")
+        .replace(/^_|_$/g, "");
+
+    const finger = withoutSide.match(/(thumb|index|middle|ring|pinky|little|finger)[_ ]?(\d+)?/);
+    if (finger) {
+        const fingerName = finger[1] === "pinky" || finger[1] === "little"
+            ? "Little Finger"
+            : `${finger[1][0].toUpperCase()}${finger[1].slice(1)}${finger[1] === "thumb" ? "" : " Finger"}`;
+        return `${side}${numberedPartLabel(fingerName, finger[2])}`;
+    }
+
+    const compact = withoutSide.replace(/_/g, "");
+    const exact = {
+        root: "Root",
+        hips: "Pelvis",
+        hip: "Pelvis",
+        pelvis: "Pelvis",
+        neck: "Neck",
+        head: "Head",
+        jaw: "Jaw",
+        eye: "Eye",
+        clavicle: "Clavicle",
+        collar: "Clavicle",
+        shoulder: "Shoulder",
+        arm: "Upper Arm",
+        upperarm: "Upper Arm",
+        lowerarm: "Forearm",
+        forearm: "Forearm",
+        elbow: "Elbow",
+        wrist: "Wrist",
+        hand: "Hand",
+        upperleg: "Thigh",
+        thigh: "Thigh",
+        lowerleg: "Lower Leg",
+        calf: "Lower Leg",
+        shin: "Lower Leg",
+        knee: "Knee",
+        ankle: "Ankle",
+        foot: "Foot",
+        toe: "Toes",
+        toebase: "Toes",
+    };
+    if (exact[compact]) return `${side}${exact[compact]}`;
+
+    const spine = compact.match(/^(spine|chest)(\d+)$/);
+    if (spine) return `${spine[1] === "chest" ? "Chest" : "Spine"} ${String(Number(spine[2])).padStart(2, "0")}`;
+    const generic = withoutSide
         .replace(/_/g, " ")
-        .replace(/\b(l|r)\b/g, token => token === "l" ? "Left" : "Right")
+        .replace(/\bupperarm\b/gi, "Upper Arm")
+        .replace(/\blowerarm\b/gi, "Forearm")
+        .replace(/\bupperleg\b/gi, "Thigh")
+        .replace(/\blowerleg\b/gi, "Lower Leg")
         .replace(/\b\w/g, character => character.toUpperCase());
+    return `${side}${generic}`.trim();
+}
+
+export function groupTimelineTracks(trackNames = []) {
+    const uniqueNames = Array.from(new Set((trackNames || []).filter(Boolean)));
+    const grouped = new Map(TIMELINE_TRACK_GROUPS.map(group => [group.id, []]));
+    for (const trackName of uniqueNames) grouped.get(timelineGroupIdForTrack(trackName)).push(trackName);
+    return TIMELINE_TRACK_GROUPS.map(group => ({
+        ...group,
+        trackNames: grouped.get(group.id),
+    })).filter(group => group.trackNames.length);
+}
+
+function timelineTrackHasKeys(state, trackName) {
+    return !!state?.tracks?.[trackName]?.keys?.length;
+}
+
+export function aggregateTimelineKeyFrames(state, trackNames = []) {
+    const frames = new Set();
+    for (const trackName of trackNames) {
+        for (const key of state?.tracks?.[trackName]?.keys || []) frames.add(key.frame);
+    }
+    return Array.from(frames).sort((a, b) => a - b);
+}
+
+/**
+ * Build the flat row projection used by the virtual list. Group rows retain
+ * their descendant track names so selections never depend on mounted DOM rows.
+ */
+export function buildTimelineRows({
+    state,
+    trackNames = [],
+    expandedGroups = new Set(),
+    viewMode = "animated",
+    activeTrack = null,
+    focusTrackNames = [],
+    selectedTrackNames = [],
+    search = "",
+} = {}) {
+    const query = String(search || "").trim().toLowerCase();
+    const selected = new Set(selectedTrackNames || []);
+    const focused = new Set(focusTrackNames || []);
+    const activeGroup = activeTrack ? timelineGroupIdForTrack(activeTrack) : null;
+    const groups = groupTimelineTracks(trackNames);
+    const rows = [];
+    for (const group of groups) {
+        const groupMatchesSearch = !query || group.label.toLowerCase().includes(query);
+        let candidates = group.trackNames.filter(trackName => {
+            if (trackName === activeTrack) return true;
+            if (viewMode === "animated" && !timelineTrackHasKeys(state, trackName)) return false;
+            if (
+                viewMode === "focus"
+                && (focused.size ? !focused.has(trackName) : group.id !== activeGroup)
+            ) return false;
+            if (viewMode === "selected" && !selected.has(trackName)) return false;
+            return true;
+        });
+        if (query && !groupMatchesSearch) {
+            candidates = candidates.filter(trackName => (
+                trackName.toLowerCase().includes(query)
+                || humanizeBoneName(trackName).toLowerCase().includes(query)
+            ));
+        }
+        if (activeTrack && group.trackNames.includes(activeTrack) && !candidates.includes(activeTrack)) {
+            candidates.push(activeTrack);
+        }
+        if (!candidates.length) continue;
+        const forcedExpanded = !!query || viewMode === "focus" || viewMode === "selected";
+        const projectedExpanded = expandedGroups.has(group.id) || forcedExpanded;
+        const keyFrames = aggregateTimelineKeyFrames(state, candidates);
+        rows.push({
+            type: "group",
+            id: `group:${group.id}`,
+            groupId: group.id,
+            depth: 0,
+            label: group.label,
+            trackNames: candidates,
+            keyFrames,
+            keyCount: candidates.reduce((sum, name) => sum + (state?.tracks?.[name]?.keys?.length || 0), 0),
+            expanded: projectedExpanded,
+            forcedExpanded,
+        });
+        if (projectedExpanded) {
+            const appendTrack = (trackName, depth = 1) => {
+                rows.push({
+                    type: "track",
+                    id: `track:${trackName}`,
+                    groupId: group.id,
+                    depth,
+                    trackName,
+                    trackNames: [trackName],
+                    label: humanizeBoneName(trackName),
+                    rawName: trackName,
+                    keyFrames: (state?.tracks?.[trackName]?.keys || []).map(key => key.frame),
+                    keyCount: state?.tracks?.[trackName]?.keys?.length || 0,
+                    active: trackName === activeTrack,
+                });
+            };
+            if (group.id === "leftHand" || group.id === "rightHand") {
+                const fingerTracks = new Map(TIMELINE_FINGER_GROUPS.map(finger => [finger.id, []]));
+                const directTracks = [];
+                for (const trackName of candidates) {
+                    const fingerId = timelineFingerGroupIdForTrack(trackName);
+                    if (fingerId) fingerTracks.get(fingerId)?.push(trackName);
+                    else directTracks.push(trackName);
+                }
+                for (const trackName of directTracks) appendTrack(trackName, 1);
+                for (const finger of TIMELINE_FINGER_GROUPS) {
+                    const tracks = fingerTracks.get(finger.id) || [];
+                    if (!tracks.length) continue;
+                    const subgroupId = `${group.id}:${finger.id}`;
+                    const subgroupForcedExpanded = !!query || viewMode === "focus" || viewMode === "selected";
+                    const subgroupExpanded = expandedGroups.has(subgroupId) || subgroupForcedExpanded;
+                    rows.push({
+                        type: "group",
+                        id: `group:${subgroupId}`,
+                        groupId: subgroupId,
+                        parentGroupId: group.id,
+                        depth: 1,
+                        label: finger.label,
+                        trackNames: tracks,
+                        keyFrames: aggregateTimelineKeyFrames(state, tracks),
+                        keyCount: tracks.reduce((sum, name) => sum + (state?.tracks?.[name]?.keys?.length || 0), 0),
+                        expanded: subgroupExpanded,
+                        forcedExpanded: subgroupForcedExpanded,
+                    });
+                    if (subgroupExpanded) {
+                        for (const trackName of tracks) appendTrack(trackName, 2);
+                    }
+                }
+            } else {
+                for (const trackName of candidates) appendTrack(trackName, 1);
+            }
+        }
+    }
+    return rows;
+}
+
+export function findKeyframesInTimelineRows(state, rows, range = {}) {
+    const firstRow = clamp(Math.floor(finiteNumber(range.startRow)), 0, Math.max(0, rows.length - 1));
+    const lastRow = clamp(Math.floor(finiteNumber(range.endRow)), 0, Math.max(0, rows.length - 1));
+    const startRow = Math.min(firstRow, lastRow);
+    const endRow = Math.max(firstRow, lastRow);
+    const startFrame = Math.min(finiteNumber(range.startFrame), finiteNumber(range.endFrame));
+    const endFrame = Math.max(finiteNumber(range.startFrame), finiteNumber(range.endFrame));
+    const selections = [];
+    const seen = new Set();
+    for (let rowIndex = startRow; rowIndex <= endRow; rowIndex++) {
+        for (const trackName of rows[rowIndex]?.trackNames || []) {
+            for (const key of state?.tracks?.[trackName]?.keys || []) {
+                const id = `${trackName}\u0000${key.id}`;
+                if (seen.has(id) || key.frame < startFrame || key.frame > endFrame) continue;
+                seen.add(id);
+                selections.push({ trackName, keyId: key.id, frame: key.frame });
+            }
+        }
+    }
+    return selections;
+}
+
+export function timelineViewportToContentPoint({
+    clientX,
+    clientY,
+    viewportRect,
+    offsetWidth,
+    offsetHeight,
+    clientLeft = 0,
+    clientTop = 0,
+    scrollLeft = 0,
+    scrollTop = 0,
+} = {}) {
+    const rect = viewportRect || { left: 0, top: 0, width: 1, height: 1 };
+    const scaleX = Math.max(1e-6, finiteNumber(rect.width, 1) / Math.max(1, finiteNumber(offsetWidth, rect.width)));
+    const scaleY = Math.max(1e-6, finiteNumber(rect.height, 1) / Math.max(1, finiteNumber(offsetHeight, rect.height)));
+    return {
+        x: Math.max(0, finiteNumber(scrollLeft) + ((finiteNumber(clientX) - finiteNumber(rect.left) - finiteNumber(clientLeft) * scaleX) / scaleX)),
+        y: Math.max(0, finiteNumber(scrollTop) + ((finiteNumber(clientY) - finiteNumber(rect.top) - finiteNumber(clientTop) * scaleY) / scaleY)),
+        scaleX,
+        scaleY,
+    };
+}
+
+export function timelineContentPointToPosition(point, {
+    laneLeft = 168,
+    laneWidth = 640,
+    rulerHeight = TIMELINE_RULER_HEIGHT,
+    rowHeight = TIMELINE_ROW_HEIGHT,
+    rowCount = 0,
+    frameCount = MIN_FRAME_COUNT,
+} = {}) {
+    const frame = clamp(
+        ((finiteNumber(point?.x) - laneLeft) / Math.max(1, finiteNumber(laneWidth, 640))) * Math.max(1, frameCount - 1),
+        0,
+        Math.max(1, frameCount - 1),
+    );
+    const row = clamp(
+        Math.floor((finiteNumber(point?.y) - rulerHeight) / Math.max(1, finiteNumber(rowHeight, TIMELINE_ROW_HEIGHT))),
+        0,
+        Math.max(0, Math.floor(finiteNumber(rowCount)) - 1),
+    );
+    return { frame, row };
 }
 
 function niceTickStep(frameCount) {
@@ -739,20 +1099,22 @@ export function computeVirtualTrackRange({
     count,
     scrollTop,
     viewportHeight,
-    rowHeight = 25,
-    rulerHeight = 30,
+    rowHeight = TIMELINE_ROW_HEIGHT,
+    rulerHeight = TIMELINE_RULER_HEIGHT,
     overscan = 3,
     chunkSize = 4,
 } = {}) {
     const total = Math.max(0, Math.floor(finiteNumber(count)));
     if (!total) return { start: 0, end: 0 };
     const height = Math.max(rowHeight, finiteNumber(viewportHeight, 238));
-    const trackScrollTop = Math.max(0, finiteNumber(scrollTop) - rulerHeight);
-    const firstVisible = Math.floor(trackScrollTop / rowHeight);
-    const visibleCount = Math.ceil(height / rowHeight);
+    const top = Math.max(0, finiteNumber(scrollTop) - rulerHeight);
+    const bottom = Math.max(0, finiteNumber(scrollTop) + height - rulerHeight);
+    const firstVisible = Math.floor(top / rowHeight);
+    const lastVisibleExclusive = Math.ceil(bottom / rowHeight);
     const rawStart = Math.max(0, firstVisible - overscan);
+    const rawEnd = Math.min(total, lastVisibleExclusive + overscan);
     const start = Math.max(0, Math.floor(rawStart / chunkSize) * chunkSize);
-    const end = Math.min(total, start + visibleCount + overscan * 2 + chunkSize);
+    const end = Math.min(total, Math.ceil(rawEnd / chunkSize) * chunkSize);
     return { start, end };
 }
 
@@ -841,9 +1203,18 @@ export class PoseAnimationTimeline {
         this.onFrameChange = options.onFrameChange || (() => {});
         this.onStateChange = options.onStateChange || (() => {});
         this.onRequestKey = options.onRequestKey || (() => {});
+        this.onTrackSelect = options.onTrackSelect || (() => {});
+        this.onTrackHover = options.onTrackHover || (() => {});
         this.getPreferredTrack = options.getPreferredTrack || (() => null);
+        this.getFocusTracks = options.getFocusTracks || (() => []);
         this.search = "";
-        this.keyedOnly = false;
+        this.viewMode = "animated";
+        this.activeTrack = options.activeTrack || this.getPreferredTrack() || null;
+        this.expandedGroups = new Set();
+        if (this.activeTrack) {
+            for (const id of timelineExpansionIdsForTrack(this.activeTrack)) this.expandedGroups.add(id);
+        }
+        this.collapsed = false;
         this.selectedKey = null;
         this.selectedKeys = new Map();
         this._raf = null;
@@ -851,6 +1222,8 @@ export class PoseAnimationTimeline {
         this._virtualRange = { start: -1, end: -1 };
         this._virtualFrameRange = { start: -1, end: -1 };
         this._virtualNames = [];
+        this._virtualRows = [];
+        this._laneContentLeft = 168;
         this._virtualScrollRaf = null;
         this._visiblePlayheads = [];
         this._visibleKeyLanes = [];
@@ -860,6 +1233,11 @@ export class PoseAnimationTimeline {
         this._suppressKeyClick = false;
         this._keyDrawRaf = null;
         this._keyDrawToolbar = false;
+        this._rowKeyCache = new WeakMap();
+        this._marquee = null;
+        this._marqueeRaf = null;
+        this._activeResizeCancel = null;
+        this._activeKeyDragCancel = null;
         this._build();
         this.render();
     }
@@ -985,12 +1363,35 @@ export class PoseAnimationTimeline {
             this.body.scrollTop = 0;
             this.renderTracks();
         });
-        this.keyedButton = this._button("KEYED", "Show animated tracks only", () => {
-            this.keyedOnly = !this.keyedOnly;
-            this.keyedButton.classList.toggle("active", this.keyedOnly);
+
+        this.viewSelect = document.createElement("select");
+        this.viewSelect.className = "vnccs-ps-tl-select vnccs-ps-tl-view-select";
+        this.viewSelect.title = "Track view";
+        for (const [value, label] of [
+            ["animated", "Animated"],
+            ["focus", "Focus"],
+            ["selected", "Selected"],
+            ["all", "All"],
+        ]) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            this.viewSelect.appendChild(option);
+        }
+        this.viewSelect.value = this.viewMode;
+        this.viewSelect.addEventListener("change", () => {
+            this.viewMode = this.viewSelect.value;
             this.body.scrollTop = 0;
             this.renderTracks();
-        }, "toggle");
+        });
+        this.collapseButton = this._button("▾", "Collapse timeline", () => {
+            this.collapsed = !this.collapsed;
+            this.element.classList.toggle("collapsed", this.collapsed);
+            this.collapseButton.textContent = this.collapsed ? "▴" : "▾";
+            this.collapseButton.title = this.collapsed ? "Expand timeline" : "Collapse timeline";
+            if (this.collapsed) this.stopPlayback();
+            else this._renderVisibleTrackRows(true);
+        }, "vnccs-ps-tl-collapse");
 
         this.toolbar.append(
             this.firstButton, this.previousButton, this.playButton, this.nextButton, this.lastButton,
@@ -998,15 +1399,25 @@ export class PoseAnimationTimeline {
             this.addKeyButton, this.deleteKeyButton, this.interpolationSelect,
             this.autoKeyButton, this.loopButton,
             fpsLabel, durationLabel,
-            this.searchInput, this.keyedButton,
+            this.viewSelect, this.searchInput,
         );
 
+        this.resizer = document.createElement("div");
+        this.resizer.className = "vnccs-ps-tl-resizer";
+        this.resizer.title = "Drag to resize timeline";
         this.body = document.createElement("div");
         this.body.className = "vnccs-ps-tl-body";
         this.content = document.createElement("div");
         this.content.className = "vnccs-ps-tl-content";
         this.body.appendChild(this.content);
-        this.element.append(this.toolbar, this.body);
+        this.element.append(this.resizer, this.toolbar, this.collapseButton, this.body);
+        try {
+            const savedHeight = Number(globalThis.localStorage?.getItem("vnccsPoseStudioTimelineHeight"));
+            if (Number.isFinite(savedHeight) && savedHeight >= 96) {
+                this.element.style.setProperty("--vnccs-tl-panel-height", `${savedHeight}px`);
+            }
+        } catch (_) {}
+        this.resizer.addEventListener("pointerdown", event => this._beginResize(event));
         installTimelineShortcuts(this.element.ownerDocument);
         this.element.addEventListener("pointerenter", () => {
             this._pointerInside = true;
@@ -1074,6 +1485,10 @@ export class PoseAnimationTimeline {
         return this.selectedKeys.has(this._selectionId(trackName, keyId));
     }
 
+    _selectedTrackNames() {
+        return new Set(Array.from(this.selectedKeys.values(), selection => selection.trackName));
+    }
+
     _selectKey(trackName, key, { additive = false, toggle = false } = {}) {
         const id = this._selectionId(trackName, key.id);
         if (!additive) this.selectedKeys.clear();
@@ -1089,6 +1504,14 @@ export class PoseAnimationTimeline {
     }
 
     _refreshVisibleSelection() {
+        const selectedTrackNames = this._selectedTrackNames();
+        for (const rowElement of this.virtualTracks?.children || []) {
+            const rowData = this._virtualRows[Number(rowElement.dataset.rowIndex)];
+            rowElement.classList.toggle(
+                "selected",
+                (rowData?.trackNames || []).some(trackName => selectedTrackNames.has(trackName)),
+            );
+        }
         this._drawVisibleKeyLanes();
         this.updateToolbar();
     }
@@ -1104,86 +1527,220 @@ export class PoseAnimationTimeline {
         });
     }
 
+    _viewportPoint(clientX, clientY) {
+        return timelineViewportToContentPoint({
+            clientX,
+            clientY,
+            viewportRect: this.body.getBoundingClientRect(),
+            offsetWidth: this.body.offsetWidth || this.body.clientWidth,
+            offsetHeight: this.body.offsetHeight || this.body.clientHeight,
+            clientLeft: this.body.clientLeft,
+            clientTop: this.body.clientTop,
+            scrollLeft: this.body.scrollLeft,
+            scrollTop: this.body.scrollTop,
+        });
+    }
+
+    _contentPosition(point) {
+        return timelineContentPointToPosition(point, {
+            laneLeft: this._laneContentLeft,
+            laneWidth: this._laneWidth,
+            rulerHeight: TIMELINE_RULER_HEIGHT,
+            rowHeight: TIMELINE_ROW_HEIGHT,
+            rowCount: this._virtualRows.length,
+            frameCount: this.state.frameCount,
+        });
+    }
+
     _beginMarqueeSelection(event) {
-        if (event.button !== 0) return;
+        if (event.button !== 0 || this._marquee) return;
         const lane = event.target.closest(".vnccs-ps-tl-lane:not(.ruler)");
         if (!lane || !this.virtualTracks?.contains(lane)) return;
-        if (this._keyAtPointer(event, lane, lane.dataset.track)) return;
+        const row = this._virtualRows[Number(lane.dataset.rowIndex)];
+        if (!row || this._keyAtPointer(event, lane, row)) return;
         event.preventDefault();
         event.stopPropagation();
         this.element.focus({ preventScroll: true });
 
-        const pointerId = event.pointerId;
-        const startX = event.clientX;
-        const startY = event.clientY;
-        const additive = event.ctrlKey || event.metaKey || event.shiftKey;
-        const initialSelection = additive ? new Map(this.selectedKeys) : new Map();
-        const laneRect = lane.getBoundingClientRect();
         const doc = this.element.ownerDocument;
-        const selectionBox = doc.createElement("div");
-        selectionBox.className = "vnccs-ps-tl-selection-box";
-        doc.body.appendChild(selectionBox);
-        this.body.setPointerCapture?.(pointerId);
-        let dragged = false;
-
-        const frameAt = clientX => clamp(
-            ((clientX - laneRect.left) / Math.max(1, laneRect.width)) * (this.state.frameCount - 1),
-            0,
-            this.state.frameCount - 1,
-        );
-        const trackAt = clientY => clamp(
-            Math.floor((clientY - this.virtualTracks.getBoundingClientRect().top) / 25),
-            0,
-            Math.max(0, this._virtualNames.length - 1),
-        );
+        const layer = doc.createElement("div");
+        layer.className = "vnccs-ps-tl-selection-layer";
+        const box = doc.createElement("div");
+        box.className = "vnccs-ps-tl-selection-box";
+        layer.appendChild(box);
+        doc.body.appendChild(layer);
+        const additive = event.ctrlKey || event.metaKey || event.shiftKey;
+        // Cancellation must restore the selection that existed before the
+        // gesture. A non-additive drag still starts its live result from an
+        // empty base, but Escape/pointercancel must not erase prior keys.
+        const previousSelection = new Map(this.selectedKeys);
+        const baseSelection = additive ? new Map(previousSelection) : new Map();
+        const anchorPoint = this._viewportPoint(event.clientX, event.clientY);
+        this._marquee = {
+            pointerId: event.pointerId,
+            lane,
+            row,
+            additive,
+            previousSelection,
+            baseSelection,
+            anchorPoint,
+            anchorPosition: this._contentPosition(anchorPoint),
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            clientX: event.clientX,
+            clientY: event.clientY,
+            dragged: false,
+            layer,
+            box,
+        };
+        this.body.setPointerCapture?.(event.pointerId);
         const move = moveEvent => {
-            const left = Math.min(startX, moveEvent.clientX);
-            const top = Math.min(startY, moveEvent.clientY);
-            const width = Math.abs(moveEvent.clientX - startX);
-            const height = Math.abs(moveEvent.clientY - startY);
-            if (!dragged && Math.hypot(width, height) < 4) return;
-            dragged = true;
-            Object.assign(selectionBox.style, {
-                display: "block",
-                left: `${left}px`,
-                top: `${top}px`,
-                width: `${width}px`,
-                height: `${height}px`,
+            if (!this._marquee || moveEvent.pointerId !== this._marquee.pointerId) return;
+            this._marquee.clientX = moveEvent.clientX;
+            this._marquee.clientY = moveEvent.clientY;
+            if (Math.hypot(
+                moveEvent.clientX - this._marquee.startClientX,
+                moveEvent.clientY - this._marquee.startClientY,
+            ) >= 4) this._marquee.dragged = true;
+        };
+        const end = endEvent => this._finishMarqueeSelection(endEvent.type === "pointercancel", endEvent);
+        const escape = keyEvent => {
+            if (keyEvent.key !== "Escape") return;
+            keyEvent.preventDefault();
+            this._finishMarqueeSelection(true, keyEvent);
+        };
+        this._marquee.move = move;
+        this._marquee.end = end;
+        this._marquee.escape = escape;
+        this.body.addEventListener("pointermove", move);
+        this.body.addEventListener("pointerup", end);
+        this.body.addEventListener("pointercancel", end);
+        doc.defaultView?.addEventListener("keydown", escape, true);
+        this._marqueeRaf = requestAnimationFrame(() => this._updateMarqueeSelection());
+    }
+
+    _updateMarqueeSelection() {
+        const drag = this._marquee;
+        if (!drag) return;
+        const rect = this.body.getBoundingClientRect();
+        const scale = this._viewportPoint(drag.clientX, drag.clientY);
+        const minimumDimension = Math.max(1, Math.min(rect.width, rect.height));
+        // Keep opposite edge zones disjoint even under an extreme Comfy scale.
+        const edge = Math.max(1, Math.min(
+            42,
+            Math.max(4, minimumDimension * 0.15),
+            minimumDimension / 2 - 0.5,
+        ));
+        const edgeVelocity = (position, low, high) => {
+            if (position < low + edge) return -Math.pow(clamp((low + edge - position) / edge, 0, 1), 2) * 22;
+            if (position > high - edge) return Math.pow(clamp((position - (high - edge)) / edge, 0, 1), 2) * 22;
+            return 0;
+        };
+        if (drag.dragged) {
+            const dx = edgeVelocity(drag.clientX, rect.left, rect.right) / scale.scaleX;
+            const dy = edgeVelocity(drag.clientY, rect.top, rect.bottom) / scale.scaleY;
+            if (dx) this.body.scrollLeft += dx;
+            if (dy) this.body.scrollTop += dy;
+        }
+
+        const currentPoint = this._viewportPoint(drag.clientX, drag.clientY);
+        const currentPosition = this._contentPosition(currentPoint);
+        if (drag.dragged) {
+            const matches = findKeyframesInTimelineRows(this.state, this._virtualRows, {
+                startRow: drag.anchorPosition.row,
+                endRow: currentPosition.row,
+                startFrame: drag.anchorPosition.frame,
+                endFrame: currentPosition.frame,
             });
-            const matches = findKeyframesInRange(this.state, this._virtualNames, {
-                startTrack: trackAt(startY),
-                endTrack: trackAt(moveEvent.clientY),
-                startFrame: frameAt(startX),
-                endFrame: frameAt(moveEvent.clientX),
-            });
-            this.selectedKeys = new Map(initialSelection);
+            this.selectedKeys = new Map(drag.baseSelection);
             for (const match of matches) {
                 this.selectedKeys.set(this._selectionId(match.trackName, match.keyId), match);
             }
             const last = Array.from(this.selectedKeys.values()).at(-1) || null;
             this.selectedKey = last ? { ...last } : null;
             this._scheduleKeyLaneDraw(true);
+
+            const bodyPointToClient = point => ({
+                x: rect.left + this.body.clientLeft * scale.scaleX + (point.x - this.body.scrollLeft) * scale.scaleX,
+                y: rect.top + this.body.clientTop * scale.scaleY + (point.y - this.body.scrollTop) * scale.scaleY,
+            });
+            const anchorClient = bodyPointToClient(drag.anchorPoint);
+            const currentClient = bodyPointToClient(currentPoint);
+            const left = Math.min(anchorClient.x, currentClient.x);
+            const top = Math.min(anchorClient.y, currentClient.y);
+            const laneViewportLeft = Math.min(rect.right, rect.left + this._laneContentLeft * scale.scaleX);
+            const laneViewportTop = Math.min(rect.bottom, rect.top + TIMELINE_RULER_HEIGHT * scale.scaleY);
+            Object.assign(drag.layer.style, {
+                clipPath: `inset(${Math.max(0, laneViewportTop)}px ${Math.max(0, globalThis.innerWidth - rect.right)}px ${Math.max(0, globalThis.innerHeight - rect.bottom)}px ${Math.max(0, laneViewportLeft)}px)`,
+            });
+            Object.assign(drag.box.style, {
+                display: "block",
+                left: `${left}px`,
+                top: `${top}px`,
+                width: `${Math.abs(currentClient.x - anchorClient.x)}px`,
+                height: `${Math.abs(currentClient.y - anchorClient.y)}px`,
+            });
+        }
+        this._marqueeRaf = requestAnimationFrame(() => this._updateMarqueeSelection());
+    }
+
+    _finishMarqueeSelection(cancelled, event = {}) {
+        const drag = this._marquee;
+        if (!drag) return;
+        this._marquee = null;
+        if (this._marqueeRaf) cancelAnimationFrame(this._marqueeRaf);
+        this._marqueeRaf = null;
+        this.body.removeEventListener("pointermove", drag.move);
+        this.body.removeEventListener("pointerup", drag.end);
+        this.body.removeEventListener("pointercancel", drag.end);
+        this.element.ownerDocument.defaultView?.removeEventListener("keydown", drag.escape, true);
+        if (this.body.hasPointerCapture?.(drag.pointerId)) this.body.releasePointerCapture(drag.pointerId);
+        drag.layer.remove();
+        if (cancelled) {
+            this.selectedKeys = new Map(drag.previousSelection);
+            const last = Array.from(this.selectedKeys.values()).at(-1) || null;
+            this.selectedKey = last ? { ...last } : null;
+        } else if (!drag.dragged) {
+            if (!drag.additive) this._clearSelection();
+            const point = this._viewportPoint(event.clientX ?? drag.clientX, event.clientY ?? drag.clientY);
+            this.setFrame(Math.round(this._contentPosition(point).frame), { scrub: true });
+        }
+        if (this.viewMode === "selected") this.renderTracks();
+        else this._refreshVisibleSelection();
+    }
+
+    _beginResize(event) {
+        if (event.button !== 0) return;
+        this._activeResizeCancel?.();
+        event.preventDefault();
+        const startY = event.clientY;
+        const startRect = this.element.getBoundingClientRect();
+        const scale = startRect.height / Math.max(1, this.element.offsetHeight);
+        const startHeight = this.element.offsetHeight;
+        this.element.classList.add("resizing");
+        this.resizer.setPointerCapture?.(event.pointerId);
+        const move = moveEvent => {
+            const maximum = Math.max(96, Math.min(520, (this.element.parentElement?.clientHeight || 800) * 0.6));
+            const height = clamp(startHeight + (startY - moveEvent.clientY) / Math.max(1e-6, scale), 96, maximum);
+            this.element.style.setProperty("--vnccs-tl-panel-height", `${height}px`);
+            this._renderVisibleTrackRows(true);
         };
         const end = endEvent => {
-            this.body.removeEventListener("pointermove", move);
-            this.body.removeEventListener("pointerup", end);
-            this.body.removeEventListener("pointercancel", end);
-            if (this.body.hasPointerCapture?.(endEvent.pointerId)) this.body.releasePointerCapture(endEvent.pointerId);
-            selectionBox.remove();
-            if (endEvent.type === "pointercancel") {
-                this.selectedKeys = new Map(initialSelection);
-                const last = Array.from(this.selectedKeys.values()).at(-1) || null;
-                this.selectedKey = last ? { ...last } : null;
-                this._refreshVisibleSelection();
-            } else if (!dragged) {
-                if (!additive) this._clearSelection();
-                this.setFrame(this._frameFromPointer(endEvent, lane), { scrub: true });
-                this._refreshVisibleSelection();
-            }
+            this.resizer.removeEventListener("pointermove", move);
+            this.resizer.removeEventListener("pointerup", end);
+            this.resizer.removeEventListener("pointercancel", end);
+            if (this.resizer.hasPointerCapture?.(endEvent.pointerId)) this.resizer.releasePointerCapture(endEvent.pointerId);
+            if (this._activeResizeCancel === cancel) this._activeResizeCancel = null;
+            this.element.classList.remove("resizing");
+            try {
+                globalThis.localStorage?.setItem("vnccsPoseStudioTimelineHeight", String(this.element.offsetHeight));
+            } catch (_) {}
         };
-        this.body.addEventListener("pointermove", move);
-        this.body.addEventListener("pointerup", end);
-        this.body.addEventListener("pointercancel", end);
+        const cancel = () => end({ type: "pointercancel", pointerId: event.pointerId });
+        this._activeResizeCancel = cancel;
+        this.resizer.addEventListener("pointermove", move);
+        this.resizer.addEventListener("pointerup", end);
+        this.resizer.addEventListener("pointercancel", end);
     }
 
     copySelectedKeys() {
@@ -1218,9 +1775,64 @@ export class PoseAnimationTimeline {
         this.renderTracks();
     }
 
+    setActiveTrack(trackName, { reveal = true, notify = false } = {}) {
+        const next = trackName || null;
+        const changed = next !== this.activeTrack;
+        this.activeTrack = next;
+        if (next && reveal) {
+            for (const id of timelineExpansionIdsForTrack(next)) this.expandedGroups.add(id);
+        }
+        if (notify && next) this.onTrackSelect(next);
+        if (changed || reveal) {
+            this.renderTracks();
+            if (next && reveal) this._scrollTrackIntoView(next);
+        }
+    }
+
+    notifyActiveTrack(trackName, options = {}) {
+        this.setActiveTrack(trackName, { reveal: options.reveal !== false, notify: false });
+    }
+
+    setPreferredTrack(trackName, options = {}) {
+        this.notifyActiveTrack(trackName, options);
+    }
+
+    _scrollTrackIntoView(trackName) {
+        const index = this._virtualRows.findIndex(row => row.type === "track" && row.trackName === trackName);
+        if (index < 0 || !this.body) return false;
+        const rowTop = TIMELINE_RULER_HEIGHT + index * TIMELINE_ROW_HEIGHT;
+        const rowBottom = rowTop + TIMELINE_ROW_HEIGHT;
+        const viewportTop = this.body.scrollTop;
+        const viewportBottom = viewportTop + Math.max(TIMELINE_ROW_HEIGHT, this.body.clientHeight);
+        if (rowTop < viewportTop + TIMELINE_RULER_HEIGHT) {
+            this.body.scrollTop = Math.max(0, rowTop - TIMELINE_RULER_HEIGHT);
+        } else if (rowBottom > viewportBottom) {
+            this.body.scrollTop = Math.max(0, rowBottom - Math.max(TIMELINE_ROW_HEIGHT, this.body.clientHeight));
+        }
+        this._renderVisibleTrackRows(true);
+        return true;
+    }
+
     setVisible(visible) {
         this.element.classList.toggle("visible", !!visible);
-        if (!visible) this.stopPlayback();
+        if (!visible) {
+            this.stopPlayback();
+            this._finishMarqueeSelection(true);
+            this.onTrackHover(null);
+        }
+    }
+
+    destroy() {
+        this.stopPlayback();
+        this._finishMarqueeSelection(true);
+        this._activeResizeCancel?.();
+        this._activeKeyDragCancel?.();
+        if (this._virtualScrollRaf) cancelAnimationFrame(this._virtualScrollRaf);
+        if (this._keyDrawRaf) cancelAnimationFrame(this._keyDrawRaf);
+        this._timelineResizeObserver?.disconnect?.();
+        this.onTrackHover(null);
+        if (hoveredTimeline === this) hoveredTimeline = null;
+        this.element?.remove();
     }
 
     setFrame(frameValue, options = {}) {
@@ -1336,10 +1948,24 @@ export class PoseAnimationTimeline {
         for (const name of Object.keys(this.state.tracks || {})) {
             if (!names.includes(name)) names.push(name);
         }
-        return names.filter(name => {
-            if (this.keyedOnly && !this.state.tracks?.[name]?.keys?.length) return false;
-            if (this.search && !humanizeBoneName(name).toLowerCase().includes(this.search) && !name.toLowerCase().includes(this.search)) return false;
-            return true;
+        return names;
+    }
+
+    _timelineRows() {
+        const preferred = this.getPreferredTrack?.() || this.activeTrack;
+        if (preferred && preferred !== this.activeTrack) {
+            this.activeTrack = preferred;
+            for (const id of timelineExpansionIdsForTrack(preferred)) this.expandedGroups.add(id);
+        }
+        return buildTimelineRows({
+            state: this.state,
+            trackNames: this._allTrackNames(),
+            expandedGroups: this.expandedGroups,
+            viewMode: this.viewMode,
+            activeTrack: this.activeTrack,
+            focusTrackNames: this.viewMode === "focus" ? this.getFocusTracks(this.activeTrack) : [],
+            selectedTrackNames: Array.from(new Set(Array.from(this.selectedKeys.values()).map(item => item.trackName))),
+            search: this.search,
         });
     }
 
@@ -1349,31 +1975,61 @@ export class PoseAnimationTimeline {
         return Math.round(ratio * (this.state.frameCount - 1));
     }
 
-    _keyAtPointer(event, lane, trackName) {
-        if (!trackName) return null;
+    _keysForRow(row) {
+        if (!row) return [];
+        const cached = this._rowKeyCache.get(row);
+        if (cached) return cached;
+        let result;
+        if (row.type === "track") {
+            result = (this.state.tracks?.[row.trackName]?.keys || []).map(key => ({
+                frame: key.frame,
+                members: [{ trackName: row.trackName, key }],
+            }));
+        } else {
+            const byFrame = new Map();
+            for (const trackName of row.trackNames || []) {
+                for (const key of this.state.tracks?.[trackName]?.keys || []) {
+                    if (!byFrame.has(key.frame)) byFrame.set(key.frame, []);
+                    byFrame.get(key.frame).push({ trackName, key });
+                }
+            }
+            result = Array.from(byFrame, ([frame, members]) => ({ frame, members })).sort((a, b) => a.frame - b.frame);
+        }
+        this._rowKeyCache.set(row, result);
+        return result;
+    }
+
+    _keyAtPointer(event, lane, row) {
+        if (!row) return null;
         const rect = lane.getBoundingClientRect();
         return findNearestKeyframeAtPosition(
-            this.state.tracks?.[trackName]?.keys,
+            this._keysForRow(row),
             event.clientX - rect.left,
             rect.width,
             this.state.frameCount,
         );
     }
 
-    _drawKeyLane(canvas, trackName) {
+    _drawKeyLane(canvas, row) {
         const context = canvas.getContext("2d");
         if (!context) return;
         const width = canvas.width;
         const height = canvas.height;
         const lastFrame = Math.max(1, this.state.frameCount - 1);
         context.clearRect(0, 0, width, height);
+        const positions = new Map();
+        for (const aggregate of this._keysForRow(row)) {
+            for (const { trackName, key } of aggregate.members) {
+                const previewFrame = this._dragPreview?.frames?.get(this._selectionId(trackName, key.id));
+                const frame = previewFrame === undefined ? key.frame : previewFrame + this._dragPreview.delta;
+                const selected = this._isSelected(trackName, key.id);
+                positions.set(frame, (positions.get(frame) || false) || selected);
+            }
+        }
         const regular = [];
         const selected = [];
-        for (const key of this.state.tracks?.[trackName]?.keys || []) {
-            const previewFrame = this._dragPreview?.frames?.get(this._selectionId(trackName, key.id));
-            const frame = previewFrame === undefined ? key.frame : previewFrame + this._dragPreview.delta;
-            const x = (frame / lastFrame) * width;
-            (this._isSelected(trackName, key.id) ? selected : regular).push(x);
+        for (const [frame, isSelected] of positions) {
+            (isSelected ? selected : regular).push((frame / lastFrame) * width);
         }
         const drawDiamonds = (positions, fill, stroke, shadow = false) => {
             if (!positions.length) return;
@@ -1398,7 +2054,7 @@ export class PoseAnimationTimeline {
     }
 
     _drawVisibleKeyLanes() {
-        for (const { canvas, trackName } of this._visibleKeyLanes) this._drawKeyLane(canvas, trackName);
+        for (const { canvas, row } of this._visibleKeyLanes) this._drawKeyLane(canvas, row);
     }
 
     _bindScrub(lane) {
@@ -1420,7 +2076,7 @@ export class PoseAnimationTimeline {
         });
     }
 
-    _makeLane(trackName = null, ruler = false) {
+    _makeLane(row = null, ruler = false, rowIndex = -1) {
         const lane = document.createElement("div");
         lane.className = `vnccs-ps-tl-lane${ruler ? " ruler" : ""}`;
         const playhead = document.createElement("div");
@@ -1450,49 +2106,67 @@ export class PoseAnimationTimeline {
             return lane;
         }
 
-        lane.dataset.track = trackName;
+        lane.dataset.rowIndex = String(rowIndex);
+        if (row?.trackName) lane.dataset.track = row.trackName;
         const canvas = document.createElement("canvas");
         canvas.className = "vnccs-ps-tl-keys-canvas";
         canvas.width = Math.max(1, Math.round(this._laneWidth));
-        canvas.height = 25;
+        canvas.height = TIMELINE_ROW_HEIGHT;
         lane.appendChild(canvas);
-        this._visibleKeyLanes.push({ canvas, trackName });
-        this._drawKeyLane(canvas, trackName);
+        this._visibleKeyLanes.push({ canvas, row });
+        this._drawKeyLane(canvas, row);
 
         lane.addEventListener("click", event => {
-            const key = this._keyAtPointer(event, lane, trackName);
-            if (!key) return;
+            const aggregate = this._keyAtPointer(event, lane, row);
+            if (!aggregate) return;
             event.stopPropagation();
             if (this._suppressKeyClick) {
                 this._suppressKeyClick = false;
                 return;
             }
             const additive = event.ctrlKey || event.metaKey || event.shiftKey;
-            this._selectKey(trackName, key, { additive, toggle: additive });
-            this.setFrame(key.frame);
+            const allSelected = aggregate.members.every(({ trackName, key }) => this._isSelected(trackName, key.id));
+            if (!additive) this._clearSelection();
+            for (const { trackName, key } of aggregate.members) {
+                this._selectKey(trackName, key, { additive: true, toggle: additive && allSelected });
+            }
+            this.setFrame(aggregate.frame);
             this._refreshVisibleSelection();
+            if (this.viewMode === "selected") this.renderTracks();
         });
         lane.addEventListener("contextmenu", event => {
-            const key = this._keyAtPointer(event, lane, trackName);
-            if (!key) return;
+            const aggregate = this._keyAtPointer(event, lane, row);
+            if (!aggregate) return;
             event.preventDefault();
             event.stopPropagation();
-            if (this._isSelected(trackName, key.id)) {
+            if (aggregate.members.every(({ trackName, key }) => this._isSelected(trackName, key.id))) {
                 this.deleteSelectedKeys();
-            } else if (deleteTrackKeyframe(this.state, trackName, key.frame)) {
+            } else {
+                let deleted = 0;
+                for (const { trackName, key } of aggregate.members) {
+                    if (deleteTrackKeyframe(this.state, trackName, key.frame)) deleted++;
+                }
+                if (!deleted) return;
                 this._clearSelection();
-                this.onStateChange({ type: "deleteKey", trackName, frame: key.frame });
+                this.onStateChange({ type: "deleteKeys", count: deleted, frame: aggregate.frame });
                 this.renderTracks();
             }
         });
         lane.addEventListener("pointerdown", event => {
-            const key = this._keyAtPointer(event, lane, trackName);
-            if (!key || event.button !== 0) return;
+            const aggregate = this._keyAtPointer(event, lane, row);
+            if (!aggregate || event.button !== 0) return;
+            this._activeKeyDragCancel?.();
             event.stopPropagation();
             this.element.focus({ preventScroll: true });
-            const originalFrame = key.frame;
+            const originalFrame = aggregate.frame;
             if (event.ctrlKey || event.metaKey || event.shiftKey) return;
-            if (!this._isSelected(trackName, key.id)) this._selectKey(trackName, key);
+            const anySelected = aggregate.members.some(({ trackName, key }) => this._isSelected(trackName, key.id));
+            if (!anySelected) {
+                this._clearSelection();
+            }
+            for (const { trackName, key } of aggregate.members) {
+                if (!this._isSelected(trackName, key.id)) this._selectKey(trackName, key, { additive: true });
+            }
             this._refreshVisibleSelection();
             const originalSelections = this._selectedKeyframes().map(item => ({
                 trackName: item.trackName,
@@ -1518,72 +2192,117 @@ export class PoseAnimationTimeline {
                 lane.removeEventListener("pointerup", end);
                 lane.removeEventListener("pointercancel", end);
                 if (lane.hasPointerCapture?.(endEvent.pointerId)) lane.releasePointerCapture(endEvent.pointerId);
+                if (this._activeKeyDragCancel === cancel) this._activeKeyDragCancel = null;
                 this._dragPreview = null;
-                if (dragged && deltaFrame) {
+                const cancelled = endEvent.type === "pointercancel";
+                if (!cancelled && dragged && deltaFrame) {
                     const result = moveKeyframeSelection(this.state, originalSelections, deltaFrame);
-                    this._setSelection(result.selections, result.selections.find(item => item.keyId === key.id));
-                    const movedPrimary = result.selections.find(item => item.keyId === key.id);
+                    const primaryId = aggregate.members[0]?.key.id;
+                    this._setSelection(result.selections, result.selections.find(item => item.keyId === primaryId));
+                    const movedPrimary = result.selections.find(item => item.keyId === primaryId);
                     if (movedPrimary) this.setFrame(movedPrimary.frame);
                     this.onStateChange({ type: "moveKeys", count: result.selections.length, delta: result.delta });
                     this._suppressKeyClick = true;
                     setTimeout(() => { this._suppressKeyClick = false; }, 0);
-                } else if (dragged) {
+                } else if (!cancelled && dragged) {
                     this._suppressKeyClick = true;
                     setTimeout(() => { this._suppressKeyClick = false; }, 0);
                 }
                 this.renderTracks();
                 this.updateToolbar();
             };
+            const cancel = () => end({ type: "pointercancel", pointerId: event.pointerId });
+            this._activeKeyDragCancel = cancel;
             lane.addEventListener("pointermove", move);
             lane.addEventListener("pointerup", end);
             lane.addEventListener("pointercancel", end);
         });
         lane.addEventListener("pointermove", event => {
             if (this._dragPreview) return;
-            const key = this._keyAtPointer(event, lane, trackName);
-            lane.title = key
-                ? `Frame ${key.frame} · ${INTERPOLATION_PRESETS.find(item => item.value === key.interpolation)?.label || key.interpolation}`
+            const aggregate = this._keyAtPointer(event, lane, row);
+            const interpolation = aggregate?.members[0]?.key?.interpolation;
+            lane.title = aggregate
+                ? `Frame ${aggregate.frame} · ${aggregate.members.length} key${aggregate.members.length === 1 ? "" : "s"} · ${INTERPOLATION_PRESETS.find(item => item.value === interpolation)?.label || interpolation}`
                 : "";
         });
         lane.addEventListener("dblclick", event => {
-            if (this._keyAtPointer(event, lane, trackName)) return;
+            if (this._keyAtPointer(event, lane, row) || row.type !== "track") return;
             const frame = this._frameFromPointer(event, lane);
             this.setFrame(frame);
-            this.onRequestKey(trackName, frame);
+            this.onRequestKey(row.trackName, frame);
         });
         return lane;
     }
 
-    _makeTrackRow(trackName, index) {
+    _makeTrackRow(rowData, index, selectedTrackNames = new Set()) {
         const row = document.createElement("div");
-        row.className = "vnccs-ps-tl-row virtual";
-        row.dataset.track = trackName;
-        row.style.top = `${index * 25}px`;
+        row.className = `vnccs-ps-tl-row virtual${rowData.type === "group" ? " group" : ""}${rowData.active ? " focused" : ""}`;
+        if ((rowData.trackNames || []).some(trackName => selectedTrackNames.has(trackName))) row.classList.add("selected");
+        row.dataset.rowIndex = String(index);
+        row.dataset.depth = String(rowData.depth || 0);
+        if (rowData.trackName) row.dataset.track = rowData.trackName;
+        row.style.top = `${index * TIMELINE_ROW_HEIGHT}px`;
         const label = document.createElement("div");
         label.className = "vnccs-ps-tl-track-label";
-        if (this.state.tracks?.[trackName]?.keys?.length) label.classList.add("animated");
+        label.dataset.depth = String(rowData.depth || 0);
+        if (rowData.keyCount) label.classList.add("animated");
 
-        const indicator = document.createElement("span");
-        indicator.className = "vnccs-ps-tl-track-dot";
+        if (rowData.type === "group") {
+            const toggle = document.createElement("button");
+            toggle.type = "button";
+            toggle.className = "vnccs-ps-tl-track-toggle";
+            toggle.textContent = rowData.expanded ? "▾" : "▸";
+            toggle.disabled = !!rowData.forcedExpanded;
+            toggle.title = rowData.forcedExpanded
+                ? "Expanded by the current search or track view"
+                : (rowData.expanded ? `Collapse ${rowData.label}` : `Expand ${rowData.label}`);
+            const toggleGroup = event => {
+                event.stopPropagation();
+                if (rowData.forcedExpanded) return;
+                if (this.expandedGroups.has(rowData.groupId)) this.expandedGroups.delete(rowData.groupId);
+                else this.expandedGroups.add(rowData.groupId);
+                this.renderTracks();
+            };
+            toggle.addEventListener("click", toggleGroup);
+            label.addEventListener("dblclick", toggleGroup);
+            label.appendChild(toggle);
+        } else {
+            const indicator = document.createElement("span");
+            indicator.className = "vnccs-ps-tl-track-dot";
+            label.appendChild(indicator);
+        }
         const text = document.createElement("span");
         text.className = "vnccs-ps-tl-track-name";
-        text.textContent = humanizeBoneName(trackName);
-        text.title = trackName;
-        const add = this._button("◇", `Add/update key at frame ${this.state.currentFrame}`, event => {
-            event.stopPropagation();
-            this.onRequestKey(trackName, this.state.currentFrame);
-        }, "row-key");
-        label.append(indicator, text, add);
-        row.append(label, this._makeLane(trackName));
+        text.textContent = rowData.label;
+        text.title = rowData.rawName || `${rowData.label} · ${rowData.trackNames.length} track${rowData.trackNames.length === 1 ? "" : "s"}`;
+        label.appendChild(text);
+        const count = document.createElement("span");
+        count.className = "vnccs-ps-tl-track-count";
+        count.textContent = String(rowData.keyCount || 0);
+        count.title = `${rowData.keyCount || 0} keyframes`;
+        label.appendChild(count);
+        if (rowData.type === "track") {
+            const add = this._button("◇", `Add/update key at frame ${this.state.currentFrame}`, event => {
+                event.stopPropagation();
+                this.onRequestKey(rowData.trackName, this.state.currentFrame);
+            }, "row-key");
+            label.appendChild(add);
+            label.addEventListener("click", () => this.setActiveTrack(rowData.trackName, { reveal: false, notify: true }));
+            row.addEventListener("pointerenter", () => this.onTrackHover(rowData.trackName));
+            row.addEventListener("pointerleave", () => this.onTrackHover(null));
+        }
+        row.append(label, this._makeLane(rowData, false, index));
         return row;
     }
 
     _renderVisibleTrackRows(force = false) {
         if (!this.virtualTracks || !this.state) return;
         const range = computeVirtualTrackRange({
-            count: this._virtualNames.length,
+            count: this._virtualRows.length,
             scrollTop: this.body.scrollTop,
             viewportHeight: this.body.clientHeight || 238,
+            rowHeight: TIMELINE_ROW_HEIGHT,
+            rulerHeight: TIMELINE_RULER_HEIGHT,
         });
         if (
             !force
@@ -1591,18 +2310,21 @@ export class PoseAnimationTimeline {
             && range.end === this._virtualRange.end
         ) return;
         this._virtualRange = range;
+        this.onTrackHover(null);
         this.virtualTracks.replaceChildren();
         this._visiblePlayheads = [];
         this._visibleKeyLanes = [];
         const fragment = document.createDocumentFragment();
+        const selectedTrackNames = this._selectedTrackNames();
         for (let index = range.start; index < range.end; index++) {
-            fragment.appendChild(this._makeTrackRow(this._virtualNames[index], index));
+            fragment.appendChild(this._makeTrackRow(this._virtualRows[index], index, selectedTrackNames));
         }
         this.virtualTracks.appendChild(fragment);
     }
 
     renderTracks() {
         if (!this.content || !this.state) return;
+        this.onTrackHover(null);
         this.content.innerHTML = "";
         this._rulerPlayhead = null;
         this._visiblePlayheads = [];
@@ -1616,20 +2338,24 @@ export class PoseAnimationTimeline {
         const rulerLabel = document.createElement("div");
         rulerLabel.className = "vnccs-ps-tl-track-label ruler";
         rulerLabel.textContent = "Dope Sheet · Frames";
-        rulerRow.append(rulerLabel, this._makeLane(null, true));
+        const rulerLane = this._makeLane(null, true);
+        rulerRow.append(rulerLabel, rulerLane);
         this.content.appendChild(rulerRow);
+        this._laneContentLeft = rulerLane.offsetLeft || 168;
 
-        const names = this._allTrackNames();
-        this._virtualNames = names;
+        const rows = this._timelineRows();
+        this._rowKeyCache = new WeakMap();
+        this._virtualRows = rows;
+        this._virtualNames = rows.map(row => row.trackName || row.id);
         this._virtualRange = { start: -1, end: -1 };
         this._virtualFrameRange = { start: -1, end: -1 };
         this.virtualTracks = document.createElement("div");
         this.virtualTracks.className = "vnccs-ps-tl-virtual-tracks";
-        this.virtualTracks.style.height = `${names.length * 25}px`;
+        this.virtualTracks.style.height = `${rows.length * TIMELINE_ROW_HEIGHT}px`;
         this.content.appendChild(this.virtualTracks);
         this._renderVisibleTrackRows(true);
 
-        if (!names.length) {
+        if (!rows.length) {
             const empty = document.createElement("div");
             empty.className = "vnccs-ps-tl-empty";
             empty.textContent = "No matching bone tracks";

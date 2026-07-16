@@ -901,6 +901,7 @@ export class PoseViewerCore {
             onInteractionEnd: null,
             onHandHover: null,
             onHandActivate: null,
+            onBoneSelectionChange: null,
 
             syncMode: 'end',
             skinMode: 'flat_color',
@@ -935,6 +936,9 @@ export class PoseViewerCore {
         this.modelLandmarks = {};
         this.modelLandmarkIndices = {};
         this.selectedBone = null;
+        this.hoveredBoneName = null;
+        this.externalHoveredBoneName = null;
+        this._emittingBoneSelectionChange = false;
 
         this.jointMarkers = [];
 
@@ -1811,9 +1815,11 @@ export class PoseViewerCore {
 
             this.transform.detach();
             if (dragged) {
-                this.selectedBone = null;
                 this.hoveredBoneName = null;
-                this.updateMarkers();
+                if (!this.deselectBone({ source: 'viewer' })) {
+                    this.updateMarkers();
+                    this.requestRender();
+                }
             } else if (clickedBone) {
                 this.selectBone(clickedBone);
             }
@@ -1822,8 +1828,27 @@ export class PoseViewerCore {
         }
     }
 
-    selectBone(bone) {
-        if (this.selectedBone === bone) return;
+    _emitBoneSelectionChange(previousBone, source) {
+        const callback = this.options?.onBoneSelectionChange;
+        if (typeof callback !== 'function' || this._emittingBoneSelectionChange) return;
+
+        this._emittingBoneSelectionChange = true;
+        try {
+            callback({
+                boneName: this.selectedBone?.name || null,
+                previousBoneName: previousBone?.name || null,
+                source,
+            });
+        } catch (error) {
+            if (typeof this.options?.onError === 'function') this.options.onError(error);
+        } finally {
+            this._emittingBoneSelectionChange = false;
+        }
+    }
+
+    selectBone(bone, { source = 'viewer' } = {}) {
+        if (!bone || !this.transform || this.selectedBone === bone) return false;
+        const previousBone = this.selectedBone;
         this.selectedBone = bone;
 
         // Attach transform for rotation (FK)
@@ -1835,13 +1860,95 @@ export class PoseViewerCore {
         if (this.selectedIKEffector) {
             this.selectedIKEffector = null;
         }
+        this.requestRender();
+        this._emitBoneSelectionChange(previousBone, source);
+        return true;
     }
 
-    deselectBone() {
-        if (!this.selectedBone) return;
+    deselectBone({ source = 'viewer' } = {}) {
+        if (!this.selectedBone) return false;
+        const previousBone = this.selectedBone;
         this.selectedBone = null;
-        this.transform.detach();
+        this.transform?.detach();
         this.updateMarkers();
+        this.requestRender();
+        this._emitBoneSelectionChange(previousBone, source);
+        return true;
+    }
+
+    /**
+     * Select a skeleton bone without needing access to the Three.js Bone object.
+     * Passing null (or an empty string) clears the selection. Unknown names are
+     * rejected without changing the current selection.
+     */
+    selectBoneByName(name) {
+        if (name === null || name === undefined || name === '') {
+            this.deselectBone({ source: 'external' });
+            return true;
+        }
+        if (typeof name !== 'string') return false;
+        if (!this.initialized || !this.transform) return false;
+
+        const bone = this.bones?.[name] || this.boneList?.find(item => item?.name === name);
+        if (!bone) return false;
+
+        this.selectBone(bone, { source: 'external' });
+        return true;
+    }
+
+    /**
+     * Return a compact editing context for the timeline Focus view: the
+     * selected bone, its IK chain, ancestors, and direct children. Keeping
+     * descendants to one level prevents selecting the pelvis from expanding
+     * the entire skeleton.
+     */
+    getBoneTimelineContext(name) {
+        if (typeof name !== 'string' || !this.bones?.[name]) return [];
+        const result = [];
+        const seen = new Set();
+        const add = boneName => {
+            if (!boneName || seen.has(boneName) || !this.bones?.[boneName]) return;
+            seen.add(boneName);
+            result.push(boneName);
+        };
+
+        add(name);
+        const chainKey = this.ikController?.getChainForBone?.(name);
+        const chain = chainKey ? IK_CHAINS[chainKey] : null;
+        for (const boneName of chain?.bones || []) add(boneName);
+        add(chain?.effector);
+        add(chain?.poleBone);
+
+        let parentName = this.bones[name]?.userData?.parentName;
+        while (parentName && this.bones[parentName]) {
+            add(parentName);
+            parentName = this.bones[parentName]?.userData?.parentName;
+        }
+        for (const bone of this.boneList || []) {
+            if (bone?.userData?.parentName === name) add(bone.name);
+        }
+        return result;
+    }
+
+    /**
+     * Add a timeline-driven marker highlight. This is deliberately independent
+     * from pointer hover and never selects a bone or attaches TransformControls.
+     */
+    setExternalHoveredBone(name) {
+        if (name !== null && name !== undefined && name !== '') {
+            if (typeof name !== 'string') return false;
+            const bone = this.bones?.[name] || this.boneList?.find(item => item?.name === name);
+            if (!bone) return false;
+            name = bone.name;
+        } else {
+            name = null;
+        }
+
+        if (this.externalHoveredBoneName === name) return true;
+        this.externalHoveredBoneName = name;
+        this.updateMarkers();
+        this.requestRender();
+        return true;
     }
 
     // === IK Methods ===
@@ -1910,8 +2017,10 @@ export class PoseViewerCore {
 
         // Deselect any bone and update markers
         if (this.selectedBone) {
+            const previousBone = this.selectedBone;
             this.selectedBone = null;
             this.updateMarkers();
+            this._emitBoneSelectionChange(previousBone, 'ik');
         }
 
 
@@ -2366,10 +2475,14 @@ export class PoseViewerCore {
 
         // Add hovered bone and its chain (if it doesn't overlap with selection)
         let hoveredBones = new Set();
-        if (this.hoveredBoneName) {
-            hoveredBones.add(this.hoveredBoneName);
+        const hoveredBoneNames = new Set([
+            this.hoveredBoneName,
+            this.externalHoveredBoneName,
+        ].filter(Boolean));
+        for (const hoveredBoneName of hoveredBoneNames) {
+            hoveredBones.add(hoveredBoneName);
             if (this.ikMode && this.ikController) {
-                const chainKey = this.ikController.getChainForBone(this.hoveredBoneName);
+                const chainKey = this.ikController.getChainForBone(hoveredBoneName);
                 if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
                     const chainDef = IK_CHAINS[chainKey];
                     if (chainDef.bones) chainDef.bones.forEach(b => hoveredBones.add(b));
@@ -2430,6 +2543,20 @@ export class PoseViewerCore {
         }
         if (!data || !data.vertices || !data.bones) return;
 
+        // A model refresh replaces every Three.js Bone instance. Preserve the
+        // logical selection by name, but detach from the obsolete skeleton
+        // before disposing it so TransformControls cannot retain a stale bone.
+        const selectedBoneName = this.selectedBone?.name || null;
+        this.transform?.detach();
+        this.selectedBone = null;
+        this.selectedIKEffector = null;
+        this.selectedPoleTarget = null;
+        this.hoveredBoneName = null;
+        // Hand hover helpers capture Bone instances in their render callback,
+        // so dispose them before replacing the skeleton.
+        this._updateHoveredHand(null);
+        this.hideHandHighlightRing();
+        this.unhighlightHandMarkers();
         this._cleanupPrevious();
 
         const { geometry, vertices, indices } = this._initMeshGeometry(data);
@@ -2470,6 +2597,15 @@ export class PoseViewerCore {
         this.applyBoneLengthScales();
 
         this._initIKHelpers();
+        if (selectedBoneName && this.bones?.[selectedBoneName]) {
+            this.selectBone(this.bones[selectedBoneName], { source: 'external' });
+        }
+        if (this.externalHoveredBoneName && !this.bones?.[this.externalHoveredBoneName]) {
+            this.externalHoveredBoneName = null;
+        }
+        // Re-apply both restored selection and timeline hover to the freshly
+        // created marker meshes, even when there was no selected bone.
+        this.updateMarkers();
         this.requestRender();
     }
 

@@ -3,6 +3,9 @@ import test from "node:test";
 
 import {
     MODEL_ROTATION_TRACK,
+    TIMELINE_ROW_HEIGHT,
+    aggregateTimelineKeyFrames,
+    buildTimelineRows,
     copyKeyframeSelection,
     createAnimationStateFromPoses,
     createClearedAnimationState,
@@ -14,6 +17,9 @@ import {
     findChangedPoseTracks,
     findNearestKeyframeAtPosition,
     findKeyframesInRange,
+    findKeyframesInTimelineRows,
+    groupTimelineTracks,
+    humanizeBoneName,
     moveKeyframeSelection,
     normalizeAnimationState,
     playbackFrameForElapsed,
@@ -24,6 +30,10 @@ import {
     retimeAnimationTiming,
     serializeAnimationStateSnapshot,
     setTrackKeyframeFromEuler,
+    timelineContentPointToPosition,
+    timelineFingerGroupIdForTrack,
+    timelineGroupIdForTrack,
+    timelineViewportToContentPoint,
 } from "../web/vnccs_pose_animation.mjs";
 
 const angleDistance = (a, b) => Math.abs(((b - a + 540) % 360) - 180);
@@ -124,11 +134,14 @@ test("legacy derived FPS is migrated to the 12 FPS default", () => {
 
 test("dense timelines virtualize rows and offscreen frame markers", () => {
     const topRows = computeVirtualTrackRange({ count: 100, scrollTop: 0, viewportHeight: 200 });
-    assert.deepEqual(topRows, { start: 0, end: 18 });
+    assert.deepEqual(topRows, { start: 0, end: 12 });
 
     const middleRows = computeVirtualTrackRange({ count: 100, scrollTop: 1280, viewportHeight: 200 });
-    assert.ok(middleRows.start > 0);
-    assert.ok(middleRows.end - middleRows.start <= 18);
+    const firstVisibleRow = Math.floor((1280 - 26) / TIMELINE_ROW_HEIGHT);
+    const lastVisibleRow = Math.ceil((1280 + 200 - 26) / TIMELINE_ROW_HEIGHT);
+    assert.ok(middleRows.start <= firstVisibleRow);
+    assert.ok(middleRows.end >= lastVisibleRow);
+    assert.ok(middleRows.end - middleRows.start <= 20);
 
     const firstFrames = computeVisibleFrameRange({
         frameCount: 600,
@@ -147,6 +160,181 @@ test("dense timelines virtualize rows and offscreen frame markers", () => {
     });
     assert.ok(laterFrames.start > 200);
     assert.ok(laterFrames.end < 500);
+});
+
+test("timeline groups use anatomical labels and stable body regions", () => {
+    assert.equal(humanizeBoneName("mixamorigLeftArm"), "Left Upper Arm");
+    assert.equal(humanizeBoneName("index_01_l"), "Left Index Finger — Base");
+    assert.equal(humanizeBoneName("Spine02"), "Spine 02");
+    assert.equal(timelineGroupIdForTrack(MODEL_ROTATION_TRACK), "scene");
+    assert.equal(timelineGroupIdForTrack("upperarm_l"), "leftArm");
+    assert.equal(timelineGroupIdForTrack("RightForeArm"), "rightArm");
+    assert.equal(timelineGroupIdForTrack("thumb_02_l"), "leftHand");
+    assert.equal(timelineGroupIdForTrack("foot_r"), "rightLeg");
+    assert.equal(timelineGroupIdForTrack("pelvis"), "torso");
+    assert.equal(timelineGroupIdForTrack("custom_helper"), "other");
+    assert.equal(timelineFingerGroupIdForTrack("index_02_l"), "index");
+    assert.equal(timelineFingerGroupIdForTrack("pinky_03_r"), "little");
+    assert.equal(timelineFingerGroupIdForTrack("hand_l"), null);
+
+    const groups = groupTimelineTracks([
+        MODEL_ROTATION_TRACK, "head", "upperarm_l", "hand_l", "thigh_r", "custom_helper",
+    ]);
+    assert.deepEqual(groups.map(group => group.id), ["scene", "torso", "leftArm", "rightLeg", "leftHand", "other"]);
+});
+
+test("expanded hands remain compact through collapsible per-finger groups", () => {
+    const state = createDefaultAnimationState({}, { duration: 1, fps: 12 });
+    for (const name of ["hand_l", "thumb_01_l", "thumb_02_l", "index_01_l", "index_02_l", "index_03_l"]) {
+        setTrackKeyframeFromEuler(state, name, 4, [10, 0, 0]);
+    }
+    const compact = buildTimelineRows({
+        state,
+        trackNames: Object.keys(state.tracks),
+        viewMode: "all",
+        expandedGroups: new Set(["leftHand"]),
+    });
+    assert.ok(compact.some(row => row.trackName === "hand_l"));
+    assert.ok(compact.some(row => row.id === "group:leftHand:thumb"));
+    assert.ok(compact.some(row => row.id === "group:leftHand:index"));
+    assert.equal(compact.some(row => row.trackName === "index_02_l"), false);
+
+    const expandedIndex = buildTimelineRows({
+        state,
+        trackNames: Object.keys(state.tracks),
+        viewMode: "all",
+        expandedGroups: new Set(["leftHand", "leftHand:index"]),
+    });
+    assert.deepEqual(
+        expandedIndex.filter(row => row.type === "track" && row.groupId === "leftHand").map(row => row.trackName),
+        ["hand_l", "index_01_l", "index_02_l", "index_03_l"],
+    );
+    assert.ok(expandedIndex.filter(row => row.trackName?.startsWith("index_")).every(row => row.depth === 2));
+});
+
+test("hierarchical timeline rows aggregate keys and keep an active unkeyed track visible", () => {
+    const state = createDefaultAnimationState({}, { duration: 1, fps: 12 });
+    setTrackKeyframeFromEuler(state, "upperarm_l", 2, [10, 0, 0]);
+    setTrackKeyframeFromEuler(state, "upperarm_l", 8, [20, 0, 0]);
+    setTrackKeyframeFromEuler(state, "forearm_l", 8, [30, 0, 0]);
+    const names = ["head", "upperarm_l", "forearm_l", "wrist_l"];
+    const collapsed = buildTimelineRows({ state, trackNames: names, viewMode: "animated" });
+    const armGroup = collapsed.find(row => row.id === "group:leftArm");
+    assert.ok(armGroup);
+    assert.deepEqual(armGroup.keyFrames, [0, 2, 8]);
+    assert.equal(collapsed.some(row => row.type === "track"), false);
+    assert.deepEqual(aggregateTimelineKeyFrames(state, ["upperarm_l", "forearm_l"]), [0, 2, 8]);
+
+    const focused = buildTimelineRows({
+        state,
+        trackNames: names,
+        viewMode: "animated",
+        activeTrack: "wrist_l",
+        expandedGroups: new Set(["leftHand"]),
+    });
+    assert.ok(focused.some(row => row.trackName === "wrist_l"));
+    assert.equal(focused.find(row => row.trackName === "wrist_l").keyCount, 0);
+
+    const searched = buildTimelineRows({
+        state,
+        trackNames: names,
+        viewMode: "all",
+        search: "wrist",
+    });
+    assert.ok(searched.some(row => row.trackName === "wrist_l"));
+
+    const focusMode = buildTimelineRows({
+        state,
+        trackNames: names,
+        viewMode: "focus",
+        activeTrack: "upperarm_l",
+        focusTrackNames: ["upperarm_l", "forearm_l"],
+    });
+    assert.ok(focusMode.some(row => row.trackName === "upperarm_l"));
+    assert.ok(focusMode.some(row => row.trackName === "forearm_l"));
+    assert.equal(focusMode.some(row => row.trackName === "wrist_l"), false);
+
+    const selectedMode = buildTimelineRows({
+        state,
+        trackNames: names,
+        viewMode: "selected",
+        selectedTrackNames: ["forearm_l"],
+    });
+    assert.deepEqual(selectedMode.filter(row => row.type === "track").map(row => row.trackName), ["forearm_l"]);
+});
+
+test("collapsed and expanded group range selection resolves real keys without duplicates", () => {
+    const state = createDefaultAnimationState({}, { duration: 1, fps: 12 });
+    const upper = setTrackKeyframeFromEuler(state, "upperarm_l", 4, [10, 0, 0]);
+    const lower = setTrackKeyframeFromEuler(state, "forearm_l", 4, [20, 0, 0]);
+    setTrackKeyframeFromEuler(state, "forearm_l", 9, [30, 0, 0]);
+    const collapsed = buildTimelineRows({
+        state,
+        trackNames: ["upperarm_l", "forearm_l"],
+        viewMode: "all",
+    });
+    const selected = findKeyframesInTimelineRows(state, collapsed, {
+        startRow: 0,
+        endRow: 0,
+        startFrame: 3.5,
+        endFrame: 4.5,
+    });
+    assert.deepEqual(new Set(selected.map(item => item.keyId)), new Set([upper.id, lower.id]));
+
+    const expanded = buildTimelineRows({
+        state,
+        trackNames: ["upperarm_l", "forearm_l"],
+        viewMode: "all",
+        expandedGroups: new Set(["leftArm"]),
+    });
+    const expandedSelection = findKeyframesInTimelineRows(state, expanded, {
+        startRow: 0,
+        endRow: 2,
+        startFrame: 3.5,
+        endFrame: 4.5,
+    });
+    assert.equal(expandedSelection.length, 2);
+});
+
+test("viewport mapping remains correct under Comfy scale and scrolling", () => {
+    const viewportRect = { left: 10, top: 20, width: 500, height: 250 };
+    const point = timelineViewportToContentPoint({
+        clientX: 100,
+        clientY: 50,
+        viewportRect,
+        offsetWidth: 1000,
+        offsetHeight: 500,
+        clientLeft: 2,
+        clientTop: 2,
+        scrollLeft: 100,
+        scrollTop: 200,
+    });
+    assert.deepEqual(point, { x: 278, y: 258, scaleX: 0.5, scaleY: 0.5 });
+    assert.deepEqual(timelineContentPointToPosition(point, {
+        laneLeft: 168,
+        laneWidth: 640,
+        rulerHeight: 26,
+        rowHeight: 22,
+        rowCount: 40,
+        frameCount: 65,
+    }), { frame: 11, row: 10 });
+
+    const afterScroll = timelineViewportToContentPoint({
+        clientX: 100,
+        clientY: 50,
+        viewportRect,
+        offsetWidth: 1000,
+        offsetHeight: 500,
+        clientLeft: 2,
+        clientTop: 2,
+        scrollLeft: 100,
+        scrollTop: 244,
+    });
+    assert.equal(timelineContentPointToPosition(afterScroll, {
+        rowCount: 40,
+        rulerHeight: 26,
+        rowHeight: 22,
+    }).row, 12);
 });
 
 test("canvas key hit testing finds only nearby frames", () => {

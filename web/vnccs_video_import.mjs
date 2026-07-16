@@ -1,4 +1,5 @@
 import {
+    MODEL_ROTATION_TRACK,
     eulerDegreesToQuaternion,
     quaternionToEulerDegrees,
     slerpQuaternion,
@@ -11,10 +12,17 @@ export const VIDEO_FILE_EXTENSIONS = new Set([
 export const MAX_VIDEO_POSE_SAMPLES = 600;
 
 export const VIDEO_STABILIZATION_PRESETS = Object.freeze({
-    off: Object.freeze({ radius: 0, strength: 0, thresholdDegrees: Infinity }),
-    light: Object.freeze({ radius: 1, strength: 0.5, thresholdDegrees: 4 }),
-    medium: Object.freeze({ radius: 2, strength: 0.75, thresholdDegrees: 2 }),
-    strong: Object.freeze({ radius: 3, strength: 0.9, thresholdDegrees: 0.75 }),
+    off: Object.freeze({ radius: 0, strength: 0, thresholdDegrees: Infinity, jerkLimitDegrees: Infinity }),
+    light: Object.freeze({ radius: 1, strength: 0.18, thresholdDegrees: 2, jerkLimitDegrees: 12 }),
+    medium: Object.freeze({ radius: 2, strength: 0.32, thresholdDegrees: 1, jerkLimitDegrees: 6 }),
+    strong: Object.freeze({ radius: 3, strength: 0.48, thresholdDegrees: 0.35, jerkLimitDegrees: 3 }),
+});
+
+export const VIDEO_KEY_REDUCTION_PRESETS = Object.freeze({
+    off: null,
+    conservative: Object.freeze({ toleranceDegrees: 0.35, staticThresholdDegrees: 0.2 }),
+    balanced: Object.freeze({ toleranceDegrees: 1.0, staticThresholdDegrees: 0.5 }),
+    aggressive: Object.freeze({ toleranceDegrees: 2.5, staticThresholdDegrees: 1.0 }),
 });
 
 function finiteNumber(value, fallback = 0) {
@@ -100,25 +108,222 @@ function quaternionMedoid(quaternions) {
     return best;
 }
 
+function simplifyQuaternionFrames(quaternions, toleranceDegrees) {
+    const frameCount = quaternions.length;
+    if (!frameCount) return [];
+    if (frameCount === 1) return [0];
+    const keep = new Set([0, frameCount - 1]);
+    const segments = [[0, frameCount - 1]];
+    while (segments.length) {
+        const [start, end] = segments.pop();
+        if (end - start <= 1) continue;
+        let maximumError = -1;
+        let maximumFrame = -1;
+        for (let frame = start + 1; frame < end; frame++) {
+            const t = (frame - start) / (end - start);
+            const interpolated = slerpQuaternion(quaternions[start], quaternions[end], t);
+            const error = quaternionAngularDistanceDegrees(quaternions[frame], interpolated);
+            if (error > maximumError) {
+                maximumError = error;
+                maximumFrame = frame;
+            }
+        }
+        if (maximumFrame > start && maximumError > toleranceDegrees) {
+            keep.add(maximumFrame);
+            segments.push([start, maximumFrame], [maximumFrame, end]);
+        }
+    }
+    return Array.from(keep).sort((a, b) => a - b);
+}
+
+/**
+ * Build independent per-bone key lists. A track is omitted entirely when it
+ * stays within the static threshold; moving tracks retain only the keys needed
+ * for quaternion interpolation to reproduce every sampled pose within the
+ * selected angular tolerance.
+ */
+export function reduceVideoPoseKeyframes(poses, presetName = "balanced") {
+    const frames = Array.isArray(poses) ? poses.filter(pose => pose && typeof pose === "object") : [];
+    const preset = VIDEO_KEY_REDUCTION_PRESETS[presetName];
+    if (!preset || !frames.length) return null;
+    const trackKeyframes = {};
+    const boneNames = new Set();
+    for (const pose of frames) {
+        for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
+    }
+
+    const reduceTrack = (trackName, rotations) => {
+        const quaternions = rotations.map(eulerDegreesToQuaternion);
+        const first = quaternions[0];
+        const maximumMotion = quaternions.reduce(
+            (maximum, quaternion) => Math.max(maximum, quaternionAngularDistanceDegrees(first, quaternion)),
+            0,
+        );
+        if (maximumMotion <= preset.staticThresholdDegrees) return false;
+        trackKeyframes[trackName] = simplifyQuaternionFrames(quaternions, preset.toleranceDegrees);
+        return true;
+    };
+
+    for (const boneName of boneNames) {
+        reduceTrack(boneName, frames.map(pose => pose.bones?.[boneName] || [0, 0, 0]));
+    }
+    reduceTrack(MODEL_ROTATION_TRACK, frames.map(pose => pose.modelRotation || [0, 0, 0]));
+
+    const totalKeyCount = Object.values(trackKeyframes).reduce((sum, keyedFrames) => sum + keyedFrames.length, 0);
+    return {
+        trackKeyframes,
+        totalKeyCount,
+        keyedTrackCount: Object.keys(trackKeyframes).length,
+        omittedTrackCount: boneNames.size + 1 - Object.keys(trackKeyframes).length,
+        denseKeyCount: (boneNames.size + 1) * frames.length,
+        preset: presetName,
+    };
+}
+
+function rejectQuaternionOutliers(source, preset) {
+    const output = source.map(quaternion => quaternion.slice());
+    if (source.length < 3) return output;
+    const hardRadius = Math.max(2, preset.radius);
+    const hardFlipDegrees = preset.hardFlipDegrees || 45;
+
+    // A bad first/last sample has no two-sided predictor, but it is still
+    // unambiguous when the following/preceding pair agrees closely.
+    const firstJump = quaternionAngularDistanceDegrees(source[0], source[1]);
+    const firstContinuation = quaternionAngularDistanceDegrees(source[1], source[2]);
+    if (firstJump >= hardFlipDegrees && firstContinuation <= Math.max(6, firstJump * 0.2)) {
+        output[0] = source[1].slice();
+    }
+    const last = source.length - 1;
+    const lastJump = quaternionAngularDistanceDegrees(source[last], source[last - 1]);
+    const lastContinuation = quaternionAngularDistanceDegrees(source[last - 1], source[last - 2]);
+    if (lastJump >= hardFlipDegrees && lastContinuation <= Math.max(6, lastJump * 0.2)) {
+        output[last] = source[last - 1].slice();
+    }
+
+    for (let index = 1; index < last; index++) {
+        const previous = source[index - 1];
+        const current = source[index];
+        const next = source[index + 1];
+        const distanceToPrevious = quaternionAngularDistanceDegrees(current, previous);
+        const distanceToNext = quaternionAngularDistanceDegrees(current, next);
+        const neighborDistance = quaternionAngularDistanceDegrees(previous, next);
+        const predicted = slerpQuaternion(previous, next, 0.5);
+        const predictionError = quaternionAngularDistanceDegrees(current, predicted);
+        const pathExcess = Math.max(
+            0,
+            distanceToPrevious + distanceToNext - neighborDistance,
+        );
+        const localRadius = Math.min(hardRadius, index, last - index);
+        const neighborhood = source.slice(index - localRadius, index + localRadius + 1);
+        const medoid = quaternionMedoid(neighborhood);
+        const medoidError = quaternionAngularDistanceDegrees(current, medoid);
+
+        const anchoredToNeighbor = Math.min(distanceToPrevious, distanceToNext) <= Math.max(
+            preset.thresholdDegrees * 2,
+            preset.jerkLimitDegrees * 2,
+        );
+        const sharpDetour = !anchoredToNeighbor && pathExcess >= Math.max(
+            preset.thresholdDegrees * 4,
+            preset.jerkLimitDegrees * 2,
+        );
+        const isolatedDetour = (
+            distanceToPrevious > preset.thresholdDegrees
+            && distanceToNext > preset.thresholdDegrees
+            && (
+                sharpDetour
+                || neighborDistance <= Math.max(
+                    preset.thresholdDegrees * 2,
+                    Math.min(distanceToPrevious, distanceToNext) * 0.85,
+                )
+            )
+            && predictionError > preset.thresholdDegrees
+        );
+        const catastrophicWindowFlip = medoidError >= hardFlipDegrees;
+        if (catastrophicWindowFlip) {
+            const currentMatchesOneNeighbor = Math.min(distanceToPrevious, distanceToNext) <= preset.thresholdDegrees * 2;
+            output[index] = currentMatchesOneNeighbor ? medoid.slice() : predicted;
+        }
+        else if (isolatedDetour) output[index] = predicted;
+    }
+    return output;
+}
+
+function smoothQuaternionJitter(source, preset) {
+    if (source.length < 3 || preset.strength <= 0) return source.map(quaternion => quaternion.slice());
+    return source.map((current, index) => {
+        if (index === 0 || index === source.length - 1) return current.slice();
+        const previous = source[index - 1];
+        const next = source[index + 1];
+        const distanceToPrevious = quaternionAngularDistanceDegrees(current, previous);
+        const distanceToNext = quaternionAngularDistanceDegrees(current, next);
+
+        // Preserve a sustained fast transition: one neighbor already shares the
+        // new pose while the other is far away. Jitter has no such stable side.
+        if (
+            Math.max(distanceToPrevious, distanceToNext) >= 30
+            && Math.min(distanceToPrevious, distanceToNext) <= preset.thresholdDegrees * 2
+        ) {
+            return current.slice();
+        }
+
+        const predicted = slerpQuaternion(previous, next, 0.5);
+        const predictionError = quaternionAngularDistanceDegrees(current, predicted);
+        if (predictionError <= preset.thresholdDegrees) return current.slice();
+        return slerpQuaternion(current, predicted, preset.strength);
+    });
+}
+
+function limitQuaternionJerk(source, preset) {
+    const baseLimit = preset.jerkLimitDegrees;
+    if (source.length < 3 || !Number.isFinite(baseLimit)) {
+        return source.map(quaternion => quaternion.slice());
+    }
+
+    // Two bounded passes remove residual one-frame acceleration left by the
+    // soft filter. Each pass is synchronous, so a corrected key cannot drag
+    // its neighbours during that same pass.
+    let output = source.map(quaternion => quaternion.slice());
+    for (let pass = 0; pass < 2; pass++) {
+        const input = output;
+        output = input.map((current, index) => {
+            if (index === 0 || index === input.length - 1) return current.slice();
+            const previous = input[index - 1];
+            const next = input[index + 1];
+            const distanceToPrevious = quaternionAngularDistanceDegrees(current, previous);
+            const distanceToNext = quaternionAngularDistanceDegrees(current, next);
+
+            // A new pose that remains on the following frame (or the inverse
+            // transition on the preceding frame) is animation, not a spike.
+            if (
+                Math.max(distanceToPrevious, distanceToNext) >= 30
+                && Math.min(distanceToPrevious, distanceToNext) <= preset.thresholdDegrees * 2
+            ) {
+                return current.slice();
+            }
+
+            const predicted = slerpQuaternion(previous, next, 0.5);
+            const predictionError = quaternionAngularDistanceDegrees(current, predicted);
+            // Allow a little extra curvature when the neighbouring samples are
+            // themselves moving, while still putting a hard ceiling on an
+            // isolated local detour.
+            const neighborDistance = quaternionAngularDistanceDegrees(previous, next);
+            const allowedError = baseLimit + Math.min(baseLimit, neighborDistance * 0.1);
+            if (predictionError <= allowedError) return current.slice();
+            return slerpQuaternion(current, predicted, 1 - allowedError / predictionError);
+        });
+    }
+    return output;
+}
+
 function stabilizeEulerRotationSeries(values, preset) {
     const source = values.map(value => Array.isArray(value) ? value.slice(0, 3) : [0, 0, 0]);
-    const quaternions = source.map(eulerDegreesToQuaternion);
     if (source.length < 3 || preset.radius < 1 || preset.strength <= 0) return source;
-    return source.map((value, index) => {
-        // Keep the selected segment boundaries exact.
-        if (index === 0 || index === source.length - 1) return value;
-        const localRadius = Math.min(preset.radius, index, source.length - 1 - index);
-        const neighborhood = quaternions.slice(index - localRadius, index + localRadius + 1);
-        const medoid = quaternionMedoid(neighborhood);
-        const residual = quaternionAngularDistanceDegrees(quaternions[index], medoid);
-        if (residual <= preset.thresholdDegrees) return value;
-
-        // A one-frame quarter/full turn is never normal capture jitter. Replace
-        // catastrophic flips completely; use the selected strength for smaller
-        // deviations so legitimate fast motion is not flattened.
-        const correction = residual >= 60 ? 1 : preset.strength;
-        return quaternionToEulerDegrees(slerpQuaternion(quaternions[index], medoid, correction));
-    });
+    const quaternions = source.map(eulerDegreesToQuaternion);
+    const withoutSpikes = rejectQuaternionOutliers(quaternions, preset);
+    const smoothed = smoothQuaternionJitter(withoutSpikes, preset);
+    const safetyChecked = rejectQuaternionOutliers(smoothed, preset);
+    const jerkLimited = limitQuaternionJerk(safetyChecked, preset);
+    return jerkLimited.map(quaternionToEulerDegrees);
 }
 
 /**
@@ -126,11 +331,21 @@ function stabilizeEulerRotationSeries(values, preset) {
  * motion. Rotations are compared and blended as quaternions, so Euler axis
  * ambiguity cannot synthesize a flipped orientation.
  */
-export function stabilizeVideoPoseSequence(poses, presetName = "medium") {
+export function stabilizeVideoPoseSequence(poses, presetName = "medium", { sampleFps = 12 } = {}) {
     const frames = Array.isArray(poses)
         ? poses.filter(pose => pose && typeof pose === "object").map(pose => JSON.parse(JSON.stringify(pose)))
         : [];
-    const preset = VIDEO_STABILIZATION_PRESETS[presetName] || VIDEO_STABILIZATION_PRESETS.medium;
+    const basePreset = VIDEO_STABILIZATION_PRESETS[presetName] || VIDEO_STABILIZATION_PRESETS.medium;
+    const fps = Math.max(0.001, finiteNumber(sampleFps, 12));
+    const sparseScale = Math.min(1, fps / 6);
+    const timeScale = Math.max(1, 12 / fps);
+    const preset = {
+        ...basePreset,
+        strength: basePreset.strength * sparseScale,
+        thresholdDegrees: basePreset.thresholdDegrees * timeScale,
+        jerkLimitDegrees: basePreset.jerkLimitDegrees * timeScale,
+        hardFlipDegrees: Math.min(170, 45 * Math.sqrt(timeScale)),
+    };
     if (frames.length < 3 || preset.strength <= 0 || preset.radius <= 0) return frames;
 
     const boneNames = new Set();

@@ -19,6 +19,7 @@ import {
     drawVideoCover,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
+    reduceVideoPoseKeyframes,
     seekVideo,
     stabilizeVideoPoseSequence,
     waitForVideoMetadata,
@@ -1143,10 +1144,14 @@ const STYLES = `
 
 /* === Animation Timeline / Dope Sheet === */
 .vnccs-ps-timeline {
+    --vnccs-tl-row-height: 22px;
+    --vnccs-tl-ruler-height: 26px;
+    --vnccs-tl-label-width: 168px;
     display: none;
-    flex: 0 0 238px;
-    min-height: 150px;
-    max-height: 46%;
+    position: relative;
+    flex: 0 0 var(--vnccs-tl-panel-height, 204px);
+    min-height: 96px;
+    max-height: min(60%, 520px);
     overflow: hidden;
     border-top: 1px solid var(--ps-accent-border);
     background: #0c0b13;
@@ -1160,6 +1165,41 @@ const STYLES = `
     flex-direction: column;
 }
 
+.vnccs-ps-timeline.resizing {
+    transition: none;
+    user-select: none;
+}
+
+.vnccs-ps-timeline.collapsed {
+    flex: 0 0 34px !important;
+    min-height: 34px;
+    max-height: 34px;
+}
+
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-body,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-resizer {
+    display: none;
+}
+
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-toolbar {
+    min-height: 33px;
+    height: 33px;
+    border-bottom: 0;
+}
+
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-view-select,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-search,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-status,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-compact-label,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-number.config,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-select:not(.vnccs-ps-tl-view-select) {
+    display: none;
+}
+
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-collapse {
+    margin-left: auto;
+}
+
 .vnccs-ps-timeline:focus-within {
     box-shadow: inset 0 1px 0 rgba(255, 143, 163, 0.22);
 }
@@ -1169,11 +1209,12 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-toolbar {
-    min-height: 38px;
+    min-height: 34px;
+    height: 34px;
     display: flex;
     align-items: center;
-    gap: 4px;
-    padding: 5px 7px;
+    gap: 3px;
+    padding: 4px 36px 4px 6px;
     box-sizing: border-box;
     flex-shrink: 0;
     overflow-x: auto;
@@ -1184,11 +1225,11 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-btn {
-    min-width: 27px;
-    height: 26px;
+    min-width: 25px;
+    height: 24px;
     border: 1px solid var(--ps-border);
     border-radius: 5px;
-    padding: 0 7px;
+    padding: 0 6px;
     background: rgba(255,255,255,0.045);
     color: var(--ps-text-muted);
     font: 700 9px/1 var(--ps-font);
@@ -1216,9 +1257,9 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-btn.row-key {
-    min-width: 22px;
-    width: 22px;
-    height: 20px;
+    min-width: 19px;
+    width: 19px;
+    height: 18px;
     margin-left: auto;
     padding: 0;
     border: 0;
@@ -1235,7 +1276,7 @@ const STYLES = `
 .vnccs-ps-tl-number,
 .vnccs-ps-tl-search,
 .vnccs-ps-tl-select {
-    height: 26px;
+    height: 24px;
     box-sizing: border-box;
     border: 1px solid var(--ps-border);
     border-radius: 5px;
@@ -1253,16 +1294,28 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-number {
-    width: 48px;
+    width: 45px;
     padding: 3px 5px;
 }
 
-.vnccs-ps-tl-number.config { width: 54px; }
-.vnccs-ps-tl-select { width: 92px; padding: 3px 5px; }
-.vnccs-ps-tl-search { width: 96px; padding: 3px 7px; }
+.vnccs-ps-tl-number.config { width: 51px; }
+.vnccs-ps-tl-select { width: 86px; padding: 3px 5px; }
+.vnccs-ps-tl-view-select { width: 78px; }
+.vnccs-ps-tl-search { width: 92px; padding: 3px 7px; }
+
+.vnccs-ps-tl-collapse {
+    position: absolute;
+    z-index: 31;
+    top: 5px;
+    right: 5px;
+    width: 25px;
+    padding: 0;
+    font-size: 11px;
+    background: #211d2d;
+}
 
 .vnccs-ps-tl-status {
-    min-width: 94px;
+    min-width: 82px;
     color: var(--ps-text-muted);
     font: 9px var(--ps-font-mono);
     white-space: nowrap;
@@ -1271,30 +1324,63 @@ const STYLES = `
 .vnccs-ps-tl-compact-label {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 3px;
     color: var(--ps-text-dim);
     font: 700 8px var(--ps-font);
     text-transform: uppercase;
     white-space: nowrap;
 }
 
+.vnccs-ps-tl-resizer {
+    position: absolute;
+    z-index: 30;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 6px;
+    cursor: row-resize;
+    touch-action: none;
+}
+
+.vnccs-ps-tl-resizer::after {
+    content: '';
+    position: absolute;
+    top: 1px;
+    left: 50%;
+    width: 38px;
+    height: 2px;
+    border-radius: 2px;
+    transform: translateX(-50%);
+    background: rgba(255, 143, 163, 0.18);
+    transition: width .12s ease, background-color .12s ease;
+}
+
+.vnccs-ps-tl-resizer:hover::after,
+.vnccs-ps-timeline.resizing .vnccs-ps-tl-resizer::after {
+    width: 58px;
+    background: rgba(255, 143, 163, 0.72);
+}
+
 .vnccs-ps-tl-body {
     flex: 1;
     min-height: 0;
+    position: relative;
     overflow: auto;
+    overscroll-behavior: contain;
     scrollbar-color: rgba(255,143,163,0.35) rgba(0,0,0,0.2);
     scrollbar-width: thin;
 }
 
 .vnccs-ps-tl-content {
-    min-width: calc(168px + var(--vnccs-tl-lane-width, 640px));
+    min-width: calc(var(--vnccs-tl-label-width) + var(--vnccs-tl-lane-width, 640px));
     position: relative;
 }
 
 .vnccs-ps-tl-row {
     display: grid;
-    grid-template-columns: 168px var(--vnccs-tl-lane-width, 640px);
-    min-height: 25px;
+    grid-template-columns: var(--vnccs-tl-label-width) var(--vnccs-tl-lane-width, 640px);
+    min-height: var(--vnccs-tl-row-height);
+    height: var(--vnccs-tl-row-height);
     border-bottom: 1px solid rgba(255,255,255,0.035);
 }
 
@@ -1308,7 +1394,7 @@ const STYLES = `
     position: absolute;
     left: 0;
     width: 100%;
-    height: 25px;
+    height: var(--vnccs-tl-row-height);
     contain: layout paint style;
 }
 
@@ -1317,11 +1403,33 @@ const STYLES = `
     background-color: rgba(255,143,163,0.035);
 }
 
+.vnccs-ps-tl-row.group {
+    border-bottom-color: rgba(255, 143, 163, 0.075);
+    background: rgba(255, 143, 163, 0.025);
+}
+
+.vnccs-ps-tl-row.group .vnccs-ps-tl-track-label {
+    background: #171421;
+    color: var(--ps-text);
+    font-weight: 700;
+}
+
+.vnccs-ps-tl-row.group .vnccs-ps-tl-lane {
+    background-color: rgba(255, 143, 163, 0.018);
+}
+
+.vnccs-ps-tl-row.selected .vnccs-ps-tl-track-label,
+.vnccs-ps-tl-row.focused .vnccs-ps-tl-track-label {
+    color: var(--ps-accent);
+    background: rgba(255, 143, 163, 0.09);
+}
+
 .vnccs-ps-tl-row.ruler {
     position: sticky;
     top: 0;
     z-index: 12;
-    min-height: 30px;
+    min-height: var(--vnccs-tl-ruler-height);
+    height: var(--vnccs-tl-ruler-height);
     background: #13111d;
     border-bottom-color: var(--ps-accent-border);
 }
@@ -1333,14 +1441,68 @@ const STYLES = `
     display: flex;
     align-items: center;
     min-width: 0;
-    gap: 7px;
-    padding: 0 7px;
+    gap: 5px;
+    padding: 0 6px 0 calc(6px + var(--vnccs-tl-indent, 0px));
     box-sizing: border-box;
     border-right: 1px solid var(--ps-border);
     background: #11101a;
     color: var(--ps-text-muted);
     font-size: 9px;
 }
+
+.vnccs-ps-tl-track-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px;
+    min-width: 13px;
+    height: 18px;
+    flex: 0 0 13px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ps-text-dim);
+    font: 700 9px/1 var(--ps-font);
+    cursor: pointer;
+}
+
+.vnccs-ps-tl-track-toggle:hover {
+    color: var(--ps-accent);
+}
+
+.vnccs-ps-tl-track-toggle:disabled {
+    opacity: 0.45;
+    color: var(--ps-text-dim);
+    cursor: default;
+}
+
+.vnccs-ps-tl-track-count {
+    min-width: 15px;
+    height: 13px;
+    margin-left: auto;
+    padding: 0 4px;
+    box-sizing: border-box;
+    border-radius: 7px;
+    background: rgba(255,255,255,0.055);
+    color: var(--ps-text-dim);
+    font: 700 7px/13px var(--ps-font-mono);
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.vnccs-ps-tl-row.group .vnccs-ps-tl-track-count {
+    background: rgba(255, 143, 163, 0.1);
+    color: var(--ps-text-muted);
+}
+
+.vnccs-ps-tl-track-label[data-depth="1"],
+.vnccs-ps-tl-row[data-depth="1"] .vnccs-ps-tl-track-label { --vnccs-tl-indent: 11px; }
+.vnccs-ps-tl-track-label[data-depth="2"],
+.vnccs-ps-tl-row[data-depth="2"] .vnccs-ps-tl-track-label { --vnccs-tl-indent: 22px; }
+.vnccs-ps-tl-track-label[data-depth="3"],
+.vnccs-ps-tl-row[data-depth="3"] .vnccs-ps-tl-track-label { --vnccs-tl-indent: 33px; }
+.vnccs-ps-tl-track-label[data-depth="4"],
+.vnccs-ps-tl-row[data-depth="4"] .vnccs-ps-tl-track-label { --vnccs-tl-indent: 44px; }
 
 .vnccs-ps-tl-track-label.ruler {
     z-index: 14;
@@ -1351,8 +1513,8 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-track-dot {
-    width: 5px;
-    height: 5px;
+    width: 4px;
+    height: 4px;
     border-radius: 50%;
     flex-shrink: 0;
     background: var(--ps-text-dim);
@@ -1364,6 +1526,8 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-track-name {
+    min-width: 0;
+    flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -1371,7 +1535,7 @@ const STYLES = `
 
 .vnccs-ps-tl-lane {
     position: relative;
-    height: 25px;
+    height: var(--vnccs-tl-row-height);
     box-sizing: border-box;
     cursor: crosshair;
     background-image: repeating-linear-gradient(
@@ -1384,7 +1548,7 @@ const STYLES = `
 }
 
 .vnccs-ps-tl-lane.ruler {
-    height: 30px;
+    height: var(--vnccs-tl-ruler-height);
     cursor: ew-resize;
     background: #13111d;
 }
@@ -1415,8 +1579,8 @@ const STYLES = `
 
 .vnccs-ps-tl-tick {
     position: absolute;
-    top: 5px;
-    height: 25px;
+    top: 3px;
+    height: 23px;
     transform: translateX(-50%);
     color: var(--ps-text-dim);
     font: 8px var(--ps-font-mono);
@@ -1427,9 +1591,9 @@ const STYLES = `
     content: '';
     position: absolute;
     left: 50%;
-    top: 12px;
+    top: 11px;
     width: 1px;
-    height: 7px;
+    height: 6px;
     background: rgba(255,255,255,.12);
 }
 
@@ -1440,7 +1604,16 @@ const STYLES = `
     z-index: 4;
     inset: 0;
     width: 100%;
-    height: 25px;
+    height: var(--vnccs-tl-row-height);
+    contain: strict;
+    pointer-events: none;
+}
+
+.vnccs-ps-tl-selection-layer {
+    position: fixed;
+    z-index: 100000;
+    inset: 0;
+    overflow: hidden;
     pointer-events: none;
 }
 
@@ -1455,11 +1628,15 @@ const STYLES = `
     pointer-events: none;
 }
 
+.vnccs-ps-tl-selection-layer .vnccs-ps-tl-selection-box {
+    position: absolute;
+}
+
 .vnccs-ps-tl-empty {
     position: sticky;
-    left: 168px;
+    left: var(--vnccs-tl-label-width);
     width: 300px;
-    padding: 25px;
+    padding: 18px;
     color: var(--ps-text-dim);
     font-size: 10px;
 }
@@ -2212,7 +2389,7 @@ const STYLES = `
 
 .vnccs-ps-video-controls {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
     gap: 8px;
 }
 .vnccs-ps-video-field {
@@ -4219,7 +4396,22 @@ class PoseStudioWidget {
                 this.syncToNode(false, { skipCapture: true });
             },
             onRequestKey: (trackName, frame) => this.addAnimationKey(trackName, frame),
+            onTrackSelect: (trackName) => {
+                if (!trackName || trackName === MODEL_ROTATION_TRACK) {
+                    this.viewer?.selectBoneByName?.(null);
+                    return;
+                }
+                this.viewer?.selectBoneByName?.(trackName);
+            },
+            onTrackHover: (trackName) => {
+                const boneName = trackName && trackName !== MODEL_ROTATION_TRACK ? trackName : null;
+                this.viewer?.setExternalHoveredBone?.(boneName);
+            },
             getPreferredTrack: () => this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK,
+            getFocusTracks: (trackName) => {
+                if (!trackName || trackName === MODEL_ROTATION_TRACK) return [MODEL_ROTATION_TRACK];
+                return this.viewer?.getBoneTimelineContext?.(trackName) || [trackName];
+            },
         });
         parent.appendChild(this.animationTimeline.element);
         this.animationTimeline.setVisible(this.isAnimationMode());
@@ -4254,15 +4446,16 @@ class PoseStudioWidget {
         if (this.viewer?.isInitialized?.()) {
             if (normalized === "animation") {
                 this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+                this.animationTimeline?.notifyActiveTrack?.(
+                    this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK,
+                    { reveal: true },
+                );
             } else {
                 this._applyingAnimationPose = true;
                 this.viewer.setPose(this.poses[this.activeTab] || {}, true);
                 this._applyingAnimationPose = false;
                 this.updateRotationSliders();
             }
-        }
-        if (normalized === "animation" && this.node?.size?.[1] < 860) {
-            this.node.setSize?.([this.node.size[0], 860]);
         }
         if (sync) this.syncToNode(false, { skipCapture: normalized === "animation" });
     }
@@ -4278,6 +4471,10 @@ class PoseStudioWidget {
     updateAnimationTimelineBones() {
         const names = (this.viewer?.boneList || []).map(bone => bone?.name).filter(Boolean);
         this.animationTimeline?.setBoneNames(names);
+        this.animationTimeline?.notifyActiveTrack?.(
+            this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK,
+            { reveal: true },
+        );
     }
 
     applyAnimationFrame(frame, { transient = false, updateTimeline = true } = {}) {
@@ -4410,13 +4607,18 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true });
     }
 
-    replaceAnimationFromPoses(poses, { duration = null, keyframeStep = 1 } = {}) {
+    replaceAnimationFromPoses(poses, {
+        duration = null,
+        keyframeStep = 1,
+        trackKeyframes = null,
+    } = {}) {
         const previousPrompt = this.getPosePrompt(this.activeTab);
         const state = createAnimationStateFromPoses(poses, {
             duration,
             fps: 12,
             interpolation: "linear",
             keyframeStep,
+            trackKeyframes,
         });
         state.basePose.prompt = String(state.basePose.prompt || previousPrompt || "");
 
@@ -4574,6 +4776,13 @@ class PoseStudioWidget {
             },
             onHandActivate: ({ side }) => {
                 this.showHandControlPopover(side);
+            },
+            onBoneSelectionChange: ({ boneName, source }) => {
+                if (source === "external" || !this.isAnimationMode()) return;
+                this.animationTimeline?.notifyActiveTrack?.(
+                    boneName || MODEL_ROTATION_TRACK,
+                    { reveal: true },
+                );
             },
             onPoseChange: (pose) => {
                 // Return params request logic mapped into direct assignment beforehand 
@@ -7256,6 +7465,7 @@ class PoseStudioWidget {
         onProgress = null,
         stabilization = "medium",
         keyframeStep = 2,
+        keyReduction = "off",
     } = {}) {
         if (!this.viewer?.isInitialized?.()) throw new Error("Pose viewer is not ready.");
         if (!plan || plan.duration <= 0 || !plan.times?.length) throw new Error("Select a non-empty video segment.");
@@ -7339,19 +7549,36 @@ class PoseStudioWidget {
             });
             const stabilizedPoses = stabilization === "off"
                 ? poses
-                : stabilizeVideoPoseSequence(poses, stabilization);
+                : stabilizeVideoPoseSequence(poses, stabilization, {
+                    sampleFps: plan.effectiveFps,
+                });
+            if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+            onProgress?.({
+                index: poses.length,
+                count: poses.length,
+                time: plan.outTime,
+                progress: 98,
+                phase: "reduce",
+            });
+            const reduction = reduceVideoPoseKeyframes(stabilizedPoses, keyReduction);
             this._lastSAM3DPoseData = lastPoseData;
             this._lastSAM3DMeshData = lastMeshData;
             this.syncMeshProportionSlidersFromViewer();
             this.replaceAnimationFromPoses(stabilizedPoses, {
                 duration: plan.duration,
                 keyframeStep,
+                trackKeyframes: reduction?.trackKeyframes || null,
             });
             this.updateRotationSliders();
             this.updateCaptureCameraPreview();
             return {
                 sampleCount: poses.length,
-                keyedFrameCount: countVideoKeyedFrames(poses.length, keyframeStep),
+                keyedFrameCount: Object.values(this.animationState.tracks || {}).reduce(
+                    (sum, track) => sum + (track.keys?.length || 0),
+                    0,
+                ),
+                keyedTrackCount: Object.keys(this.animationState.tracks || {}).length,
+                omittedTrackCount: reduction?.omittedTrackCount || 0,
             };
         } catch (error) {
             if (this.container?.isConnected && this.viewer?.isInitialized?.()) {
@@ -7417,6 +7644,7 @@ class PoseStudioWidget {
                     <label class="vnccs-ps-video-field">CAPTURE FPS<input class="vnccs-ps-video-fps" type="number" min="0.01" max="60" step="1" value="12"></label>
                     <label class="vnccs-ps-video-field">KEY EVERY N FRAMES<input class="vnccs-ps-video-key-step" type="number" min="1" max="60" step="1" value="2"></label>
                     <label class="vnccs-ps-video-field">STABILIZATION<select class="vnccs-ps-video-stabilization"><option value="off">Off</option><option value="light">Light</option><option value="medium" selected>Medium</option><option value="strong">Strong</option></select></label>
+                    <label class="vnccs-ps-video-field">ADAPTIVE KEY REDUCTION<select class="vnccs-ps-video-key-reduction"><option value="off" selected>Off (fixed interval)</option><option value="conservative">Conservative (≤0.35°)</option><option value="balanced">Balanced (≤1°)</option><option value="aggressive">Aggressive (≤2.5°)</option></select></label>
                 </div>
                 <div class="vnccs-ps-video-summary">Reading video metadata…</div>
                 <div class="vnccs-ps-video-progress">
@@ -7445,6 +7673,7 @@ class PoseStudioWidget {
         const fpsInput = modal.querySelector(".vnccs-ps-video-fps");
         const keyframeStepInput = modal.querySelector(".vnccs-ps-video-key-step");
         const stabilizationSelect = modal.querySelector(".vnccs-ps-video-stabilization");
+        const keyReductionSelect = modal.querySelector(".vnccs-ps-video-key-reduction");
         const fullViewButton = modal.querySelector(".vnccs-ps-video-view-full");
         const selectionViewButton = modal.querySelector(".vnccs-ps-video-view-selection");
         const zoomOutButton = modal.querySelector(".vnccs-ps-video-zoom-out");
@@ -7554,11 +7783,16 @@ class PoseStudioWidget {
             const plan = currentPlan();
             const keyframeStep = Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2));
             const keyedFrameCount = countVideoKeyedFrames(plan.sampleCount, keyframeStep);
+            const adaptiveReduction = keyReductionSelect.value !== "off";
+            keyframeStepInput.disabled = processing || adaptiveReduction;
             summary.classList.toggle("is-limited", plan.limited);
             const effective = Number(plan.effectiveFps.toFixed(3));
+            const keySummary = adaptiveReduction
+                ? `adaptive ${keyReductionSelect.value} keys after capture`
+                : `${keyedFrameCount} fixed key positions per track`;
             summary.textContent = plan.limited
-                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · ${keyedFrameCount} keyed frames · effective ${effective} FPS (limited from ${plan.requestedSamples})`
-                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS · ${keyedFrameCount} keyed frames`;
+                ? `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples · ${keySummary} · effective ${effective} FPS (limited from ${plan.requestedSamples})`
+                : `${this.formatVideoTime(plan.duration)} selected · ${plan.sampleCount} pose samples at ${effective} FPS · ${keySummary}`;
             importButton.disabled = processing || plan.duration <= 0;
             updateViewportControls();
         };
@@ -7658,6 +7892,7 @@ class PoseStudioWidget {
             updateSelectionUI();
         });
         stabilizationSelect.addEventListener("change", updateSelectionUI);
+        keyReductionSelect.addEventListener("change", updateSelectionUI);
         fullViewButton.addEventListener("click", () => {
             if (!processing) setViewport({ start: 0, end: duration });
         });
@@ -7723,6 +7958,7 @@ class PoseStudioWidget {
             outInput.disabled = true;
             keyframeStepInput.disabled = true;
             stabilizationSelect.disabled = true;
+            keyReductionSelect.disabled = true;
             zoomRange.disabled = true;
             updateViewportControls();
             progressWrap.classList.add("is-active");
@@ -7733,6 +7969,7 @@ class PoseStudioWidget {
                     signal: importController.signal,
                     stabilization: stabilizationSelect.value,
                     keyframeStep: Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2)),
+                    keyReduction: keyReductionSelect.value,
                     onProgress: status => {
                         if (closed) return;
                         const value = Math.max(0, Math.min(100, status.progress || 0));
@@ -7740,14 +7977,16 @@ class PoseStudioWidget {
                         progressPercent.textContent = `${Math.round(value)}%`;
                         const action = status.phase === "stabilize"
                             ? "Stabilizing captured poses"
-                            : (status.phase === "pose" ? "Capturing pose" : "Reading frame");
+                            : (status.phase === "reduce"
+                                ? "Removing redundant per-bone keys"
+                                : (status.phase === "pose" ? "Capturing pose" : "Reading frame"));
                         summary.textContent = `${action} ${Math.min(status.index + 1, status.count)}/${status.count} · ${this.formatVideoTime(status.time)}`;
                     },
                 });
                 if (closed) return;
                 progressFill.style.width = "100%";
                 progressPercent.textContent = "100%";
-                this.showMessage(`Video imported: ${result.sampleCount} captured poses, ${result.keyedFrameCount} keyed frames.`);
+                this.showMessage(`Video imported: ${result.sampleCount} poses → ${result.keyedFrameCount} keys across ${result.keyedTrackCount} tracks.`);
                 close({ abort: false });
             } catch (error) {
                 if (closed || error?.name === "AbortError") return;
@@ -7761,9 +8000,10 @@ class PoseStudioWidget {
                 fpsInput.disabled = false;
                 inInput.disabled = false;
                 outInput.disabled = false;
-                keyframeStepInput.disabled = false;
                 stabilizationSelect.disabled = false;
+                keyReductionSelect.disabled = false;
                 zoomRange.disabled = false;
+                keyframeStepInput.disabled = keyReductionSelect.value !== "off";
                 updateViewportControls();
                 cancelButton.textContent = "Cancel";
             }
@@ -11413,7 +11653,7 @@ app.registerExtension({
             if (onRemoved) onRemoved.apply(this, arguments);
             if (this.studioWidget) {
                 this.studioWidget._activeVideoImportClose?.();
-                this.studioWidget.animationTimeline?.stopPlayback?.();
+                this.studioWidget.animationTimeline?.destroy?.();
                 if (this.studioWidget._containerResizeObserver) {
                     this.studioWidget._containerResizeObserver.disconnect();
                     this.studioWidget._containerResizeObserver = null;

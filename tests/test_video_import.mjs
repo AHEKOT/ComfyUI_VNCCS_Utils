@@ -8,10 +8,22 @@ import {
     countVideoKeyedFrames,
     fitVideoTimelineSelection,
     isLikelyVideoFile,
+    reduceVideoPoseKeyframes,
     stabilizeVideoPoseSequence,
     zoomVideoTimelineViewport,
 } from "../web/vnccs_video_import.mjs";
-import { createAnimationStateFromPoses } from "../web/vnccs_pose_animation.mjs";
+import {
+    createAnimationStateFromPoses,
+    eulerDegreesToQuaternion,
+    evaluateAnimationFrame,
+} from "../web/vnccs_pose_animation.mjs";
+
+const quaternionDistanceDegrees = (aEuler, bEuler) => {
+    const a = eulerDegreesToQuaternion(aEuler);
+    const b = eulerDegreesToQuaternion(bEuler);
+    const dot = Math.abs(a.reduce((sum, value, index) => sum + value * b[index], 0));
+    return 2 * Math.acos(Math.max(-1, Math.min(1, dot))) * 180 / Math.PI;
+};
 
 test("popular browser video files are routed to video import", () => {
     for (const name of ["clip.mp4", "clip.webm", "clip.mov", "clip.m4v", "clip.ogv", "clip.mkv", "clip.avi"]) {
@@ -111,8 +123,10 @@ test("quaternion medoid preserves steady motion and can be disabled", () => {
         modelRotation: [0, y, 0],
     }));
     const stabilized = stabilizeVideoPoseSequence(poses, "strong");
-    assert.deepEqual(stabilized.map(pose => pose.bones.wrist_l[1]), [0, 10, 20, 30, 40]);
-    assert.deepEqual(stabilized.map(pose => pose.modelRotation[1]), [0, 10, 20, 30, 40]);
+    stabilized.forEach((pose, frame) => {
+        assert.ok(Math.abs(pose.bones.wrist_l[1] - frame * 10) < 1e-9);
+        assert.ok(Math.abs(pose.modelRotation[1] - frame * 10) < 1e-9);
+    });
     assert.deepEqual(stabilizeVideoPoseSequence(poses, "off"), poses);
 });
 
@@ -138,4 +152,118 @@ test("equivalent Euler representations are not mistaken for rotation jumps", () 
     ];
     const stabilized = stabilizeVideoPoseSequence(poses, "strong");
     assert.deepEqual(stabilized[1].bones.pelvis, [180, 0, 180]);
+});
+
+test("stabilization catches boundary and two-frame capture flips", () => {
+    const boundary = [90, 0, 0, 0, 0].map(x => ({
+        bones: { pelvis: [x, 0, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    assert.ok(Math.abs(stabilizeVideoPoseSequence(boundary, "medium")[0].bones.pelvis[0]) < 1e-9);
+
+    const doubleFlip = [0, 0, 80, 80, 0, 0].map(x => ({
+        bones: { pelvis: [x, 0, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(doubleFlip, "medium");
+    assert.ok(Math.abs(stabilized[2].bones.pelvis[0]) < 1e-9);
+    assert.ok(Math.abs(stabilized[3].bones.pelvis[0]) < 1e-9);
+});
+
+test("stabilization reduces alternating parser jitter but preserves sustained fast motion", () => {
+    const jitter = [0, 2, -2, 2, -2, 0].map(y => ({
+        bones: { wrist_l: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilizedJitter = stabilizeVideoPoseSequence(jitter, "strong");
+    const beforePeak = Math.max(...jitter.map(pose => Math.abs(pose.bones.wrist_l[1])));
+    const afterPeak = Math.max(...stabilizedJitter.map(pose => Math.abs(pose.bones.wrist_l[1])));
+    assert.ok(afterPeak < beforePeak);
+
+    const sustained = [0, 0, 60, 60, 60].map(y => ({
+        bones: { arm_l: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilizedMotion = stabilizeVideoPoseSequence(sustained, "medium");
+    assert.ok(stabilizedMotion[2].bones.arm_l[1] > 50);
+    assert.ok(stabilizedMotion[3].bones.arm_l[1] > 50);
+});
+
+test("catastrophic single sample is restored from temporal SLERP without contaminating neighbors", () => {
+    const poses = [0, 10, 170, 30, 40].map(y => ({
+        bones: { pelvis: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "medium");
+    [0, 10, 20, 30, 40].forEach((expected, frame) => {
+        assert.ok(quaternionDistanceDegrees(stabilized[frame].bones.pelvis, [0, expected, 0]) < 1e-6);
+    });
+});
+
+test("medium stabilization fully rejects a sharp single-frame detour", () => {
+    const poses = [0, 10, 50, 30, 40].map(y => ({
+        bones: { pelvis: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "medium");
+    [0, 10, 20, 30, 40].forEach((expected, frame) => {
+        assert.ok(quaternionDistanceDegrees(stabilized[frame].bones.pelvis, [0, expected, 0]) < 1e-6);
+    });
+});
+
+test("ordered parser jitter is reduced and sparse sampling does not erase real motion", () => {
+    const jitter = [0, 10, 28, 30, 40].map(y => ({
+        bones: { wrist_l: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(jitter, "medium");
+    assert.ok(Math.abs(stabilized[2].bones.wrist_l[1] - 20) < 8);
+
+    const sparseMotion = [0, 0, 90, 0, 0].map(y => ({
+        bones: { arm_l: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const sparseStabilized = stabilizeVideoPoseSequence(sparseMotion, "medium", { sampleFps: 0.1 });
+    assert.ok(sparseStabilized[2].bones.arm_l[1] > 80);
+});
+
+test("stabilization keeps equivalent rotations continuous across Euler wrap", () => {
+    const poses = [179, -179, 179, -179, 179].map(y => ({
+        bones: { head: [0, y, 0] },
+        modelRotation: [0, 0, 0],
+    }));
+    const stabilized = stabilizeVideoPoseSequence(poses, "strong");
+    stabilized.forEach((pose, frame) => {
+        assert.ok(quaternionDistanceDegrees(pose.bones.head, poses[frame].bones.head) <= 2.000001);
+    });
+});
+
+test("adaptive key reduction omits static joints and simplifies each moving joint independently", () => {
+    const poses = Array.from({ length: 11 }, (_, frame) => ({
+        bones: {
+            head: [0, 0, 0],
+            arm_l: [0, frame * 2, 0],
+            wrist_l: [0, (frame <= 5 ? frame : 10 - frame) * 6, 0],
+            finger_l: [0, frame % 2 ? 0.1 : -0.1, 0],
+        },
+        modelRotation: [0, 0, 0],
+    }));
+    const reduction = reduceVideoPoseKeyframes(poses, "balanced");
+    assert.deepEqual(reduction.trackKeyframes.arm_l, [0, 10]);
+    assert.deepEqual(reduction.trackKeyframes.wrist_l, [0, 5, 10]);
+    assert.equal(reduction.trackKeyframes.head, undefined);
+    assert.equal(reduction.trackKeyframes.finger_l, undefined);
+    assert.equal(reduction.trackKeyframes["@modelRotation"], undefined);
+    assert.equal(reduction.totalKeyCount, 5);
+
+    const state = createAnimationStateFromPoses(poses, {
+        duration: 11 / 12,
+        trackKeyframes: reduction.trackKeyframes,
+    });
+    assert.deepEqual(Object.keys(state.tracks).sort(), ["arm_l", "wrist_l"]);
+    for (let frame = 0; frame < poses.length; frame++) {
+        const evaluated = evaluateAnimationFrame(state, frame);
+        assert.ok(quaternionDistanceDegrees(evaluated.bones.arm_l, poses[frame].bones.arm_l) <= 1.000001);
+        assert.ok(quaternionDistanceDegrees(evaluated.bones.wrist_l, poses[frame].bones.wrist_l) <= 1.000001);
+    }
 });
