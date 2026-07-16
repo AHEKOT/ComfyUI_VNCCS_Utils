@@ -3,7 +3,11 @@ import test from "node:test";
 
 import {
     DEFAULT_CAMERA_STATE,
+    FRONT_AZIMUTH_STEPS,
     cameraStateFromRadarPoint,
+    cameraStateFromPrompt,
+    cameraPromptToSkydomeRotation,
+    cameraStateToSkydomeRotation,
     computeRadarGeometry,
     elevationFromRatio,
     normalizeCameraState,
@@ -27,6 +31,7 @@ test("camera state parsing is backward compatible and normalized", () => {
             distance: "medium shot",
             include_trigger: false,
             random: false,
+            random_azimuth_mode: "full",
         },
     );
 
@@ -37,6 +42,7 @@ test("camera state parsing is backward compatible and normalized", () => {
             distance: "wide shot",
             include_trigger: true,
             random: true,
+            random_azimuth_mode: "full",
         })),
         {
             azimuth: 270,
@@ -44,6 +50,7 @@ test("camera state parsing is backward compatible and normalized", () => {
             distance: "wide shot",
             include_trigger: true,
             random: true,
+            random_azimuth_mode: "full",
         },
     );
 });
@@ -55,6 +62,7 @@ test("random mode always selects a new camera combination", () => {
         distance: "close-up",
         include_trigger: false,
         random: true,
+        random_azimuth_mode: "full",
     });
 
     for (let index = 0; index < 95; index += 1) {
@@ -65,7 +73,41 @@ test("random mode always selects a new camera combination", () => {
         );
         assert.equal(next.include_trigger, false);
         assert.equal(next.random, true);
+        assert.equal(next.random_azimuth_mode, "full");
     }
+});
+
+test("front random mode limits azimuth but still randomizes height and distance", () => {
+    const current = normalizeCameraState({
+        azimuth: 0,
+        elevation: 0,
+        distance: "medium shot",
+        random: true,
+        random_azimuth_mode: "front",
+    });
+    const elevations = new Set();
+    const distances = new Set();
+
+    for (let index = 0; index < 35; index += 1) {
+        const next = randomizeCameraState(current, () => index / 35);
+        assert.ok(FRONT_AZIMUTH_STEPS.includes(next.azimuth));
+        assert.notDeepEqual(
+            [next.azimuth, next.elevation, next.distance],
+            [current.azimuth, current.elevation, current.distance],
+        );
+        elevations.add(next.elevation);
+        distances.add(next.distance);
+    }
+
+    assert.deepEqual([...elevations].sort((a, b) => a - b), [-30, 0, 30, 60]);
+    assert.deepEqual([...distances].sort(), ["close-up", "medium shot", "wide shot"]);
+});
+
+test("legacy front-only random metadata migrates to the new mode", () => {
+    assert.equal(
+        normalizeCameraState({ random_front_only: true }).random_azimuth_mode,
+        "front",
+    );
 });
 
 test("radar geometry remains circular in non-square containers", () => {
@@ -105,6 +147,49 @@ test("radar pointer mapping snaps azimuth and distance", () => {
     );
     assert.equal(rightClose.azimuth, 90);
     assert.equal(rightClose.distance, "close-up");
+});
+
+test("skydome rotation follows horizontal and vertical camera direction", () => {
+    assert.deepEqual(
+        cameraStateToSkydomeRotation({
+            azimuth: 90,
+            elevation: 60,
+            distance: "wide shot",
+        }),
+        { yawDegrees: -90, pitchDegrees: 60 },
+    );
+    assert.deepEqual(
+        cameraStateToSkydomeRotation({
+            azimuth: 270,
+            elevation: -30,
+            distance: "medium shot",
+        }),
+        { yawDegrees: -270, pitchDegrees: -30 },
+    );
+});
+
+test("skydome rotation is parsed from the resolved prompt of each execution", () => {
+    assert.deepEqual(
+        cameraStateFromPrompt("<sks> front-left quarter view high-angle shot wide shot"),
+        {
+            azimuth: 315,
+            elevation: 60,
+            distance: "wide shot",
+            include_trigger: true,
+            random: false,
+            random_azimuth_mode: "full",
+        },
+    );
+    assert.deepEqual(
+        cameraPromptToSkydomeRotation("left side view low-angle shot close-up"),
+        { yawDegrees: -270, pitchDegrees: -30 },
+    );
+    assert.deepEqual(
+        cameraPromptToSkydomeRotation(
+            "Use a medium shot from a front-right three-quarter angle, with the camera at eye level.",
+        ),
+        { yawDegrees: -45, pitchDegrees: 0 },
+    );
 });
 
 test("elevation selector snaps across its vertical range", () => {

@@ -762,6 +762,27 @@ export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, 
     };
 }
 
+export function selectRandomLibraryPoseData(libraryPoses = [], random = Math.random) {
+    const candidates = (Array.isArray(libraryPoses) ? libraryPoses : []).filter(item => (
+        item?.data && typeof item.data === "object"
+    ));
+    if (!candidates.length) return null;
+    const raw = Number(random());
+    const normalized = Number.isFinite(raw)
+        ? Math.min(0.9999999999999999, Math.max(0, raw))
+        : 0;
+    return candidates[Math.floor(normalized * candidates.length)].data;
+}
+
+export function resolveDebugLightingMode({
+    keepManualLighting = false,
+    keepOriginalLighting = false,
+} = {}) {
+    if (keepOriginalLighting) return "original";
+    if (keepManualLighting) return "manual";
+    return "random";
+}
+
 /**
  * Keep duration, frame rate, and the internal integer frame count in sync.
  * Duration is quantized to a whole frame so the three values can never

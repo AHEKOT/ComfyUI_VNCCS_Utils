@@ -241,6 +241,67 @@ const STYLES = `
     color: var(--vc-text);
 }
 
+.vnccs-camera-random-scope {
+    display: none;
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 24px;
+    margin-top: 6px;
+    padding: 2px 3px 2px 7px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    border: 1px solid var(--vc-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+    box-sizing: border-box;
+}
+
+.vnccs-camera-random-scope.visible {
+    display: flex;
+}
+
+.vnccs-camera-random-scope-label {
+    overflow: hidden;
+    color: var(--vc-dim);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 1;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.vnccs-camera-random-scope-options {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 142px;
+    height: 18px;
+    padding: 1px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.vnccs-camera-random-scope-btn {
+    min-width: 0;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--vc-muted);
+    font: 800 8px/1 'JetBrains Mono', 'Fira Code', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.vnccs-camera-random-scope-btn.active {
+    background: var(--vc-accent);
+    color: #24121a;
+    box-shadow: 0 0 7px rgba(255, 143, 163, 0.28);
+}
+
 @media (max-width: 330px) {
     .vnccs-camera-main {
         grid-template-columns: minmax(0, 1fr) 46px;
@@ -402,7 +463,33 @@ class VNCCSCameraWidget {
 
         toggles.append(triggerLabel, randomLabel);
         this.footer.append(this.readout, toggles);
-        this.surface.append(this.main, this.footer);
+
+        this.randomScope = document.createElement("div");
+        this.randomScope.className = "vnccs-camera-random-scope";
+
+        const randomScopeLabel = document.createElement("span");
+        randomScopeLabel.className = "vnccs-camera-random-scope-label";
+        randomScopeLabel.textContent = "Random angle";
+
+        const randomScopeOptions = document.createElement("div");
+        randomScopeOptions.className = "vnccs-camera-random-scope-options";
+        this.randomScopeButtons = new Map();
+        [
+            ["full", "360°", "Randomize around the full 360 degrees"],
+            ["front", "Front ±45°", "Randomize only front, front-left and front-right views"],
+        ].forEach(([mode, label, title]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "vnccs-camera-random-scope-btn";
+            button.textContent = label;
+            button.title = title;
+            button.dataset.mode = mode;
+            this.randomScopeButtons.set(mode, button);
+            randomScopeOptions.appendChild(button);
+        });
+
+        this.randomScope.append(randomScopeLabel, randomScopeOptions);
+        this.surface.append(this.main, this.footer, this.randomScope);
         this.container.appendChild(this.surface);
     }
 
@@ -459,6 +546,12 @@ class VNCCSCameraWidget {
             this.state.random = this.randomInput.checked;
             this.commit();
         });
+        for (const [mode, button] of this.randomScopeButtons) {
+            button.addEventListener("click", () => {
+                this.state.random_azimuth_mode = mode;
+                this.commit();
+            });
+        }
     }
 
     resize() {
@@ -518,6 +611,13 @@ class VNCCSCameraWidget {
     updateUI() {
         this.triggerInput.checked = this.state.include_trigger;
         this.randomInput.checked = this.state.random;
+        this.randomScope.classList.toggle("visible", this.state.random);
+        this.randomScope.setAttribute("aria-hidden", this.state.random ? "false" : "true");
+        for (const [mode, button] of this.randomScopeButtons) {
+            const active = mode === this.state.random_azimuth_mode;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        }
         for (const [elevation, button] of this.elevationButtons) {
             const active = elevation === this.state.elevation;
             button.classList.toggle("active", active);
@@ -557,6 +657,18 @@ class VNCCSCameraWidget {
 
         ctx.save();
         ctx.translate(centerX, centerY);
+
+        if (this.state.random && this.state.random_azimuth_mode === "front") {
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, outerRadius, Math.PI / 4, Math.PI * 3 / 4);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255, 143, 163, 0.055)";
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255, 143, 163, 0.22)";
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
 
         ctx.strokeStyle = "rgba(255, 255, 255, 0.105)";
         ctx.lineWidth = 1;

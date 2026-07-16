@@ -1,6 +1,8 @@
 export const AZIMUTH_STEPS = Object.freeze([0, 45, 90, 135, 180, 225, 270, 315]);
+export const FRONT_AZIMUTH_STEPS = Object.freeze([315, 0, 45]);
 export const ELEVATION_STEPS = Object.freeze([-30, 0, 30, 60]);
 export const DISTANCE_OPTIONS = Object.freeze(["close-up", "medium shot", "wide shot"]);
+export const RANDOM_AZIMUTH_MODES = Object.freeze(["full", "front"]);
 
 export const DEFAULT_CAMERA_STATE = Object.freeze({
     azimuth: 0,
@@ -8,6 +10,7 @@ export const DEFAULT_CAMERA_STATE = Object.freeze({
     distance: "medium shot",
     include_trigger: true,
     random: false,
+    random_azimuth_mode: "full",
 });
 
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
@@ -37,6 +40,12 @@ export function normalizeCameraState(value = {}) {
     const distance = DISTANCE_OPTIONS.includes(value?.distance)
         ? value.distance
         : DEFAULT_CAMERA_STATE.distance;
+    const legacyFrontOnly = typeof value?.random_front_only === "boolean"
+        ? value.random_front_only
+        : null;
+    const randomAzimuthMode = RANDOM_AZIMUTH_MODES.includes(value?.random_azimuth_mode)
+        ? value.random_azimuth_mode
+        : legacyFrontOnly === true ? "front" : DEFAULT_CAMERA_STATE.random_azimuth_mode;
 
     return {
         azimuth,
@@ -46,6 +55,7 @@ export function normalizeCameraState(value = {}) {
             ? value.include_trigger
             : DEFAULT_CAMERA_STATE.include_trigger,
         random: typeof value?.random === "boolean" ? value.random : DEFAULT_CAMERA_STATE.random,
+        random_azimuth_mode: randomAzimuthMode,
     };
 }
 
@@ -65,32 +75,105 @@ export function serializeCameraState(state) {
     return JSON.stringify(normalizeCameraState(state));
 }
 
+export function cameraStateToSkydomeRotation(state) {
+    const normalized = normalizeCameraState(state);
+    return {
+        yawDegrees: -normalized.azimuth,
+        pitchDegrees: normalized.elevation,
+    };
+}
+
+const CAMERA_PROMPT_AZIMUTHS = Object.freeze([
+    [["front-right quarter view", "front-right three-quarter angle"], 45],
+    [["back-right quarter view", "back-right three-quarter angle"], 135],
+    [["back-left quarter view", "back-left three-quarter angle"], 225],
+    [["front-left quarter view", "front-left three-quarter angle"], 315],
+    [["right side view", "from the right side"], 90],
+    [["left side view", "from the left side"], 270],
+    [["front view", "from the front"], 0],
+    [["back view", "from the back"], 180],
+]);
+
+const CAMERA_PROMPT_ELEVATIONS = Object.freeze([
+    [["low-angle shot", "low angle"], -30],
+    [["eye-level shot", "eye level"], 0],
+    [["elevated shot", "elevated angle"], 30],
+    [["high-angle shot", "high angle"], 60],
+]);
+
+const CAMERA_PROMPT_DISTANCES = Object.freeze([
+    [["close-up"], "close-up"],
+    [["medium shot"], "medium shot"],
+    [["wide shot"], "wide shot"],
+]);
+
+function findPromptCameraValue(text, mappings, fallback) {
+    for (const [phrases, value] of mappings) {
+        if (phrases.some(phrase => text.includes(phrase))) return value;
+    }
+    return fallback;
+}
+
+export function cameraStateFromPrompt(cameraPrompt) {
+    const rawPrompt = String(cameraPrompt ?? "");
+    const includeTrigger = /<\s*sks\s*>/i.test(rawPrompt);
+    const text = rawPrompt
+        .replace(/<\s*sks\s*>/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .toLowerCase();
+
+    return normalizeCameraState({
+        ...DEFAULT_CAMERA_STATE,
+        azimuth: findPromptCameraValue(
+            text,
+            CAMERA_PROMPT_AZIMUTHS,
+            DEFAULT_CAMERA_STATE.azimuth,
+        ),
+        elevation: findPromptCameraValue(
+            text,
+            CAMERA_PROMPT_ELEVATIONS,
+            DEFAULT_CAMERA_STATE.elevation,
+        ),
+        distance: findPromptCameraValue(
+            text,
+            CAMERA_PROMPT_DISTANCES,
+            DEFAULT_CAMERA_STATE.distance,
+        ),
+        include_trigger: includeTrigger,
+    });
+}
+
+export function cameraPromptToSkydomeRotation(cameraPrompt) {
+    return cameraStateToSkydomeRotation(cameraStateFromPrompt(cameraPrompt));
+}
+
 export function randomizeCameraState(state, random = Math.random) {
     const current = normalizeCameraState(state);
-    const combinationCount = AZIMUTH_STEPS.length * ELEVATION_STEPS.length * DISTANCE_OPTIONS.length;
-    const currentIndex = (
-        AZIMUTH_STEPS.indexOf(current.azimuth) * ELEVATION_STEPS.length
-        + ELEVATION_STEPS.indexOf(current.elevation)
-    ) * DISTANCE_OPTIONS.length + DISTANCE_OPTIONS.indexOf(current.distance);
+    const azimuthSteps = current.random_azimuth_mode === "front"
+        ? FRONT_AZIMUTH_STEPS
+        : AZIMUTH_STEPS;
+    const combinations = [];
+    for (const azimuth of azimuthSteps) {
+        for (const elevation of ELEVATION_STEPS) {
+            for (const distance of DISTANCE_OPTIONS) {
+                combinations.push({ azimuth, elevation, distance });
+            }
+        }
+    }
+    const candidates = combinations.filter(candidate => (
+        candidate.azimuth !== current.azimuth
+        || candidate.elevation !== current.elevation
+        || candidate.distance !== current.distance
+    ));
 
     const rawRandom = Number(random());
     const safeRandom = Number.isFinite(rawRandom) ? clamp(rawRandom, 0, 0.9999999999999999) : 0;
-    let nextIndex = Math.floor(safeRandom * (combinationCount - 1));
-
-    // Pick from every combination except the current one, so "random" always
-    // produces a visibly new set even when the RNG lands on the same slot.
-    if (nextIndex >= currentIndex) nextIndex += 1;
-
-    const distanceIndex = nextIndex % DISTANCE_OPTIONS.length;
-    nextIndex = Math.floor(nextIndex / DISTANCE_OPTIONS.length);
-    const elevationIndex = nextIndex % ELEVATION_STEPS.length;
-    const azimuthIndex = Math.floor(nextIndex / ELEVATION_STEPS.length);
+    const next = candidates[Math.floor(safeRandom * candidates.length)] || combinations[0];
 
     return {
         ...current,
-        azimuth: AZIMUTH_STEPS[azimuthIndex],
-        elevation: ELEVATION_STEPS[elevationIndex],
-        distance: DISTANCE_OPTIONS[distanceIndex],
+        ...next,
     };
 }
 

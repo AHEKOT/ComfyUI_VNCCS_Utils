@@ -73,7 +73,7 @@ class VNCCS_VisualPositionControl(VNCCS_PositionControl):
         return {
             "required": {
                 # The JS widget submits a JSON string here.
-                # format: {"azimuth": 0, "elevation": 0, "distance": "medium shot", "include_trigger": true, "random": false}
+                # format: {"azimuth": 0, "elevation": 0, "distance": "medium shot", "include_trigger": true, "random": false, "random_azimuth_mode": "full"}
                 "camera_data": ("STRING", {"default": "{}", "hidden": True}), 
             }
         }

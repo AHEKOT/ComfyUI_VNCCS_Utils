@@ -10,6 +10,8 @@ This node is fully self-contained with all data loading logic.
 import json
 import os
 import base64
+import re
+import uuid
 from io import BytesIO
 import hashlib
 import torch
@@ -28,6 +30,89 @@ _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_PIXELS = 4096 * 4096
+
+_CAMERA_AZIMUTH_PHRASES = (
+    ("front-right quarter view", "from a front-right three-quarter angle"),
+    ("back-right quarter view", "from a back-right three-quarter angle"),
+    ("back-left quarter view", "from a back-left three-quarter angle"),
+    ("front-left quarter view", "from a front-left three-quarter angle"),
+    ("right side view", "from the right side"),
+    ("left side view", "from the left side"),
+    ("front view", "from the front"),
+    ("back view", "from the back"),
+)
+
+_CAMERA_ELEVATION_PHRASES = (
+    ("low-angle shot", "at a low angle"),
+    ("eye-level shot", "at eye level"),
+    ("elevated shot", "at an elevated angle"),
+    ("high-angle shot", "at a high angle"),
+)
+
+_CAMERA_DISTANCE_PHRASES = (
+    ("close-up", "a close-up"),
+    ("medium shot", "a medium shot"),
+    ("wide shot", "a wide shot"),
+)
+
+
+def _clean_camera_prompt(camera_prompt):
+    text = "" if camera_prompt is None else str(camera_prompt)
+    text = re.sub(r"<\s*sks\s*>", " ", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" \t\r\n,.;")
+
+
+def _find_camera_phrase(text, phrases):
+    lowered = text.lower()
+    for source, natural in phrases:
+        if source in lowered:
+            return source, natural
+    return None, ""
+
+
+def _format_camera_prompt(camera_prompt):
+    text = _clean_camera_prompt(camera_prompt)
+    if not text:
+        return ""
+
+    azimuth_source, azimuth = _find_camera_phrase(text, _CAMERA_AZIMUTH_PHRASES)
+    elevation_source, elevation = _find_camera_phrase(text, _CAMERA_ELEVATION_PHRASES)
+    distance_source, distance = _find_camera_phrase(text, _CAMERA_DISTANCE_PHRASES)
+
+    if azimuth and elevation and distance:
+        return f"Use {distance} {azimuth}, with the camera {elevation}."
+
+    remaining = text
+    for source in (azimuth_source, elevation_source, distance_source):
+        if source:
+            remaining = re.sub(re.escape(source), " ", remaining, flags=re.IGNORECASE)
+    remaining = re.sub(r"\s+", " ", remaining).strip(" \t\r\n,.;")
+
+    parts = []
+    if distance:
+        parts.append(distance)
+    if azimuth:
+        parts.append(azimuth)
+    if elevation:
+        parts.append(f"with the camera {elevation}")
+
+    if parts:
+        sentence = "Use " + ", ".join(parts)
+        if remaining:
+            sentence += f", following this additional direction: {remaining}"
+        return sentence.rstrip(".") + "."
+
+    return f"Camera framing: {text.rstrip('.')}."
+
+
+def _merge_camera_prompt(base_prompt, camera_prompt):
+    base = "" if base_prompt is None else str(base_prompt).strip()
+    camera = _format_camera_prompt(camera_prompt)
+    if not camera:
+        return base
+    if not base:
+        return camera
+    return f"{base}\n{camera}"
 
 
 # === Data Cache and Loader (from Character Studio) ===
@@ -173,6 +258,11 @@ class VNCCS_PoseStudio:
             },
             "optional": {
                 "pose_image": ("IMAGE",),
+                "camera_prompt": ("STRING", {
+                    "default": "",
+                    "forceInput": True,
+                    "tooltip": "Camera direction from VNCCS Visual Camera Control.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID"
@@ -180,7 +270,13 @@ class VNCCS_PoseStudio:
         }
 
     @classmethod
-    def IS_CHANGED(cls, pose_data: str = "{}", pose_image=None, unique_id: str = None):
+    def IS_CHANGED(
+        cls,
+        pose_data: str = "{}",
+        pose_image=None,
+        camera_prompt: str = "",
+        unique_id: str = None,
+    ):
         # Force re-execution if Debug Mode is enabled
         try:
             data = json.loads(pose_data)
@@ -189,23 +285,31 @@ class VNCCS_PoseStudio:
                 return float("NaN")
         except Exception:
             pass
+        change_key = f"{pose_data}|camera_prompt:{camera_prompt or ''}"
         if pose_image is None:
-            return pose_data
+            return change_key
         try:
             tensor = pose_image.detach().cpu()
             arr = tensor.numpy()
             sample = arr.flat[::max(1, arr.size // 1000)]
             digest = hashlib.sha256(bytes(sample)).hexdigest()
-            return f"{pose_data}|pose_image:{digest}"
+            return f"{change_key}|pose_image:{digest}"
         except Exception:
-            return f"{pose_data}|pose_image:{id(pose_image)}"
+            return f"{change_key}|pose_image:{id(pose_image)}"
 
-    def _wait_for_frontend_sync(self, unique_id, start_time, timeout=15.0):
+    def _wait_for_frontend_sync(
+        self,
+        unique_id,
+        start_time,
+        timeout=15.0,
+        sync_token=None,
+    ):
         import time
         import folder_paths
 
         temp_dir = folder_paths.get_temp_directory()
-        filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}.json")
+        token_suffix = f"_{sync_token}" if sync_token else ""
+        filepath = os.path.join(temp_dir, f"vnccs_debug_{unique_id}{token_suffix}.json")
 
         while time.time() - start_time < timeout:
             if os.path.exists(filepath) and os.path.getmtime(filepath) > start_time - 1.0:
@@ -222,7 +326,7 @@ class VNCCS_PoseStudio:
             time.sleep(0.1)
         return None
 
-    def _apply_pose_image_via_frontend(self, pose_image, unique_id):
+    def _apply_pose_image_via_frontend(self, pose_image, unique_id, camera_prompt=""):
         if pose_image is None or not unique_id:
             return None
 
@@ -244,12 +348,20 @@ class VNCCS_PoseStudio:
                 print("[VNCCS Pose Studio] pose_image SAM import returned empty pose data.")
                 return None
 
+            sync_token = uuid.uuid4().hex
             start_time = time.time()
             PromptServer.instance.send_sync("vnccs_apply_sam3d_pose", {
                 "node_id": unique_id,
                 "pose_data": pose_payload,
+                "camera_prompt": camera_prompt or "",
+                "sync_token": sync_token,
             })
-            synced = self._wait_for_frontend_sync(unique_id, start_time, timeout=20.0)
+            synced = self._wait_for_frontend_sync(
+                unique_id,
+                start_time,
+                timeout=20.0,
+                sync_token=sync_token,
+            )
             if synced:
                 print("[VNCCS Pose Studio] Applied pose_image SAM pose through frontend sync.")
                 return synced
@@ -262,6 +374,7 @@ class VNCCS_PoseStudio:
         self,
         pose_data: str = "{}",
         pose_image=None,
+        camera_prompt: str = "",
         unique_id: str = None
     ):
         """Generate rendered mesh images for all poses."""
@@ -272,29 +385,50 @@ class VNCCS_PoseStudio:
             data = _hydrate_cached_pose_animation(data)
             pose_image_synced = False
             export_settings = data.get("export", {}) if isinstance(data, dict) else {}
+            if (
+                isinstance(export_settings, dict)
+                and export_settings.get("directional_skydome_enabled", True) is False
+            ):
+                camera_prompt = ""
             if isinstance(export_settings, dict) and export_settings.get("interface_mode") == "manager":
                 pose_image = None
 
             if pose_image is not None:
-                synced = self._apply_pose_image_via_frontend(pose_image, unique_id)
+                synced = self._apply_pose_image_via_frontend(
+                    pose_image,
+                    unique_id,
+                    camera_prompt,
+                )
                 if isinstance(synced, dict):
                     data = _hydrate_cached_pose_animation(synced)
                     pose_image_synced = True
             
             # --- LIVE SYNC with Frontend ---
             # We request a fresh capture/sync from the frontend on every run
-            # to ensure the backend uses EXACTLY what the user sees in the widget.
-            if unique_id and not pose_image_synced and not data.get("captured_images"):
+            # and pass this execution's resolved camera prompt so queued random
+            # runs cannot reuse the skydome orientation from another execution.
+            if unique_id and not pose_image_synced:
                 try:
                     from server import PromptServer
                     import time
-                    PromptServer.instance.send_sync("vnccs_req_pose_sync", {"node_id": unique_id})
+                    sync_token = uuid.uuid4().hex
+                    start_time = time.time()
+                    PromptServer.instance.send_sync("vnccs_req_pose_sync", {
+                        "node_id": unique_id,
+                        "camera_prompt": camera_prompt or "",
+                        "sync_token": sync_token,
+                    })
                     sync_timeout = 5.0
                     if export_settings.get("editor_mode", export_settings.get("content_mode")) == "animation":
                         animation = data.get("animation") if isinstance(data.get("animation"), dict) else {}
                         frame_count = max(1, int(animation.get("frameCount", animation.get("frame_count", 1)) or 1))
                         sync_timeout = min(120.0, max(15.0, 5.0 + frame_count * 0.25))
-                    synced = self._wait_for_frontend_sync(unique_id, time.time(), timeout=sync_timeout)
+                    synced = self._wait_for_frontend_sync(
+                        unique_id,
+                        start_time,
+                        timeout=sync_timeout,
+                        sync_token=sync_token,
+                    )
                     if synced:
                         data = _hydrate_cached_pose_animation(synced)
                 except Exception as e:
@@ -360,11 +494,15 @@ class VNCCS_PoseStudio:
         
         if captured_images:
             # Extract prompts (frontend generated)
-            lighting_prompts = data.get("lighting_prompts", [])
+            lighting_prompts = list(data.get("lighting_prompts", []) or [])
             
             # Pad prompts to match images count if needed
             while len(lighting_prompts) < len(captured_images):
                 lighting_prompts.append("")
+            lighting_prompts = [
+                _merge_camera_prompt(prompt, camera_prompt)
+                for prompt in lighting_prompts[:len(captured_images)]
+            ]
             try:
                 rendered_images = _decode_captured_images(captured_images)
             except Exception as e:
@@ -441,14 +579,17 @@ class VNCCS_PoseStudio:
             # Return list of individual images
             tensor_list = [t.unsqueeze(0) for t in tensors]
             # Fallback prompts (empty strings since python renderer doesn't generate them yet)
-            prompts = [""] * len(tensor_list)
+            prompts = [
+                _merge_camera_prompt("", camera_prompt)
+                for _ in tensor_list
+            ]
             return (tensor_list, prompts)
         else:
             # GRID mode - concatenate into single image
             grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
             np_grid = np.array(grid_img).astype(np.float32) / 255.0
             grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
-            return ([grid_tensor], [""])
+            return ([grid_tensor], [_merge_camera_prompt("", camera_prompt)])
     
     def _apply_pose(self, verts, bones_data, model_rotation):
         """Apply bone rotations (FK) and global rotation to vertices."""

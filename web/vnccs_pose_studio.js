@@ -7,6 +7,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import {
+    cameraPromptToSkydomeRotation,
+} from "./vnccs_camera_control_utils.mjs";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
 import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
@@ -42,9 +45,11 @@ import {
     isAnimationEmpty,
     normalizeAnimationState,
     resolveCaptureCameraParams,
+    resolveDebugLightingMode,
     retimeAnimationTiming,
     restoreAnimationStateSnapshot,
     sampleAnimationFrames,
+    selectRandomLibraryPoseData,
     serializeAnimationStateSnapshot,
     setTrackKeyframeFromEuler,
 } from "./vnccs_pose_animation.mjs";
@@ -3544,7 +3549,6 @@ class PoseStudioWidget {
             grid_columns: 2,
             bg_color: [255, 255, 255],
             debugMode: false,
-            debugPortraitMode: false, // Focus on upper body in debug mode
             debugKeepLighting: false, // Use manual lighting in debug mode
             debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
@@ -3556,7 +3560,8 @@ class PoseStudioWidget {
             background_url: null,
             interface_mode: "studio",
             editor_mode: "image",
-            hand_controls_v2: true
+            hand_controls_v2: true,
+            directional_skydome_enabled: true,
         };
 
         // Lighting settings (array of light configs)
@@ -3620,8 +3625,11 @@ class PoseStudioWidget {
         this.libraryThumbSize = this.loadLibraryThumbnailSize();
         this.libraryResizeObserver = null;
         this.repositoryProgressStates = {};
+        this._skydomePromptKey = "";
 
         this.createUI();
+        this.setSkydomeFromCameraPrompt("", { force: true });
+        this.applyDirectionalSkydomeSetting();
     }
 
     createUI() {
@@ -4778,7 +4786,7 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
     }
 
-    commitViewerPoseToCurrentEditor({ fullCapture = false } = {}) {
+    commitViewerPoseToCurrentEditor({ fullCapture = false, syncOptions = {} } = {}) {
         if (!this.viewer?.isInitialized?.()) return;
         const pose = this.viewer.getPose();
         if (this.isAnimationMode()) {
@@ -4790,7 +4798,7 @@ class PoseStudioWidget {
             return;
         }
         this.poses[this.activeTab] = pose;
-        this.syncToNode(fullCapture);
+        this.syncToNode(fullCapture, syncOptions);
     }
 
     updateAnimationSettings({ fps, duration, loop, autoKey } = {}) {
@@ -5049,6 +5057,32 @@ class PoseStudioWidget {
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0
         };
+    }
+
+    setSkydomeFromCameraPrompt(cameraPrompt, { force = false } = {}) {
+        if (this.exportParams.directional_skydome_enabled === false) return false;
+        const prompt = String(cameraPrompt ?? "");
+        const rotation = cameraPromptToSkydomeRotation(prompt);
+        const stateKey = `${rotation.yawDegrees}:${rotation.pitchDegrees}`;
+
+        if (!force && stateKey === this._skydomePromptKey) return false;
+        this._skydomePromptKey = stateKey;
+        this.viewer?.setDirectionalSkydomeOrientation?.(
+            rotation.yawDegrees,
+            rotation.pitchDegrees,
+        );
+        return true;
+    }
+
+    applyDirectionalSkydomeSetting() {
+        const enabled = this.exportParams.directional_skydome_enabled !== false;
+        if (!enabled) {
+            this._skydomePromptKey = "";
+            this.viewer?.setDirectionalSkydomeOrientation?.(0, 0);
+        }
+        this.viewer?.setDirectionalSkydomeVisible?.(enabled);
+        this.node?._vnccsSetCameraPromptInputDisabled?.(!enabled);
+        return enabled;
     }
 
     ensurePosePrompts() {
@@ -9864,6 +9898,34 @@ class PoseStudioWidget {
         handControlsRow.appendChild(handControlsLabel);
         content.appendChild(handControlsRow);
 
+        const skydomeRow = document.createElement("div");
+        skydomeRow.className = "vnccs-ps-field";
+        skydomeRow.style.marginBottom = "14px";
+
+        const skydomeLabel = document.createElement("label");
+        skydomeLabel.style.display = "flex";
+        skydomeLabel.style.alignItems = "center";
+        skydomeLabel.style.gap = "10px";
+        skydomeLabel.style.cursor = "pointer";
+        skydomeLabel.style.userSelect = "none";
+
+        const skydomeCheckbox = document.createElement("input");
+        skydomeCheckbox.type = "checkbox";
+        skydomeCheckbox.checked = this.exportParams.directional_skydome_enabled !== false;
+        skydomeCheckbox.onchange = () => {
+            this.exportParams.directional_skydome_enabled = skydomeCheckbox.checked;
+            this.applyDirectionalSkydomeSetting();
+            this.syncToNode(true);
+        };
+
+        const skydomeText = document.createElement("div");
+        skydomeText.innerHTML = "<strong>Directional Skydome</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Shows and exports the colored direction grid and enables the camera-angle prompt input. Disabling it hides the skydome and removes the input socket.</div>";
+
+        skydomeLabel.appendChild(skydomeCheckbox);
+        skydomeLabel.appendChild(skydomeText);
+        skydomeRow.appendChild(skydomeLabel);
+        content.appendChild(skydomeRow);
+
         const debugSection = this.createSection("Debug", false);
 
         // SAM Camera Override Toggle
@@ -9919,39 +9981,12 @@ class PoseStudioWidget {
         };
 
         const debugText = document.createElement("div");
-        debugText.innerHTML = "<strong>Debug Mode (Randomize on Queue)</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Automatically randomizes pose, lighting and camera for each queued run. Used for generating synthetic datasets.</div>";
+        debugText.innerHTML = "<strong>Debug Mode (Library Pose on Queue)</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Selects exactly one random pose from the loaded pose library for each execution and applies it as saved. No extra model rotation, camera or framing randomization is added.</div>";
 
         debugLabel.appendChild(debugCheckbox);
         debugLabel.appendChild(debugText);
         debugRow.appendChild(debugLabel);
         debugSection.content.appendChild(debugRow);
-
-        // Portrait Mode Toggle
-        const portraitRow = document.createElement("div");
-        portraitRow.className = "vnccs-ps-field";
-        portraitRow.style.marginTop = "10px";
-
-        const portraitLabel = document.createElement("label");
-        portraitLabel.style.display = "flex";
-        portraitLabel.style.alignItems = "center";
-        portraitLabel.style.gap = "10px";
-        portraitLabel.style.cursor = "pointer";
-
-        const portraitCheckbox = document.createElement("input");
-        portraitCheckbox.type = "checkbox";
-        portraitCheckbox.checked = this.exportParams.debugPortraitMode || false;
-        portraitCheckbox.onchange = () => {
-            this.exportParams.debugPortraitMode = portraitCheckbox.checked;
-            this.syncToNode(false);
-        };
-
-        const portraitText = document.createElement("div");
-        portraitText.innerHTML = "<strong>Portrait Mode</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will focus framing on the head and upper torso.</div>";
-
-        portraitLabel.appendChild(portraitCheckbox);
-        portraitLabel.appendChild(portraitText);
-        portraitRow.appendChild(portraitLabel);
-        debugSection.content.appendChild(portraitRow);
 
         // Keep Lighting Toggle
         const keepLightRow = document.createElement("div");
@@ -9973,7 +10008,7 @@ class PoseStudioWidget {
         };
 
         const keepLightText = document.createElement("div");
-        keepLightText.innerHTML = "<strong>Keep Manual Lighting</strong><div style='font-size:11px; color:#888; margin-top:4px;'>If enabled, Debug Mode will use your current lighting settings instead of randomizing them.</div>";
+        keepLightText.innerHTML = "<strong>Keep Manual Lighting</strong><div style='font-size:11px; color:#888; margin-top:4px;'>Disables Debug light randomization and preserves the complete current lighting state, including Keeping Original Lighting.</div>";
 
         keepLightLabel.appendChild(keepLightCheckbox);
         keepLightLabel.appendChild(keepLightText);
@@ -10944,148 +10979,75 @@ class PoseStudioWidget {
         return result;
     }
 
-    /**
-     * Generate random debug parameters for model rotation, camera, and lighting.
-     * Model must remain at least ~20% visible in frame.
-     */
-    generateDebugParams() {
-        // Random Y rotation for model (-90 to 90)
-        const modelYRotation = Math.random() * 180 - 90;
+    getDebugLibraryPoseCandidates() {
+        return (this.libraryPoses || []).filter(item => (
+            item?.data && typeof item.data === "object"
+        ));
+    }
 
-        // Camera Settings
-        const viewW = this.exportParams.view_width || 1024;
-        const viewH = this.exportParams.view_height || 1024;
-        const ar = viewW / viewH;
-
-        let zoom = 1.3 + Math.random() * 0.7;
-        let offsetX = (Math.random() * 2 - 1) * (2.0 / zoom);
-        let offsetY = (Math.random() * 2 - 1) * (2.0 / zoom);
-
-        if (this.exportParams.debugPortraitMode) {
-            // Portrait framing: High zoom, focused on head/torso
-            // If AR is narrow (< 0.7), cap zoom to avoid shoulder clipping
-            const maxZoom = ar < 0.7 ? (2.0 + ar * 2) : 3.5;
-            zoom = 2.2 + Math.random() * (maxZoom - 2.2);
-
-            offsetX = (Math.random() * 2 - 1) * 0.3; // Slight side jitter (world units)
-            // Shift target UP to head area (Y approx 15-16). 
-            // Pelvis is at Y=10. so offsetY = -5 to -6.
-            offsetY = -5.5 + (Math.random() * 2 - 1) * 1.0;
+    async ensureDebugLibraryReady() {
+        if (!this.exportParams.debugMode || this.isAnimationMode()) return;
+        if (this.getDebugLibraryPoseCandidates().length > 0) return;
+        await this.refreshLibrary(true);
+        if (this.getDebugLibraryPoseCandidates().length === 0) {
+            throw new Error("Debug Mode requires at least one fully loaded library pose.");
         }
+    }
 
-        // Random directional lighting
-        let lights = [];
-        let lightingPrompt = "";
+    selectRandomDebugLibraryPose(random = Math.random) {
+        const selected = selectRandomLibraryPoseData(this.libraryPoses, random);
+        if (!selected) return null;
+        try {
+            return structuredClone(selected);
+        } catch (_) {
+            return JSON.parse(JSON.stringify(selected));
+        }
+    }
 
-        if (this.exportParams.debugKeepLighting) {
-            // Use current manual lights
-            lights = JSON.parse(JSON.stringify(this.lightParams));
-            lightingPrompt = this.generatePromptFromLights(lights);
-        } else {
-            // Original randomization logic
-            const prompts = [];
-            const r = Math.random();
-            const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
+    generateRandomDebugLights() {
+        const lights = [];
+        const r = Math.random();
+        const numLights = r < 0.2 ? 3 : (r < 0.7 ? 2 : 1);
+        const colorPalette = [
+            "#ff0000", "#00ff00", "#0000ff", "#ffff00",
+            "#00ffff", "#ff00ff", "#ff8000", "#ffffff",
+        ];
 
-            // Basic Vivid Colors
-            const colorPalette = [
-                { name: "Red", hex: "#ff0000" },
-                { name: "Green", hex: "#00ff00" },
-                { name: "Blue", hex: "#0000ff" },
-                { name: "Yellow", hex: "#ffff00" },
-                { name: "Cyan", hex: "#00ffff" },
-                { name: "Magenta", hex: "#ff00ff" },
-                { name: "Orange", hex: "#ff8000" },
-                { name: "White", hex: "#ffffff" }
-            ];
-
-            for (let i = 0; i < numLights; i++) {
-                const colorObj = colorPalette[Math.floor(Math.random() * colorPalette.length)];
-                const intensity = 2.0 + Math.random() * 1.5;
-                let x, y, z;
-                if (numLights > 1) {
-                    const slice = 120 / numLights;
-                    const center = -60 + slice * i + slice / 2;
-                    x = center + (Math.random() * 20 - 10);
-                } else {
-                    x = (Math.random() * 2 - 1) * 60;
-                }
-                y = 10 + Math.random() * 50;
-                z = Math.random() * 60;
-
-                let posDesc = "";
-                if (y > 40) posDesc += "top ";
-                else if (y < 20) posDesc += "low ";
-                if (x > 20) posDesc += "right";
-                else if (x < -20) posDesc += "left";
-                else if (z > 30) posDesc += "front";
-                else posDesc += "side";
-
-                let intDesc = "strong";
-                if (intensity > 3.0) intDesc = "blinding";
-                else if (intensity < 2.5) intDesc = "bright";
-
-                prompts.push(`${intDesc} ${colorObj.name} light from the ${posDesc.trim()}`);
-                lights.push({
-                    type: 'directional',
-                    color: colorObj.hex,
-                    intensity: parseFloat(intensity.toFixed(2)),
-                    x: parseFloat(x.toFixed(1)),
-                    y: parseFloat(y.toFixed(1)),
-                    z: parseFloat(z.toFixed(1))
-                });
+        for (let i = 0; i < numLights; i++) {
+            const intensity = 2.0 + Math.random() * 1.5;
+            let x;
+            if (numLights > 1) {
+                const slice = 120 / numLights;
+                const center = -60 + slice * i + slice / 2;
+                x = center + (Math.random() * 20 - 10);
+            } else {
+                x = (Math.random() * 2 - 1) * 60;
             }
-            lightingPrompt = prompts.join(". ") + ".";
-
-            // Random Ambient Light
-            let ambColor = '#505050';
-            let ambIntensity = 0.1;
-
-            if (Math.random() < 0.7) {
-                const h = Math.random();
-                const s = 0.3 + Math.random() * 0.7;
-                const l = 0.3 + Math.random() * 0.5;
-                const hue2rgb = (p, q, t) => {
-                    if (t < 0) t += 1;
-                    if (t > 1) t -= 1;
-                    if (t < 1 / 6) return p + (q - p) * 6 * t;
-                    if (t < 1 / 2) return q;
-                    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
-                    return p;
-                };
-                const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-                const p = 2 * l - q;
-                const r = Math.round(hue2rgb(p, q, h + 1 / 3) * 255);
-                const g = Math.round(hue2rgb(p, q, h) * 255);
-                const b = Math.round(hue2rgb(p, q, h - 1 / 3) * 255);
-                const toHex = c => {
-                    const hex = c.toString(16);
-                    return hex.length === 1 ? '0' + hex : hex;
-                };
-                ambColor = '#' + toHex(r) + toHex(g) + toHex(b);
-                ambIntensity = 0.2 + Math.random() * 1.0;
-            }
-
             lights.push({
-                type: 'ambient',
-                color: ambColor,
-                intensity: parseFloat(ambIntensity.toFixed(2)),
-                x: 0, y: 0, z: 0
+                type: "directional",
+                color: colorPalette[Math.floor(Math.random() * colorPalette.length)],
+                intensity: parseFloat(intensity.toFixed(2)),
+                x: parseFloat(x.toFixed(1)),
+                y: parseFloat((10 + Math.random() * 50).toFixed(1)),
+                z: parseFloat((Math.random() * 60).toFixed(1)),
             });
         }
 
-        // Debug background color (White)
-        const bgColor = [255, 255, 255];
-
-        return {
-            modelYRotation,
-            zoom: parseFloat(zoom.toFixed(2)),
-            offsetX: parseFloat(offsetX.toFixed(1)),
-            offsetY: parseFloat(offsetY.toFixed(1)),
-            lights,
-            lightingPrompt,
-            bgColor
-        };
+        let ambientColor = "#505050";
+        let ambientIntensity = 0.1;
+        if (Math.random() < 0.7) {
+            ambientColor = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+            ambientIntensity = 0.2 + Math.random();
+        }
+        lights.push({
+            type: "ambient",
+            color: ambientColor,
+            intensity: parseFloat(ambientIntensity.toFixed(2)),
+            x: 0,
+            y: 0,
+            z: 0,
+        });
+        return lights;
     }
 
     syncMeshProportionSlidersFromViewer() {
@@ -11114,6 +11076,9 @@ class PoseStudioWidget {
     syncToNode(fullCapture = false, options = {}) {
         if (this._isSyncing || this._animationCacheRestorePending) return;
         this._isSyncing = true;
+        if (Object.prototype.hasOwnProperty.call(options, "cameraPrompt")) {
+            this.setSkydomeFromCameraPrompt(options.cameraPrompt, { force: true });
+        }
         const animationMode = this.isAnimationMode();
         if (animationMode && !this._applyingAnimationPose) this.captureAnimationEdits();
         if (animationMode && this.animationState?.basePose) {
@@ -11121,11 +11086,25 @@ class PoseStudioWidget {
         }
         if (animationMode && !options.skipAnimationHistory) this.commitAnimationHistory();
         const animationCanCapture = animationMode && fullCapture;
+        const requestedDebugExecution = (
+            !animationMode
+            && fullCapture
+            && options.executionCapture === true
+            && this.exportParams.debugMode
+        );
+        const debugPose = requestedDebugExecution
+            ? this.selectRandomDebugLibraryPose()
+            : null;
+        const isDebugExecution = requestedDebugExecution && !!debugPose;
         const skipCapture = options.skipCapture === true
             || (animationMode && !animationCanCapture)
             || (options.skipCapture !== false && this.interfaceMode === "manager" && !fullCapture);
-        const capturePoses = animationCanCapture ? sampleAnimationFrames(this.animationState) : this.poses;
-        const outputCount = animationMode ? this.animationState.frameCount : this.poses.length;
+        const capturePoses = isDebugExecution
+            ? [debugPose]
+            : animationCanCapture ? sampleAnimationFrames(this.animationState) : this.poses;
+        const outputCount = isDebugExecution
+            ? 1
+            : animationMode ? this.animationState.frameCount : this.poses.length;
 
         if (this.radarRedraw) this.radarRedraw();
 
@@ -11167,53 +11146,51 @@ class PoseStudioWidget {
             const h = this.exportParams.view_height || 1024;
             const bg = this.exportParams.bg_color || [40, 40, 40];
 
-            // Debug/Export Mode: apply randomized params if needed
-            const isDebug = !animationMode && this.exportParams.debugMode;
             const isOriginalLighting = this.exportParams.keepOriginalLighting;
             const userLights = JSON.parse(JSON.stringify(this.lightParams));
             const currentCaptureCamera = this.currentCameraParams();
+            const debugPrompt = isDebugExecution ? this.getPosePrompt(this.activeTab) : "";
+            const debugLightingMode = resolveDebugLightingMode({
+                keepManualLighting: this.exportParams.debugKeepLighting,
+                keepOriginalLighting: isOriginalLighting,
+            });
+            const debugLights = isDebugExecution && debugLightingMode === "random"
+                ? this.generateRandomDebugLights()
+                : null;
 
             if (fullCapture) {
                 const originalTab = this.activeTab;
-                const originalLights = [...this.lightParams]; // Save original lighting
 
                 for (let i = 0; i < capturePoses.length; i++) {
-                    if (!animationMode) this.activeTab = i; // Switch tab for image-mode capture
+                    if (!animationMode && !isDebugExecution) {
+                        this.activeTab = i; // Switch tab for ordinary image-mode capture
+                    }
 
-                    if (isDebug) {
-                        // Generate fresh random params for each pose
-                        const debugParams = this.generateDebugParams();
-
-                        // Random Pose logic...
-                        let randomPoseUsed = false;
-                        if (this.libraryPoses && this.libraryPoses.length > 0) {
-                            const randIdx = Math.floor(Math.random() * this.libraryPoses.length);
-                            const poseItem = this.libraryPoses[randIdx];
-                            if (poseItem.data) {
-                                this.viewer.setPose(poseItem.data, true);
-                                randomPoseUsed = true;
-                            }
-                        }
-                        if (!randomPoseUsed) this.viewer.setPose(capturePoses[i], true);
-
-                        // Model Rotation
-                        const rArray = this.viewer.isInitialized() ? this.viewer.getPose().modelRotation : [0, 0, 0];
-                        const currentRot = { x: rArray[0], y: rArray[1], z: rArray[2] };
-                        this.viewer.setModelRotation(currentRot.x, debugParams.modelYRotation, currentRot.z);
-
-                        // Lighting
-                        if (isOriginalLighting) {
-                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
-                        } else if (debugParams.lights) {
-                            this.viewer.updateLights(debugParams.lights);
-                        }
-
-                        // Capture
-                        this.setPoseCapture(i, this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY));
-
-                        // Prompt
-                        const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || originalLights);
-                        this.lightingPrompts[i] = this.generatePromptFromLights(promptLights, this.getPosePrompt(i));
+                    if (isDebugExecution) {
+                        this.viewer.setPose(capturePoses[i], !capturePoses[i]?.camera);
+                        const poseCamera = resolveCaptureCameraParams(
+                            capturePoses[i].cameraParams,
+                            currentCaptureCamera,
+                            false,
+                        );
+                        const captureLights = debugLightingMode === "original"
+                            ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                            : debugLightingMode === "manual" ? userLights : debugLights;
+                        this.viewer.updateLights(captureLights);
+                        this.setPoseCapture(i, this.viewer.capture(
+                            w,
+                            h,
+                            poseCamera.zoom,
+                            bg,
+                            poseCamera.offset_x,
+                            poseCamera.offset_y,
+                            poseCamera.yaw_deg,
+                            poseCamera.pitch_deg,
+                        ));
+                        this.lightingPrompts[i] = this.generatePromptFromLights(
+                            isOriginalLighting ? [] : captureLights,
+                            debugPrompt,
+                        );
                     } else {
                         // Normal mode
                         this._applyingAnimationPose = animationMode;
@@ -11246,7 +11223,11 @@ class PoseStudioWidget {
                 }
 
                 // Restore original state and UI
-                this.viewer.updateLights(userLights);
+                this.viewer.updateLights(
+                    isOriginalLighting
+                        ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                        : userLights,
+                );
                 this.activeTab = originalTab;
                 if (animationMode) {
                     this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
@@ -11266,51 +11247,23 @@ class PoseStudioWidget {
 
             } else {
                 // Capture only ACTIVE
-                if (isDebug) {
-                    const debugParams = this.generateDebugParams();
-                    this.viewer.resetPose();
-                    this.viewer.setModelRotation(0, debugParams.modelYRotation, 0);
+                const z = this.exportParams.cam_zoom || 1.0;
+                const oX = this.exportParams.cam_offset_x || 0;
+                const oY = this.exportParams.cam_offset_y || 0;
+                const yaw = this.exportParams.cam_yaw_deg || 0;
+                const pitch = this.exportParams.cam_pitch_deg || 0;
 
-                    if (isOriginalLighting) {
-                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
-                    } else if (debugParams.lights) {
-                        this.viewer.updateLights(debugParams.lights);
-                    }
-
-                    this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, debugParams.zoom, debugParams.bgColor, debugParams.offsetX, debugParams.offsetY, 0, 0));
-
-                    const promptLights = isOriginalLighting ? [{ type: 'ambient', color: '#ffffff', intensity: 1.0 }] : (debugParams.lights || userLights);
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(promptLights, this.getPosePrompt(this.activeTab));
-
-                    this.viewer.updateLights(userLights);
-                    this.viewer.setPose(this.poses[this.activeTab], true);
-
-                    const z = this.exportParams.cam_zoom || 1.0;
-                    const oX = this.exportParams.cam_offset_x || 0;
-                    const oY = this.exportParams.cam_offset_y || 0;
-                    const yaw = this.exportParams.cam_yaw_deg || 0;
-                    const pitch = this.exportParams.cam_pitch_deg || 0;
-                    this.viewer.updateCaptureCamera(w, h, z, oX, oY, yaw, pitch);
+                if (isOriginalLighting) {
+                    this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                 } else {
-                    const z = this.exportParams.cam_zoom || 1.0;
-                    const oX = this.exportParams.cam_offset_x || 0;
-                    const oY = this.exportParams.cam_offset_y || 0;
-                    const yaw = this.exportParams.cam_yaw_deg || 0;
-                    const pitch = this.exportParams.cam_pitch_deg || 0;
-
-                    if (isOriginalLighting) {
-                        this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
-                    } else {
-                        this.viewer.updateLights(this.lightParams);
-                    }
-
-                    this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch));
-                    this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, this.getPosePrompt(this.activeTab));
-
-                    if (isOriginalLighting) {
-                        this.viewer.updateLights(userLights);
-                    }
+                    this.viewer.updateLights(this.lightParams);
                 }
+
+                this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, z, bg, oX, oY, yaw, pitch));
+                this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(
+                    isOriginalLighting ? [] : this.lightParams,
+                    this.getPosePrompt(this.activeTab),
+                );
             }
         }
 
@@ -11320,6 +11273,7 @@ class PoseStudioWidget {
         // uploaded separately and the widget stores compact cache references.
         const exportToSave = { ...this.exportParams };
         delete exportToSave.background_url;
+        delete exportToSave.debugPortraitMode;
 
         // captured_images are excluded from the widget to avoid inflating workflow size
         // (each 1024×1024 PNG is ~500KB base64; multiple poses exceed ComfyUI localStorage limit)
@@ -11478,6 +11432,7 @@ class PoseStudioWidget {
 
             if (data.export) {
                 this.exportParams = { ...this.exportParams, ...data.export };
+                delete this.exportParams.debugPortraitMode;
                 if (!data.export.editor_mode && data.export.content_mode) {
                     this.exportParams.editor_mode = data.export.content_mode;
                 }
@@ -11504,6 +11459,7 @@ class PoseStudioWidget {
                 this.viewer.setKpFigureVisible(this.exportParams.debugShowSAMHelper !== false);
             }
             this.viewer?.setUseHandControlPopover?.(this.exportParams.hand_controls_v2 !== false);
+            this.applyDirectionalSkydomeSetting();
             if (this.updateOverrideBtn) this.updateOverrideBtn();
 
             const savedImagePoses = Array.isArray(data.image_poses) ? data.image_poses : data.poses;
@@ -11714,14 +11670,26 @@ app.registerExtension({
             return api;
         })();
 
-        const uploadPoseStudioSync = async (node, nodeId) => {
+        const waitForPoseStudioSyncIdle = async (widget, timeoutMs = 5000) => {
+            const deadline = Date.now() + timeoutMs;
+            while (widget?._isSyncing && Date.now() < deadline) {
+                await new Promise(resolve => setTimeout(resolve, 16));
+            }
+            if (widget?._isSyncing) {
+                throw new Error("Pose Studio is still synchronizing another capture.");
+            }
+        };
+
+        const uploadPoseStudioSync = async (node, nodeId, syncToken = "") => {
             const poseWidget = node.widgets.find(w => w.name === "pose_data");
             if (!poseWidget) return;
             const widgetData = JSON.parse(poseWidget.value);
             const animationCacheReady = await node.studioWidget.flushAnimationCacheUpload();
+            const syncFileId = syncToken ? `${nodeId}_${syncToken}` : nodeId;
             const payload = {
                 ...widgetData,
-                node_id: nodeId,
+                node_id: syncFileId,
+                sync_token: syncToken || undefined,
                 // Normal execution stays compact and lets Python hydrate the
                 // server cache. If the cache upload failed, include the live
                 // state once so execution still cannot lose the animation.
@@ -11741,6 +11709,8 @@ app.registerExtension({
 
         api.addEventListener("vnccs_req_pose_sync", async (event) => {
             const nodeId = event.detail.node_id;
+            const cameraPrompt = String(event.detail.camera_prompt ?? "");
+            const syncToken = String(event.detail.sync_token ?? "");
             const node = app.graph.getNodeById(nodeId);
             if (node && node.studioWidget) {
                 try {
@@ -11752,16 +11722,25 @@ app.registerExtension({
                     if (!node.studioWidget.viewer || !node.studioWidget.viewer.isInitialized()) {
                         await node.studioWidget.loadModel();
                     }
+                    await node.studioWidget.ensureDebugLibraryReady();
 
                     // Update lights and state before capture
                     if (node.studioWidget.viewer) {
-                        node.studioWidget.viewer.updateLights(node.studioWidget.lightParams);
+                        node.studioWidget.viewer.updateLights(
+                            node.studioWidget.exportParams.keepOriginalLighting
+                                ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                                : node.studioWidget.lightParams,
+                        );
                     }
-                    node.studioWidget.syncToNode(true);
+                    await waitForPoseStudioSyncIdle(node.studioWidget);
+                    node.studioWidget.syncToNode(true, {
+                        cameraPrompt,
+                        executionCapture: true,
+                    });
 
                     // Build payload from widget metadata + in-memory captures
                     // (captured_images are no longer stored in the widget to keep workflow size small)
-                    await uploadPoseStudioSync(node, nodeId);
+                    await uploadPoseStudioSync(node, nodeId, syncToken);
                 } catch (e) {
                     console.error("[VNCCS] Batch Sync Error:", e);
                 }
@@ -11771,6 +11750,8 @@ app.registerExtension({
         api.addEventListener("vnccs_apply_sam3d_pose", async (event) => {
             const nodeId = event.detail.node_id;
             const poseData = event.detail.pose_data;
+            const cameraPrompt = String(event.detail.camera_prompt ?? "");
+            const syncToken = String(event.detail.sync_token ?? "");
             const node = app.graph.getNodeById(nodeId);
             if (!node?.studioWidget || !poseData) return;
 
@@ -11799,10 +11780,19 @@ app.registerExtension({
                 }
                 widget.syncMeshProportionSlidersFromViewer();
                 widget.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
+                widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
 
                 widget.updateTabs();
-                widget.commitViewerPoseToCurrentEditor({ fullCapture: true });
-                await uploadPoseStudioSync(node, nodeId);
+                await widget.ensureDebugLibraryReady();
+                await waitForPoseStudioSyncIdle(widget);
+                widget.commitViewerPoseToCurrentEditor({
+                    fullCapture: true,
+                    syncOptions: {
+                        cameraPrompt,
+                        executionCapture: true,
+                    },
+                });
+                await uploadPoseStudioSync(node, nodeId, syncToken);
             } catch (e) {
                 console.error("[VNCCS] SAM3D pose_image apply error:", e);
             }
@@ -11829,6 +11819,27 @@ app.registerExtension({
                 node.addInput("pose_image", "IMAGE");
             }
             node._vnccsPoseImageInputDisabled = false;
+        };
+
+        const setCameraPromptInputDisabled = (node, disabled) => {
+            if (!node) return;
+            const inputIndex = node.inputs?.findIndex(input => input?.name === "camera_prompt") ?? -1;
+            if (disabled) {
+                if (inputIndex >= 0) {
+                    if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
+                    if (typeof node.removeInput === "function") node.removeInput(inputIndex);
+                    else node.inputs.splice(inputIndex, 1);
+                }
+                node._vnccsCameraPromptInputDisabled = true;
+                node.setDirtyCanvas?.(true, true);
+                return;
+            }
+
+            if (inputIndex < 0 && typeof node.addInput === "function") {
+                node.addInput("camera_prompt", "STRING");
+            }
+            node._vnccsCameraPromptInputDisabled = false;
+            node.setDirtyCanvas?.(true, true);
         };
 
         const syncStudioDOMWidgetWidth = (node) => {
@@ -11862,6 +11873,8 @@ app.registerExtension({
             // Create widget
             this.studioWidget = new PoseStudioWidget(this);
             this._vnccsSetPoseImageInputDisabled = (disabled) => setPoseImageInputDisabled(this, disabled);
+            this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);
+            this.studioWidget.applyDirectionalSkydomeSetting();
 
             const studioDOMWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
                 serialize: false,

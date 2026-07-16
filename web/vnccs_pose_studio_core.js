@@ -928,6 +928,9 @@ export class PoseViewerCore {
         this.renderer = null;
         this.orbit = null;
         this.transform = null;
+        this.directionalSkydome = null;
+        this.directionalSkydomeVisible = true;
+        this.directionalSkydomeOrientation = { yawDegrees: 0, pitchDegrees: 0 };
 
         this.skinnedMesh = null;
         this.skeleton = null;
@@ -1181,6 +1184,7 @@ export class PoseViewerCore {
         this.bones = {};
         this.boneList = [];
         this.ikController = null;
+        this.directionalSkydome = null;
         this.options = null;
     }
 
@@ -1225,6 +1229,7 @@ export class PoseViewerCore {
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x1a1a2e);
+        this._createDirectionalSkydome();
 
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
@@ -1328,7 +1333,7 @@ export class PoseViewerCore {
         this.lights = [defaultLight];
 
         // Capture Camera (Independent of Orbit camera)
-        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 100);
+        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 500);
         this.scene.add(this.captureCamera);
 
         // Visual Helper - Orange Frame
@@ -1348,6 +1353,127 @@ export class PoseViewerCore {
 
         this.hoveredBoneName = null;
         this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
+    }
+
+    _createDirectionalSkydome() {
+        if (!this.THREE || !this.scene || this.directionalSkydome) return;
+
+        const THREE = this.THREE;
+        const geometry = new THREE.SphereGeometry(30, 96, 48);
+        const material = new THREE.ShaderMaterial({
+            vertexShader: `
+                varying vec3 vLocalDirection;
+
+                void main() {
+                    vLocalDirection = normalize(position);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vLocalDirection;
+
+                const float PI = 3.141592653589793;
+                const float TAU = 6.283185307179586;
+
+                vec3 hsvToRgb(vec3 c) {
+                    vec3 p = abs(fract(c.xxx + vec3(0.0, 0.6666667, 0.3333333)) * 6.0 - 3.0);
+                    vec3 rgb = clamp(p - 1.0, 0.0, 1.0);
+                    return c.z * mix(vec3(1.0), rgb, c.y);
+                }
+
+                void main() {
+                    vec3 direction = normalize(vLocalDirection);
+                    float longitude = atan(direction.z, direction.x);
+                    float latitude = asin(clamp(direction.y, -1.0, 1.0));
+
+                    // Color exists only on the grid. Longitude supplies the
+                    // compass direction while latitude distinguishes high/low.
+                    float hue = fract((longitude / TAU) + 0.5 + (direction.y + 1.0) * 0.16);
+                    vec3 rainbow = hsvToRgb(vec3(hue, 1.0, 1.0));
+
+                    float meridians = 1.0 - smoothstep(
+                        0.0,
+                        0.04,
+                        abs(sin(longitude * 18.0))
+                    );
+                    float parallels = 1.0 - smoothstep(
+                        0.0,
+                        0.04,
+                        abs(sin((latitude + PI * 0.5) * 18.0))
+                    );
+                    float equator = 1.0 - smoothstep(0.0, 0.018, abs(direction.y));
+                    float grid = max(max(meridians, parallels), equator);
+
+                    if (grid <= 0.001) discard;
+                    gl_FragColor = vec4(rainbow, grid * 0.48);
+                }
+            `,
+            side: THREE.BackSide,
+            depthTest: true,
+            depthWrite: false,
+            transparent: true,
+            toneMapped: false,
+        });
+
+        const skydome = new THREE.Mesh(geometry, material);
+        skydome.name = "VNCCS_DirectionalSkydome";
+        skydome.renderOrder = -1000;
+        skydome.frustumCulled = false;
+        skydome.visible = this.directionalSkydomeVisible;
+        skydome.onBeforeRender = () => {
+            if (this.meshCenter) {
+                skydome.position.copy(this.meshCenter);
+                skydome.updateMatrixWorld(true);
+            }
+        };
+
+        this.directionalSkydome = skydome;
+        this.scene.add(skydome);
+        this.setDirectionalSkydomeOrientation(
+            this.directionalSkydomeOrientation.yawDegrees,
+            this.directionalSkydomeOrientation.pitchDegrees,
+        );
+    }
+
+    setDirectionalSkydomeVisible(visible) {
+        this.directionalSkydomeVisible = visible !== false;
+        if (this.directionalSkydome) {
+            this.directionalSkydome.visible = this.directionalSkydomeVisible;
+        }
+        this.requestRender();
+    }
+
+    setDirectionalSkydomeOrientation(yawDegrees = 0, pitchDegrees = 0) {
+        const yaw = Number(yawDegrees) || 0;
+        const pitch = Number(pitchDegrees) || 0;
+        this.directionalSkydomeOrientation = {
+            yawDegrees: yaw,
+            pitchDegrees: pitch,
+        };
+
+        if (this.directionalSkydome && this.THREE) {
+            if (yaw === 0 && pitch === 0) {
+                this.directionalSkydome.quaternion.identity();
+            } else {
+                const yawQuaternion = new this.THREE.Quaternion().setFromAxisAngle(
+                    new this.THREE.Vector3(0, 1, 0),
+                    this.THREE.MathUtils.degToRad(yaw),
+                );
+                const pitchQuaternion = new this.THREE.Quaternion().setFromAxisAngle(
+                    new this.THREE.Vector3(1, 0, 0),
+                    this.THREE.MathUtils.degToRad(pitch),
+                );
+
+                // Apply compass direction first, then camera height around the
+                // screen-horizontal axis. This keeps the skydome horizon level
+                // instead of introducing roll when yaw and pitch are combined.
+                this.directionalSkydome.quaternion
+                    .copy(pitchQuaternion)
+                    .multiply(yawQuaternion)
+                    .normalize();
+            }
+        }
+        this.requestRender();
     }
 
     // === Light Management ===

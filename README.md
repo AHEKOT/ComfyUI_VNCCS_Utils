@@ -80,6 +80,7 @@ An interactive node with a visual widget for controlling camera position. It is 
 *   **Visual Widget**: Select azimuth and distance with the mouse.
 *   **Elevation Slider**: Pick elevation from -30° to 60°.
 *   **Trigger Word Toggle**: Enable or disable the `<sks>` trigger from the widget.
+*   **Random Range Toggle**: Randomize across the full 360° or restrict random views to the front ±45° while keeping elevation and distance random.
 
 ### VNCCS QWEN Detailer
 **[Example Workflow](workflows/VNCCS_Utils%20QwenDetailer_ChangeEmotion.json)**

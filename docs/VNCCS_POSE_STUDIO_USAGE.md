@@ -32,6 +32,7 @@ Inputs:
 | --- | --- | --- | --- |
 | `pose_data` | `STRING` | hidden | Main JSON state written by the custom Pose Studio UI. |
 | `pose_image` | `IMAGE` | optional | Studio mode only. Runs SAM 3D Body image-to-pose import and applies the result to the frontend pose. Disabled in VNCCS Pose Manager mode. |
+| `camera_prompt` | `STRING` | settings-controlled socket | Connect `VNCCS Visual Camera Control`. It is available only while `Directional Skydome` is enabled. Pose Studio removes `<sks>`, rewrites the camera tokens as natural text, and appends them to each generated prompt. |
 | `unique_id` | ComfyUI hidden | hidden | Used for backend/frontend synchronization. |
 
 Outputs:
@@ -39,11 +40,12 @@ Outputs:
 | Output | Type | Notes |
 | --- | --- | --- |
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
-| `lighting_prompt` | `STRING` list | Lighting prompt aligned with `images`. |
+| `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
 
 Important backend behavior:
 
-- The node requests a fresh frontend sync before execution when `captured_images` are not already present.
+- The node requests a fresh frontend sync for every execution.
+- When `Directional Skydome` is enabled in Settings, a transparent rainbow wire-grid skydome is rendered behind the mannequin and included in captures. Pose Studio parses azimuth and elevation from each execution's resolved `camera_prompt` and rotates the grid before capture, including high- and low-angle views. Disabling the setting hides the skydome from the interface and export, removes the `camera_prompt` socket, and disables camera-prompt merging.
 - If `pose_image` is connected in Studio mode, the backend runs SAM 3D Body, sends the imported pose back to the UI, waits for sync, and then renders the updated state.
 - If `pose_data.export.interface_mode` is `manager`, `pose_image` is ignored and the frontend removes that input port.
 - Captured image payloads are limited to 16 images, 64 MiB of base64 text total, 32 MiB decoded bytes per image, and 4096 x 4096 pixels per image.
@@ -211,6 +213,7 @@ Common settings:
 | camera offsets | Shift subject inside the frame. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
+| `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
 
 Tips:
 
@@ -234,6 +237,22 @@ Lighting controls include:
 The `lighting_prompt` output is intended to be appended to your generation
 prompt. It is especially useful when you want image lighting and text prompt
 lighting to agree.
+
+### Debug Mode Lighting
+
+For each queued execution, Debug Mode selects exactly one fully loaded pose from
+the pose library and applies that library entry as saved, including its stored
+rotation and camera data. It does not add any extra random model rotation,
+camera angle, framing, zoom, or offsets.
+
+Lighting behavior is controlled separately:
+
+- With `Keep Manual Lighting` disabled, Debug Mode may generate temporary random
+  lights for that capture.
+- With `Keep Manual Lighting` enabled, the complete current lighting state is
+  preserved and random light generation is skipped.
+- `Keeping Original Lighting` takes precedence and is preserved as part of the
+  manual lighting state.
 
 ## Pose Library
 

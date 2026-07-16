@@ -27,10 +27,12 @@ import {
     playbackFrameForElapsed,
     pasteKeyframeSelection,
     resolveCaptureCameraParams,
+    resolveDebugLightingMode,
     restoreAnimationStateSnapshot,
     retimeAnimationFrameCount,
     retimeAnimationTiming,
     serializeAnimationStateSnapshot,
+    selectRandomLibraryPoseData,
     setTrackKeyframeFromEuler,
     timelineContentPointToPosition,
     timelineFingerGroupIdForTrack,
@@ -39,6 +41,47 @@ import {
 } from "../web/vnccs_pose_animation.mjs";
 
 const angleDistance = (a, b) => Math.abs(((b - a + 540) % 360) - 180);
+
+test("debug execution selects one complete library pose", () => {
+    const first = {
+        bones: { head: [10, 20, 30] },
+        modelRotation: [5, 15, 25],
+        cameraParams: { zoom: 2.25, yaw_deg: 35 },
+    };
+    const second = {
+        bones: { spine: [1, 2, 3] },
+        modelRotation: [-5, -15, -25],
+        camera: { posX: 1, posY: 2, posZ: 3 },
+    };
+    const library = [
+        { name: "metadata-only" },
+        { name: "first", data: first },
+        { name: "second", data: second },
+    ];
+
+    assert.equal(selectRandomLibraryPoseData(library, () => 0), first);
+    assert.equal(selectRandomLibraryPoseData(library, () => 0.999999), second);
+    assert.equal(selectRandomLibraryPoseData([], () => 0.5), null);
+});
+
+test("debug lighting preserves original and manual modes before random lighting", () => {
+    assert.equal(resolveDebugLightingMode(), "random");
+    assert.equal(
+        resolveDebugLightingMode({ keepManualLighting: true }),
+        "manual",
+    );
+    assert.equal(
+        resolveDebugLightingMode({
+            keepManualLighting: true,
+            keepOriginalLighting: true,
+        }),
+        "original",
+    );
+    assert.equal(
+        resolveDebugLightingMode({ keepOriginalLighting: true }),
+        "original",
+    );
+});
 
 test("quaternion animation follows the shortest path across 180 degrees", () => {
     const state = createDefaultAnimationState({}, { frameCount: 11, duration: 1 });
