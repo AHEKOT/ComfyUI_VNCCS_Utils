@@ -11076,14 +11076,14 @@ class PoseStudioWidget {
         // Lightweight sync for prompt/data (no capture) - Debounced to prevent UI lag during drag
         clearTimeout(this.lightingQuickSyncTimeout);
         this.lightingQuickSyncTimeout = setTimeout(() => {
-            this.syncToNode(false);
+            this.syncToNode(false, { skipCapture: true });
         }, 100);
 
-        // Debounce full capture (previews) to avoid lag/shaking during drag
+        // Interactive lighting changes are captured immediately before execution.
+        // A synchronous 1024px PNG capture here blocks the UI after every drag,
+        // and a full capture repeats that work for every pose.
         clearTimeout(this.lightingSyncTimeout);
-        this.lightingSyncTimeout = setTimeout(() => {
-            this.syncToNode(true);
-        }, 500);
+        this.lightingSyncTimeout = null;
     }
 
     updateRotationSliders() {
@@ -11734,7 +11734,15 @@ class PoseStudioWidget {
             ? this.selectRandomDebugLibraryPose()
             : null;
         const isDebugExecution = requestedDebugExecution && !!debugPose;
+        // PNG encoding is synchronous (`canvas.toDataURL`) and can occupy the
+        // main thread for hundreds of milliseconds. Normal UI edits only need to
+        // persist pose/settings data; execution explicitly requests fresh captures
+        // with `executionCapture: true`. `skipCapture: false` remains available for
+        // the few UI actions which intentionally need a preview image immediately.
+        const captureExplicitlyRequested = options.executionCapture === true
+            || options.skipCapture === false;
         const skipCapture = options.skipCapture === true
+            || !captureExplicitlyRequested
             || (animationMode && !animationCanCapture)
             || (options.skipCapture !== false && this.interfaceMode === "manager" && !fullCapture);
         const capturePoses = isDebugExecution
