@@ -1084,6 +1084,8 @@ export class PoseViewerCore {
         this._captureBatch = null;
         this._needsRender = true;
         this._renderFrame = null;
+        this._viewportSizeObserved = false;
+        this._viewportBufferLocked = false;
         this._hoverPointerFrame = null;
         this._pendingHoverPointer = null;
 
@@ -1305,6 +1307,7 @@ export class PoseViewerCore {
         this.ikController = null;
         this.directionalSkydome = null;
         this._captureBatch = null;
+        this._viewportBufferLocked = false;
         this._raycaster = null;
         this._pointerNdc = null;
         this._pointerWorldPosition = null;
@@ -1362,6 +1365,9 @@ export class PoseViewerCore {
             preserveDrawingBuffer: true
         });
         this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
+        // resize() may have received the real DOM viewport while Three.js modules
+        // were still loading. In that case this is already the stable editor buffer.
+        this._viewportBufferLocked = this._viewportSizeObserved;
         // More than 2x DPR is very costly for a preserveDrawingBuffer WebGL canvas
         // and brings little visible benefit inside a graph node.
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -2859,20 +2865,35 @@ export class PoseViewerCore {
 
     resize(w, h) {
         if (!(w > 0 && h > 0)) return;
-        const sizeChanged = w !== this.width || h !== this.height;
+        const profile = typeof this.options?.profileResizePhase === 'function'
+            ? this.options.profileResizePhase
+            : (_name, callback) => callback();
         this.width = w;
         this.height = h;
-        // Pass false to NOT update canvas CSS style (CSS 100% rule handles that).
-        // This prevents layout thrashing in ComfyUI node2.0 mode.
-        if (this.renderer && sizeChanged) this.renderer.setSize(w, h, false);
+        this._viewportSizeObserved = true;
+
+        // WebGLRenderer.setSize() reallocates the antialiased preserved drawing
+        // buffer. Doing that for every node-resize tick is the main difference
+        // from the lightweight UniCanvas 2D path. Allocate once at the first real
+        // DOM size, then keep the editor buffer stable. CSS still fills the panel;
+        // updating camera.aspect below compensates for its current shape, so the
+        // mannequin keeps correct proportions without repeated GPU allocations.
+        if (this.renderer && !this._viewportBufferLocked) {
+            profile("Three WebGL buffer allocation", () => {
+                this.renderer.setSize(w, h, false);
+            });
+            this._viewportBufferLocked = true;
+        }
         if (this.camera) {
-            this.camera.aspect = w / h;
-            this.camera.updateProjectionMatrix();
+            profile("Three camera projection", () => {
+                this.camera.aspect = w / h;
+                this.camera.updateProjectionMatrix();
+            });
         }
         if (this.initialized && this.renderer && this.scene && this.camera) {
-            // setSize() clears the backing buffer. Render in the same task so the
-            // browser never presents that cleared intermediate frame.
-            this.renderer.render(this.scene, this.camera);
+            profile("Three renderer.render", () => {
+                this.renderer.render(this.scene, this.camera);
+            });
             this._needsRender = false;
         } else {
             this.requestRender();

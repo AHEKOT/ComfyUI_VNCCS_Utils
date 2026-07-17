@@ -5,6 +5,7 @@
 import { app } from "../../scripts/app.js";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
+const UNICANVAS_LAYOUT_LOG_ENABLED = false;
 
 const STYLES = `
 .vnccs-unicanvas {
@@ -2267,6 +2268,7 @@ class UniCanvasWidget {
   }
 
   scheduleUILayoutLog(reason = "layout") {
+    if (!UNICANVAS_LAYOUT_LOG_ENABLED) return;
     clearTimeout(this.layoutLogTimer);
     this.layoutLogTimer = setTimeout(() => {
       this.layoutLogTimer = null;
@@ -2275,6 +2277,7 @@ class UniCanvasWidget {
   }
 
   logUILayout(reason = "layout") {
+    if (!UNICANVAS_LAYOUT_LOG_ENABLED) return;
     if (!this.container || !this.stageWrap) return;
     const containerRect = this.container.getBoundingClientRect();
     const stageRect = this.stageWrap.getBoundingClientRect();

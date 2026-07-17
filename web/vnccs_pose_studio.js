@@ -104,6 +104,53 @@ const EXTENSION_URL = new URL(".", import.meta.url).toString();
 const POSE_STUDIO_LAYOUT_BASE_WIDTH = 220 / 0.1663;
 const POSE_STUDIO_LAYOUT_BASE_HEIGHT = 37 / 0.0346;
 const POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE = 1.55;
+const POSE_STUDIO_LAYOUT_LOG_ENABLED = false;
+
+// Enable from DevTools with:
+// window.__VNCCS_POSE_RESIZE_PROFILE = { enabled: true }
+// Every measured phase is also emitted as a User Timing entry so it appears in
+// the Performance flame chart. The profiler is a no-op while disabled.
+function profilePoseStudioResize(name, callback) {
+    const config = globalThis.__VNCCS_POSE_RESIZE_PROFILE;
+    if (!config?.enabled || typeof performance === "undefined") return callback();
+
+    const start = performance.now();
+    try {
+        return callback();
+    } finally {
+        const duration = performance.now() - start;
+        const stats = config._stats || (config._stats = new Map());
+        const current = stats.get(name) || { phase: name, calls: 0, totalMs: 0, maxMs: 0 };
+        current.calls += 1;
+        current.totalMs += duration;
+        current.maxMs = Math.max(current.maxMs, duration);
+        stats.set(name, current);
+
+        try {
+            performance.measure(`VNCCS Pose resize / ${name}`, {
+                start,
+                duration,
+            });
+        } catch (_) {}
+
+        clearTimeout(config._reportTimer);
+        config._reportTimer = setTimeout(() => {
+            config._reportTimer = null;
+            const rows = Array.from(config._stats?.values?.() || []).map(row => ({
+                phase: row.phase,
+                calls: row.calls,
+                totalMs: Number(row.totalMs.toFixed(2)),
+                avgMs: Number((row.totalMs / Math.max(1, row.calls)).toFixed(2)),
+                maxMs: Number(row.maxMs.toFixed(2)),
+            })).sort((a, b) => b.totalMs - a.totalMs);
+            config._stats = new Map();
+            console.groupCollapsed("VNCCS Pose Studio resize profile");
+            console.table(rows);
+            console.log("If measured JS phases are fast but frames are still slow, inspect GPU/Paint/Composite in the Performance trace.");
+            console.groupEnd();
+        }, 350);
+    }
+}
 
 // === Styles ===
 const STYLES = `
@@ -3642,6 +3689,13 @@ class PoseStudioWidget {
         this.managerLayoutFrame = null;
         this._lastManagerLayoutKey = null;
         this.layoutLogTimer = null;
+        this._observedContainerWidth = 0;
+        this._observedContainerHeight = 0;
+        this._observedCanvasWidth = 0;
+        this._observedCanvasHeight = 0;
+        this._uiScaleCommitTimer = null;
+        this._forceNextUIScaleCommit = false;
+        this._handPopoverResizeFrame = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -5058,6 +5112,7 @@ class PoseStudioWidget {
             showCaptureFrame: true,
             syncMode: 'end',
             useHandControlPopover: this.exportParams.hand_controls_v2 !== false,
+            profileResizePhase: profilePoseStudioResize,
             onHandHover: ({ side }) => {
                 this._hoveredHandSide = side;
                 if (!side && !this._activeHandSide) {
@@ -11082,36 +11137,32 @@ class PoseStudioWidget {
     }
 
     resize({ forceUIScale = false } = {}) {
-        this.updateMainUIScale({ force: forceUIScale });
+        this.scheduleMainUIScaleCommit({ force: forceUIScale });
         this.scheduleUILayoutLog("resize");
         if (this.interfaceMode === "manager") {
             this.schedulePoseManagerGridLayout();
             return;
         }
-        // Resize and repaint before this animation frame is presented. The canvas
-        // backing buffer therefore always matches its CSS box and the browser never
-        // stretches an old frame while the node is being dragged.
         this.performViewerResize();
     }
 
-    performViewerResize() {
+    performViewerResize(width = this._observedCanvasWidth, height = this._observedCanvasHeight) {
         if (!this.viewer || !this.canvasContainer || this.interfaceMode === "manager") return;
-        const rect = this.canvasContainer.getBoundingClientRect();
-        const targetW = Math.round(rect.width);
-        const targetH = Math.round(rect.height);
+        const targetW = Math.round(Number(width) || 0);
+        const targetH = Math.round(Number(height) || 0);
         if (targetW <= 1 || targetH <= 1) return;
 
         if (targetW === this._lastResizeW && targetH === this._lastResizeH) return;
 
         this._lastResizeW = targetW;
         this._lastResizeH = targetH;
-        this.viewer.resize(targetW, targetH);
-        if (this._activeHandSide) {
-            this.positionHandControlPopover(this._activeHandSide);
-        }
+        profilePoseStudioResize("PoseViewer resize total", () => {
+            this.viewer.resize(targetW, targetH);
+        });
     }
 
     scheduleUILayoutLog(reason = "layout") {
+        if (!POSE_STUDIO_LAYOUT_LOG_ENABLED) return;
         clearTimeout(this.layoutLogTimer);
         this.layoutLogTimer = setTimeout(() => {
             this.layoutLogTimer = null;
@@ -11120,6 +11171,7 @@ class PoseStudioWidget {
     }
 
     logUILayout(reason = "layout") {
+        if (!POSE_STUDIO_LAYOUT_LOG_ENABLED) return;
         if (!this.container || !this.centerPanel || !this.canvasContainer) return;
         const containerRect = this.container.getBoundingClientRect();
         const centerRect = this.centerPanel.getBoundingClientRect();
@@ -11200,13 +11252,17 @@ class PoseStudioWidget {
         console.groupEnd();
     }
 
-    updateMainUIScale({ force = false } = {}) {
+    updateMainUIScale({
+        force = false,
+        width = this._observedContainerWidth,
+        height = this._observedContainerHeight,
+    } = {}) {
         if (!this.container) return;
-        const width = this.container.clientWidth || this.node?.size?.[0] || 900;
-        const height = this.container.clientHeight || this.node?.size?.[1] || 740;
+        const resolvedWidth = Number(width) || Number(this.node?.size?.[0]) || 900;
+        const resolvedHeight = Number(height) || Number(this.node?.size?.[1]) || 740;
         const scale = Math.max(0.35, Math.min(2.5, Math.min(
-            width / POSE_STUDIO_LAYOUT_BASE_WIDTH,
-            height / POSE_STUDIO_LAYOUT_BASE_HEIGHT,
+            resolvedWidth / POSE_STUDIO_LAYOUT_BASE_WIDTH,
+            resolvedHeight / POSE_STUDIO_LAYOUT_BASE_HEIGHT,
         )));
         const next = scale.toFixed(3);
         const relativeNext = (scale / POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE).toFixed(3);
@@ -11223,21 +11279,84 @@ class PoseStudioWidget {
         return true;
     }
 
+    scheduleMainUIScaleCommit({ width = null, height = null, force = false } = {}) {
+        const nextWidth = Number(width);
+        const nextHeight = Number(height);
+        if (Number.isFinite(nextWidth) && nextWidth > 0) {
+            this._observedContainerWidth = nextWidth;
+        }
+        if (Number.isFinite(nextHeight) && nextHeight > 0) {
+            this._observedContainerHeight = nextHeight;
+        }
+        this._forceNextUIScaleCommit ||= force;
+
+        clearTimeout(this._uiScaleCommitTimer);
+        this._uiScaleCommitTimer = setTimeout(() => {
+            this._uiScaleCommitTimer = null;
+            const shouldForce = this._forceNextUIScaleCommit;
+            this._forceNextUIScaleCommit = false;
+            profilePoseStudioResize("UI scale/style update", () => {
+                this.updateMainUIScale({
+                    force: shouldForce,
+                    width: this._observedContainerWidth,
+                    height: this._observedContainerHeight,
+                });
+            });
+
+            // Popover positioning reads several layout metrics. Keep it out of the
+            // resize hot path and run it only after the settled layout was painted.
+            if (this._activeHandSide) {
+                if (this._handPopoverResizeFrame) {
+                    cancelAnimationFrame(this._handPopoverResizeFrame);
+                }
+                this._handPopoverResizeFrame = requestAnimationFrame(() => {
+                    this._handPopoverResizeFrame = requestAnimationFrame(() => {
+                        this._handPopoverResizeFrame = null;
+                        if (this._activeHandSide) {
+                            this.positionHandControlPopover(this._activeHandSide);
+                        }
+                    });
+                });
+            }
+        }, 120);
+    }
+
     startResizeObserver() {
         if (this._containerResizeObserver || !this.canvasContainer) return;
 
-        this._containerResizeObserver = new ResizeObserver(() => {
-            this.scheduleUILayoutLog("resize");
-            if (this.interfaceMode === "manager") {
-                this.schedulePoseManagerGridLayout();
-                return;
-            }
-            // ResizeObserver runs before paint. Updating the drawing buffer here
-            // prevents the browser from ever displaying a CSS-scaled stale frame.
-            this.performViewerResize();
+        this._containerResizeObserver = new ResizeObserver((entries) => {
+            profilePoseStudioResize("ResizeObserver callback", () => {
+                let canvasWidth = 0;
+                let canvasHeight = 0;
+
+                for (const entry of entries) {
+                    const contentBox = Array.isArray(entry.contentBoxSize)
+                        ? entry.contentBoxSize[0]
+                        : entry.contentBoxSize;
+                    const width = Number(contentBox?.inlineSize ?? entry.contentRect?.width) || 0;
+                    const height = Number(contentBox?.blockSize ?? entry.contentRect?.height) || 0;
+
+                    if (entry.target === this.container) {
+                        this.scheduleMainUIScaleCommit({ width, height });
+                    } else if (entry.target === this.canvasContainer) {
+                        this._observedCanvasWidth = width;
+                        this._observedCanvasHeight = height;
+                        canvasWidth = width;
+                        canvasHeight = height;
+                    }
+                }
+
+                this.scheduleUILayoutLog("resize");
+                if (this.interfaceMode === "manager") {
+                    this.schedulePoseManagerGridLayout();
+                    return;
+                }
+                if (canvasWidth > 0 && canvasHeight > 0) {
+                    this.performViewerResize(canvasWidth, canvasHeight);
+                }
+            });
         });
 
-        this.updateMainUIScale();
         if (this.container) this._containerResizeObserver.observe(this.container);
         this._containerResizeObserver.observe(this.canvasContainer);
     }
@@ -12455,8 +12574,9 @@ app.registerExtension({
             if (!node || node._vnccsPoseWidthFrame) return;
             node._vnccsPoseWidthFrame = requestAnimationFrame(() => {
                 node._vnccsPoseWidthFrame = null;
-                syncStudioDOMWidgetWidth(node);
-                node.studioWidget?.resize?.();
+                profilePoseStudioResize("Comfy DOM widget triggerDraw", () => {
+                    syncStudioDOMWidgetWidth(node);
+                });
             });
         };
 
@@ -12527,7 +12647,7 @@ app.registerExtension({
                 clearTimeout(this.resizeTimer);
                 this.resizeTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
-                    this.studioWidget.resize({ forceUIScale: true });
+                    this.studioWidget.scheduleMainUIScaleCommit({ force: true });
                 }, 50);
             }
         };
@@ -12616,6 +12736,14 @@ app.registerExtension({
                 if (this.studioWidget.layoutLogTimer) {
                     clearTimeout(this.studioWidget.layoutLogTimer);
                     this.studioWidget.layoutLogTimer = null;
+                }
+                if (this.studioWidget._uiScaleCommitTimer) {
+                    clearTimeout(this.studioWidget._uiScaleCommitTimer);
+                    this.studioWidget._uiScaleCommitTimer = null;
+                }
+                if (this.studioWidget._handPopoverResizeFrame) {
+                    cancelAnimationFrame(this.studioWidget._handPopoverResizeFrame);
+                    this.studioWidget._handPopoverResizeFrame = null;
                 }
                 if (this.studioWidget._managerPreviewRefreshFrame) {
                     cancelAnimationFrame(this.studioWidget._managerPreviewRefreshFrame);
