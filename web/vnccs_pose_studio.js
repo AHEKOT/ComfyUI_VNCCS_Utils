@@ -3556,6 +3556,10 @@ class PoseStudioWidget {
             arm_size: 1.0,
             hand_size: 1.0,
             foot_size: 1.0,
+            shoulder_l_length: 0.5,
+            shoulder_r_length: 0.5,
+            hip_l_length: 0.5,
+            hip_r_length: 0.5,
             upper_arm_l_length: 0.5,
             upper_arm_r_length: 0.5,
             forearm_l_length: 0.5,
@@ -3583,7 +3587,7 @@ class PoseStudioWidget {
             debugKeepLighting: false, // Use manual lighting in debug mode
             debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
-            samApplyCamera: false, // Allow SAM import to override camera yaw/pitch
+            samApplyCamera: true, // SAM imports use the detector camera for exact image-space alignment
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
@@ -4083,6 +4087,10 @@ class PoseStudioWidget {
             { key: "arm_size",  label: "Arm Size",  min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "hand_size", label: "Hand Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
             { key: "foot_size", label: "Foot Size", min: 0.5, max: 2.0, step: 0.01, def: 1.0 },
+            { key: "shoulder_l_length", label: "Left Clavicle Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "shoulder_r_length", label: "Right Clavicle Length", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "hip_l_length", label: "Left Hip Offset", min: 0, max: 1, step: 0.01, def: 0.5 },
+            { key: "hip_r_length", label: "Right Hip Offset", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "upper_arm_l_length", label: "Left Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "upper_arm_r_length", label: "Right Upper Arm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "forearm_l_length", label: "Left Forearm Length", min: 0, max: 1, step: 0.01, def: 0.5 },
@@ -7607,10 +7615,12 @@ class PoseStudioWidget {
             this._samCameraModeActive = false;
             return false;
         }
-        // When SAM camera override is disabled: use forceFallback to get proper bbox-based
-        // zoom/offset. Also apply inverse SAM camera angles to the model rotation so the
-        // pose looks correct from the standard front-facing camera without moving the camera.
-        if (!this.exportParams.samApplyCamera) {
+        // A pose pinned to SAM world joints only remains point-for-point aligned in the
+        // source image when it is rendered by the same projection.  Do not add a second
+        // bbox/shoulder fit here: its zoom and pan move every correctly pinned joint.
+        // Keep the legacy standard-camera fit only for old SAM payloads that contain no
+        // render projection at all.
+        if (!frameParams.sam_projection) {
             this.viewer?.setSAMProjectionCameraFrame?.(null);
             this._samCameraModeActive = false;
             const fallbackParams = this.viewer?.fitSAM3DToStandardCamera?.(
@@ -7630,8 +7640,8 @@ class PoseStudioWidget {
             this.viewer.setCameraParams(this.currentCameraParams());
             return true;
         }
-        this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection || null);
-        this._samCameraModeActive = !!frameParams.sam_projection;
+        this.viewer?.setSAMProjectionCameraFrame?.(frameParams.sam_projection);
+        this._samCameraModeActive = true;
 
         // Save pre-SAM params for toggle (first application only)
         if (!this._samCamBannerVisible) {
@@ -7644,11 +7654,12 @@ class PoseStudioWidget {
             };
         }
 
-        this.exportParams.cam_zoom = frameParams.zoom;
-        this.exportParams.cam_offset_x = frameParams.offset_x;
-        this.exportParams.cam_offset_y = frameParams.offset_y;
-        this.exportParams.cam_yaw_deg = frameParams.yaw_deg ?? 0;
-        this.exportParams.cam_pitch_deg = frameParams.pitch_deg ?? 0;
+        this.exportParams.samApplyCamera = true;
+        this.exportParams.cam_zoom = 1;
+        this.exportParams.cam_offset_x = 0;
+        this.exportParams.cam_offset_y = 0;
+        this.exportParams.cam_yaw_deg = 0;
+        this.exportParams.cam_pitch_deg = 0;
         this.syncCameraWidgets();
         this.applyCameraToViewer(true);
         this.viewer.setCameraParams(this.currentCameraParams());
@@ -7660,7 +7671,7 @@ class PoseStudioWidget {
             cam_yaw_deg: this.exportParams.cam_yaw_deg,
             cam_pitch_deg: this.exportParams.cam_pitch_deg,
         };
-        this._samCamStoredProjectionFrame = frameParams.sam_projection || null;
+        this._samCamStoredProjectionFrame = frameParams.sam_projection;
         this._samCamBannerVisible = true;
         this._samCamDisplayActive = true;
         this._updateSAMCameraBanner();
@@ -11264,6 +11275,10 @@ class PoseStudioWidget {
     syncMeshProportionSlidersFromViewer() {
         if (!this.viewer?.boneLengthParams) return;
         const mapping = {
+            shoulder_l_length: 'shoulder_l',
+            shoulder_r_length: 'shoulder_r',
+            hip_l_length: 'hip_l',
+            hip_r_length: 'hip_r',
             upper_arm_l_length: 'upper_arm_l',
             upper_arm_r_length: 'upper_arm_r',
             forearm_l_length: 'forearm_l',
@@ -11628,6 +11643,8 @@ class PoseStudioWidget {
                     if (data.mesh.shin_r_length === undefined) this.meshParams.shin_r_length = data.mesh.shin_length;
                 }
                 const lengthKeys = [
+                    'shoulder_l_length', 'shoulder_r_length',
+                    'hip_l_length', 'hip_r_length',
                     'upper_arm_l_length', 'upper_arm_r_length',
                     'forearm_l_length', 'forearm_r_length',
                     'thigh_l_length', 'thigh_r_length',
@@ -12064,9 +12081,13 @@ app.registerExtension({
             const inputIndex = node.inputs?.findIndex(input => input?.name === "pose_image") ?? -1;
             if (disabled) {
                 if (inputIndex >= 0) {
-                    if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
-                    if (typeof node.removeInput === "function") node.removeInput(inputIndex);
-                    else node.inputs.splice(inputIndex, 1);
+                    if (node.graph) {
+                        if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
+                        if (typeof node.removeInput === "function") node.removeInput(inputIndex);
+                        else node.inputs.splice(inputIndex, 1);
+                    } else {
+                        node.inputs.splice(inputIndex, 1);
+                    }
                 }
                 node._vnccsPoseImageInputDisabled = true;
                 return;
@@ -12083,9 +12104,13 @@ app.registerExtension({
             const inputIndex = node.inputs?.findIndex(input => input?.name === "camera_prompt") ?? -1;
             if (disabled) {
                 if (inputIndex >= 0) {
-                    if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
-                    if (typeof node.removeInput === "function") node.removeInput(inputIndex);
-                    else node.inputs.splice(inputIndex, 1);
+                    if (node.graph) {
+                        if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
+                        if (typeof node.removeInput === "function") node.removeInput(inputIndex);
+                        else node.inputs.splice(inputIndex, 1);
+                    } else {
+                        node.inputs.splice(inputIndex, 1);
+                    }
                 }
                 node._vnccsCameraPromptInputDisabled = true;
                 node.setDirtyCanvas?.(true, true);

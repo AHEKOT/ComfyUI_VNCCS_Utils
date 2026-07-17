@@ -593,12 +593,12 @@ export class AnalyticIKSolver {
 
         // Calculate rotation
         const dot = currentDir.dot(targetDir);
-        if (dot > 0.9999) return; // Already aligned
+        if (dot > 1 - 1e-12) return; // Already aligned to sub-pixel precision
 
         const axis = new THREE.Vector3().crossVectors(currentDir, targetDir);
         let angle = Math.acos(Math.max(-1, Math.min(1, dot)));
 
-        if (axis.lengthSq() < 0.0001) {
+        if (axis.lengthSq() < 1e-12) {
             // Singularity: 180 degree rotation. Pick any perpendicular axis.
             if (dot < 0) {
                 const perp = new THREE.Vector3(1, 0, 0);
@@ -1060,6 +1060,10 @@ export class PoseViewerCore {
         this.handScale = 1.0;
         this.footScale = 1.0;
         this.boneLengthParams = {
+            shoulder_l: 0.5,
+            shoulder_r: 0.5,
+            hip_l: 0.5,
+            hip_r: 0.5,
             upper_arm_l: 0.5,
             upper_arm_r: 0.5,
             forearm_l: 0.5,
@@ -3174,6 +3178,18 @@ export class PoseViewerCore {
     }
 
     _boneLengthChildrenForGroup(group) {
+        if (group === 'shoulder_l') {
+            return ['upperarm_l'];
+        }
+        if (group === 'shoulder_r') {
+            return ['upperarm_r'];
+        }
+        if (group === 'hip_l') {
+            return ['thigh_l'];
+        }
+        if (group === 'hip_r') {
+            return ['thigh_r'];
+        }
         if (group === 'upper_arm') {
             return ['lowerarm_l', 'lowerarm_r'];
         }
@@ -3219,6 +3235,8 @@ export class PoseViewerCore {
     updateBoneLengthScale(group, value) {
         if (!this.boneLengthParams) {
             this.boneLengthParams = {
+                shoulder_l: 0.5, shoulder_r: 0.5,
+                hip_l: 0.5, hip_r: 0.5,
                 upper_arm_l: 0.5, upper_arm_r: 0.5,
                 forearm_l: 0.5, forearm_r: 0.5,
                 thigh_l: 0.5, thigh_r: 0.5,
@@ -3229,6 +3247,8 @@ export class PoseViewerCore {
         if (group === 'arm') group = 'upper_arm';
         if (group === 'leg') group = 'thigh';
         const validGroups = [
+            'shoulder_l', 'shoulder_r',
+            'hip_l', 'hip_r',
             'upper_arm', 'upper_arm_l', 'upper_arm_r',
             'forearm', 'forearm_l', 'forearm_r',
             'thigh', 'thigh_l', 'thigh_r',
@@ -3249,6 +3269,10 @@ export class PoseViewerCore {
 
     applyBoneLengthScales() {
         if (!this.boneLengthParams) return;
+        this.updateBoneLengthScale('shoulder_l', this.boneLengthParams.shoulder_l ?? 0.5);
+        this.updateBoneLengthScale('shoulder_r', this.boneLengthParams.shoulder_r ?? 0.5);
+        this.updateBoneLengthScale('hip_l', this.boneLengthParams.hip_l ?? 0.5);
+        this.updateBoneLengthScale('hip_r', this.boneLengthParams.hip_r ?? 0.5);
         this.updateBoneLengthScale('upper_arm_l', this.boneLengthParams.upper_arm_l ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
         this.updateBoneLengthScale('upper_arm_r', this.boneLengthParams.upper_arm_r ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
         this.updateBoneLengthScale('forearm_l', this.boneLengthParams.forearm_l ?? this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
@@ -4173,8 +4197,8 @@ export class PoseViewerCore {
                 },
             };
         })();
-        // Compute equivalent yaw/pitch angles from SAM camera position so the caller can
-        // apply inverse rotation to the model (used when samApplyCamera=false).
+        // Compute equivalent yaw/pitch angles for the legacy fallback used by SAM payloads
+        // that do not contain a render projection.
         const samCameraAngles = (() => {
             if (!samProjectionFrame) return { yaw_deg: 0, pitch_deg: 0 };
             const tgt = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
@@ -4934,6 +4958,10 @@ export class PoseViewerCore {
         const named = this._buildSAM3DNamedPoints(overlayPose);
         const pointNames = new Set([
             'pelvis', 'neck', 'neck_01', 'neck_tail', 'head',
+            'spine_01', 'spine_02', 'spine_03',
+            'clavicle_l', 'clavicle_r',
+            'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r',
+            'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r',
             'canonical_nose', 'canonical_left_eye', 'canonical_right_eye',
             'canonical_left_ear', 'canonical_right_ear',
             'left_shoulder', 'right_shoulder',
@@ -5004,6 +5032,7 @@ export class PoseViewerCore {
             this._drawHMR2Figure(worldKps);
         }
         this._applyImportPelvisAndTorso(worldKps, options.shoulderYOffset || 0);
+        this._placeSAM3DHipRoots(importTargets.worldKps || worldKps);
         this._applySAM3DTargetIK(importTargets, {
             includeSpine: options.includeSpine !== false,
             normalizeLimbs: options.normalizeLimbs !== false,
@@ -5015,7 +5044,9 @@ export class PoseViewerCore {
         const alignedWorldKps = importTargets.worldKps || worldKps;
         if (options.alignHead !== false) this._applySAM3DHeadLineRetarget(alignedWorldKps);
         if (options.alignHands !== false) this._applySAM3DHandPointRetarget(alignedWorldKps);
-        if (options.alignFeet !== false) this._applySAM3DFootPointRetarget(alignedWorldKps);
+        if (options.alignFeet !== false) {
+            this._applySAM3DFootPointRetarget(alignedWorldKps, options.footLocalRotations || null);
+        }
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);
@@ -5026,22 +5057,78 @@ export class PoseViewerCore {
         return true;
     }
 
-    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
-        const worldKps = this._samMeshOverlayWorldKps;
-        this.fitSAM3DArmLengthsToWorldKps(worldKps);
-        return this.applyWorldKeypointImport(worldKps, {
-            shoulderYOffset,
-            // The overlay is a pose-direction reference, not a set of hard
-            // hip/ankle pins. Preserve the mannequin's fitted segment lengths
-            // so a small scale mismatch cannot be converted into bent knees.
-            normalizeLimbs: true,
-            normalizeArms: true,
-            normalizeLegs: true,
-            drawFigure: true,
-        });
+    _placeSAM3DHipRoots(worldKps) {
+        if (!this.THREE || !this.skinnedMesh || !this.bones || !worldKps) return false;
+        this.skinnedMesh.updateMatrixWorld(true);
+        let applied = false;
+        for (const side of ['l', 'r']) {
+            const thigh = this.bones[`thigh_${side}`];
+            const target = worldKps[side === 'l' ? 'left_hip' : 'right_hip'];
+            if (!thigh?.parent || !target) continue;
+
+            // Move the complete leg from its socket. This removes pelvis-width
+            // error before IK without changing thigh/shin lengths or translating
+            // the ankle independently from the rest of the leg.
+            thigh.parent.updateMatrixWorld(true);
+            thigh.position.copy(thigh.parent.worldToLocal(target.clone()));
+            thigh.updateMatrixWorld(true);
+            applied = true;
+        }
+        if (applied) this.skinnedMesh.updateMatrixWorld(true);
+        return applied;
     }
 
-    fitSAM3DArmLengthsToWorldKps(worldKps) {
+    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
+        const worldKps = this._samMeshOverlayWorldKps;
+        const passCount = 6;
+        for (let pass = 0; pass < passCount; pass++) {
+            this.fitSAM3DJointRootLengthsToWorldKps(worldKps);
+            this.fitSAM3DLimbLengthsToWorldKps(worldKps);
+            const finalPass = pass === passCount - 1;
+            const applied = this.applyWorldKeypointImport(worldKps, {
+                shoulderYOffset,
+                // Solve the torso/head once. Later passes only converge limb-root
+                // proportions and IK, so the allowed smaller head cannot drift.
+                includeSpine: pass === 0,
+                normalizeLimbs: false,
+                footLocalRotations: this._sam3dImportedFootLocalRotations || null,
+                drawFigure: finalPass,
+                updateMarkers: finalPass,
+                dispatchPoseChange: finalPass,
+            });
+            if (!applied) return false;
+        }
+        return true;
+    }
+
+    fitSAM3DJointRootLengthsToWorldKps(worldKps) {
+        if (!worldKps || !this.bones || !this.skinnedMesh) return null;
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        const fitted = {};
+        const fitRoot = (group, parentName, childName, target) => {
+            const parent = this._getBoneWorldPositionForImport(parentName);
+            const child = this._getBoneWorldPositionForImport(childName);
+            if (!parent || !child || !target) return;
+            const currentLength = parent.distanceTo(child);
+            const currentScale = this._lengthSliderToScale(this.boneLengthParams?.[group] ?? 0.5);
+            const baseLength = currentScale > 1e-5 ? currentLength / currentScale : 0;
+            const targetLength = parent.distanceTo(target);
+            if (baseLength <= 1e-5 || targetLength <= 1e-5) return;
+            fitted[group] = Math.max(0, Math.min(1, targetLength / baseLength - 0.5));
+        };
+
+        fitRoot('shoulder_l', 'clavicle_l', 'upperarm_l', worldKps.left_shoulder);
+        fitRoot('shoulder_r', 'clavicle_r', 'upperarm_r', worldKps.right_shoulder);
+        fitRoot('hip_l', 'pelvis', 'thigh_l', worldKps.left_hip);
+        fitRoot('hip_r', 'pelvis', 'thigh_r', worldKps.right_hip);
+        for (const [group, value] of Object.entries(fitted)) {
+            this.updateBoneLengthScale(group, value);
+        }
+        return Object.keys(fitted).length ? fitted : null;
+    }
+
+    fitSAM3DLimbLengthsToWorldKps(worldKps) {
         if (!worldKps || !this.bones || !this.skinnedMesh) return null;
 
         this.skinnedMesh.updateMatrixWorld(true);
@@ -5085,10 +5172,34 @@ export class PoseViewerCore {
 
         fitSide('l');
         fitSide('r');
+
+        const fitLeg = (side) => {
+            const prefix = side === 'l' ? 'left' : 'right';
+            const hip = worldKps[`${prefix}_hip`];
+            const knee = worldKps[`${prefix}_knee`];
+            const ankle = worldKps[`${prefix}_ankle`];
+            if (!hip || !knee || !ankle) return;
+
+            const thighGroup = `thigh_${side}`;
+            const shinGroup = `shin_${side}`;
+            const baseThigh = measuredBaseLength(`thigh_${side}`, `calf_${side}`, thighGroup);
+            const baseShin = measuredBaseLength(`calf_${side}`, `foot_${side}`, shinGroup);
+            const thighValue = sliderValue(hip.distanceTo(knee), baseThigh);
+            const shinValue = sliderValue(knee.distanceTo(ankle), baseShin);
+            if (thighValue !== null) fitted[thighGroup] = thighValue;
+            if (shinValue !== null) fitted[shinGroup] = shinValue;
+        };
+
+        fitLeg('l');
+        fitLeg('r');
         for (const [group, value] of Object.entries(fitted)) {
             this.updateBoneLengthScale(group, value);
         }
         return Object.keys(fitted).length ? fitted : null;
+    }
+
+    fitSAM3DArmLengthsToWorldKps(worldKps) {
+        return this.fitSAM3DLimbLengthsToWorldKps(worldKps);
     }
 
     _estimateCurrentModelHeight() {
@@ -5535,74 +5646,207 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
     }
 
-    _applySAM3DFootPointRetarget(worldKps) {
+    _getFootToeSurfaceData(side) {
+        if (!this.THREE || !this.skinnedMesh || !this.bones || !this.boneList) return null;
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry?.attributes?.position;
+        const skinIndex = geometry?.attributes?.skinIndex;
+        const skinWeight = geometry?.attributes?.skinWeight;
+        const foot = this.bones[`foot_${side}`];
+        const ball = this.bones[`ball_${side}`];
+        const initialBallOffset = this.initialBoneStates?.[`ball_${side}`]?.position;
+        if (!position || !skinIndex || !skinWeight || !foot || !ball || !initialBallOffset) return null;
+
+        if (this._footToeSurfaceVertexCache?.geometry !== geometry) {
+            this._footToeSurfaceVertexCache = { geometry };
+        }
+        let data = this._footToeSurfaceVertexCache[side];
+        if (!data) {
+            const footIndex = this.boneList.indexOf(foot);
+            const ballIndex = this.boneList.indexOf(ball);
+            if (footIndex < 0 || ballIndex < 0) return null;
+
+            const forward = initialBallOffset.clone().normalize();
+            const footHead = new this.THREE.Vector3(...(foot.userData?.headPos || [0, 0, 0]));
+            const candidates = [];
+            const restPoint = new this.THREE.Vector3();
+            for (let index = 0; index < position.count; index++) {
+                let relatedWeight = 0;
+                for (let slot = 0; slot < 4; slot++) {
+                    const boneIndex = skinIndex.getComponent(index, slot);
+                    if (boneIndex === footIndex || boneIndex === ballIndex) {
+                        relatedWeight += skinWeight.getComponent(index, slot);
+                    }
+                }
+                if (relatedWeight < 0.35) continue;
+                restPoint.fromBufferAttribute(position, index);
+                candidates.push({
+                    index,
+                    projection: restPoint.clone().sub(footHead).dot(forward),
+                });
+            }
+            candidates.sort((a, b) => b.projection - a.projection);
+            const indices = candidates.slice(0, 24).map((item) => item.index);
+            if (!indices.length) return null;
+
+            const restAnchor = new this.THREE.Vector3();
+            for (const index of indices) {
+                restPoint.fromBufferAttribute(position, index);
+                restAnchor.add(restPoint);
+            }
+            restAnchor.multiplyScalar(1 / indices.length);
+
+            // Bones are created in the same unrotated model-space frame as the
+            // rest vertices. This vector therefore calibrates the actual end of
+            // the rendered toes, rather than the shorter ball_* helper bone.
+            const localForward = restAnchor.clone().sub(footHead);
+            if (localForward.lengthSq() < 1e-8) localForward.copy(initialBallOffset);
+            localForward.normalize();
+            const localDorsal = new this.THREE.Vector3(0, 1, 0);
+            localDorsal.sub(localForward.clone().multiplyScalar(localDorsal.dot(localForward)));
+            if (localDorsal.lengthSq() < 1e-8) localDorsal.set(0, 0, 1);
+            localDorsal.normalize();
+            const localMedial = new this.THREE.Vector3()
+                .crossVectors(localForward, localDorsal)
+                .normalize();
+            data = { indices, restAnchor, localForward, localDorsal, localMedial };
+            this._footToeSurfaceVertexCache[side] = data;
+        }
+        return data;
+    }
+
+    _getCurrentFootToeSurfaceAnchor(side) {
+        const data = this._getFootToeSurfaceData(side);
+        const position = this.skinnedMesh?.geometry?.attributes?.position;
+        if (!data?.indices?.length || !position || typeof this.skinnedMesh.applyBoneTransform !== 'function') {
+            return null;
+        }
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        const anchor = new this.THREE.Vector3();
+        const point = new this.THREE.Vector3();
+        for (const index of data.indices) {
+            point.fromBufferAttribute(position, index);
+            this.skinnedMesh.applyBoneTransform(index, point);
+            point.applyMatrix4(this.skinnedMesh.matrixWorld);
+            anchor.add(point);
+        }
+        return anchor.multiplyScalar(1 / data.indices.length);
+    }
+
+    _applySAM3DFootPointRetarget(worldKps, footLocalRotations = null) {
         if (!this.THREE || !this.bones || !this.skinnedMesh || !worldKps) return;
 
         const applySide = (side) => {
             const footName = `foot_${side}`;
             const foot = this.bones?.[footName];
-            if (!foot) return;
+            const ballName = `ball_${side}`;
+            const ball = this.bones?.[ballName] || foot?.children?.find((item) => item?.isBone) || null;
+            if (!foot || !ball) return;
 
             const ankle = worldKps[side === 'l' ? 'left_ankle' : 'right_ankle'];
             const bigToe = worldKps[side === 'l' ? 'left_big_toe' : 'right_big_toe'];
             const smallToe = worldKps[side === 'l' ? 'left_small_toe' : 'right_small_toe'];
             const heel = worldKps[side === 'l' ? 'left_heel' : 'right_heel'];
-            const toe = bigToe && smallToe ? bigToe.clone().add(smallToe).multiplyScalar(0.5) : (bigToe || smallToe);
-            if (!ankle || !toe) return;
+            const knee = worldKps[side === 'l' ? 'left_knee' : 'right_knee'];
+            if (!ankle || !bigToe || !smallToe) return;
 
-            const targetForward = toe.clone().sub(ankle);
+            const toeCenter = bigToe.clone().add(smallToe).multiplyScalar(0.5);
+            const surfaceData = this._getFootToeSurfaceData(side);
+            const initialBallOffset = this.initialBoneStates?.[ballName]?.position || ball.position;
+            const localForward = surfaceData?.localForward?.clone() || initialBallOffset.clone().normalize();
+            const localDorsal = surfaceData?.localDorsal?.clone() || new this.THREE.Vector3(0, 1, 0);
+            localDorsal.sub(localForward.clone().multiplyScalar(localDorsal.dot(localForward)));
+            if (localForward.lengthSq() < 1e-8 || localDorsal.lengthSq() < 1e-8) return;
+            localForward.normalize();
+            localDorsal.normalize();
+            const localMedial = new this.THREE.Vector3()
+                .crossVectors(localForward, localDorsal)
+                .normalize();
+
+            // foot_* is the ankle pivot. Its child ball_* must aim from that
+            // pivot to the SAM toe centre; heel->toe is a sole direction and is
+            // not a valid ankle-bone target (it lifts/twists the whole foot).
+            const targetForward = toeCenter.clone().sub(ankle);
             if (targetForward.lengthSq() < 1e-8) return;
+            targetForward.normalize();
 
-            const ball = this.bones?.[`ball_${side}`] || foot.children?.find((item) => item?.isBone) || null;
-            const getPos = (bone) => {
-                const position = new this.THREE.Vector3();
-                bone.getWorldPosition(position);
-                return position;
-            };
-            const footPos = getPos(foot);
+            const toeWidth = bigToe.clone().sub(smallToe).normalize();
+            const soleDirection = heel ? toeCenter.clone().sub(heel) : targetForward.clone();
+            let targetDorsal = new this.THREE.Vector3().crossVectors(toeWidth, soleDirection);
+            targetDorsal.sub(targetForward.clone().multiplyScalar(targetDorsal.dot(targetForward)));
+            if (targetDorsal.lengthSq() < 1e-8) {
+                targetDorsal.crossVectors(toeWidth, targetForward);
+            }
+            if (targetDorsal.lengthSq() < 1e-8) return;
+            targetDorsal.normalize();
 
-            const footWorld = foot.getWorldQuaternion(new this.THREE.Quaternion());
-            const currentToe = ball
-                ? getPos(ball)
-                : footPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(footWorld));
-            const currentForward = currentToe.clone().sub(footPos);
-            if (currentForward.lengthSq() < 1e-8) return;
+            // The toe triangle has two valid normals. SAM joint rotation is used
+            // only to select the correct half-space after its forward axis has been
+            // aligned to the heel-to-toe vector. This preserves SAM's sole/top
+            // choice without trusting its incompatible MHR foot bone axes.
+            const importedLocalRotation = footLocalRotations?.[footName];
+            if (importedLocalRotation && foot.parent) {
+                const hintedWorld = foot.parent.getWorldQuaternion(new this.THREE.Quaternion())
+                    .multiply(importedLocalRotation.clone())
+                    .normalize();
+                const hintedForward = localForward.clone().applyQuaternion(hintedWorld).normalize();
+                const hintedDorsal = localDorsal.clone().applyQuaternion(hintedWorld).normalize();
+                const forwardCorrection = new this.THREE.Quaternion()
+                    .setFromUnitVectors(hintedForward, targetForward);
+                hintedDorsal.applyQuaternion(forwardCorrection);
+                if (targetDorsal.dot(hintedDorsal) < 0) targetDorsal.negate();
+            } else if (knee) {
+                const targetTowardKnee = knee.clone().sub(ankle);
+                targetTowardKnee.sub(targetForward.clone().multiplyScalar(targetTowardKnee.dot(targetForward)));
+                if (targetTowardKnee.lengthSq() > 1e-8 && targetDorsal.dot(targetTowardKnee) < 0) {
+                    targetDorsal.negate();
+                }
+            }
 
-            const delta = new this.THREE.Quaternion().setFromUnitVectors(
-                currentForward.normalize(),
-                targetForward.clone().normalize(),
-            ).normalize();
-            this._applyBoneWorldDelta(foot, delta);
+            const targetMedial = new this.THREE.Vector3().crossVectors(targetForward, targetDorsal).normalize();
+
+            const localBasis = new this.THREE.Matrix4().makeBasis(localMedial, localForward, localDorsal);
+            const targetBasis = new this.THREE.Matrix4().makeBasis(targetMedial, targetForward, targetDorsal);
+            const localBasisRotation = new this.THREE.Quaternion().setFromRotationMatrix(localBasis).normalize();
+            const targetBasisRotation = new this.THREE.Quaternion().setFromRotationMatrix(targetBasis).normalize();
+            const desiredWorldRotation = targetBasisRotation.multiply(localBasisRotation.invert()).normalize();
+
+            this._setBoneWorldQuaternion(foot, desiredWorldRotation);
             this.skinnedMesh.updateMatrixWorld(true);
 
-            if (heel) {
-                const parentPos = foot.parent ? getPos(foot.parent) : null;
-                const alignedFootPos = getPos(foot);
-                const alignedToe = ball
-                    ? getPos(ball)
-                    : alignedFootPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(foot.getWorldQuaternion(new this.THREE.Quaternion())));
-                const rollAxis = toe.clone().sub(ankle);
-                const currentPlaneRef = parentPos ? parentPos.clone().sub(alignedFootPos) : null;
-                const targetPlaneRef = heel.clone().sub(ankle);
-                if (rollAxis.lengthSq() > 1e-8 && currentPlaneRef?.lengthSq() > 1e-8 && targetPlaneRef.lengthSq() > 1e-8) {
-                    rollAxis.normalize();
-                    const currentNormal = new this.THREE.Vector3().crossVectors(
-                        alignedToe.clone().sub(alignedFootPos),
-                        currentPlaneRef,
+            // foot_* is already at the SAM ankle because the leg IK ran before
+            // this method. Rotate and uniformly scale the rendered foot around
+            // that fixed pivot so its real toe surface reaches the SAM toe. Never
+            // translate the ankle target and never change calf/foot bone offsets.
+            const targetLength = ankle.distanceTo(toeCenter);
+            if (targetLength > 1e-6 && surfaceData) {
+                for (let pass = 0; pass < 4; pass++) {
+                    const footPosition = foot.getWorldPosition(new this.THREE.Vector3());
+                    const currentToe = this._getCurrentFootToeSurfaceAnchor(side);
+                    if (!currentToe) break;
+                    const currentVector = currentToe.sub(footPosition);
+                    const currentLength = currentVector.length();
+                    if (currentLength < 1e-6) break;
+
+                    const directionCorrection = new this.THREE.Quaternion().setFromUnitVectors(
+                        currentVector.clone().multiplyScalar(1 / currentLength),
+                        targetForward
                     );
-                    const targetNormal = new this.THREE.Vector3().crossVectors(
-                        toe.clone().sub(ankle),
-                        targetPlaneRef,
-                    );
-                    currentNormal.sub(rollAxis.clone().multiplyScalar(currentNormal.dot(rollAxis)));
-                    targetNormal.sub(rollAxis.clone().multiplyScalar(targetNormal.dot(rollAxis)));
-                    if (currentNormal.lengthSq() > 1e-8 && targetNormal.lengthSq() > 1e-8) {
-                        currentNormal.normalize();
-                        targetNormal.normalize();
-                        const rollDelta = new this.THREE.Quaternion().setFromUnitVectors(currentNormal, targetNormal).normalize();
-                        this._applyBoneWorldDelta(foot, rollDelta);
-                        this.skinnedMesh.updateMatrixWorld(true);
+                    if (directionCorrection.angleTo(new this.THREE.Quaternion()) > 1e-7) {
+                        const currentWorld = foot.getWorldQuaternion(new this.THREE.Quaternion());
+                        this._setBoneWorldQuaternion(
+                            foot,
+                            directionCorrection.multiply(currentWorld).normalize()
+                        );
                     }
+
+                    const scaleRatio = targetLength / currentLength;
+                    if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 1e-5) {
+                        foot.scale.multiplyScalar(Math.max(0.5, Math.min(2, scaleRatio)));
+                    }
+                    this.skinnedMesh.updateMatrixWorld(true);
                 }
             }
         };
@@ -6906,13 +7150,16 @@ export class PoseViewerCore {
             clavicle_l: 'upperarm_l',
         };
 
-        const applyFK = (boneName, parentKpName, childKpName) => {
+        const applyFK = (boneName, parentKpName, childKpName, targetFromBoneOrigin = false) => {
             const parentPoint = worldKps[parentKpName];
             const childPoint = worldKps[childKpName];
             const bone = this.bones[boneName];
             if (!parentPoint || !childPoint || !bone) return;
 
-            const targetDir = new THREE.Vector3().subVectors(childPoint, parentPoint).normalize();
+            const boneWorldPosition = new THREE.Vector3();
+            bone.getWorldPosition(boneWorldPosition);
+            const targetOrigin = targetFromBoneOrigin ? boneWorldPosition : parentPoint;
+            const targetDir = new THREE.Vector3().subVectors(childPoint, targetOrigin).normalize();
             if (targetDir.lengthSq() < 0.001) return;
 
             const childBone = childBoneMap[boneName] ? this.bones[childBoneMap[boneName]] : null;
@@ -6952,8 +7199,8 @@ export class PoseViewerCore {
             if (worldKps.left_shoulder) worldKps.left_shoulder = worldKps.left_shoulder.clone().setY(worldKps.left_shoulder.y + shoulderYOffset);
         }
 
-        applyFK('clavicle_r', 'neck', 'right_shoulder');
-        applyFK('clavicle_l', 'neck', 'left_shoulder');
+        applyFK('clavicle_r', 'neck', 'right_shoulder', true);
+        applyFK('clavicle_l', 'neck', 'left_shoulder', true);
     }
 
     _buildWorldKeypointsFromSAM3D(data) {
@@ -7211,6 +7458,7 @@ export class PoseViewerCore {
         if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
 
         this.recordState();
+        this._sam3dImportedFootLocalRotations = null;
         this.modelRotation = { x: 0, y: 0, z: 0 };
         if (this.skinnedMesh) {
             this.skinnedMesh.rotation.set(0, 0, 0);
@@ -7235,6 +7483,17 @@ export class PoseViewerCore {
         const worldKps = importTargets?.worldKps;
 
         const usedRotationImport = this._applySAM3DRotationImport(data);
+        if (usedRotationImport) {
+            const footLocalRotations = {};
+            for (const footName of ['foot_l', 'foot_r']) {
+                const foot = this.bones?.[footName];
+                if (!foot) continue;
+                footLocalRotations[footName] = foot.quaternion.clone();
+            }
+            if (Object.keys(footLocalRotations).length) {
+                this._sam3dImportedFootLocalRotations = footLocalRotations;
+            }
+        }
 
         if (worldKps?.pelvis) {
             return this.applyWorldKeypointImport(worldKps, {
@@ -7243,6 +7502,7 @@ export class PoseViewerCore {
                 normalizeLimbs: true,
                 normalizeArms: true,
                 normalizeLegs: true,
+                footLocalRotations: this._sam3dImportedFootLocalRotations,
             });
         }
 

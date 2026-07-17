@@ -116,23 +116,116 @@ test("world-keypoint import uses the shared image alignment stages", () => {
     assert.ok(!calls.includes("dispatch"));
 });
 
+test("SAM foot retarget aims ankle-to-toe without translating the ankle or changing leg length", () => {
+    const root = new THREE.Bone();
+    const calf = new THREE.Bone();
+    const foot = new THREE.Bone();
+    const ball = new THREE.Bone();
+    root.name = "root";
+    calf.name = "calf_l";
+    foot.name = "foot_l";
+    ball.name = "ball_l";
+    calf.position.set(0.2, 1, -0.1);
+    foot.position.set(0, -0.5, 0.05);
+    ball.position.set(0.03, -0.2, 0.8);
+    root.add(calf);
+    calf.add(foot);
+    foot.add(ball);
+    root.rotation.set(0.4, -0.3, 0.2);
+    calf.rotation.set(-0.2, 0.15, 0.35);
+    foot.rotation.set(0.5, -0.7, 0.9);
+    root.updateMatrixWorld(true);
+
+    const viewer = Object.create(PoseViewerCore.prototype);
+    viewer.THREE = THREE;
+    viewer.bones = { calf_l: calf, foot_l: foot, ball_l: ball };
+    viewer.initialBoneStates = {
+        foot_l: { position: foot.position.clone() },
+        ball_l: { position: ball.position.clone() },
+    };
+    viewer.skeleton = { update() {} };
+    viewer.skinnedMesh = { updateMatrixWorld: () => root.updateMatrixWorld(true) };
+
+    const worldKps = {
+        left_knee: new THREE.Vector3(2, 3, 0),
+        left_ankle: new THREE.Vector3(2, 1.4, 0.2),
+        left_heel: new THREE.Vector3(2, 1, 1),
+        left_big_toe: new THREE.Vector3(2.5, 1, -1),
+        left_small_toe: new THREE.Vector3(1.5, 1, -1),
+    };
+    const initialFootOffset = foot.position.clone();
+    const initialAnklePivot = foot.getWorldPosition(new THREE.Vector3());
+    viewer._applySAM3DFootPointRetarget(worldKps);
+
+    const footPosition = foot.getWorldPosition(new THREE.Vector3());
+    const ballPosition = ball.getWorldPosition(new THREE.Vector3());
+    const actualForward = ballPosition.sub(footPosition).normalize();
+    const expectedForward = worldKps.left_big_toe.clone()
+        .add(worldKps.left_small_toe)
+        .multiplyScalar(0.5)
+        .sub(worldKps.left_ankle)
+        .normalize();
+    assert.ok(actualForward.distanceTo(expectedForward) < 1e-8);
+    assert.ok(foot.position.distanceTo(initialFootOffset) < 1e-12, "calf-to-ankle length must not change");
+    assert.ok(
+        foot.getWorldPosition(new THREE.Vector3()).distanceTo(initialAnklePivot) < 1e-12,
+        "rotating the foot must not translate its ankle pivot"
+    );
+
+    const initialForward = ball.position.clone().normalize();
+    const initialDorsal = new THREE.Vector3(0, 1, 0);
+    initialDorsal.sub(initialForward.clone().multiplyScalar(initialDorsal.dot(initialForward))).normalize();
+    const footWorld = foot.getWorldQuaternion(new THREE.Quaternion());
+    const actualDorsal = initialDorsal.clone().applyQuaternion(footWorld).normalize();
+    const targetTowardKnee = worldKps.left_knee.clone().sub(worldKps.left_ankle);
+    targetTowardKnee.sub(expectedForward.clone().multiplyScalar(targetTowardKnee.dot(expectedForward))).normalize();
+    assert.ok(actualDorsal.dot(targetTowardKnee) > 0, "foot dorsal side must face the knee");
+
+    const firstRotation = footWorld.clone();
+    viewer._applySAM3DFootPointRetarget(worldKps);
+    const secondRotation = foot.getWorldQuaternion(new THREE.Quaternion());
+    assert.ok(firstRotation.angleTo(secondRotation) < 1e-8);
+
+    const importedSAMRotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.35, -0.6, 1.1));
+    let translatedSolveCount = 0;
+    viewer.ikController = {
+        ccdSolver: {
+            solve() {
+                translatedSolveCount += 1;
+            },
+        },
+    };
+    const ankleBeforeHintedFit = foot.getWorldPosition(new THREE.Vector3());
+    viewer._applySAM3DFootPointRetarget(worldKps, { foot_l: importedSAMRotation });
+    assert.equal(translatedSolveCount, 0, "foot fitting must never move the leg IK target");
+    assert.ok(foot.position.distanceTo(initialFootOffset) < 1e-12);
+    assert.ok(foot.getWorldPosition(new THREE.Vector3()).distanceTo(ankleBeforeHintedFit) < 1e-12);
+
+    const hintedBall = ball.getWorldPosition(new THREE.Vector3());
+    const hintedAnkle = foot.getWorldPosition(new THREE.Vector3());
+    assert.ok(hintedBall.sub(hintedAnkle).normalize().distanceTo(expectedForward) < 1e-8);
+});
+
 test("SAM mesh overlay fit preserves fitted limb lengths", () => {
     const worldKps = { pelvis: {} };
     const viewer = Object.create(PoseViewerCore.prototype);
     viewer._samMeshOverlayWorldKps = worldKps;
-    viewer.fitSAM3DArmLengthsToWorldKps = receivedWorldKps => {
+    viewer.fitSAM3DJointRootLengthsToWorldKps = receivedWorldKps => {
         assert.equal(receivedWorldKps, worldKps);
     };
-    viewer.applyWorldKeypointImport = (receivedWorldKps, options) => {
+    viewer.fitSAM3DLimbLengthsToWorldKps = receivedWorldKps => {
         assert.equal(receivedWorldKps, worldKps);
-        assert.equal(options.normalizeLimbs, true);
-        assert.equal(options.normalizeArms, true);
-        assert.equal(options.normalizeLegs, true);
+    };
+    let applyCount = 0;
+    viewer.applyWorldKeypointImport = (receivedWorldKps, options) => {
+        applyCount += 1;
+        assert.equal(receivedWorldKps, worldKps);
+        assert.equal(options.normalizeLimbs, false);
         assert.equal(options.exactArmTargets, undefined);
         return true;
     };
-
     assert.equal(viewer.fitCurrentPoseToSAMMeshOverlay(0.125), true);
+    assert.equal(applyCount, 6);
 });
 
 test("SAM normalization keeps a straight leg at full chain reach", () => {
