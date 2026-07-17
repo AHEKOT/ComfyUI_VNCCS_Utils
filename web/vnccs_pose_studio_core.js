@@ -1080,6 +1080,12 @@ export class PoseViewerCore {
         this.pendingData = null;
         this.pendingLights = null;
         this.pendingBackgroundUrl = null;
+        this._lightParamsSignature = null;
+        this._captureBatch = null;
+        this._needsRender = true;
+        this._renderFrame = null;
+        this._hoverPointerFrame = null;
+        this._pendingHoverPointer = null;
 
         // IK State
         this.ikController = null;
@@ -1119,7 +1125,12 @@ export class PoseViewerCore {
     }
 
     _getRaycastableJointMarkers() {
-        return (this.jointMarkers || []).filter((marker) => marker?.visible);
+        if (!this._raycastableJointMarkers) this._raycastableJointMarkers = [];
+        this._raycastableJointMarkers.length = 0;
+        for (const marker of this.jointMarkers || []) {
+            if (marker?.visible) this._raycastableJointMarkers.push(marker);
+        }
+        return this._raycastableJointMarkers;
     }
 
     _resolveHandBone(bone) {
@@ -1223,6 +1234,15 @@ export class PoseViewerCore {
     dispose() {
         this.initialized = false;
 
+        if (this._renderFrame) {
+            cancelAnimationFrame(this._renderFrame);
+            this._renderFrame = null;
+        }
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
         if (this.queuedSyncFrame) {
             cancelAnimationFrame(this.queuedSyncFrame);
             this.queuedSyncFrame = null;
@@ -1284,6 +1304,11 @@ export class PoseViewerCore {
         this.boneList = [];
         this.ikController = null;
         this.directionalSkydome = null;
+        this._captureBatch = null;
+        this._raycaster = null;
+        this._pointerNdc = null;
+        this._pointerWorldPosition = null;
+        this._dragIntersectPoint = null;
         this.options = null;
     }
 
@@ -1297,9 +1322,6 @@ export class PoseViewerCore {
             this.setupScene();
 
             this.initialized = true;
-
-
-            this.animate();
 
             // Apply buffered data after initialized=true
             if (this.pendingData) {
@@ -1340,7 +1362,13 @@ export class PoseViewerCore {
             preserveDrawingBuffer: true
         });
         this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        // More than 2x DPR is very costly for a preserveDrawingBuffer WebGL canvas
+        // and brings little visible benefit inside a graph node.
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this._raycaster = new THREE.Raycaster();
+        this._pointerNdc = new THREE.Vector2();
+        this._pointerWorldPosition = new THREE.Vector3();
+        this._dragIntersectPoint = new THREE.Vector3();
 
         // Orbit Controls
         this.orbit = new this.OrbitControls(this.camera, this.canvas);
@@ -1447,11 +1475,11 @@ export class PoseViewerCore {
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
-        this.canvas.addEventListener("pointermove", (e) => this.handlePointerMove(e));
+        this.canvas.addEventListener("pointermove", (e) => this.schedulePointerMove(e));
         this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
 
         this.hoveredBoneName = null;
-        this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
+        this.directDrag = { active: false, chainKey: null, effector: null, effectorBone: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
     }
 
     _createDirectionalSkydome() {
@@ -1585,6 +1613,56 @@ export class PoseViewerCore {
         const THREE = this.THREE;
         if (!lightParams) return;
 
+        const sourceParams = lightParams.length
+            ? lightParams
+            : [{ type: 'ambient', color: '#ffffff', intensity: 0.5 }];
+        const signature = JSON.stringify(sourceParams.map((params) => ({
+            type: params?.type || '',
+            color: params?.color ?? '#ffffff',
+            intensity: Number(params?.intensity ?? (params?.type === 'ambient' ? 0.5 : 1.0)),
+            x: Number(params?.x ?? (params?.type === 'directional' ? 1 : 0)),
+            y: Number(params?.y ?? (params?.type === 'directional' ? 2 : 0)),
+            z: Number(params?.z ?? (params?.type === 'directional' ? 3 : 5)),
+            radius: Number(params?.radius ?? 100),
+        })));
+        if (signature === this._lightParamsSignature) return;
+
+        const matchesType = (light, params) => (
+            (params.type === 'ambient' && light?.isAmbientLight)
+            || (params.type === 'directional' && light?.isDirectionalLight)
+            || (params.type === 'point' && light?.isPointLight)
+        );
+        const setColor = (light, color) => {
+            if (!light?.color) return;
+            if (typeof color === 'string') light.color.set(color);
+            else if (Array.isArray(color)) light.color.setRGB(
+                Number(color[0] || 0) / 255,
+                Number(color[1] || 0) / 255,
+                Number(color[2] || 0) / 255,
+            );
+            else light.color.set(0xffffff);
+        };
+        const updateLight = (light, params) => {
+            setColor(light, params.color);
+            light.intensity = params.intensity ?? (params.type === 'ambient' ? 0.5 : 1.0);
+            if (params.type === 'directional') {
+                light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
+            } else if (params.type === 'point') {
+                light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
+                light.distance = params.radius ?? 100;
+            }
+        };
+
+        if (
+            this.lights?.length === sourceParams.length
+            && sourceParams.every((params, index) => matchesType(this.lights[index], params))
+        ) {
+            sourceParams.forEach((params, index) => updateLight(this.lights[index], params));
+            this._lightParamsSignature = signature;
+            this.requestRender();
+            return;
+        }
+
         // Remove existing managed lights
         if (this.lights && this.lights.length > 0) {
             for (const light of this.lights) {
@@ -1596,15 +1674,8 @@ export class PoseViewerCore {
 
         // Failsafe: if no lights are provided, or all were removed, add a default ambient light
         // to prevent black silhouettes. 
-        if (!lightParams || lightParams.length === 0) {
-            const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
-            this.scene.add(defaultLight);
-            this.lights.push(defaultLight);
-            return;
-        }
-
         // Create new lights from params
-        for (const params of lightParams) {
+        for (const params of sourceParams) {
             // Handle both hex string (#ffffff) and legacy RGB array formats
             let color;
             if (typeof params.color === 'string') {
@@ -1631,37 +1702,45 @@ export class PoseViewerCore {
             }
 
             if (light) {
+                updateLight(light, params);
                 this.scene.add(light);
                 this.lights.push(light);
             }
         }
 
+        this._lightParamsSignature = signature;
         this.requestRender();
     }
 
     animate() {
+        this._renderFrame = null;
         if (!this.initialized) return;
 
         // Damping requires continuous updates while active
-        if (this.orbit.enableDamping) {
-            this.orbit.update();
-        }
+        const dampingChanged = this.orbit?.enableDamping ? this.orbit.update() : false;
 
-        if (this._needsRender) {
+        if (this._needsRender || dampingChanged) {
             this._needsRender = false;
             if (this.renderer) this.renderer.render(this.scene, this.camera);
         }
 
-        requestAnimationFrame(() => this.animate());
+        if (dampingChanged) this.requestRender();
     }
 
     requestRender() {
         this._needsRender = true;
+        if (!this.initialized || this._renderFrame) return;
+        this._renderFrame = requestAnimationFrame(() => this.animate());
     }
 
     handlePointerDown(e) {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return;
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
 
         // CRITICAL: Force world matrices to update before capturing positions for IK
         this.skinnedMesh.updateMatrixWorld(true);
@@ -1675,8 +1754,10 @@ export class PoseViewerCore {
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-        const raycaster = new this.THREE.Raycaster();
-        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+        const raycaster = this._raycaster || new this.THREE.Raycaster();
+        const pointer = this._pointerNdc || new this.THREE.Vector2();
+        pointer.set(x, y);
+        raycaster.setFromCamera(pointer, this.camera);
 
         // --- IK MODE: Check for pole target hit ---
         if (this.ikMode && this.ikController) {
@@ -1698,7 +1779,6 @@ export class PoseViewerCore {
 
         if (markerIntersects.length > 0) {
             // Sort by distance and pick the closest one
-            markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
             const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
@@ -1718,6 +1798,7 @@ export class PoseViewerCore {
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
                             this.directDrag.effector = effectorObj;
+                            this.directDrag.effectorBone = this.bones?.[chainDef.effector] || null;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
                             this.directDrag.hasDragged = false;
@@ -1784,7 +1865,7 @@ export class PoseViewerCore {
             let nearest = null;
             let minD = Infinity;
 
-            const wPos = new this.THREE.Vector3();
+            const wPos = this._pointerWorldPosition || new this.THREE.Vector3();
             for (const b of this.boneList) {
                 b.getWorldPosition(wPos);
                 const d = point.distanceTo(wPos);
@@ -1817,6 +1898,7 @@ export class PoseViewerCore {
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
                             this.directDrag.effector = effectorObj;
+                            this.directDrag.effectorBone = this.bones?.[chainDef.effector] || null;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
                             this.directDrag.hasDragged = false;
@@ -1879,6 +1961,28 @@ export class PoseViewerCore {
         }
     }
 
+    schedulePointerMove(e) {
+        // Direct manipulation needs every event for input fidelity. Passive hover
+        // raycasts cannot produce more visible updates than the display refresh
+        // rate, so only process the latest hover event in each frame.
+        if (this.directDrag?.active || e.buttons !== 0 || this.transform?.dragging) {
+            this.handlePointerMove(e);
+            return;
+        }
+        this._pendingHoverPointer = {
+            clientX: e.clientX,
+            clientY: e.clientY,
+            buttons: e.buttons,
+        };
+        if (this._hoverPointerFrame) return;
+        this._hoverPointerFrame = requestAnimationFrame(() => {
+            this._hoverPointerFrame = null;
+            const pending = this._pendingHoverPointer;
+            this._pendingHoverPointer = null;
+            if (pending) this.handlePointerMove(pending);
+        });
+    }
+
     handlePointerMove(e) {
         if (!this.initialized || !this.skinnedMesh) return;
 
@@ -1890,16 +1994,29 @@ export class PoseViewerCore {
             }
         }
 
+        if (!this.directDrag?.active && e.buttons !== 0) return;
+        if (!this.directDrag?.active && this.transform.dragging) {
+            if (this.hoveredBoneName || this._hoveredHandSide) {
+                this.hoveredBoneName = null;
+                this._updateHoveredHand(null);
+                this.updateMarkers();
+                this.requestRender();
+            }
+            return;
+        }
+
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-        const raycaster = new this.THREE.Raycaster();
-        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+        const raycaster = this._raycaster || new this.THREE.Raycaster();
+        const pointer = this._pointerNdc || new this.THREE.Vector2();
+        pointer.set(x, y);
+        raycaster.setFromCamera(pointer, this.camera);
 
         // Process Direct Limb Dragging updates IK effector seamlessly in screen space
         if (this.directDrag && this.directDrag.active) {
-            const intersectPoint = new this.THREE.Vector3();
+            const intersectPoint = this._dragIntersectPoint || new this.THREE.Vector3();
             raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
 
             if (intersectPoint) {
@@ -1925,7 +2042,7 @@ export class PoseViewerCore {
 
                         // Snap true IK foot/hand effector target to its new dragged-along position
                         const chainDef = IK_CHAINS[this.directDrag.chainKey];
-                        const trueEffectorBone = this.boneList.find(b => b.name === chainDef.effector);
+                        const trueEffectorBone = this.directDrag.effectorBone || this.bones?.[chainDef.effector];
                         if (trueEffectorBone && this.directDrag.effector) {
                             trueEffectorBone.getWorldPosition(this.directDrag.effector.position);
                         }
@@ -1947,25 +2064,11 @@ export class PoseViewerCore {
         }
 
         // --- HOVER LOGIC ---
-        // Stop expensive raycasting if the user is holding ANY button (like right-click panning)
-        if (e.buttons !== 0) return;
-
-        // Skip hover if we are dragging via TransformControls
-        if (this.transform.dragging) {
-            if (this.hoveredBoneName || this._hoveredHandSide) {
-                this.hoveredBoneName = null;
-                this._updateHoveredHand(null);
-                this.updateMarkers();
-            }
-            return;
-        }
-
         let hitBone = null;
         let hoveredHandSide = null;
 
         const markerIntersects = raycaster.intersectObjects(this._getRaycastableJointMarkers(), false);
         if (markerIntersects.length > 0) {
-            markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
             const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
@@ -1978,7 +2081,7 @@ export class PoseViewerCore {
                 let nearest = null;
                 let minD = Infinity;
 
-                const wPos = new this.THREE.Vector3();
+                const wPos = this._pointerWorldPosition || new this.THREE.Vector3();
                 for (const b of this.boneList) {
                     b.getWorldPosition(wPos);
                     const d = point.distanceTo(wPos);
@@ -2008,12 +2111,18 @@ export class PoseViewerCore {
 
     handlePointerUp(e) {
         if (!this.initialized || !this.skinnedMesh) return;
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
 
         if (this.directDrag && this.directDrag.active) {
             const dragged = !!this.directDrag.hasDragged;
             const clickedBone = this.directDrag.clickedBone || null;
             this.directDrag.active = false;
             this.directDrag.effector = null;
+            this.directDrag.effectorBone = null;
             this.directDrag.chainKey = null;
             this.directDrag.clickedBone = null;
             this.directDrag.hasDragged = false;
@@ -2749,16 +2858,25 @@ export class PoseViewerCore {
     }
 
     resize(w, h) {
+        if (!(w > 0 && h > 0)) return;
+        const sizeChanged = w !== this.width || h !== this.height;
         this.width = w;
         this.height = h;
         // Pass false to NOT update canvas CSS style (CSS 100% rule handles that).
         // This prevents layout thrashing in ComfyUI node2.0 mode.
-        if (this.renderer) this.renderer.setSize(w, h, false);
+        if (this.renderer && sizeChanged) this.renderer.setSize(w, h, false);
         if (this.camera) {
             this.camera.aspect = w / h;
             this.camera.updateProjectionMatrix();
         }
-        this.requestRender();
+        if (this.initialized && this.renderer && this.scene && this.camera) {
+            // setSize() clears the backing buffer. Render in the same task so the
+            // browser never presents that cleared intermediate frame.
+            this.renderer.render(this.scene, this.camera);
+            this._needsRender = false;
+        } else {
+            this.requestRender();
+        }
     }
 
     loadData(data, keepCamera = false) {
@@ -4605,6 +4723,47 @@ export class PoseViewerCore {
         return this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
     }
 
+    beginCaptureBatch(width, height) {
+        if (!this.initialized || !this.renderer || !this.THREE) return false;
+        const targetWidth = Math.max(1, Math.round(Number(width) || 1));
+        const targetHeight = Math.max(1, Math.round(Number(height) || 1));
+        if (this._captureBatch) {
+            if (this._captureBatch.width !== targetWidth || this._captureBatch.height !== targetHeight) {
+                this.renderer.setSize(targetWidth, targetHeight, false);
+                this._captureBatch.width = targetWidth;
+                this._captureBatch.height = targetHeight;
+            }
+            return false;
+        }
+
+        const originalSize = new this.THREE.Vector2();
+        this.renderer.getSize(originalSize);
+        this._captureBatch = {
+            width: targetWidth,
+            height: targetHeight,
+            originalWidth: originalSize.x,
+            originalHeight: originalSize.y,
+            originalPixelRatio: this.renderer.getPixelRatio(),
+        };
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(targetWidth, targetHeight, false);
+        return true;
+    }
+
+    endCaptureBatch() {
+        const batch = this._captureBatch;
+        if (!batch || !this.renderer) return;
+        this._captureBatch = null;
+        this.renderer.setPixelRatio(batch.originalPixelRatio);
+        this.renderer.setSize(batch.originalWidth, batch.originalHeight, false);
+        if (this.initialized && this.scene && this.camera) {
+            // Restoring the drawing-buffer size clears it just like a viewport
+            // resize. Repaint synchronously to avoid a visible flash after capture.
+            this.renderer.render(this.scene, this.camera);
+            this._needsRender = false;
+        }
+    }
+
     capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
         if (!this.initialized) return null;
 
@@ -4665,29 +4824,17 @@ export class PoseViewerCore {
         }
 
         let dataURL = null;
-        const oldPixelRatio = this.renderer.getPixelRatio();
+        const ownsCaptureBatch = !this._captureBatch;
+        this.beginCaptureBatch(width, height);
 
         try {
-            // Resize renderer to output size
-            const originalSize = new this.THREE.Vector2();
-            this.renderer.getSize(originalSize);
-
-            this.renderer.setPixelRatio(1); // Force 1:1 pixel ratio for capture
-            this.renderer.setSize(width, height, false); // false = don't update style to avoid layout thrashing
-
             // Render with Fixed Camera
             this.renderer.render(this.scene, this.captureCamera);
             dataURL = this.canvas.toDataURL("image/png");
-
-            // Restore renderer
-            this.renderer.setPixelRatio(oldPixelRatio);
-            this.renderer.setSize(originalSize.x, originalSize.y, true); // Update style back
-
         } catch (e) {
             console.error("Capture failed:", e);
         } finally {
             // Restore state
-            if (this.renderer.getPixelRatio() !== oldPixelRatio) this.renderer.setPixelRatio(oldPixelRatio);
             this.scene.background = oldBg;
 
             this.jointMarkers.forEach(m => m.visible = markersVisible && this._shouldMarkerBeVisible(m));
@@ -4715,9 +4862,7 @@ export class PoseViewerCore {
                     pole.visible = poleVisibility[key] ?? false;
                 }
             }
-
-            // Re-render viewport
-            this.renderer.render(this.scene, this.camera);
+            if (ownsCaptureBatch) this.endCaptureBatch();
         }
         return dataURL;
     }

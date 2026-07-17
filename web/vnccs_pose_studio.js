@@ -992,6 +992,7 @@ const STYLES = `
     flex: 1;
     position: relative;
     overflow: hidden;
+    contain: paint;
     /* NOTE: no flex centering here — canvas must fill 100% of container, not be letterboxed */
     background:
         radial-gradient(circle, rgba(255, 143, 163, 0.04) 1px, transparent 1px),
@@ -3546,6 +3547,9 @@ class PoseStudioWidget {
         this._lastUploadedAnimationCacheId = null;
         this._lastUploadedAnimationCacheRevision = -1;
         this._animationCacheUploadWarned = false;
+        this._animationCacheSnapshot = null;
+        this._pendingAnimationCacheJSON = null;
+        this._pendingAnimationCacheId = null;
         this._passthroughPoseData = {};
         this.ikMode = true; // IK mode toggle (false = FK, true = IK)
         this.interfaceMode = "studio"; // studio | manager | managerDetail
@@ -3620,6 +3624,7 @@ class PoseStudioWidget {
         this.tabScrollLeft = null;
         this.tabScrollRight = null;
         this._tabResizeObserver = null;
+        this._tabScrollFrame = null;
         this.canvasContainer = null;
         this.managerPanel = null;
         this.managerGrid = null;
@@ -3635,6 +3640,7 @@ class PoseStudioWidget {
         this.managerImageMetrics = new Map();
         this.managerPoseMetrics = [];
         this.managerLayoutFrame = null;
+        this._lastManagerLayoutKey = null;
         this.layoutLogTimer = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -3654,6 +3660,8 @@ class PoseStudioWidget {
         this._morphWorkerFailed = false;
         this._morphSeq = 0;
         this._lastAppliedMorphSeq = 0;
+        this._morphSolveInFlight = false;
+        this._pendingMorphSolve = null;
         this._managerPreviewRefreshFrame = null;
         this._managerPreviewRefreshGeneration = 0;
         this._managerPreviewRefreshNextIndex = 0;
@@ -3668,8 +3676,13 @@ class PoseStudioWidget {
         this.libraryThumbSizeStorageKey = "vnccsPoseLibraryPreviewSize";
         this.libraryThumbSize = this.loadLibraryThumbnailSize();
         this.libraryResizeObserver = null;
+        this._libraryResizeFrame = null;
+        this._libraryRenderFrame = null;
+        this._autoRepoRefreshTimer = null;
         this.repositoryProgressStates = {};
         this._skydomePromptKey = "";
+        this._nodeWidgetCache = null;
+        this._lastCaptureUploadSnapshot = null;
 
         this.createUI();
         this.setSkydomeFromCameraPrompt("", { force: true });
@@ -4331,7 +4344,13 @@ class PoseStudioWidget {
         this.tabsShell.appendChild(this.tabScrollRight);
         centerPanel.appendChild(this.tabsShell);
         if (typeof ResizeObserver !== "undefined") {
-            this._tabResizeObserver = new ResizeObserver(() => this.updateTabScrollButtons());
+            this._tabResizeObserver = new ResizeObserver(() => {
+                if (this._tabScrollFrame) return;
+                this._tabScrollFrame = requestAnimationFrame(() => {
+                    this._tabScrollFrame = null;
+                    this.updateTabScrollButtons();
+                });
+            });
             this._tabResizeObserver.observe(this.tabsContainer);
         }
         this.updateTabs();
@@ -4641,6 +4660,7 @@ class PoseStudioWidget {
             this._animationCacheId = this.createAnimationCacheId();
             this._lastUploadedAnimationCacheId = null;
             this._lastUploadedAnimationCacheRevision = -1;
+            this._pendingAnimationCacheId = null;
         }
         return this._animationCacheId;
     }
@@ -4666,7 +4686,10 @@ class PoseStudioWidget {
 
         const run = async () => {
             try {
-                const animationJSON = JSON.stringify(this.animationState);
+                const animationJSON = (
+                    revision === this._animationCacheRevision
+                    && this._pendingAnimationCacheJSON
+                ) ? this._pendingAnimationCacheJSON : JSON.stringify(this.animationState);
                 const body = `{"animation_id":${JSON.stringify(cacheId)},"revision":${Math.max(0, Math.floor(Number(revision) || 0))},"animation":${animationJSON}}`;
                 const response = await fetch("/vnccs/pose_animation_upload", {
                     method: "POST",
@@ -4702,6 +4725,12 @@ class PoseStudioWidget {
         } finally {
             if (this._animationCacheUploadPromise === promise) {
                 this._animationCacheUploadPromise = null;
+            }
+            if (
+                this._pendingAnimationCacheId === cacheId
+                && revision >= this._animationCacheRevision
+            ) {
+                this._pendingAnimationCacheId = null;
             }
         }
     }
@@ -4759,6 +4788,9 @@ class PoseStudioWidget {
                 : -1;
             this.animationState = restored;
             this._animationInitialized = true;
+            this._animationCacheSnapshot = this.animationSnapshot();
+            this._pendingAnimationCacheJSON = JSON.stringify(this.animationState);
+            this._pendingAnimationCacheId = null;
             this.animationTimeline?.setState(this.animationState);
             this.resetAnimationHistory();
             if (this.isAnimationMode() && this.viewer?.isInitialized?.()) {
@@ -5245,6 +5277,7 @@ class PoseStudioWidget {
         }
 
         this.managerGrid.innerHTML = "";
+        this._lastManagerLayoutKey = null;
 
         if (!this.poses.length) {
             const empty = document.createElement("div");
@@ -5254,6 +5287,7 @@ class PoseStudioWidget {
             return;
         }
 
+        const fragment = document.createDocumentFragment();
         for (let i = 0; i < this.poses.length; i++) {
             const card = document.createElement("div");
             card.className = "vnccs-ps-pose-card" + (i === this.activeTab ? " active" : "");
@@ -5267,6 +5301,8 @@ class PoseStudioWidget {
             const capture = this.poseCaptures?.[i];
             if (capture) {
                 const img = document.createElement("img");
+                img.loading = "lazy";
+                img.decoding = "async";
                 img.src = capture;
                 img.alt = `Pose ${i + 1}`;
                 preview.appendChild(img);
@@ -5306,18 +5342,20 @@ class PoseStudioWidget {
                     this.openPoseFromManager(i);
                 }
             });
-            this.managerGrid.appendChild(card);
+            fragment.appendChild(card);
         }
+        this.managerGrid.appendChild(fragment);
 
         this.schedulePoseManagerGridLayout();
     }
 
     schedulePoseManagerGridLayout() {
-        if (this.managerLayoutFrame) cancelAnimationFrame(this.managerLayoutFrame);
-        this.managerLayoutFrame = requestAnimationFrame(() => {
-            this.managerLayoutFrame = null;
-            this.layoutPoseManager();
-        });
+        if (!this.managerLayoutFrame) {
+            this.managerLayoutFrame = requestAnimationFrame(() => {
+                this.managerLayoutFrame = null;
+                this.layoutPoseManager();
+            });
+        }
         for (let i = 0; i < (this.poseCaptures || []).length; i++) {
             const capture = this.poseCaptures[i];
             const stableMetrics = this.managerPoseMetrics?.[i];
@@ -5402,6 +5440,8 @@ class PoseStudioWidget {
             const stableMetrics = (metrics?.width && metrics?.height) ? metrics : this.managerPoseMetrics?.[index];
             return Math.max(0.05, Math.min(20, (stableMetrics?.width && stableMetrics?.height) ? stableMetrics.width / stableMetrics.height : fallbackAspect));
         });
+        const layoutKey = `${count}|${Math.round(width)}|${Math.round(height)}|${aspects.map(aspect => aspect.toFixed(4)).join(',')}`;
+        if (layoutKey === this._lastManagerLayoutKey) return;
         let best = null;
 
         for (let cols = 1; cols <= count; cols++) {
@@ -5429,6 +5469,7 @@ class PoseStudioWidget {
         }
 
         if (!best) return;
+        this._lastManagerLayoutKey = layoutKey;
 
         this.managerGrid.style.setProperty("--pm-cols", String(best.cols));
         this.managerGrid.style.setProperty("--pm-rows", String(best.rows));
@@ -5469,10 +5510,12 @@ class PoseStudioWidget {
             if (!img) {
                 preview.innerHTML = "";
                 img = document.createElement("img");
+                img.loading = "lazy";
+                img.decoding = "async";
                 img.alt = `Pose ${index + 1}`;
                 preview.appendChild(img);
             }
-            img.src = capture;
+            if (img.getAttribute("src") !== capture) img.src = capture;
         };
 
         updateCard(
@@ -5521,6 +5564,7 @@ class PoseStudioWidget {
         if (!this.lightingPrompts) this.lightingPrompts = [];
         this.ensurePosePrompts();
 
+        const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
         try {
             const capturesPerFrame = 2;
             const startIndex = Math.max(0, Math.min(this._managerPreviewRefreshNextIndex || 0, this.poses.length));
@@ -5554,6 +5598,7 @@ class PoseStudioWidget {
         } finally {
             this.viewer.setPose(originalPose, true);
             this.viewer.updateLights(originalLights);
+            if (captureBatchStarted) this.viewer.endCaptureBatch?.();
         }
 
         if (generation !== this._managerPreviewRefreshGeneration) return;
@@ -5607,6 +5652,7 @@ class PoseStudioWidget {
 
         this.managerDetailStrip.innerHTML = "";
 
+        const fragment = document.createDocumentFragment();
         for (let i = 0; i < this.poses.length; i++) {
             const card = document.createElement("div");
             card.className = "vnccs-ps-detail-card" + (i === this.activeTab ? " active" : "");
@@ -5620,6 +5666,8 @@ class PoseStudioWidget {
             const capture = this.poseCaptures?.[i];
             if (capture) {
                 const img = document.createElement("img");
+                img.loading = "lazy";
+                img.decoding = "async";
                 img.src = capture;
                 img.alt = `Pose ${i + 1}`;
                 preview.appendChild(img);
@@ -5664,8 +5712,9 @@ class PoseStudioWidget {
                     open();
                 }
             });
-            this.managerDetailStrip.appendChild(card);
+            fragment.appendChild(card);
         }
+        this.managerDetailStrip.appendChild(fragment);
 
         requestAnimationFrame(() => {
             const active = this.managerDetailStrip?.querySelector(".vnccs-ps-detail-card.active");
@@ -6932,7 +6981,7 @@ class PoseStudioWidget {
     }
 
     updateTabs() {
-        this.tabsContainer.innerHTML = "";
+        const fragment = document.createDocumentFragment();
 
         // Show/hide Sync Tabs button based on tab count
         if (this.syncTabsBtn) {
@@ -6960,21 +7009,37 @@ class PoseStudioWidget {
             }
 
             tab.addEventListener("click", () => this.switchTab(i));
-            this.tabsContainer.appendChild(tab);
+            fragment.appendChild(tab);
         }
 
         const addBtn = document.createElement("button");
         addBtn.className = "vnccs-ps-tab-add";
         addBtn.innerText = "+";
         addBtn.addEventListener("click", () => this.addTab());
-        this.tabsContainer.appendChild(addBtn);
+        fragment.appendChild(addBtn);
+        this.tabsContainer.replaceChildren(fragment);
 
         requestAnimationFrame(() => {
             this.updateTabScrollButtons();
             this.scrollActiveTabIntoView();
         });
-        this.renderPoseManager();
-        this.renderPoseManagerDetailStrip();
+        if (this.interfaceMode === "manager") this.renderPoseManager();
+        else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
+    }
+
+    refreshTabActiveState({ scroll = true } = {}) {
+        const tabs = Array.from(this.tabsContainer?.querySelectorAll(".vnccs-ps-tab") || []);
+        if (tabs.length !== this.poses.length) {
+            this.updateTabs();
+            return;
+        }
+        tabs.forEach((tab, index) => tab.classList.toggle("active", index === this.activeTab));
+        requestAnimationFrame(() => {
+            this.updateTabScrollButtons();
+            if (scroll) this.scrollActiveTabIntoView();
+        });
+        if (this.interfaceMode === "manager") this.renderPoseManager();
+        else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
     }
 
     updateTabScrollButtons() {
@@ -7028,7 +7093,7 @@ class PoseStudioWidget {
         }
 
         this.activeTab = index;
-        this.updateTabs();
+        this.refreshTabActiveState();
         this.clearSAMCameraMode();
         this.syncPromptFieldToActiveTab();
 
@@ -8698,13 +8763,21 @@ class PoseStudioWidget {
                 this.libraryResizeObserver.disconnect();
                 this.libraryResizeObserver = null;
             }
+            if (this._libraryRenderFrame) {
+                cancelAnimationFrame(this._libraryRenderFrame);
+                this._libraryRenderFrame = null;
+            }
+            if (this._libraryResizeFrame) {
+                cancelAnimationFrame(this._libraryResizeFrame);
+                this._libraryResizeFrame = null;
+            }
             this.libraryModal = null;
             overlay.remove();
         };
         modal.querySelector('.vnccs-ps-modal-close').onclick = closeLibraryModal;
         modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
         modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.toggleLibrarySettings();
-        this.librarySearchInput.addEventListener('input', () => this.renderLibrary());
+        this.librarySearchInput.addEventListener('input', () => this.scheduleLibraryRender());
         overlay.onclick = (e) => { if (e.target === overlay) closeLibraryModal(); };
 
         overlay.appendChild(modal);
@@ -8720,7 +8793,13 @@ class PoseStudioWidget {
             return;
         }
         if (typeof ResizeObserver !== "undefined") {
-            this.libraryResizeObserver = new ResizeObserver(() => this.updateLibraryLayoutScale());
+            this.libraryResizeObserver = new ResizeObserver(() => {
+                if (this._libraryResizeFrame) return;
+                this._libraryResizeFrame = requestAnimationFrame(() => {
+                    this._libraryResizeFrame = null;
+                    this.updateLibraryLayoutScale();
+                });
+            });
             if (this.libraryModal) this.libraryResizeObserver.observe(this.libraryModal);
             this.libraryResizeObserver.observe(this.libraryWorkspace);
         }
@@ -8797,9 +8876,10 @@ class PoseStudioWidget {
                 }
             };
 
-            const timer = setInterval(async () => {
+            this._autoRepoRefreshTimer = setInterval(async () => {
                 if (Date.now() - startedAt > 10 * 60 * 1000 || await poll()) {
-                    clearInterval(timer);
+                    clearInterval(this._autoRepoRefreshTimer);
+                    this._autoRepoRefreshTimer = null;
                 }
             }, 2500);
         } catch (err) {
@@ -9360,12 +9440,20 @@ class PoseStudioWidget {
         });
     }
 
+    scheduleLibraryRender() {
+        if (this._libraryRenderFrame) return;
+        this._libraryRenderFrame = requestAnimationFrame(() => {
+            this._libraryRenderFrame = null;
+            this.renderLibrary();
+        });
+    }
+
     renderLibraryCategories() {
         if (!this.libraryCategoriesEl) return;
         const categories = Array.from(new Set((this.libraryPoses || []).map((pose) => this.getLibraryPoseMeta(pose).category))).sort();
         const all = ["All", ...categories];
         if (!all.includes(this.libraryActiveCategory)) this.libraryActiveCategory = "All";
-        this.libraryCategoriesEl.innerHTML = '';
+        const fragment = document.createDocumentFragment();
         for (const category of all) {
             const btn = document.createElement('button');
             btn.className = 'vnccs-ps-library-category-chip';
@@ -9375,8 +9463,9 @@ class PoseStudioWidget {
                 this.libraryActiveCategory = category;
                 this.renderLibrary();
             };
-            this.libraryCategoriesEl.appendChild(btn);
+            fragment.appendChild(btn);
         }
+        this.libraryCategoriesEl.replaceChildren(fragment);
     }
 
     renderLibrary() {
@@ -9404,6 +9493,7 @@ class PoseStudioWidget {
             this.librarySelectedName = null;
         }
 
+        const fragment = document.createDocumentFragment();
         for (const pose of filtered) {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
@@ -9415,8 +9505,8 @@ class PoseStudioWidget {
             if (pose.has_preview) {
                 const previewUrl = this.getLibraryPreviewUrl(pose);
                 preview.innerHTML = this.isLibraryVideoPreview(pose)
-                    ? `<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="${this.escapeHtml(pose.name)} animation preview"></video>`
-                    : `<img src="${previewUrl}" alt="${this.escapeHtml(pose.name)}">`;
+                    ? `<video src="${previewUrl}" muted loop playsinline preload="none" aria-label="${this.escapeHtml(pose.name)} animation preview"></video>`
+                    : `<img src="${previewUrl}" alt="${this.escapeHtml(pose.name)}" loading="lazy" decoding="async">`;
             } else {
                 preview.innerHTML = this.isLibraryAnimation(pose) ? '<span>🎞️</span>' : '<span>🦴</span>';
             }
@@ -9429,7 +9519,10 @@ class PoseStudioWidget {
 
             const previewVideo = preview.querySelector("video");
             if (previewVideo) {
-                item.addEventListener("mouseenter", () => previewVideo.play().catch(() => {}));
+                item.addEventListener("mouseenter", () => {
+                    previewVideo.preload = "auto";
+                    previewVideo.play().catch(() => {});
+                });
                 item.addEventListener("mouseleave", () => {
                     previewVideo.pause();
                     try { previewVideo.currentTime = 0; } catch (_) {}
@@ -9444,8 +9537,9 @@ class PoseStudioWidget {
                 item.appendChild(typeBadge);
             }
             item.appendChild(name);
-            this.libraryGrid.appendChild(item);
+            fragment.appendChild(item);
         }
+        this.libraryGrid.appendChild(fragment);
 
         const selected = (this.libraryPoses || []).find(pose => this.getLibraryPoseId(pose) === this.librarySelectedName) || null;
         this.renderLibraryInspector(selected);
@@ -9476,7 +9570,7 @@ class PoseStudioWidget {
         const previewMarkup = previewSrc
             ? (this.isLibraryVideoPreview(pose)
                 ? `<video src="${previewSrc}" controls muted loop playsinline preload="metadata" aria-label="${this.escapeHtml(pose.name)} animation preview"></video>`
-                : `<img src="${previewSrc}" alt="${this.escapeHtml(pose.name)}">`)
+                : `<img src="${previewSrc}" alt="${this.escapeHtml(pose.name)}" decoding="async">`)
             : (isAnimation ? '<span>🎞️</span>' : '<span>🦴</span>');
         const editableTags = meta.tags.filter(tag => tag.toLowerCase() !== "animation");
         const assetPrompt = isAnimation
@@ -9537,7 +9631,7 @@ class PoseStudioWidget {
                     : await this.compressLibraryImage(file);
                 previewBox.innerHTML = isAnimation
                     ? `<video src="${pendingPreview}" controls muted loop playsinline></video>`
-                    : `<img src="${pendingPreview}" alt="${this.escapeHtml(pose.name)}">`;
+                    : `<img src="${pendingPreview}" alt="${this.escapeHtml(pose.name)}" decoding="async">`;
             } catch (error) {
                 pendingPreview = null;
                 event.target.value = "";
@@ -9842,6 +9936,9 @@ class PoseStudioWidget {
         this._animationCacheRestorePromise = null;
         this._animationCacheId = null;
         this._animationCacheRevision = 0;
+        this._animationCacheSnapshot = null;
+        this._pendingAnimationCacheJSON = null;
+        this._pendingAnimationCacheId = null;
         this.poses = [JSON.parse(JSON.stringify(this.animationState.basePose))];
         this.posePrompts = [String(this.animationState.basePose.prompt || "")];
         this.poseCaptures = [];
@@ -10605,13 +10702,32 @@ class PoseStudioWidget {
         if (message.type === "error") {
             console.warn("[VNCCS PoseStudio] Live morph worker failed:", message.message);
             this._morphWorkerFailed = true;
+            this._morphSolveInFlight = false;
+            this._pendingMorphSolve = null;
             return;
         }
         if (message.type !== "result") return;
-        if (message.seq < this._morphSeq || message.seq < this._lastAppliedMorphSeq) return;
-        if (!this.viewer?.updateBodyVertices?.(message.vertices, message.bonePositions)) return;
-        this._lastAppliedMorphSeq = message.seq;
-        this.scheduleAllManagerPreviewRefresh();
+        this._morphSolveInFlight = false;
+        const isLatest = message.seq >= this._morphSeq && message.seq >= this._lastAppliedMorphSeq;
+        if (isLatest && this.viewer?.updateBodyVertices?.(message.vertices, message.bonePositions)) {
+            this._lastAppliedMorphSeq = message.seq;
+            this.scheduleAllManagerPreviewRefresh();
+        }
+        this.flushPendingMorphSolve();
+    }
+
+    flushPendingMorphSolve() {
+        if (this._morphSolveInFlight || !this._pendingMorphSolve || !this._morphWorker) return;
+        const next = this._pendingMorphSolve;
+        this._pendingMorphSolve = null;
+        this._morphSolveInFlight = true;
+        try {
+            this._morphWorker.postMessage(next);
+        } catch (error) {
+            this._morphSolveInFlight = false;
+            this._morphWorkerFailed = true;
+            console.warn("[VNCCS PoseStudio] Failed to queue live morph:", error);
+        }
     }
 
     requestLiveMorph(changedKey = null) {
@@ -10619,12 +10735,13 @@ class PoseStudioWidget {
         const worker = this.ensureMorphWorker();
         if (!worker || !this.viewer?.isInitialized?.()) return false;
         const seq = ++this._morphSeq;
-        worker.postMessage({
+        this._pendingMorphSolve = {
             type: "solve",
             seq,
             clientId: this._morphClientId,
             params: { ...this.meshParams },
-        });
+        };
+        this.flushPendingMorphSolve();
         return true;
     }
 
@@ -10950,7 +11067,7 @@ class PoseStudioWidget {
     onMeshParamsChanged(changedKey = null, options = {}) {
         // Update node widgets
         for (const [key, value] of Object.entries(this.meshParams)) {
-            const widget = this.node.widgets?.find(w => w.name === key);
+            const widget = this.getNodeWidget(key);
             if (widget) {
                 widget.value = value;
             }
@@ -10964,30 +11081,33 @@ class PoseStudioWidget {
         this.queueFullMeshUpdate(changedKey);
     }
 
-    resize() {
-        this.updateMainUIScale();
+    resize({ forceUIScale = false } = {}) {
+        this.updateMainUIScale({ force: forceUIScale });
         this.scheduleUILayoutLog("resize");
         if (this.interfaceMode === "manager") {
             this.schedulePoseManagerGridLayout();
             return;
         }
-        if (this.viewer && this.canvasContainer) {
-            const rect = this.canvasContainer.getBoundingClientRect();
-            const targetW = Math.round(rect.width);
-            const targetH = Math.round(rect.height);
+        // Resize and repaint before this animation frame is presented. The canvas
+        // backing buffer therefore always matches its CSS box and the browser never
+        // stretches an old frame while the node is being dragged.
+        this.performViewerResize();
+    }
 
-            if (targetW > 1 && targetH > 1) {
-                const dw = Math.abs(targetW - (this._lastResizeW || 0));
-                const dh = Math.abs(targetH - (this._lastResizeH || 0));
-                if (dw < 2 && dh < 2) return;
+    performViewerResize() {
+        if (!this.viewer || !this.canvasContainer || this.interfaceMode === "manager") return;
+        const rect = this.canvasContainer.getBoundingClientRect();
+        const targetW = Math.round(rect.width);
+        const targetH = Math.round(rect.height);
+        if (targetW <= 1 || targetH <= 1) return;
 
-                this._lastResizeW = targetW;
-                this._lastResizeH = targetH;
-                this.viewer.resize(targetW, targetH);
-                if (this._activeHandSide) {
-                    this.positionHandControlPopover(this._activeHandSide);
-                }
-            }
+        if (targetW === this._lastResizeW && targetH === this._lastResizeH) return;
+
+        this._lastResizeW = targetW;
+        this._lastResizeH = targetH;
+        this.viewer.resize(targetW, targetH);
+        if (this._activeHandSide) {
+            this.positionHandControlPopover(this._activeHandSide);
         }
     }
 
@@ -11080,7 +11200,7 @@ class PoseStudioWidget {
         console.groupEnd();
     }
 
-    updateMainUIScale() {
+    updateMainUIScale({ force = false } = {}) {
         if (!this.container) return;
         const width = this.container.clientWidth || this.node?.size?.[0] || 900;
         const height = this.container.clientHeight || this.node?.size?.[1] || 740;
@@ -11090,20 +11210,31 @@ class PoseStudioWidget {
         )));
         const next = scale.toFixed(3);
         const relativeNext = (scale / POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE).toFixed(3);
+        const previous = Number.parseFloat(this.container.style.getPropertyValue("--vnccs-ps-ui-scale"));
+        if (!force && Number.isFinite(previous) && Math.abs(scale - previous) < 0.005) {
+            return false;
+        }
         if (this.container.style.getPropertyValue("--vnccs-ps-ui-scale") !== next) {
             this.container.style.setProperty("--vnccs-ps-ui-scale", next);
         }
         if (this.container.style.getPropertyValue("--vnccs-ps-relative-ui-scale") !== relativeNext) {
             this.container.style.setProperty("--vnccs-ps-relative-ui-scale", relativeNext);
         }
+        return true;
     }
 
     startResizeObserver() {
         if (this._containerResizeObserver || !this.canvasContainer) return;
 
         this._containerResizeObserver = new ResizeObserver(() => {
-            if (this._resizeRaf) cancelAnimationFrame(this._resizeRaf);
-            this._resizeRaf = requestAnimationFrame(() => this.resize());
+            this.scheduleUILayoutLog("resize");
+            if (this.interfaceMode === "manager") {
+                this.schedulePoseManagerGridLayout();
+                return;
+            }
+            // ResizeObserver runs before paint. Updating the drawing buffer here
+            // prevents the browser from ever displaying a CSS-scaled stale frame.
+            this.performViewerResize();
         });
 
         this.updateMainUIScale();
@@ -11408,6 +11539,59 @@ class PoseStudioWidget {
         }
     }
 
+    getNodeWidget(name) {
+        const widgets = this.node?.widgets || [];
+        if (
+            !this._nodeWidgetCache
+            || this._nodeWidgetCache.source !== widgets
+            || this._nodeWidgetCache.length !== widgets.length
+        ) {
+            this._nodeWidgetCache = {
+                source: widgets,
+                length: widgets.length,
+                byName: new Map(widgets.map(widget => [widget?.name, widget])),
+            };
+        }
+        return this._nodeWidgetCache.byName.get(name);
+    }
+
+    queueCaptureUpload(captureId) {
+        const captures = this.poseCaptures || [];
+        if (!captureId || !captures.some(capture => typeof capture === "string" && capture.length > 0)) return;
+        const prompts = this.lightingPrompts || [];
+        const previous = this._lastCaptureUploadSnapshot;
+        const unchanged = previous
+            && previous.captureId === captureId
+            && previous.captures.length === captures.length
+            && previous.prompts.length === prompts.length
+            && previous.captures.every((capture, index) => capture === captures[index])
+            && previous.prompts.every((prompt, index) => prompt === prompts[index]);
+        if (unchanged) return;
+
+        const snapshot = {
+            captureId,
+            captures: captures.slice(),
+            prompts: prompts.slice(),
+        };
+        this._lastCaptureUploadSnapshot = snapshot;
+        fetch('/vnccs/pose_captures_upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                capture_id: captureId,
+                captured_images: snapshot.captures,
+                lighting_prompts: snapshot.prompts,
+            })
+        }).then(response => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        }).catch(error => {
+            if (this._lastCaptureUploadSnapshot === snapshot) {
+                this._lastCaptureUploadSnapshot = null;
+            }
+            console.warn("[VNCCS PoseStudio] Capture upload failed:", error);
+        });
+    }
+
     syncToNode(fullCapture = false, options = {}) {
         if (this._isSyncing || this._animationCacheRestorePending) return;
         this._isSyncing = true;
@@ -11495,7 +11679,9 @@ class PoseStudioWidget {
 
             if (fullCapture) {
                 const originalTab = this.activeTab;
+                const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
 
+                try {
                 for (let i = 0; i < capturePoses.length; i++) {
                     if (!animationMode && !isDebugExecution) {
                         this.activeTab = i; // Switch tab for ordinary image-mode capture
@@ -11568,7 +11754,7 @@ class PoseStudioWidget {
                     this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
                 } else {
                     this.viewer.setPose(this.poses[this.activeTab], true);
-                    this.updateTabs(); // Ensure UI reflects correct tab
+                    this.refreshTabActiveState({ scroll: false });
                     this.updateRotationSliders();
                 }
 
@@ -11579,6 +11765,9 @@ class PoseStudioWidget {
                 const yaw = this.exportParams.cam_yaw_deg || 0;
                 const pitch = this.exportParams.cam_pitch_deg || 0;
                 this.viewer.updateCaptureCamera(w, h, z, oX, oY, yaw, pitch);
+                } finally {
+                    if (captureBatchStarted) this.viewer.endCaptureBatch?.();
+                }
 
             } else {
                 // Capture only ACTIVE
@@ -11622,12 +11811,23 @@ class PoseStudioWidget {
             : `vnccs_capture_${this.node.id}`;
         let animationToSave;
         if (this._animationInitialized) {
-            this._animationCacheRevision = Math.max(0, this._animationCacheRevision) + 1;
+            const animationCacheId = this.getAnimationCacheId();
+            const animationSnapshot = this.animationSnapshot();
+            const cacheNeedsUpload = (
+                this._lastUploadedAnimationCacheId !== animationCacheId
+                && this._pendingAnimationCacheId !== animationCacheId
+            );
+            if (animationSnapshot !== this._animationCacheSnapshot || cacheNeedsUpload) {
+                this._animationCacheSnapshot = animationSnapshot;
+                this._pendingAnimationCacheJSON = JSON.stringify(this.animationState);
+                this._animationCacheRevision = Math.max(0, this._animationCacheRevision) + 1;
+                this._pendingAnimationCacheId = animationCacheId;
+                this.scheduleAnimationCacheUpload();
+            }
             animationToSave = createAnimationCacheReference(this.animationState, {
-                cacheId: this.getAnimationCacheId(),
+                cacheId: animationCacheId,
                 revision: this._animationCacheRevision,
             });
-            this.scheduleAnimationCacheUpload();
         }
 
         const data = {
@@ -11645,41 +11845,34 @@ class PoseStudioWidget {
             background_url: this.exportParams.background_url || null
         };
 
-        // Upload captures to server cache (fire-and-forget; errors are non-fatal)
-        if (captureId && this.poseCaptures && this.poseCaptures.some(c => c)) {
-            fetch('/vnccs/pose_captures_upload', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    capture_id: captureId,
-                    captured_images: this.poseCaptures,
-                    lighting_prompts: this.lightingPrompts || []
-                })
-            }).catch(e => console.warn("[VNCCS PoseStudio] Capture upload failed:", e));
-        }
+        // Upload captures only when image or prompt content changed.
+        this.queueCaptureUpload(captureId);
 
-        const widget = this.node.widgets?.find(w => w.name === "pose_data");
+        const widget = this.getNodeWidget("pose_data");
         if (widget) {
-            widget.value = JSON.stringify(data);
+            const nextWidgetValue = JSON.stringify(data);
+            if (widget.value !== nextWidgetValue) {
+                widget.value = nextWidgetValue;
 
-            // Force ComfyUI to recognize the state change so it saves to the workflow
-            if (widget.callback) {
-                widget.callback(widget.value);
-            }
-            if (app.graph && app.graph.setDirtyCanvas) {
-                app.graph.setDirtyCanvas(true, true);
+                // Force ComfyUI to recognize the state change so it saves to the workflow
+                if (widget.callback) {
+                    widget.callback(widget.value);
+                }
+                if (app.graph && app.graph.setDirtyCanvas) {
+                    app.graph.setDirtyCanvas(true, true);
+                }
             }
         }
 
-        this.renderPoseManager();
-        this.renderPoseManagerDetailStrip();
+        if (this.interfaceMode === "manager") this.renderPoseManager();
+        else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
         this._isSyncing = false;
     }
 
     loadFromNode() {
         this.clearSAMCameraMode();
         // Load from pose_data widget
-        const widget = this.node.widgets?.find(w => w.name === "pose_data");
+        const widget = this.getNodeWidget("pose_data");
         if (!widget || !widget.value) {
             return;
         }
@@ -11806,6 +11999,9 @@ class PoseStudioWidget {
             }
 
             let cachedAnimationReference = null;
+            this._animationCacheSnapshot = null;
+            this._pendingAnimationCacheJSON = null;
+            this._pendingAnimationCacheId = null;
             if (isAnimationCacheReference(data.animation)) {
                 cachedAnimationReference = data.animation;
                 this._animationCacheId = this.animationCacheIdBelongsToNode(data.animation.cacheId)
@@ -12255,6 +12451,15 @@ app.registerExtension({
             }
         };
 
+        const scheduleStudioDOMWidgetWidth = (node) => {
+            if (!node || node._vnccsPoseWidthFrame) return;
+            node._vnccsPoseWidthFrame = requestAnimationFrame(() => {
+                node._vnccsPoseWidthFrame = null;
+                syncStudioDOMWidgetWidth(node);
+                node.studioWidget?.resize?.();
+            });
+        };
+
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (onCreated) onCreated.apply(this, arguments);
@@ -12277,7 +12482,7 @@ app.registerExtension({
             requestAnimationFrame(() => syncStudioDOMWidgetWidth(this));
 
             // Pre-load library for random functionality
-            setTimeout(() => {
+            this._vnccsPoseLibraryWarmupTimer = setTimeout(() => {
                 if (this.studioWidget) {
                     this.studioWidget.refreshLibrary(false);
                     this.studioWidget.autoRefreshEnabledPoseRepositories();
@@ -12298,7 +12503,7 @@ app.registerExtension({
                 }
             }
             // Load model after initialization
-            setTimeout(() => {
+            this._vnccsPoseInitTimer = setTimeout(() => {
                 this.studioWidget.loadFromNode();
                 this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
                 window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
@@ -12317,12 +12522,12 @@ app.registerExtension({
         nodeType.prototype.onResize = function (size) {
             if (this.studioWidget) {
                 // DON'T set container dimensions - let it fill naturally
-                // Just trigger the viewer resize
-                syncStudioDOMWidgetWidth(this);
+                // Coalesce ComfyUI DOM-widget redraws to one per display frame.
+                scheduleStudioDOMWidgetWidth(this);
                 clearTimeout(this.resizeTimer);
                 this.resizeTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
-                    this.studioWidget.resize();
+                    this.studioWidget.resize({ forceUIScale: true });
                 }, 50);
             }
         };
@@ -12334,7 +12539,8 @@ app.registerExtension({
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
-                setTimeout(() => {
+                clearTimeout(this._vnccsPoseConfigureTimer);
+                this._vnccsPoseConfigureTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
                     this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
@@ -12359,6 +12565,14 @@ app.registerExtension({
         nodeType.prototype.onRemoved = function () {
             window.__vnccsPoseStudioCharacterCreatorSync?.unregisterStudio(this.studioWidget);
             if (onRemoved) onRemoved.apply(this, arguments);
+            clearTimeout(this.resizeTimer);
+            clearTimeout(this._vnccsPoseLibraryWarmupTimer);
+            clearTimeout(this._vnccsPoseInitTimer);
+            clearTimeout(this._vnccsPoseConfigureTimer);
+            if (this._vnccsPoseWidthFrame) {
+                cancelAnimationFrame(this._vnccsPoseWidthFrame);
+                this._vnccsPoseWidthFrame = null;
+            }
             if (this.studioWidget) {
                 this.studioWidget._activeVideoImportClose?.();
                 void this.studioWidget.flushAnimationCacheUpload?.();
@@ -12370,6 +12584,30 @@ app.registerExtension({
                 if (this.studioWidget.managerResizeObserver) {
                     this.studioWidget.managerResizeObserver.disconnect();
                     this.studioWidget.managerResizeObserver = null;
+                }
+                if (this.studioWidget._tabResizeObserver) {
+                    this.studioWidget._tabResizeObserver.disconnect();
+                    this.studioWidget._tabResizeObserver = null;
+                }
+                if (this.studioWidget._tabScrollFrame) {
+                    cancelAnimationFrame(this.studioWidget._tabScrollFrame);
+                    this.studioWidget._tabScrollFrame = null;
+                }
+                if (this.studioWidget.libraryResizeObserver) {
+                    this.studioWidget.libraryResizeObserver.disconnect();
+                    this.studioWidget.libraryResizeObserver = null;
+                }
+                if (this.studioWidget._libraryRenderFrame) {
+                    cancelAnimationFrame(this.studioWidget._libraryRenderFrame);
+                    this.studioWidget._libraryRenderFrame = null;
+                }
+                if (this.studioWidget._libraryResizeFrame) {
+                    cancelAnimationFrame(this.studioWidget._libraryResizeFrame);
+                    this.studioWidget._libraryResizeFrame = null;
+                }
+                if (this.studioWidget._autoRepoRefreshTimer) {
+                    clearInterval(this.studioWidget._autoRepoRefreshTimer);
+                    this.studioWidget._autoRepoRefreshTimer = null;
                 }
                 if (this.studioWidget.managerLayoutFrame) {
                     cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
@@ -12383,9 +12621,11 @@ app.registerExtension({
                     cancelAnimationFrame(this.studioWidget._managerPreviewRefreshFrame);
                     this.studioWidget._managerPreviewRefreshFrame = null;
                 }
-                if (this.studioWidget._resizeRaf) {
-                    cancelAnimationFrame(this.studioWidget._resizeRaf);
-                }
+                clearTimeout(this.studioWidget.colorTimeout);
+                clearTimeout(this.studioWidget.lightingQuickSyncTimeout);
+                clearTimeout(this.studioWidget.lightingSyncTimeout);
+                this.studioWidget._pendingMorphSolve = null;
+                this.studioWidget._morphSolveInFlight = false;
                 if (this.studioWidget._morphWorker) {
                     if (this.studioWidget._morphClientId) {
                         VNCCS_SHARED_MORPH_CLIENTS.delete(this.studioWidget._morphClientId);
