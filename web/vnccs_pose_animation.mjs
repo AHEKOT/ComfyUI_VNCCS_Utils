@@ -18,8 +18,13 @@ export const MAX_FRAME_COUNT = 600;
 export const MIN_ANIMATION_FPS = 0.001;
 export const MAX_ANIMATION_FPS = 120;
 export const DEFAULT_ANIMATION_FPS = 12;
-export const TIMELINE_ROW_HEIGHT = 22;
-export const TIMELINE_RULER_HEIGHT = 26;
+export const TIMELINE_ROW_HEIGHT = 28;
+export const TIMELINE_RULER_HEIGHT = 33;
+const TIMELINE_LABEL_WIDTH = 210;
+const TIMELINE_MIN_LANE_WIDTH = 800;
+const TIMELINE_FRAME_WIDTH = 15;
+const TIMELINE_MIN_PANEL_HEIGHT = 120;
+const TIMELINE_MAX_PANEL_HEIGHT = 650;
 
 export const TIMELINE_TRACK_GROUPS = Object.freeze([
     { id: "scene", label: "Scene" },
@@ -1208,7 +1213,7 @@ export function computeVisibleFrameRange({
     laneWidth,
     scrollLeft,
     viewportWidth,
-    labelWidth = 168,
+    labelWidth = TIMELINE_LABEL_WIDTH,
     overscanPixels = 320,
     chunkSize = 20,
 } = {}) {
@@ -1225,7 +1230,7 @@ export function computeVisibleFrameRange({
     return { start, end };
 }
 
-export function findNearestKeyframeAtPosition(keys, pointerX, laneWidth, frameCount, threshold = 7) {
+export function findNearestKeyframeAtPosition(keys, pointerX, laneWidth, frameCount, threshold = 9) {
     if (!Array.isArray(keys) || !keys.length) return null;
     const width = Math.max(1, finiteNumber(laneWidth, 1));
     const lastFrame = Math.max(1, Math.round(finiteNumber(frameCount, 2)) - 1);
@@ -1249,7 +1254,7 @@ export function findNearestKeyframeAtPosition(keys, pointerX, laneWidth, frameCo
             nearestDistance = distance;
         }
     }
-    return nearestDistance <= Math.max(1, finiteNumber(threshold, 7)) ? nearest : null;
+    return nearestDistance <= Math.max(1, finiteNumber(threshold, 9)) ? nearest : null;
 }
 
 function installTimelineShortcuts(doc) {
@@ -1308,7 +1313,7 @@ export class PoseAnimationTimeline {
         this._virtualFrameRange = { start: -1, end: -1 };
         this._virtualNames = [];
         this._virtualRows = [];
-        this._laneContentLeft = 168;
+        this._laneContentLeft = TIMELINE_LABEL_WIDTH;
         this._virtualScrollRaf = null;
         this._visiblePlayheads = [];
         this._visibleKeyLanes = [];
@@ -1497,8 +1502,8 @@ export class PoseAnimationTimeline {
         this.body.appendChild(this.content);
         this.element.append(this.resizer, this.toolbar, this.collapseButton, this.body);
         try {
-            const savedHeight = Number(globalThis.localStorage?.getItem("vnccsPoseStudioTimelineHeight"));
-            if (Number.isFinite(savedHeight) && savedHeight >= 96) {
+            const savedHeight = Number(globalThis.localStorage?.getItem("vnccsPoseStudioTimelineHeightV3"));
+            if (Number.isFinite(savedHeight) && savedHeight >= TIMELINE_MIN_PANEL_HEIGHT) {
                 this.element.style.setProperty("--vnccs-tl-panel-height", `${savedHeight}px`);
             }
         } catch (_) {}
@@ -1805,8 +1810,15 @@ export class PoseAnimationTimeline {
         this.element.classList.add("resizing");
         this.resizer.setPointerCapture?.(event.pointerId);
         const move = moveEvent => {
-            const maximum = Math.max(96, Math.min(520, (this.element.parentElement?.clientHeight || 800) * 0.6));
-            const height = clamp(startHeight + (startY - moveEvent.clientY) / Math.max(1e-6, scale), 96, maximum);
+            const maximum = Math.max(
+                TIMELINE_MIN_PANEL_HEIGHT,
+                Math.min(TIMELINE_MAX_PANEL_HEIGHT, (this.element.parentElement?.clientHeight || 800) * 0.6),
+            );
+            const height = clamp(
+                startHeight + (startY - moveEvent.clientY) / Math.max(1e-6, scale),
+                TIMELINE_MIN_PANEL_HEIGHT,
+                maximum,
+            );
             this.element.style.setProperty("--vnccs-tl-panel-height", `${height}px`);
             this._renderVisibleTrackRows(true);
         };
@@ -1818,7 +1830,7 @@ export class PoseAnimationTimeline {
             if (this._activeResizeCancel === cancel) this._activeResizeCancel = null;
             this.element.classList.remove("resizing");
             try {
-                globalThis.localStorage?.setItem("vnccsPoseStudioTimelineHeight", String(this.element.offsetHeight));
+                globalThis.localStorage?.setItem("vnccsPoseStudioTimelineHeightV3", String(this.element.offsetHeight));
             } catch (_) {}
         };
         const cancel = () => end({ type: "pointercancel", pointerId: event.pointerId });
@@ -2120,10 +2132,10 @@ export class PoseAnimationTimeline {
             if (!positions.length) return;
             context.beginPath();
             for (const x of positions) {
-                context.moveTo(x, height / 2 - 5);
-                context.lineTo(x + 5, height / 2);
-                context.lineTo(x, height / 2 + 5);
-                context.lineTo(x - 5, height / 2);
+                context.moveTo(x, height / 2 - 6);
+                context.lineTo(x + 6, height / 2);
+                context.lineTo(x, height / 2 + 6);
+                context.lineTo(x - 6, height / 2);
                 context.closePath();
             }
             context.fillStyle = fill;
@@ -2385,7 +2397,7 @@ export class PoseAnimationTimeline {
         const range = computeVirtualTrackRange({
             count: this._virtualRows.length,
             scrollTop: this.body.scrollTop,
-            viewportHeight: this.body.clientHeight || 238,
+            viewportHeight: this.body.clientHeight || 298,
             rowHeight: TIMELINE_ROW_HEIGHT,
             rulerHeight: TIMELINE_RULER_HEIGHT,
         });
@@ -2414,7 +2426,7 @@ export class PoseAnimationTimeline {
         this._rulerPlayhead = null;
         this._visiblePlayheads = [];
         this._visibleKeyLanes = [];
-        const width = Math.max(640, this.state.frameCount * 12);
+        const width = Math.max(TIMELINE_MIN_LANE_WIDTH, this.state.frameCount * TIMELINE_FRAME_WIDTH);
         this._laneWidth = width;
         this.content.style.setProperty("--vnccs-tl-lane-width", `${width}px`);
 
@@ -2426,7 +2438,7 @@ export class PoseAnimationTimeline {
         const rulerLane = this._makeLane(null, true);
         rulerRow.append(rulerLabel, rulerLane);
         this.content.appendChild(rulerRow);
-        this._laneContentLeft = rulerLane.offsetLeft || 168;
+        this._laneContentLeft = rulerLane.offsetLeft || TIMELINE_LABEL_WIDTH;
 
         const rows = this._timelineRows();
         this._rowKeyCache = new WeakMap();
