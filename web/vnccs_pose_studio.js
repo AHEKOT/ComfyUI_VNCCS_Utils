@@ -2101,9 +2101,10 @@ const STYLES = `
     top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(8, 6, 16, 0.97);
     backdrop-filter: blur(12px);
-    z-index: 100;
+    z-index: 3000;
     display: flex;
     flex-direction: column;
+    pointer-events: auto;
 }
 
 .vnccs-ps-hand-popover {
@@ -3062,12 +3063,29 @@ const STYLES = `
     border-radius: inherit;
 }
 
-.vnccs-ps-library-item-preview img {
+.vnccs-ps-library-item-preview img,
+.vnccs-ps-library-item-preview video {
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
     border-radius: inherit;
+}
+
+.vnccs-ps-library-item-type {
+    position: absolute;
+    top: calc(8px * var(--vnccs-ps-library-ui-scale));
+    left: calc(8px * var(--vnccs-ps-library-ui-scale));
+    z-index: 6;
+    padding: calc(4px * var(--vnccs-ps-library-ui-scale)) calc(8px * var(--vnccs-ps-library-ui-scale));
+    border: 1px solid rgba(184, 169, 232, 0.58);
+    border-radius: 999px;
+    background: rgba(18, 12, 34, 0.84);
+    color: var(--ps-accent-lavender);
+    font: 800 calc(8px * var(--vnccs-ps-library-ui-scale)) var(--ps-font);
+    letter-spacing: calc(.7px * var(--vnccs-ps-library-ui-scale));
+    text-transform: uppercase;
+    pointer-events: none;
 }
 
 .vnccs-ps-library-item-name {
@@ -3141,10 +3159,23 @@ const STYLES = `
     font-size: 34px;
 }
 
-.vnccs-ps-library-inspector-preview img {
+.vnccs-ps-library-inspector-preview img,
+.vnccs-ps-library-inspector-preview video {
     width: 100%;
     height: 100%;
     object-fit: contain;
+}
+
+.vnccs-ps-library-system-tag {
+    align-self: flex-start;
+    padding: 5px 9px;
+    border: 1px solid rgba(184, 169, 232, 0.5);
+    border-radius: 999px;
+    background: rgba(184, 169, 232, 0.12);
+    color: var(--ps-accent-lavender);
+    font-size: 9px;
+    letter-spacing: .7px;
+    text-transform: none;
 }
 
 .vnccs-ps-library-inspector-actions {
@@ -3561,7 +3592,7 @@ class PoseStudioWidget {
             interface_mode: "studio",
             editor_mode: "image",
             hand_controls_v2: true,
-            directional_skydome_enabled: true,
+            directional_skydome_enabled: false,
         };
 
         // Lighting settings (array of light configs)
@@ -4502,6 +4533,7 @@ class PoseStudioWidget {
     applyEditorMode() {
         if (!this.container) return;
         const animation = this.isAnimationMode();
+        this.node?._vnccsSetAnimationOutputMode?.(animation);
         this.container.classList.toggle("vnccs-ps-editor-animation", animation);
         this.animationTimeline?.setVisible(animation && this.interfaceMode !== "manager");
         requestAnimationFrame(() => this.resize());
@@ -5060,7 +5092,7 @@ class PoseStudioWidget {
     }
 
     setSkydomeFromCameraPrompt(cameraPrompt, { force = false } = {}) {
-        if (this.exportParams.directional_skydome_enabled === false) return false;
+        if (this.exportParams.directional_skydome_enabled !== true) return false;
         const prompt = String(cameraPrompt ?? "");
         const rotation = cameraPromptToSkydomeRotation(prompt);
         const stateKey = `${rotation.yawDegrees}:${rotation.pitchDegrees}`;
@@ -5075,7 +5107,7 @@ class PoseStudioWidget {
     }
 
     applyDirectionalSkydomeSetting() {
-        const enabled = this.exportParams.directional_skydome_enabled !== false;
+        const enabled = this.exportParams.directional_skydome_enabled === true;
         if (!enabled) {
             this._skydomePromptKey = "";
             this.viewer?.setDirectionalSkydomeOrientation?.(0, 0);
@@ -8590,6 +8622,7 @@ class PoseStudioWidget {
     }
 
     showLibraryModal() {
+        const animationMode = this.isAnimationMode();
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-library-overlay';
 
@@ -8600,13 +8633,13 @@ class PoseStudioWidget {
                 <div class="vnccs-ps-library-modal-title">📚 Pose Library</div>
                 <div class="vnccs-ps-library-header-actions">
                     <button class="vnccs-ps-btn primary vnccs-ps-library-save-current">
-                        <span class="vnccs-ps-btn-icon">💾</span> Save Current Pose
+                        <span class="vnccs-ps-btn-icon">💾</span> Save Current ${animationMode ? "Animation" : "Pose"}
                     </button>
                 </div>
                 <button class="vnccs-ps-modal-close">✕</button>
             </div>
             <div class="vnccs-ps-library-toolbar">
-                <input class="vnccs-ps-library-search" type="search" placeholder="Search poses and tags...">
+                <input class="vnccs-ps-library-search" type="search" placeholder="Search poses, animations, and tags...">
                 <label class="vnccs-ps-library-size-control" title="Preview size">
                     <span>Preview</span>
                     <input class="vnccs-ps-library-size-slider" type="range" min="160" max="520" step="10">
@@ -8763,7 +8796,7 @@ class PoseStudioWidget {
         if (this.libraryCategoriesEl) this.libraryCategoriesEl.style.display = this.librarySettingsMode ? 'none' : '';
         if (this.librarySearchInput) {
             this.librarySearchInput.disabled = this.librarySettingsMode;
-            this.librarySearchInput.placeholder = this.librarySettingsMode ? "Repository settings" : "Search poses and tags...";
+            this.librarySearchInput.placeholder = this.librarySettingsMode ? "Repository settings" : "Search poses, animations, and tags...";
         }
         if (this.librarySettingsMode) {
             await this.refreshPoseRepositories();
@@ -8794,10 +8827,10 @@ class PoseStudioWidget {
         this.librarySettingsEl.innerHTML = `
             <div class="vnccs-ps-library-settings-head">
                 <div>
-                    <div class="vnccs-ps-library-settings-title">Pose Repositories</div>
-                    <div class="vnccs-ps-library-settings-subtitle">Hugging Face libraries can be enabled, disabled, refreshed, or removed.</div>
+                    <div class="vnccs-ps-library-settings-title">Library Repositories</div>
+                    <div class="vnccs-ps-library-settings-subtitle">Pose and animation libraries on Hugging Face can be enabled, disabled, refreshed, or removed.</div>
                 </div>
-                <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to poses</button>
+                <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to library</button>
             </div>
             <div class="vnccs-ps-library-local-repo"></div>
             <div class="vnccs-ps-library-repo-notice"></div>
@@ -8834,7 +8867,7 @@ class PoseStudioWidget {
                 <div>
                     <div class="vnccs-ps-library-repo-title">${this.escapeHtml(repo.title || repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-id">${this.escapeHtml(repo.repo_id)}</div>
-                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}${this.escapeHtml(syncMeta)}</div>
+                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${Number(repo.animation_count || 0)} animations · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}${this.escapeHtml(syncMeta)}</div>
                 </div>
                 <div class="vnccs-ps-library-repo-actions">
                     <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? 'Disable' : 'Enable'}</button>
@@ -8863,9 +8896,9 @@ class PoseStudioWidget {
         holder.innerHTML = `
             <div class="vnccs-ps-library-repo-card" data-repo-progress-key="local:publish">
                 <div>
-                    <div class="vnccs-ps-library-repo-title">Local User Poses</div>
+                    <div class="vnccs-ps-library-repo-title">Local Pose Library</div>
                     <div class="vnccs-ps-library-repo-id">local_user_poses → ${this.escapeHtml(publishRepo)}</div>
-                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · last publish ${this.escapeHtml(lastPublish)} · ${this.escapeHtml(lastResult)}</div>
+                    <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${Number(repo.animation_count || 0)} animations · last publish ${this.escapeHtml(lastPublish)} · ${this.escapeHtml(lastResult)}</div>
                 </div>
                 <div class="vnccs-ps-library-repo-actions">
                     <button class="vnccs-ps-library-repo-action primary publish">Publish</button>
@@ -8980,7 +9013,7 @@ class PoseStudioWidget {
     async runLocalPoseRepositoryPublish(payload) {
         const progressKey = "local:publish";
         const taskId = this.createRepositoryTaskId("repo-publish");
-        const progress = this.createInlineRepositoryProgress(progressKey, "Publishing local poses to Hugging Face...");
+        const progress = this.createInlineRepositoryProgress(progressKey, "Publishing local library to Hugging Face...");
         let pollTimer = null;
         try {
             pollTimer = setInterval(() => this.pollRepositoryProgress(taskId, progress), 350);
@@ -8998,13 +9031,13 @@ class PoseStudioWidget {
             progress.update({
                 status: "success",
                 progress: 100,
-                message: `Published ${Number(result.uploaded_count || 0)} files. Deleted ${Number(result.deleted_count || 0)} stale files. ${Number(result.skipped_count || 0)} poses unchanged.`,
+                message: `Published ${Number(result.uploaded_count || 0)} files. Deleted ${Number(result.deleted_count || 0)} stale files. ${Number(result.skipped_count || 0)} library items unchanged.`,
             });
         } catch (err) {
             progress.update({
                 status: "error",
                 progress: 100,
-                message: `Failed to publish local poses: ${err?.message || err}`,
+                message: `Failed to publish local library: ${err?.message || err}`,
             });
             this.renderPoseRepositorySettings();
         } finally {
@@ -9232,13 +9265,31 @@ class PoseStudioWidget {
     getLibraryPoseMeta(pose) {
         const dataMeta = pose?.data?._library || {};
         const category = (pose?.category || dataMeta.category || "Uncategorized").trim() || "Uncategorized";
-        const tags = Array.isArray(pose?.tags) ? pose.tags : (Array.isArray(dataMeta.tags) ? dataMeta.tags : []);
+        const assetType = (
+            pose?.asset_type
+            || dataMeta.asset_type
+            || (pose?.data?.animation && typeof pose.data.animation === "object" ? "animation" : "pose")
+        ) === "animation" ? "animation" : "pose";
+        const rawTags = Array.isArray(pose?.tags) ? pose.tags : (Array.isArray(dataMeta.tags) ? dataMeta.tags : []);
+        const tags = rawTags
+            .map(tag => String(tag).trim())
+            .filter(tag => tag && tag.toLowerCase() !== "animation");
+        if (assetType === "animation") tags.unshift("Animation");
         const repository = (pose?.repository || dataMeta.repository || "local_user_poses").trim() || "local_user_poses";
         return {
             repository,
             category,
-            tags: tags.map(tag => String(tag).trim()).filter(Boolean),
+            tags,
+            assetType,
         };
+    }
+
+    isLibraryAnimation(pose) {
+        return this.getLibraryPoseMeta(pose).assetType === "animation";
+    }
+
+    isLibraryVideoPreview(pose) {
+        return String(pose?.preview_type || "").toLowerCase().startsWith("video/");
     }
 
     getLibraryPoseName(poseOrName) {
@@ -9319,12 +9370,12 @@ class PoseStudioWidget {
         const filtered = this.getFilteredLibraryPoses();
 
         if ((this.libraryPoses || []).length === 0) {
-            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses.<br>Use Save Current Pose to add one.</div>';
+            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No saved poses or animations.<br>Use Save Current to add one.</div>';
             this.renderLibraryInspector(null);
             return;
         }
         if (filtered.length === 0) {
-            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No poses match this search.</div>';
+            this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">No library items match this search.</div>';
             this.renderLibraryInspector(null);
             return;
         }
@@ -9342,9 +9393,12 @@ class PoseStudioWidget {
             const preview = document.createElement('div');
             preview.className = 'vnccs-ps-library-item-preview';
             if (pose.has_preview) {
-                preview.innerHTML = `<img src="${this.getLibraryPreviewUrl(pose)}" alt="${pose.name}">`;
+                const previewUrl = this.getLibraryPreviewUrl(pose);
+                preview.innerHTML = this.isLibraryVideoPreview(pose)
+                    ? `<video src="${previewUrl}" muted loop playsinline preload="metadata" aria-label="${this.escapeHtml(pose.name)} animation preview"></video>`
+                    : `<img src="${previewUrl}" alt="${this.escapeHtml(pose.name)}">`;
             } else {
-                preview.innerHTML = '<span>🦴</span>';
+                preview.innerHTML = this.isLibraryAnimation(pose) ? '<span>🎞️</span>' : '<span>🦴</span>';
             }
 
             const name = document.createElement('div');
@@ -9353,7 +9407,22 @@ class PoseStudioWidget {
 
             item.onclick = () => this.selectLibraryPose(pose);
 
+            const previewVideo = preview.querySelector("video");
+            if (previewVideo) {
+                item.addEventListener("mouseenter", () => previewVideo.play().catch(() => {}));
+                item.addEventListener("mouseleave", () => {
+                    previewVideo.pause();
+                    try { previewVideo.currentTime = 0; } catch (_) {}
+                });
+            }
+
             item.appendChild(preview);
+            if (this.isLibraryAnimation(pose)) {
+                const typeBadge = document.createElement("div");
+                typeBadge.className = "vnccs-ps-library-item-type";
+                typeBadge.textContent = "Animation";
+                item.appendChild(typeBadge);
+            }
             item.appendChild(name);
             this.libraryGrid.appendChild(item);
         }
@@ -9375,21 +9444,31 @@ class PoseStudioWidget {
         if (!pose) {
             this.libraryInspector.classList.remove('visible');
             if (this.libraryWorkspace) this.libraryWorkspace.classList.remove('has-inspector');
-            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select a pose to preview and edit it.</div>';
+            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select a pose or animation to preview and edit it.</div>';
             this.updateLibraryInspectorScale();
             return;
         }
         this.libraryInspector.classList.add('visible');
         if (this.libraryWorkspace) this.libraryWorkspace.classList.add('has-inspector');
         const meta = this.getLibraryPoseMeta(pose);
+        const isAnimation = meta.assetType === "animation";
         const previewSrc = this.getLibraryPreviewUrl(pose);
+        const previewMarkup = previewSrc
+            ? (this.isLibraryVideoPreview(pose)
+                ? `<video src="${previewSrc}" controls muted loop playsinline preload="metadata" aria-label="${this.escapeHtml(pose.name)} animation preview"></video>`
+                : `<img src="${previewSrc}" alt="${this.escapeHtml(pose.name)}">`)
+            : (isAnimation ? '<span>🎞️</span>' : '<span>🦴</span>');
+        const editableTags = meta.tags.filter(tag => tag.toLowerCase() !== "animation");
+        const assetPrompt = isAnimation
+            ? (pose.data?.animation?.basePose?.prompt ?? pose.data?.prompt ?? "")
+            : (pose.data?.prompt ?? "");
         this.libraryInspector.innerHTML = `
             <div class="vnccs-ps-library-inspector-inner">
                 <div class="vnccs-ps-library-inspector-preview">
-                    ${previewSrc ? `<img src="${previewSrc}" alt="${pose.name}">` : '<span>🦴</span>'}
+                    ${previewMarkup}
                 </div>
                 <div class="vnccs-ps-library-inspector-actions">
-                    <button class="vnccs-ps-btn primary vnccs-ps-library-apply">Apply Pose</button>
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-apply">Apply ${isAnimation ? "Animation" : "Pose"}</button>
                     <button class="vnccs-ps-btn danger vnccs-ps-library-delete">Delete</button>
                 </div>
                 <label class="vnccs-ps-library-field">
@@ -9406,15 +9485,16 @@ class PoseStudioWidget {
                 </label>
                 <label class="vnccs-ps-library-field">
                     <span>Tags</span>
-                    <input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${this.escapeHtml(meta.tags.join(', '))}" placeholder="standing, hands, portrait">
+                    ${isAnimation ? '<span class="vnccs-ps-library-system-tag">Animation · system tag</span>' : ''}
+                    <input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${this.escapeHtml(editableTags.join(', '))}" placeholder="standing, hands, portrait">
                 </label>
                 <label class="vnccs-ps-library-field">
                     <span>Prompt</span>
-                    <textarea class="vnccs-ps-textarea vnccs-ps-library-edit-prompt" placeholder="Pose prompt..." style="width:100%;min-height:60px;resize:vertical;">${this.escapeHtml(pose.data?.prompt ?? "")}</textarea>
+                    <textarea class="vnccs-ps-textarea vnccs-ps-library-edit-prompt" placeholder="${isAnimation ? "Animation" : "Pose"} prompt..." style="width:100%;min-height:60px;resize:vertical;">${this.escapeHtml(assetPrompt)}</textarea>
                 </label>
                 <label class="vnccs-ps-library-field">
-                    <span>Custom Image</span>
-                    <input class="vnccs-ps-library-image-input" type="file" accept="image/*">
+                    <span>Custom ${isAnimation ? "Video Preview" : "Image"}</span>
+                    <input class="vnccs-ps-library-preview-input" type="file" accept="${isAnimation ? "video/*" : "image/*"}">
                 </label>
                 <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
             </div>
@@ -9428,11 +9508,21 @@ class PoseStudioWidget {
             this.libraryInspector.closest('.vnccs-ps-modal-overlay')?.remove();
         };
         this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose);
-        this.libraryInspector.querySelector('.vnccs-ps-library-image-input').onchange = async (event) => {
+        this.libraryInspector.querySelector('.vnccs-ps-library-preview-input').onchange = async (event) => {
             const file = event.target.files?.[0];
             if (!file) return;
-            pendingPreview = await this.compressLibraryImage(file);
-            previewBox.innerHTML = `<img src="${pendingPreview}" alt="${pose.name}">`;
+            try {
+                pendingPreview = isAnimation
+                    ? await this.readLibraryFileAsDataUrl(file, 40 * 1024 * 1024)
+                    : await this.compressLibraryImage(file);
+                previewBox.innerHTML = isAnimation
+                    ? `<video src="${pendingPreview}" controls muted loop playsinline></video>`
+                    : `<img src="${pendingPreview}" alt="${this.escapeHtml(pose.name)}">`;
+            } catch (error) {
+                pendingPreview = null;
+                event.target.value = "";
+                this.showMessage(error?.message || String(error), true);
+            }
         };
         this.libraryInspector.querySelector('.vnccs-ps-library-save-edit').onclick = async () => {
             const newName = this.libraryInspector.querySelector('.vnccs-ps-library-edit-name').value.trim();
@@ -9442,11 +9532,18 @@ class PoseStudioWidget {
                 .map(tag => tag.trim())
                 .filter(Boolean);
             if (!newName) {
-                this.showMessage("Pose name is required.", true);
+                this.showMessage(`${isAnimation ? "Animation" : "Pose"} name is required.`, true);
                 return;
             }
             const posePromptValue = this.libraryInspector.querySelector('.vnccs-ps-library-edit-prompt').value;
-            const updatedPoseData = Object.assign({}, pose.data || {}, { prompt: posePromptValue });
+            const updatedPoseData = typeof structuredClone === "function"
+                ? structuredClone(pose.data || {})
+                : JSON.parse(JSON.stringify(pose.data || {}));
+            updatedPoseData.prompt = posePromptValue;
+            if (isAnimation && updatedPoseData.animation) {
+                updatedPoseData.animation.basePose = updatedPoseData.animation.basePose || {};
+                updatedPoseData.animation.basePose.prompt = posePromptValue;
+            }
             const result = await this.saveLibraryPoseRecord({
                 oldName: pose.name,
                 oldRepository: meta.repository,
@@ -9457,6 +9554,7 @@ class PoseStudioWidget {
                 category,
                 tags,
                 preview: pendingPreview,
+                assetType: meta.assetType,
             });
             this.librarySelectedName = result.id || `${meta.repository}/${category}/${newName}`;
             await this.refreshLibrary(true);
@@ -9503,25 +9601,52 @@ class PoseStudioWidget {
         });
     }
 
+    readLibraryFileAsDataUrl(file, maxBytes = 40 * 1024 * 1024) {
+        return new Promise((resolve, reject) => {
+            if (!(file instanceof Blob)) {
+                reject(new Error("Preview file is invalid."));
+                return;
+            }
+            if (file.size > maxBytes) {
+                reject(new Error(`Preview video must be smaller than ${Math.floor(maxBytes / (1024 * 1024))} MB.`));
+                return;
+            }
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(reader.error || new Error("Failed to read preview file."));
+            reader.readAsDataURL(file);
+        });
+    }
+
     showSaveToLibraryModal() {
+        const animationMode = this.isAnimationMode();
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
 
-        const currentPrompt = this.getPosePrompt(this.activeTab);
+        const currentPrompt = animationMode
+            ? String(this.animationState?.basePose?.prompt ?? this.getPosePrompt(this.activeTab) ?? "")
+            : this.getPosePrompt(this.activeTab);
 
         const modal = document.createElement('div');
         modal.className = 'vnccs-ps-modal vnccs-ps-save-library-modal';
         modal.innerHTML = `
-            <div class="vnccs-ps-modal-title">Save to Library</div>
+            <div class="vnccs-ps-modal-title">Save ${animationMode ? "Animation" : "Pose"} to Library</div>
             <div class="vnccs-ps-modal-content">
-                <input type="text" placeholder="Pose name..." class="vnccs-ps-input">
+                <input type="text" placeholder="${animationMode ? "Animation" : "Pose"} name..." class="vnccs-ps-input">
                 <input type="text" placeholder="Category..." class="vnccs-ps-input" value="Uncategorized">
                 <input type="text" placeholder="Tags, comma separated..." class="vnccs-ps-input">
+                ${animationMode ? '<span class="vnccs-ps-library-system-tag">Animation · system tag</span>' : ''}
                 <label class="vnccs-ps-save-library-label">Prompt</label>
-                <textarea class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Pose prompt...">${this.escapeHtml(currentPrompt)}</textarea>
-                <label class="vnccs-ps-save-library-check">
-                    <input type="checkbox" checked> Include preview image
-                </label>
+                <textarea class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="${animationMode ? "Animation" : "Pose"} prompt...">${this.escapeHtml(currentPrompt)}</textarea>
+                ${animationMode ? `
+                    <label class="vnccs-ps-save-library-label">Video Preview (optional)</label>
+                    <input class="vnccs-ps-animation-preview-input" type="file" accept="video/*">
+                    <small style="color:var(--ps-text-muted);line-height:1.4">The video will be resized, frame-rate limited, and transcoded to AV1 WebM (VP9 fallback) for efficient repository storage.</small>
+                ` : `
+                    <label class="vnccs-ps-save-library-check">
+                        <input type="checkbox" checked> Include preview image
+                    </label>
+                `}
             </div>
             <button class="vnccs-ps-modal-btn primary">💾 Save</button>
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
@@ -9533,16 +9658,27 @@ class PoseStudioWidget {
         const tagsInput = textInputs[2];
         const promptInput = modal.querySelector('.vnccs-ps-save-prompt');
         const previewCheck = modal.querySelector('input[type="checkbox"]');
+        const animationPreviewInput = modal.querySelector('.vnccs-ps-animation-preview-input');
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
             const name = nameInput.value.trim();
             if (name) {
-                await this.saveToLibrary(name, previewCheck.checked, {
-                    category: categoryInput.value.trim() || "Uncategorized",
-                    tags: tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean),
-                    prompt: promptInput.value,
-                });
-                overlay.remove();
+                const saveButton = modal.querySelector('.vnccs-ps-modal-btn.primary');
+                const saveButtonLabel = saveButton.textContent;
+                saveButton.disabled = true;
+                saveButton.textContent = animationMode ? "Encoding & Saving…" : "Saving…";
+                try {
+                    const saved = await this.saveToLibrary(name, animationMode ? false : previewCheck.checked, {
+                        category: categoryInput.value.trim() || "Uncategorized",
+                        tags: tagsInput.value.split(',').map(tag => tag.trim()).filter(Boolean),
+                        prompt: promptInput.value,
+                        previewFile: animationPreviewInput?.files?.[0] || null,
+                    });
+                    if (saved) overlay.remove();
+                } finally {
+                    saveButton.disabled = false;
+                    saveButton.textContent = saveButtonLabel;
+                }
             }
         };
 
@@ -9554,7 +9690,7 @@ class PoseStudioWidget {
         nameInput.focus();
     }
 
-    async saveLibraryPoseRecord({ oldName = "", oldRepository = "", oldCategory = "", name, pose, repository = "local_user_poses", category = "Uncategorized", tags = [], preview = null }) {
+    async saveLibraryPoseRecord({ oldName = "", oldRepository = "", oldCategory = "", name, pose, repository = "local_user_poses", category = "Uncategorized", tags = [], preview = null, assetType = "pose" }) {
         const response = await fetch('/vnccs/pose_library/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -9568,6 +9704,7 @@ class PoseStudioWidget {
                 preview,
                 category,
                 tags,
+                asset_type: assetType,
             })
         });
         const result = await response.json().catch(() => ({}));
@@ -9578,45 +9715,70 @@ class PoseStudioWidget {
     }
 
     async saveToLibrary(name, includePreview = true, metadata = {}) {
-        if (!this.viewer) return;
+        if (!this.viewer) return false;
 
-        const pose = this.viewer.getPose();
-        if (this._samCameraModeActive) {
-            delete pose.cameraParams;
-        } else {
-            pose.cameraParams = this.currentCameraParams();
-        }
-        pose.prompt = metadata.prompt ?? this.getPosePrompt(this.activeTab);
+        const animationMode = this.isAnimationMode();
+        let assetData;
         let preview = null;
 
-        if (includePreview) {
-            preview = this.viewer.capture(
-                this.exportParams.view_width,
-                this.exportParams.view_height,
-                this.exportParams.cam_zoom || 1.0,
-                this.exportParams.bg_color || [40, 40, 40],
-                this.exportParams.cam_offset_x || 0,
-                this.exportParams.cam_offset_y || 0,
-                this.exportParams.cam_yaw_deg || 0,
-                this.exportParams.cam_pitch_deg || 0
-            );
-            preview = await this.compressLibraryImage(preview);
-        }
-
         try {
+            if (animationMode) {
+                this.ensureAnimationInitialized();
+                if (!this._applyingAnimationPose) this.captureAnimationEdits();
+                this.commitAnimationHistory();
+                const snapshot = JSON.parse(serializeAnimationStateSnapshot(this.animationState));
+                snapshot.basePose = snapshot.basePose || {};
+                snapshot.basePose.prompt = metadata.prompt ?? snapshot.basePose.prompt ?? "";
+                snapshot.basePose.cameraParams = this.currentCameraParams();
+                assetData = {
+                    schema_version: 1,
+                    animation: snapshot,
+                    prompt: snapshot.basePose.prompt,
+                };
+                if (metadata.previewFile) {
+                    preview = await this.readLibraryFileAsDataUrl(metadata.previewFile, 40 * 1024 * 1024);
+                }
+            } else {
+                const pose = this.viewer.getPose();
+                if (this._samCameraModeActive) {
+                    delete pose.cameraParams;
+                } else {
+                    pose.cameraParams = this.currentCameraParams();
+                }
+                pose.prompt = metadata.prompt ?? this.getPosePrompt(this.activeTab);
+                assetData = pose;
+            }
+
+            if (!animationMode && includePreview) {
+                preview = this.viewer.capture(
+                    this.exportParams.view_width,
+                    this.exportParams.view_height,
+                    this.exportParams.cam_zoom || 1.0,
+                    this.exportParams.bg_color || [40, 40, 40],
+                    this.exportParams.cam_offset_x || 0,
+                    this.exportParams.cam_offset_y || 0,
+                    this.exportParams.cam_yaw_deg || 0,
+                    this.exportParams.cam_pitch_deg || 0
+                );
+                preview = await this.compressLibraryImage(preview);
+            }
+
             const result = await this.saveLibraryPoseRecord({
                 name,
-                pose,
+                pose: assetData,
                 preview,
                 repository: "local_user_poses",
                 category: metadata.category || "Uncategorized",
                 tags: metadata.tags || [],
+                assetType: animationMode ? "animation" : "pose",
             });
             this.librarySelectedName = result.id || `local_user_poses/${metadata.category || "Uncategorized"}/${name}`;
             this.refreshLibrary(true);
+            return true;
         } catch (err) {
-            console.error("Failed to save pose:", err);
-            this.showMessage(`Failed to save pose: ${err?.message || err}`, true);
+            console.error(`Failed to save ${animationMode ? "animation" : "pose"}:`, err);
+            this.showMessage(`Failed to save ${animationMode ? "animation" : "pose"}: ${err?.message || err}`, true);
+            return false;
         }
     }
 
@@ -9635,24 +9797,75 @@ class PoseStudioWidget {
         return true;
     }
 
+    loadAnimationLibraryAsset(asset) {
+        const source = asset?.animation;
+        if (!source || typeof source !== "object") {
+            throw new Error("Library animation is missing its timeline data.");
+        }
+
+        this.animationTimeline?.stopPlayback?.();
+        this.clearSAMCameraMode();
+        const fallbackPose = source.basePose && typeof source.basePose === "object"
+            ? source.basePose
+            : {};
+        this.animationState = normalizeAnimationState(source, fallbackPose);
+        this.animationState.basePose = this.animationState.basePose || {};
+        this.animationState.basePose.prompt = (
+            this.animationState.basePose.prompt
+            ?? asset.prompt
+            ?? ""
+        );
+        this.animationState.currentFrame = 0;
+        this._animationInitialized = true;
+        ++this._animationCacheRestoreToken;
+        this._animationCacheRestorePending = false;
+        this._animationCacheRestorePromise = null;
+        this._animationCacheId = null;
+        this._animationCacheRevision = 0;
+        this.poses = [JSON.parse(JSON.stringify(this.animationState.basePose))];
+        this.posePrompts = [String(this.animationState.basePose.prompt || "")];
+        this.poseCaptures = [];
+        this.lightingPrompts = [];
+        this.activeTab = 0;
+
+        this.restorePoseCameraParams(this.animationState.basePose);
+        this.animationTimeline?.setState(this.animationState);
+        this.resetAnimationHistory();
+        this.setInterfaceMode("studio", { sync: false });
+        this.setEditorMode("animation", { sync: false });
+        this.updateTabs();
+        this.syncPromptFieldToActiveTab();
+        this.applyAnimationFrame(0, { transient: true });
+        this.updateRotationSliders();
+        this.syncToNode(false, { skipCapture: true, skipAnimationHistory: true });
+    }
+
     async loadFromLibrary(poseOrName) {
         const name = this.getLibraryPoseName(poseOrName);
         try {
             this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
+            if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
 
             if (data.pose && this.viewer) {
-                this.viewer.setPose(data.pose, false);
-                this.restorePoseCameraParams(data.pose);
-                if (this.isAnimationMode()) {
-                    this.animationState.basePose.prompt = data.pose.prompt ?? this.animationState.basePose.prompt ?? "";
+                const assetType = data.asset_type === "animation" || data.pose?.animation
+                    ? "animation"
+                    : "pose";
+                if (assetType === "animation") {
+                    this.loadAnimationLibraryAsset(data.pose);
                 } else {
-                    this.setPosePrompt(this.activeTab, data.pose.prompt ?? "");
+                    this.viewer.setPose(data.pose, false);
+                    this.restorePoseCameraParams(data.pose);
+                    if (this.isAnimationMode()) {
+                        this.animationState.basePose.prompt = data.pose.prompt ?? this.animationState.basePose.prompt ?? "";
+                    } else {
+                        this.setPosePrompt(this.activeTab, data.pose.prompt ?? "");
+                    }
+                    this.syncPromptFieldToActiveTab();
+                    this.updateRotationSliders();
+                    this.commitViewerPoseToCurrentEditor();
                 }
-                this.syncPromptFieldToActiveTab();
-                this.updateRotationSliders();
-                this.commitViewerPoseToCurrentEditor();
             }
         } catch (err) {
             console.error("Failed to load pose:", err);
@@ -9661,7 +9874,7 @@ class PoseStudioWidget {
 
     showSettingsModal() {
         // Toggle behavior: check if already exists
-        const existing = this.canvasContainer.querySelector('.vnccs-ps-settings-panel');
+        const existing = this.container.querySelector('.vnccs-ps-settings-panel');
         if (existing) {
             existing.remove();
             return;
@@ -9899,7 +10112,7 @@ class PoseStudioWidget {
 
         const skydomeCheckbox = document.createElement("input");
         skydomeCheckbox.type = "checkbox";
-        skydomeCheckbox.checked = this.exportParams.directional_skydome_enabled !== false;
+        skydomeCheckbox.checked = this.exportParams.directional_skydome_enabled === true;
         skydomeCheckbox.onchange = () => {
             this.exportParams.directional_skydome_enabled = skydomeCheckbox.checked;
             this.applyDirectionalSkydomeSetting();
@@ -9912,9 +10125,9 @@ class PoseStudioWidget {
         skydomeLabel.appendChild(skydomeCheckbox);
         skydomeLabel.appendChild(skydomeText);
         skydomeRow.appendChild(skydomeLabel);
-        content.appendChild(skydomeRow);
 
         const debugSection = this.createSection("Debug", false);
+        debugSection.content.appendChild(skydomeRow);
 
         // SAM Camera Override Toggle
         const samCamRow = document.createElement("div");
@@ -10186,7 +10399,10 @@ class PoseStudioWidget {
         panel.appendChild(header);
         panel.appendChild(content);
 
-        this.canvasContainer.appendChild(panel);
+        // Settings are node-wide, so mount them at the root instead of inside
+        // the clipped canvas area. This keeps the panel above the action bar,
+        // animation timeline, footer, and both sidebars.
+        this.container.appendChild(panel);
     }
 
     showMessage(text, isError = false) {
@@ -10222,6 +10438,7 @@ class PoseStudioWidget {
 
     showDeleteConfirmModal(poseOrName) {
         const poseName = this.getLibraryPoseName(poseOrName);
+        const itemType = this.isLibraryAnimation(poseOrName) ? "Animation" : "Pose";
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay';
 
@@ -10230,14 +10447,14 @@ class PoseStudioWidget {
 
         const title = document.createElement('div');
         title.className = 'vnccs-ps-modal-title';
-        title.textContent = '⚠️ Delete Pose';
+        title.textContent = `⚠️ Delete ${itemType}`;
 
         const content = document.createElement('div');
         content.className = 'vnccs-ps-modal-content';
         content.style.textAlign = 'center';
 
         const message = document.createElement('div');
-        message.innerHTML = `Delete pose "<strong>${poseName}</strong>"?<br>This cannot be undone.`;
+        message.innerHTML = `Delete ${itemType.toLowerCase()} "<strong>${this.escapeHtml(poseName)}</strong>"?<br>This cannot be undone.`;
         content.appendChild(message);
 
         const deleteBtn = document.createElement('button');
@@ -10268,13 +10485,17 @@ class PoseStudioWidget {
 
     async deleteFromLibrary(poseOrName) {
         const name = this.getLibraryPoseName(poseOrName);
+        const itemType = this.isLibraryAnimation(poseOrName) ? "animation" : "pose";
         try {
-            await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`, { method: 'DELETE' });
+            const response = await fetch(`/vnccs/pose_library/delete/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`, { method: 'DELETE' });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
             if (typeof poseOrName === 'string' && this.librarySelectedName === name) this.librarySelectedName = null;
             if (typeof poseOrName !== 'string' && this.librarySelectedName === this.getLibraryPoseId(poseOrName)) this.librarySelectedName = null;
             this.refreshLibrary(true);
         } catch (err) {
-            console.error("Failed to delete pose:", err);
+            console.error(`Failed to delete ${itemType}:`, err);
+            this.showMessage(`Failed to delete ${itemType}: ${err?.message || err}`, true);
         }
     }
 
@@ -10969,7 +11190,9 @@ class PoseStudioWidget {
 
     getDebugLibraryPoseCandidates() {
         return (this.libraryPoses || []).filter(item => (
-            item?.data && typeof item.data === "object"
+            item?.data
+            && typeof item.data === "object"
+            && !this.isLibraryAnimation(item)
         ));
     }
 
@@ -10983,7 +11206,7 @@ class PoseStudioWidget {
     }
 
     selectRandomDebugLibraryPose(random = Math.random) {
-        const selected = selectRandomLibraryPoseData(this.libraryPoses, random);
+        const selected = selectRandomLibraryPoseData(this.getDebugLibraryPoseCandidates(), random);
         if (!selected) return null;
         try {
             return structuredClone(selected);
@@ -11790,6 +12013,52 @@ app.registerExtension({
     async beforeRegisterNodeDef(nodeType, nodeData, _app) {
         if (nodeData.name !== "VNCCS_PoseStudio") return;
 
+        const socketAcceptsType = (socketType, valueType) => {
+            const accepted = String(socketType || "")
+                .split(",")
+                .map(type => type.trim())
+                .filter(Boolean);
+            return accepted.includes("*") || accepted.includes(valueType);
+        };
+
+        const setAnimationOutputMode = (node, animation) => {
+            const output = node?.outputs?.[0];
+            if (!output) return;
+            if (!("_vnccsImageOutputShape" in node)) {
+                node._vnccsImageOutputShape = output.shape;
+            }
+
+            const nextType = animation ? "VIDEO" : "IMAGE";
+            const nextName = animation ? "video" : "images";
+            const typeChanged = output.type !== nextType;
+
+            if (typeChanged && Array.isArray(output.links)) {
+                for (const linkId of [...output.links]) {
+                    const link = app.graph?.links?.[linkId] ?? app.graph?.links?.get?.(linkId);
+                    const target = link ? app.graph?.getNodeById?.(link.target_id) : null;
+                    const input = target?.inputs?.[link?.target_slot];
+                    if (!input || !socketAcceptsType(input.type, nextType)) {
+                        app.graph?.removeLink?.(linkId);
+                    } else if (link) {
+                        link.type = nextType;
+                    }
+                }
+            }
+
+            output.type = nextType;
+            output.name = nextName;
+            output.label = nextName;
+            const liteGraph = globalThis.LiteGraph;
+            const nextShape = animation
+                ? liteGraph?.CIRCLE_SHAPE
+                : node._vnccsImageOutputShape ?? liteGraph?.GRID_SHAPE;
+            if (nextShape !== undefined) {
+                output.shape = nextShape;
+            }
+            node.setDirtyCanvas?.(true, true);
+            app.graph?.setDirtyCanvas?.(true, true);
+        };
+
         const setPoseImageInputDisabled = (node, disabled) => {
             if (!node) return;
             const inputIndex = node.inputs?.findIndex(input => input?.name === "pose_image") ?? -1;
@@ -11859,6 +12128,7 @@ app.registerExtension({
             this.setSize([900, 740]);
 
             // Create widget
+            this._vnccsSetAnimationOutputMode = (animation) => setAnimationOutputMode(this, animation);
             this.studioWidget = new PoseStudioWidget(this);
             this._vnccsSetPoseImageInputDisabled = (disabled) => setPoseImageInputDisabled(this, disabled);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);

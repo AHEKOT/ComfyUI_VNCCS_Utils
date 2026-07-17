@@ -764,7 +764,11 @@ export function resolveCaptureCameraParams(poseParams = {}, currentParams = {}, 
 
 export function selectRandomLibraryPoseData(libraryPoses = [], random = Math.random) {
     const candidates = (Array.isArray(libraryPoses) ? libraryPoses : []).filter(item => (
-        item?.data && typeof item.data === "object"
+        item?.data
+        && typeof item.data === "object"
+        && item?.asset_type !== "animation"
+        && item?.data?._library?.asset_type !== "animation"
+        && !item?.data?.animation
     ));
     if (!candidates.length) return null;
     const raw = Number(random());

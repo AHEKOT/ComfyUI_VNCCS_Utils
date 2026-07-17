@@ -1,6 +1,7 @@
 opencv-python
 huggingface_hub
 aiohttp
+av
 kornia
 requests
 torch

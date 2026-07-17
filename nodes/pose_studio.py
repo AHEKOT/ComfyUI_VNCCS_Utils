@@ -10,8 +10,10 @@ This node is fully self-contained with all data loading logic.
 import json
 import os
 import base64
+import math
 import re
 import uuid
+from fractions import Fraction
 from io import BytesIO
 import hashlib
 import torch
@@ -155,6 +157,36 @@ def _decode_captured_images(captured_images):
     return rendered_images
 
 
+def _animation_frame_rate(data):
+    animation = data.get("animation", {}) if isinstance(data, dict) else {}
+    try:
+        fps = float(animation.get("fps", animation.get("frame_rate", 12.0)))
+    except (TypeError, ValueError):
+        fps = 12.0
+    if not math.isfinite(fps):
+        fps = 12.0
+    return max(1.0, min(120.0, fps))
+
+
+def _create_comfy_video(frame_batch, fps):
+    """Build the same VIDEO value as ComfyUI's built-in CreateVideo node."""
+    try:
+        from comfy_api.latest import InputImpl, Types
+    except ImportError as exc:
+        raise RuntimeError(
+            "Pose Studio Animation output requires a ComfyUI version with the "
+            "official VIDEO datatype (CreateVideo)."
+        ) from exc
+
+    return InputImpl.VideoFromComponents(
+        Types.VideoComponents(
+            images=frame_batch,
+            audio=None,
+            frame_rate=Fraction(str(fps)),
+        )
+    )
+
+
 def _get_character_data_path():
     """Get the path to CharacterData folder."""
     return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "CharacterData"))
@@ -243,7 +275,10 @@ def _hydrate_cached_pose_animation(data):
 class VNCCS_PoseStudio:
     """Pose Studio with mesh editing and multiple pose generation."""
     
-    RETURN_TYPES = ("IMAGE", "STRING")
+    # The first socket is narrowed to IMAGE or VIDEO by the frontend according
+    # to editor_mode. Keeping the backend union makes both workflow variants
+    # valid during server-side prompt validation.
+    RETURN_TYPES = ("IMAGE,VIDEO", "STRING")
     RETURN_NAMES = ("images", "lighting_prompt")
     OUTPUT_IS_LIST = (True, True)
     FUNCTION = "generate"
@@ -387,7 +422,7 @@ class VNCCS_PoseStudio:
             export_settings = data.get("export", {}) if isinstance(data, dict) else {}
             if (
                 isinstance(export_settings, dict)
-                and export_settings.get("directional_skydome_enabled", True) is False
+                and export_settings.get("directional_skydome_enabled", False) is not True
             ):
                 camera_prompt = ""
             if isinstance(export_settings, dict) and export_settings.get("interface_mode") == "manager":
@@ -515,6 +550,17 @@ class VNCCS_PoseStudio:
                 for img in rendered_images:
                     np_img = np.array(img).astype(np.float32) / 255.0
                     tensors.append(torch.from_numpy(np_img))
+
+                if editor_mode == "animation":
+                    frame_batch = torch.stack(tensors, dim=0)
+                    video = _create_comfy_video(
+                        frame_batch,
+                        _animation_frame_rate(data),
+                    )
+                    # OUTPUT_IS_LIST stays enabled for the image-mode contract.
+                    # A one-item list still supplies one ordinary VIDEO value to
+                    # downstream nodes while LIST images retain their old behavior.
+                    return ([video], lighting_prompts)
                 
                 if output_mode == "LIST":
                     # Return list of individual images and prompts

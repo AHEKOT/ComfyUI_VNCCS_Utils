@@ -56,6 +56,11 @@ test("debug execution selects one complete library pose", () => {
     const library = [
         { name: "metadata-only" },
         { name: "first", data: first },
+        {
+            name: "animation",
+            asset_type: "animation",
+            data: { animation: createDefaultAnimationState({}) },
+        },
         { name: "second", data: second },
     ];
 
@@ -451,8 +456,15 @@ test("animation reset clears every track while preserving timeline settings", ()
     assert.equal(cleared.autoKey, false);
 });
 
-test("one history snapshot restores all keys removed by a grouped delete or reset", () => {
-    const state = createDefaultAnimationState({}, { duration: 2, fps: 12 });
+test("one history or library snapshot restores all keys and animation settings", () => {
+    const state = createDefaultAnimationState({}, {
+        duration: 2,
+        fps: 12,
+        loop: false,
+        autoKey: false,
+        snap: false,
+        defaultInterpolation: "hold",
+    });
     setTrackKeyframeFromEuler(state, "head", 0, [0, 0, 0], "linear");
     setTrackKeyframeFromEuler(state, "head", 12, [0, 30, 0], "easeIn");
     setTrackKeyframeFromEuler(state, "arm", 3, [15, 0, 0], "easeOut");
@@ -466,6 +478,12 @@ test("one history snapshot restores all keys removed by a grouped delete or rese
     assert.deepEqual(restored.tracks, expectedTracks);
     assert.equal(restored.currentFrame, 7);
     assert.equal(Object.values(restored.tracks).reduce((sum, track) => sum + track.keys.length, 0), 7);
+    assert.equal(restored.duration, 2);
+    assert.equal(restored.fps, 12);
+    assert.equal(restored.loop, false);
+    assert.equal(restored.autoKey, false);
+    assert.equal(restored.snap, false);
+    assert.equal(restored.defaultInterpolation, "hold");
 });
 
 test("pose diff reports changed bones and model rotation only", () => {
