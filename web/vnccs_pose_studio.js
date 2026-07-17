@@ -99,6 +99,11 @@ function getVNCCSSharedMorphWorker() {
 
 // Determine the extension's base URL dynamically to support varied directory names (e.g. ComfyUI_VNCCS_Utils or vnccs-utils)
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
+// Reference layout captured from the stable studio view: 220px side panel = 16.63%
+// of the container and the 37px tab bar = 3.46% of the container height.
+const POSE_STUDIO_LAYOUT_BASE_WIDTH = 220 / 0.1663;
+const POSE_STUDIO_LAYOUT_BASE_HEIGHT = 37 / 0.0346;
+const POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE = 1.55;
 
 // === Styles ===
 const STYLES = `
@@ -132,6 +137,7 @@ const STYLES = `
     --ps-radius-lg:  16px;
     --ps-transition: 0.2s ease;
     --vnccs-ps-ui-scale: 1;
+    --vnccs-ps-relative-ui-scale: 1;
 }
 
 /* Main Container */
@@ -1136,6 +1142,8 @@ const STYLES = `
 .vnccs-ps-footer {
     display: flex;
     flex-wrap: wrap;
+    zoom: var(--vnccs-ps-relative-ui-scale);
+    flex-shrink: 0;
     gap: 4px;
     padding-top: 8px;
     border-top: 1px solid var(--ps-border);
@@ -3627,6 +3635,7 @@ class PoseStudioWidget {
         this.managerImageMetrics = new Map();
         this.managerPoseMetrics = [];
         this.managerLayoutFrame = null;
+        this.layoutLogTimer = null;
         this._defaultHandPresets = HAND_PRESETS;
         this._handSliderValues = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
         this._handSliderDefaults = { spread: 0, grasp: 0, thumb: 0, index: 0, middle: 0, ring: 0, pinky: 0 };
@@ -10957,6 +10966,7 @@ class PoseStudioWidget {
 
     resize() {
         this.updateMainUIScale();
+        this.scheduleUILayoutLog("resize");
         if (this.interfaceMode === "manager") {
             this.schedulePoseManagerGridLayout();
             return;
@@ -10981,12 +10991,111 @@ class PoseStudioWidget {
         }
     }
 
+    scheduleUILayoutLog(reason = "layout") {
+        clearTimeout(this.layoutLogTimer);
+        this.layoutLogTimer = setTimeout(() => {
+            this.layoutLogTimer = null;
+            this.logUILayout(reason);
+        }, 120);
+    }
+
+    logUILayout(reason = "layout") {
+        if (!this.container || !this.centerPanel || !this.canvasContainer) return;
+        const containerRect = this.container.getBoundingClientRect();
+        const centerRect = this.centerPanel.getBoundingClientRect();
+        const canvasRect = this.canvasContainer.getBoundingClientRect();
+        const nodeWidth = Number(this.node?.size?.[0]) || 0;
+        const nodeHeight = Number(this.node?.size?.[1]) || 0;
+        const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
+        const pct = (value, base) => base ? round((value / base) * 100) : 0;
+        const localRect = (el, parentRect = containerRect) => {
+            if (!el) return null;
+            const rect = el.getBoundingClientRect();
+            return {
+                x: round(rect.left - parentRect.left),
+                y: round(rect.top - parentRect.top),
+                width: round(rect.width),
+                height: round(rect.height),
+                right: round(rect.right - parentRect.left),
+                bottom: round(rect.bottom - parentRect.top),
+                widthPctOfContainer: pct(rect.width, containerRect.width),
+                heightPctOfContainer: pct(rect.height, containerRect.height),
+                widthPctOfCenter: pct(rect.width, centerRect.width),
+                heightPctOfCenter: pct(rect.height, centerRect.height),
+                widthPctOfCanvas: pct(rect.width, canvasRect.width),
+                heightPctOfCanvas: pct(rect.height, canvasRect.height),
+            };
+        };
+        const actions = this.centerPanel.querySelector(".vnccs-ps-actions");
+        const footer = this.centerPanel.querySelector(".vnccs-ps-footer");
+        const timeline = this.animationTimeline?.element || null;
+        const payload = {
+            reason,
+            interfaceMode: this.interfaceMode,
+            editorMode: this.exportParams?.editor_mode || "image",
+            nodeSize: { width: round(nodeWidth), height: round(nodeHeight) },
+            containerClient: { width: this.container.clientWidth, height: this.container.clientHeight },
+            containerRect: {
+                x: round(containerRect.left),
+                y: round(containerRect.top),
+                width: round(containerRect.width),
+                height: round(containerRect.height),
+            },
+            graphScaleFromNodeToScreen: {
+                x: nodeWidth ? round(containerRect.width / nodeWidth) : 0,
+                y: nodeHeight ? round(containerRect.height / nodeHeight) : 0,
+            },
+            cssUiScale: this.container.style.getPropertyValue("--vnccs-ps-ui-scale") || "unset",
+            cssRelativeUiScale: this.container.style.getPropertyValue("--vnccs-ps-relative-ui-scale") || "unset",
+            parts: {
+                left: localRect(this.leftPanel),
+                center: localRect(this.centerPanel),
+                right: localRect(this.rightSidebar),
+                tabsInContainer: localRect(this.tabsShell),
+                tabsInCenter: localRect(this.tabsShell, centerRect),
+                canvasWrapInContainer: localRect(this.canvasContainer),
+                canvasWrapInCenter: localRect(this.canvasContainer, centerRect),
+                canvasInWrap: localRect(this.canvas, canvasRect),
+                actionsInCenter: localRect(actions, centerRect),
+                timelineInCenter: localRect(timeline, centerRect),
+                footerInCenter: localRect(footer, centerRect),
+                manager: localRect(this.managerPanel),
+                managerBody: localRect(this.managerBody),
+                managerSidebar: localRect(this.managerSidebar),
+                managerStage: localRect(this.managerStage),
+                managerGrid: localRect(this.managerGrid),
+                managerDetailStrip: localRect(this.managerDetailStrip),
+            },
+            counts: {
+                tabs: this.tabsContainer?.children?.length || 0,
+                leftSections: this.leftPanel?.querySelectorAll(".vnccs-ps-section").length || 0,
+                rightSections: this.rightSidebar?.querySelectorAll(".vnccs-ps-section").length || 0,
+                actionButtons: actions?.querySelectorAll("button").length || 0,
+                managerCards: this.managerGrid?.querySelectorAll(".vnccs-ps-pose-card").length || 0,
+            },
+        };
+        console.groupCollapsed("VNCCS Pose Studio layout");
+        console.log(payload);
+        console.table(payload.parts);
+        console.groupEnd();
+    }
+
     updateMainUIScale() {
         if (!this.container) return;
         const width = this.container.clientWidth || this.node?.size?.[0] || 900;
         const height = this.container.clientHeight || this.node?.size?.[1] || 740;
-        const scale = Math.max(0.85, Math.min(1.55, Math.min(width / 900, height / 740)));
-        this.container.style.setProperty("--vnccs-ps-ui-scale", scale.toFixed(3));
+        const scale = Math.max(0.35, Math.min(2.5, Math.min(
+            width / POSE_STUDIO_LAYOUT_BASE_WIDTH,
+            height / POSE_STUDIO_LAYOUT_BASE_HEIGHT,
+        )));
+        const next = scale.toFixed(3);
+        const relativeNext = (scale / POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE).toFixed(3);
+        if (this.container.style.getPropertyValue("--vnccs-ps-ui-scale") !== next) {
+            this.container.style.setProperty("--vnccs-ps-ui-scale", next);
+        }
+        if (this.container.style.getPropertyValue("--vnccs-ps-relative-ui-scale") !== relativeNext) {
+            this.container.style.setProperty("--vnccs-ps-relative-ui-scale", relativeNext);
+        }
     }
 
     startResizeObserver() {
@@ -12265,6 +12374,10 @@ app.registerExtension({
                 if (this.studioWidget.managerLayoutFrame) {
                     cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
                     this.studioWidget.managerLayoutFrame = null;
+                }
+                if (this.studioWidget.layoutLogTimer) {
+                    clearTimeout(this.studioWidget.layoutLogTimer);
+                    this.studioWidget.layoutLogTimer = null;
                 }
                 if (this.studioWidget._managerPreviewRefreshFrame) {
                     cancelAnimationFrame(this.studioWidget._managerPreviewRefreshFrame);
