@@ -1081,6 +1081,12 @@ export class PoseViewerCore {
         this.pendingLights = null;
         this.pendingBackgroundUrl = null;
         this._lightParamsSignature = null;
+        this.cachedSkinTexture = null;
+        this.cachedSkinType = null;
+        this._cachedSkinTextureReady = false;
+        this._skinTextureLoadToken = 0;
+        this._skinTextureReady = true;
+        this._skinTexturePromise = Promise.resolve(true);
         this._captureBatch = null;
         this._needsRender = true;
         this._renderFrame = null;
@@ -1233,8 +1239,18 @@ export class PoseViewerCore {
         return this.initialized && this.skinnedMesh !== null;
     }
 
+    isCaptureReady() {
+        return this.isInitialized() && this._skinTextureReady !== false;
+    }
+
+    waitForCaptureReady() {
+        return this._skinTexturePromise || Promise.resolve(true);
+    }
+
     dispose() {
         this.initialized = false;
+        this._skinTextureLoadToken += 1;
+        this._skinTextureReady = false;
 
         if (this._renderFrame) {
             cancelAnimationFrame(this._renderFrame);
@@ -3000,7 +3016,65 @@ export class PoseViewerCore {
         return { geometry, vertices, indices };
     }
 
-    updateBodyVertices(vertices, bonePositions = null) {
+    _skinTextureFilename(skinType) {
+        return {
+            "naked": "skin.png",
+            "naked_marks": "skin_marks.png",
+            "dummy_white": "skin_dummy.png"
+        }[skinType] || "skin_dummy.png";
+    }
+
+    _markSkinTextureReady() {
+        this._skinTextureReady = true;
+        this._skinTexturePromise = Promise.resolve(true);
+    }
+
+    _loadSkinTexture(skinType, onReady) {
+        const token = ++this._skinTextureLoadToken;
+        const skinFile = this._skinTextureFilename(skinType);
+        this._skinTextureReady = false;
+
+        const promise = new Promise((resolve) => {
+            const texLoader = new this.THREE.TextureLoader();
+            texLoader.load(
+                `${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
+                (tex) => {
+                    if (token !== this._skinTextureLoadToken || !this.initialized) {
+                        tex?.dispose?.();
+                        resolve(false);
+                        return;
+                    }
+                    this.cachedSkinTexture = tex;
+                    this.cachedSkinType = skinType;
+                    this._cachedSkinTextureReady = true;
+                    onReady?.(tex);
+                    this._skinTextureReady = true;
+                    this.requestRender();
+                    resolve(true);
+                },
+                undefined,
+                (error) => {
+                    if (token === this._skinTextureLoadToken) {
+                        // The untextured material has a neutral fallback color,
+                        // so capture can continue without producing a silhouette.
+                        this._skinTextureReady = true;
+                        console.error(`Failed to load skin texture: ${skinFile}`, error);
+                    }
+                    resolve(false);
+                },
+            );
+        });
+        this._skinTexturePromise = promise;
+        return promise;
+    }
+
+    updateBodyVertices(
+        vertices,
+        bonePositions = null,
+        landmarks = null,
+        landmarkIndices = null,
+        indices = null,
+    ) {
         if (!this.initialized || !this.skinnedMesh || !this.skinnedMesh.geometry || !vertices) return false;
         const geometry = this.skinnedMesh.geometry;
         const position = geometry.getAttribute('position');
@@ -3019,6 +3093,9 @@ export class PoseViewerCore {
 
         position.array.set(vertices);
         position.needsUpdate = true;
+        if (indices && indices.length) {
+            geometry.setIndex(new this.THREE.BufferAttribute(new Uint32Array(indices), 1));
+        }
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
@@ -3077,6 +3154,13 @@ export class PoseViewerCore {
             this.updateIKEffectorPositions?.();
         }
 
+        if (landmarks && typeof landmarks === 'object') {
+            this.modelLandmarks = landmarks;
+        }
+        if (landmarkIndices && typeof landmarkIndices === 'object') {
+            this.modelLandmarkIndices = landmarkIndices;
+        }
+
         this.requestRender();
         return true;
     }
@@ -3090,7 +3174,11 @@ export class PoseViewerCore {
         for (const bData of data.bones) {
             const bone = new THREE.Bone();
             bone.name = bData.name;
-            bone.userData = { headPos: bData.headPos, parentName: bData.parent };
+            bone.userData = {
+                headPos: bData.headPos,
+                tailPos: bData.tailPos,
+                parentName: bData.parent,
+            };
             bone.position.set(bData.headPos[0], bData.headPos[1], bData.headPos[2]);
             this.bones[bone.name] = bone;
             this.boneList.push(bone);
@@ -3120,11 +3208,19 @@ export class PoseViewerCore {
         this.skeleton = new THREE.Skeleton(this.boneList);
 
         const vCount = vertices.length / 3;
-        const skinInds = new Float32Array(vCount * 4);
-        const skinWgts = new Float32Array(vCount * 4);
+        let skinInds = new Uint16Array(vCount * 4);
+        let skinWgts = new Float32Array(vCount * 4);
         const boneHeads = this.boneList.map(b => b.userData.headPos);
 
-        if (data.weights) {
+        if (
+            data.skinIndices
+            && data.skinWeights
+            && data.skinIndices.length === vCount * 4
+            && data.skinWeights.length === vCount * 4
+        ) {
+            skinInds = new Uint16Array(data.skinIndices);
+            skinWgts = new Float32Array(data.skinWeights);
+        } else if (data.weights) {
             const vWeights = new Array(vCount).fill(null).map(() => []);
             const boneMap = {};
             this.boneList.forEach((b, i) => boneMap[b.name] = i);
@@ -3177,28 +3273,23 @@ export class PoseViewerCore {
         }
 
         const skinType = this.currentSkinType || "dummy_white";
-        const skinFile = {
-            "naked": "skin.png",
-            "naked_marks": "skin_marks.png",
-            "dummy_white": "skin_dummy.png"
-        }[skinType] || "skin_dummy.png";
-
-        let skinTex;
-        if (this.cachedSkinTexture && this.cachedSkinType === skinType) {
-            skinTex = this.cachedSkinTexture;
-        } else {
-            const texLoader = new THREE.TextureLoader();
-            skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-                (tex) => this.requestRender(),
-                undefined,
-                (err) => console.error("Texture failed to load", err)
-            );
-            this.cachedSkinTexture = skinTex;
-            this.cachedSkinType = skinType;
-        }
+        const textureSkinningEnabled = this.options.enableTextureSkinning
+            && this.options.skinMode !== 'flat_color';
+        const skinTex = textureSkinningEnabled
+            && this._cachedSkinTextureReady
+            && this.cachedSkinTexture
+            && this.cachedSkinType === skinType
+            ? this.cachedSkinTexture
+            : null;
 
         const material = new THREE.MeshPhongMaterial({
-            map: skinTex, color: 0xffffff, specular: 0x111111, shininess: 5, side: THREE.DoubleSide
+            map: skinTex,
+            // Never bind TextureLoader's not-yet-loaded placeholder: sampling
+            // it produces the black Pose Manager silhouettes seen on startup.
+            color: skinTex ? 0xffffff : (textureSkinningEnabled ? 0xc8b5aa : 0xaaaaaa),
+            specular: 0x111111,
+            shininess: 5,
+            side: THREE.DoubleSide
         });
 
         material.onBeforeCompile = (shader) => {
@@ -3218,6 +3309,18 @@ export class PoseViewerCore {
         this.scene.add(this.skinnedMesh);
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
+
+        if (!textureSkinningEnabled || skinTex) {
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
+        } else {
+            this._loadSkinTexture(skinType, (tex) => {
+                if (this.skinnedMesh?.material !== material) return;
+                material.map = tex;
+                material.color.setHex(0xffffff);
+                material.needsUpdate = true;
+            });
+        }
     }
 
     _createJointMarkers() {
@@ -3435,34 +3538,37 @@ export class PoseViewerCore {
             }
             this.skinnedMesh.material.color.setHex(0xaaaaaa);
             this.skinnedMesh.material.needsUpdate = true;
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
             this.requestRender();
             return;
         }
 
-        const skinFile = {
-            "naked": "skin.png",
-            "naked_marks": "skin_marks.png",
-            "dummy_white": "skin_dummy.png"
-        }[skinType] || "skin_dummy.png";
+        const material = this.skinnedMesh.material;
+        if (
+            this._cachedSkinTextureReady
+            && this.cachedSkinTexture
+            && this.cachedSkinType === skinType
+        ) {
+            const previous = material.map;
+            material.map = this.cachedSkinTexture;
+            material.color.setHex(0xffffff);
+            material.needsUpdate = true;
+            if (previous && previous !== material.map) previous.dispose?.();
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
+            this.requestRender();
+            return;
+        }
 
-        const THREE = this.THREE;
-        const texLoader = new THREE.TextureLoader();
-        texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-            (tex) => {
-                // Dispose old texture to prevent memory leaks
-                if (this.skinnedMesh.material.map) {
-                    this.skinnedMesh.material.map.dispose();
-                }
-                this.skinnedMesh.material.map = tex;
-                this.skinnedMesh.material.needsUpdate = true;
-                this.cachedSkinTexture = tex;
-                this.cachedSkinType = skinType;
-
-                this.requestRender();
-            },
-            undefined,
-            (err) => console.error(`Failed to load skin texture: ${skinFile}`, err)
-        );
+        this._loadSkinTexture(skinType, (tex) => {
+            if (this.skinnedMesh?.material !== material) return;
+            const previous = material.map;
+            material.map = tex;
+            material.color.setHex(0xffffff);
+            material.needsUpdate = true;
+            if (previous && previous !== tex) previous.dispose?.();
+        });
     }
 
     // === Pose State Management ===

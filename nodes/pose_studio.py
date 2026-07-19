@@ -4,7 +4,8 @@ Combines Character Studio mesh sliders with dynamic pose tabs.
 Each pose stores bone rotations and global model rotation.
 Outputs rendered mesh images with skin material.
 
-This node is fully self-contained with all data loading logic.
+MakeHuman morphing, skinning, posing, and rendering run in the browser widget.
+The Python node only synchronizes captures and converts them to ComfyUI outputs.
 """
 
 import json
@@ -18,20 +19,12 @@ from io import BytesIO
 import hashlib
 import torch
 import numpy as np
-from PIL import Image, ImageDraw
-
-# Import from CharacterData module
-from ..CharacterData.mh_parser import TargetParser, HumanSolver
-from ..CharacterData.obj_loader import load_obj
-from ..CharacterData import matrix
-from ..CharacterData.mh_skeleton import Skeleton
-import threading
-import types
-_CACHE_LOCK = threading.Lock()
+from PIL import Image
 _CAPTURED_IMAGE_MAX_COUNT = 600
 _CAPTURED_IMAGE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_BYTES = 32 * 1024 * 1024
 _CAPTURED_IMAGE_MAX_PIXELS = 4096 * 4096
+_POSE_OUTPUT_MAX_PIXELS = 4096 * 4096
 
 _CAMERA_AZIMUTH_PHRASES = (
     ("front-right quarter view", "from a front-right three-quarter angle"),
@@ -117,17 +110,6 @@ def _merge_camera_prompt(base_prompt, camera_prompt):
     return f"{base}\n{camera}"
 
 
-# === Data Cache and Loader (from Character Studio) ===
-
-# Singleton storage for loaded MH data to avoid reloading every time
-POSE_STUDIO_CACHE = {
-    "base_mesh": None,
-    "targets": None,
-    "parser": None,
-    "skeleton": None
-}
-
-
 def _decode_captured_images(captured_images):
     if not isinstance(captured_images, list):
         raise ValueError("captured_images must be a list")
@@ -168,6 +150,18 @@ def _animation_frame_rate(data):
     return max(1.0, min(120.0, fps))
 
 
+def _positive_int(value, name, default):
+    if value is None:
+        value = default
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if not math.isfinite(number) or number < 1 or not number.is_integer():
+        raise ValueError(f"{name} must be a positive integer")
+    return int(number)
+
+
 def _create_comfy_video(frame_batch, fps):
     """Build the same VIDEO value as ComfyUI's built-in CreateVideo node."""
     try:
@@ -185,66 +179,6 @@ def _create_comfy_video(frame_batch, fps):
             frame_rate=Fraction(str(fps)),
         )
     )
-
-
-def _get_character_data_path():
-    """Get the path to CharacterData folder."""
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "CharacterData"))
-
-
-def _ensure_data_loaded():
-    """Load MakeHuman data if not already loaded."""
-    if POSE_STUDIO_CACHE['base_mesh'] is not None:
-        return  # fast path without lock
-    with _CACHE_LOCK:
-        if POSE_STUDIO_CACHE['base_mesh'] is not None:
-            return  # double-check after acquiring lock
-
-        char_data_path = _get_character_data_path()
-        mh_path = os.path.join(char_data_path, "makehuman")
-
-        if not os.path.exists(mh_path):
-            raise Exception(f"MakeHuman data not found at: {mh_path}")
-
-        print(f"[VNCCS Pose Studio] Loading MakeHuman data from {mh_path}...")
-
-        # 1. Load Base Mesh
-        base_obj_paths = [
-            os.path.join(mh_path, "makehuman", "data", "3dobjs", "base.obj"),
-            os.path.join(mh_path, "data", "3dobjs", "base.obj"),
-        ]
-
-        base_path = next((p for p in base_obj_paths if os.path.exists(p)), None)
-        if not base_path:
-            raise Exception("Could not find base.obj inside makehuman data.")
-
-        base_mesh = load_obj(base_path)
-
-        # 2. Load Targets
-        parser = TargetParser(mh_path)
-        targets = parser.scan_targets()
-
-        print(f"[VNCCS Pose Studio] Loaded {len(targets)} targets.")
-
-        # 3. Load Skeleton (Preference: game_engine > default)
-        skeleton = None
-        skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "game_engine.mhskel")
-        if not os.path.exists(skel_path):
-            skel_path = os.path.join(mh_path, "makehuman", "data", "rigs", "default.mhskel")
-
-        if os.path.exists(skel_path):
-            print(f"[VNCCS Pose Studio] Loading skeleton from {skel_path}...")
-            skeleton = Skeleton()
-            skeleton.fromFile(skel_path, base_mesh)
-        else:
-            print(f"[VNCCS Pose Studio] Warning: Default skeleton not found at {skel_path}")
-
-        POSE_STUDIO_CACHE.update({
-            "base_mesh": base_mesh,
-            "targets": targets,
-            "parser": parser,
-            "skeleton": skeleton,
-        })
 
 
 # === Main Node Class ===
@@ -491,37 +425,16 @@ class VNCCS_PoseStudio:
             print(f"Pose Studio Error: pose_data is not a dict, got {type(data)}. Using default.")
             data = {}
         
-        # Extract settings from JSON
-        mesh = data.get("mesh", {})
-        age = mesh.get("age", 25.0)
-        gender = mesh.get("gender", 0.5)
-        weight = mesh.get("weight", 0.5)
-        muscle = mesh.get("muscle", 0.5)
-        height = mesh.get("height", 0.5)
-        breast_size = mesh.get("breast_size", 0.5)
-        firmness = mesh.get("firmness", 0.5)
-        
-        # Male specifics
-        penis_len = mesh.get("penis_len", 0.5)
-        penis_circ = mesh.get("penis_circ", 0.5)
-        penis_test = mesh.get("penis_test", 0.5)
-        # Fallback for old configs
-        if "genital_size" in mesh:
-            genital_size = mesh["genital_size"]
-            penis_len = genital_size # Map old single slider to length
-        
         export = data.get("export", {})
-        view_width = export.get("view_width", export.get("view_size", 512))
-        view_height = export.get("view_height", export.get("view_size", 512))
-        cam_zoom = export.get("cam_zoom", 1.0)
+        view_width = _positive_int(export.get("view_width", export.get("view_size", 512)), "view_width", 512)
+        view_height = _positive_int(export.get("view_height", export.get("view_size", 512)), "view_height", 512)
+        if view_width * view_height > _POSE_OUTPUT_MAX_PIXELS:
+            raise ValueError("Pose Studio output dimensions are too large")
         output_mode = export.get("output_mode", "LIST")
-        grid_columns = export.get("grid_columns", 2)
+        grid_columns = _positive_int(export.get("grid_columns", 2), "grid_columns", 2)
         bg_color = export.get("bg_color", [40, 40, 40])  # RGB
         
-        poses = data.get("poses", [{}])
         editor_mode = export.get("editor_mode", export.get("content_mode", "image"))
-        if not poses and editor_mode != "animation":
-            poses = [{}]
             
         # === 1. Try Client-Side Rendered Images (CSR) ===
         # If frontend sent captured images, use them directly.
@@ -538,11 +451,7 @@ class VNCCS_PoseStudio:
                 _merge_camera_prompt(prompt, camera_prompt)
                 for prompt in lighting_prompts[:len(captured_images)]
             ]
-            try:
-                rendered_images = _decode_captured_images(captured_images)
-            except Exception as e:
-                print(f"Pose Studio Error: Failed to decode captured images: {e}")
-                rendered_images = []
+            rendered_images = _decode_captured_images(captured_images)
             
             if rendered_images:
                 # Convert to tensors
@@ -576,280 +485,11 @@ class VNCCS_PoseStudio:
                     combined_prompt = lighting_prompts[0] if lighting_prompts else ""
                     return ([grid_tensor], [combined_prompt])
 
-        if editor_mode == "animation":
-            raise RuntimeError(
-                "Pose Studio animation frames were not captured by the widget; "
-                "backend animation rendering is intentionally disabled."
-            )
-        
-        # === 2. Fallback to Python Rendering ===
-        
-        # Ensure data loaded
-        _ensure_data_loaded()
-        
-        # Normalize age
-        mh_age = (age - 1.0) / (90.0 - 1.0)
-        mh_age = max(0.0, min(1.0, mh_age))
-        
-        # Solve base mesh
-        solver = HumanSolver()
-        factors = solver.calculate_factors(mh_age, gender, weight, muscle, height, breast_size, firmness, penis_len, penis_circ, penis_test)
-        base_verts = solver.solve_mesh(
-            POSE_STUDIO_CACHE['base_mesh'],
-            POSE_STUDIO_CACHE['targets'],
-            factors
+        raise RuntimeError(
+            "Pose Studio did not receive images rendered by the browser widget. "
+            "Backend 3D rendering has been removed; keep the ComfyUI browser tab open "
+            "and ensure WebGL is available while the workflow executes."
         )
-        
-        # Render each pose
-        rendered_images = []
-        view_size = (view_width, view_height)
-        
-        for pose_idx, pose in enumerate(poses):
-            bones = pose.get("bones", {})
-            model_rotation = pose.get("modelRotation", [0, 0, 0])
-            
-            # Apply pose to skeleton and get posed vertices
-            posed_verts = self._apply_pose(base_verts, bones, model_rotation)
-            
-            # Render with background color and current lights
-            img = self._render_mesh(posed_verts, view_size, tuple(bg_color), data.get("lights", []))
-            rendered_images.append(img)
-        
-        # Convert to tensors
-        tensors = []
-        for img in rendered_images:
-            np_img = np.array(img).astype(np.float32) / 255.0
-            tensors.append(torch.from_numpy(np_img))
-        
-        if output_mode == "LIST":
-            # Return list of individual images
-            tensor_list = [t.unsqueeze(0) for t in tensors]
-            # Fallback prompts (empty strings since python renderer doesn't generate them yet)
-            prompts = [
-                _merge_camera_prompt("", camera_prompt)
-                for _ in tensor_list
-            ]
-            return (tensor_list, prompts)
-        else:
-            # GRID mode - concatenate into single image
-            grid_img = self._make_grid(rendered_images, grid_columns, tuple(bg_color))
-            np_grid = np.array(grid_img).astype(np.float32) / 255.0
-            grid_tensor = torch.from_numpy(np_grid).unsqueeze(0)
-            return ([grid_tensor], [_merge_camera_prompt("", camera_prompt)])
-    
-    def _apply_pose(self, verts, bones_data, model_rotation):
-        """Apply bone rotations (FK) and global rotation to vertices."""
-        
-        mesh_wrapper = types.SimpleNamespace(vertices=verts)
-        
-        # 2. Get and copy skeleton
-        # We must copy because we modify joint positions (fitting) and bone rotations
-        orig_skel = POSE_STUDIO_CACHE['skeleton']
-        if not orig_skel:
-            # Should not happen if _ensure_data_loaded is called
-            return verts
-            
-        skel = orig_skel.copy()
-        
-        # 3. Fit skeleton to current mesh (proportions)
-        # This moves joints to match the morphing target
-        skel.updateJointPositions(mesh_wrapper)
-        
-        # 4. Apply rotations to bones
-        deg2rad = np.pi / 180.0
-        
-        for bone_name, rot_deg in bones_data.items():
-            bone = skel.getBone(bone_name)
-            if not bone:
-                continue
-            if not isinstance(rot_deg, (list, tuple)) or len(rot_deg) < 3:
-                continue
-            rx, ry, rz = rot_deg[0] * deg2rad, rot_deg[1] * deg2rad, rot_deg[2] * deg2rad
-            
-            # Create rotation matrix
-            # Note: matrix.rotx returns 4x4
-            rot_mat = np.dot(
-                matrix.rotz(rz),
-                np.dot(matrix.roty(ry), matrix.rotx(rx))
-            )
-            
-            bone.matPose = rot_mat
-
-        # 5. Update global matrices (FK)
-        # boneslist is breadth-first sorted, so parents always processed before children
-        for bone in skel.boneslist:
-            bone.update()
-            
-        # 6. Linear Blend Skinning (LBS)
-        # Pre-allocate result (N, 3)
-        skinned_verts = np.zeros_like(verts)
-        
-        # Helper arrays
-        # Expand verts to (N, 4) for matrix multiplication
-        ones = np.ones((len(verts), 1), dtype=np.float32)
-        verts4 = np.hstack([verts, ones])
-        
-        has_weights = False
-        # Iterate over all bones that have weights
-        # skel.vertexWeights.data is OrderedDict {bone: (indices, weights)}
-        if skel.vertexWeights:
-            has_weights = True
-            for bname, (indices, weights) in skel.vertexWeights.data.items():
-                bone = skel.getBone(bname)
-                if not bone or len(indices) == 0:
-                    continue
-                
-                # Get Skinning Matrix: Pose * InvBind
-                # shape (4, 4)
-                mat_skin = bone.matPoseVerts
-                
-                # Select vertices affected by this bone
-                # v_subset shape (K, 4)
-                v_subset = verts4[indices]
-                
-                # Transform: v' = v * M^T
-                v_transformed = np.asarray(np.dot(v_subset, mat_skin.T))
-                
-                # Weighted accumulation
-                # weights shape (K,) -> reshape to (K, 1)
-                w_expanded = weights[:, np.newaxis]
-                
-                # Optimization: Doing it in place.
-                current = skinned_verts[indices]
-                skinned_verts[indices] = current + v_transformed[:, :3] * w_expanded
-
-        if not has_weights:
-            print("Pose Studio Warning: No weights found, skinning skipped!")
-            skinned_verts = verts.copy()
-
-        # 7. Apply Global Model Rotation
-        posed = skinned_verts
-        
-        rx, ry, rz = model_rotation
-        if abs(rx) > 0.01 or abs(ry) > 0.01 or abs(rz) > 0.01:
-            # Convert degrees to radians
-            rx, ry, rz = rx * deg2rad, ry * deg2rad, rz * deg2rad
-            
-            rot_mat = np.dot(
-                matrix.rotz(rz),
-                np.dot(matrix.roty(ry), matrix.rotx(rx))
-            )[:3, :3]
-            
-            # Center for rotation
-            center = posed.mean(axis=0)  # Rotate around body center
-            posed = posed - center
-            posed = np.dot(posed, rot_mat.T)
-            posed = posed + center
-        
-        return posed
-    
-    def _render_mesh(self, verts, size, bg_color=(40, 40, 40), lights=[]):
-        """Render mesh with skin-colored Phong shading."""
-        from PIL import Image, ImageDraw
-        
-        base_mesh = POSE_STUDIO_CACHE['base_mesh']
-        
-        # Setup viewport
-        W, H = size
-        img = Image.new('RGB', (W, H), bg_color)
-        draw = ImageDraw.Draw(img)
-        
-        # Project vertices
-        center = verts.mean(axis=0)
-        scale = min(W, H) * 0.4 / max(np.abs(verts - center).max(), 0.001)
-        
-        verts_screen = np.zeros((len(verts), 2))
-        verts_screen[:, 0] = (verts[:, 0] - center[0]) * scale + W / 2
-        verts_screen[:, 1] = H / 2 - (verts[:, 1] - center[1]) * scale
-        
-        # Get valid faces
-        valid_face_groups = ["body", "helper-r-eye", "helper-l-eye", "helper-upper-teeth", "helper-lower-teeth"]
-        faces = []
-        if base_mesh.face_groups:
-            for i, group in enumerate(base_mesh.face_groups):
-                g_clean = group.strip()
-                if g_clean in valid_face_groups:
-                    faces.append(base_mesh.faces[i])
-        
-        # Render with flat shading
-        self._render_flat_shaded(draw, verts_screen, verts, faces, W, H, lights)
-        
-        return img
-    
-    def _render_flat_shaded(self, draw, verts_screen, verts_3d, faces, W, H, lights=[]):
-        """Render faces with flat shading and skin color."""
-        # 1. Setup Lighting from params
-        main_light_dir = np.array([0.5, 0.8, 1.0])
-        main_light_int = 0.7
-        ambient_int = 0.3
-        
-        if lights:
-            # Simple aggregation of lights for Python renderer
-            for l in lights:
-                lt = l.get("type", "ambient")
-                if lt == "ambient":
-                    ambient_int = max(0.2, min(0.6, l.get("intensity", 1.0) * 0.4))
-                elif lt == "directional" or lt == "point":
-                    # For point lights we just use direction to center
-                    x, y, z = l.get("x", 0), l.get("y", 10), l.get("z", 10)
-                    main_light_dir = np.array([x, y, z])
-                    mag = np.linalg.norm(main_light_dir)
-                    if mag > 0.001: main_light_dir = main_light_dir / mag
-                    main_light_int = min(1.2, l.get("intensity", 1.0) * 0.8)
-                    break # Use first found as main for flat shading
-        
-        # Skin base color (warm tone)
-        base_color = np.array([212, 165, 116])  # 0xd4a574
-        
-        face_data = []
-        for face in faces:
-            if len(face) < 3:
-                continue
-            
-            # Get vertex indices
-            v_indices = []
-            for item in face:
-                if isinstance(item, (list, tuple)):
-                    v_indices.append(item[0])
-                else:
-                    v_indices.append(item)
-            
-            if any(vi >= len(verts_3d) for vi in v_indices):
-                continue
-            
-            # Calculate face center Z for sorting
-            z_avg = np.mean([verts_3d[vi][2] for vi in v_indices[:3]])
-            
-            # Calculate normal
-            p0 = verts_3d[v_indices[0]]
-            p1 = verts_3d[v_indices[1]]
-            p2 = verts_3d[v_indices[2]]
-            
-            v1 = p1 - p0
-            v2 = p2 - p0
-            normal = np.cross(v1, v2)
-            norm_len = np.linalg.norm(normal)
-            if norm_len < 1e-8:
-                continue
-            normal = normal / norm_len
-            
-            # Lighting
-            diffuse = max(0, np.dot(normal, main_light_dir))
-            intensity = min(1.0, ambient_int + diffuse * main_light_int)
-            
-            color = (base_color * intensity).astype(int)
-            color = tuple(np.clip(color, 0, 255))
-            
-            face_data.append((z_avg, v_indices, color))
-        
-        # Sort by depth (painter's algorithm)
-        face_data.sort(key=lambda x: x[0])
-        
-        # Draw faces
-        for _, v_indices, color in face_data:
-            points = [(verts_screen[vi][0], verts_screen[vi][1]) for vi in v_indices[:4]]
-            if len(points) >= 3:
-                draw.polygon(points, fill=color)
     
     def _make_grid(self, images, columns, bg_color=(40, 40, 40)):
         """Combine images into a grid."""
@@ -857,10 +497,12 @@ class VNCCS_PoseStudio:
             return Image.new('RGB', (512, 512), bg_color)
         
         n = len(images)
-        cols = min(columns, n)
+        cols = min(_positive_int(columns, "grid_columns", 1), n)
         rows = (n + cols - 1) // cols
         
         w, h = images[0].size
+        if w * cols * h * rows > _POSE_OUTPUT_MAX_PIXELS:
+            raise ValueError("Pose Studio grid dimensions are too large")
         grid = Image.new('RGB', (w * cols, h * rows), bg_color)
         
         for i, img in enumerate(images):

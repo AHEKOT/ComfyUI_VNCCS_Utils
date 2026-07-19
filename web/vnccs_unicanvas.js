@@ -732,6 +732,8 @@ class UniCanvasWidget {
     this.presetDownloads = {};
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
+    this._disposed = false;
+    this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
       this.settings.preset_runtime_settings = {};
@@ -751,6 +753,7 @@ class UniCanvasWidget {
     this._buildDOM();
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
+      if (this._disposed) return;
       this._isRestoring = false;
       this.fitInitialView();
       this.renderLayerList();
@@ -1434,6 +1437,9 @@ class UniCanvasWidget {
   }
 
   _attachEvents() {
+    this._eventAbortController?.abort();
+    this._eventAbortController = new AbortController();
+    const eventSignal = this._eventAbortController.signal;
     enableUniCanvasGraphNavigationForwarding(this.container);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.container);
@@ -1443,11 +1449,11 @@ class UniCanvasWidget {
     this.canvas.addEventListener("pointerleave", (e) => this.onPointerLeave(e));
     this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     this.canvas.addEventListener("auxclick", (e) => e.preventDefault());
-    window.addEventListener("pointermove", (e) => this.onPointerMove(e));
-    window.addEventListener("pointerup", (e) => this.onPointerUp(e));
+    window.addEventListener("pointermove", (e) => this.onPointerMove(e), { signal: eventSignal });
+    window.addEventListener("pointerup", (e) => this.onPointerUp(e), { signal: eventSignal });
     this._flushStateBeforeUnload = () => this.flushStateUpload(true);
-    window.addEventListener("pagehide", this._flushStateBeforeUnload);
-    window.addEventListener("beforeunload", this._flushStateBeforeUnload);
+    window.addEventListener("pagehide", this._flushStateBeforeUnload, { signal: eventSignal });
+    window.addEventListener("beforeunload", this._flushStateBeforeUnload, { signal: eventSignal });
     this.container.addEventListener("keydown", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement) || !NUMERIC_SETTINGS.has(target.dataset.setting) || e.key !== ",") return;
@@ -1478,13 +1484,13 @@ class UniCanvasWidget {
       if (!this.customSelectMenu) return;
       if (this.customSelectMenu.contains(e.target) || e.target === this.customSelectSource) return;
       this.closeCustomSelect();
-    }, true);
+    }, { capture: true, signal: eventSignal });
     window.addEventListener("keydown", (e) => {
       if (!this.customSelectMenu || e.key !== "Escape") return;
       e.preventDefault();
       this.closeCustomSelect();
-    }, true);
-    window.addEventListener("resize", () => this.closeCustomSelect(), { passive: true });
+    }, { capture: true, signal: eventSignal });
+    window.addEventListener("resize", () => this.closeCustomSelect(), { passive: true, signal: eventSignal });
     this.container.addEventListener("click", (e) => {
       const btn = e.target?.closest?.("[data-action], [data-model-selection-mode], [data-preset-picker-toggle], [data-preset-id], [data-preset-download], [data-turbo-download], [data-turbo-toggle]");
       if (!(btn instanceof HTMLElement)) return;
@@ -2081,15 +2087,17 @@ class UniCanvasWidget {
   }
 
   startPresetDownloadPolling() {
-    if (this.presetDownloadTimer) return;
+    if (this._disposed || this.presetDownloadTimer) return;
     this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 2000);
     this.refreshPresetDownloadStatus();
   }
 
   async refreshPresetDownloadStatus() {
+    if (this._disposed) return;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets/status?t=${Date.now()}`);
       const data = await res.json();
+      if (this._disposed) return;
       if (!res.ok) throw new Error(data.error || "Status failed");
       this.presetDownloads = data || {};
       await this.loadPresets();
@@ -5997,6 +6005,7 @@ class UniCanvasWidget {
   }
 
   startDrawProgressPolling(drawId) {
+    if (this._disposed) return;
     this.stopDrawProgressPolling();
     const poll = async () => {
       try {
@@ -6073,7 +6082,7 @@ class UniCanvasWidget {
   }
 
   syncToNode() {
-    if (this._isRestoring) return;
+    if (this._disposed || this._isRestoring) return;
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
     clearTimeout(this.fullSyncTimer);
@@ -6155,11 +6164,12 @@ class UniCanvasWidget {
   }
 
   scheduleFullSync(delay = 900) {
-    if (this._isRestoring) return;
+    if (this._disposed || this._isRestoring) return;
     clearTimeout(this.fullSyncTimer);
     this.fullSyncTimer = window.setTimeout(() => {
       this.fullSyncTimer = null;
       const run = () => {
+        if (this._disposed) return;
         if (this.isPointerDown || this.drawInProgress) {
           this.scheduleFullSync(delay);
           return;
@@ -6267,6 +6277,7 @@ class UniCanvasWidget {
   }
 
   scheduleStateUpload() {
+    if (this._disposed) return;
     clearTimeout(this.stateUploadTimer);
     this.pendingStateUpload = true;
     this.stateUploadTimer = window.setTimeout(() => {
@@ -6572,13 +6583,36 @@ class UniCanvasWidget {
   }
 
   dispose() {
-    this.flushStateUpload(true);
-    clearTimeout(this.stateUploadTimer);
-    if (this._flushStateBeforeUnload) {
-      window.removeEventListener("pagehide", this._flushStateBeforeUnload);
-      window.removeEventListener("beforeunload", this._flushStateBeforeUnload);
+    if (this._disposed) return;
+    try {
+      void this.flushStateUpload(true);
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
+    this._disposed = true;
+    this._eventAbortController?.abort();
+    this._eventAbortController = null;
+    this.stopDrawProgressPolling();
+    if (this.presetDownloadTimer) window.clearInterval(this.presetDownloadTimer);
+    this.presetDownloadTimer = null;
+    for (const timer of [
+      this.stateUploadTimer,
+      this.settingsSyncTimer,
+      this.fullSyncTimer,
+      this.layoutLogTimer,
+      this.deferredCanvasCommitTimer,
+      this.snapTimeout,
+    ]) window.clearTimeout(timer);
+    this.stateUploadTimer = null;
+    this.settingsSyncTimer = null;
+    this.fullSyncTimer = null;
+    this.layoutLogTimer = null;
+    this.deferredCanvasCommitTimer = null;
+    this.snapTimeout = null;
+    this.pendingStateUpload = null;
+    this.closeCustomSelect();
     this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
   }
 }
 
@@ -6627,7 +6661,7 @@ app.registerExtension({
         stateWidget.computeSize = () => [0, -4];
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
-      setTimeout(() => {
+      this._vnccsUniCanvasInitTimer = setTimeout(() => {
         this.uniCanvasWidget?.resize();
         this.uniCanvasWidget?.fitInitialView();
         this.uniCanvasWidget?.render();
@@ -6646,7 +6680,8 @@ app.registerExtension({
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
       onConfigure?.apply(this, arguments);
-      setTimeout(async () => {
+      clearTimeout(this._vnccsUniCanvasConfigureTimer);
+      this._vnccsUniCanvasConfigureTimer = setTimeout(async () => {
         if (!this.uniCanvasWidget) return;
         syncUniCanvasDOMWidgetWidth(this);
         this.uniCanvasWidget._isRestoring = true;
@@ -6661,6 +6696,9 @@ app.registerExtension({
 
     const onRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
+      clearTimeout(this._vnccsUniCanvasInitTimer);
+      clearTimeout(this._vnccsUniCanvasResizeTimer);
+      clearTimeout(this._vnccsUniCanvasConfigureTimer);
       this.uniCanvasWidget?.dispose();
       onRemoved?.apply(this, arguments);
     };

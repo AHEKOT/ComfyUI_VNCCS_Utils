@@ -5,6 +5,23 @@ import { api } from "../../scripts/api.js";
 window.VNCCS_REGISTRY = window.VNCCS_REGISTRY || {};
 window.VNCCS_FETCH_PROMISES = window.VNCCS_FETCH_PROMISES || {};
 
+function appendTextElement(parent, tagName, text, cssText = "") {
+    const element = document.createElement(tagName);
+    if (cssText) element.style.cssText = cssText;
+    element.textContent = String(text ?? "");
+    parent.appendChild(element);
+    return element;
+}
+
+function setStatusText(element, text, color, fontFamily = "") {
+    const span = document.createElement("span");
+    span.textContent = String(text ?? "");
+    span.style.color = color;
+    if (fontFamily) span.style.fontFamily = fontFamily;
+    element.replaceChildren(span);
+    return span;
+}
+
 class VNCCS_ModelListWidget {
     constructor(node, container) {
         this.node = node;
@@ -15,6 +32,9 @@ class VNCCS_ModelListWidget {
         this.pollingInterval = null;
         this.downloadStartTimes = {}; // Local logic for fake progress
         this.downloadProgressTimers = {};
+        this.disposed = false;
+        this.pendingTimeouts = new Set();
+        this.disposeCallbacks = new Set();
 
         // Styles
         this.styleContainer();
@@ -151,11 +171,11 @@ class VNCCS_ModelListWidget {
     }
 
     async processQueue() {
-        if (this.isProcessingQueue) return;
+        if (this.isProcessingQueue || this.disposed) return;
         this.isProcessingQueue = true;
 
         try {
-            while (this.downloadQueue.length > 0) {
+            while (!this.disposed && this.downloadQueue.length > 0) {
                 const task = this.downloadQueue.shift(); // Get next
 
                 // Double check if we should still download (maybe state changed?)
@@ -169,13 +189,15 @@ class VNCCS_ModelListWidget {
                     await this.waitForCompletion(task.name, 900000); // 15 min timeout per model
                 } catch (e) {
                     console.error("Download timeout or error:", e);
-                    this.downloadStatuses[task.name] = { status: "error", message: "Timed out / Error" };
-                    this.renderList();
+                    if (!this.disposed) {
+                        this.downloadStatuses[task.name] = { status: "error", message: "Timed out / Error" };
+                        this.renderList();
+                    }
                     // Continue to next...
                 }
 
                 // Short rest
-                await new Promise(r => setTimeout(r, 1000));
+                await this.delay(1000);
             }
         } finally {
             this.isProcessingQueue = false;
@@ -187,30 +209,76 @@ class VNCCS_ModelListWidget {
     async waitForCompletion(modelName, timeoutMs = 600000) {
         const start = Date.now();
         return new Promise((resolve, reject) => {
+            let settled = false;
+            let timer = null;
+            const finish = (callback, value) => {
+                if (settled) return;
+                settled = true;
+                if (timer !== null) this.clearTrackedTimeout(timer);
+                this.disposeCallbacks.delete(onDispose);
+                callback(value);
+            };
+            const onDispose = () => finish(reject, new Error("Widget disposed"));
+            this.disposeCallbacks.add(onDispose);
             const check = () => {
+                if (this.disposed) {
+                    onDispose();
+                    return;
+                }
                 const s = this.downloadStatuses[modelName];
 
                 if (Date.now() - start > timeoutMs) {
-                    reject(new Error("Timeout"));
+                    finish(reject, new Error("Timeout"));
                     return;
                 }
 
                 // If status is success or error, we are done
                 if (s && (s.status === "success" || s.status === "error")) {
-                    resolve();
+                    finish(resolve);
                 } else if (!s) {
                     // Status disappeared? treat as error
-                    reject(new Error("Status lost"));
+                    finish(reject, new Error("Status lost"));
                 } else {
                     // Still downloading... check again in 2s
-                    setTimeout(check, 2000);
+                    timer = this.setTrackedTimeout(check, 2000);
                 }
             };
             check();
         });
     }
 
+    setTrackedTimeout(callback, delay) {
+        if (this.disposed) return null;
+        const timer = window.setTimeout(() => {
+            this.pendingTimeouts.delete(timer);
+            if (!this.disposed) callback();
+        }, delay);
+        this.pendingTimeouts.add(timer);
+        return timer;
+    }
+
+    clearTrackedTimeout(timer) {
+        if (timer === null || timer === undefined) return;
+        window.clearTimeout(timer);
+        this.pendingTimeouts.delete(timer);
+    }
+
+    delay(delay) {
+        if (this.disposed) return Promise.resolve();
+        return new Promise((resolve) => {
+            let timer = null;
+            const finish = () => {
+                this.disposeCallbacks.delete(finish);
+                if (timer !== null) this.clearTrackedTimeout(timer);
+                resolve();
+            };
+            this.disposeCallbacks.add(finish);
+            timer = this.setTrackedTimeout(finish, delay);
+        });
+    }
+
     async fetchModels(repoId, force = false) {
+        if (this.disposed) return;
         this.loading = true;
 
         if (force) {
@@ -262,6 +330,7 @@ class VNCCS_ModelListWidget {
 
         try {
             const models = await fetchPromise;
+            if (this.disposed) return;
             this.models = models;
             const cacheKey = `vnccs_cache_${repoId}`;
             localStorage.setItem(cacheKey, JSON.stringify(this.models));
@@ -283,7 +352,10 @@ class VNCCS_ModelListWidget {
 
     startPolling() {
         if (this.pollingInterval) clearInterval(this.pollingInterval);
-        this.pollingInterval = setInterval(() => this.updateStatuses(), 2000);
+        if (this.disposed) return;
+        this.pollingInterval = setInterval(() => {
+            if (!this.disposed) this.updateStatuses();
+        }, 2000);
     }
 
     showApiKeyDialog(modelName, repoId, version) {
@@ -386,6 +458,7 @@ class VNCCS_ModelListWidget {
     }
 
     async updateStatuses() {
+        if (this.disposed) return;
         try {
             const response = await api.fetchApi(`/vnccs/utils/manager/status?t=${Date.now()}`, {
                 cache: "no-store",
@@ -393,6 +466,7 @@ class VNCCS_ModelListWidget {
             });
             if (response.ok) {
                 const newStatuses = await response.json();
+                if (this.disposed) return;
 
                 // Track transitions to "success" to trigger registry refresh (updates disk status in all nodes)
                 let needsRefresh = false;
@@ -437,7 +511,7 @@ class VNCCS_ModelListWidget {
     }
 
     startDownloadProgressTimer(modelName) {
-        if (this.downloadProgressTimers[modelName]) return;
+        if (this.disposed || this.downloadProgressTimers[modelName]) return;
 
         this.downloadProgressTimers[modelName] = setInterval(() => {
             const status = this.downloadStatuses[modelName];
@@ -453,6 +527,23 @@ class VNCCS_ModelListWidget {
                 this.renderList();
             }
         }, 500);
+    }
+
+    dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        this.downloadQueue = [];
+        this.isProcessingQueue = false;
+        if (this.pollingInterval) {
+            clearInterval(this.pollingInterval);
+            this.pollingInterval = null;
+        }
+        for (const timer of Object.values(this.downloadProgressTimers)) clearInterval(timer);
+        this.downloadProgressTimers = {};
+        for (const timer of this.pendingTimeouts) window.clearTimeout(timer);
+        this.pendingTimeouts.clear();
+        for (const callback of [...this.disposeCallbacks]) callback();
+        this.disposeCallbacks.clear();
     }
 
     async pollDownloadStatusNow(modelName) {
@@ -528,10 +619,18 @@ class VNCCS_ModelListWidget {
     }
 
     renderError(msg) {
-        this.listArea.innerHTML = `<div style="color: #ff5555; text-align: center; margin-top: 20px;">Error: ${msg}</div>`;
+        if (this.disposed) return;
+        this.listArea.replaceChildren();
+        appendTextElement(
+            this.listArea,
+            "div",
+            `Error: ${msg}`,
+            "color: #ff5555; text-align: center; margin-top: 20px;",
+        );
     }
 
     renderList() {
+        if (this.disposed) return;
         if (this.models.length === 0) {
             this.listArea.innerHTML = `<div style="color: #888; text-align: center;">No models found in config.</div>`;
             return;
@@ -615,14 +714,15 @@ class VNCCS_ModelListWidget {
                 const topRow = document.createElement("div");
                 topRow.style.display = "flex";
                 topRow.style.justifyContent = "space-between";
-                topRow.innerHTML = `<span style="font-weight: bold; color: #eee; font-size: 13px;">${model.name}</span>`;
+                appendTextElement(topRow, "span", model.name, "font-weight: bold; color: #eee; font-size: 13px;");
                 statusLabel = document.createElement("span");
+                statusLabel.className = "vnccs-model-status";
                 statusLabel.style.fontSize = "11px";
                 topRow.appendChild(statusLabel);
                 content.appendChild(topRow);
 
                 // Desc Row
-                content.innerHTML += `<div style="font-size: 10px; color: #bbb;">${model.description || ""}</div>`;
+                appendTextElement(content, "div", model.description || "", "font-size: 10px; color: #bbb;");
 
                 // Controls Row
                 const controlsRow = document.createElement("div");
@@ -649,11 +749,7 @@ class VNCCS_ModelListWidget {
             } else {
                 // Re-select elements
                 bgLayer = item.querySelector(".progress-bg");
-                statusLabel = item.querySelector("span:last-child"); // slightly fragile selector
-                if (!statusLabel || statusLabel.parentElement.parentElement.parentElement !== item) {
-                    // Fallback check if structure matches
-                    statusLabel = item.children[1].children[0].children[1];
-                }
+                statusLabel = item.querySelector(".vnccs-model-status");
                 versionSelect = item.querySelector("select");
                 btn = item.querySelector("button");
             }
@@ -705,7 +801,7 @@ class VNCCS_ModelListWidget {
                     bgLayer.style.transition = "width 0.2s linear";
                     bgLayer.style.background = "rgba(40, 100, 40, 0.5)";
                     item.style.background = `linear-gradient(90deg, rgba(40, 100, 40, 0.45) 0%, rgba(40, 100, 40, 0.45) ${progress}%, #333 ${progress}%, #333 100%)`;
-                    statusLabel.innerHTML = `<span style="color: #ccf; font-family: monospace;">⬇ ${msg}</span>`;
+                    setStatusText(statusLabel, `⬇ ${msg}`, "#ccf", "monospace");
                     item.style.borderColor = "#44a";
                     btn.textContent = "Downloading";
                     btn.disabled = true;
@@ -720,7 +816,7 @@ class VNCCS_ModelListWidget {
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "repeating-linear-gradient(45deg, #443, #443 10px, #332 10px, #332 20px)";
                     item.style.background = "repeating-linear-gradient(45deg, #443, #443 10px, #332 10px, #332 20px)";
-                    statusLabel.innerHTML = `<span style="color: #dd8;">⏳ Queued</span>`;
+                    setStatusText(statusLabel, "⏳ Queued", "#dd8");
                     btn.textContent = "Waiting...";
                     btn.disabled = true;
                     btn.style.background = "#554";
@@ -734,7 +830,7 @@ class VNCCS_ModelListWidget {
                     bgLayer.style.width = "100%";
                     bgLayer.style.background = "rgba(100, 80, 0, 0.2)";
                     item.style.background = "rgba(100, 80, 0, 0.2)";
-                    statusLabel.innerHTML = `<span style="color: #fa0;">⚠ API Key Required</span>`;
+                    setStatusText(statusLabel, "⚠ API Key Required", "#fa0");
                     btn.textContent = "Enter Key";
                     btn.disabled = false;
                     btn.style.background = "#ca0";
@@ -763,7 +859,7 @@ class VNCCS_ModelListWidget {
                         bgLayer.style.width = "100%";
                         bgLayer.style.background = "rgba(100, 40, 40, 0.2)";
                         item.style.background = "rgba(100, 40, 40, 0.2)";
-                        statusLabel.innerHTML = `<span style="color: #f88;">⚠ ${dynStatus.message || "Error"}</span>`;
+                        setStatusText(statusLabel, `⚠ ${dynStatus.message || "Error"}`, "#f88");
                         btn.textContent = "Retry";
                         btn.disabled = false;
                         btn.style.background = "#a44";
@@ -771,7 +867,7 @@ class VNCCS_ModelListWidget {
                         btn.onclick = () => this.downloadModel(repoId, model.name, selVer);
                     } else {
                         item.style.borderColor = "#666";
-                        statusLabel.innerHTML = `<span style="color: #ccc;">○ Not Installed</span>`;
+                        setStatusText(statusLabel, "○ Not Installed", "#ccc");
                         btn.textContent = "Download";
                         btn.disabled = false;
                         btn.style.background = "#44a";
@@ -786,18 +882,27 @@ class VNCCS_ModelListWidget {
                 bgLayer.style.width = "0%";
                 item.style.background = "#333";
 
-                let updateMsg = "";
+                let latestVersionMessage = "";
                 if (model.versions && model.versions.length > 0) {
                     const latestVer = model.versions[0].version;
                     if (String(selVer).replace(/^v/, '') !== String(latestVer).replace(/^v/, '')) {
-                        updateMsg = ` <span style="color: #fca; font-size: 0.9em;">(Latest: v${latestVer})</span>`;
+                        latestVersionMessage = `(Latest: v${latestVer})`;
                     }
                 }
+
+                const setInstalledStatus = (text, color, includeLatest = false) => {
+                    setStatusText(statusLabel, text, color);
+                    if (includeLatest && latestVersionMessage) {
+                        const suffix = appendTextElement(statusLabel, "span", ` ${latestVersionMessage}`);
+                        suffix.style.color = "#fca";
+                        suffix.style.fontSize = "0.9em";
+                    }
+                };
 
                 if (isSelectedActive) {
                     item.style.borderColor = "#484";
                     item.style.background = "rgba(40, 100, 40, 0.1)";
-                    statusLabel.innerHTML = `<span style="color: #afa;">✓ Active</span>${updateMsg}`;
+                    setInstalledStatus("✓ Active", "#afa", true);
                     btn.textContent = "Active";
                     btn.disabled = true;
                     btn.style.background = "transparent";
@@ -806,9 +911,8 @@ class VNCCS_ModelListWidget {
                 } else {
                     // Installed but not active
                     item.style.borderColor = isSuccess ? "#4a4" : "#aa4";
-                    statusLabel.innerHTML = isSuccess ?
-                        `<span style="color: #cfc;">✓ Installed v${selVer}</span>` :
-                        `<span style="color: #ffc;">Installed</span>${updateMsg}`;
+                    if (isSuccess) setInstalledStatus(`✓ Installed v${selVer}`, "#cfc");
+                    else setInstalledStatus("Installed", "#ffc", true);
 
                     btn.textContent = "Set Active";
                     btn.disabled = false;
@@ -854,20 +958,24 @@ class VNCCS_ModelListWidget {
         if (this.header && this.statusText) {
             if (installedCount === totalModels) {
                 if (hasUpdates) {
-                    this.statusText.innerHTML = `<span style="color: #fc4;">Updates Available (${installedCount}/${totalModels})</span>`;
+                    this.statusText.textContent = `Updates Available (${installedCount}/${totalModels})`;
+                    this.statusText.style.color = "#fc4";
                     this.header.style.borderBottomColor = "#aa4";
                 } else {
-                    this.statusText.innerHTML = `<span style="color: #8c8;">All Updated (${installedCount}/${totalModels})</span>`;
+                    this.statusText.textContent = `All Updated (${installedCount}/${totalModels})`;
+                    this.statusText.style.color = "#8c8";
                     this.header.style.borderBottomColor = "#484";
                 }
             } else {
-                this.statusText.innerHTML = `<span style="color: #ccc;">Installed ${installedCount} models from ${totalModels}</span>`;
+                this.statusText.textContent = `Installed ${installedCount} models from ${totalModels}`;
+                this.statusText.style.color = "#ccc";
                 this.header.style.borderBottomColor = "#333";
             }
         }
     }
 
     showMessage(text, isError = false) {
+        if (this.disposed) return;
         const overlay = document.createElement("div");
         overlay.style.cssText = `
             position: absolute; top:0; left:0; width:100%; height:100%;
@@ -880,7 +988,7 @@ class VNCCS_ModelListWidget {
             padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
             text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        appendTextElement(box, "div", text, "color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;");
         const btn = document.createElement("button");
         btn.innerText = "OK";
         btn.style.cssText = "background: #44a; color: white; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;";
@@ -891,6 +999,7 @@ class VNCCS_ModelListWidget {
     }
 
     showConfirm(text, onConfirm) {
+        if (this.disposed) return;
         const overlay = document.createElement("div");
         overlay.style.cssText = `
             position: absolute; top:0; left:0; width:100%; height:100%;
@@ -903,7 +1012,7 @@ class VNCCS_ModelListWidget {
             padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
             text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        appendTextElement(box, "div", text, "color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;");
 
         const row = document.createElement("div");
         row.style.display = "flex";
@@ -988,7 +1097,7 @@ app.registerExtension({
                 requestAnimationFrame(() => syncDOMWidgetWidth(this, "ModelList"));
 
                 // Auto-fetch on load (delayed to allow graph restore)
-                setTimeout(() => {
+                this._vnccsModelManagerInitTimer = setTimeout(() => {
                     const repoWidget = this.widgets?.find(w => w.name === "repo_id");
                     if (repoWidget && repoWidget.value && this.listWidget) {
                         this.listWidget.fetchModels(repoWidget.value);
@@ -1007,7 +1116,16 @@ app.registerExtension({
             nodeType.prototype.onConfigure = function (info) {
                 if (onConfigure) onConfigure.apply(this, arguments);
                 syncDOMWidgetWidth(this, "ModelList");
-                setTimeout(() => syncDOMWidgetWidth(this, "ModelList"), 100);
+                clearTimeout(this._vnccsModelManagerConfigureTimer);
+                this._vnccsModelManagerConfigureTimer = setTimeout(() => syncDOMWidgetWidth(this, "ModelList"), 100);
+            };
+
+            const onRemoved = nodeType.prototype.onRemoved;
+            nodeType.prototype.onRemoved = function () {
+                clearTimeout(this._vnccsModelManagerInitTimer);
+                clearTimeout(this._vnccsModelManagerConfigureTimer);
+                this.listWidget?.dispose();
+                if (onRemoved) onRemoved.apply(this, arguments);
             };
         }
 
@@ -1059,8 +1177,8 @@ app.registerExtension({
                 this.selectorWidget = new VNCCS_SelectorWidget(this, container);
 
                 // 5. Initial Data Update (Delayed)
-                setTimeout(() => {
-                    this.selectorWidget.refresh();
+                this._vnccsModelSelectorInitTimer = setTimeout(() => {
+                    this.selectorWidget?.refresh();
                 }, 100);
             };
 
@@ -1084,12 +1202,21 @@ app.registerExtension({
                         // Trigger a render so version logic runs (after fetch?)
                         // We might need to wait for fetch first, usually refresh() handles it
                         // but setting currentValue is key.
-                        setTimeout(() => {
+                        clearTimeout(this._vnccsModelSelectorConfigureTimer);
+                        this._vnccsModelSelectorConfigureTimer = setTimeout(() => {
                             syncDOMWidgetWidth(this, "SelectorWidget");
-                            this.selectorWidget.refresh();
+                            this.selectorWidget?.refresh();
                         }, 500);
                     }
                 }
+            };
+
+            const onRemoved = nodeType.prototype.onRemoved;
+            nodeType.prototype.onRemoved = function () {
+                clearTimeout(this._vnccsModelSelectorInitTimer);
+                clearTimeout(this._vnccsModelSelectorConfigureTimer);
+                this.selectorWidget?.dispose();
+                if (onRemoved) onRemoved.apply(this, arguments);
             };
         }
     }
@@ -1101,6 +1228,8 @@ class VNCCS_SelectorWidget {
         this.container = container;
         this.models = [];
         this.currentValue = "";
+        this.disposed = false;
+        this.overlays = new Set();
 
         // Base Design Resolution
         this.designWidth = 320;
@@ -1111,6 +1240,7 @@ class VNCCS_SelectorWidget {
 
         // Listen for global registry updates (sync with Manager)
         this._onRegistryUpdate = (e) => {
+            if (this.disposed) return;
             // Avoid refreshing if node is gone or collapsed
             if (!this.container || !this.container.isConnected) {
                 window.removeEventListener("vnccs-registry-updated", this._onRegistryUpdate);
@@ -1171,6 +1301,7 @@ class VNCCS_SelectorWidget {
     }
 
     async refresh(force = false) {
+        if (this.disposed) return;
         // 1. Re-sync inputs
         const repoWidget = this.node.widgets.find(w => w.name === "repo_id");
         const nameWidget = this.node.widgets.find(w => w.name === "model_name");
@@ -1227,6 +1358,7 @@ class VNCCS_SelectorWidget {
     }
 
     setValue(name) {
+        if (this.disposed) return;
         this.currentValue = name;
         // Update hidden widget
         const w = this.node.widgets.find(x => x.name === "model_name");
@@ -1243,6 +1375,7 @@ class VNCCS_SelectorWidget {
     }
 
     render() {
+        if (this.disposed) return;
         // Ensure hidden widgets are in sync if model is found
         const selectedModel = this.models.find(m => m.name === this.currentValue);
         if (selectedModel) {
@@ -1313,7 +1446,9 @@ class VNCCS_SelectorWidget {
             }
 
             // Version info
-            let ver = "";
+            let versionText = "";
+            let versionWarning = "";
+            let versionWarningColor = "";
             const latestVer = (selectedModel.versions && selectedModel.versions.length > 0) ? selectedModel.versions[0].version : null;
 
             const normalize = (s) => String(s).replace(/^v/, '').trim();
@@ -1321,16 +1456,19 @@ class VNCCS_SelectorWidget {
 
             if (isConfigured) {
                 // We have an active version
-                ver = formatV(activeVer);
+                versionText = formatV(activeVer);
                 // Optionally warn if outdated?
                 if (latestVer && normalize(activeVer) !== normalize(latestVer)) {
-                    ver += ` <span style="color:#fa0; font-size:9px;">(New: ${formatV(latestVer)})</span>`;
+                    versionWarning = `(New: ${formatV(latestVer)})`;
+                    versionWarningColor = "#fa0";
                 }
             } else {
                 if (latestVer) {
-                    ver = `${formatV(latestVer)} <span style="color:#f88;">(Not Active)</span>`;
+                    versionText = formatV(latestVer);
+                    versionWarning = "(Not Active)";
+                    versionWarningColor = "#f88";
                 } else {
-                    ver = "Unknown Version";
+                    versionText = "Unknown Version";
                 }
             }
 
@@ -1338,36 +1476,48 @@ class VNCCS_SelectorWidget {
             const icon = isConfigured ? "✓" : (hasAnyInstall ? "⚠" : "✖");
             const iconColor = isConfigured ? "#4a4" : (hasAnyInstall ? "#fa0" : "#f44");
 
-            card.innerHTML = `
-                <div style="font-weight: bold; color: ${nameColor}; word-break: break-word; font-size: 13px; line-height: 1.3; padding-right: 15px;">${selectedModel.name}</div>
-                <div style="font-size: 10px; color: #aaa; margin-top: 2px;">${ver}</div>
-                <div style="font-size: 10px; color: #8a8; margin-top: 5px; border-top: 1px solid rgba(100,150,100,0.2); padding-top: 4px; line-height: 1.25; font-style: italic;">
-                    ${selectedModel.description || "No description available."}
-                </div>
-                <div style="position: absolute; top: 6px; right: 6px; color: ${iconColor}; font-weight: bold; font-size: 14px;">${icon}</div>
-            `;
+            appendTextElement(
+                card,
+                "div",
+                selectedModel.name,
+                `font-weight: bold; color: ${nameColor}; word-break: break-word; font-size: 13px; line-height: 1.3; padding-right: 15px;`,
+            );
+            const versionLine = appendTextElement(card, "div", versionText, "font-size: 10px; color: #aaa; margin-top: 2px;");
+            if (versionWarning) {
+                appendTextElement(
+                    versionLine,
+                    "span",
+                    ` ${versionWarning}`,
+                    `color: ${versionWarningColor}; font-size: 9px;`,
+                );
+            }
+            appendTextElement(
+                card,
+                "div",
+                selectedModel.description || "No description available.",
+                "font-size: 10px; color: #8a8; margin-top: 5px; border-top: 1px solid rgba(100,150,100,0.2); padding-top: 4px; line-height: 1.25; font-style: italic;",
+            );
+            appendTextElement(
+                card,
+                "div",
+                icon,
+                `position: absolute; top: 6px; right: 6px; color: ${iconColor}; font-weight: bold; font-size: 14px;`,
+            );
         } else if (this.currentValue) {
             // Case 2: We have a saved name, but no API data yet (or missing from repo)
             // If models list is empty, we are probably still loading or offline -> Show Name nicely
             // If models list exists but not found -> Show "Missing"
 
             if (this.models.length === 0) {
-                card.innerHTML = `
-                    <div style="font-weight: bold; color: #ddd; word-break: break-word; font-size: 13px;">${this.currentValue}</div>
-                    <div style="font-size: 10px; color: #888; margin-top: 2px;">Loading info...</div>
-                `;
+                appendTextElement(card, "div", this.currentValue, "font-weight: bold; color: #ddd; word-break: break-word; font-size: 13px;");
+                appendTextElement(card, "div", "Loading info...", "font-size: 10px; color: #888; margin-top: 2px;");
             } else {
-                card.innerHTML = `
-                    <div style="font-weight: bold; color: #f88; word-break: break-word; font-size: 13px;">${this.currentValue}</div>
-                    <div style="font-size: 10px; color: #d66; margin-top: 2px;">Not found in Repo</div>
-                `;
+                appendTextElement(card, "div", this.currentValue, "font-weight: bold; color: #f88; word-break: break-word; font-size: 13px;");
+                appendTextElement(card, "div", "Not found in Repo", "font-size: 10px; color: #d66; margin-top: 2px;");
             }
         } else {
             // Case 3: Empty (New Node)
-            const color = "#ccc";
-            card.innerHTML = `
-                <div style="color: ${color}; font-style: italic; font-size: 13px; text-align: center; padding: 4px 0;">Select Model...</div>
-            `;
+            appendTextElement(card, "div", "Select Model...", "color: #ccc; font-style: italic; font-size: 13px; text-align: center; padding: 4px 0;");
         }
 
         row.appendChild(card);
@@ -1401,6 +1551,7 @@ class VNCCS_SelectorWidget {
     }
 
     showModal() {
+        if (this.disposed) return;
         if (!this.models.length) {
             // If empty, try refresh first? or custom confirm
             this.showConfirm("Model list empty. Refresh now?", () => {
@@ -1411,6 +1562,7 @@ class VNCCS_SelectorWidget {
 
         // Create Modal Overlay
         const overlay = document.createElement("div");
+        this.overlays.add(overlay);
         Object.assign(overlay.style, {
             position: "fixed", top: "0", left: "0", width: "100vw", height: "100vh",
             background: "rgba(0,0,0,0.6)", zIndex: "10000",
@@ -1466,10 +1618,8 @@ class VNCCS_SelectorWidget {
                     el.onmouseover = () => { if (!isSelected) el.style.background = "#333"; };
                     el.onmouseout = () => { if (!isSelected) el.style.background = "transparent"; };
 
-                    el.innerHTML = `
-                        <div style="color: ${isSelected ? '#6c6' : '#eee'}; font-weight: bold;">${m.name}</div>
-                        <div style="color: #888; font-size: 11px;">${m.description || ""}</div>
-                    `;
+                    appendTextElement(el, "div", m.name, `color: ${isSelected ? '#6c6' : '#eee'}; font-weight: bold;`);
+                    appendTextElement(el, "div", m.description || "", "color: #888; font-size: 11px;");
                     el.onclick = () => {
                         this.setValue(m.name);
                         document.body.removeChild(overlay);
@@ -1497,7 +1647,9 @@ class VNCCS_SelectorWidget {
     }
 
     showMessage(text, isError = false) {
+        if (this.disposed) return;
         const overlay = document.createElement("div");
+        this.overlays.add(overlay);
         overlay.style.cssText = `
             position: fixed; top:0; left:0; width:100vw; height:100vh;
             background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
@@ -1509,7 +1661,7 @@ class VNCCS_SelectorWidget {
             padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
             text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        appendTextElement(box, "div", text, "color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;");
         const btn = document.createElement("button");
         btn.innerText = "OK";
         btn.style.cssText = "background: #44a; color: white; border: none; padding: 6px 20px; border-radius: 4px; cursor: pointer; font-weight: bold;";
@@ -1520,7 +1672,9 @@ class VNCCS_SelectorWidget {
     }
 
     showConfirm(text, onConfirm) {
+        if (this.disposed) return;
         const overlay = document.createElement("div");
+        this.overlays.add(overlay);
         overlay.style.cssText = `
             position: fixed; top:0; left:0; width:100vw; height:100vh;
             background: rgba(0,0,0,0.7); display:flex; align-items:center; justify-content:center;
@@ -1532,7 +1686,7 @@ class VNCCS_SelectorWidget {
             padding: 15px; border-radius: 8px; max-width: 300px; width: 100%;
             text-align: center; box-shadow: 0 4px 15px rgba(0,0,0,0.5);
         `;
-        box.innerHTML = `<div style="color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;">${text}</div>`;
+        appendTextElement(box, "div", text, "color: #eee; font-size: 13px; margin-bottom: 15px; line-height: 1.4;");
 
         const row = document.createElement("div");
         row.style.display = "flex";
@@ -1554,5 +1708,16 @@ class VNCCS_SelectorWidget {
         box.appendChild(row);
         overlay.appendChild(box);
         document.body.appendChild(overlay);
+    }
+
+    dispose() {
+        if (this.disposed) return;
+        this.disposed = true;
+        window.removeEventListener("vnccs-registry-updated", this._onRegistryUpdate);
+        for (const overlay of this.overlays) overlay.remove();
+        this.overlays.clear();
+        this.container?.replaceChildren();
+        this.node = null;
+        this.container = null;
     }
 }
