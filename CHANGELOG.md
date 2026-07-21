@@ -1,3 +1,19 @@
+# Version 0.6.0
+## Runtime Reliability and Legacy Cleanup
+
+### Fixes
+
+*   **Bounded runtime caches**: Added conservative disk and progress-cache limits, access-based retention, and true LRU refresh for Pose Studio captures.
+*   **Pose Studio synchronization**: Frontend capture upload now surfaces HTTP failures instead of silently continuing after a rejected sync request.
+*   **Model Manager repository isolation**: Download state and installed-version selection are now namespaced by repository while retaining compatibility aliases for existing clients and registries.
+*   **Atomic model registry writes**: Installed model metadata now uses private temporary files and atomic replacement.
+*   **UniCanvas production diagnostics**: Expensive tensor inspection and temporary input-image dumps are disabled by the `UNICANVAS_DEBUG = 0` source flag; set it to `1` for diagnostics.
+
+### Maintenance
+
+*   Removed disabled layout diagnostics and other proven-unused constants and wrappers.
+*   Added UniCanvas to Comfy Registry node metadata and introduced Python/JavaScript CI coverage.
+
 # Version 0.5.3
 ## Z-Image Fun ControlNet Crash Mitigation
 

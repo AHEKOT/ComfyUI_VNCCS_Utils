@@ -86,6 +86,28 @@ class UniCanvasRenderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dimensions are too large"):
             UNICANVAS._render_unicanvas_state_to_rgba(json.dumps(state))
 
+    def test_debug_tensor_inspection_is_disabled_by_default(self):
+        previous = UNICANVAS.UNICANVAS_DEBUG
+        try:
+            UNICANVAS.UNICANVAS_DEBUG = 0
+            self.assertEqual(UNICANVAS._tensor_debug(object()), {})
+            self.assertEqual(UNICANVAS._latent_debug({"samples": object()}), {})
+        finally:
+            UNICANVAS.UNICANVAS_DEBUG = previous
+
+    def test_draw_progress_is_bounded(self):
+        UNICANVAS._DRAW_PROGRESS.clear()
+        now = 10_000.0
+        for index in range(UNICANVAS._DRAW_PROGRESS_MAX + 20):
+            UNICANVAS._DRAW_PROGRESS[str(index)] = {
+                "stage": "sampling",
+                "updated_at": now + index,
+            }
+
+        UNICANVAS._prune_draw_progress(now + UNICANVAS._DRAW_PROGRESS_MAX + 20)
+
+        self.assertEqual(len(UNICANVAS._DRAW_PROGRESS), UNICANVAS._DRAW_PROGRESS_MAX)
+
 
 if __name__ == "__main__":
     unittest.main()

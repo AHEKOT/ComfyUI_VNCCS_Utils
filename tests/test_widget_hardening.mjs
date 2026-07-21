@@ -39,6 +39,28 @@ test("Pose Studio sync lock is reset in a finally block", () => {
 });
 
 
+test("Pose Studio upload rejects HTTP sync failures", () => {
+    const helperStart = poseStudioSource.indexOf("const requirePoseStudioSyncResponse = async");
+    const eventEnd = poseStudioSource.indexOf("\n        api.addEventListener(\"vnccs_apply_sam3d_pose\"", helperStart);
+    const normalSyncPath = poseStudioSource.slice(helperStart, eventEnd);
+    assert.match(normalSyncPath, /if \(!response\.ok\)/);
+    assert.match(normalSyncPath, /throw new Error\(message\)/);
+    assert.match(normalSyncPath, /await requirePoseStudioSyncResponse\(response\)/);
+    assert.match(normalSyncPath, /await reportPoseStudioSyncFailure\(nodeId, syncToken, e\)/);
+});
+
+
+test("Pose Library image previews preserve their aspect ratio without cropping", () => {
+    const rule = poseStudioSource.match(/\.vnccs-ps-library-item-preview img\s*\{([^}]*)\}/)?.[1] || "";
+    assert.match(rule, /max-width:\s*100%/);
+    assert.match(rule, /max-height:\s*100%/);
+    assert.match(rule, /width:\s*auto/);
+    assert.match(rule, /height:\s*auto/);
+    assert.match(rule, /object-fit:\s*contain/);
+    assert.doesNotMatch(rule, /object-fit:\s*cover/);
+});
+
+
 test("Pose Manager regenerates missing previews after worker model load and mode entry", () => {
     const modeStart = poseStudioSource.indexOf("setInterfaceMode(mode, { sync = true } = {})");
     const modeEnd = poseStudioSource.indexOf("\n    applyInterfaceMode()", modeStart);

@@ -220,6 +220,30 @@ def get_cached_config_path(repo_id, force_refresh=False):
 # To prevent thread starvation and bandwidth contention, we serialize all large downloads
 download_queue = queue.Queue()
 download_status = {}
+_DOWNLOAD_STATUS_LOCK = threading.Lock()
+_REGISTRY_LOCK = threading.Lock()
+
+def _download_status_key(repo_id, model_name):
+    return f"{repo_id}::{model_name}"
+
+def _set_download_status(repo_id, model_name, status):
+    status = dict(status)
+    with _DOWNLOAD_STATUS_LOCK:
+        # Composite keys keep repositories isolated. The name-only alias keeps
+        # the legacy unfiltered status endpoint compatible with older clients.
+        download_status[_download_status_key(repo_id, model_name)] = status
+        download_status[model_name] = status
+
+def _download_status_snapshot(repo_id=""):
+    with _DOWNLOAD_STATUS_LOCK:
+        if not repo_id:
+            return {key: dict(value) for key, value in download_status.items() if "::" not in key}
+        prefix = f"{repo_id}::"
+        return {
+            key[len(prefix):]: dict(value)
+            for key, value in download_status.items()
+            if key.startswith(prefix)
+        }
 
 def worker_loop():
     while True:
@@ -234,7 +258,7 @@ def worker_loop():
         
         temp_path = None
         try:
-            download_status[model_name] = {"status": "downloading", "message": "Initializing..."}
+            _set_download_status(repo_id, model_name, {"status": "downloading", "message": "Initializing..."})
             
             url = ""
             headers = {}
@@ -309,21 +333,21 @@ def worker_loop():
                                 mb_done = downloadStart / (1024 * 1024)
                                 mb_total = total_size / (1024 * 1024)
                                 msg = f"{mb_done:.1f}/{mb_total:.1f} MB"
-                                download_status[model_name] = {
+                                _set_download_status(repo_id, model_name, {
                                     "status": "downloading",
                                     "message": msg,
                                     "progress": percent
-                                }
+                                })
                             else:
                                  mb_done = downloadStart / (1024 * 1024)
-                                 download_status[model_name] = {
+                                 _set_download_status(repo_id, model_name, {
                                     "status": "downloading",
                                     "message": f"{mb_done:.1f} MB",
                                     "progress": 0
-                                 }
+                                 })
 
             # 3. Install
-            download_status[model_name]["message"] = "Installing..."
+            _set_download_status(repo_id, model_name, {"status": "downloading", "message": "Installing...", "progress": 100})
             target_abs_path = resolve_model_local_path(target_model["local_path"])
             target_dir = os.path.dirname(target_abs_path)
             os.makedirs(target_dir, exist_ok=True)
@@ -333,9 +357,9 @@ def worker_loop():
             temp_path = None
             
             # 4. Update registry
-            update_installed_version(model_name, target_model["version"])
+            update_installed_version(model_name, target_model["version"], repo_id)
             print(f"[VNCCS] Successfully installed {model_name} to {target_abs_path}")
-            download_status[model_name] = {"status": "success", "message": "Installed"}
+            _set_download_status(repo_id, model_name, {"status": "success", "message": "Installed"})
 
         except Exception as e:
             print(f"[VNCCS] Failed to download {model_name}:")
@@ -354,7 +378,7 @@ def worker_loop():
             elif "404" in err_msg or "EntryNotFoundError" in err_msg:
                 err_msg = "File not found (404)"
             
-            download_status[model_name] = {"status": status_code, "message": err_msg}
+            _set_download_status(repo_id, model_name, {"status": status_code, "message": err_msg})
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -390,14 +414,14 @@ class VNCCS_ModelManager:
 # Removed local download_status declaration as it is now global
 @server.PromptServer.instance.routes.get("/vnccs/manager/status")
 async def get_download_status(request):
-    return web.json_response(download_status, headers={
+    return web.json_response(_download_status_snapshot(request.rel_url.query.get("repo_id", "")), headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     })
 
 @server.PromptServer.instance.routes.get("/vnccs/utils/manager/status")
 async def get_utils_download_status(request):
-    return web.json_response(download_status, headers={
+    return web.json_response(_download_status_snapshot(request.rel_url.query.get("repo_id", "")), headers={
         "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
         "Pragma": "no-cache",
     })
@@ -413,12 +437,34 @@ def get_installed_version_info():
             return {}
     return {}
 
-def update_installed_version(model_name, version):
+def _registry_key(repo_id, model_name):
+    return f"{repo_id}::{model_name}" if repo_id else model_name
+
+def get_registered_version(registry, repo_id, model_name):
+    exact_key = _registry_key(repo_id, model_name)
+    if exact_key in registry:
+        return registry[exact_key]
+    exact_lower = exact_key.strip().lower()
+    for key, value in registry.items():
+        if str(key).strip().lower() == exact_lower:
+            return value
+    # Compatibility with registries written before repository-aware keys.
+    if model_name in registry:
+        return registry[model_name]
+    model_lower = str(model_name).strip().lower()
+    for key, value in registry.items():
+        if "::" not in str(key) and str(key).strip().lower() == model_lower:
+            return value
+    return None
+
+def update_installed_version(model_name, version, repo_id=""):
     registry_path = resolve_path("vnccs_installed_models.json")
-    data = get_installed_version_info()
-    data[model_name] = version
-    with open(registry_path, 'w') as f:
-        json.dump(data, f, indent=4)
+    with _REGISTRY_LOCK:
+        data = get_installed_version_info()
+        data[_registry_key(repo_id, model_name)] = version
+        # Preserve the original key for old workflows and old frontends.
+        data[model_name] = version
+        write_private_json(registry_path, data)
 
 # --- Configuration Management (User Settings) ---
 def get_vnccs_config():
@@ -475,11 +521,12 @@ async def set_active_version(request):
         data = await request.json()
         model_name = data.get("model_name")
         version = data.get("version")
+        repo_id = data.get("repo_id", "")
         
         if not model_name or not version:
             return web.json_response({"error": "Missing parameters"}, status=400)
             
-        update_installed_version(model_name, version)
+        update_installed_version(model_name, version, repo_id)
         return web.json_response({"status": "updated", "message": f"Set active version for {model_name} to {version}"})
         
     except Exception as e:
@@ -535,7 +582,7 @@ async def check_models(request):
             latest = variants[0]
             
             # 1. Determine Active Version (User Selection)
-            active_ver = active_registry.get(name, None)
+            active_ver = get_registered_version(active_registry, repo_id, name)
             
             # 2. Determine ALL Installed Versions (Scan Disk)
             installed_versions = []
@@ -611,10 +658,10 @@ async def download_model(request):
     if not repo_id or " " in repo_id:
          return web.json_response({"error": "Invalid Repo ID"}, status=400)
     if model_name:
-        download_status[model_name] = {
+        _set_download_status(repo_id, model_name, {
             "status": "queued",
             "message": f"Preparing v{target_version or 'latest'}..."
-        }
+        })
     
     try:
         def fetch_config_sync():
@@ -649,7 +696,7 @@ async def download_model(request):
             
         # Add to Global Queue instead of spawning new thread directly
         # If queue is empty, it starts immediately. If busy, it waits.
-        download_status[model_name] = {"status": "queued", "message": "Queued in backend..."} 
+        _set_download_status(repo_id, model_name, {"status": "queued", "message": "Queued in backend..."})
         download_queue.put((repo_id, model_name, target_model))
         
         return web.json_response({"status": "queued", "message": f"Download queued for {model_name}"})
@@ -706,13 +753,7 @@ class VNCCS_ModelSelector:
             else:
                 # Fallback to backend registry
                 registry = get_installed_version_info()
-                active_ver = registry.get(target_name)
-                if active_ver is None:
-                    # Try case-insensitive search in registry
-                    for k, v in registry.items():
-                        if k.strip().lower() == target_name.lower():
-                            active_ver = v
-                            break
+                active_ver = get_registered_version(registry, repo_id, target_name)
             
             def normalize_ver(v):
                 return str(v).lower().lstrip('v').strip()

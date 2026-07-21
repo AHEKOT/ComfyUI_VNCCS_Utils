@@ -464,7 +464,8 @@ class VNCCS_ModelListWidget {
     async updateStatuses() {
         if (this.disposed) return;
         try {
-            const response = await api.fetchApi(`/vnccs/utils/manager/status?t=${Date.now()}`, {
+            const repoId = this.node.widgets?.find(w => w.name === "repo_id")?.value || "";
+            const response = await api.fetchApi(`/vnccs/utils/manager/status?repo_id=${encodeURIComponent(repoId)}&t=${Date.now()}`, {
                 cache: "no-store",
                 headers: { "Cache-Control": "no-cache" }
             });
@@ -931,7 +932,7 @@ class VNCCS_ModelListWidget {
                         try {
                             await api.fetchApi("/vnccs/manager/set_active", {
                                 method: "POST",
-                                body: JSON.stringify({ model_name: model.name, version: selVer })
+                                body: JSON.stringify({ repo_id: repoId, model_name: model.name, version: selVer })
                             });
                             await this.fetchModels(repoId);
                             window.dispatchEvent(new CustomEvent("vnccs-registry-updated"));

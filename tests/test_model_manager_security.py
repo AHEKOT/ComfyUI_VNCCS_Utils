@@ -1,6 +1,8 @@
 import importlib.util
+import json
 import socket
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -77,6 +79,7 @@ class _FakeResponse:
 
 class ModelManagerSecurityTests(unittest.TestCase):
     def setUp(self):
+        MODEL_MANAGER.download_status.clear()
         self.resolve_public = mock.patch.object(
             MODEL_MANAGER.socket,
             "getaddrinfo",
@@ -145,6 +148,27 @@ class ModelManagerSecurityTests(unittest.TestCase):
         self.assertTrue(MODEL_MANAGER._download_url_is_host("https://www.civitai.com/models/1", "civitai.com"))
         self.assertFalse(MODEL_MANAGER._download_url_is_host("https://attacker.example/civitai.com", "civitai.com"))
         self.assertFalse(MODEL_MANAGER._download_url_is_host("https://evilcivitai.com/models/1", "civitai.com"))
+
+    def test_download_status_is_isolated_by_repository(self):
+        MODEL_MANAGER._set_download_status("org/one", "shared", {"status": "downloading", "progress": 25})
+        MODEL_MANAGER._set_download_status("org/two", "shared", {"status": "success"})
+
+        self.assertEqual(MODEL_MANAGER._download_status_snapshot("org/one")["shared"]["progress"], 25)
+        self.assertEqual(MODEL_MANAGER._download_status_snapshot("org/two")["shared"]["status"], "success")
+        self.assertEqual(MODEL_MANAGER._download_status_snapshot()["shared"]["status"], "success")
+
+    def test_installed_registry_is_repository_aware_and_atomically_written(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            registry_path = Path(temp_dir) / "vnccs_installed_models.json"
+            with mock.patch.object(MODEL_MANAGER, "resolve_path", return_value=str(registry_path)):
+                MODEL_MANAGER.update_installed_version("shared", "1.0", "org/one")
+                MODEL_MANAGER.update_installed_version("shared", "2.0", "org/two")
+                registry = json.loads(registry_path.read_text())
+                temp_files = list(registry_path.parent.glob("*.tmp.*"))
+
+        self.assertEqual(MODEL_MANAGER.get_registered_version(registry, "org/one", "shared"), "1.0")
+        self.assertEqual(MODEL_MANAGER.get_registered_version(registry, "org/two", "shared"), "2.0")
+        self.assertEqual(temp_files, [])
 
 
 if __name__ == "__main__":

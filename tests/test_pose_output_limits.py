@@ -63,6 +63,24 @@ class PoseOutputLimitTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Backend 3D rendering has been removed"):
             POSE_STUDIO.VNCCS_PoseStudio().generate("{}")
 
+    def test_frontend_sync_error_marker_fails_without_waiting_for_stale_data(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        node._wait_for_frontend_sync = lambda *_args, **_kwargs: {"sync_error": "payload rejected"}
+        server_module = types.ModuleType("server")
+        server_module.PromptServer = types.SimpleNamespace(
+            instance=types.SimpleNamespace(send_sync=lambda *_args, **_kwargs: None),
+        )
+        previous_server = sys.modules.get("server")
+        sys.modules["server"] = server_module
+        try:
+            with self.assertRaisesRegex(RuntimeError, "frontend sync failed: payload rejected"):
+                node.generate("{}", unique_id="42")
+        finally:
+            if previous_server is None:
+                sys.modules.pop("server", None)
+            else:
+                sys.modules["server"] = previous_server
+
 
 if __name__ == "__main__":
     unittest.main()

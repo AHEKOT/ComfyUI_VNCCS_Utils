@@ -104,7 +104,6 @@ const EXTENSION_URL = new URL(".", import.meta.url).toString();
 const POSE_STUDIO_LAYOUT_BASE_WIDTH = 220 / 0.1663;
 const POSE_STUDIO_LAYOUT_BASE_HEIGHT = 37 / 0.0346;
 const POSE_STUDIO_LAYOUT_REFERENCE_UI_SCALE = 1.55;
-const POSE_STUDIO_LAYOUT_LOG_ENABLED = false;
 
 // Enable from DevTools with:
 // window.__VNCCS_POSE_RESIZE_PROFILE = { enabled: true }
@@ -3178,7 +3177,16 @@ const STYLES = `
     border-radius: inherit;
 }
 
-.vnccs-ps-library-item-preview img,
+.vnccs-ps-library-item-preview img {
+    max-width: 100%;
+    max-height: 100%;
+    width: auto;
+    height: auto;
+    object-fit: contain;
+    display: block;
+    border-radius: inherit;
+}
+
 .vnccs-ps-library-item-preview video {
     width: 100%;
     height: 100%;
@@ -3747,7 +3755,6 @@ class PoseStudioWidget {
         this.managerPoseMetrics = [];
         this.managerLayoutFrame = null;
         this._lastManagerLayoutKey = null;
-        this.layoutLogTimer = null;
         this._observedContainerWidth = 0;
         this._observedContainerHeight = 0;
         this._observedCanvasWidth = 0;
@@ -11338,7 +11345,6 @@ class PoseStudioWidget {
 
     resize({ forceUIScale = false } = {}) {
         this.scheduleMainUIScaleCommit({ force: forceUIScale });
-        this.scheduleUILayoutLog("resize");
         if (this.interfaceMode === "manager") {
             this.schedulePoseManagerGridLayout();
             return;
@@ -11359,97 +11365,6 @@ class PoseStudioWidget {
         profilePoseStudioResize("PoseViewer resize total", () => {
             this.viewer.resize(targetW, targetH);
         });
-    }
-
-    scheduleUILayoutLog(reason = "layout") {
-        if (!POSE_STUDIO_LAYOUT_LOG_ENABLED) return;
-        clearTimeout(this.layoutLogTimer);
-        this.layoutLogTimer = setTimeout(() => {
-            this.layoutLogTimer = null;
-            this.logUILayout(reason);
-        }, 120);
-    }
-
-    logUILayout(reason = "layout") {
-        if (!POSE_STUDIO_LAYOUT_LOG_ENABLED) return;
-        if (!this.container || !this.centerPanel || !this.canvasContainer) return;
-        const containerRect = this.container.getBoundingClientRect();
-        const centerRect = this.centerPanel.getBoundingClientRect();
-        const canvasRect = this.canvasContainer.getBoundingClientRect();
-        const nodeWidth = Number(this.node?.size?.[0]) || 0;
-        const nodeHeight = Number(this.node?.size?.[1]) || 0;
-        const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
-        const pct = (value, base) => base ? round((value / base) * 100) : 0;
-        const localRect = (el, parentRect = containerRect) => {
-            if (!el) return null;
-            const rect = el.getBoundingClientRect();
-            return {
-                x: round(rect.left - parentRect.left),
-                y: round(rect.top - parentRect.top),
-                width: round(rect.width),
-                height: round(rect.height),
-                right: round(rect.right - parentRect.left),
-                bottom: round(rect.bottom - parentRect.top),
-                widthPctOfContainer: pct(rect.width, containerRect.width),
-                heightPctOfContainer: pct(rect.height, containerRect.height),
-                widthPctOfCenter: pct(rect.width, centerRect.width),
-                heightPctOfCenter: pct(rect.height, centerRect.height),
-                widthPctOfCanvas: pct(rect.width, canvasRect.width),
-                heightPctOfCanvas: pct(rect.height, canvasRect.height),
-            };
-        };
-        const actions = this.centerPanel.querySelector(".vnccs-ps-actions");
-        const footer = this.centerPanel.querySelector(".vnccs-ps-footer");
-        const timeline = this.animationTimeline?.element || null;
-        const payload = {
-            reason,
-            interfaceMode: this.interfaceMode,
-            editorMode: this.exportParams?.editor_mode || "image",
-            nodeSize: { width: round(nodeWidth), height: round(nodeHeight) },
-            containerClient: { width: this.container.clientWidth, height: this.container.clientHeight },
-            containerRect: {
-                x: round(containerRect.left),
-                y: round(containerRect.top),
-                width: round(containerRect.width),
-                height: round(containerRect.height),
-            },
-            graphScaleFromNodeToScreen: {
-                x: nodeWidth ? round(containerRect.width / nodeWidth) : 0,
-                y: nodeHeight ? round(containerRect.height / nodeHeight) : 0,
-            },
-            cssUiScale: this.container.style.getPropertyValue("--vnccs-ps-ui-scale") || "unset",
-            cssRelativeUiScale: this.container.style.getPropertyValue("--vnccs-ps-relative-ui-scale") || "unset",
-            parts: {
-                left: localRect(this.leftPanel),
-                center: localRect(this.centerPanel),
-                right: localRect(this.rightSidebar),
-                tabsInContainer: localRect(this.tabsShell),
-                tabsInCenter: localRect(this.tabsShell, centerRect),
-                canvasWrapInContainer: localRect(this.canvasContainer),
-                canvasWrapInCenter: localRect(this.canvasContainer, centerRect),
-                canvasInWrap: localRect(this.canvas, canvasRect),
-                actionsInCenter: localRect(actions, centerRect),
-                timelineInCenter: localRect(timeline, centerRect),
-                footerInCenter: localRect(footer, centerRect),
-                manager: localRect(this.managerPanel),
-                managerBody: localRect(this.managerBody),
-                managerSidebar: localRect(this.managerSidebar),
-                managerStage: localRect(this.managerStage),
-                managerGrid: localRect(this.managerGrid),
-                managerDetailStrip: localRect(this.managerDetailStrip),
-            },
-            counts: {
-                tabs: this.tabsContainer?.children?.length || 0,
-                leftSections: this.leftPanel?.querySelectorAll(".vnccs-ps-section").length || 0,
-                rightSections: this.rightSidebar?.querySelectorAll(".vnccs-ps-section").length || 0,
-                actionButtons: actions?.querySelectorAll("button").length || 0,
-                managerCards: this.managerGrid?.querySelectorAll(".vnccs-ps-pose-card").length || 0,
-            },
-        };
-        console.groupCollapsed("VNCCS Pose Studio layout");
-        console.log(payload);
-        console.table(payload.parts);
-        console.groupEnd();
     }
 
     updateMainUIScale({
@@ -11546,7 +11461,6 @@ class PoseStudioWidget {
                     }
                 }
 
-                this.scheduleUILayoutLog("resize");
                 if (this.interfaceMode === "manager") {
                     this.schedulePoseManagerGridLayout();
                     return;
@@ -12563,11 +12477,37 @@ app.registerExtension({
                 lighting_prompts: node.studioWidget.lightingPrompts || []
             };
 
-            await fetch('/vnccs/pose_sync/upload_capture', {
+            return fetch('/vnccs/pose_sync/upload_capture', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+        };
+
+        const requirePoseStudioSyncResponse = async (response) => {
+            if (!response.ok) {
+                let message = `Pose Studio sync failed (HTTP ${response.status})`;
+                try {
+                    const errorPayload = await response.json();
+                    if (errorPayload?.error) message = String(errorPayload.error);
+                } catch (_) { }
+                throw new Error(message);
+            }
+        };
+
+        const reportPoseStudioSyncFailure = async (nodeId, syncToken, error) => {
+            const syncFileId = syncToken ? `${nodeId}_${syncToken}` : nodeId;
+            try {
+                await fetch('/vnccs/pose_sync/upload_capture', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        node_id: syncFileId,
+                        sync_token: syncToken || undefined,
+                        sync_error: String(error?.message || error || "Pose Studio sync failed").slice(0, 2048),
+                    }),
+                });
+            } catch (_) { }
         };
 
         api.addEventListener("vnccs_req_pose_sync", async (event) => {
@@ -12603,8 +12543,10 @@ app.registerExtension({
 
                     // Build payload from widget metadata + in-memory captures
                     // (captured_images are no longer stored in the widget to keep workflow size small)
-                    await uploadPoseStudioSync(node, nodeId, syncToken);
+                    const response = await uploadPoseStudioSync(node, nodeId, syncToken);
+                    await requirePoseStudioSyncResponse(response);
                 } catch (e) {
+                    await reportPoseStudioSyncFailure(nodeId, syncToken, e);
                     console.error("[VNCCS] Batch Sync Error:", e);
                 }
             }
@@ -12949,10 +12891,6 @@ app.registerExtension({
                 if (this.studioWidget.managerLayoutFrame) {
                     cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
                     this.studioWidget.managerLayoutFrame = null;
-                }
-                if (this.studioWidget.layoutLogTimer) {
-                    clearTimeout(this.studioWidget.layoutLogTimer);
-                    this.studioWidget.layoutLogTimer = null;
                 }
                 if (this.studioWidget._uiScaleCommitTimer) {
                     clearTimeout(this.studioWidget._uiScaleCommitTimer);

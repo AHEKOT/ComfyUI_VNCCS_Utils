@@ -377,6 +377,7 @@ class VNCCS_PoseStudio:
             # and pass this execution's resolved camera prompt so queued random
             # runs cannot reuse the skydome orientation from another execution.
             if unique_id and not pose_image_synced:
+                sync_error_message = None
                 try:
                     from server import PromptServer
                     import time
@@ -399,9 +400,14 @@ class VNCCS_PoseStudio:
                         sync_token=sync_token,
                     )
                     if synced:
-                        data = _hydrate_cached_pose_animation(synced)
+                        if isinstance(synced, dict) and synced.get("sync_error"):
+                            sync_error_message = str(synced["sync_error"])
+                        else:
+                            data = _hydrate_cached_pose_animation(synced)
                 except Exception as e:
                     print(f"[VNCCS Pose Studio] Sync error: {e}")
+                if sync_error_message:
+                    raise RuntimeError(f"Pose Studio frontend sync failed: {sync_error_message}")
             # ---------------------------------------------
             
         except (json.JSONDecodeError, TypeError):
@@ -412,8 +418,8 @@ class VNCCS_PoseStudio:
             capture_id = data.get("capture_id")
             if capture_id:
                 try:
-                    from .. import VNCCS_CAPTURE_CACHE
-                    cached = VNCCS_CAPTURE_CACHE.get(capture_id)
+                    from .. import vnccs_get_capture_cache
+                    cached = vnccs_get_capture_cache(capture_id)
                     if cached:
                         data["captured_images"] = cached.get("captured_images", [])
                         data["lighting_prompts"] = cached.get("lighting_prompts", [])

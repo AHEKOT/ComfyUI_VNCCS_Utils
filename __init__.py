@@ -37,6 +37,7 @@ import json
 import re
 import numpy as np
 import tempfile
+import time
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _CAPTURE_CACHE_MAX_IMAGES = 600
@@ -45,9 +46,14 @@ _POSE_ANIMATION_CACHE_MAX = 24
 _POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS = 48 * 1024 * 1024
 _POSE_ANIMATION_CACHE_MAX_KEYS = 300_000
 _POSE_ANIMATION_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_pose_animation_cache")
+_POSE_ANIMATION_DISK_CACHE_MAX_FILES = 256
+_POSE_ANIMATION_DISK_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_MAX = 10
 _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
+_UNICANVAS_STATE_DISK_CACHE_MAX_FILES = 64
+_UNICANVAS_STATE_DISK_CACHE_MAX_BYTES = 1024 * 1024 * 1024
+_DISK_CACHE_TTL_SECONDS = 180 * 24 * 60 * 60
 _SAM3D_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 _SAM3D_MAX_PIXELS = 4096 * 4096
 
@@ -65,6 +71,54 @@ def _vnccs_content_length_ok(request, max_bytes):
 def _vnccs_safe_id(value, fallback="item"):
     cleaned = _SAFE_ID_RE.sub("_", str(value or "")).strip("_")
     return cleaned[:128] or fallback
+
+def _vnccs_prune_cache_dir(directory, max_files, max_total_bytes, protected_path=None):
+    """Bound temporary disk caches without removing the file just written."""
+    now = time.time()
+    protected_path = os.path.abspath(protected_path) if protected_path else None
+    files = []
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if not entry.is_file(follow_symlinks=False):
+                continue
+            stat = entry.stat(follow_symlinks=False)
+            path = os.path.abspath(entry.path)
+            age = max(0.0, now - stat.st_mtime)
+            if entry.name.endswith(".tmp"):
+                if age > 60 * 60:
+                    os.unlink(entry.path)
+                continue
+            if not entry.name.endswith(".json"):
+                continue
+            if path != protected_path and age > _DISK_CACHE_TTL_SECONDS:
+                os.unlink(entry.path)
+                continue
+            files.append([stat.st_mtime, stat.st_size, entry.path, path])
+        except OSError:
+            continue
+
+    files.sort(key=lambda item: item[0])
+    total_bytes = sum(item[1] for item in files)
+    blocked_paths = set()
+    while len(files) > max_files or total_bytes > max_total_bytes:
+        removable_index = next((
+            index
+            for index, item in enumerate(files)
+            if item[3] != protected_path and item[3] not in blocked_paths
+        ), None)
+        if removable_index is None:
+            break
+        _, size, path, absolute_path = files[removable_index]
+        try:
+            os.unlink(path)
+            files.pop(removable_index)
+            total_bytes -= size
+        except OSError:
+            blocked_paths.add(absolute_path)
 
 def _vnccs_validate_capture_payload(data):
     captured_images = data.get("captured_images", [])
@@ -151,6 +205,13 @@ _vnccs_register_pose_sync()
 VNCCS_CAPTURE_CACHE = {}
 _CAPTURE_CACHE_MAX = 10
 
+def vnccs_get_capture_cache(capture_id):
+    capture_id = _vnccs_safe_id(capture_id, "capture")
+    entry = VNCCS_CAPTURE_CACHE.pop(capture_id, None)
+    if entry is not None:
+        VNCCS_CAPTURE_CACHE[capture_id] = entry
+    return entry
+
 def _vnccs_register_capture_cache():
     try:
         from server import PromptServer
@@ -173,6 +234,7 @@ def _vnccs_register_capture_cache():
             except ValueError as exc:
                 return web.json_response({"error": str(exc)}, status=413)
 
+            VNCCS_CAPTURE_CACHE.pop(capture_id, None)
             VNCCS_CAPTURE_CACHE[capture_id] = {
                 "captured_images": captured_images,
                 "lighting_prompts": lighting_prompts,
@@ -190,7 +252,7 @@ def _vnccs_register_capture_cache():
     @PromptServer.instance.routes.get("/vnccs/pose_captures/{capture_id}")
     async def vnccs_pose_captures_get(request):
         capture_id = _vnccs_safe_id(request.match_info["capture_id"], "capture")
-        entry = VNCCS_CAPTURE_CACHE.get(capture_id)
+        entry = vnccs_get_capture_cache(capture_id)
         if not entry:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response(entry)
@@ -212,6 +274,12 @@ def _vnccs_write_pose_animation_cache_file(animation_id, entry):
     with open(temp_path, "w", encoding="utf-8") as handle:
         json.dump(entry, handle, ensure_ascii=False, separators=(",", ":"))
     os.replace(temp_path, path)
+    _vnccs_prune_cache_dir(
+        _POSE_ANIMATION_CACHE_DIR,
+        _POSE_ANIMATION_DISK_CACHE_MAX_FILES,
+        _POSE_ANIMATION_DISK_CACHE_MAX_BYTES,
+        protected_path=path,
+    )
 
 def _vnccs_read_pose_animation_cache_file(animation_id):
     path = _vnccs_pose_animation_cache_path(animation_id)
@@ -219,6 +287,10 @@ def _vnccs_read_pose_animation_cache_file(animation_id):
         return None
     with open(path, "r", encoding="utf-8") as handle:
         entry = json.load(handle)
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
     return entry if isinstance(entry, dict) else None
 
 def vnccs_get_pose_animation_cache(animation_id):
@@ -312,13 +384,24 @@ def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
     with open(temp_path, "w", encoding="utf-8") as handle:
         json.dump(entry, handle, ensure_ascii=False)
     os.replace(temp_path, path)
+    _vnccs_prune_cache_dir(
+        _UNICANVAS_STATE_CACHE_DIR,
+        _UNICANVAS_STATE_DISK_CACHE_MAX_FILES,
+        _UNICANVAS_STATE_DISK_CACHE_MAX_BYTES,
+        protected_path=path,
+    )
 
 def _vnccs_read_unicanvas_state_cache_file(state_id):
     path = _vnccs_unicanvas_state_cache_path(state_id)
     if not os.path.exists(path):
         return None
     with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+        entry = json.load(handle)
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
+    return entry
 
 def _vnccs_register_unicanvas_state_cache():
     try:

@@ -35,6 +35,9 @@ _LORA_CACHE: dict[str, Any] = {}
 _SAM_CACHE: dict[str, tuple[Any, Any, Any]] = {}
 _DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
 _DRAW_PROGRESS_LOCK = threading.Lock()
+_DRAW_PROGRESS_MAX = 256
+_DRAW_PROGRESS_TTL_SECONDS = 60 * 60
+_DRAW_PROGRESS_RUNNING_TTL_SECONDS = 24 * 60 * 60
 _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCHED = False
 _COMFY_PROGRESS_LOCAL = threading.local()
@@ -46,6 +49,7 @@ _PRESET_MIN_MODEL_FILE_SIZE = 1024
 _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
+UNICANVAS_DEBUG = 0
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
@@ -1488,6 +1492,8 @@ def _get_unicanvas_model_loader(loader_type: str | None) -> UniCanvasModelLoader
 
 
 def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> None:
+    if not UNICANVAS_DEBUG:
+        return
     if data is None:
         print(f"[VNCCS UniCanvas][draw:{draw_id}] {message}", flush=True)
         return
@@ -1496,6 +1502,26 @@ def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> N
     except Exception:
         payload = str(data)
     print(f"[VNCCS UniCanvas][draw:{draw_id}] {message}: {payload}", flush=True)
+
+
+def _prune_draw_progress(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    expired = []
+    for draw_id, state in _DRAW_PROGRESS.items():
+        age = max(0.0, now - float(state.get("updated_at", now)))
+        stage = state.get("stage")
+        if (stage in {"complete", "error"} and age > _DRAW_PROGRESS_TTL_SECONDS) or age > _DRAW_PROGRESS_RUNNING_TTL_SECONDS:
+            expired.append(draw_id)
+    for draw_id in expired:
+        _DRAW_PROGRESS.pop(draw_id, None)
+    if len(_DRAW_PROGRESS) <= _DRAW_PROGRESS_MAX:
+        return
+    ordered = sorted(
+        _DRAW_PROGRESS.items(),
+        key=lambda item: (item[1].get("stage") not in {"complete", "error"}, float(item[1].get("updated_at", 0))),
+    )
+    for draw_id, _ in ordered[:len(_DRAW_PROGRESS) - _DRAW_PROGRESS_MAX]:
+        _DRAW_PROGRESS.pop(draw_id, None)
 
 
 def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
@@ -1510,10 +1536,12 @@ def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0,
     }
     with _DRAW_PROGRESS_LOCK:
         _DRAW_PROGRESS[draw_id] = payload
+        _prune_draw_progress()
 
 
 def _get_draw_progress(draw_id: str) -> dict[str, Any]:
     with _DRAW_PROGRESS_LOCK:
+        _prune_draw_progress()
         return dict(_DRAW_PROGRESS.get(draw_id) or {
             "draw_id": draw_id,
             "stage": "unknown",
@@ -1526,6 +1554,8 @@ def _get_draw_progress(draw_id: str) -> dict[str, Any]:
 
 
 def _tensor_debug(value: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if value is None:
         return {"present": False}
     if not torch.is_tensor(value):
@@ -1567,6 +1597,8 @@ def _tensor_debug(value: Any) -> dict[str, Any]:
 
 
 def _latent_debug(latent: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if not isinstance(latent, dict):
         return {"type": type(latent).__name__, "is_dict": False}
     return {
@@ -1579,6 +1611,8 @@ def _latent_debug(latent: Any) -> dict[str, Any]:
 
 
 def _conditioning_debug(conditioning: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if not isinstance(conditioning, list):
         return {"type": type(conditioning).__name__, "is_list": False}
     entries = []
@@ -3639,7 +3673,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "inference_size": payload.get("inference_size"),
             "output_size": payload.get("output_size"),
             "source_empty": payload.get("source_empty"),
-            "frontend_debug": payload.get("debug"),
             "generation_mode": settings.get("generation_mode"),
             "model_loader": settings.get("model_loader"),
             "ckpt_name": settings.get("ckpt_name"),
@@ -3691,33 +3724,32 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     with contextlib.ExitStack() as _model_stack:
         _model_stack.enter_context(_COMFY_MODEL_OP_LOCK)
         _model_stack.enter_context(torch.inference_mode())
-        if True:
-            _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
-            model, clip, vae = _load_generation_assets(settings)
-            model, clip = model_module.clone_assets(model, clip)
-            settings["_draw_id"] = draw_id
-            _preload_z_image_fun_controlnet_patch(settings, mode, draw_id)
-            _preload_vae_for_direct_decode(vae, settings, draw_id)
-            if model_module.key == "qwen_image_edit":
-                settings["_qwen_edit_clip"] = clip
-                settings["_qwen_edit_vae"] = vae
-            _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
-            model, clip = _apply_generation_loras(model, clip, settings)
-            if model_module.key == "qwen_image_edit":
-                settings["_qwen_edit_clip"] = clip
-            _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
-            if model_module.key == "qwen_image_edit":
-                positive = []
-                negative = []
-                _uc_log(
-                    draw_id,
-                    "Qwen Image Edit prompt encoding deferred",
-                    {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
-                )
-            else:
-                positive = _encode_generation_prompt(clip, positive_text, settings)
-                negative = _encode_generation_prompt(clip, negative_text, settings)
-                model_module.validate_conditioning(positive, negative, settings)
+        _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
+        model, clip, vae = _load_generation_assets(settings)
+        model, clip = model_module.clone_assets(model, clip)
+        settings["_draw_id"] = draw_id
+        _preload_z_image_fun_controlnet_patch(settings, mode, draw_id)
+        _preload_vae_for_direct_decode(vae, settings, draw_id)
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
+            settings["_qwen_edit_vae"] = vae
+        _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
+        model, clip = _apply_generation_loras(model, clip, settings)
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
+        _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
+        if model_module.key == "qwen_image_edit":
+            positive = []
+            negative = []
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit prompt encoding deferred",
+                {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+            )
+        else:
+            positive = _encode_generation_prompt(clip, positive_text, settings)
+            negative = _encode_generation_prompt(clip, negative_text, settings)
+            model_module.validate_conditioning(positive, negative, settings)
 
         mask = None
         mask_image = None
@@ -3770,7 +3802,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 paste_mask_image = None
             if model_module.key == "qwen_image_edit" and mask is not None:
                 settings["_qwen_edit_mask"] = mask
-            if mask_image is not None:
+            if mask_image is not None and UNICANVAS_DEBUG:
                 mask_for_debug = _pil_to_mask_image(mask_image)
                 _uc_log(
                     draw_id,

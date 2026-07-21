@@ -6,7 +6,6 @@ import { app } from "../../scripts/app.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
-const UNICANVAS_LAYOUT_LOG_ENABLED = false;
 
 const STYLES = `
 .vnccs-unicanvas {
@@ -709,7 +708,6 @@ class UniCanvasWidget {
     this.renderQueued = false;
     this.settingsSyncTimer = null;
     this.fullSyncTimer = null;
-    this.layoutLogTimer = null;
     this.thumbnailRenderQueue = [];
     this.thumbnailRenderQueued = false;
     this.lodRenderQueue = [];
@@ -2250,77 +2248,6 @@ class UniCanvasWidget {
       this.fitInitialView();
     }
     this.render();
-    this.scheduleUILayoutLog("resize");
-  }
-
-  scheduleUILayoutLog(reason = "layout") {
-    if (!UNICANVAS_LAYOUT_LOG_ENABLED) return;
-    clearTimeout(this.layoutLogTimer);
-    this.layoutLogTimer = setTimeout(() => {
-      this.layoutLogTimer = null;
-      this.logUILayout(reason);
-    }, 120);
-  }
-
-  logUILayout(reason = "layout") {
-    if (!UNICANVAS_LAYOUT_LOG_ENABLED) return;
-    if (!this.container || !this.stageWrap) return;
-    const containerRect = this.container.getBoundingClientRect();
-    const stageRect = this.stageWrap.getBoundingClientRect();
-    const nodeWidth = Number(this.node?.size?.[0]) || 0;
-    const nodeHeight = Number(this.node?.size?.[1]) || 0;
-    const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
-    const pct = (value, base) => base ? round((value / base) * 100) : 0;
-    const localRect = (el, parentRect = containerRect) => {
-      if (!el) return null;
-      const rect = el.getBoundingClientRect();
-      return {
-        x: round(rect.left - parentRect.left),
-        y: round(rect.top - parentRect.top),
-        width: round(rect.width),
-        height: round(rect.height),
-        right: round(rect.right - parentRect.left),
-        bottom: round(rect.bottom - parentRect.top),
-        widthPctOfContainer: pct(rect.width, containerRect.width),
-        heightPctOfContainer: pct(rect.height, containerRect.height),
-        widthPctOfStage: pct(rect.width, stageRect.width),
-        heightPctOfStage: pct(rect.height, stageRect.height),
-      };
-    };
-    const toolButtons = Array.from(this.tools?.querySelectorAll(".vnccs-uc-tool") || []);
-    const payload = {
-      reason,
-      nodeSize: { width: round(nodeWidth), height: round(nodeHeight) },
-      containerClient: { width: this.container.clientWidth, height: this.container.clientHeight },
-      containerRect: {
-        x: round(containerRect.left),
-        y: round(containerRect.top),
-        width: round(containerRect.width),
-        height: round(containerRect.height),
-      },
-      graphScaleFromNodeToScreen: {
-        x: nodeWidth ? round(containerRect.width / nodeWidth) : 0,
-        y: nodeHeight ? round(containerRect.height / nodeHeight) : 0,
-      },
-      cssUiScale: this.container.style.getPropertyValue("--vnccs-uc-ui-scale") || "unset",
-      parts: {
-        left: localRect(this.left),
-        stage: localRect(this.stageWrap),
-        right: localRect(this.side),
-        topBar: localRect(this.bottom),
-        toolbarInContainer: localRect(this.tools),
-        toolbarInStage: localRect(this.tools, stageRect),
-        firstTool: localRect(toolButtons[0], stageRect),
-        lastTool: localRect(toolButtons[toolButtons.length - 1], stageRect),
-      },
-      counts: {
-        toolButtons: toolButtons.length,
-      },
-    };
-    console.groupCollapsed("VNCCS UniCanvas layout");
-    console.log(payload);
-    console.table(payload.parts);
-    console.groupEnd();
   }
 
   requestRender() {
@@ -5566,48 +5493,6 @@ class UniCanvasWidget {
     return out;
   }
 
-  getCanvasAlphaStats(canvas) {
-    const data = this.getReadbackContext(canvas, false).getImageData(0, 0, canvas.width, canvas.height).data;
-    let minX = canvas.width;
-    let minY = canvas.height;
-    let maxX = -1;
-    let maxY = -1;
-    let alphaSum = 0;
-    let nonzero = 0;
-    for (let y = 0; y < canvas.height; y++) {
-      for (let x = 0; x < canvas.width; x++) {
-        const alpha = data[(y * canvas.width + x) * 4 + 3];
-        alphaSum += alpha;
-        if (alpha > 8) {
-          nonzero++;
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-    return {
-      size: { width: canvas.width, height: canvas.height },
-      alphaSum,
-      nonzeroAlphaPixels: nonzero,
-      bboxAlphaGt8: nonzero ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } : null,
-    };
-  }
-
-  getLayerDebugSummary() {
-    return this.layers.map((layer, index) => ({
-      index,
-      id: layer.id,
-      name: layer.name,
-      type: layer.type,
-      visible: layer.visible,
-      locked: layer.locked,
-      opacity: layer.opacity,
-      alpha: layer.type === "mask" ? this.getCanvasAlphaStats(layer.canvas) : null,
-    }));
-  }
-
   async draw() {
     this.flushSettingsToWidget();
     const { loader } = this.normalizeGenerationSettings();
@@ -5641,21 +5526,6 @@ class UniCanvasWidget {
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
     const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
-    const debug = {
-      debugId,
-      mode,
-      bbox: { ...requestBbox },
-      origin: { ...this.origin },
-      worldSize: { ...this.size },
-      view: { ...this.view },
-      inferenceSize,
-      outputSize,
-      layers: this.getLayerDebugSummary(),
-      rasterInBbox: rasterStats,
-      maskInBbox: maskStats,
-      exportedMask: this.getCanvasAlphaStats(maskCanvas),
-    };
-    console.debug("[VNCCS UniCanvas] GENERATE request", debug);
     const batchSize = Math.max(1, Math.min(99, Math.round(Number(this.settings.batch_size) || 1)));
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
@@ -5677,11 +5547,9 @@ class UniCanvasWidget {
           inference_size: inferenceSize,
           output_size: outputSize,
           settings: this.makeSettingsPayload(),
-          debug,
         }),
       });
       const data = await res.json();
-      console.debug("[VNCCS UniCanvas] GENERATE response", { debugId, data });
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const resultImages = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
       if (!resultImages.length) throw new Error("Generation returned no images");
@@ -6505,14 +6373,12 @@ class UniCanvasWidget {
       this.stateUploadTimer,
       this.settingsSyncTimer,
       this.fullSyncTimer,
-      this.layoutLogTimer,
       this.deferredCanvasCommitTimer,
       this.snapTimeout,
     ]) window.clearTimeout(timer);
     this.stateUploadTimer = null;
     this.settingsSyncTimer = null;
     this.fullSyncTimer = null;
-    this.layoutLogTimer = null;
     this.deferredCanvasCommitTimer = null;
     this.snapTimeout = null;
     this.pendingStateUpload = null;
