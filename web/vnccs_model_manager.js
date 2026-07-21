@@ -1,5 +1,6 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 // Global Registry Cache to prevent API storms (multiple nodes requesting same data)
 window.VNCCS_REGISTRY = window.VNCCS_REGISTRY || {};
@@ -38,6 +39,9 @@ class VNCCS_ModelListWidget {
 
         // Styles
         this.styleContainer();
+        this.customSelectController = installCustomSelects(this.container, {
+            theme: "model-manager",
+        });
 
         // Start polling for status periodically
         this.startPolling();
@@ -532,6 +536,8 @@ class VNCCS_ModelListWidget {
     dispose() {
         if (this.disposed) return;
         this.disposed = true;
+        this.customSelectController?.disconnect();
+        this.customSelectController = null;
         this.downloadQueue = [];
         this.isProcessingQueue = false;
         if (this.pollingInterval) {

@@ -32,7 +32,6 @@ _COMFY_MODEL_OP_LOCK = threading.RLock()
 _MODEL_CACHE_MAX_ENTRIES = 1
 _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
-_MODEL_PATCH_CACHE: dict[str, Any] = {}
 _SAM_CACHE: dict[str, tuple[Any, Any, Any]] = {}
 _DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
 _DRAW_PROGRESS_LOCK = threading.Lock()
@@ -317,9 +316,6 @@ class UniCanvasModelModule:
     aliases: tuple[str, ...]
     defaults: dict[str, Any]
     is_edit_model: bool = False
-
-    def normalize_key(self, generation_mode: str) -> bool:
-        return generation_mode == self.key or generation_mode in self.aliases
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode in {"inpaint", "outpaint"}
@@ -2214,59 +2210,6 @@ def _make_gradient_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_i
     return paste_image
 
 
-def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
-    rgba = source_rgba.convert("RGBA")
-    alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
-    mask = np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8)
-    np_image = np.asarray(rgba, dtype=np.uint8)
-    height, width = alpha.shape
-    valid = alpha > 8
-
-    if not bool(valid.any()):
-        _uc_log(draw_id, "outpaint infill fallback", {"reason": "no valid source pixels"})
-        return Image.new("RGB", rgba.size, (127, 127, 127))
-
-    mean_color = np_image[valid, :3].mean(axis=0).astype(np.float32)
-    mean_tuple = tuple(np.round(mean_color).astype(np.uint8).tolist())
-    lowfreq = Image.new("RGB", rgba.size, mean_tuple)
-    lowfreq.paste(rgba.convert("RGB"), (0, 0), rgba.getchannel("A"))
-    blur_radius = max(24, int(round(max(width, height) / 18)))
-    lowfreq = lowfreq.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    lowfreq_width = max(8, int(round(width / 32)))
-    lowfreq_height = max(8, int(round(height / 32)))
-    lowfreq = lowfreq.resize((lowfreq_width, lowfreq_height), Image.Resampling.BICUBIC)
-    lowfreq = lowfreq.resize((width, height), Image.Resampling.BICUBIC)
-    filled = np.asarray(lowfreq, dtype=np.float32)
-
-    rng = np.random.default_rng(0)
-    noise_layers = ((128, 16.0), (64, 10.0), (32, 5.0))
-    for noise_cell, noise_strength in noise_layers:
-        noise_width = max(1, int(math.ceil(width / noise_cell)))
-        noise_height = max(1, int(math.ceil(height / noise_cell)))
-        noise = rng.normal(0.0, noise_strength, size=(noise_height, noise_width, 3)).astype(np.float32)
-        noise_image = Image.fromarray(np.clip(127.5 + noise, 0, 255).astype(np.uint8), mode="RGB")
-        noise_image = noise_image.resize((width, height), Image.Resampling.BILINEAR)
-        filled += np.asarray(noise_image, dtype=np.float32) - 127.5
-
-    result = Image.fromarray(np.clip(filled, 0, 255).astype(np.uint8), mode="RGB")
-    result.paste(rgba, (0, 0), rgba.getchannel("A"))
-    _uc_log(
-        draw_id,
-        "outpaint source infilled with low-frequency context noise",
-        {
-            "source_size": source_rgba.size,
-            "mean_color": [float(v) for v in mean_color],
-            "blur_radius": blur_radius,
-            "lowfreq_size": [lowfreq_width, lowfreq_height],
-            "noise_layers": [{"cell": cell, "strength": strength} for cell, strength in noise_layers],
-            "mask": _tensor_debug(torch.from_numpy(mask.astype(np.float32) / 255.0)[None,]),
-            "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
-            "valid_source_pixels": int(valid.sum()),
-        },
-    )
-    return result
-
-
 def _sample_transparent_outpaint_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
     rgba = source_rgba.convert("RGBA")
     alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
@@ -2351,35 +2294,6 @@ def _apply_differential_diffusion(model: Any, draw_id: str, strength: float = 1.
     except Exception as exc:
         _uc_log(draw_id, "DifferentialDiffusion unavailable", {"error": str(exc)})
         return model
-
-
-def _composite_inpaint_result(
-    source: Image.Image,
-    generated: Image.Image,
-    mask_image: Image.Image,
-    output_size: tuple[int, int],
-    draw_id: str,
-) -> Image.Image:
-    base = source.convert("RGB")
-    upper = generated.convert("RGB")
-    mask = _pil_to_mask_image(mask_image)
-    if base.size != output_size:
-        base = base.resize(output_size, Image.Resampling.LANCZOS)
-    if upper.size != output_size:
-        upper = upper.resize(output_size, Image.Resampling.LANCZOS)
-    if mask.size != output_size:
-        mask = mask.resize(output_size, Image.Resampling.BILINEAR)
-    _uc_log(
-        draw_id,
-        "inpaint paste-back",
-        {
-            "base_size": base.size,
-            "upper_size": upper.size,
-            "mask_size": mask.size,
-            "mask": _tensor_debug(torch.from_numpy(np.asarray(mask, dtype=np.float32) / 255.0)[None,]),
-        },
-    )
-    return Image.composite(upper, base, mask)
 
 
 def _normalize_path(value: str) -> str:
@@ -2689,19 +2603,6 @@ def _load_model_patch(patch_name: str):
     if loaded is None:
         raise ValueError(f"Model patch not found or failed to load: {patch_name}")
     return loaded
-
-
-def _load_model_patch_cached(patch_name: str):
-    if not patch_name:
-        raise ValueError("Model patch name is required")
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_PATCH_CACHE.get(patch_name)
-    if cached is not None:
-        return cached.clone() if hasattr(cached, "clone") else cached
-    loaded = _load_model_patch(patch_name)
-    with _MODEL_CACHE_LOCK:
-        _MODEL_PATCH_CACHE[patch_name] = loaded
-    return loaded.clone() if hasattr(loaded, "clone") else loaded
 
 
 def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown") -> None:
@@ -3701,14 +3602,6 @@ def _get_unicanvas_assets() -> dict[str, Any]:
     }
 
 
-def _load_checkpoint(ckpt_name: str):
-    return _load_generation_assets({"generation_mode": "illustrious", "ckpt_name": ckpt_name})
-
-
-def _encode_prompt(clip: Any, text: str):
-    return _encode_generation_prompt(clip, text, {"generation_mode": "illustrious"})
-
-
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
     _set_draw_progress(draw_id, "queued", 0.01, 0, 0, "Queued")
@@ -4073,10 +3966,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         "generation_mode": settings.get("generation_mode", "illustrious"),
         "debug_id": draw_id,
     }
-
-
-def _run_sdxl_draw(payload: dict[str, Any]) -> dict[str, Any]:
-    return _run_unicanvas_draw(payload)
 
 
 def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:

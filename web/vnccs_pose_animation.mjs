@@ -7,6 +7,8 @@
  * avoids the common +179 -> -179 full-spin interpolation bug.
  */
 
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
+
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
 export const POSE_ANIMATION_CACHE_STORAGE = "server_cache";
@@ -733,6 +735,37 @@ export function retimeAnimationFrameCount(state, nextFrameCountValue) {
     return state;
 }
 
+/**
+ * Change the timeline boundary without retiming its contents. Existing key
+ * frame numbers and the playhead stay fixed. Shrinking stops at the last key
+ * instead of moving, merging, or deleting animation data.
+ */
+export function resizeAnimationFrameCount(state, nextFrameCountValue) {
+    if (!state) return state;
+    const requestedFrameCount = clamp(
+        Math.round(finiteNumber(nextFrameCountValue, state.frameCount)),
+        MIN_FRAME_COUNT,
+        MAX_FRAME_COUNT,
+    );
+    let lastKeyFrame = -1;
+    for (const track of Object.values(state.tracks || {})) {
+        for (const key of track.keys || []) {
+            lastKeyFrame = Math.max(lastKeyFrame, Math.round(finiteNumber(key.frame, -1)));
+        }
+    }
+    state.frameCount = clamp(
+        Math.max(requestedFrameCount, lastKeyFrame + 1),
+        MIN_FRAME_COUNT,
+        MAX_FRAME_COUNT,
+    );
+    state.currentFrame = clamp(
+        Math.round(finiteNumber(state.currentFrame)),
+        0,
+        state.frameCount - 1,
+    );
+    return state;
+}
+
 export function getAnimationFPS(state) {
     return clamp(
         finiteNumber(state?.fps, DEFAULT_ANIMATION_FPS),
@@ -792,11 +825,7 @@ export function resolveDebugLightingMode({
     return "random";
 }
 
-/**
- * Keep duration, frame rate, and the internal integer frame count in sync.
- * Duration is quantized to a whole frame so the three values can never
- * describe different timelines.
- */
+/** Keep duration, frame rate, and the internal integer frame count in sync. */
 export function retimeAnimationTiming(state, { duration, fps } = {}) {
     if (!state) return state;
     const previousFps = getAnimationFPS(state);
@@ -813,9 +842,29 @@ export function retimeAnimationTiming(state, { duration, fps } = {}) {
         MIN_FRAME_COUNT,
         MAX_FRAME_COUNT,
     );
-    retimeAnimationFrameCount(state, nextFrameCount);
+
+    if (duration !== undefined) {
+        // FPS changes alter the frame representation of the same moment in
+        // time. Apply that conversion first, then resize the duration without
+        // moving keys that are already expressed in the requested FPS.
+        if (fps !== undefined && Math.abs(requestedFps - previousFps) > 1e-9) {
+            const previousDuration = clamp(
+                finiteNumber(state.duration, 2),
+                MIN_FRAME_COUNT / requestedFps,
+                MAX_FRAME_COUNT / requestedFps,
+            );
+            retimeAnimationFrameCount(state, Math.round(previousDuration * requestedFps));
+        }
+        resizeAnimationFrameCount(state, nextFrameCount);
+    } else {
+        // Changing FPS keeps key times stable, so their frame numbers must be
+        // converted to the new rate.
+        retimeAnimationFrameCount(state, nextFrameCount);
+    }
     state.fps = requestedFps;
-    state.duration = requestedDuration;
+    state.duration = state.frameCount === nextFrameCount
+        ? requestedDuration
+        : state.frameCount / requestedFps;
     state.schemaVersion = POSE_ANIMATION_SCHEMA_VERSION;
     return state;
 }
@@ -1230,6 +1279,35 @@ export function computeVisibleFrameRange({
     return { start, end };
 }
 
+export function computeTimelineLaneWidth({
+    frameCount,
+    viewportWidth,
+    labelWidth = TIMELINE_LABEL_WIDTH,
+    frameWidth = TIMELINE_FRAME_WIDTH,
+    minimumLaneWidth = TIMELINE_MIN_LANE_WIDTH,
+} = {}) {
+    const count = Math.max(MIN_FRAME_COUNT, Math.round(finiteNumber(frameCount, 24)));
+    const availableWidth = Math.max(0, finiteNumber(viewportWidth) - finiteNumber(labelWidth));
+    return Math.max(
+        Math.max(1, finiteNumber(minimumLaneWidth, TIMELINE_MIN_LANE_WIDTH)),
+        count * Math.max(1, finiteNumber(frameWidth, TIMELINE_FRAME_WIDTH)),
+        availableWidth,
+    );
+}
+
+export function computeTimelineHorizontalScroll({
+    scrollWidth,
+    clientWidth,
+    scrollLeft = 0,
+} = {}) {
+    const maximum = Math.max(0, finiteNumber(scrollWidth) - finiteNumber(clientWidth));
+    return {
+        maximum,
+        value: clamp(finiteNumber(scrollLeft), 0, maximum),
+        visible: maximum > 1,
+    };
+}
+
 export function findNearestKeyframeAtPosition(keys, pointerX, laneWidth, frameCount, threshold = 9) {
     if (!Array.isArray(keys) || !keys.length) return null;
     const width = Math.max(1, finiteNumber(laneWidth, 1));
@@ -1326,6 +1404,7 @@ export class PoseAnimationTimeline {
         this._rowKeyCache = new WeakMap();
         this._marquee = null;
         this._marqueeRaf = null;
+        this._viewportGeometryRaf = null;
         this._activeResizeCancel = null;
         this._activeKeyDragCancel = null;
         this._build();
@@ -1500,7 +1579,27 @@ export class PoseAnimationTimeline {
         this.content = document.createElement("div");
         this.content.className = "vnccs-ps-tl-content";
         this.body.appendChild(this.content);
-        this.element.append(this.resizer, this.toolbar, this.collapseButton, this.body);
+        this.horizontalScrollbar = document.createElement("div");
+        this.horizontalScrollbar.className = "vnccs-ps-tl-horizontal-scroll";
+        this.horizontalScrollInput = document.createElement("input");
+        this.horizontalScrollInput.type = "range";
+        this.horizontalScrollInput.min = "0";
+        this.horizontalScrollInput.max = "0";
+        this.horizontalScrollInput.step = "1";
+        this.horizontalScrollInput.value = "0";
+        this.horizontalScrollInput.setAttribute("aria-label", "Timeline horizontal scroll");
+        this.horizontalScrollInput.title = "Drag to scroll the timeline horizontally";
+        this.horizontalScrollInput.addEventListener("input", () => {
+            this.body.scrollLeft = Number(this.horizontalScrollInput.value) || 0;
+        });
+        this.horizontalScrollbar.appendChild(this.horizontalScrollInput);
+        this.element.append(
+            this.resizer,
+            this.toolbar,
+            this.collapseButton,
+            this.body,
+            this.horizontalScrollbar,
+        );
         try {
             const savedHeight = Number(globalThis.localStorage?.getItem("vnccsPoseStudioTimelineHeightV3"));
             if (Number.isFinite(savedHeight) && savedHeight >= TIMELINE_MIN_PANEL_HEIGHT) {
@@ -1519,7 +1618,25 @@ export class PoseAnimationTimeline {
         });
         this.body.addEventListener("pointerdown", event => this._beginMarqueeSelection(event), true);
 
+        this.body.addEventListener("wheel", event => {
+            const maximum = Math.max(0, this.body.scrollWidth - this.body.clientWidth);
+            if (maximum <= 0) return;
+            const rawDelta = Math.abs(event.deltaX) > 0.01
+                ? event.deltaX
+                : (event.shiftKey ? event.deltaY : 0);
+            if (Math.abs(rawDelta) <= 0.01) return;
+            const deltaScale = event.deltaMode === 1
+                ? 16
+                : (event.deltaMode === 2 ? this.body.clientWidth : 1);
+            const previous = this.body.scrollLeft;
+            this.body.scrollLeft = clamp(previous + rawDelta * deltaScale, 0, maximum);
+            const changed = Math.abs(this.body.scrollLeft - previous) > 0.01;
+            const horizontalGesture = event.shiftKey || Math.abs(event.deltaX) >= Math.abs(event.deltaY);
+            if (changed && horizontalGesture) event.preventDefault();
+        }, { passive: false });
+
         this.body.addEventListener("scroll", () => {
+            this._syncHorizontalScrollbar();
             if (this._virtualScrollRaf) return;
             this._virtualScrollRaf = requestAnimationFrame(() => {
                 this._virtualScrollRaf = null;
@@ -1527,24 +1644,29 @@ export class PoseAnimationTimeline {
             });
         }, { passive: true });
         if (globalThis.ResizeObserver) {
-            this._timelineResizeObserver = new globalThis.ResizeObserver(() => this._renderVisibleTrackRows(true));
+            this._timelineResizeObserver = new globalThis.ResizeObserver(() => this._scheduleViewportGeometryRefresh());
             this._timelineResizeObserver.observe(this.body);
         }
 
         this.element.addEventListener("keydown", event => {
-            if ((event.key === "Delete" || event.key === "Backspace") && this.selectedKeys.size) {
+            const formControlTarget = event.target.matches("input,select,textarea");
+            if ((event.key === "Delete" || event.key === "Backspace") && this.selectedKeys.size && !formControlTarget) {
                 event.preventDefault();
                 this.deleteSelectedKeys();
-            } else if (event.key === " " && !event.target.matches("input,select,textarea")) {
+            } else if (event.key === " " && !formControlTarget) {
                 event.preventDefault();
                 this.togglePlayback();
-            } else if (event.key === "ArrowLeft" && !event.target.matches("input")) {
+            } else if (event.key === "ArrowLeft" && !event.target.matches("input,select")) {
                 event.preventDefault();
                 this.setFrame(this.state.currentFrame - 1);
-            } else if (event.key === "ArrowRight" && !event.target.matches("input")) {
+            } else if (event.key === "ArrowRight" && !event.target.matches("input,select")) {
                 event.preventDefault();
                 this.setFrame(this.state.currentFrame + 1);
             }
+        });
+        this._customSelectController = installCustomSelects(this.element, {
+            selector: "select.vnccs-ps-tl-select",
+            theme: "pose-studio",
         });
     }
 
@@ -1628,6 +1750,40 @@ export class PoseAnimationTimeline {
             clientTop: this.body.clientTop,
             scrollLeft: this.body.scrollLeft,
             scrollTop: this.body.scrollTop,
+        });
+    }
+
+    _desiredLaneWidth() {
+        return computeTimelineLaneWidth({
+            frameCount: this.state?.frameCount,
+            viewportWidth: this.body?.clientWidth,
+        });
+    }
+
+    _syncHorizontalScrollbar() {
+        if (!this.body || !this.horizontalScrollbar || !this.horizontalScrollInput) return;
+        const scroll = computeTimelineHorizontalScroll({
+            scrollWidth: this.body.scrollWidth,
+            clientWidth: this.body.clientWidth,
+            scrollLeft: this.body.scrollLeft,
+        });
+        this.horizontalScrollbar.classList.toggle("visible", scroll.visible);
+        this.horizontalScrollInput.max = String(Math.max(0, Math.round(scroll.maximum)));
+        this.horizontalScrollInput.value = String(Math.round(scroll.value));
+        this.horizontalScrollInput.disabled = !scroll.visible;
+    }
+
+    _scheduleViewportGeometryRefresh() {
+        if (this._viewportGeometryRaf) return;
+        this._viewportGeometryRaf = requestAnimationFrame(() => {
+            this._viewportGeometryRaf = null;
+            const desiredWidth = this._desiredLaneWidth();
+            if (Math.abs(desiredWidth - finiteNumber(this._laneWidth)) > 1) {
+                this.renderTracks();
+                return;
+            }
+            this._renderVisibleTrackRows(true);
+            this._syncHorizontalScrollbar();
         });
     }
 
@@ -1916,16 +2072,21 @@ export class PoseAnimationTimeline {
             this.stopPlayback();
             this._finishMarqueeSelection(true);
             this.onTrackHover(null);
+        } else {
+            this._scheduleViewportGeometryRefresh();
         }
     }
 
     destroy() {
         this.stopPlayback();
         this._finishMarqueeSelection(true);
+        this._customSelectController?.disconnect();
+        this._customSelectController = null;
         this._activeResizeCancel?.();
         this._activeKeyDragCancel?.();
         if (this._virtualScrollRaf) cancelAnimationFrame(this._virtualScrollRaf);
         if (this._keyDrawRaf) cancelAnimationFrame(this._keyDrawRaf);
+        if (this._viewportGeometryRaf) cancelAnimationFrame(this._viewportGeometryRaf);
         this._timelineResizeObserver?.disconnect?.();
         this.onTrackHover(null);
         if (hoveredTimeline === this) hoveredTimeline = null;
@@ -2426,7 +2587,7 @@ export class PoseAnimationTimeline {
         this._rulerPlayhead = null;
         this._visiblePlayheads = [];
         this._visibleKeyLanes = [];
-        const width = Math.max(TIMELINE_MIN_LANE_WIDTH, this.state.frameCount * TIMELINE_FRAME_WIDTH);
+        const width = this._desiredLaneWidth();
         this._laneWidth = width;
         this.content.style.setProperty("--vnccs-tl-lane-width", `${width}px`);
 
@@ -2459,6 +2620,7 @@ export class PoseAnimationTimeline {
             this.content.appendChild(empty);
         }
         this.updatePlayheads();
+        this._syncHorizontalScrollbar();
     }
 
     updatePlayheads() {

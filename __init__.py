@@ -135,6 +135,18 @@ def _vnccs_register_pose_library():
 _vnccs_register_pose_library()
 
 
+# Register Pose Studio runtime synchronization API
+def _vnccs_register_pose_sync():
+    try:
+        from server import PromptServer
+        from .api.pose_sync import register_routes
+        register_routes(PromptServer.instance.app)
+    except Exception as e:
+        print(f"[VNCCS] Failed to register Pose Sync API: {e}")
+
+_vnccs_register_pose_sync()
+
+
 # === Pose Studio Capture Cache ===
 VNCCS_CAPTURE_CACHE = {}
 _CAPTURE_CACHE_MAX = 10

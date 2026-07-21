@@ -6,13 +6,14 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PoseViewerCore, IK_CHAINS } from "./vnccs_pose_studio_core.js";
+import { PoseViewerCore } from "./vnccs_pose_studio_core.js";
 import {
     cameraPromptToSkydomeRotation,
 } from "./vnccs_camera_control_utils.mjs";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
-import { detectAndParseJSON, extractKeypointsFromImage, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
+import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -42,7 +43,6 @@ import {
     findChangedPoseTracks,
     getPoseTrackEuler,
     isAnimationCacheReference,
-    isAnimationEmpty,
     normalizeAnimationState,
     resolveCaptureCameraParams,
     resolveDebugLightingMode,
@@ -1243,6 +1243,7 @@ const STYLES = `
 }
 
 .vnccs-ps-timeline.collapsed .vnccs-ps-tl-body,
+.vnccs-ps-timeline.collapsed .vnccs-ps-tl-horizontal-scroll,
 .vnccs-ps-timeline.collapsed .vnccs-ps-tl-resizer {
     display: none;
 }
@@ -1431,10 +1432,68 @@ const STYLES = `
     flex: 1;
     min-height: 0;
     position: relative;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     overscroll-behavior: contain;
     scrollbar-color: rgba(255,143,163,0.35) rgba(0,0,0,0.2);
     scrollbar-width: thin;
+}
+
+.vnccs-ps-tl-horizontal-scroll {
+    display: none;
+    flex: 0 0 16px;
+    min-height: 16px;
+    align-items: center;
+    padding: 0 5px;
+    box-sizing: border-box;
+    border-top: 1px solid rgba(255,255,255,0.045);
+    background: #0b0a11;
+}
+
+.vnccs-ps-tl-horizontal-scroll.visible {
+    display: flex;
+}
+
+.vnccs-ps-tl-horizontal-scroll input[type="range"] {
+    width: 100%;
+    height: 14px;
+    margin: 0;
+    padding: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    background: transparent;
+    cursor: ew-resize;
+}
+
+.vnccs-ps-tl-horizontal-scroll input[type="range"]::-webkit-slider-runnable-track {
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.1);
+}
+
+.vnccs-ps-tl-horizontal-scroll input[type="range"]::-webkit-slider-thumb {
+    width: 34px;
+    height: 9px;
+    margin-top: -2px;
+    border: 1px solid rgba(255,143,163,0.72);
+    border-radius: 999px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: rgba(255,143,163,0.62);
+}
+
+.vnccs-ps-tl-horizontal-scroll input[type="range"]::-moz-range-track {
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(255,255,255,0.1);
+}
+
+.vnccs-ps-tl-horizontal-scroll input[type="range"]::-moz-range-thumb {
+    width: 34px;
+    height: 9px;
+    border: 1px solid rgba(255,143,163,0.72);
+    border-radius: 999px;
+    background: rgba(255,143,163,0.62);
 }
 
 .vnccs-ps-tl-content {
@@ -5156,6 +5215,9 @@ class PoseStudioWidget {
             this.viewer.updateLights(this.lightParams);
         }
 
+        this._customSelectController = installCustomSelects(this.container, {
+            theme: "pose-studio",
+        });
         this.startResizeObserver();
     }
 
@@ -12850,6 +12912,8 @@ app.registerExtension({
                 this.studioWidget._activeVideoImportClose?.();
                 void this.studioWidget.flushAnimationCacheUpload?.();
                 this.studioWidget.animationTimeline?.destroy?.();
+                this.studioWidget._customSelectController?.disconnect();
+                this.studioWidget._customSelectController = null;
                 if (this.studioWidget._containerResizeObserver) {
                     this.studioWidget._containerResizeObserver.disconnect();
                     this.studioWidget._containerResizeObserver = null;

@@ -225,11 +225,6 @@ function collectSourceBones(root) {
     return { bones, normalizedBones };
 }
 
-function hasMixamoSignature(sourceBones) {
-    const requiredNames = ['hips', 'spine', 'leftupleg', 'rightupleg'];
-    return requiredNames.every((name) => sourceBones.normalizedBones[name]);
-}
-
 function buildFrameRotationMap(sourceBones, targetTHREE) {
     const sourceWorldRotations = {};
     for (const [mixamoName, mhName] of Object.entries(MIXAMO_TO_MH_BONE_MAP)) {

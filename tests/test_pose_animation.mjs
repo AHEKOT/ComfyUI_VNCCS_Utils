@@ -13,6 +13,8 @@ import {
     createDefaultAnimationState,
     computeVirtualTrackRange,
     computeVisibleFrameRange,
+    computeTimelineHorizontalScroll,
+    computeTimelineLaneWidth,
     eulerDegreesToQuaternion,
     evaluateAnimationFrame,
     findChangedPoseTracks,
@@ -29,6 +31,7 @@ import {
     resolveCaptureCameraParams,
     resolveDebugLightingMode,
     restoreAnimationStateSnapshot,
+    resizeAnimationFrameCount,
     retimeAnimationFrameCount,
     retimeAnimationTiming,
     serializeAnimationStateSnapshot,
@@ -120,6 +123,31 @@ test("retiming preserves normalized key positions", () => {
     retimeAnimationFrameCount(state, 21);
     assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 10, 20]);
     assert.equal(state.duration, 1);
+});
+
+test("extending duration preserves key and playhead frame numbers", () => {
+    const state = createDefaultAnimationState({}, { frameCount: 24, duration: 2, fps: 12 });
+    setTrackKeyframeFromEuler(state, "head", 0, [0, 0, 0]);
+    setTrackKeyframeFromEuler(state, "head", 23, [45, 0, 0]);
+    state.currentFrame = 23;
+
+    retimeAnimationTiming(state, { duration: 20 });
+
+    assert.equal(state.frameCount, 240);
+    assert.equal(state.duration, 20);
+    assert.equal(state.currentFrame, 23);
+    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 23]);
+});
+
+test("shrinking duration never moves or destroys keys beyond the requested end", () => {
+    const state = createDefaultAnimationState({}, { frameCount: 24, duration: 2, fps: 12 });
+    setTrackKeyframeFromEuler(state, "head", 0, [0, 0, 0]);
+    setTrackKeyframeFromEuler(state, "head", 23, [45, 0, 0]);
+
+    resizeAnimationFrameCount(state, 12);
+
+    assert.equal(state.frameCount, 24);
+    assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 23]);
 });
 
 test("seconds and FPS always retime the internal frame count together", () => {
@@ -391,6 +419,33 @@ test("canvas key hit testing finds only nearby frames", () => {
     const keys = [{ id: "a", frame: 2 }, { id: "b", frame: 20 }, { id: "c", frame: 40 }];
     assert.equal(findNearestKeyframeAtPosition(keys, 200, 400, 41)?.id, "b");
     assert.equal(findNearestKeyframeAtPosition(keys, 215, 400, 41), null);
+});
+
+test("timeline lanes fill the visible area and overflow only for dense clips", () => {
+    assert.equal(computeTimelineLaneWidth({ frameCount: 24, viewportWidth: 1800 }), 1590);
+    assert.equal(computeTimelineLaneWidth({ frameCount: 24, viewportWidth: 700 }), 800);
+    assert.equal(computeTimelineLaneWidth({ frameCount: 600, viewportWidth: 1800 }), 9000);
+});
+
+test("timeline horizontal slider mirrors and clamps native scrolling", () => {
+    assert.deepEqual(computeTimelineHorizontalScroll({
+        scrollWidth: 9210,
+        clientWidth: 1800,
+        scrollLeft: 3200,
+    }), {
+        maximum: 7410,
+        value: 3200,
+        visible: true,
+    });
+    assert.deepEqual(computeTimelineHorizontalScroll({
+        scrollWidth: 1800,
+        clientWidth: 1800,
+        scrollLeft: 50,
+    }), {
+        maximum: 0,
+        value: 0,
+        visible: false,
+    });
 });
 
 test("marquee selection supports grouped moves without collapsing key spacing", () => {

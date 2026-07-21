@@ -9,7 +9,6 @@ import tempfile
 import uuid
 import threading
 import asyncio
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from fractions import Fraction
@@ -23,11 +22,10 @@ POSE_ASSET_TYPE = "pose"
 ANIMATION_ASSET_TYPE = "animation"
 ANIMATION_SYSTEM_TAG = "Animation"
 RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
-SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 MAX_PREVIEW_BYTES = 16 * 1024 * 1024
 MAX_VIDEO_PREVIEW_INPUT_BYTES = 40 * 1024 * 1024
 MAX_VIDEO_PREVIEW_STORED_BYTES = 32 * 1024 * 1024
-MAX_SYNC_CAPTURE_CHARS = 64 * 1024 * 1024
+MAX_LIBRARY_SAVE_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_POSE_REPOSITORY_FILE_BYTES = 32 * 1024 * 1024
 MAX_POSE_REPOSITORY_SYNC_BYTES = 256 * 1024 * 1024
 _REPOSITORY_PROGRESS = {}
@@ -618,17 +616,6 @@ def remove_local_repository_cache(repo_id):
         removed_count += len(files)
     shutil.rmtree(repo_root, ignore_errors=True)
     return removed_count
-
-def download_pose_repository_file_job(repo_id, token, job):
-    tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
-    try:
-        changed = copy_if_changed(tmp_path, job["target_path"], job.get("expected_sha") or "")
-        return {**job, "changed": changed, "bytes": os.path.getsize(tmp_path)}
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
 
 def sync_pose_repository_files(repo, manifest, token, task_id=None):
     """Download new/changed pose files from a Hugging Face pose repository."""
@@ -1295,10 +1282,6 @@ def sanitize_pose_name(name):
     name = "".join(c for c in str(name or "") if c.isalnum() or c in "-_ ").strip()
     return name
 
-def sanitize_node_id(value):
-    cleaned = SAFE_ID_RE.sub("_", str(value or "")).strip("_")
-    return cleaned[:128]
-
 def sanitize_path_segment(value, fallback):
     value = str(value or "").strip() or fallback
     value = value.replace("\\", "_").replace("/", "_")
@@ -1577,19 +1560,6 @@ def install_prepared_preview(folder_path, name, prepared_preview):
     remove_previews(folder_path, name)
     os.replace(tmp_path, os.path.join(folder_path, f"{name}{ext}"))
 
-def save_preview(folder_path, name, preview_b64):
-    prepared_preview = None
-    try:
-        prepared_preview = prepare_preview_file(folder_path, preview_b64)
-        install_prepared_preview(folder_path, name, prepared_preview)
-        prepared_preview = None
-    finally:
-        if prepared_preview:
-            try:
-                os.remove(prepared_preview[0])
-            except Exception:
-                pass
-
 def normalize_request_repository(value):
     return str(value or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
 
@@ -1747,7 +1717,7 @@ async def get_pose(request):
 async def save_pose(request):
     """POST /vnccs/pose_library/save - Saves a pose with optional preview."""
     try:
-        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
+        if not expected_content_length(request, MAX_LIBRARY_SAVE_REQUEST_BYTES):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except:
@@ -1892,34 +1862,6 @@ async def get_preview(request):
     with open(preview_path, "rb") as f:
         return web.Response(body=f.read(), content_type=content_type)
 
-async def upload_pose_sync(request):
-    """POST /vnccs/pose_sync/upload_capture - Saves synchronized capture for execution."""
-    try:
-        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
-            return web.json_response({"error": "capture payload is too large"}, status=413)
-        data = await request.json()
-        node_id = sanitize_node_id(data.get("node_id"))
-        if not node_id:
-             return web.json_response({"error": "No node_id"}, status=400)
-        if len(json.dumps(data, separators=(",", ":"))) > MAX_SYNC_CAPTURE_CHARS:
-            return web.json_response({"error": "capture payload is too large"}, status=413)
-             
-        import folder_paths
-        temp_dir = folder_paths.get_temp_directory()
-        # Note: we use 'debug' in the filename for backwards compatibility with the backend check
-        filepath = os.path.join(temp_dir, f"vnccs_debug_{node_id}.json")
-        temp_abs = os.path.abspath(temp_dir)
-        file_abs = os.path.abspath(filepath)
-        if file_abs != temp_abs and not file_abs.startswith(temp_abs + os.sep):
-            return web.json_response({"error": "Invalid node_id"}, status=400)
-        
-        with open(filepath, "w") as f:
-            json.dump(data, f)
-            
-        return web.json_response({"status": "ok"})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
 def register_routes(app):
     """Register Pose Library API routes."""
     app.router.add_get("/vnccs/pose_library/list", list_poses)
@@ -1935,5 +1877,3 @@ def register_routes(app):
     app.router.add_post("/vnccs/pose_library/repositories/refresh", refresh_pose_repositories)
     app.router.add_post("/vnccs/pose_library/repositories/auto_refresh", auto_refresh_enabled_pose_repositories)
     app.router.add_post("/vnccs/pose_library/repositories/local/publish", publish_local_pose_repository)
-    app.router.add_post("/vnccs/pose_sync/upload_capture", upload_pose_sync)
-    app.router.add_post("/vnccs/debug/upload_capture", upload_pose_sync)  # Aliased for backward compatibility

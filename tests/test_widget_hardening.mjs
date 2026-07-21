@@ -7,6 +7,7 @@ const modelManagerSource = await readFile(new URL("../web/vnccs_model_manager.js
 const uniCanvasSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const poseStudioSource = await readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 const poseStudioCoreSource = await readFile(new URL("../web/vnccs_pose_studio_core.js", import.meta.url), "utf8");
+const poseAnimationSource = await readFile(new URL("../web/vnccs_pose_animation.mjs", import.meta.url), "utf8");
 
 
 test("Model Manager never interpolates remote data into innerHTML", () => {
@@ -106,4 +107,24 @@ test("each Pose Manager model generation restarts preview capture from the first
             < workerMethod.indexOf("this.scheduleAllManagerPreviewRefresh()"),
         "AGE camera fitting must finish before preview capture is scheduled",
     );
+});
+
+
+test("animation timeline fills its viewport and exposes mouse-draggable horizontal scrolling", () => {
+    assert.match(poseAnimationSource, /viewportWidth: this\.body\?\.clientWidth/);
+    assert.match(poseAnimationSource, /this\.horizontalScrollInput\.type = "range"/);
+    assert.match(
+        poseAnimationSource,
+        /this\.body\.scrollLeft = Number\(this\.horizontalScrollInput\.value\) \|\| 0/,
+    );
+    assert.match(
+        poseAnimationSource,
+        /this\.body\.addEventListener\("scroll", \(\) => \{\s*this\._syncHorizontalScrollbar\(\)/,
+    );
+    assert.match(poseStudioSource, /\.vnccs-ps-tl-body \{[\s\S]*overflow-x: hidden;[\s\S]*overflow-y: auto;/);
+    assert.match(
+        poseAnimationSource,
+        /this\.body\.addEventListener\("wheel", event => \{[\s\S]*this\.body\.scrollLeft = clamp\(/,
+    );
+    assert.match(poseStudioSource, /\.vnccs-ps-tl-horizontal-scroll\.visible \{\s*display: flex;/);
 });

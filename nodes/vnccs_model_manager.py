@@ -1,6 +1,5 @@
 import os
 import json
-import aiohttp
 from aiohttp import web
 import server
 import folder_paths
