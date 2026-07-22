@@ -143,19 +143,30 @@ def _vnccs_validate_pose_animation_payload(data):
     animation = data.get("animation")
     if not isinstance(animation, dict):
         raise ValueError("animation must be an object")
-    tracks = animation.get("tracks", {})
-    if not isinstance(tracks, dict):
-        raise ValueError("animation.tracks must be an object")
     total_keys = 0
-    for track in tracks.values():
-        if not isinstance(track, dict):
-            continue
-        keys = track.get("keys", [])
-        if not isinstance(keys, list):
-            raise ValueError("animation track keys must be a list")
-        total_keys += len(keys)
-        if total_keys > _POSE_ANIMATION_CACHE_MAX_KEYS:
-            raise ValueError(f"animation key limit is {_POSE_ANIMATION_CACHE_MAX_KEYS}")
+    animations = [animation]
+    character_animations = animation.get("characterAnimations", [])
+    if character_animations is not None:
+        if not isinstance(character_animations, list) or len(character_animations) > 3:
+            raise ValueError("animation.characterAnimations must contain at most three entries")
+        for entry in character_animations:
+            nested = entry.get("animation") if isinstance(entry, dict) else None
+            if not isinstance(nested, dict):
+                raise ValueError("character animation must be an object")
+            animations.append(nested)
+    for clip in animations:
+        tracks = clip.get("tracks", {})
+        if not isinstance(tracks, dict):
+            raise ValueError("animation.tracks must be an object")
+        for track in tracks.values():
+            if not isinstance(track, dict):
+                continue
+            keys = track.get("keys", [])
+            if not isinstance(keys, list):
+                raise ValueError("animation track keys must be a list")
+            total_keys += len(keys)
+            if total_keys > _POSE_ANIMATION_CACHE_MAX_KEYS:
+                raise ValueError(f"animation key limit is {_POSE_ANIMATION_CACHE_MAX_KEYS}")
     raw = json.dumps(animation, ensure_ascii=False, separators=(",", ":"))
     if len(raw) > _POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS:
         raise ValueError("animation payload is too large")

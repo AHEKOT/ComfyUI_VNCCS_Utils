@@ -393,6 +393,12 @@ class VNCCS_PoseStudio:
                         animation = data.get("animation") if isinstance(data.get("animation"), dict) else {}
                         frame_count = max(1, int(animation.get("frameCount", animation.get("frame_count", 1)) or 1))
                         sync_timeout = min(120.0, max(15.0, 5.0 + frame_count * 0.25))
+                    else:
+                        character_count = len(data.get("characters", [])) if isinstance(data.get("characters"), list) else 1
+                        if character_count > 1:
+                            # A freshly opened multi-character workflow may
+                            # still be materializing up to four independent rigs.
+                            sync_timeout = min(60.0, 10.0 + character_count * 10.0)
                     synced = self._wait_for_frontend_sync(
                         unique_id,
                         start_time,

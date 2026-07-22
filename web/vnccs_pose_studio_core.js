@@ -1031,6 +1031,14 @@ export class PoseViewerCore {
         this.skeleton = null;
         this.boneList = [];
         this.bones = {};
+        // The selected character owns the editable rig above. Other scene
+        // characters are lightweight independent rig clones with no markers,
+        // IK helpers, or TransformControls, so they remain visible but inert.
+        this.passiveCharacters = new Map();
+        this.activeCharacterAppearance = {
+            color: "#ffffff",
+            transform: { x: 0, y: 0, z: 0, zoom: 1 },
+        };
         this.modelLandmarks = {};
         this.modelLandmarkIndices = {};
         this.selectedBone = null;
@@ -1074,6 +1082,7 @@ export class PoseViewerCore {
             shin_r: 0.5,
             spine: 0.5,
         };
+        this.shapedBoneRestPositions = {};
 
         // Managed lights array
         this.lights = [];
@@ -1278,6 +1287,10 @@ export class PoseViewerCore {
             this.orbit = null;
         }
 
+        this.clearPassiveCharacters();
+        this.cachedSkinTexture?.dispose?.();
+        this.cachedSkinTexture = null;
+
         // Clean up lights
         if (this.lights) {
             this.lights.forEach(l => {
@@ -1320,6 +1333,9 @@ export class PoseViewerCore {
         this.skeleton = null;
         this.bones = {};
         this.boneList = [];
+        this.passiveCharacters = new Map();
+        this.shapedBoneRestPositions = {};
+        this.sceneCameraTarget = null;
         this.ikController = null;
         this.directionalSkydome = null;
         this._captureBatch = null;
@@ -1484,6 +1500,9 @@ export class PoseViewerCore {
         // Capture Camera (Independent of Orbit camera)
         this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 500);
         this.scene.add(this.captureCamera);
+        // The common scene camera must not jump when a differently shaped
+        // active character replaces the editor rig.
+        this.sceneCameraTarget = null;
 
         // Visual Helper - Orange Frame
         const frameGeo = new THREE.BufferGeometry().setFromPoints([
@@ -2946,6 +2965,7 @@ export class PoseViewerCore {
         geometry.computeBoundingBox();
         const center = geometry.boundingBox.getCenter(new THREE.Vector3());
         this.meshCenter = center.clone();
+        if (!this.sceneCameraTarget) this.sceneCameraTarget = center.clone();
         const size = geometry.boundingBox.getSize(new THREE.Vector3());
         if (!keepCamera && size.length() > 0.1 && this.orbit) {
             this.orbit.target.copy(center);
@@ -2975,6 +2995,7 @@ export class PoseViewerCore {
             this.updateFootScale(this.footScale);
         }
         this.applyBoneLengthScales();
+        this._cacheShapedRestBonePositions();
 
         this._initIKHelpers();
         if (selectedBoneName && this.bones?.[selectedBoneName]) {
@@ -3082,13 +3103,23 @@ export class PoseViewerCore {
 
         const savedRotations = new Map();
         let savedMeshRotation = null;
+        let savedMeshPosition = null;
+        let savedMeshScale = null;
         if (bonePositions && this.boneList?.length && bonePositions.length >= this.boneList.length * 6) {
             for (const bone of this.boneList) {
                 savedRotations.set(bone.name, bone.rotation.clone());
                 bone.rotation.set(0, 0, 0);
             }
             savedMeshRotation = this.skinnedMesh.rotation.clone();
+            savedMeshPosition = this.skinnedMesh.position.clone();
+            savedMeshScale = this.skinnedMesh.scale.clone();
+            // The original bind pose is created before a character-specific
+            // X/Y/Zoom transform is applied. Recalculate inverses in that same
+            // neutral mesh space or the skin cancels the character transform
+            // while SkeletonHelper continues to follow the transformed bones.
             this.skinnedMesh.rotation.set(0, 0, 0);
+            this.skinnedMesh.position.set(0, 0, 0);
+            this.skinnedMesh.scale.set(1, 1, 1);
         }
 
         position.array.set(vertices);
@@ -3150,7 +3181,12 @@ export class PoseViewerCore {
                 if (rotation) bone.rotation.copy(rotation);
             }
             if (savedMeshRotation) this.skinnedMesh.rotation.copy(savedMeshRotation);
+            if (savedMeshPosition) this.skinnedMesh.position.copy(savedMeshPosition);
+            if (savedMeshScale) this.skinnedMesh.scale.copy(savedMeshScale);
+            this.skinnedMesh.updateMatrixWorld(true);
             if (this.skeleton) this.skeleton.update();
+            this.applyBoneLengthScales();
+            this._cacheShapedRestBonePositions();
             this.updateIKEffectorPositions?.();
         }
 
@@ -3204,6 +3240,9 @@ export class PoseViewerCore {
                 rotation: bone.rotation.clone()
             };
         }
+        this.shapedBoneRestPositions = Object.fromEntries(
+            this.boneList.map(bone => [bone.name, bone.position.clone()]),
+        );
 
         this.skeleton = new THREE.Skeleton(this.boneList);
 
@@ -3307,6 +3346,8 @@ export class PoseViewerCore {
         rootBones.forEach(b => this.skinnedMesh.add(b));
         this.skinnedMesh["bind"](this.skeleton);
         this.scene.add(this.skinnedMesh);
+        this._applyCharacterTransform(this.skinnedMesh, this.activeCharacterAppearance?.transform);
+        this._applyActiveCharacterColor();
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
 
@@ -3316,9 +3357,7 @@ export class PoseViewerCore {
         } else {
             this._loadSkinTexture(skinType, (tex) => {
                 if (this.skinnedMesh?.material !== material) return;
-                material.map = tex;
-                material.color.setHex(0xffffff);
-                material.needsUpdate = true;
+                this._applyTextureToAllCharacters(tex);
             });
         }
     }
@@ -3474,6 +3513,16 @@ export class PoseViewerCore {
         return [];
     }
 
+    _cacheShapedRestBonePositions(boneNames = null) {
+        if (!this.shapedBoneRestPositions) this.shapedBoneRestPositions = {};
+        const names = boneNames ? new Set(boneNames) : null;
+        for (const bone of this.boneList || []) {
+            if (!names || names.has(bone.name)) {
+                this.shapedBoneRestPositions[bone.name] = bone.position.clone();
+            }
+        }
+    }
+
     updateBoneLengthScale(group, value) {
         if (!this.boneLengthParams) {
             this.boneLengthParams = {
@@ -3500,11 +3549,13 @@ export class PoseViewerCore {
         if (!validGroups.includes(group)) return;
         this.boneLengthParams[group] = Number.isFinite(Number(value)) ? Number(value) : 0.5;
         const scale = this._lengthSliderToScale(this.boneLengthParams[group]);
-        for (const childName of this._boneLengthChildrenForGroup(group)) {
+        const affectedChildren = this._boneLengthChildrenForGroup(group);
+        for (const childName of affectedChildren) {
             this._setBoneOffsetScale(childName, scale);
         }
         for (const bone of this.boneList) bone.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
+        this._cacheShapedRestBonePositions(affectedChildren);
         this.updateIKEffectorPositions();
         this.requestRender();
     }
@@ -3532,42 +3583,27 @@ export class PoseViewerCore {
 
         // Check configuration bypass flags to protect embedding apps (e.g WebGL Error Contexts)
         if (!this.options.enableTextureSkinning || this.options.skinMode === 'flat_color') {
-            if (this.skinnedMesh.material.map) {
-                this.skinnedMesh.material.map.dispose();
-                this.skinnedMesh.material.map = null;
-            }
-            this.skinnedMesh.material.color.setHex(0xaaaaaa);
-            this.skinnedMesh.material.needsUpdate = true;
+            // Maps are cache-owned and may still be referenced by a passive
+            // rig. Detach them from every character without disposing here.
+            this._applyTextureToAllCharacters(null);
             this._skinTextureLoadToken += 1;
             this._markSkinTextureReady();
-            this.requestRender();
             return;
         }
 
-        const material = this.skinnedMesh.material;
         if (
             this._cachedSkinTextureReady
             && this.cachedSkinTexture
             && this.cachedSkinType === skinType
         ) {
-            const previous = material.map;
-            material.map = this.cachedSkinTexture;
-            material.color.setHex(0xffffff);
-            material.needsUpdate = true;
-            if (previous && previous !== material.map) previous.dispose?.();
+            this._applyTextureToAllCharacters(this.cachedSkinTexture);
             this._skinTextureLoadToken += 1;
             this._markSkinTextureReady();
-            this.requestRender();
             return;
         }
 
         this._loadSkinTexture(skinType, (tex) => {
-            if (this.skinnedMesh?.material !== material) return;
-            const previous = material.map;
-            material.map = tex;
-            material.color.setHex(0xffffff);
-            material.needsUpdate = true;
-            if (previous && previous !== tex) previous.dispose?.();
+            this._applyTextureToAllCharacters(tex);
         });
     }
 
@@ -3684,6 +3720,10 @@ export class PoseViewerCore {
         // Reset all bones
         for (const b of this.boneList) {
             b.rotation.set(0, 0, 0);
+            const shapedRest = this.shapedBoneRestPositions?.[b.name];
+            const initialRest = this.initialBoneStates?.[b.name]?.position;
+            if (shapedRest) b.position.copy(shapedRest);
+            else if (initialRest) b.position.copy(initialRest);
         }
 
         // Apply bone rotations
@@ -3773,6 +3813,7 @@ export class PoseViewerCore {
         }
 
         // Update skeleton after all changes
+        this.skinnedMesh?.updateMatrixWorld?.(true);
         if (this.skeleton) {
             this.skeleton.update();
         }
@@ -4174,6 +4215,234 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
+    _normalizedCharacterTransform(transform = {}) {
+        const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+        return {
+            x: Math.max(-50, Math.min(50, finite(transform.x ?? transform.offset_x, 0))),
+            y: Math.max(-50, Math.min(50, finite(transform.y ?? transform.offset_y, 0))),
+            z: Math.max(-40, Math.min(40, finite(transform.z ?? transform.depth, 0))),
+            zoom: Math.max(0.1, Math.min(7, finite(transform.zoom ?? transform.scale, 1))),
+        };
+    }
+
+    _normalizedCharacterColor(color) {
+        const text = String(color || "").trim();
+        if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+        if (/^#[0-9a-f]{3}$/i.test(text)) {
+            return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`.toLowerCase();
+        }
+        return "#ffffff";
+    }
+
+    _applyCharacterTransform(mesh, transform = {}) {
+        if (!mesh) return;
+        const normalized = this._normalizedCharacterTransform(transform);
+        mesh.position.set(normalized.x, normalized.y, normalized.z);
+        mesh.scale.setScalar(normalized.zoom);
+        mesh.updateMatrixWorld(true);
+    }
+
+    _applyMaterialCharacterColor(material, color) {
+        if (!material) return;
+        const normalized = this._normalizedCharacterColor(color);
+        const materials = Array.isArray(material) ? material : [material];
+        for (const item of materials) {
+            item?.color?.set?.(normalized);
+            if (item) item.needsUpdate = true;
+        }
+    }
+
+    _applyActiveCharacterColor() {
+        if (!this.skinnedMesh?.material) return;
+        this._applyMaterialCharacterColor(
+            this.skinnedMesh.material,
+            this.activeCharacterAppearance?.color,
+        );
+    }
+
+    _setCharacterMaterialTexture(material, texture) {
+        const materials = Array.isArray(material) ? material : [material];
+        for (const item of materials) {
+            if (!item) continue;
+            item.map = texture || null;
+            item.needsUpdate = true;
+        }
+    }
+
+    _applyTextureToAllCharacters(texture) {
+        this._setCharacterMaterialTexture(this.skinnedMesh?.material, texture);
+        this._applyActiveCharacterColor();
+        for (const entry of this.passiveCharacters?.values?.() || []) {
+            this._setCharacterMaterialTexture(entry.mesh?.material, texture);
+            this._applyMaterialCharacterColor(entry.mesh?.material, entry.color);
+        }
+        this.requestRender();
+    }
+
+    setActiveCharacterAppearance({ color, transform } = {}) {
+        const current = this.activeCharacterAppearance || {};
+        this.activeCharacterAppearance = {
+            color: this._normalizedCharacterColor(color ?? current.color),
+            transform: this._normalizedCharacterTransform(transform ?? current.transform),
+        };
+        this._applyActiveCharacterColor();
+        this._applyCharacterTransform(this.skinnedMesh, this.activeCharacterAppearance.transform);
+        this.updateIKEffectorPositions?.();
+        this.updateMarkers?.();
+        this.requestRender();
+    }
+
+    resetSceneCameraTarget() {
+        this.sceneCameraTarget = null;
+    }
+
+    _disposePassiveCharacter(entry) {
+        if (!entry) return;
+        if (entry.mesh?.parent) entry.mesh.parent.remove(entry.mesh);
+        entry.mesh?.geometry?.dispose?.();
+        const materials = Array.isArray(entry.mesh?.material)
+            ? entry.mesh.material
+            : [entry.mesh?.material];
+        for (const material of materials) material?.dispose?.();
+    }
+
+    removePassiveCharacter(id) {
+        const key = String(id || "");
+        const entry = this.passiveCharacters?.get(key);
+        if (!entry) return false;
+        this._disposePassiveCharacter(entry);
+        this.passiveCharacters.delete(key);
+        this.requestRender();
+        return true;
+    }
+
+    clearPassiveCharacters() {
+        if (!this.passiveCharacters) return;
+        for (const entry of this.passiveCharacters.values()) {
+            this._disposePassiveCharacter(entry);
+        }
+        this.passiveCharacters.clear();
+        this.requestRender?.();
+    }
+
+    _cloneActiveRigForPassiveCharacter(id) {
+        if (!this.THREE || !this.scene || !this.skinnedMesh || !this.skeleton) return null;
+        const THREE = this.THREE;
+        const cloneBySource = new Map();
+        const clonedBones = this.boneList.map(source => {
+            const bone = new THREE.Bone();
+            bone.name = source.name;
+            bone.position.copy(source.position);
+            bone.quaternion.copy(source.quaternion);
+            bone.scale.copy(source.scale);
+            bone.rotation.order = source.rotation.order;
+            bone.userData = { ...source.userData };
+            cloneBySource.set(source, bone);
+            return bone;
+        });
+
+        const roots = [];
+        for (const source of this.boneList) {
+            const cloned = cloneBySource.get(source);
+            const clonedParent = cloneBySource.get(source.parent);
+            if (clonedParent) clonedParent.add(cloned);
+            else roots.push(cloned);
+        }
+
+        const boneInverses = (this.skeleton.boneInverses || []).map(matrix => matrix.clone());
+        const skeleton = new THREE.Skeleton(clonedBones, boneInverses);
+        const geometry = this.skinnedMesh.geometry.clone();
+        const material = Array.isArray(this.skinnedMesh.material)
+            ? this.skinnedMesh.material.map(item => item.clone())
+            : this.skinnedMesh.material.clone();
+        const mesh = new THREE.SkinnedMesh(geometry, material);
+        mesh.name = `VNCCS Passive Character ${id}`;
+        mesh.userData.vnccsPassiveCharacterId = String(id);
+        roots.forEach(root => mesh.add(root));
+        mesh.bind(skeleton, this.skinnedMesh.bindMatrix.clone());
+        mesh.bindMode = this.skinnedMesh.bindMode;
+        this.scene.add(mesh);
+
+        const initialPositions = new Map();
+        for (const source of this.boneList) {
+            // Clone the currently shaped rest offsets so per-character head,
+            // limb, and bone-length proportions survive passive animation.
+            const shapedRest = this.shapedBoneRestPositions?.[source.name];
+            const initialRest = this.initialBoneStates?.[source.name]?.position;
+            initialPositions.set(
+                source.name,
+                (shapedRest || initialRest || source.position).clone(),
+            );
+        }
+        return {
+            id: String(id),
+            mesh,
+            skeleton,
+            boneList: clonedBones,
+            bones: Object.fromEntries(clonedBones.map(bone => [bone.name, bone])),
+            initialPositions,
+            color: this._normalizedCharacterColor(this.activeCharacterAppearance?.color),
+        };
+    }
+
+    upsertPassiveCharacterFromActive(id, { pose = {}, color, transform } = {}) {
+        const key = String(id || "");
+        if (!key || !this.isInitialized()) return false;
+        this.removePassiveCharacter(key);
+        const entry = this._cloneActiveRigForPassiveCharacter(key);
+        if (!entry) return false;
+        this.passiveCharacters.set(key, entry);
+        this.setPassiveCharacterState(key, { pose, color, transform });
+        return true;
+    }
+
+    setPassiveCharacterState(id, { pose = {}, color, transform } = {}) {
+        const entry = this.passiveCharacters?.get(String(id || ""));
+        if (!entry) return false;
+
+        for (const bone of entry.boneList) {
+            bone.rotation.set(0, 0, 0);
+            const initial = entry.initialPositions.get(bone.name);
+            if (initial) bone.position.copy(initial);
+        }
+        for (const [name, rotation] of Object.entries(pose?.bones || {})) {
+            const bone = entry.bones[name];
+            if (!bone || !Array.isArray(rotation) || rotation.length < 3) continue;
+            bone.rotation.set(
+                (Number(rotation[0]) || 0) * Math.PI / 180,
+                (Number(rotation[1]) || 0) * Math.PI / 180,
+                (Number(rotation[2]) || 0) * Math.PI / 180,
+            );
+        }
+        for (const [chainKey, position] of Object.entries(pose?.hipBonePosition || {})) {
+            const definition = IK_CHAINS[chainKey];
+            const bone = definition?.effector ? entry.bones[definition.effector] : null;
+            if (bone && Array.isArray(position) && position.length >= 3) {
+                bone.position.set(Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0);
+            }
+        }
+        const rotation = Array.isArray(pose?.modelRotation) ? pose.modelRotation : [0, 0, 0];
+        entry.mesh.rotation.set(
+            (Number(rotation[0]) || 0) * Math.PI / 180,
+            (Number(rotation[1]) || 0) * Math.PI / 180,
+            (Number(rotation[2]) || 0) * Math.PI / 180,
+        );
+        this._applyCharacterTransform(entry.mesh, transform);
+        entry.color = this._normalizedCharacterColor(color ?? entry.color);
+        this._applyMaterialCharacterColor(entry.mesh.material, entry.color);
+        entry.skeleton.update();
+        entry.mesh.updateMatrixWorld(true);
+        this.requestRender();
+        return true;
+    }
+
+    setPassiveCharactersVisible(visible) {
+        for (const entry of this.passiveCharacters?.values?.() || []) {
+            entry.mesh.visible = visible !== false;
+        }
+        this.requestRender();
+    }
+
 
     setSkinMode(mode) {
         if (!this.options) return;
@@ -4244,7 +4513,7 @@ export class PoseViewerCore {
         if (!this.THREE || !this.captureCamera) return; // Not initialized yet
         if (this._applySAMProjectionCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg)) return;
 
-        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        const baseTarget = this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
             baseTarget.x - offsetX,
@@ -4321,7 +4590,7 @@ export class PoseViewerCore {
         const target = this._samProjectionCameraFrame
             ? this._getSAMProjectionViewTarget(this.captureCamera)
             : (() => {
-                const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+                const baseTarget = this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
                 return new this.THREE.Vector3(
                     baseTarget.x - offsetX,
                     baseTarget.y - offsetY,
