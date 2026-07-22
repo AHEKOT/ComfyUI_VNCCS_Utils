@@ -70,6 +70,38 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
 
+## VNCCS img2threejs Studio
+
+**VNCCS img2threejs Studio** is an image-to-procedural-3D workspace embedded in
+a ComfyUI node. Drop in a reference image, generate a constrained component and
+material spec with Codex, Claude, OpenAI, Azure OpenAI, or a local multimodal
+GGUF, and inspect the result in an interactive Three.js viewport.
+
+The node vendors the MIT-licensed
+[`hoainho/img2threejs`](https://github.com/hoainho/img2threejs) v1.2.0 skill and
+forge pipeline. Generated model code is never evaluated inside ComfyUI: the
+widget renders a validated JSON scene, while the upstream forge produces the
+downloadable ObjectSculptSpec and TypeScript `THREE.Group` factory.
+
+### Key Features
+
+* **Integrated 3D Viewport**: Orbit, frame, inspect hierarchy, toggle grid and
+  wireframe, and capture a workflow preview directly inside the node.
+* **Multi-Provider Framework**: Codex CLI, Claude API/CLI, OpenAI Responses,
+  Azure OpenAI Responses, and local multimodal GGUF through `llama.cpp`.
+* **Quality-Gated Refinement**: Send the reference and current render through a
+  focused visual-review pass instead of replacing the asset with a blind
+  one-shot generation.
+* **Safe Procedural Output**: Validated scene JSON, full ObjectSculptSpec,
+  generated TypeScript, preview image, and a retained project directory.
+* **Private Local Mode**: Pair a vision GGUF with its mmproj file; reference
+  images remain on the ComfyUI host.
+* **Graphical UX**: Provider configuration, model uploads, progress,
+  cancellation, errors, and confirmations use node-bound panels and modals—no
+  browser alert dialogs.
+
+👉 **[Setup, providers, workflow, and security guide](docs/IMG2THREEJS_STUDIO.md)**
+
 ## Additional Nodes
 
 ### VNCCS Visual Camera Control
@@ -143,6 +175,13 @@ git clone https://github.com/AHEKOT/ComfyUI_VNCCS_Utils.git
 cd ComfyUI_VNCCS_Utils
 pip install -r requirements.txt
 ```
+
+For local multimodal GGUF support, install a current native
+[`llama.cpp`](https://github.com/ggml-org/llama.cpp) build and expose
+`llama-server` (`llama-server.exe` on Windows) to the ComfyUI process. Studio
+uses native `libmtmd` architecture detection rather than legacy Python vision
+handler classes. See the detailed guide for PATH and `VNCCS_LLAMA_SERVER`
+setup.
 
 Restart ComfyUI after installation.
 

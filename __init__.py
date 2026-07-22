@@ -3,6 +3,7 @@ from .nodes.vnccs_qwen_detailer import VNCCS_QWEN_Detailer, VNCCS_BBox_Extractor
 from .nodes.vnccs_model_manager import VNCCS_ModelManager, VNCCS_ModelSelector
 from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
+from .nodes.img2threejs_studio import VNCCS_Img2ThreeJSStudio
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_PositionControl": VNCCS_PositionControl,
@@ -13,6 +14,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_ModelSelector": VNCCS_ModelSelector,
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
+    "VNCCS_Img2ThreeJSStudio": VNCCS_Img2ThreeJSStudio,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -24,6 +26,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_ModelSelector": "VNCCS Model Selector",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
+    "VNCCS_Img2ThreeJSStudio": "VNCCS img2threejs Studio",
 }
 
 WEB_DIRECTORY = "./web"
@@ -579,3 +582,22 @@ def _vnccs_register_sam3d_pose_import():
 
 
 _vnccs_register_sam3d_pose_import()
+
+
+# === img2threejs Studio API ===
+def _vnccs_register_img2threejs_studio():
+    try:
+        from server import PromptServer
+        from .api.img2threejs_studio import register_routes
+
+        # Register on ComfyUI's RouteTableDef. PromptServer.add_routes() creates
+        # both the modern /api-prefixed endpoints used by api.fetchApi() and
+        # their legacy unprefixed aliases from this table.
+        register_routes(PromptServer.instance.routes)
+    except Exception as exc:
+        # Keep the rest of the extension importable when ComfyUI's server is
+        # not present (for example during isolated node/unit tests).
+        print(f"[VNCCS] Failed to register img2threejs Studio API: {exc}")
+
+
+_vnccs_register_img2threejs_studio()
