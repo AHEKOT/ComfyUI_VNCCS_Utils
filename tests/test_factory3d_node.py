@@ -215,12 +215,62 @@ class FactoryNodeTests(unittest.TestCase):
             mock.patch.object(
                 self.module.time,
                 "monotonic",
-                side_effect=[0.0, 31.0],
+                side_effect=[0.0, 61.0],
             ),
         ):
-            with self.assertRaisesRegex(RuntimeError, "no current 3D scene preview"):
+            with self.assertRaisesRegex(RuntimeError, "current 3D scene preview"):
                 self.module.VNCCS_3DFactory().load_scene(state)
-        backend.ensure_scene_exports.assert_not_called()
+        backend.ensure_scene_exports.assert_called_once_with(scene_id)
+
+    def test_execution_requests_a_token_bound_preview_from_the_live_widget(self):
+        scene_id = "a" * 32
+        capture_token = "c" * 32
+        preview_path = ROOT / "preview" / "scene.png"
+        scene = {
+            "scene_id": scene_id,
+            "revision": 4,
+            "render_revision": 7,
+            "objects": [{"object_id": "b" * 32}],
+            "preview": {},
+        }
+        events = []
+
+        def send_sync(name, payload):
+            events.append((name, payload))
+            scene["preview"]["capture_token"] = payload["capture_token"]
+
+        def preview_file(value, expected_capture_token=""):
+            if (
+                expected_capture_token
+                and value["preview"].get("capture_token") != expected_capture_token
+            ):
+                raise FileNotFoundError("capture pending")
+            return preview_path
+
+        backend = types.SimpleNamespace(
+            load_scene=lambda _scene_id: scene,
+            _scene_preview_file=preview_file,
+            ensure_scene_exports=lambda _scene_id: None,
+            resolve_scene_dir=lambda _scene_id: ROOT,
+        )
+        server = types.ModuleType("server")
+        server.PromptServer = types.SimpleNamespace(
+            instance=types.SimpleNamespace(send_sync=send_sync),
+        )
+        state = json.dumps({"schema_version": 4, "scene_id": scene_id})
+        token_value = types.SimpleNamespace(hex=capture_token)
+        with (
+            mock.patch.dict(sys.modules, {"server": server}),
+            mock.patch.object(self.module.uuid, "uuid4", return_value=token_value),
+            mock.patch.object(self.module, "_backend", return_value=backend),
+            mock.patch.object(self.module, "_preview_tensor", return_value="fresh-preview"),
+        ):
+            result = self.module.VNCCS_3DFactory().load_scene(state, unique_id="17")
+
+        self.assertEqual(result[0], "fresh-preview")
+        self.assertEqual(events[0][0], "vnccs_req_3d_factory_preview")
+        self.assertEqual(events[0][1]["node_id"], "17")
+        self.assertEqual(events[0][1]["capture_token"], capture_token)
 
 
 if __name__ == "__main__":

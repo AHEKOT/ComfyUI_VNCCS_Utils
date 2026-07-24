@@ -6,7 +6,7 @@ import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
-export const FACTORY_VIEWER_BUILD = "20260724.16";
+export const FACTORY_VIEWER_BUILD = "20260724.18";
 
 function finiteVector(values, fallback = [0, 0, 0]) {
     return fallback.map((item, index) => {
@@ -493,48 +493,84 @@ export class Factory3DViewer {
 
     resize() {
         if (this._disposed) return;
+        // getBoundingClientRect() is expressed in post-transform screen
+        // pixels. ComfyUI scales DOM widgets together with graph zoom, while
+        // the frame's absolute left/top/width/height remain local CSS
+        // coordinates. Mixing those spaces makes the frame shrink and drift
+        // toward the top-left after zooming the graph. clientWidth/Height are
+        // the untransformed containing-block dimensions shared by the canvas
+        // and the frame.
         const rect = this.host.getBoundingClientRect();
-        const width = Math.max(1, Math.floor(rect.width));
-        const height = Math.max(1, Math.floor(rect.height));
+        const width = Math.max(
+            1,
+            Math.floor(Number(this.host.clientWidth) || rect.width),
+        );
+        const height = Math.max(
+            1,
+            Math.floor(Number(this.host.clientHeight) || rect.height),
+        );
         this._updateCameraProjection(width, height);
         this.renderer.setSize(width, height, false);
         this._updateCameraFrame(width, height);
     }
 
-    _updateCameraProjection(width = 0, height = 0) {
+    _cameraFrameLayout(width = 0, height = 0) {
         const viewWidth = Math.max(1, Number(width) || this.host.clientWidth || 1);
         const viewHeight = Math.max(1, Number(height) || this.host.clientHeight || 1);
-        const viewAspect = viewWidth / viewHeight;
         const captureAspect = this.captureWidth / Math.max(1, this.captureHeight);
+        const minimumSide = Math.min(viewWidth, viewHeight);
+        const safeInset = Math.min(
+            Math.max(0, (minimumSide - 1) * 0.5),
+            Math.min(56, Math.max(18, Math.round(minimumSide * 0.065))),
+        );
+        const availableWidth = Math.max(1, viewWidth - safeInset * 2);
+        const availableHeight = Math.max(1, viewHeight - safeInset * 2);
+        let frameWidth = availableWidth;
+        let frameHeight = frameWidth / captureAspect;
+        if (frameHeight > availableHeight) {
+            frameHeight = availableHeight;
+            frameWidth = frameHeight * captureAspect;
+        }
+        return {
+            viewWidth,
+            viewHeight,
+            width: Math.max(1, frameWidth),
+            height: Math.max(1, frameHeight),
+            left: Math.max(0, (viewWidth - frameWidth) * 0.5),
+            top: Math.max(0, (viewHeight - frameHeight) * 0.5),
+            safeInset,
+        };
+    }
+
+    _updateCameraProjection(width = 0, height = 0) {
+        const layout = this._cameraFrameLayout(width, height);
+        const viewAspect = layout.viewWidth / layout.viewHeight;
         let editorFov = this.captureFov;
-        if (this.cameraFrameVisible && captureAspect > viewAspect) {
+        if (this.cameraFrameVisible) {
+            const frameHeightFraction = Math.max(
+                1e-6,
+                Math.min(1, layout.height / layout.viewHeight),
+            );
             editorFov = degrees(
                 2 * Math.atan(
-                    Math.tan(radians(this.captureFov) * 0.5) * captureAspect / viewAspect,
+                    Math.tan(radians(this.captureFov) * 0.5) / frameHeightFraction,
                 ),
             );
         }
         this.camera.aspect = viewAspect;
-        this.camera.fov = Math.max(5, Math.min(150, editorFov));
+        this.camera.fov = Math.max(5, Math.min(175, editorFov));
         this.camera.updateProjectionMatrix();
     }
 
     _updateCameraFrame(width = 0, height = 0) {
         if (!this.cameraFrame) return;
-        const viewWidth = Math.max(1, Number(width) || this.host.clientWidth || 1);
-        const viewHeight = Math.max(1, Number(height) || this.host.clientHeight || 1);
-        const viewAspect = viewWidth / viewHeight;
-        const captureAspect = this.captureWidth / Math.max(1, this.captureHeight);
-        let frameWidth = viewWidth;
-        let frameHeight = viewHeight;
-        if (captureAspect < viewAspect) frameWidth = viewHeight * captureAspect;
-        else if (captureAspect > viewAspect) frameHeight = viewWidth / captureAspect;
+        const layout = this._cameraFrameLayout(width, height);
         Object.assign(this.cameraFrame.style, {
             display: this.cameraFrameVisible ? "block" : "none",
-            left: `${Math.max(0, (viewWidth - frameWidth) * 0.5)}px`,
-            top: `${Math.max(0, (viewHeight - frameHeight) * 0.5)}px`,
-            width: `${Math.max(1, frameWidth)}px`,
-            height: `${Math.max(1, frameHeight)}px`,
+            left: `${layout.left}px`,
+            top: `${layout.top}px`,
+            width: `${layout.width}px`,
+            height: `${layout.height}px`,
         });
         this.cameraFrameLabel.textContent = `${this.captureWidth} × ${this.captureHeight}`;
     }
@@ -1213,7 +1249,6 @@ export class Factory3DViewer {
         if (hasVisibleObjects) await this._waitForRenderable();
 
         let target = null;
-        const originalSize = this.renderer.getSize(new THREE.Vector2());
         const originalPixelRatio = this.renderer.getPixelRatio();
         const overlayVisibility = {
             grid: this.grid.visible,
@@ -1250,13 +1285,14 @@ export class Factory3DViewer {
             context.drawImage(this.canvas, 0, 0, targetWidth, targetHeight);
         } finally {
             this.renderer.setPixelRatio(originalPixelRatio);
-            this.renderer.setSize(originalSize.x, originalSize.y, false);
             this.grid.visible = overlayVisibility.grid;
             this.transformHelper.visible = overlayVisibility.transform;
             this.selectionBounds.visible = overlayVisibility.bounds;
             this._capturing = false;
-            this._updateCameraProjection(originalSize.x, originalSize.y);
-            this._updateCameraFrame(originalSize.x, originalSize.y);
+            // Re-read the local viewport after capture. The Comfy graph may
+            // have been zoomed or the node resized while the exact-size render
+            // was being encoded.
+            this.resize();
             this.renderer.render(this.scene, this.camera);
         }
         return await new Promise((resolve, reject) => {

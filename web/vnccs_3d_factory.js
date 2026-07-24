@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.16";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.18";
 
 
 const API_BASE = "/vnccs/3d-factory";
@@ -12,6 +12,7 @@ const ENDPOINTS = Object.freeze({
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
     preview: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview`,
+    previewError: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview/error`,
     generate: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/generate`,
     exportScene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/export`,
     job: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
@@ -20,7 +21,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 4;
-const FRONTEND_BUILD = "20260724.18";
+const FRONTEND_BUILD = "20260724.21";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -495,6 +496,11 @@ class Factory3DWidget {
     }
 
     _bind() {
+        this._listen(api, "vnccs_req_3d_factory_preview", event => {
+            const detail = safeObject(event?.detail);
+            if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
+            void this._captureExecutionPreview(detail);
+        });
         const pick = () => !this.currentJobId && this.els.sourceInput.click();
         this._listen(this.els.sourceDrop, "click", event => {
             if (!event.target.closest(".vnccs-i3s__source-change")) pick();
@@ -1771,7 +1777,7 @@ class Factory3DWidget {
         );
     }
 
-    async _saveScenePreviewNow() {
+    async _saveScenePreviewNow({ captureToken = "" } = {}) {
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
         if (this.destroyed || !this.sceneId || !this.scene?.objects?.length) return null;
@@ -1791,6 +1797,7 @@ class Factory3DWidget {
             form.append("image", blob, "scene-preview.png");
             form.append("revision", String(savedScene.revision));
             form.append("render_revision", String(savedScene.render_revision));
+            if (captureToken) form.append("capture_token", captureToken);
             const preview = await this._fetchJSON(ENDPOINTS.preview(sceneId), {
                 method: "POST",
                 body: form,
@@ -1811,6 +1818,65 @@ class Factory3DWidget {
         } catch (error) {
             console.error("[VNCCS 3D Factory] 3D scene preview save failed", error);
             throw error;
+        }
+    }
+
+    async _reportExecutionPreviewFailure(sceneId, captureToken, error) {
+        if (!sceneId || !captureToken) return;
+        try {
+            await this._fetchJSON(ENDPOINTS.previewError(sceneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    capture_token: captureToken,
+                    error: errorText(error, "3D viewport capture failed").slice(0, 2048),
+                }),
+            });
+        } catch (reportError) {
+            console.error("[VNCCS 3D Factory] Could not report preview sync failure", reportError);
+        }
+    }
+
+    async _captureExecutionPreview(detail) {
+        const sceneId = String(detail.scene_id || "");
+        const captureToken = String(detail.capture_token || "");
+        try {
+            if (!/^[a-f0-9]{32}$/.test(sceneId) || !/^[a-f0-9]{32}$/.test(captureToken)) {
+                throw new Error("Execution preview request has invalid identifiers.");
+            }
+            await this._restoreSerial;
+            if (this.destroyed) throw new Error("3D Factory widget was disposed before capture.");
+            if (this.sceneId !== sceneId) {
+                throw new Error(
+                    `The widget has scene ${this.sceneId || "none"} open; execution requested ${sceneId}.`,
+                );
+            }
+            if (!this.scene?.objects?.length) {
+                throw new Error("The requested scene has no loaded Gaussian objects.");
+            }
+            console.info("[VNCCS 3D Factory][viewport] Execution preview requested", {
+                sceneId,
+                captureToken,
+                sceneRevision: detail.scene_revision,
+                renderRevision: detail.render_revision,
+                documentVisible: document.visibilityState,
+            });
+            const preview = await this._saveScenePreviewNow({ captureToken });
+            if (!preview) throw new Error("The 3D viewport returned no execution preview.");
+            console.info("[VNCCS 3D Factory][viewport] Execution preview completed", {
+                sceneId,
+                captureToken,
+                width: preview.width,
+                height: preview.height,
+            });
+        } catch (error) {
+            console.error("[VNCCS 3D Factory] Execution preview failed", {
+                sceneId,
+                captureToken,
+                error,
+                stack: error?.stack || "",
+            });
+            await this._reportExecutionPreviewFailure(sceneId, captureToken, error);
         }
     }
 

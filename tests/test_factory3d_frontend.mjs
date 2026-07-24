@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.18"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.21"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -172,6 +172,11 @@ test("Preview output is captured from the clean 3D viewport and persisted per sc
     assert.match(studio, /form\.append\("image", blob, "scene-preview\.png"\)/);
     assert.match(studio, /form\.append\("revision", String\(savedScene\.revision\)\)/);
     assert.match(studio, /form\.append\("render_revision", String\(savedScene\.render_revision\)\)/);
+    assert.match(studio, /vnccs_req_3d_factory_preview/);
+    assert.match(studio, /_captureExecutionPreview/);
+    assert.match(studio, /form\.append\("capture_token", captureToken\)/);
+    assert.match(studio, /Execution preview completed/);
+    assert.match(studio, /previewError: sceneId =>/);
     assert.match(viewer, /async capturePreview/);
     assert.match(studio, /width: this\.exportSettings\.width/);
     assert.match(studio, /height: this\.exportSettings\.height/);
@@ -183,6 +188,7 @@ test("Preview output is captured from the clean 3D viewport and persisted per sc
     assert.match(viewer, /this\.transformHelper\.visible = false/);
     assert.match(viewer, /this\.selectionBounds\.visible = false/);
     assert.match(viewer, /context\.drawImage\(this\.canvas/);
+    assert.match(viewer, /this\.resize\(\)/);
     assert.doesNotMatch(viewer, /preserveDrawingBuffer:\s*true/);
     assert.doesNotMatch(viewer, /maxSide/);
 });
@@ -332,7 +338,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.16");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.18");
     assert.equal(module.validateSplatBuffer(new ArrayBuffer(64)).byteLength, 64);
     assert.throws(
         () => module.validateSplatBuffer(new ArrayBuffer(33)),
@@ -400,20 +406,78 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     frameViewer.cameraFrameLabel = { textContent: "" };
     frameViewer._updateCameraProjection(1600, 900);
     frameViewer._updateCameraFrame(1600, 900);
-    assert.ok(Math.abs(frameViewer.camera.fov - 42) < 1e-9);
-    assert.equal(frameViewer.cameraFrame.style.width, "506.25px");
-    assert.equal(frameViewer.cameraFrame.style.height, "900px");
-    assert.equal(frameViewer.cameraFrame.style.left, "546.875px");
+    const portraitWidth = Number.parseFloat(frameViewer.cameraFrame.style.width);
+    const portraitHeight = Number.parseFloat(frameViewer.cameraFrame.style.height);
+    const portraitLeft = Number.parseFloat(frameViewer.cameraFrame.style.left);
+    const portraitTop = Number.parseFloat(frameViewer.cameraFrame.style.top);
+    assert.ok(frameViewer.camera.fov > 42);
+    assert.ok(portraitLeft >= 18);
+    assert.ok(portraitTop >= 18);
+    assert.ok(portraitLeft + portraitWidth <= 1600 - 18);
+    assert.ok(portraitTop + portraitHeight <= 900 - 18);
+    assert.ok(Math.abs(portraitWidth / portraitHeight - 1080 / 1920) < 1e-9);
+    assert.ok(Math.abs(
+        Math.tan(THREE.MathUtils.degToRad(21))
+            / Math.tan(THREE.MathUtils.degToRad(frameViewer.camera.fov * 0.5))
+            - portraitHeight / 900,
+    ) < 1e-9);
     assert.equal(frameViewer.cameraFrameLabel.textContent, "1080 × 1920");
 
     frameViewer.captureWidth = 1920;
     frameViewer.captureHeight = 1080;
     frameViewer._updateCameraProjection(900, 1600);
     frameViewer._updateCameraFrame(900, 1600);
+    const landscapeWidth = Number.parseFloat(frameViewer.cameraFrame.style.width);
+    const landscapeHeight = Number.parseFloat(frameViewer.cameraFrame.style.height);
+    const landscapeLeft = Number.parseFloat(frameViewer.cameraFrame.style.left);
+    const landscapeTop = Number.parseFloat(frameViewer.cameraFrame.style.top);
     assert.ok(frameViewer.camera.fov > 42);
-    assert.equal(frameViewer.cameraFrame.style.width, "900px");
-    assert.equal(frameViewer.cameraFrame.style.height, "506.25px");
-    assert.equal(frameViewer.cameraFrame.style.top, "546.875px");
+    assert.ok(landscapeLeft >= 18);
+    assert.ok(landscapeTop >= 18);
+    assert.ok(landscapeLeft + landscapeWidth <= 900 - 18);
+    assert.ok(landscapeTop + landscapeHeight <= 1600 - 18);
+    assert.ok(Math.abs(landscapeWidth / landscapeHeight - 1920 / 1080) < 1e-9);
+    assert.ok(Math.abs(
+        Math.tan(THREE.MathUtils.degToRad(21))
+            / Math.tan(THREE.MathUtils.degToRad(frameViewer.camera.fov * 0.5))
+            - landscapeHeight / 1600,
+    ) < 1e-9);
+
+    frameViewer.captureWidth = 1024;
+    frameViewer.captureHeight = 1024;
+    const squareLayout = frameViewer._cameraFrameLayout(1024, 1024);
+    assert.equal(squareLayout.safeInset, 56);
+    assert.equal(squareLayout.left, 56);
+    assert.equal(squareLayout.top, 56);
+    assert.equal(squareLayout.width, 912);
+    assert.equal(squareLayout.height, 912);
+
+    // ComfyUI graph zoom changes the screen-space bounding rect but not the
+    // frame's local containing-block coordinates. The frame must stay centered
+    // in the complete local viewport.
+    let renderedSize = null;
+    frameViewer._disposed = false;
+    frameViewer.captureWidth = 1024;
+    frameViewer.captureHeight = 439;
+    frameViewer.host = {
+        clientWidth: 1600,
+        clientHeight: 900,
+        getBoundingClientRect: () => ({ width: 800, height: 450 }),
+    };
+    frameViewer.renderer = {
+        setSize: (width, height, updateStyle) => {
+            renderedSize = [width, height, updateStyle];
+        },
+    };
+    frameViewer.resize();
+    assert.deepEqual(renderedSize, [1600, 900, false]);
+    const zoomedFrameWidth = Number.parseFloat(frameViewer.cameraFrame.style.width);
+    const zoomedFrameHeight = Number.parseFloat(frameViewer.cameraFrame.style.height);
+    const zoomedFrameLeft = Number.parseFloat(frameViewer.cameraFrame.style.left);
+    const zoomedFrameTop = Number.parseFloat(frameViewer.cameraFrame.style.top);
+    assert.ok(Math.abs(zoomedFrameLeft + zoomedFrameWidth * 0.5 - 800) < 1e-9);
+    assert.ok(Math.abs(zoomedFrameTop + zoomedFrameHeight * 0.5 - 450) < 1e-9);
+    assert.ok(Math.abs(zoomedFrameWidth / zoomedFrameHeight - 1024 / 439) < 1e-9);
 
     const splats = [];
     for (let index = 0; index < 1000; index += 1) {

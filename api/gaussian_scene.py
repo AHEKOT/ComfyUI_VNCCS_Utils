@@ -9,6 +9,7 @@ standards-compatible PLY/SPLAT asset.
 from __future__ import annotations
 
 import math
+import logging
 import os
 import tempfile
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from typing import Any, Iterable
 import numpy as np
 
 
+LOGGER = logging.getLogger("vnccs.3d_factory.gaussian_scene")
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_VERTICES = 64 * 1024 * 1024
 _CHUNK = 65_536
@@ -81,6 +83,7 @@ _REQUIRED = {
     "rot_2",
     "rot_3",
 }
+_CORE_FLOAT_FIELDS = tuple(sorted(_REQUIRED))
 
 
 @dataclass(frozen=True)
@@ -385,6 +388,139 @@ def _transform_records(records: np.ndarray, transform: Any) -> np.ndarray:
     return result
 
 
+def _core_record_mask(records: np.ndarray) -> tuple[np.ndarray, dict[str, int]]:
+    """Return records that can safely represent a rendered Gaussian.
+
+    TripoSplat PLY files may contain optional normal/SH fields in addition to
+    the fields consumed by the compact SPLAT renderer.  A bad optional
+    coefficient can be neutralized, but a bad center, color, opacity, scale,
+    or quaternion makes the complete Gaussian unusable and must remove that
+    record from an exported scene.
+    """
+    count = len(records)
+    valid = np.ones(count, dtype=bool)
+    invalid_core_values = 0
+    with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+        for name in _CORE_FLOAT_FIELDS:
+            values = np.asarray(records[name], dtype=np.float32)
+            finite = np.isfinite(values)
+            invalid_core_values += int((~finite).sum())
+            valid &= finite
+
+        log_scales = np.column_stack(
+            tuple(np.asarray(records[f"scale_{index}"], dtype=np.float64) for index in range(3))
+        )
+        decoded_scales = np.exp(log_scales)
+        valid_scale_values = np.isfinite(decoded_scales) & (decoded_scales > 0)
+        invalid_scales = int((~valid_scale_values).sum())
+        valid &= valid_scale_values.all(axis=1)
+
+        rotation = np.column_stack(
+            tuple(np.asarray(records[f"rot_{index}"], dtype=np.float32) for index in range(4))
+        )
+        norms = np.linalg.norm(rotation, axis=1)
+        valid_quaternions = np.isfinite(norms) & (norms > 1e-12)
+        invalid_quaternions = int((~valid_quaternions).sum())
+        valid &= valid_quaternions
+
+    return valid, {
+        "invalid_core_values": invalid_core_values,
+        "invalid_scales": invalid_scales,
+        "invalid_quaternions": invalid_quaternions,
+    }
+
+
+def _prepare_export_records(
+    records: np.ndarray,
+    transform: Any,
+) -> tuple[np.ndarray, dict[str, int]]:
+    """Sanitize one source chunk and return only strictly valid output rows."""
+    source_count = len(records)
+    source_mask, source_diagnostics = _core_record_mask(records)
+    prepared = records[source_mask].copy()
+
+    repaired_values = 0
+    optional_fields = [
+        name
+        for name in records.dtype.names or ()
+        if records.dtype.fields[name][0].kind == "f" and name not in _REQUIRED
+    ]
+    with np.errstate(over="ignore", invalid="ignore"):
+        for name in optional_fields:
+            values = np.asarray(prepared[name], dtype=np.float32)
+            invalid = ~np.isfinite(values)
+            repaired_values += int(invalid.sum())
+            if invalid.any():
+                prepared[name][invalid] = 0
+
+        transformed = _transform_records(prepared, transform)
+
+    output_mask, output_diagnostics = _core_record_mask(transformed)
+    output = transformed[output_mask]
+    return output, {
+        "source_records": source_count,
+        "valid_records": len(output),
+        "dropped_records": source_count - len(output),
+        "repaired_optional_values": repaired_values,
+        "invalid_core_values": (
+            source_diagnostics["invalid_core_values"]
+            + output_diagnostics["invalid_core_values"]
+        ),
+        "invalid_scales": (
+            source_diagnostics["invalid_scales"]
+            + output_diagnostics["invalid_scales"]
+        ),
+        "invalid_quaternions": (
+            source_diagnostics["invalid_quaternions"]
+            + output_diagnostics["invalid_quaternions"]
+        ),
+    }
+
+
+def _scan_export_source(info: PlyInfo, transform: Any) -> dict[str, Any]:
+    data = np.memmap(
+        info.path,
+        mode="r",
+        dtype=info.dtype,
+        offset=info.data_offset,
+        shape=(info.vertex_count,),
+    )
+    diagnostics: dict[str, Any] = {
+        "path": str(info.path),
+        "source_records": 0,
+        "valid_records": 0,
+        "dropped_records": 0,
+        "repaired_optional_values": 0,
+        "invalid_core_values": 0,
+        "invalid_scales": 0,
+        "invalid_quaternions": 0,
+    }
+    try:
+        for start in range(0, info.vertex_count, _CHUNK):
+            _prepared, chunk = _prepare_export_records(
+                data[start : start + _CHUNK],
+                transform,
+            )
+            for key in (
+                "source_records",
+                "valid_records",
+                "dropped_records",
+                "repaired_optional_values",
+                "invalid_core_values",
+                "invalid_scales",
+                "invalid_quaternions",
+            ):
+                diagnostics[key] += int(chunk[key])
+    finally:
+        del data
+    if diagnostics["valid_records"] <= 0:
+        raise ValueError(
+            f"{info.path.name}: no valid Gaussian records remain after sanitization "
+            f"({diagnostics['source_records']:,} source records)"
+        )
+    return diagnostics
+
+
 def _ply_header(count: int, dtype: np.dtype) -> bytes:
     lines = [
         "ply",
@@ -415,23 +551,25 @@ def export_scene_ply(
 ) -> dict[str, Any]:
     entries = []
     for path, transform in sources:
-        validate_ply_payload(path)
-        entries.append((inspect_ply(path), normalize_transform(transform)))
+        info = inspect_ply(path)
+        normalized_transform = normalize_transform(transform)
+        diagnostics = _scan_export_source(info, normalized_transform)
+        entries.append((info, normalized_transform, diagnostics))
     if not entries:
         raise ValueError("the scene contains no Gaussian objects")
     names = entries[0][0].dtype.names
     descriptor = entries[0][0].dtype.descr
-    for info, _transform in entries[1:]:
+    for info, _transform, _diagnostics in entries[1:]:
         if info.dtype.names != names or info.dtype.descr != descriptor:
             raise ValueError("scene objects use incompatible Gaussian PLY layouts")
 
-    total = sum(info.vertex_count for info, _transform in entries)
+    total = sum(diagnostics["valid_records"] for _info, _transform, diagnostics in entries)
     output = Path(target).resolve()
     temporary, descriptor_handle = _atomic_target(output)
     try:
         with os.fdopen(descriptor_handle, "wb") as handle:
             handle.write(_ply_header(total, entries[0][0].dtype))
-            for info, transform in entries:
+            for info, transform, _diagnostics in entries:
                 data = np.memmap(
                     info.path,
                     mode="r",
@@ -440,7 +578,10 @@ def export_scene_ply(
                     shape=(info.vertex_count,),
                 )
                 for start in range(0, info.vertex_count, _CHUNK):
-                    transformed = _transform_records(data[start : start + _CHUNK], transform)
+                    transformed, _chunk_diagnostics = _prepare_export_records(
+                        data[start : start + _CHUNK],
+                        transform,
+                    )
                     handle.write(transformed.tobytes())
                 del data
             handle.flush()
@@ -452,7 +593,40 @@ def export_scene_ply(
         except OSError:
             pass
         raise
-    return {"path": str(output), "gaussians": total, "objects": len(entries), "format": "ply"}
+    validation = validate_ply_payload(output)
+    diagnostics = [entry[2] for entry in entries]
+    dropped = sum(item["dropped_records"] for item in diagnostics)
+    repaired = sum(item["repaired_optional_values"] for item in diagnostics)
+    if dropped or repaired:
+        LOGGER.warning(
+            "Sanitized Gaussian scene export %s: %s optional NaN/Inf value(s) "
+            "neutralized, %s unusable Gaussian record(s) removed",
+            output,
+            f"{repaired:,}",
+            f"{dropped:,}",
+        )
+        for item in diagnostics:
+            if item["dropped_records"] or item["repaired_optional_values"]:
+                LOGGER.warning(
+                    "Gaussian source %s: %s/%s records exported, "
+                    "%s optional value(s) repaired, %s record(s) removed",
+                    item["path"],
+                    f"{item['valid_records']:,}",
+                    f"{item['source_records']:,}",
+                    f"{item['repaired_optional_values']:,}",
+                    f"{item['dropped_records']:,}",
+                )
+    return {
+        "path": str(output),
+        "gaussians": total,
+        "source_gaussians": sum(item["source_records"] for item in diagnostics),
+        "dropped_gaussians": dropped,
+        "repaired_values": repaired,
+        "objects": len(entries),
+        "format": "ply",
+        "validation": validation,
+        "sources": diagnostics,
+    }
 
 
 def ply_to_splat(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> dict[str, Any]:

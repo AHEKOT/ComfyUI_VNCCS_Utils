@@ -129,6 +129,46 @@ class GaussianSceneTests(unittest.TestCase):
         self.assertEqual(transform["rotation"], [0.0, 0.0, 0.0])
         self.assertEqual(transform["scale"], 0.001)
 
+    def test_scene_export_repairs_optional_values_and_drops_only_unusable_gaussians(self):
+        names = [
+            "x", "y", "z", "nx", "ny", "nz",
+            "f_dc_0", "f_dc_1", "f_dc_2", "f_rest_0", "opacity",
+            "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3",
+        ]
+        dtype = np.dtype([(name, "<f4") for name in names])
+        records = np.zeros(2, dtype=dtype)
+        records["rot_0"] = 1
+        records["f_rest_0"][0] = np.nan
+        records["x"][1] = np.nan
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "legacy-invalid.ply"
+            target = root / "sanitized.ply"
+            source.write_bytes(self.module._ply_header(2, dtype) + records.tobytes())
+
+            with self.assertRaisesRegex(ValueError, "NaN/Inf"):
+                self.module.validate_ply_payload(source)
+
+            result = self.module.export_scene_ply([(source, {})], target)
+            self.assertEqual(result["source_gaussians"], 2)
+            self.assertEqual(result["gaussians"], 1)
+            self.assertEqual(result["dropped_gaussians"], 1)
+            self.assertEqual(result["repaired_values"], 1)
+            self.assertEqual(self.module.validate_ply_payload(target)["gaussians"], 1)
+
+            info = self.module.inspect_ply(target)
+            output = np.memmap(
+                target,
+                mode="r",
+                dtype=info.dtype,
+                offset=info.data_offset,
+                shape=(1,),
+            )
+            self.assertEqual(float(output["f_rest_0"][0]), 0.0)
+            del output
+
 
 if __name__ == "__main__":
     unittest.main()

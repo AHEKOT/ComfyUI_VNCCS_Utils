@@ -7,6 +7,7 @@ import json
 import math
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -174,22 +175,87 @@ def _preview_tensor(path: Path) -> torch.Tensor:
         raise RuntimeError(f"3D Factory scene preview could not be decoded: {exc}") from exc
 
 
-def _wait_for_scene_preview(backend: Any, scene_id: str, timeout: float = 30.0) -> Path:
-    """Wait briefly for the browser viewport's revision-bound preview upload."""
+def _request_scene_preview(
+    unique_id: Any,
+    scene: dict[str, Any],
+    capture_token: str,
+) -> bool:
+    """Ask the matching live widget for an execution-bound render.
+
+    This is the same server-to-widget synchronization pattern used by Pose
+    Studio.  It runs directly from ComfyUI execution and does not rely on a
+    requestAnimationFrame loop, tab focus, or the background autosave timer.
+    """
+    if unique_id is None or not capture_token:
+        return False
+    try:
+        from server import PromptServer
+
+        PromptServer.instance.send_sync(
+            "vnccs_req_3d_factory_preview",
+            {
+                "node_id": unique_id,
+                "scene_id": scene.get("scene_id", ""),
+                "scene_revision": int(scene.get("revision", 0)),
+                "render_revision": int(
+                    scene.get("render_revision", scene.get("revision", 0))
+                ),
+                "capture_token": capture_token,
+            },
+        )
+        return True
+    except Exception as exc:
+        print(f"[VNCCS 3D Factory] Could not request execution preview sync: {exc}", flush=True)
+        return False
+
+
+def _wait_for_scene_preview(
+    backend: Any,
+    scene_id: str,
+    timeout: float = 60.0,
+    capture_token: str = "",
+) -> Path:
+    """Wait for a fresh execution capture, with a revision-safe saved fallback."""
     deadline = time.monotonic() + max(0.0, float(timeout))
     last_error: Exception | None = None
+    current_preview: Path | None = None
     while True:
         scene = backend.load_scene(scene_id)
+        if capture_token:
+            sync = scene.get("preview_sync")
+            if (
+                isinstance(sync, dict)
+                and sync.get("capture_token") == capture_token
+                and sync.get("status") == "failed"
+            ):
+                raise RuntimeError(
+                    "3D Factory execution preview failed in the viewport: "
+                    f"{sync.get('error') or 'unknown capture error'}"
+                )
         try:
+            if capture_token:
+                return backend._scene_preview_file(scene, capture_token)
             return backend._scene_preview_file(scene)
         except FileNotFoundError as exc:
             last_error = exc
+            if capture_token:
+                try:
+                    current_preview = backend._scene_preview_file(scene)
+                except FileNotFoundError:
+                    current_preview = None
         if time.monotonic() >= deadline:
             break
         time.sleep(0.1)
+    if current_preview is not None:
+        print(
+            "[VNCCS 3D Factory] Fresh execution preview sync timed out; "
+            "using the saved preview because its scene, camera, and resolution revisions match.",
+            flush=True,
+        )
+        return current_preview
     raise RuntimeError(
-        "3D Factory has objects but no current 3D scene preview. "
-        "Keep the Factory widget open until it reports 'Scene ready', then queue the workflow again. "
+        "3D Factory could not obtain a current 3D scene preview during execution. "
+        "The saved preview is also stale for the scene geometry, camera, or export resolution. "
         f"Last preview check: {last_error}"
     ) from last_error
 
@@ -251,7 +317,6 @@ class VNCCS_3DFactory:
         return digest
 
     def load_scene(self, factory_data: str = _EMPTY_STATE, unique_id=None):
-        del unique_id
         state = _parse_state(factory_data)
         scene_id = str(state.get("scene_id") or "")
         if not scene_id:
@@ -267,11 +332,17 @@ class VNCCS_3DFactory:
             raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 
         if scene.get("objects"):
-            preview_path = _wait_for_scene_preview(backend, scene_id)
-            preview = _preview_tensor(preview_path)
+            capture_token = uuid.uuid4().hex if unique_id is not None else ""
+            requested = _request_scene_preview(unique_id, scene, capture_token)
             # Export failures must fail the node with their real traceback.
             # Returning empty paths made a broken export look successful.
             exports = backend.ensure_scene_exports(scene_id)
+            preview_path = _wait_for_scene_preview(
+                backend,
+                scene_id,
+                capture_token=capture_token if requested else "",
+            )
+            preview = _preview_tensor(preview_path)
         else:
             preview = _empty_image()
             exports = None

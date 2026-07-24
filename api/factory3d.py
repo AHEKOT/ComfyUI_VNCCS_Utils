@@ -32,7 +32,7 @@ from .gaussian_scene import (
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
 SCHEMA_VERSION = 3
-EXPORT_FORMAT_VERSION = 2
+EXPORT_FORMAT_VERSION = 3
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -539,7 +539,10 @@ def _scene_reference_file(scene: dict[str, Any]) -> Path:
     return target
 
 
-def _scene_preview_file(scene: dict[str, Any]) -> Path:
+def _scene_preview_file(
+    scene: dict[str, Any],
+    expected_capture_token: str = "",
+) -> Path:
     preview = scene.get("preview", {})
     relative = preview.get("file") if isinstance(preview, dict) else None
     if not isinstance(relative, str) or not relative:
@@ -556,6 +559,8 @@ def _scene_preview_file(scene: dict[str, Any]) -> Path:
         or int(preview.get("height", 0)) != render["height"]
     ):
         raise FileNotFoundError("scene 3D preview dimensions do not match the export frame")
+    if expected_capture_token and preview.get("capture_token") != expected_capture_token:
+        raise FileNotFoundError("scene 3D preview has not completed this execution capture")
     root = resolve_scene_dir(scene["scene_id"])
     target = (root / relative).resolve()
     if root not in target.parents or not target.is_file():
@@ -603,6 +608,7 @@ def store_scene_preview(
     image_bytes: bytes,
     expected_revision: Any = None,
     expected_render_revision: Any = None,
+    capture_token: Any = "",
 ) -> dict[str, Any]:
     """Persist a clean render of the current browser-side 3D viewport."""
     image = _decode_image(image_bytes, max_bytes=MAX_PREVIEW_BYTES).convert("RGB")
@@ -616,6 +622,9 @@ def store_scene_preview(
     preview_root.mkdir(parents=True, exist_ok=True)
     target = preview_root / "scene.png"
     temporary = preview_root / f".scene.{secrets.token_hex(6)}.tmp"
+    normalized_capture_token = str(capture_token or "")
+    if normalized_capture_token and not _ID_RE.fullmatch(normalized_capture_token):
+        raise ValueError("scene preview capture token is invalid")
     with _STATE_LOCK:
         scene = load_scene(scene_id)
         if expected_revision is not None:
@@ -660,6 +669,34 @@ def store_scene_preview(
             "render_revision": int(
                 scene.get("render_revision", scene.get("revision", 0))
             ),
+            "capture_token": normalized_capture_token,
+            "updated_at": _now(),
+        }
+        scene["preview_sync"] = {
+            "capture_token": normalized_capture_token,
+            "status": "completed",
+            "error": "",
+            "updated_at": _now(),
+        }
+        _save_scene(scene, bump_revision=False)
+        return scene
+
+
+def store_scene_preview_error(
+    scene_id: str,
+    capture_token: Any,
+    error: Any,
+) -> dict[str, Any]:
+    normalized_capture_token = str(capture_token or "")
+    if not _ID_RE.fullmatch(normalized_capture_token):
+        raise ValueError("scene preview capture token is invalid")
+    message = str(error or "3D viewport capture failed").strip()[:2048]
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        scene["preview_sync"] = {
+            "capture_token": normalized_capture_token,
+            "status": "failed",
+            "error": message or "3D viewport capture failed",
             "updated_at": _now(),
         }
         _save_scene(scene, bump_revision=False)
@@ -1652,9 +1689,26 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                 "format_version": EXPORT_FORMAT_VERSION,
                 "created_at": _now(),
                 "gaussians": result["ply"]["gaussians"],
+                "source_gaussians": result["ply"].get(
+                    "source_gaussians",
+                    result["ply"]["gaussians"],
+                ),
+                "dropped_gaussians": result["ply"].get("dropped_gaussians", 0),
+                "repaired_values": result["ply"].get("repaired_values", 0),
                 "objects": result["ply"]["objects"],
                 "files": {"ply": relative_ply, "splat": relative_splat},
             }
+            if (
+                result["ply"].get("dropped_gaussians", 0)
+                or result["ply"].get("repaired_values", 0)
+            ):
+                LOGGER.warning(
+                    "Scene %s export sanitized %s optional value(s) and removed "
+                    "%s invalid Gaussian record(s)",
+                    scene_id,
+                    f"{result['ply'].get('repaired_values', 0):,}",
+                    f"{result['ply'].get('dropped_gaussians', 0):,}",
+                )
             _save_scene(current, bump_revision=False)
             return {"scene": current, "ply": ply, "splat": splat}
     raise RuntimeError("scene export did not stabilize")
@@ -1798,6 +1852,7 @@ def register_routes(routes: Any) -> None:
                 image_bytes,
                 post.get("revision"),
                 post.get("render_revision"),
+                post.get("capture_token"),
             )
             return web.json_response(_public_scene(scene)["preview"], status=201)
         except FileNotFoundError as exc:
@@ -1810,6 +1865,30 @@ def register_routes(routes: Any) -> None:
         try:
             scene = load_scene(request.match_info["scene_id"])
             return web.FileResponse(_scene_preview_file(scene))
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/preview/error")
+    async def factory_scene_preview_error(request: Any) -> Any:
+        try:
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("scene preview failure payload must be an object")
+            scene = store_scene_preview_error(
+                scene_id,
+                payload.get("capture_token"),
+                payload.get("error"),
+            )
+            return web.json_response(
+                {
+                    "status": "recorded",
+                    "capture_token": scene["preview_sync"]["capture_token"],
+                },
+                status=201,
+            )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:

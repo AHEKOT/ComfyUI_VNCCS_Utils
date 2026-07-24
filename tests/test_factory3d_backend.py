@@ -551,12 +551,29 @@ class FactoryBackendTests(unittest.TestCase):
         )
         stream = io.BytesIO()
         Image.new("RGB", (320, 180), (12, 24, 48)).save(stream, format="PNG")
-        saved = self.factory.store_scene_preview(scene["scene_id"], stream.getvalue())
+        capture_token = "c" * 32
+        saved = self.factory.store_scene_preview(
+            scene["scene_id"],
+            stream.getvalue(),
+            capture_token=capture_token,
+        )
         preview = saved["preview"]
         self.assertEqual((preview["width"], preview["height"]), (320, 180))
         self.assertEqual(preview["revision"], saved["revision"])
         self.assertEqual(preview["render_revision"], saved["render_revision"])
         self.assertTrue(self.factory._scene_preview_file(saved).is_file())
+        self.assertTrue(
+            self.factory._scene_preview_file(saved, capture_token).is_file()
+        )
+        with self.assertRaisesRegex(FileNotFoundError, "execution capture"):
+            self.factory._scene_preview_file(saved, "d" * 32)
+        failed = self.factory.store_scene_preview_error(
+            scene["scene_id"],
+            "d" * 32,
+            "GPU context was lost",
+        )
+        self.assertEqual(failed["preview_sync"]["status"], "failed")
+        self.assertEqual(failed["preview_sync"]["error"], "GPU context was lost")
         public = self.factory._public_scene(saved)["preview"]
         self.assertNotIn("file", public)
         self.assertEqual(
