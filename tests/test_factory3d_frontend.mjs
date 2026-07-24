@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.13"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.14"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -71,7 +71,9 @@ test("Viewer uses true splats, transform controls, adaptive clipping, and no flo
     assert.match(viewer, /lod: lod \? "quality" : false/);
     assert.match(viewer, /full-splat-visible; quality-lod-queued/);
     assert.match(viewer, /Quality LOD unavailable; keeping full SPLAT/);
-    assert.match(viewer, /for \(const candidate of lodCandidates\) this\._queueLodUpgrade\(candidate\)/);
+    assert.match(viewer, /this\._pendingLodCandidates = lodCandidates/);
+    assert.match(viewer, /startPendingLodUpgrades/);
+    assert.match(viewer, /_waitForRenderable/);
     assert.match(studio, /Loading generated object/);
     assert.match(studio, /generatedScene = safeObject\(job\.result\?\.scene\)/);
     assert.match(studio, /this\.els\.cancelJob\.disabled = !visible \|\| !this\.currentJobId \|\| value >= 100/);
@@ -204,7 +206,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.13");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.14");
     assert.equal(module.validateSplatBuffer(new ArrayBuffer(64)).byteLength, 64);
     assert.throws(
         () => module.validateSplatBuffer(new ArrayBuffer(33)),

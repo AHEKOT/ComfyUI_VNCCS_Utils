@@ -358,6 +358,11 @@ def store_scene_reference(
 def store_scene_preview(scene_id: str, image_bytes: bytes) -> dict[str, Any]:
     """Persist a clean render of the current browser-side 3D viewport."""
     image = _decode_image(image_bytes).convert("RGB")
+    if image.width < 64 or image.height < 64:
+        raise ValueError(
+            f"scene preview is only {image.width}x{image.height}; "
+            "the 3D viewport did not produce a valid export render"
+        )
     root = resolve_scene_dir(scene_id)
     preview_root = root / "preview"
     preview_root.mkdir(parents=True, exist_ok=True)

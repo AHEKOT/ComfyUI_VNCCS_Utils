@@ -6,7 +6,7 @@ import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
-export const FACTORY_VIEWER_BUILD = "20260724.13";
+export const FACTORY_VIEWER_BUILD = "20260724.14";
 
 function finiteVector(values, fallback = [0, 0, 0]) {
     return fallback.map((item, index) => {
@@ -245,6 +245,7 @@ export class Factory3DViewer {
         this._resizeObserver = null;
         this._interactionReasons = new Set();
         this._lodQueue = Promise.resolve();
+        this._pendingLodCandidates = [];
         this._setup();
     }
 
@@ -529,6 +530,7 @@ export class Factory3DViewer {
         const loadController = new AbortController();
         this._loadController = loadController;
         this.sceneData = sceneData || { objects: [] };
+        this._pendingLodCandidates = [];
         this.options.onLoadingChange(true);
         this.transform.detach();
         this.selectionBounds.visible = false;
@@ -670,12 +672,17 @@ export class Factory3DViewer {
         else if (source[0] && this.objects.has(source[0].object_id)) this.select(source[0].object_id);
         else this.select("");
         if (this.objects.size) this.fit();
-        // Start expensive optimization only after every complete SPLAT is
-        // decoded, registered, selected, and framed. Otherwise the first
-        // quality-LoD build can occupy Spark's worker while later objects are
-        // still waiting for their initial decode, leaving the viewport blank.
-        for (const candidate of lodCandidates) this._queueLodUpgrade(candidate);
+        // The widget starts these only after it has captured the mandatory
+        // current-revision preview. This keeps quality-LoD workers from
+        // starving either initial object decoding or the export render.
+        this._pendingLodCandidates = lodCandidates;
         return { loaded: this.objects.size, failures };
+    }
+
+    startPendingLodUpgrades() {
+        const candidates = this._pendingLodCandidates;
+        this._pendingLodCandidates = [];
+        for (const candidate of candidates) this._queueLodUpgrade(candidate);
     }
 
     _queueLodUpgrade({ token, item, objectRoot, baseMesh, fileBytes }) {
@@ -843,9 +850,27 @@ export class Factory3DViewer {
         if (!this._disposed) this.options.onStateChange(this.getState());
     }
 
+    async _waitForRenderable(timeoutMs = 15000) {
+        const started = performance.now();
+        let frames = 0;
+        this.spark.setDirty?.();
+        while (!this._disposed && performance.now() - started < timeoutMs) {
+            await new Promise(resolve => setTimeout(resolve, 32));
+            this.renderer.render(this.scene, this.camera);
+            frames += 1;
+            if (frames >= 2 && Number(this.spark.activeSplats) > 0) {
+                return Number(this.spark.activeSplats);
+            }
+        }
+        throw new Error(
+            `3D viewport did not produce renderable splats within ${Math.round(timeoutMs / 1000)} seconds`,
+        );
+    }
+
     async capturePreview({ maxSide = 1280 } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
         if (!this.objects.size) return null;
+        await this._waitForRenderable();
 
         let target = null;
         const overlayVisibility = {
@@ -891,6 +916,7 @@ export class Factory3DViewer {
         if (this._disposed) return;
         this._disposed = true;
         this._loadingToken += 1;
+        this._pendingLodCandidates = [];
         this._loadController?.abort();
         this._loadController = null;
         cancelAnimationFrame(this._frame);

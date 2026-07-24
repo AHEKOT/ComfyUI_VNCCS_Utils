@@ -111,6 +111,33 @@ class FactoryNodeTests(unittest.TestCase):
         render.assert_called_once_with(preview_path)
         self.assertEqual(result[0], "3d-scene-render")
 
+    def test_nonempty_scene_without_current_preview_fails_instead_of_returning_black_square(self):
+        scene_id = "a" * 32
+        scene = {
+            "scene_id": scene_id,
+            "objects": [{"object_id": "b" * 32}],
+        }
+        backend = types.SimpleNamespace(
+            load_scene=lambda _scene_id: scene,
+            update_scene=lambda _scene_id, _snapshot: scene,
+            _scene_preview_file=mock.Mock(side_effect=FileNotFoundError("stale")),
+            ensure_scene_exports=mock.Mock(),
+            resolve_scene_dir=lambda _scene_id: ROOT,
+        )
+        state = json.dumps({"schema_version": 2, "scene_id": scene_id})
+        with (
+            mock.patch.object(self.module, "_backend", return_value=backend),
+            mock.patch.object(self.module.time, "sleep"),
+            mock.patch.object(
+                self.module.time,
+                "monotonic",
+                side_effect=[0.0, 9.0],
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "no current 3D scene preview"):
+                self.module.VNCCS_3DFactory().load_scene(state)
+        backend.ensure_scene_exports.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

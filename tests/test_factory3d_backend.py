@@ -261,10 +261,10 @@ class FactoryBackendTests(unittest.TestCase):
     def test_scene_preview_is_a_revision_bound_3d_render(self):
         scene = self.factory.create_scene("Scene")
         stream = io.BytesIO()
-        Image.new("RGB", (5, 3), (12, 24, 48)).save(stream, format="PNG")
+        Image.new("RGB", (320, 180), (12, 24, 48)).save(stream, format="PNG")
         saved = self.factory.store_scene_preview(scene["scene_id"], stream.getvalue())
         preview = saved["preview"]
-        self.assertEqual((preview["width"], preview["height"]), (5, 3))
+        self.assertEqual((preview["width"], preview["height"]), (320, 180))
         self.assertEqual(preview["revision"], saved["revision"])
         self.assertTrue(self.factory._scene_preview_file(saved).is_file())
         public = self.factory._public_scene(saved)["preview"]
@@ -277,6 +277,13 @@ class FactoryBackendTests(unittest.TestCase):
         changed = self.factory.update_scene(scene["scene_id"], {"name": "Changed"})
         with self.assertRaisesRegex(FileNotFoundError, "stale"):
             self.factory._scene_preview_file(changed)
+
+    def test_scene_preview_rejects_placeholder_sized_images(self):
+        scene = self.factory.create_scene("Scene")
+        stream = io.BytesIO()
+        Image.new("RGB", (1, 1), (0, 0, 0)).save(stream, format="PNG")
+        with self.assertRaisesRegex(ValueError, "only 1x1"):
+            self.factory.store_scene_preview(scene["scene_id"], stream.getvalue())
 
     def test_weights_are_discovered_in_standard_comfy_model_directories(self):
         model_root = self.factory._model_root()

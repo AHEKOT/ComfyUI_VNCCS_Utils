@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -67,15 +68,35 @@ def _empty_image() -> torch.Tensor:
 
 def _preview_tensor(path: Path) -> torch.Tensor:
     if not path.is_file():
-        return _empty_image()
+        raise FileNotFoundError("3D Factory scene preview file is missing")
     try:
         with Image.open(path) as image:
             if image.width * image.height > _MAX_PREVIEW_PIXELS:
                 raise ValueError("3D Factory preview dimensions are too large")
             pixels = np.asarray(image.convert("RGB"), dtype=np.float32) / 255.0
         return torch.from_numpy(np.array(pixels, copy=True)).unsqueeze(0)
-    except (OSError, ValueError):
-        return _empty_image()
+    except OSError as exc:
+        raise RuntimeError(f"3D Factory scene preview could not be decoded: {exc}") from exc
+
+
+def _wait_for_scene_preview(backend: Any, scene_id: str, timeout: float = 8.0) -> Path:
+    """Wait briefly for the browser viewport's revision-bound preview upload."""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    last_error: Exception | None = None
+    while True:
+        scene = backend.load_scene(scene_id)
+        try:
+            return backend._scene_preview_file(scene)
+        except FileNotFoundError as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    raise RuntimeError(
+        "3D Factory has objects but no current 3D scene preview. "
+        "Keep the Factory widget open until it reports 'Scene ready', then queue the workflow again. "
+        f"Last preview check: {last_error}"
+    ) from last_error
 
 
 def _backend():
@@ -147,21 +168,20 @@ class VNCCS_3DFactory:
             if isinstance(snapshot, dict):
                 backend.update_scene(scene_id, snapshot)
             scene = backend.load_scene(scene_id)
-        except (FileNotFoundError, ValueError):
-            return (_empty_image(), "", "", "")
+        except (FileNotFoundError, ValueError) as exc:
+            raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 
-        preview_path = Path()
-        try:
-            preview_path = backend._scene_preview_file(scene)
-        except FileNotFoundError:
-            pass
-
-        try:
-            exports = backend.ensure_scene_exports(scene_id) if scene.get("objects") else None
-        except (OSError, ValueError):
+        if scene.get("objects"):
+            preview_path = _wait_for_scene_preview(backend, scene_id)
+            preview = _preview_tensor(preview_path)
+            # Export failures must fail the node with their real traceback.
+            # Returning empty paths made a broken export look successful.
+            exports = backend.ensure_scene_exports(scene_id)
+        else:
+            preview = _empty_image()
             exports = None
         return (
-            _preview_tensor(preview_path),
+            preview,
             str(exports["ply"]) if exports else "",
             str(exports["splat"]) if exports else "",
             str(backend.resolve_scene_dir(scene_id) / "scene.json"),

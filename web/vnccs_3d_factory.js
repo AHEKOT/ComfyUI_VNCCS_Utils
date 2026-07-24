@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.13";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.14";
 
 
 const API_BASE = "/vnccs/3d-factory";
@@ -20,7 +20,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 2;
-const FRONTEND_BUILD = "20260724.13";
+const FRONTEND_BUILD = "20260724.14";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -664,13 +664,32 @@ class Factory3DWidget {
             : scene.objects?.[0]?.object_id || "";
         this._selectObject(selected);
         this.syncToNode();
+        let previewError = null;
+        const loaded = Number(viewportResult.loaded) || 0;
+        if (loaded > 0) {
+            this._setStatus("Saving scene preview", "working");
+            try {
+                const preview = await this._saveScenePreviewNow();
+                if (!preview) throw new Error("The viewport did not produce a scene preview");
+            } catch (error) {
+                previewError = error;
+                console.error("[VNCCS 3D Factory] Mandatory scene preview export failed", {
+                    build: FRONTEND_BUILD,
+                    sceneId: this.sceneId,
+                    error,
+                });
+            } finally {
+                this.viewer.startPendingLodUpgrades();
+            }
+        } else {
+            this.viewer.startPendingLodUpgrades();
+        }
         if (viewportFailures.length) {
             const failureDetails = viewportFailures.map(item => ({
                 objectId: item.objectId,
                 error: errorText(item.error),
                 stack: item.error?.stack || "",
             }));
-            const loaded = Number(viewportResult.loaded) || 0;
             console.error("[VNCCS 3D Factory] Viewport scene load incomplete", {
                 build: FRONTEND_BUILD,
                 sceneId: this.sceneId,
@@ -679,10 +698,12 @@ class Factory3DWidget {
                 failures: failureDetails,
             });
             this._setStatus(loaded ? "Scene partially loaded" : "Viewport failed", "error");
+        } else if (previewError) {
+            this._setStatus("Preview export failed", "error");
+            this._showError("Scene preview export failed", previewError);
         } else {
             this._setStatus("Scene ready", "success");
         }
-        if (Number(viewportResult.loaded) > 0) this._scheduleScenePreview(240);
     }
 
     _selected() {
