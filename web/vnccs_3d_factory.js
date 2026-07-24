@@ -22,7 +22,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 5;
-const FRONTEND_BUILD = "20260724.25";
+const FRONTEND_BUILD = "20260724.26";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -2686,27 +2686,193 @@ class Factory3DWidget {
 
 
 function enableCanvasNavigationForwarding(root) {
-    const forward = event => {
-        if (event.defaultPrevented || event.target.closest("input,textarea,select,button,[contenteditable='true']")) return;
-        const canvas = app.canvas?.canvas;
-        if (!canvas || event.target.closest(".vnccs-i3s__viewer-host")) return;
-        canvas.dispatchEvent(new WheelEvent("wheel", {
+    if (!root) return () => {};
+    const graphCanvas = () => app.canvasEl || app.canvas?.canvas || document.querySelector("canvas.litegraph");
+    let panning = false;
+
+    const markForwarded = event => {
+        Object.defineProperty(event, "_vnccsFactoryForwardedCanvasInput", { value: true });
+        return event;
+    };
+
+    const cloneMouseEvent = (type, source, buttons = source.buttons) => markForwarded(new MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        button: source.button,
+        buttons,
+    }));
+
+    const clonePointerEvent = (type, source, buttons = source.buttons) => {
+        const EventCtor = window.PointerEvent || window.MouseEvent;
+        return markForwarded(new EventCtor(type, {
             bubbles: true,
             cancelable: true,
-            clientX: event.clientX,
-            clientY: event.clientY,
-            deltaX: event.deltaX,
-            deltaY: event.deltaY,
-            deltaZ: event.deltaZ,
-            deltaMode: event.deltaMode,
-            ctrlKey: event.ctrlKey,
-            shiftKey: event.shiftKey,
-            altKey: event.altKey,
-            metaKey: event.metaKey,
+            view: window,
+            detail: source.detail,
+            screenX: source.screenX,
+            screenY: source.screenY,
+            clientX: source.clientX,
+            clientY: source.clientY,
+            ctrlKey: source.ctrlKey,
+            altKey: source.altKey,
+            shiftKey: source.shiftKey,
+            metaKey: source.metaKey,
+            button: 1,
+            buttons,
+            pointerId: source.pointerId || 1,
+            pointerType: source.pointerType || "mouse",
+            isPrimary: source.isPrimary !== false,
         }));
     };
-    root.addEventListener("wheel", forward, { passive: true });
-    return () => root.removeEventListener("wheel", forward);
+
+    const cloneWheelEvent = source => markForwarded(new WheelEvent("wheel", {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        detail: source.detail,
+        screenX: source.screenX,
+        screenY: source.screenY,
+        clientX: source.clientX,
+        clientY: source.clientY,
+        ctrlKey: source.ctrlKey,
+        altKey: source.altKey,
+        shiftKey: source.shiftKey,
+        metaKey: source.metaKey,
+        deltaX: source.deltaX,
+        deltaY: source.deltaY,
+        deltaZ: source.deltaZ,
+        deltaMode: source.deltaMode,
+    }));
+
+    const forwardMouse = (type, event, buttons) => {
+        const canvas = graphCanvas();
+        if (!canvas) return false;
+        const pointerType = type === "mousedown"
+            ? "pointerdown"
+            : type === "mousemove"
+                ? "pointermove"
+                : "pointerup";
+        canvas.dispatchEvent(clonePointerEvent(pointerType, event, buttons));
+        canvas.dispatchEvent(cloneMouseEvent(type, event, buttons));
+        return true;
+    };
+
+    const forwardWheel = event => {
+        const canvas = graphCanvas();
+        if (!canvas) return false;
+        canvas.dispatchEvent(cloneWheelEvent(event));
+        return true;
+    };
+
+    const hasOwnWheelHandler = target => {
+        for (let element = target; element && element !== root; element = element.parentElement) {
+            if (typeof element.onwheel === "function") return true;
+        }
+        return false;
+    };
+
+    const hasScrollableAncestor = target => {
+        for (let element = target; element && element !== root; element = element.parentElement) {
+            if (!(element instanceof HTMLElement)) continue;
+            const style = getComputedStyle(element);
+            const scrollY = /(auto|scroll|overlay)/.test(style.overflowY)
+                && element.scrollHeight > element.clientHeight + 1;
+            const scrollX = /(auto|scroll|overlay)/.test(style.overflowX)
+                && element.scrollWidth > element.clientWidth + 1;
+            if (scrollY || scrollX) return true;
+        }
+        return false;
+    };
+
+    const hasInteractiveTarget = target => {
+        if (!(target instanceof Element)) return true;
+        return Boolean(target.closest([
+            "button",
+            "input",
+            "textarea",
+            "select",
+            "label",
+            "a",
+            "canvas",
+            "[contenteditable='true']",
+            "[role='button']",
+            ".vnccs-i3s__viewer-host",
+            ".vnccs-custom-select-menu",
+            ".vnccs-i3s__modal-layer",
+        ].join(",")));
+    };
+
+    const canForwardFrom = target => {
+        if (hasInteractiveTarget(target)) return false;
+        if (hasOwnWheelHandler(target)) return false;
+        if (hasScrollableAncestor(target)) return false;
+        return true;
+    };
+
+    const finishPan = event => {
+        if (event._vnccsFactoryForwardedCanvasInput || !panning) return;
+        panning = false;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mouseup", event, 0);
+        window.removeEventListener("mousemove", movePan, true);
+        window.removeEventListener("mouseup", finishPan, true);
+    };
+
+    const movePan = event => {
+        if (event._vnccsFactoryForwardedCanvasInput || !panning) return;
+        event.preventDefault();
+        event.stopPropagation();
+        forwardMouse("mousemove", event, event.buttons || 4);
+    };
+
+    const startPan = event => {
+        if (event._vnccsFactoryForwardedCanvasInput || event.button !== 1) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardMouse("mousedown", event, 4)) return;
+        panning = true;
+        event.preventDefault();
+        event.stopPropagation();
+        window.addEventListener("mousemove", movePan, true);
+        window.addEventListener("mouseup", finishPan, true);
+    };
+
+    const suppressAuxClick = event => {
+        if (event.button !== 1 || !canForwardFrom(event.target)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    const forwardWheelFromInterface = event => {
+        if (event._vnccsFactoryForwardedCanvasInput) return;
+        if (!canForwardFrom(event.target)) return;
+        if (!forwardWheel(event)) return;
+        event.preventDefault();
+        event.stopPropagation();
+    };
+
+    root.addEventListener("mousedown", startPan, true);
+    root.addEventListener("auxclick", suppressAuxClick, true);
+    root.addEventListener("wheel", forwardWheelFromInterface, { capture: true, passive: false });
+
+    return () => {
+        panning = false;
+        root.removeEventListener("mousedown", startPan, true);
+        root.removeEventListener("auxclick", suppressAuxClick, true);
+        root.removeEventListener("wheel", forwardWheelFromInterface, true);
+        window.removeEventListener("mousemove", movePan, true);
+        window.removeEventListener("mouseup", finishPan, true);
+    };
 }
 
 function hideFactoryDataWidget(node) {

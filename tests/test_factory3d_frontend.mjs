@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.25"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.26"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -143,6 +143,17 @@ test("Factory reuses the UniCanvas support banner in the lower-left panel", () =
     assert.match(studio, /vnccs-i3s__donate-link/);
     assert.match(studio, /this\._listen\(this\.els\.donateLink, "pointerdown", event => event\.stopPropagation\(\)\)/);
     assert.match(styles, /\.vnccs-i3s__donate-link \{[^}]*margin-top: auto/);
+});
+
+test("Middle-button graph navigation is forwarded from UI but not the 3D viewport", () => {
+    assert.match(studio, /event\.button !== 1/);
+    assert.match(studio, /forwardMouse\("mousedown", event, 4\)/);
+    assert.match(studio, /forwardMouse\("mousemove", event, event\.buttons \|\| 4\)/);
+    assert.match(studio, /forwardMouse\("mouseup", event, 0\)/);
+    assert.match(studio, /"pointerdown"/);
+    assert.match(studio, /\.vnccs-i3s__viewer-host/);
+    assert.match(studio, /root\.addEventListener\("wheel", forwardWheelFromInterface, \{ capture: true, passive: false \}\)/);
+    assert.match(studio, /root\.removeEventListener\("mousedown", startPan, true\)/);
 });
 
 test("Factory production code contains no retired LLM integrations", () => {
