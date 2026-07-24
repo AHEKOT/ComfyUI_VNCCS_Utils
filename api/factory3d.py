@@ -811,7 +811,7 @@ def capabilities() -> dict[str, Any]:
             "num_gaussians": 131072,
             "conditioning_resolution": 1024,
             "prevent_upscale": False,
-            "erode_radius": 0,
+            "remove_background": True,
             "seed": -1,
         },
         "device": device,
@@ -835,6 +835,12 @@ def _generation_settings(values: Any) -> dict[str, Any]:
         "yes",
         "on",
     }
+    remove_background = str(data.get("remove_background", "1")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     return {
         "steps": max(1, min(100, int(data.get("steps", 20)))),
         "guidance_scale": max(1.0, min(20.0, float(data.get("guidance_scale", 3.0)))),
@@ -844,7 +850,7 @@ def _generation_settings(values: Any) -> dict[str, Any]:
         ),
         "conditioning_resolution": conditioning_resolution,
         "prevent_upscale": prevent_upscale,
-        "erode_radius": max(0, min(8, int(data.get("erode_radius", 0)))),
+        "remove_background": remove_background,
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
     }
 
@@ -1213,12 +1219,19 @@ def _generate_object(
                     f"gaussians={settings['num_gaussians']:,} · "
                     f"conditioning={settings['conditioning_resolution']}² · "
                     f"prevent_upscale={settings['prevent_upscale']} · "
-                    f"erosion={settings['erode_radius']}"
+                    f"remove_background={settings['remove_background']}"
                 ),
             )
             generator = torch.Generator(device=pipeline._device).manual_seed(seed)
 
-            _emit(job, "preprocess", 22, "Removing background and framing subject")
+            _emit(
+                job,
+                "preprocess",
+                22,
+                "Removing background and framing subject"
+                if settings["remove_background"]
+                else "Preserving background and framing source",
+            )
             if settings["conditioning_resolution"] in EXPERIMENTAL_CONDITIONING_RESOLUTIONS:
                 side = settings["conditioning_resolution"] // 16
                 _emit(
@@ -1235,9 +1248,9 @@ def _generate_object(
                 )
             prepared = pipeline.preprocess_image(
                 image,
-                erode_radius=settings["erode_radius"],
                 canvas_size=settings["conditioning_resolution"],
                 prevent_upscale=settings["prevent_upscale"],
+                remove_background=settings["remove_background"],
             )
             prepared.save(object_root / "prepared.png", format="PNG")
             _emit(
@@ -1249,7 +1262,8 @@ def _generate_object(
                     f"requested {settings['conditioning_resolution']}×"
                     f"{settings['conditioning_resolution']} · effective "
                     f"{prepared.width}×{prepared.height} · {prepared.mode} · "
-                    f"prevent upscale {settings['prevent_upscale']}"
+                    f"prevent upscale {settings['prevent_upscale']} · "
+                    f"remove background {settings['remove_background']}"
                 ),
             )
             _check_cancel(job)
@@ -1489,7 +1503,7 @@ def _generate_object(
                 "conditioning_resolution": settings["conditioning_resolution"],
                 "effective_conditioning_resolution": prepared.width,
                 "prevent_upscale": settings["prevent_upscale"],
-                "erode_radius": settings["erode_radius"],
+                "remove_background": settings["remove_background"],
             },
             "files": {
                 "reference": str(relative_root / "reference.png"),

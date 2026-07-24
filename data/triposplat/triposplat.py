@@ -685,7 +685,7 @@ def _foreground_bbox(alpha: np.ndarray, threshold: int = _ALPHA_BBOX_THRESHOLD) 
     if xs.size == 0:
         raise ValueError(
             "TripoSplat preprocessing produced an empty foreground mask. "
-            "Use a clearer silhouette, disable mask erosion, or provide a valid alpha channel."
+            "Use a clearer silhouette or provide a valid alpha channel."
         )
     # PIL's right/lower crop bounds are exclusive.
     return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
@@ -697,6 +697,7 @@ def preprocess_image(
     erode_radius: int = 0,
     canvas_size: int = _CANVAS_SIZE,
     prevent_upscale: bool = False,
+    remove_background: bool = True,
 ) -> Image.Image:
     image = _image_to_pil(image)
     size = _conditioning_canvas_size(
@@ -707,11 +708,17 @@ def preprocess_image(
     w, h = image.size
     s = _safe_preprocess_scale(w, h, size)
     image = image.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
-    has_real_alpha = _has_usable_alpha(image)
-    if not has_real_alpha:
-        if rmbg is None:
-            raise ValueError("TripoSplat background removal requires a loaded BiRefNet model")
-        image = rmbg.remove_background(image.convert("RGB"))
+    if remove_background:
+        has_real_alpha = _has_usable_alpha(image)
+        if not has_real_alpha:
+            if rmbg is None:
+                raise ValueError("TripoSplat background removal requires a loaded BiRefNet model")
+            image = rmbg.remove_background(image.convert("RGB"))
+    else:
+        # Disabling background removal only bypasses BiRefNet. Preserve an
+        # existing alpha channel exactly; RGB inputs naturally receive a fully
+        # opaque alpha channel when converted to RGBA.
+        image = image.convert("RGBA")
     if erode_radius < 0:
         raise ValueError("mask erosion radius cannot be negative")
     if erode_radius > 0:
@@ -869,18 +876,22 @@ class TripoSplatPipeline:
         erode_radius: int = 0,
         canvas_size: int = _CANVAS_SIZE,
         prevent_upscale: bool = False,
+        remove_background: bool = True,
     ) -> Image.Image:
-        self._activate("rmbg")
+        if remove_background:
+            self._activate("rmbg")
         try:
             return preprocess_image(
                 image,
-                self.rmbg,
+                self.rmbg if remove_background else None,
                 erode_radius=erode_radius,
                 canvas_size=canvas_size,
                 prevent_upscale=prevent_upscale,
+                remove_background=remove_background,
             )
         finally:
-            self._offload("rmbg")
+            if remove_background:
+                self._offload("rmbg")
 
     def encode_image(self, image: Image.Image, generator: torch.Generator = None) -> dict:
         self._activate("dinov3", "vae_encoder")
@@ -946,7 +957,8 @@ class TripoSplatPipeline:
     def run(self, image, seed: int = 42, steps: int = 20, guidance_scale: float = 3.0,
             shift: float = 3.0, num_gaussians=262144, erode_radius: int = 0,
             show_progress: bool = False, callback=None,
-            conditioning_resolution: int = _CANVAS_SIZE, prevent_upscale: bool = False):
+            conditioning_resolution: int = _CANVAS_SIZE, prevent_upscale: bool = False,
+            remove_background: bool = True):
         """
         Args:
             image: Input image. Accepts a file path / PIL.Image / torch.Tensor
@@ -982,6 +994,9 @@ class TripoSplatPipeline:
                 experimental and must be divisible by 16.
             prevent_upscale: If true, cap the conditioning canvas to the source
                 image's native short side, rounded down to a 16-pixel patch grid.
+            remove_background: If true, isolate the subject with an existing
+                alpha channel or BiRefNet. If false, preserve the complete
+                source frame as opaque conditioning evidence.
             show_progress: Print a `tqdm` progress bar over sampler steps.
             callback: Optional `fn(step, total)` invoked after each sampler step.
                 Useful for external progress UIs (e.g. ComfyUI's
@@ -1004,6 +1019,7 @@ class TripoSplatPipeline:
             erode_radius=erode_radius,
             canvas_size=conditioning_resolution,
             prevent_upscale=prevent_upscale,
+            remove_background=remove_background,
         )
         cond = self.encode_image(prepared, generator=gen)
         out = self.sample_latent(cond, steps=steps, guidance_scale=guidance_scale, shift=shift,

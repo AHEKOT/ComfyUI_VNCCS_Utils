@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.21"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.23"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -121,6 +121,28 @@ test("TripoSplat setup separates model management from persisted conditioning se
     assert.match(studio, /this\.settings\.prevent_upscale \? "native cap" : ""/);
     assert.match(styles, /\.vnccs-i3s__setup-grid/);
     assert.match(styles, /\.vnccs-i3s__resolution-option:has\(input:checked\)/);
+});
+
+test("Generation exposes background removal and UniCanvas-style seed mode without mask erosion", () => {
+    assert.match(studio, /remove_background: true/);
+    assert.match(studio, /Remove background/);
+    assert.match(studio, /vnccs-i3s__remove-background/);
+    assert.match(studio, /form\.append\("remove_background", this\.settings\.remove_background \? "1" : "0"\)/);
+    assert.doesNotMatch(studio, /Mask erosion/);
+    assert.doesNotMatch(studio, /vnccs-i3s__erosion/);
+    assert.match(studio, /seed_mode: "randomize"/);
+    assert.match(studio, /vnccs-i3s__seed-row/);
+    assert.match(studio, /vnccs-i3s__seed-dice/);
+    assert.match(studio, /this\.settings\.seed_mode === "randomize"/);
+    assert.match(styles, /\.vnccs-i3s__seed-dice\.active/);
+});
+
+test("Factory reuses the UniCanvas support banner in the lower-left panel", () => {
+    assert.match(studio, /assets\/VNCCS_Donate_Button\.png/);
+    assert.match(studio, /https:\/\/www\.buymeacoffee\.com\/MIUProject/);
+    assert.match(studio, /vnccs-i3s__donate-link/);
+    assert.match(studio, /this\._listen\(this\.els\.donateLink, "pointerdown", event => event\.stopPropagation\(\)\)/);
+    assert.match(styles, /\.vnccs-i3s__donate-link \{[^}]*margin-top: auto/);
 });
 
 test("Factory production code contains no retired LLM integrations", () => {

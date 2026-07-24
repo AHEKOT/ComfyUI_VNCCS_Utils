@@ -92,19 +92,34 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
-        self.assertEqual(capabilities["defaults"]["erode_radius"], 0)
+        self.assertNotIn("erode_radius", capabilities["defaults"])
+        self.assertTrue(capabilities["defaults"]["remove_background"])
         self.assertEqual(capabilities["scene_render"]["min_side"], 64)
         self.assertEqual(capabilities["scene_render"]["max_side"], 4096)
         self.assertIn("16:9", capabilities["scene_render"]["aspect_presets"])
         settings = self.factory._generation_settings({"num_gaussians": "524288"})
         self.assertEqual(settings["num_gaussians"], 524288)
-        self.assertEqual(settings["erode_radius"], 0)
+        self.assertTrue(settings["remove_background"])
+        self.assertNotIn("erode_radius", settings)
         extreme = self.factory._generation_settings({"num_gaussians": "1048576"})
         self.assertEqual(extreme["num_gaussians"], 1048576)
         clamped = self.factory._generation_settings({"num_gaussians": "9999999"})
         self.assertEqual(clamped["num_gaussians"], 1048576)
         source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
         self.assertIn("_NUM_GAUSSIANS_MAX = 1048576", source)
+
+    def test_background_removal_defaults_on_and_can_be_disabled(self):
+        self.assertTrue(self.factory._generation_settings({})["remove_background"])
+        self.assertFalse(
+            self.factory._generation_settings({"remove_background": "0"})["remove_background"]
+        )
+        self.assertFalse(
+            self.factory._generation_settings({"remove_background": "false"})["remove_background"]
+        )
+        source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
+        self.assertIn("remove_background: bool = True", source)
+        self.assertIn('image = image.convert("RGBA")', source)
+        self.assertNotIn('image = image.convert("RGB").convert("RGBA")', source)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
         capabilities = self.factory.capabilities()

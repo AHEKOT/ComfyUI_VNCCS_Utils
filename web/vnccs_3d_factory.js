@@ -4,6 +4,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.18";
 
 
+const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 const API_BASE = "/vnccs/3d-factory";
 const ENDPOINTS = Object.freeze({
     capabilities: `${API_BASE}/capabilities`,
@@ -20,8 +21,8 @@ const ENDPOINTS = Object.freeze({
     jobLog: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/log`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 4;
-const FRONTEND_BUILD = "20260724.21";
+const STATE_VERSION = 5;
+const FRONTEND_BUILD = "20260724.23";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -31,8 +32,9 @@ const DEFAULT_SETTINGS = Object.freeze({
     num_gaussians: 131072,
     conditioning_resolution: 1024,
     prevent_upscale: false,
-    erode_radius: 0,
-    seed: -1,
+    remove_background: true,
+    seed: 0,
+    seed_mode: "randomize",
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -74,6 +76,7 @@ const ICONS = Object.freeze({
     folder: `<svg viewBox="0 0 24 24"><path d="M3 6h7l2 2h9v10H3V6Z"/></svg>`,
     ungroup: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="8" height="8" rx="1"/><rect x="13" y="11" width="8" height="8" rx="1"/><path d="M8 16H5v-3m11-5h3v3"/></svg>`,
     chevron: `<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>`,
+    dice: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" class="fill"/><circle cx="15.5" cy="8.5" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="8.5" cy="15.5" r="1.4" class="fill"/><circle cx="15.5" cy="15.5" r="1.4" class="fill"/></svg>`,
 });
 
 
@@ -82,7 +85,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.14", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260724.16", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -153,6 +156,12 @@ function randomLayerId() {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     return Array.from(bytes, value => value.toString(16).padStart(2, "0")).join("");
+}
+
+function generateRandomSeed() {
+    const values = new Uint32Array(1);
+    crypto.getRandomValues(values);
+    return values[0] & 0x7fffffff;
 }
 
 function download(url) {
@@ -317,19 +326,23 @@ class Factory3DWidget {
                             <span class="vnccs-i3s__label"><span>Guidance</span><span class="vnccs-i3s__guidance-value">3.0</span></span>
                             <input class="vnccs-i3s__range vnccs-i3s__guidance" type="range" min="1" max="10" step=".1" />
                         </label>
-                        <div class="vnccs-i3s__field-row">
-                            <label class="vnccs-i3s__field">
-                                <span class="vnccs-i3s__label">Mask erosion</span>
-                                <input class="vnccs-i3s__input vnccs-i3s__erosion" type="number" min="0" max="8" step="1" />
-                            </label>
-                            <label class="vnccs-i3s__field">
-                                <span class="vnccs-i3s__label">Seed</span>
-                                <input class="vnccs-i3s__input vnccs-i3s__seed" type="number" min="-1" max="2147483647" step="1" />
-                            </label>
+                        <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
+                            <span class="vnccs-i3s__background-title">Remove background</span>
+                            <button class="vnccs-i3s__switch vnccs-i3s__remove-background" type="button" role="switch" aria-checked="true" aria-label="Remove image background"></button>
                         </div>
+                        <label class="vnccs-i3s__field">
+                            <span class="vnccs-i3s__label">Seed</span>
+                            <span class="vnccs-i3s__seed-row">
+                                <input class="vnccs-i3s__input vnccs-i3s__seed" type="number" min="0" max="2147483647" step="1" />
+                                <button class="vnccs-i3s__button vnccs-i3s__seed-dice" type="button" title="Random seed" aria-label="Toggle random seed" aria-pressed="true">${ICONS.dice}</button>
+                            </span>
+                        </label>
                         <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__generate" type="button">${ICONS.play}<span>Generate object</span></button>
                     </div>
                 </section>
+                <a class="vnccs-i3s__donate-link" href="https://www.buymeacoffee.com/MIUProject" target="_blank" rel="noopener noreferrer" title="Support MIUProject">
+                    <img src="${VNCCS_DONATE_BANNER_URL}" alt="Support MIUProject" />
+                </a>
             </aside>
             <main class="vnccs-i3s__center">
                 <header class="vnccs-i3s__topbar">
@@ -453,9 +466,11 @@ class Factory3DWidget {
             steps: $(".vnccs-i3s__steps"),
             guidance: $(".vnccs-i3s__guidance"),
             guidanceValue: $(".vnccs-i3s__guidance-value"),
-            erosion: $(".vnccs-i3s__erosion"),
+            removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
+            seedDice: $(".vnccs-i3s__seed-dice"),
             generate: $(".vnccs-i3s__generate"),
+            donateLink: $(".vnccs-i3s__donate-link"),
             sceneName: $(".vnccs-i3s__scene-name-input"),
             sceneId: $(".vnccs-i3s__project-id"),
             sceneManager: $(".vnccs-i3s__scene-manager"),
@@ -538,7 +553,6 @@ class Factory3DWidget {
             [this.els.density, "num_gaussians", "integer"],
             [this.els.steps, "steps", "integer"],
             [this.els.guidance, "guidance_scale", "number"],
-            [this.els.erosion, "erode_radius", "integer"],
             [this.els.seed, "seed", "integer"],
         ];
         for (const [control, key, kind] of settings) {
@@ -552,6 +566,18 @@ class Factory3DWidget {
             this._listen(control, "input", update);
             this._listen(control, "change", update);
         }
+        this._listen(this.els.removeBackground, "click", () => {
+            this.settings.remove_background = !this.settings.remove_background;
+            this._syncBackgroundRemoval();
+            this._scheduleStateSave();
+        });
+        this._listen(this.els.seedDice, "click", () => {
+            this.settings.seed_mode = this.settings.seed_mode === "randomize" ? "fixed" : "randomize";
+            this._syncSeedMode();
+            this._scheduleStateSave();
+        });
+        this._listen(this.els.donateLink, "pointerdown", event => event.stopPropagation());
+        this._listen(this.els.donateLink, "click", event => event.stopPropagation());
         this._listen(this.els.modelSetup, "click", () => this.openModelSetup());
         this._listen(this.els.generate, "click", () => void this.generate());
         this._listen(this.els.sceneManager, "click", () => void this.openSceneManager());
@@ -1892,6 +1918,11 @@ class Factory3DWidget {
             return;
         }
         if (!this.sceneId) await this.ensureScene();
+        if (this.settings.seed_mode === "randomize") {
+            this.settings.seed = generateRandomSeed();
+            this.els.seed.value = String(this.settings.seed);
+            this._scheduleStateSave(0);
+        }
         const form = new FormData();
         if (this.sourceFile) form.append("image", this.sourceFile, this.sourceFile.name);
         else form.append("use_scene_reference", "1");
@@ -1902,12 +1933,12 @@ class Factory3DWidget {
             "guidance_scale",
             "num_gaussians",
             "conditioning_resolution",
-            "erode_radius",
             "seed",
         ]) {
             form.append(key, String(this.settings[key]));
         }
         form.append("prevent_upscale", this.settings.prevent_upscale ? "1" : "0");
+        form.append("remove_background", this.settings.remove_background ? "1" : "0");
         try {
             const job = await this._fetchJSON(ENDPOINTS.generate(this.sceneId), { method: "POST", body: form });
             await this._monitorJob(job.job_id);
@@ -2466,10 +2497,25 @@ class Factory3DWidget {
         this.els.steps.value = String(this.settings.steps);
         this.els.guidance.value = String(this.settings.guidance_scale);
         this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
-        this.els.erosion.value = String(this.settings.erode_radius);
         this.els.seed.value = String(this.settings.seed);
+        this._syncBackgroundRemoval();
+        this._syncSeedMode();
         this._syncDensityMode();
         this._customSelects?.refresh?.();
+    }
+
+    _syncBackgroundRemoval() {
+        this.els.removeBackground.setAttribute(
+            "aria-checked",
+            String(this.settings.remove_background !== false),
+        );
+    }
+
+    _syncSeedMode() {
+        const randomMode = this.settings.seed_mode === "randomize";
+        this.els.seedDice.classList.toggle("active", randomMode);
+        this.els.seedDice.title = randomMode ? "Random seed" : "Fixed seed";
+        this.els.seedDice.setAttribute("aria-pressed", String(randomMode));
     }
 
     _syncDensityMode() {
@@ -2554,7 +2600,19 @@ class Factory3DWidget {
                     ? state.collapsed_group_ids.map(String)
                     : [],
             );
-            this.settings = { ...DEFAULT_SETTINGS, ...safeObject(state.settings) };
+            const savedSettings = safeObject(state.settings);
+            this.settings = { ...DEFAULT_SETTINGS, ...savedSettings };
+            if (!Object.hasOwn(savedSettings, "seed_mode")) {
+                this.settings.seed_mode = Number(savedSettings.seed) < 0 ? "randomize" : "fixed";
+            }
+            this.settings.seed_mode = this.settings.seed_mode === "randomize" ? "randomize" : "fixed";
+            this.settings.seed = clamp(
+                Number(this.settings.seed) < 0 ? 0 : Math.round(Number(this.settings.seed)),
+                0,
+                2**31 - 1,
+            );
+            this.settings.remove_background = this.settings.remove_background !== false;
+            delete this.settings.erode_radius;
             if (![1024, 1536, 2048].includes(Number(this.settings.conditioning_resolution))) {
                 this.settings.conditioning_resolution = 1024;
             } else {
