@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.23"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.25"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -249,7 +249,9 @@ test("Canvas transforms are the only transform UI and object actions live on car
 test("Factory preserves the accepted Sakura three-column Studio interface", () => {
     assert.match(styles, /--i3-pink: #ff8fa3/);
     assert.match(styles, /--i3-lavender: #b8a9e8/);
-    assert.match(styles, /grid-template-columns: minmax\(205px, 23fr\) minmax\(330px, 52fr\) minmax\(220px, 25fr\)/);
+    assert.match(styles, /grid-template-columns: 300px minmax\(330px, 1fr\) 412\.5px/);
+    assert.match(styles, /grid-template-columns: 200px minmax\(290px, 1fr\) 220px/);
+    assert.doesNotMatch(styles, /minmax\(205px, 23fr\)/);
     assert.match(studio, /vnccs-i3s__side--left/);
     assert.match(studio, /vnccs-i3s__center/);
     assert.match(studio, /vnccs-i3s__side--right/);

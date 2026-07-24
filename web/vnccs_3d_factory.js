@@ -22,7 +22,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 5;
-const FRONTEND_BUILD = "20260724.23";
+const FRONTEND_BUILD = "20260724.25";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -85,7 +85,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.16", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260724.18", import.meta.url).href;
     document.head.appendChild(link);
 }
 
