@@ -152,9 +152,131 @@ def inspect_ply(path: str | os.PathLike[str]) -> PlyInfo:
     if missing:
         raise ValueError(f"{source.name}: missing Gaussian fields: {', '.join(missing)}")
     expected = offset + count * dtype.itemsize
-    if expected > source.stat().st_size:
-        raise ValueError(f"{source.name}: truncated PLY vertex payload")
+    actual_size = source.stat().st_size
+    if expected != actual_size:
+        relation = "truncated" if expected > actual_size else "contains trailing data"
+        raise ValueError(f"{source.name}: {relation} in PLY vertex payload")
     return PlyInfo(source, count, offset, dtype)
+
+
+def validate_ply_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
+    """Read every generated record and reject non-finite or degenerate data."""
+    info = inspect_ply(path)
+    if info.vertex_count <= 0:
+        raise ValueError(f"{info.path.name}: Gaussian PLY contains no vertices")
+    data = np.memmap(
+        info.path,
+        mode="r",
+        dtype=info.dtype,
+        offset=info.data_offset,
+        shape=(info.vertex_count,),
+    )
+    float_names = [
+        name
+        for name in info.dtype.names or ()
+        if info.dtype.fields[name][0].kind == "f"
+    ]
+    invalid_values = 0
+    invalid_scales = 0
+    invalid_quaternions = 0
+    ranges: dict[str, list[float]] = {}
+    try:
+        for start in range(0, info.vertex_count, _CHUNK):
+            records = data[start : start + _CHUNK]
+            for name in float_names:
+                values = np.asarray(records[name], dtype=np.float32)
+                finite = np.isfinite(values)
+                invalid_values += int((~finite).sum())
+                if finite.any():
+                    current = [float(values[finite].min()), float(values[finite].max())]
+                    previous = ranges.get(name)
+                    ranges[name] = (
+                        current
+                        if previous is None
+                        else [min(previous[0], current[0]), max(previous[1], current[1])]
+                    )
+            log_scales = np.column_stack(
+                tuple(np.asarray(records[f"scale_{index}"], dtype=np.float64) for index in range(3))
+            )
+            with np.errstate(over="ignore", under="ignore", invalid="ignore"):
+                decoded_scales = np.exp(log_scales)
+            invalid_scales += int(
+                ((~np.isfinite(decoded_scales)) | (decoded_scales <= 0)).sum()
+            )
+            rotation = np.column_stack(
+                tuple(np.asarray(records[f"rot_{index}"], dtype=np.float32) for index in range(4))
+            )
+            norms = np.linalg.norm(rotation, axis=1)
+            invalid_quaternions += int(((~np.isfinite(norms)) | (norms <= 1e-12)).sum())
+    finally:
+        del data
+    if invalid_values or invalid_scales or invalid_quaternions:
+        raise ValueError(
+            f"{info.path.name}: invalid Gaussian payload: "
+            f"{invalid_values:,} NaN/Inf value(s), "
+            f"{invalid_scales:,} invalid scale(s), "
+            f"{invalid_quaternions:,} degenerate quaternion(s)"
+        )
+    return {
+        "path": str(info.path),
+        "gaussians": info.vertex_count,
+        "invalid_values": 0,
+        "invalid_scales": 0,
+        "invalid_quaternions": 0,
+        "ranges": ranges,
+    }
+
+
+def validate_splat_payload(
+    path: str | os.PathLike[str],
+    expected_gaussians: int | None = None,
+) -> dict[str, Any]:
+    source = Path(path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    size = source.stat().st_size
+    if size % 32:
+        raise ValueError(f"{source.name}: SPLAT payload is not aligned to 32-byte records")
+    count = size // 32
+    if count <= 0:
+        raise ValueError(f"{source.name}: SPLAT payload contains no records")
+    if expected_gaussians is not None and count != int(expected_gaussians):
+        raise ValueError(
+            f"{source.name}: contains {count:,} records; expected {int(expected_gaussians):,}"
+        )
+    raw = np.memmap(source, mode="r", dtype=np.uint8, shape=(count, 32))
+    invalid_values = 0
+    invalid_scales = 0
+    invalid_rotations = 0
+    try:
+        for start in range(0, count, _CHUNK):
+            records = np.ascontiguousarray(raw[start : start + _CHUNK])
+            xyz = records[:, 0:12].reshape(-1).view("<f4").reshape(-1, 3)
+            scales = records[:, 12:24].reshape(-1).view("<f4").reshape(-1, 3)
+            invalid_values += int((~np.isfinite(xyz)).sum() + (~np.isfinite(scales)).sum())
+            invalid_scales += int((scales <= 0).sum())
+            rotations = (records[:, 28:32].astype(np.float32) - 128.0) / 128.0
+            rotation_norms = np.linalg.norm(rotations, axis=1)
+            invalid_rotations += int(
+                ((~np.isfinite(rotation_norms)) | (rotation_norms <= 1e-12)).sum()
+            )
+    finally:
+        del raw
+    if invalid_values or invalid_scales or invalid_rotations:
+        raise ValueError(
+            f"{source.name}: invalid SPLAT payload: "
+            f"{invalid_values:,} NaN/Inf value(s), "
+            f"{invalid_scales:,} non-positive scale(s), "
+            f"{invalid_rotations:,} degenerate rotation(s)"
+        )
+    return {
+        "path": str(source),
+        "gaussians": count,
+        "bytes": size,
+        "invalid_values": 0,
+        "invalid_scales": 0,
+        "invalid_rotations": 0,
+    }
 
 
 def normalize_transform(value: Any) -> dict[str, Any]:
@@ -291,7 +413,10 @@ def export_scene_ply(
     sources: Iterable[tuple[str | os.PathLike[str], Any]],
     target: str | os.PathLike[str],
 ) -> dict[str, Any]:
-    entries = [(inspect_ply(path), normalize_transform(transform)) for path, transform in sources]
+    entries = []
+    for path, transform in sources:
+        validate_ply_payload(path)
+        entries.append((inspect_ply(path), normalize_transform(transform)))
     if not entries:
         raise ValueError("the scene contains no Gaussian objects")
     names = entries[0][0].dtype.names
@@ -331,6 +456,7 @@ def export_scene_ply(
 
 
 def ply_to_splat(source: str | os.PathLike[str], target: str | os.PathLike[str]) -> dict[str, Any]:
+    validate_ply_payload(source)
     info = inspect_ply(source)
     data = np.memmap(
         info.path,

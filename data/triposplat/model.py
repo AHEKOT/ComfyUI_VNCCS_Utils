@@ -1,3 +1,5 @@
+"""Neural network components vendored from VAST-AI-Research/TripoSplat."""
+
 from typing import Optional
 import math
 import re
@@ -845,12 +847,27 @@ class BiRefNet(nn.Module):
         W, H = image.size
         arr = np.array(image, dtype=np.float32) / 255.0
         t = torch.from_numpy(arr).permute(2, 0, 1).unsqueeze(0)
-        t = F.interpolate(t, size=self.INPUT_SIZE, mode='bilinear', align_corners=True)
+        target_h, target_w = self.INPUT_SIZE
+        scale = min(target_w / W, target_h / H)
+        resized_w = max(1, min(target_w, int(round(W * scale))))
+        resized_h = max(1, min(target_h, int(round(H * scale))))
+        resized = F.interpolate(
+            t,
+            size=(resized_h, resized_w),
+            mode='bilinear',
+            align_corners=False,
+        )
         mean = torch.tensor(self._NORM_MEAN).view(1, 3, 1, 1)
         std  = torch.tensor(self._NORM_STD).view(1, 3, 1, 1)
-        t = ((t - mean) / std).to(device=self.device, dtype=self.dtype)
-        alpha = self.forward(t)
-        alpha = F.interpolate(alpha.float(), size=(H, W), mode='bilinear', align_corners=True)[0, 0]
+        # Letterbox instead of geometrically distorting non-square subjects.
+        canvas = mean.expand(1, 3, target_h, target_w).clone()
+        left = (target_w - resized_w) // 2
+        top = (target_h - resized_h) // 2
+        canvas[:, :, top:top + resized_h, left:left + resized_w] = resized
+        normalized = ((canvas - mean) / std).to(device=self.device, dtype=self.dtype)
+        alpha = self.forward(normalized).float()
+        alpha = alpha[:, :, top:top + resized_h, left:left + resized_w]
+        alpha = F.interpolate(alpha, size=(H, W), mode='bilinear', align_corners=False)[0, 0]
         a = (alpha.clamp(0, 1) * 255).to(torch.uint8).cpu().numpy()
         rgba = image.copy()
         rgba.putalpha(Image.fromarray(a, mode="L"))
@@ -1184,7 +1201,7 @@ def hammersley_sequence(dim, n, num_samples):
 
 
 @torch.no_grad()
-def sample_probs(probs, counts, algo="systematic"):
+def sample_probs(probs, counts, algo="systematic", generator: torch.Generator = None):
     batch_shape = counts.shape
     B = counts.numel()
     P = probs.size(-1)
@@ -1209,7 +1226,7 @@ def sample_probs(probs, counts, algo="systematic"):
             continue
         rows = (inv == i).nonzero(as_tuple=False).squeeze(1)
         r = rows.numel()
-        U0 = torch.rand(r, 1, device=device) / float(n)
+        U0 = torch.rand(r, 1, device=device, generator=generator) / float(n)
         grid = torch.arange(n, device=device, dtype=torch.float32)[None, :] / float(n)
         us = (U0 + grid).clamp(max=1.0 - 1e-12)
         cdf_rows = cdf.index_select(0, rows)
@@ -1355,7 +1372,16 @@ class OctreeProbabilityFixedlenDecoder(ModulatedCrossOnlyTransformerBase):
         return {"logits": logits, "probs": torch.softmax(logits, dim=-1)}
 
     @staticmethod
-    def sample(model, cond, num_points, level, temperature=1.0, algo="systematic"):
+    def sample(
+        model,
+        cond,
+        num_points,
+        level,
+        temperature=1.0,
+        algo="systematic",
+        generator: torch.Generator = None,
+        callback=None,
+    ):
         B = cond.shape[0]
         device = cond.device
         child_offset = torch.tensor([[i, j, k] for k in [0, 1] for j in [0, 1] for i in [0, 1]],
@@ -1374,7 +1400,12 @@ class OctreeProbabilityFixedlenDecoder(ModulatedCrossOnlyTransformerBase):
             pred_logits = model(parent_coords_norm, res_tensor, cond, num_tensor)["logits"] / temperature
             pred_probs = torch.softmax(pred_logits, dim=-1)
             pred_log_probs = torch.log_softmax(pred_logits, dim=-1)
-            sampled = sample_probs(pred_probs, prev_counts, algo=algo).flatten(1, 2)
+            sampled = sample_probs(
+                pred_probs,
+                prev_counts,
+                algo=algo,
+                generator=generator,
+            ).flatten(1, 2)
             pred_log_probs = pred_log_probs.flatten(1, 2)
             prev_log_probs_expanded = prev_log_probs.repeat_interleave(8, dim=1)
             child_coords_int = (prev_coords_int[:, :, None, :] * 2 + child_offset[None, None, :, :]).flatten(1, 2)
@@ -1392,11 +1423,19 @@ class OctreeProbabilityFixedlenDecoder(ModulatedCrossOnlyTransformerBase):
             prev_coords_int = next_prev_coords_int
             prev_counts = next_prev_counts
             prev_log_probs = next_prev_log_probs
+            if callback is not None:
+                callback("octree", lv, level)
 
         res = 1 << level
         prev_log_probs = torch.repeat_interleave(prev_log_probs.flatten(0, 1), prev_counts.flatten(0, 1), dim=0).reshape(B, num_points)
         coords_int = torch.repeat_interleave(prev_coords_int.flatten(0, 1), prev_counts.flatten(0, 1), dim=0).reshape(B, num_points, -1)
-        coords_norm = (coords_int.to(torch.float32) + torch.rand_like(coords_int, dtype=torch.float32)) / res
+        jitter = torch.rand(
+            coords_int.shape,
+            dtype=torch.float32,
+            device=device,
+            generator=generator,
+        )
+        coords_norm = (coords_int.to(torch.float32) + jitter) / res
         return {"points": coords_norm, "log_probs": prev_log_probs}
 
 
@@ -1601,7 +1640,7 @@ class LatentSeqMMFlowModel(nn.Module):
         self.cond_embedder2 = nn.Linear(cond2_channels, model_channels) if cond2_channels is not None else None
 
         sobol_seq = torch.quasirandom.SobolEngine(dimension=3, scramble=True, seed=123).draw(q_token_length)
-        self.pos_pe = sobol_seq.unsqueeze(0)
+        self.register_buffer("pos_pe", sobol_seq.unsqueeze(0), persistent=False)
         self.pos_embedder = PcdAbsolutePositionEmbedder(model_channels)
         self.noise_repo_layers = nn.ModuleList([
             RePo3DRotaryEmbedding(model_channels, num_heads=self.num_heads, head_dim=num_head_channels)
@@ -1644,17 +1683,26 @@ class LatentSeqMMFlowModel(nn.Module):
     def load_safetensors(self, path: str) -> None:
         self.load_state_dict(safetensors.torch.load_file(path), strict=True)
 
-    def forward(self, x_t, t, cond):
+    def prepare_condition(self, cond):
         d = self.dtype
-        z = x_t['latent'].to(d)
         feat1 = cond['feature1'].to(d)
         feat2 = cond['feature2'].to(d) if self.cond_embedder2 is not None else None
-        self.pos_pe = self.pos_pe.to(z.device)
-
-        h_x = self.input_layer(z)
         h_cond = self.cond_embedder(feat1)
         if feat2 is not None:
             h_cond = h_cond + self.cond_embedder2(feat2)
+        for i, block in enumerate(self.context_refiner):
+            h_cond = block(h_cond, mod=None, rotary_emb=self.context_repo_layers[i](h_cond))
+        return h_cond
+
+    def forward(self, x_t, t, cond):
+        d = self.dtype
+        z = x_t['latent'].to(d)
+        if isinstance(cond, dict) and "prepared_context" in cond:
+            h_cond = cond["prepared_context"].to(device=z.device, dtype=d)
+        else:
+            h_cond = self.prepare_condition(cond)
+
+        h_x = self.input_layer(z)
         t_emb = self.t_embedder(t)
         t_mod = self.adaLN_modulation(t_emb) if self.share_mod else t_emb
 
@@ -1662,9 +1710,6 @@ class LatentSeqMMFlowModel(nn.Module):
 
         for i, block in enumerate(self.noise_refiner):
             h_x = block(h_x, mod=t_mod, rotary_emb=self.noise_repo_layers[i](h_x))
-
-        for i, block in enumerate(self.context_refiner):
-            h_cond = block(h_cond, mod=None, rotary_emb=self.context_repo_layers[i](h_cond))
 
         if self.cam_channels is not None:
             cam = x_t.get('camera').to(d)
@@ -1713,13 +1758,25 @@ class OctreeGaussianDecoder(nn.Module):
         return self.gs.rep_config['num_gaussians']
 
     @torch.no_grad()
-    def decode(self, latent: torch.Tensor, num_gaussians: int):
+    def decode(
+        self,
+        latent: torch.Tensor,
+        num_gaussians: int,
+        generator: torch.Generator = None,
+        callback=None,
+    ):
         from .triposplat import _build_gaussians  # local import: avoid model.py ↔ triposplat.py cycle
         num_decoder_tokens = max(1, num_gaussians // self.gaussians_per_point)
         points_pred = OctreeProbabilityFixedlenDecoder.sample(
             self.octree, latent,
             num_points=num_decoder_tokens, level=self._MAX_VOXEL_LEVEL,
             temperature=1.0, algo='systematic',
+            generator=generator,
+            callback=callback,
         )
+        if callback is not None:
+            callback("gaussian", 0, 1)
         pred = self.gs(x=points_pred, cond=latent)
+        if callback is not None:
+            callback("gaussian", 1, 1)
         return _build_gaussians(self.gs, points_pred, pred)[0]

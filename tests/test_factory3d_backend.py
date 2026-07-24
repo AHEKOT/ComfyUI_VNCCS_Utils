@@ -1,6 +1,7 @@
 import ast
 import importlib.util
 import io
+import json
 import sys
 import tempfile
 import types
@@ -8,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 from PIL import Image
 
 
@@ -64,27 +66,44 @@ class FactoryBackendTests(unittest.TestCase):
     def test_scenes_are_created_listed_and_updated(self):
         scene = self.factory.create_scene("First scene")
         self.assertRegex(scene["scene_id"], r"^[a-f0-9]{32}$")
+        self.assertEqual(scene["schema_version"], 3)
+        self.assertEqual(scene["render_revision"], 0)
+        self.assertEqual(
+            scene["render"],
+            {
+                "width": 1024,
+                "height": 1024,
+                "aspect": "1:1",
+                "show_camera_frame": False,
+            },
+        )
+        self.assertEqual(scene["camera"]["fov"], 42.0)
         self.assertEqual(self.factory.list_scenes()[0]["name"], "First scene")
 
         updated = self.factory.update_scene(scene["scene_id"], {"name": "Renamed"})
         self.assertEqual(updated["name"], "Renamed")
-        self.assertEqual(updated["revision"], 1)
+        self.assertEqual(updated["revision"], 0)
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
-        self.assertEqual(unchanged["revision"], 1)
+        self.assertEqual(unchanged["revision"], 0)
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
+        self.assertEqual(capabilities["defaults"]["erode_radius"], 0)
+        self.assertEqual(capabilities["scene_render"]["min_side"], 64)
+        self.assertEqual(capabilities["scene_render"]["max_side"], 4096)
+        self.assertIn("16:9", capabilities["scene_render"]["aspect_presets"])
         settings = self.factory._generation_settings({"num_gaussians": "524288"})
         self.assertEqual(settings["num_gaussians"], 524288)
+        self.assertEqual(settings["erode_radius"], 0)
         extreme = self.factory._generation_settings({"num_gaussians": "1048576"})
         self.assertEqual(extreme["num_gaussians"], 1048576)
         clamped = self.factory._generation_settings({"num_gaussians": "9999999"})
         self.assertEqual(clamped["num_gaussians"], 1048576)
-        source = (ROOT / "triposplat_backend" / "triposplat.py").read_text(encoding="utf-8")
+        source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
         self.assertIn("_NUM_GAUSSIANS_MAX = 1048576", source)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
@@ -103,7 +122,7 @@ class FactoryBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "conditioning_resolution"):
             self.factory._generation_settings({"conditioning_resolution": "4096"})
 
-        source = (ROOT / "triposplat_backend" / "triposplat.py").read_text(encoding="utf-8")
+        source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
         self.assertIn("def _conditioning_canvas_size(", source)
         self.assertIn("(native_short_side // _IMAGE_PATCH_SIZE) * _IMAGE_PATCH_SIZE", source)
         self.assertIn("prevent_upscale=prevent_upscale", source)
@@ -120,6 +139,148 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(resolve((1024, 770), 2048, True), 768)
         self.assertEqual(resolve((1200, 800), 2048, False), 2048)
         self.assertEqual(resolve((4096, 3072), 1536, True), 1536)
+
+    def test_triposplat_runtime_is_relocated_and_safety_fixes_are_executable(self):
+        source_path = ROOT / "data" / "triposplat" / "triposplat.py"
+        self.assertTrue(source_path.is_file())
+        self.assertFalse((ROOT / "triposplat_backend" / "triposplat.py").exists())
+        source = source_path.read_text(encoding="utf-8")
+        self.assertNotIn("list(map(tuple", source)
+        self.assertIn("generator=generator", source)
+        self.assertIn("GaussianValidationError", source)
+        model_source = (ROOT / "data" / "triposplat" / "model.py").read_text(encoding="utf-8")
+        self.assertIn('register_buffer("pos_pe"', model_source)
+        self.assertIn('"prepared_context"', model_source)
+
+        tree = ast.parse(source)
+        helpers = [
+            item
+            for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name in {"_safe_preprocess_scale", "_foreground_bbox"}
+        ]
+        namespace = {
+            "np": np,
+            "_MAX_PREPROCESS_PIXELS": 4096 * 4096,
+            "_MAX_PREPROCESS_SIDE": 16384,
+            "_ALPHA_BBOX_THRESHOLD": 8,
+        }
+        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<triposplat-safety>", "exec"), namespace)
+
+        alpha = np.zeros((8, 8), dtype=np.uint8)
+        alpha[2, 3] = 255
+        self.assertEqual(namespace["_foreground_bbox"](alpha), [3, 2, 4, 3])
+        with self.assertRaisesRegex(ValueError, "empty foreground mask"):
+            namespace["_foreground_bbox"](np.zeros((8, 8), dtype=np.uint8))
+
+        scale = namespace["_safe_preprocess_scale"](1, 20_000_000, 2048)
+        self.assertLessEqual(round(20_000_000 * scale), 16384)
+
+    def test_quaternion_conversion_handles_half_turns_and_rejects_zero_norm(self):
+        source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        helpers = [
+            item
+            for item in tree.body
+            if isinstance(item, ast.FunctionDef)
+            and item.name in {"_normalize_quaternions", "_quat_to_matrix", "_matrix_to_quat"}
+        ]
+
+        class TestGaussianValidationError(ValueError):
+            pass
+
+        namespace = {
+            "np": np,
+            "_QUATERNION_EPSILON": 1e-12,
+            "GaussianValidationError": TestGaussianValidationError,
+        }
+        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<quaternion-helpers>", "exec"), namespace)
+
+        quaternions = np.asarray(
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        matrices = namespace["_quat_to_matrix"](quaternions)
+        recovered = namespace["_matrix_to_quat"](matrices)
+        alignment = np.abs(np.sum(quaternions * recovered, axis=1))
+        np.testing.assert_allclose(alignment, np.ones(4), atol=1e-5)
+        with self.assertRaisesRegex(TestGaussianValidationError, "invalid quaternion"):
+            namespace["_quat_to_matrix"](np.zeros((1, 4), dtype=np.float32))
+
+    def test_numeric_payload_validation_rejects_nan_and_degenerate_rotation(self):
+        names = [
+            "x", "y", "z",
+            "f_dc_0", "f_dc_1", "f_dc_2",
+            "opacity",
+            "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3",
+        ]
+        dtype = np.dtype([(name, "<f4") for name in names])
+
+        def write_ply(path: Path, record: np.ndarray) -> None:
+            header = [
+                "ply",
+                "format binary_little_endian 1.0",
+                "element vertex 1",
+                *(f"property float {name}" for name in names),
+                "end_header",
+                "",
+            ]
+            path.write_bytes("\n".join(header).encode("ascii") + record.tobytes())
+
+        valid = np.zeros(1, dtype=dtype)
+        valid["scale_0"] = valid["scale_1"] = valid["scale_2"] = -2.0
+        valid["rot_0"] = 1.0
+        good_path = self.root / "good.ply"
+        write_ply(good_path, valid)
+        report = self.gaussian.validate_ply_payload(good_path)
+        self.assertEqual(report["gaussians"], 1)
+
+        invalid = valid.copy()
+        invalid["x"] = np.nan
+        bad_path = self.root / "nan.ply"
+        write_ply(bad_path, invalid)
+        with self.assertRaisesRegex(ValueError, "NaN/Inf"):
+            self.gaussian.validate_ply_payload(bad_path)
+
+        invalid = valid.copy()
+        for index in range(4):
+            invalid[f"rot_{index}"] = 0.0
+        bad_rotation = self.root / "rotation.ply"
+        write_ply(bad_rotation, invalid)
+        with self.assertRaisesRegex(ValueError, "degenerate quaternion"):
+            self.gaussian.validate_ply_payload(bad_rotation)
+
+        invalid = valid.copy()
+        invalid["scale_0"] = -1e30
+        bad_scale = self.root / "scale.ply"
+        write_ply(bad_scale, invalid)
+        with self.assertRaisesRegex(ValueError, "invalid scale"):
+            self.gaussian.validate_ply_payload(bad_scale)
+
+    def test_compact_splat_validation_reads_float_payload(self):
+        record = np.zeros((1, 32), dtype=np.uint8)
+        record[:, 0:12] = np.asarray([[0.0, 0.0, 0.0]], dtype="<f4").view(np.uint8)
+        record[:, 12:24] = np.asarray([[1.0, 1.0, 1.0]], dtype="<f4").view(np.uint8)
+        path = self.root / "valid.splat"
+        path.write_bytes(record.tobytes())
+        self.assertEqual(self.gaussian.validate_splat_payload(path, 1)["gaussians"], 1)
+
+        record[:, 12:24] = np.asarray([[np.nan, 1.0, 1.0]], dtype="<f4").view(np.uint8)
+        path.write_bytes(record.tobytes())
+        with self.assertRaisesRegex(ValueError, "NaN/Inf"):
+            self.gaussian.validate_splat_payload(path, 1)
+
+        record[:, 12:24] = np.asarray([[1.0, 1.0, 1.0]], dtype="<f4").view(np.uint8)
+        record[:, 28:32] = 128
+        path.write_bytes(record.tobytes())
+        with self.assertRaisesRegex(ValueError, "degenerate rotation"):
+            self.gaussian.validate_splat_payload(path, 1)
 
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
         source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
@@ -172,9 +333,18 @@ class FactoryBackendTests(unittest.TestCase):
             "object_id": object_id,
             "name": "Machine",
             "created_at": 1,
+            "visible": True,
             "transform": self.gaussian.normalize_transform({"position": [1, 2, 3]}),
             "files": files,
         })
+        group_id = self.factory._new_id()
+        scene["layers"] = [{
+            "type": "group",
+            "group_id": group_id,
+            "name": "Machines",
+            "visible": True,
+            "children": [object_id],
+        }]
         self.factory._save_scene(scene)
 
         result = self.factory.duplicate_object(scene["scene_id"], object_id)
@@ -190,6 +360,114 @@ class FactoryBackendTests(unittest.TestCase):
 
         duplicate["transform"]["position"][0] = 99
         self.assertEqual(scene["objects"][0]["transform"]["position"][0], 1.0)
+        group = result["scene"]["layers"][0]
+        self.assertEqual(group["group_id"], group_id)
+        self.assertEqual(group["children"], [object_id, result["object_id"]])
+
+    def test_scene_layers_preserve_order_groups_visibility_and_render_revision(self):
+        scene = self.factory.create_scene("Layered")
+        object_ids = [self.factory._new_id() for _ in range(3)]
+        for index, object_id in enumerate(object_ids):
+            scene["objects"].append({
+                "object_id": object_id,
+                "name": f"Object {index + 1}",
+                "visible": True,
+                "transform": self.gaussian.normalize_transform({}),
+                "files": {},
+            })
+        scene["layers"] = [
+            {"type": "object", "object_id": object_ids[0]},
+            {"type": "object", "object_id": object_ids[1]},
+            {"type": "object", "object_id": object_ids[2]},
+        ]
+        self.factory._save_scene(scene, bump_revision=False)
+        group_id = self.factory._new_id()
+        layers = [
+            {
+                "type": "group",
+                "group_id": group_id,
+                "name": "Foreground",
+                "visible": True,
+                "children": [object_ids[1], object_ids[0]],
+            },
+            {"type": "object", "object_id": object_ids[2]},
+        ]
+
+        grouped = self.factory.update_scene(scene["scene_id"], {"layers": layers})
+        self.assertEqual(grouped["revision"], 0)
+        self.assertEqual(grouped["layers"], layers)
+        self.assertEqual(self.factory._visible_object_ids(grouped), set(object_ids))
+
+        hidden_group = json.loads(json.dumps(layers))
+        hidden_group[0]["visible"] = False
+        hidden = self.factory.update_scene(scene["scene_id"], {"layers": hidden_group})
+        self.assertEqual(hidden["revision"], 1)
+        self.assertEqual(self.factory._visible_object_ids(hidden), {object_ids[2]})
+        self.assertEqual(hidden["exports"], {})
+
+        object_hidden = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "layers": layers,
+                "objects": [{"object_id": object_ids[2], "visible": False}],
+            },
+        )
+        self.assertEqual(object_hidden["revision"], 2)
+        self.assertEqual(
+            self.factory._visible_object_ids(object_hidden),
+            {object_ids[0], object_ids[1]},
+        )
+
+        with self.assertRaisesRegex(ValueError, "duplicate object"):
+            self.factory.update_scene(
+                scene["scene_id"],
+                {
+                    "layers": [
+                        {"type": "object", "object_id": object_ids[0]},
+                        {
+                            "type": "group",
+                            "group_id": self.factory._new_id(),
+                            "children": [object_ids[0]],
+                        },
+                    ]
+                },
+            )
+
+    def test_hidden_objects_are_excluded_only_from_combined_scene_export(self):
+        scene = self.factory.create_scene("Visibility")
+        visible_id = self.factory._new_id()
+        hidden_id = self.factory._new_id()
+        for object_id, visible in ((visible_id, True), (hidden_id, False)):
+            root = self.factory.resolve_scene_dir(scene["scene_id"]) / "objects" / object_id
+            root.mkdir(parents=True)
+            source = root / "model.ply"
+            source.write_bytes(object_id.encode())
+            scene["objects"].append({
+                "object_id": object_id,
+                "name": object_id,
+                "visible": visible,
+                "transform": self.gaussian.normalize_transform({}),
+                "files": {
+                    "ply": str(source.relative_to(
+                        self.factory.resolve_scene_dir(scene["scene_id"])
+                    ))
+                },
+            })
+        scene["layers"] = [
+            {"type": "object", "object_id": visible_id},
+            {"type": "object", "object_id": hidden_id},
+        ]
+        self.factory._save_scene(scene, bump_revision=False)
+
+        combined = self.factory._scene_sources(self.factory.load_scene(scene["scene_id"]))
+        self.assertEqual(len(combined), 1)
+        self.assertIn(visible_id, str(combined[0][0]))
+        individual = self.factory._scene_sources(
+            self.factory.load_scene(scene["scene_id"]),
+            hidden_id,
+        )
+        self.assertEqual(len(individual), 1)
+        self.assertIn(hidden_id, str(individual[0][0]))
 
     def test_stale_scene_export_is_rebuilt_after_orientation_format_change(self):
         scene = self.factory.create_scene("Scene")
@@ -260,12 +538,24 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_scene_preview_is_a_revision_bound_3d_render(self):
         scene = self.factory.create_scene("Scene")
+        scene = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "render": {
+                    "width": 320,
+                    "height": 180,
+                    "aspect": "16:9",
+                    "show_camera_frame": True,
+                },
+            },
+        )
         stream = io.BytesIO()
         Image.new("RGB", (320, 180), (12, 24, 48)).save(stream, format="PNG")
         saved = self.factory.store_scene_preview(scene["scene_id"], stream.getvalue())
         preview = saved["preview"]
         self.assertEqual((preview["width"], preview["height"]), (320, 180))
         self.assertEqual(preview["revision"], saved["revision"])
+        self.assertEqual(preview["render_revision"], saved["render_revision"])
         self.assertTrue(self.factory._scene_preview_file(saved).is_file())
         public = self.factory._public_scene(saved)["preview"]
         self.assertNotIn("file", public)
@@ -274,9 +564,123 @@ class FactoryBackendTests(unittest.TestCase):
             f"/vnccs/3d-factory/scenes/{scene['scene_id']}/preview",
         )
 
-        changed = self.factory.update_scene(scene["scene_id"], {"name": "Changed"})
+        renamed = self.factory.update_scene(scene["scene_id"], {"name": "Changed"})
+        self.assertEqual(
+            self.factory._scene_preview_file(renamed),
+            self.factory._scene_preview_file(saved),
+        )
+        changed = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "objects": [],
+                "layers": [],
+            },
+        )
+        self.assertEqual(changed["revision"], saved["revision"])
+        scene_with_object = self.factory.load_scene(scene["scene_id"])
+        object_id = self.factory._new_id()
+        scene_with_object["objects"].append({
+            "object_id": object_id,
+            "name": "Object",
+            "visible": True,
+            "transform": self.gaussian.normalize_transform({}),
+            "files": {},
+        })
+        scene_with_object["layers"].append({"type": "object", "object_id": object_id})
+        self.factory._save_scene(scene_with_object, bump_revision=False)
+        changed = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "objects": [{
+                    "object_id": object_id,
+                    "transform": {"position": [1, 0, 0]},
+                }],
+            },
+        )
         with self.assertRaisesRegex(FileNotFoundError, "stale"):
             self.factory._scene_preview_file(changed)
+
+    def test_scene_render_dimensions_and_camera_invalidate_only_the_preview(self):
+        scene = self.factory.create_scene("Camera")
+        first = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "render": {
+                    "width": 1920,
+                    "height": 1080,
+                    "aspect": "16:9",
+                    "show_camera_frame": True,
+                }
+            },
+        )
+        self.assertEqual(first["revision"], 0)
+        self.assertEqual(first["render_revision"], 1)
+        self.assertEqual(first["render"]["width"], 1920)
+        self.assertEqual(first["render"]["height"], 1080)
+
+        wrong = io.BytesIO()
+        Image.new("RGB", (1024, 1024), (1, 2, 3)).save(wrong, format="PNG")
+        with self.assertRaisesRegex(ValueError, "configured export frame is 1920x1080"):
+            self.factory.store_scene_preview(scene["scene_id"], wrong.getvalue())
+
+        exact = io.BytesIO()
+        Image.new("RGB", (1920, 1080), (4, 5, 6)).save(exact, format="PNG")
+        saved = self.factory.store_scene_preview(scene["scene_id"], exact.getvalue())
+        self.assertTrue(self.factory._scene_preview_file(saved).is_file())
+
+        camera = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "camera": {
+                    "position": [3, 4, 5],
+                    "target": [0.5, 0.25, -1],
+                    "fov": 55,
+                }
+            },
+        )
+        self.assertEqual(camera["revision"], 0)
+        self.assertEqual(camera["render_revision"], 2)
+        self.assertEqual(camera["camera"]["position"], [3.0, 4.0, 5.0])
+        self.assertEqual(camera["camera"]["fov"], 55.0)
+        with self.assertRaisesRegex(FileNotFoundError, "camera or resolution"):
+            self.factory._scene_preview_file(camera)
+        with self.assertRaisesRegex(ValueError, "camera or export frame changed"):
+            self.factory.store_scene_preview(
+                scene["scene_id"],
+                exact.getvalue(),
+                saved["revision"],
+                saved["render_revision"],
+            )
+
+        frame_only = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "render": {
+                    **camera["render"],
+                    "show_camera_frame": False,
+                }
+            },
+        )
+        self.assertEqual(frame_only["revision"], 0)
+        self.assertEqual(frame_only["render_revision"], 2)
+
+    def test_legacy_preview_with_wrong_dimensions_is_not_exposed(self):
+        scene = self.factory.create_scene("Legacy")
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        preview_path = root / "preview" / "scene.png"
+        preview_path.parent.mkdir(parents=True)
+        Image.new("RGB", (1154, 1280), (1, 1, 1)).save(preview_path, format="PNG")
+        scene["preview"] = {
+            "file": str(preview_path.relative_to(root)),
+            "width": 1154,
+            "height": 1280,
+            "revision": 0,
+        }
+        self.factory._save_scene(scene, bump_revision=False)
+        loaded = self.factory.load_scene(scene["scene_id"])
+        with self.assertRaisesRegex(FileNotFoundError, "dimensions"):
+            self.factory._scene_preview_file(loaded)
+        self.assertNotIn("url", self.factory._public_scene(loaded)["preview"])
 
     def test_scene_preview_rejects_placeholder_sized_images(self):
         scene = self.factory.create_scene("Scene")

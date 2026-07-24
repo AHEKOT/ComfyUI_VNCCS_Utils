@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 from pathlib import Path
@@ -14,7 +15,7 @@ import torch
 from PIL import Image
 
 
-_EMPTY_STATE = '{"schema_version":2,"scene_id":"","selected_object_id":""}'
+_EMPTY_STATE = '{"schema_version":4,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
 _MAX_STATE_CHARS = 2 * 1024 * 1024
 _MAX_PREVIEW_PIXELS = 4096 * 4096
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -30,10 +31,24 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
         raise ValueError("3D Factory state is not valid JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("3D Factory state must be an object")
-    for key in ("scene_id", "selected_object_id"):
+    for key in ("scene_id", "selected_object_id", "selected_group_id"):
         item = value.get(key, "")
         if item and (not isinstance(item, str) or not _ID_RE.fullmatch(item)):
             raise ValueError(f"3D Factory {key.replace('_', ' ')} is invalid")
+    selected_object_ids = value.get("selected_object_ids", [])
+    if (
+        not isinstance(selected_object_ids, list)
+        or len(selected_object_ids) > 4096
+        or any(not isinstance(item, str) or not _ID_RE.fullmatch(item) for item in selected_object_ids)
+    ):
+        raise ValueError("3D Factory selected object ids are invalid")
+    collapsed_group_ids = value.get("collapsed_group_ids", [])
+    if (
+        not isinstance(collapsed_group_ids, list)
+        or len(collapsed_group_ids) > 1024
+        or any(not isinstance(item, str) or not _ID_RE.fullmatch(item) for item in collapsed_group_ids)
+    ):
+        raise ValueError("3D Factory collapsed group ids are invalid")
     source = value.get("source")
     if source is not None:
         if not isinstance(source, dict):
@@ -55,10 +70,90 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
         objects = snapshot.get("objects", [])
         if not isinstance(objects, list) or len(objects) > 4096:
             raise ValueError("3D Factory scene snapshot has an invalid object list")
+        object_ids: set[str] = set()
         for item in objects:
             object_id = item.get("object_id") if isinstance(item, dict) else None
             if not isinstance(object_id, str) or not _ID_RE.fullmatch(object_id):
                 raise ValueError("3D Factory scene snapshot contains an invalid object id")
+            if object_id in object_ids:
+                raise ValueError("3D Factory scene snapshot contains duplicate objects")
+            if "visible" in item and not isinstance(item["visible"], bool):
+                raise ValueError("3D Factory scene snapshot contains invalid object visibility")
+            object_ids.add(object_id)
+        layers = snapshot.get("layers", [])
+        if not isinstance(layers, list) or len(layers) > len(objects) + 1024:
+            raise ValueError("3D Factory scene snapshot has an invalid layer hierarchy")
+        assigned_objects: set[str] = set()
+        group_ids: set[str] = set()
+        for layer in layers:
+            if not isinstance(layer, dict) or layer.get("type") not in {"object", "group"}:
+                raise ValueError("3D Factory scene snapshot contains an invalid layer")
+            key = "object_id" if layer["type"] == "object" else "group_id"
+            layer_id = layer.get(key)
+            if not isinstance(layer_id, str) or not _ID_RE.fullmatch(layer_id):
+                raise ValueError("3D Factory scene snapshot contains an invalid layer id")
+            if layer["type"] == "object":
+                if layer_id not in object_ids or layer_id in assigned_objects:
+                    raise ValueError("3D Factory scene snapshot contains an unknown or duplicate layer object")
+                assigned_objects.add(layer_id)
+                continue
+            if layer_id in group_ids or layer_id in object_ids:
+                raise ValueError("3D Factory scene snapshot contains a duplicate group id")
+            group_ids.add(layer_id)
+            if "visible" in layer and not isinstance(layer["visible"], bool):
+                raise ValueError("3D Factory scene snapshot contains invalid group visibility")
+            if "name" in layer and not isinstance(layer["name"], str):
+                raise ValueError("3D Factory scene snapshot contains an invalid group name")
+            if layer["type"] == "group":
+                children = layer.get("children", [])
+                if (
+                    not isinstance(children, list)
+                    or len(children) > len(objects)
+                    or any(not isinstance(item, str) or not _ID_RE.fullmatch(item) for item in children)
+                ):
+                    raise ValueError("3D Factory scene snapshot contains invalid group children")
+                if any(item not in object_ids or item in assigned_objects for item in children):
+                    raise ValueError("3D Factory scene snapshot contains unknown or duplicate group children")
+                assigned_objects.update(children)
+        render = snapshot.get("render")
+        if render is not None:
+            if not isinstance(render, dict):
+                raise ValueError("3D Factory scene snapshot has invalid render settings")
+            for key in ("width", "height"):
+                side = render.get(key)
+                if not isinstance(side, int) or isinstance(side, bool) or not 64 <= side <= 4096:
+                    raise ValueError("3D Factory scene snapshot has invalid render dimensions")
+            if render.get("aspect", "custom") not in {
+                "custom", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9",
+            }:
+                raise ValueError("3D Factory scene snapshot has an invalid aspect preset")
+            if "show_camera_frame" in render and not isinstance(render["show_camera_frame"], bool):
+                raise ValueError("3D Factory scene snapshot has invalid camera-frame visibility")
+        camera = snapshot.get("camera")
+        if camera is not None:
+            if not isinstance(camera, dict):
+                raise ValueError("3D Factory scene snapshot has invalid camera settings")
+            for key in ("position", "target"):
+                vector = camera.get(key)
+                if (
+                    not isinstance(vector, list)
+                    or len(vector) != 3
+                    or any(
+                        not isinstance(item, (int, float))
+                        or isinstance(item, bool)
+                        or not math.isfinite(float(item))
+                        for item in vector
+                    )
+                ):
+                    raise ValueError("3D Factory scene snapshot has an invalid camera vector")
+            fov = camera.get("fov")
+            if (
+                not isinstance(fov, (int, float))
+                or isinstance(fov, bool)
+                or not math.isfinite(float(fov))
+                or not 5 <= float(fov) <= 120
+            ):
+                raise ValueError("3D Factory scene snapshot has an invalid camera FOV")
     return value
 
 
@@ -79,7 +174,7 @@ def _preview_tensor(path: Path) -> torch.Tensor:
         raise RuntimeError(f"3D Factory scene preview could not be decoded: {exc}") from exc
 
 
-def _wait_for_scene_preview(backend: Any, scene_id: str, timeout: float = 8.0) -> Path:
+def _wait_for_scene_preview(backend: Any, scene_id: str, timeout: float = 30.0) -> Path:
     """Wait briefly for the browser viewport's revision-bound preview upload."""
     deadline = time.monotonic() + max(0.0, float(timeout))
     last_error: Exception | None = None

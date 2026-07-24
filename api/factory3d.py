@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -19,16 +20,23 @@ from typing import Any, Callable
 
 from PIL import Image, ImageOps
 
-from .gaussian_scene import export_gaussian_scene, inspect_ply, normalize_transform
+from .gaussian_scene import (
+    export_gaussian_scene,
+    inspect_ply,
+    normalize_transform,
+    validate_ply_payload,
+    validate_splat_payload,
+)
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 EXPORT_FORMAT_VERSION = 2
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_PREVIEW_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_SCENE_JSON_BYTES = 2 * 1024 * 1024
 MAX_JOB_LOG_LINES = 800
@@ -39,6 +47,18 @@ CONDITIONING_RESOLUTIONS = (1024, 1536, 2048)
 EXPERIMENTAL_CONDITIONING_RESOLUTIONS = (1536, 2048)
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 _SAFE_NAME_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_ASPECT_PRESETS = {"custom", "1:1", "4:3", "3:4", "3:2", "2:3", "16:9", "9:16", "21:9"}
+_DEFAULT_RENDER_SETTINGS = {
+    "width": 1024,
+    "height": 1024,
+    "aspect": "1:1",
+    "show_camera_frame": False,
+}
+_DEFAULT_CAMERA = {
+    "position": [2.8, 2.1, 4.2],
+    "target": [0.0, 0.0, 0.0],
+    "fov": 42.0,
+}
 _WEIGHT_FILES = (
     "diffusion_models/triposplat_fp16.safetensors",
     "vae/triposplat_vae_decoder_fp16.safetensors",
@@ -114,6 +134,194 @@ def _clean_name(value: Any, fallback: str, maximum: int = 96) -> str:
     return name[:maximum] or fallback
 
 
+def _normalize_render_settings(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+    try:
+        width = int(data.get("width", _DEFAULT_RENDER_SETTINGS["width"]))
+    except (TypeError, ValueError):
+        width = _DEFAULT_RENDER_SETTINGS["width"]
+    try:
+        height = int(data.get("height", _DEFAULT_RENDER_SETTINGS["height"]))
+    except (TypeError, ValueError):
+        height = _DEFAULT_RENDER_SETTINGS["height"]
+    aspect = str(data.get("aspect", _DEFAULT_RENDER_SETTINGS["aspect"])).lower()
+    if aspect not in _ASPECT_PRESETS:
+        aspect = "custom"
+    return {
+        "width": max(64, min(4096, width)),
+        "height": max(64, min(4096, height)),
+        "aspect": aspect,
+        "show_camera_frame": data.get("show_camera_frame") is True,
+    }
+
+
+def _normalize_camera(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+
+    def vector(key: str) -> list[float]:
+        fallback = _DEFAULT_CAMERA[key]
+        raw = data.get(key)
+        if not isinstance(raw, (list, tuple)) or len(raw) != 3:
+            return list(fallback)
+        output = []
+        for index, item in enumerate(raw):
+            try:
+                number = float(item)
+            except (TypeError, ValueError):
+                number = fallback[index]
+            if not math.isfinite(number):
+                number = fallback[index]
+            output.append(max(-1_000_000.0, min(1_000_000.0, number)))
+        return output
+
+    try:
+        fov = float(data.get("fov", _DEFAULT_CAMERA["fov"]))
+    except (TypeError, ValueError):
+        fov = _DEFAULT_CAMERA["fov"]
+    if not math.isfinite(fov):
+        fov = _DEFAULT_CAMERA["fov"]
+    return {
+        "position": vector("position"),
+        "target": vector("target"),
+        "fov": max(5.0, min(120.0, fov)),
+    }
+
+
+def _normalize_scene_layers(
+    scene: dict[str, Any],
+    layers: Any = None,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    """Normalize the one-level object/group hierarchy and preserve every object."""
+    objects = [
+        item
+        for item in scene.get("objects", [])
+        if isinstance(item, dict) and isinstance(item.get("object_id"), str)
+    ]
+    object_ids = {item["object_id"] for item in objects}
+    for item in objects:
+        item["visible"] = item.get("visible") is not False
+
+    raw_layers = scene.get("layers", []) if layers is None else layers
+    if not isinstance(raw_layers, list) or len(raw_layers) > len(objects) + 1024:
+        if strict:
+            raise ValueError("invalid scene layer hierarchy")
+        raw_layers = []
+
+    output: list[dict[str, Any]] = []
+    seen_objects: set[str] = set()
+    seen_groups: set[str] = set()
+
+    def invalid(message: str) -> None:
+        if strict:
+            raise ValueError(message)
+
+    for raw in raw_layers:
+        if not isinstance(raw, dict):
+            invalid("scene layers must be objects")
+            continue
+        layer_type = raw.get("type")
+        if layer_type == "object":
+            object_id = str(raw.get("object_id") or "")
+            if object_id not in object_ids or object_id in seen_objects:
+                invalid("scene layer contains an unknown or duplicate object")
+                continue
+            output.append({"type": "object", "object_id": object_id})
+            seen_objects.add(object_id)
+            continue
+        if layer_type != "group":
+            invalid("scene layer type must be object or group")
+            continue
+        group_id = str(raw.get("group_id") or "").lower()
+        if (
+            not _ID_RE.fullmatch(group_id)
+            or group_id in seen_groups
+            or group_id in object_ids
+        ):
+            invalid("scene layer contains an invalid or duplicate group id")
+            continue
+        children = raw.get("children", [])
+        if not isinstance(children, list) or len(children) > len(objects):
+            invalid("scene group contains an invalid child list")
+            continue
+        normalized_children = []
+        for value in children:
+            object_id = str(value or "")
+            if object_id not in object_ids or object_id in seen_objects:
+                invalid("scene group contains an unknown or duplicate object")
+                continue
+            normalized_children.append(object_id)
+            seen_objects.add(object_id)
+        output.append(
+            {
+                "type": "group",
+                "group_id": group_id,
+                "name": _clean_name(raw.get("name"), "Group", 80),
+                "visible": raw.get("visible") is not False,
+                "children": normalized_children,
+            }
+        )
+        seen_groups.add(group_id)
+
+    for item in objects:
+        object_id = item["object_id"]
+        if object_id not in seen_objects:
+            output.append({"type": "object", "object_id": object_id})
+    return output
+
+
+def _remove_object_layer(layers: list[dict[str, Any]], object_id: str) -> None:
+    layers[:] = [
+        layer
+        for layer in layers
+        if not (layer.get("type") == "object" and layer.get("object_id") == object_id)
+    ]
+    for layer in layers:
+        if layer.get("type") == "group":
+            layer["children"] = [
+                value for value in layer.get("children", []) if value != object_id
+            ]
+
+
+def _insert_duplicate_layer(
+    layers: list[dict[str, Any]],
+    source_id: str,
+    duplicate_id: str,
+) -> None:
+    for index, layer in enumerate(layers):
+        if layer.get("type") == "object" and layer.get("object_id") == source_id:
+            layers.insert(index + 1, {"type": "object", "object_id": duplicate_id})
+            return
+        if layer.get("type") == "group":
+            children = layer.get("children", [])
+            if source_id in children:
+                children.insert(children.index(source_id) + 1, duplicate_id)
+                return
+    layers.append({"type": "object", "object_id": duplicate_id})
+
+
+def _visible_object_ids(scene: dict[str, Any]) -> set[str]:
+    objects = {
+        item["object_id"]: item
+        for item in scene.get("objects", [])
+        if isinstance(item, dict) and isinstance(item.get("object_id"), str)
+    }
+    visible: set[str] = set()
+    for layer in _normalize_scene_layers(scene):
+        if layer["type"] == "object":
+            object_id = layer["object_id"]
+            if objects[object_id].get("visible") is not False:
+                visible.add(object_id)
+            continue
+        if layer.get("visible") is False:
+            continue
+        for object_id in layer["children"]:
+            if objects[object_id].get("visible") is not False:
+                visible.add(object_id)
+    return visible
+
+
 def resolve_scene_dir(scene_id: str) -> Path:
     safe_id = _validate_id(scene_id, "scene id")
     root = _factory_root()
@@ -154,6 +362,14 @@ def load_scene(scene_id: str) -> dict[str, Any]:
         raise ValueError("scene metadata is invalid")
     if not isinstance(value.get("objects"), list):
         value["objects"] = []
+    value["layers"] = _normalize_scene_layers(value)
+    value["render"] = _normalize_render_settings(value.get("render"))
+    value["camera"] = _normalize_camera(value.get("camera"))
+    value["render_revision"] = max(
+        0,
+        int(value.get("render_revision", value.get("revision", 0))),
+    )
+    value["schema_version"] = SCHEMA_VERSION
     return value
 
 
@@ -161,6 +377,10 @@ def _save_scene(scene: dict[str, Any], *, bump_revision: bool = True) -> dict[st
     scene_id = _validate_id(scene.get("scene_id"), "scene id")
     if bump_revision:
         scene["revision"] = max(0, int(scene.get("revision", 0))) + 1
+        scene["render_revision"] = max(
+            0,
+            int(scene.get("render_revision", scene["revision"] - 1)),
+        ) + 1
     scene["updated_at"] = _now()
     _atomic_json(_scene_path(scene_id), scene)
     return scene
@@ -174,9 +394,17 @@ def create_scene(name: Any = "") -> dict[str, Any]:
         "scene_id": scene_id,
         "name": _clean_name(name, "Untitled scene"),
         "revision": 0,
+        "render_revision": 0,
         "created_at": timestamp,
         "updated_at": timestamp,
         "objects": [],
+        "layers": [],
+        "render": dict(_DEFAULT_RENDER_SETTINGS),
+        "camera": {
+            "position": list(_DEFAULT_CAMERA["position"]),
+            "target": list(_DEFAULT_CAMERA["target"]),
+            "fov": _DEFAULT_CAMERA["fov"],
+        },
         "exports": {},
     }
     with _STATE_LOCK:
@@ -273,6 +501,11 @@ def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
             duplicate["transform"] = normalize_transform(source_item.get("transform"))
             duplicate["files"] = duplicate_files
             scene["objects"].append(duplicate)
+            _insert_duplicate_layer(
+                scene["layers"],
+                source_item["object_id"],
+                duplicate_id,
+            )
             scene["exports"] = {}
             _save_scene(scene)
             return {"scene": scene, "object_id": duplicate_id}
@@ -313,6 +546,16 @@ def _scene_preview_file(scene: dict[str, Any]) -> Path:
         raise FileNotFoundError("scene has no saved 3D preview")
     if int(preview.get("revision", -1)) != int(scene.get("revision", 0)):
         raise FileNotFoundError("scene 3D preview is stale")
+    if int(preview.get("render_revision", preview.get("revision", -1))) != int(
+        scene.get("render_revision", scene.get("revision", 0))
+    ):
+        raise FileNotFoundError("scene 3D preview camera or resolution is stale")
+    render = _normalize_render_settings(scene.get("render"))
+    if (
+        int(preview.get("width", 0)) != render["width"]
+        or int(preview.get("height", 0)) != render["height"]
+    ):
+        raise FileNotFoundError("scene 3D preview dimensions do not match the export frame")
     root = resolve_scene_dir(scene["scene_id"])
     target = (root / relative).resolve()
     if root not in target.parents or not target.is_file():
@@ -355,9 +598,14 @@ def store_scene_reference(
         return scene
 
 
-def store_scene_preview(scene_id: str, image_bytes: bytes) -> dict[str, Any]:
+def store_scene_preview(
+    scene_id: str,
+    image_bytes: bytes,
+    expected_revision: Any = None,
+    expected_render_revision: Any = None,
+) -> dict[str, Any]:
     """Persist a clean render of the current browser-side 3D viewport."""
-    image = _decode_image(image_bytes).convert("RGB")
+    image = _decode_image(image_bytes, max_bytes=MAX_PREVIEW_BYTES).convert("RGB")
     if image.width < 64 or image.height < 64:
         raise ValueError(
             f"scene preview is only {image.width}x{image.height}; "
@@ -368,16 +616,40 @@ def store_scene_preview(scene_id: str, image_bytes: bytes) -> dict[str, Any]:
     preview_root.mkdir(parents=True, exist_ok=True)
     target = preview_root / "scene.png"
     temporary = preview_root / f".scene.{secrets.token_hex(6)}.tmp"
-    try:
-        image.save(temporary, format="PNG")
-        os.replace(temporary, target)
-    finally:
-        try:
-            temporary.unlink()
-        except OSError:
-            pass
     with _STATE_LOCK:
         scene = load_scene(scene_id)
+        if expected_revision is not None:
+            try:
+                revision = int(expected_revision)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("scene preview revision is invalid") from exc
+            if revision != int(scene.get("revision", 0)):
+                raise ValueError("scene changed while its preview was being rendered")
+        if expected_render_revision is not None:
+            try:
+                render_revision = int(expected_render_revision)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("scene preview render revision is invalid") from exc
+            if render_revision != int(
+                scene.get("render_revision", scene.get("revision", 0))
+            ):
+                raise ValueError(
+                    "scene camera or export frame changed while its preview was being rendered"
+                )
+        render = _normalize_render_settings(scene.get("render"))
+        if (image.width, image.height) != (render["width"], render["height"]):
+            raise ValueError(
+                f"scene preview is {image.width}x{image.height}; "
+                f"the configured export frame is {render['width']}x{render['height']}"
+            )
+        try:
+            image.save(temporary, format="PNG")
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
         scene["preview"] = {
             "file": str(target.relative_to(root)),
             "mime": "image/png",
@@ -385,6 +657,9 @@ def store_scene_preview(scene_id: str, image_bytes: bytes) -> dict[str, Any]:
             "height": image.height,
             "size": target.stat().st_size,
             "revision": int(scene.get("revision", 0)),
+            "render_revision": int(
+                scene.get("render_revision", scene.get("revision", 0))
+            ),
             "updated_at": _now(),
         }
         _save_scene(scene, bump_revision=False)
@@ -487,13 +762,19 @@ def capabilities() -> dict[str, Any]:
         "experimental_gaussian_counts": list(EXPERIMENTAL_GAUSSIAN_COUNTS),
         "conditioning_resolutions": list(CONDITIONING_RESOLUTIONS),
         "experimental_conditioning_resolutions": list(EXPERIMENTAL_CONDITIONING_RESOLUTIONS),
+        "scene_render": {
+            "min_side": 64,
+            "max_side": 4096,
+            "aspect_presets": sorted(_ASPECT_PRESETS),
+            "defaults": dict(_DEFAULT_RENDER_SETTINGS),
+        },
         "defaults": {
             "steps": 20,
             "guidance_scale": 3.0,
             "num_gaussians": 131072,
             "conditioning_resolution": 1024,
             "prevent_upscale": False,
-            "erode_radius": 1,
+            "erode_radius": 0,
             "seed": -1,
         },
         "device": device,
@@ -526,7 +807,7 @@ def _generation_settings(values: Any) -> dict[str, Any]:
         ),
         "conditioning_resolution": conditioning_resolution,
         "prevent_upscale": prevent_upscale,
-        "erode_radius": max(0, min(8, int(data.get("erode_radius", 1)))),
+        "erode_radius": max(0, min(8, int(data.get("erode_radius", 0)))),
         "seed": max(-1, min(2**31 - 1, int(data.get("seed", -1)))),
     }
 
@@ -729,46 +1010,49 @@ def _load_pipeline(paths: dict[str, Path], device: str, job: dict[str, Any]) -> 
     """Construct the pinned upstream pipeline with visible component stages."""
     import torch
 
-    from ..triposplat_backend import triposplat as engine
+    from ..data.triposplat import triposplat as engine
 
     target = torch.device(device)
+    load_device = torch.device("cpu") if target.type != "cpu" else target
+    dtypes = engine.component_dtypes(target)
     pipeline = engine.TripoSplatPipeline.__new__(engine.TripoSplatPipeline)
     pipeline._device = target
+    pipeline._load_device = load_device
     components = (
         (
             "DINOv3 image encoder",
             "dinov3",
             engine.load_dinov3,
             "clip_vision/dino_v3_vit_h.safetensors",
-            torch.bfloat16,
+            dtypes["dinov3"],
         ),
         (
             "Flux2 VAE encoder",
             "vae_encoder",
             engine.load_vae_encoder,
             "vae/flux2-vae.safetensors",
-            torch.bfloat16,
+            dtypes["vae_encoder"],
         ),
         (
             "BiRefNet background remover",
             "rmbg",
             engine.load_rmbg,
             "background_removal/birefnet.safetensors",
-            torch.float16,
+            dtypes["rmbg"],
         ),
         (
             "TripoSplat flow model",
             "flow_model",
             engine.load_flow_model,
             "diffusion_models/triposplat_fp16.safetensors",
-            torch.float16,
+            dtypes["flow_model"],
         ),
         (
             "Gaussian decoder",
             "decoder",
             engine.load_decoder,
             "vae/triposplat_vae_decoder_fp16.safetensors",
-            torch.float16,
+            dtypes["decoder"],
         ),
     )
     for index, (label, attribute, loader, relative, dtype) in enumerate(components):
@@ -779,12 +1063,15 @@ def _load_pipeline(paths: dict[str, Path], device: str, job: dict[str, Any]) -> 
             "model",
             progress,
             f"Loading {label} ({index + 1}/{len(components)})",
-            detail=f"{relative} · {str(dtype).removeprefix('torch.')} · {device}",
+            detail=(
+                f"{relative} · {str(dtype).removeprefix('torch.')} · "
+                f"load {load_device} / inference {target}"
+            ),
         )
         setattr(
             pipeline,
             attribute,
-            loader(str(paths[relative]), device=target, dtype=dtype),
+            loader(str(paths[relative]), device=load_device, dtype=dtype),
         )
         _emit(
             job,
@@ -822,8 +1109,12 @@ def _pipeline_for_job(job: dict[str, Any]) -> Any:
     return _PIPELINE
 
 
-def _decode_image(image_bytes: bytes) -> Image.Image:
-    if not image_bytes or len(image_bytes) > MAX_UPLOAD_BYTES:
+def _decode_image(
+    image_bytes: bytes,
+    *,
+    max_bytes: int = MAX_UPLOAD_BYTES,
+) -> Image.Image:
+    if not image_bytes or len(image_bytes) > max_bytes:
         raise ValueError("image upload is empty or too large")
     with Image.open(io.BytesIO(image_bytes)) as image:
         width, height = image.size
@@ -962,6 +1253,9 @@ def _generate_object(
                 callback=callback,
             )
             _check_cancel(job)
+            del conditioning
+            if pipeline._device.type == "cuda" and torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
             if settings["num_gaussians"] in EXPERIMENTAL_GAUSSIAN_COUNTS:
                 decoder_tokens = settings["num_gaussians"] // pipeline.decoder.gaussians_per_point
@@ -996,20 +1290,71 @@ def _generate_object(
                 "Decoding Gaussian representation",
                 detail=f"target {settings['num_gaussians']:,} splats",
             )
-            gaussian = pipeline.decode_latent(latent["latent"], num_gaussians=settings["num_gaussians"])
+
+            def decode_callback(stage: str, step: int, total: int) -> None:
+                _check_cancel(job)
+                ratio = float(step) / max(1, total)
+                if stage == "octree":
+                    progress = 85.0 + ratio * 3.5
+                    message = f"Sampling octree level {step}/{total}"
+                    detail = f"target {settings['num_gaussians']:,} splats"
+                else:
+                    progress = 88.5 + ratio * 2.0
+                    message = (
+                        "Predicting Gaussian attributes"
+                        if step == 0
+                        else "Gaussian attributes predicted"
+                    )
+                    detail = f"{settings['num_gaussians'] // 32:,} decoder tokens"
+                _emit(job, "decode", progress, message, detail=detail)
+
+            gaussian = pipeline.decode_latent(
+                latent["latent"],
+                num_gaussians=settings["num_gaussians"],
+                generator=generator,
+                callback=decode_callback,
+            )
             gaussian_count = int(gaussian.get_xyz.shape[0])
+            gaussian_report = getattr(gaussian, "last_validation_report", None)
+            if not isinstance(gaussian_report, dict):
+                gaussian_report = gaussian.validate()
+            _emit(
+                job,
+                "validate",
+                91,
+                "Validated decoded Gaussian tensors",
+                detail=(
+                    f"{gaussian_count:,} splats · finite xyz/color/opacity/scale/rotation · "
+                    f"rotation norms > 1e-12"
+                ),
+            )
             if settings["num_gaussians"] in EXPERIMENTAL_GAUSSIAN_COUNTS:
                 peak_detail = f"{gaussian_count:,} Gaussians decoded"
                 if pipeline._device.type == "cuda" and torch.cuda.is_available():
                     peak_bytes = torch.cuda.max_memory_allocated(pipeline._device)
                     peak_detail += f" · CUDA peak allocated {peak_bytes / 1024**3:.2f} GiB"
-                _emit(job, "decode", 90, "High-density decode completed", detail=peak_detail)
+                _emit(job, "decode", 91.5, "High-density decode completed", detail=peak_detail)
             _check_cancel(job)
 
             ply_path = object_root / "model.ply"
             splat_path = object_root / "model.splat"
             _emit(job, "serialize", 92, "Writing Gaussian PLY", detail=f"{gaussian_count:,} splats")
-            gaussian.save_ply(ply_path)
+
+            def ply_callback(completed: int, total: int) -> None:
+                _check_cancel(job)
+                _emit(
+                    job,
+                    "serialize",
+                    92.0 + (float(completed) / max(1, total)) * 2.0,
+                    "Writing Gaussian PLY",
+                    detail=f"{completed:,}/{total:,} splats",
+                )
+
+            gaussian.save_ply(
+                ply_path,
+                callback=ply_callback,
+                _validated_report=gaussian_report,
+            )
             _check_cancel(job)
             ply_info = inspect_ply(ply_path)
             if ply_info.vertex_count != gaussian_count:
@@ -1017,6 +1362,7 @@ def _generate_object(
                     f"serialized PLY contains {ply_info.vertex_count:,} splats; "
                     f"decoder reported {gaussian_count:,}"
                 )
+            ply_validation = validate_ply_payload(ply_path)
             ply_hash = _sha256_file(ply_path)
             _emit(
                 job,
@@ -1025,17 +1371,39 @@ def _generate_object(
                 "Validated Gaussian PLY",
                 detail=(
                     f"{ply_info.vertex_count:,} splats · {ply_path.stat().st_size:,} bytes · "
+                    f"{ply_validation['invalid_values']} invalid values · "
+                    f"{ply_validation['invalid_scales']} invalid scales · "
+                    f"{ply_validation['invalid_quaternions']} invalid quaternions · "
                     f"sha256={ply_hash[:16]}"
                 ),
             )
             _emit(job, "serialize", 96, "Writing compact SPLAT", detail=f"{gaussian_count:,} splats")
-            gaussian.save_splat(splat_path)
+
+            def splat_callback(completed: int, total: int) -> None:
+                _check_cancel(job)
+                _emit(
+                    job,
+                    "serialize",
+                    96.0 + (float(completed) / max(1, total)),
+                    "Writing compact SPLAT",
+                    detail=f"{completed:,}/{total:,} splats",
+                )
+
+            gaussian.save_splat(
+                splat_path,
+                callback=splat_callback,
+                _validated_report=gaussian_report,
+            )
             expected_splat_bytes = gaussian_count * 32
             if splat_path.stat().st_size != expected_splat_bytes:
                 raise RuntimeError(
                     f"serialized SPLAT is {splat_path.stat().st_size:,} bytes; "
                     f"expected {expected_splat_bytes:,}"
                 )
+            splat_validation = validate_splat_payload(
+                splat_path,
+                expected_gaussians=gaussian_count,
+            )
             splat_hash = _sha256_file(splat_path)
             _emit(
                 job,
@@ -1044,10 +1412,13 @@ def _generate_object(
                 "Validated compact SPLAT",
                 detail=(
                     f"{gaussian_count:,} splats · {expected_splat_bytes:,} bytes · "
+                    f"{splat_validation['invalid_values']} invalid values · "
+                    f"{splat_validation['invalid_scales']} invalid scales · "
+                    f"{splat_validation['invalid_rotations']} invalid rotations · "
                     f"sha256={splat_hash[:16]}"
                 ),
             )
-            del gaussian, latent, conditioning
+            del gaussian, latent
 
         relative_root = Path("objects") / object_id
         item = {
@@ -1060,6 +1431,19 @@ def _generate_object(
             "checksums": {
                 "ply_sha256": ply_hash,
                 "splat_sha256": splat_hash,
+            },
+            "validation": {
+                "tensor_ranges": gaussian_report["ranges"],
+                "ply": {
+                    "invalid_values": ply_validation["invalid_values"],
+                    "invalid_scales": ply_validation["invalid_scales"],
+                    "invalid_quaternions": ply_validation["invalid_quaternions"],
+                },
+                "splat": {
+                    "invalid_values": splat_validation["invalid_values"],
+                    "invalid_scales": splat_validation["invalid_scales"],
+                    "invalid_rotations": splat_validation["invalid_rotations"],
+                },
             },
             "settings": {
                 "steps": settings["steps"],
@@ -1081,6 +1465,7 @@ def _generate_object(
         with _STATE_LOCK:
             scene = load_scene(scene_id)
             scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
             scene["exports"] = {}
             _save_scene(scene)
         return {
@@ -1109,7 +1494,14 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
         reference.pop("file", None)
     preview = value.get("preview")
     if isinstance(preview, dict):
-        if int(preview.get("revision", -1)) == int(value.get("revision", 0)):
+        render = _normalize_render_settings(value.get("render"))
+        if (
+            int(preview.get("revision", -1)) == int(value.get("revision", 0))
+            and int(preview.get("render_revision", preview.get("revision", -1)))
+            == int(value.get("render_revision", value.get("revision", 0)))
+            and int(preview.get("width", 0)) == render["width"]
+            and int(preview.get("height", 0)) == render["height"]
+        ):
             preview["url"] = f"{API_BASE}/scenes/{scene_id}/preview"
         preview.pop("file", None)
     for item in value.get("objects", []):
@@ -1138,7 +1530,10 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
         raise ValueError("scene update must be an object")
     with _STATE_LOCK:
         scene = load_scene(scene_id)
+        visible_before = _visible_object_ids(scene)
         changed = False
+        render_changed = False
+        preview_changed = False
         if "name" in payload:
             name = _clean_name(payload["name"], scene["name"])
             if name != scene["name"]:
@@ -1167,20 +1562,57 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                     if transform != item.get("transform"):
                         item["transform"] = transform
                         changed = True
+                        render_changed = True
+                if "visible" in incoming:
+                    visible = incoming["visible"] is not False
+                    if visible != (item.get("visible") is not False):
+                        item["visible"] = visible
+                        changed = True
+        if "layers" in payload:
+            layers = _normalize_scene_layers(scene, payload["layers"], strict=True)
+            if layers != scene.get("layers"):
+                scene["layers"] = layers
+                changed = True
+        if "render" in payload:
+            render = _normalize_render_settings(payload["render"])
+            previous_render = _normalize_render_settings(scene.get("render"))
+            if render != previous_render:
+                scene["render"] = render
+                changed = True
+                preview_changed = (
+                    render["width"] != previous_render["width"]
+                    or render["height"] != previous_render["height"]
+                )
+        if "camera" in payload:
+            camera = _normalize_camera(payload["camera"])
+            if camera != _normalize_camera(scene.get("camera")):
+                scene["camera"] = camera
+                changed = True
+                preview_changed = True
         if not changed:
             return scene
-        scene["exports"] = {}
-        return _save_scene(scene)
+        render_changed = render_changed or visible_before != _visible_object_ids(scene)
+        if render_changed:
+            scene["exports"] = {}
+        elif preview_changed:
+            scene["render_revision"] = max(
+                0,
+                int(scene.get("render_revision", scene.get("revision", 0))),
+            ) + 1
+        return _save_scene(scene, bump_revision=render_changed)
 
 
 def _scene_sources(scene: dict[str, Any], only_object_id: str = "") -> list[tuple[Path, Any]]:
     output = []
+    visible_ids = _visible_object_ids(scene) if not only_object_id else set()
     for item in scene.get("objects", []):
         if only_object_id and item.get("object_id") != only_object_id:
             continue
+        if not only_object_id and item.get("object_id") not in visible_ids:
+            continue
         output.append((_object_file(scene["scene_id"], item, "ply"), item.get("transform")))
     if not output:
-        raise ValueError("the scene contains no Gaussian objects")
+        raise ValueError("the scene contains no visible Gaussian objects")
     return output
 
 
@@ -1352,7 +1784,7 @@ def register_routes(routes: Any) -> None:
     @routes.post(f"{API_BASE}/scenes/{{scene_id}}/preview")
     async def factory_scene_preview_upload(request: Any) -> Any:
         try:
-            if not _content_length_ok(request, MAX_UPLOAD_BYTES + 1024 * 1024):
+            if not _content_length_ok(request, MAX_PREVIEW_BYTES + 1024 * 1024):
                 return web.json_response({"error": "preview upload is too large"}, status=413)
             scene_id = _validate_id(request.match_info["scene_id"], "scene id")
             load_scene(scene_id)
@@ -1360,8 +1792,13 @@ def register_routes(routes: Any) -> None:
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
                 raise ValueError("missing scene preview image")
-            image_bytes = image_field.file.read(MAX_UPLOAD_BYTES + 1)
-            scene = store_scene_preview(scene_id, image_bytes)
+            image_bytes = image_field.file.read(MAX_PREVIEW_BYTES + 1)
+            scene = store_scene_preview(
+                scene_id,
+                image_bytes,
+                post.get("revision"),
+                post.get("render_revision"),
+            )
             return web.json_response(_public_scene(scene)["preview"], status=201)
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
@@ -1519,6 +1956,7 @@ def register_routes(routes: Any) -> None:
                 scene = load_scene(scene_id)
                 _object_by_id(scene, object_id)
                 scene["objects"] = [item for item in scene["objects"] if item.get("object_id") != object_id]
+                _remove_object_layer(scene["layers"], object_id)
                 scene["exports"] = {}
                 _save_scene(scene)
             target = resolve_scene_dir(scene_id) / "objects" / object_id

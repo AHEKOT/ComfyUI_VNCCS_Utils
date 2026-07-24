@@ -1,3 +1,6 @@
+"""Validated, ComfyUI-aware TripoSplat inference runtime."""
+
+import io
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -16,6 +19,14 @@ from .model import (
 # ---------------------------------------------------------------------------
 # Gaussian
 # ---------------------------------------------------------------------------
+
+_SERIALIZE_CHUNK_SIZE = 65536
+_QUATERNION_EPSILON = 1e-12
+
+
+class GaussianValidationError(ValueError):
+    """Raised when decoded Gaussian attributes cannot be serialized safely."""
+
 
 class Gaussian:
     def __init__(self, aabb: list, sh_degree: int = 0, mininum_kernel_size: float = 0.0,
@@ -121,91 +132,252 @@ class Gaussian:
             l.append(f'rot_{i}')
         return l
 
+    def validation_report(self) -> dict:
+        tensors = {
+            "xyz": self.get_xyz,
+            "features_dc": self._features_dc,
+            "opacity_logits": self._opacity,
+            "opacity": self.get_opacity,
+            "scaling_logits": self._scaling,
+            "scaling": self.get_scaling,
+            "rotation": self._rotation,
+        }
+        errors = []
+        counts = {}
+        expected = None
+        ranges = {}
+        for name, value in tensors.items():
+            if value is None or not isinstance(value, torch.Tensor):
+                errors.append(f"{name} is missing")
+                continue
+            count = int(value.shape[0]) if value.ndim else 0
+            counts[name] = count
+            if expected is None:
+                expected = count
+            elif count != expected:
+                errors.append(f"{name} has {count:,} rows; expected {expected:,}")
+            finite = torch.isfinite(value)
+            invalid = int((~finite).sum().item())
+            if invalid:
+                errors.append(f"{name} contains {invalid:,} NaN/Inf value(s)")
+            elif value.numel():
+                as_float = value.detach().float()
+                ranges[name] = [float(as_float.min().item()), float(as_float.max().item())]
+
+        if not expected:
+            errors.append("Gaussian contains no splats")
+        if self.get_scaling is not None:
+            non_positive = int((self.get_scaling <= 0).sum().item())
+            if non_positive:
+                errors.append(f"scaling contains {non_positive:,} non-positive value(s)")
+        if self._rotation is not None:
+            rotation = self._rotation.detach().float() + self.rots_bias.detach().float()[None, :]
+            norms = torch.linalg.vector_norm(rotation, dim=-1)
+            invalid_norms = int(((~torch.isfinite(norms)) | (norms <= _QUATERNION_EPSILON)).sum().item())
+            if invalid_norms:
+                errors.append(f"rotation contains {invalid_norms:,} invalid quaternion(s)")
+
+        return {
+            "valid": not errors,
+            "gaussians": int(expected or 0),
+            "errors": errors,
+            "ranges": ranges,
+            "counts": counts,
+        }
+
+    def validate(self) -> dict:
+        report = self.validation_report()
+        if not report["valid"]:
+            raise GaussianValidationError("invalid Gaussian output: " + "; ".join(report["errors"]))
+        return report
+
     _DEFAULT_TRANSFORM = [[1, 0, 0], [0, 0, -1], [0, 1, 0]]
 
-    def _get_ply_data(self, transform=None):
-        xyz = self.get_xyz.detach().cpu().numpy()
-        normals = np.zeros_like(xyz)
-        f_dc = self._features_dc.detach().transpose(1, 2).flatten(start_dim=1).contiguous().cpu().numpy()
-        opacities = self._inverse_opacity_activation(self.get_opacity).detach().cpu().numpy()
-        scale = torch.log(self.get_scaling).detach().cpu().numpy()
-        rotation = (self._rotation + self.rots_bias[None, :]).detach().cpu().numpy()
-        if transform is not None:
-            transform = np.array(transform)
-            xyz = np.matmul(xyz, transform.T)
-            R_mat = _quat_to_matrix(rotation)
-            R_mat = np.matmul(transform, R_mat)
-            rotation = _matrix_to_quat(R_mat)
-        return xyz, normals, f_dc, opacities, scale, rotation
-
-    def _transformed_xyz_rot(self, transform=None):
+    def _transform(self, transform=None):
         if transform is None:
             transform = self._DEFAULT_TRANSFORM
         transform = np.array(transform, dtype=np.float32)
-        xyz = self.get_xyz.detach().cpu().numpy().astype(np.float32)
-        rotation = (self._rotation + self.rots_bias[None, :]).detach().cpu().numpy()
+        if transform.shape != (3, 3) or not np.isfinite(transform).all():
+            raise GaussianValidationError("Gaussian transform must be a finite 3×3 matrix")
+        if not np.allclose(transform @ transform.T, np.eye(3), atol=1e-4) or not np.isclose(
+            np.linalg.det(transform),
+            1.0,
+            atol=1e-4,
+        ):
+            raise GaussianValidationError(
+                "Gaussian export transform must be a proper rotation matrix; "
+                "apply position/scale through the scene exporter"
+            )
+        return transform
+
+    def _transformed_xyz_rot(self, xyz, rotation, transform):
         xyz = np.matmul(xyz, transform.T)
         R_mat = _quat_to_matrix(rotation)
         R_mat = np.matmul(transform, R_mat)
         rotation = _matrix_to_quat(R_mat)
         return xyz, rotation
 
-    def to_ply_bytes(self, transform=None) -> bytes:
-        if transform is None:
-            transform = self._DEFAULT_TRANSFORM
-        xyz, normals, f_dc, opacities, scale, rotation = self._get_ply_data(transform=transform)
-        dtype_full = [(attr, 'f4') for attr in self.construct_list_of_attributes()]
-        elements = np.empty(xyz.shape[0], dtype=dtype_full)
-        elements[:] = list(map(tuple, np.concatenate((xyz, normals, f_dc, opacities, scale, rotation), axis=1)))
-        return _binary_ply_bytes(elements, dtype_full)
+    def _iter_ply_payload(
+        self,
+        transform=None,
+        callback=None,
+        chunk_size=_SERIALIZE_CHUNK_SIZE,
+        _validated_report=None,
+    ):
+        report = _validated_report or self.validate()
+        transform = self._transform(transform)
+        names = self.construct_list_of_attributes()
+        dtype_full = [(name, "<f4") for name in names]
+        count = report["gaussians"]
+        for start in range(0, count, chunk_size):
+            end = min(count, start + chunk_size)
+            xyz = self.get_xyz[start:end].detach().float().cpu().numpy()
+            rotation = (
+                self._rotation[start:end].detach().float()
+                + self.rots_bias.detach().float()[None, :]
+            ).cpu().numpy()
+            xyz, rotation = self._transformed_xyz_rot(xyz, rotation, transform)
+            arrays = (
+                xyz,
+                np.zeros_like(xyz),
+                self._features_dc[start:end]
+                .detach()
+                .float()
+                .transpose(1, 2)
+                .flatten(start_dim=1)
+                .contiguous()
+                .cpu()
+                .numpy(),
+                (
+                    self._opacity[start:end].detach().float()
+                    + self.opacity_bias_val.detach().float()
+                ).cpu().numpy(),
+                torch.log(self.get_scaling[start:end].detach().float()).cpu().numpy(),
+                rotation,
+            )
+            elements = np.empty(end - start, dtype=np.dtype(dtype_full))
+            column = 0
+            for array in arrays:
+                array = np.asarray(array, dtype=np.float32).reshape(end - start, -1)
+                for index in range(array.shape[1]):
+                    elements[names[column]] = array[:, index]
+                    column += 1
+            yield elements.tobytes()
+            if callback is not None:
+                callback(end, count)
 
-    def to_splat_bytes(self, transform=None) -> bytes:
-        if transform is None:
-            transform = self._DEFAULT_TRANSFORM
-        xyz, rotation = self._transformed_xyz_rot(transform=transform)
-        scale = self.get_scaling.detach().cpu().numpy().astype(np.float32)
-        opacity = self.get_opacity.detach().cpu().numpy()
-        f_dc = self._features_dc.detach().cpu().numpy()
+    def to_ply_bytes(self, transform=None, callback=None) -> bytes:
+        report = self.validate()
+        count = report["gaussians"]
+        output = io.BytesIO()
+        output.write(_binary_ply_header(count, self.construct_list_of_attributes()))
+        for payload in self._iter_ply_payload(
+            transform=transform,
+            callback=callback,
+            _validated_report=report,
+        ):
+            output.write(payload)
+        return output.getvalue()
+
+    def _splat_arrays(self, transform=None, _validated_report=None):
+        if _validated_report is None:
+            self.validate()
+        transform = self._transform(transform)
+        xyz = self.get_xyz.detach().float().cpu().numpy()
+        rotation = (
+            self._rotation.detach().float() + self.rots_bias.detach().float()[None, :]
+        ).cpu().numpy()
+        xyz, rotation = self._transformed_xyz_rot(xyz, rotation, transform)
+        scale = self.get_scaling.detach().float().cpu().numpy()
+        opacity = self.get_opacity.detach().float().cpu().numpy()
+        f_dc = self._features_dc.detach().float().cpu().numpy()
+        rotation = _normalize_quaternions(rotation, "SPLAT rotation")
+        order = np.argsort(-opacity[:, 0] * np.prod(scale, axis=-1), kind="stable")
+        return xyz, rotation, scale, opacity, f_dc, order
+
+    def _iter_splat_payload(
+        self,
+        transform=None,
+        callback=None,
+        chunk_size=_SERIALIZE_CHUNK_SIZE,
+        _validated_report=None,
+    ):
+        xyz, rotation, scale, opacity, f_dc, order = self._splat_arrays(
+            transform=transform,
+            _validated_report=_validated_report,
+        )
+        count = len(order)
         C0 = 0.28209479177387814
-        # .splat packs color as 4 bytes RGBA: RGB from the SH DC term, A from opacity.
-        rgb = np.clip((f_dc[:, 0, :] * C0 + 0.5) * 255, 0, 255).astype(np.uint8)
-        alpha = np.clip(opacity[:, 0:1] * 255, 0, 255).astype(np.uint8)
-        rgba = np.concatenate([rgb, alpha], axis=1)
-        rot = rotation / np.linalg.norm(rotation, axis=-1, keepdims=True)
-        rot_u8 = np.clip(rot * 128 + 128, 0, 255).astype(np.uint8)
-        order = np.argsort(-opacity[:, 0] * np.prod(scale, axis=-1))
-        xyz, scale, rgba, rot_u8 = xyz[order], scale[order], rgba[order], rot_u8[order]
-        # Per-splat record is exactly 32 bytes: xyz(12) + scale(12) + rgba(4) + rot(4).
-        data = np.concatenate([
-            xyz.astype(np.float32).view(np.uint8).reshape(-1, 12),
-            scale.astype(np.float32).view(np.uint8).reshape(-1, 12),
-            rgba.reshape(-1, 4),
-            rot_u8.reshape(-1, 4),
-        ], axis=1).reshape(-1)
-        return data.tobytes()
+        for start in range(0, count, chunk_size):
+            end = min(count, start + chunk_size)
+            indices = order[start:end]
+            chunk_xyz = xyz[indices].astype("<f4", copy=False)
+            chunk_scale = scale[indices].astype("<f4", copy=False)
+            rgb = np.clip((f_dc[indices, 0, :] * C0 + 0.5) * 255, 0, 255).astype(np.uint8)
+            alpha = np.clip(opacity[indices, 0:1] * 255, 0, 255).astype(np.uint8)
+            rgba = np.concatenate([rgb, alpha], axis=1)
+            rot_u8 = np.clip(rotation[indices] * 128 + 128, 0, 255).astype(np.uint8)
+            packed = np.empty((end - start, 32), dtype=np.uint8)
+            packed[:, 0:12] = chunk_xyz.view(np.uint8).reshape(-1, 12)
+            packed[:, 12:24] = chunk_scale.view(np.uint8).reshape(-1, 12)
+            packed[:, 24:28] = rgba
+            packed[:, 28:32] = rot_u8
+            yield packed.tobytes()
+            if callback is not None:
+                callback(end, count)
 
-    def save_ply(self, path, transform=None):
-        with open(path, 'wb') as f:
-            f.write(self.to_ply_bytes(transform=transform))
+    def to_splat_bytes(self, transform=None, callback=None) -> bytes:
+        output = io.BytesIO()
+        for payload in self._iter_splat_payload(transform=transform, callback=callback):
+            output.write(payload)
+        return output.getvalue()
 
-    def save_splat(self, path, transform=None):
-        with open(path, 'wb') as f:
-            f.write(self.to_splat_bytes(transform=transform))
+    def save_ply(self, path, transform=None, callback=None, _validated_report=None):
+        report = _validated_report or self.validate()
+        count = report["gaussians"]
+        with open(path, 'wb') as handle:
+            handle.write(_binary_ply_header(count, self.construct_list_of_attributes()))
+            for payload in self._iter_ply_payload(
+                transform=transform,
+                callback=callback,
+                _validated_report=report,
+            ):
+                handle.write(payload)
+
+    def save_splat(self, path, transform=None, callback=None, _validated_report=None):
+        with open(path, 'wb') as handle:
+            for payload in self._iter_splat_payload(
+                transform=transform,
+                callback=callback,
+                _validated_report=_validated_report,
+            ):
+                handle.write(payload)
 
 
-def _binary_ply_bytes(elements, dtype_full) -> bytes:
-    num_vertices = len(elements)
+def _binary_ply_header(num_vertices, attributes) -> bytes:
     header = "ply\nformat binary_little_endian 1.0\n"
     header += f"element vertex {num_vertices}\n"
-    type_map = {'f4': 'float', 'u1': 'uchar', 'i4': 'int'}
-    for name, t in dtype_full:
-        header += f"property {type_map.get(t, t)} {name}\n"
+    for name in attributes:
+        header += f"property float {name}\n"
     header += "end_header\n"
-    return header.encode('ascii') + elements.tobytes()
+    return header.encode('ascii')
+
+
+def _normalize_quaternions(q, label="quaternion"):
+    q = np.asarray(q, dtype=np.float32)
+    norms = np.linalg.norm(q, axis=-1, keepdims=True)
+    invalid = (~np.isfinite(q).all(axis=-1)) | (~np.isfinite(norms[:, 0])) | (
+        norms[:, 0] <= _QUATERNION_EPSILON
+    )
+    if invalid.any():
+        raise GaussianValidationError(
+            f"{label} contains {int(invalid.sum()):,} invalid quaternion(s)"
+        )
+    return q / norms
 
 
 def _quat_to_matrix(q):
-    q = q / np.linalg.norm(q, axis=-1, keepdims=True)
+    q = _normalize_quaternions(q)
     w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
     R = np.stack([
         1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y),
@@ -216,32 +388,40 @@ def _quat_to_matrix(q):
 
 
 def _matrix_to_quat(R):
+    R = np.asarray(R, dtype=np.float32)
+    if R.ndim != 3 or R.shape[1:] != (3, 3) or not np.isfinite(R).all():
+        raise GaussianValidationError("rotation matrix batch must contain finite 3×3 matrices")
     trace = R[:, 0, 0] + R[:, 1, 1] + R[:, 2, 2]
     q = np.zeros((R.shape[0], 4), dtype=R.dtype)
-    s = np.sqrt(np.maximum(trace + 1, 0)) * 2
-    q[:, 0] = 0.25 * s
-    q[:, 1] = (R[:, 2, 1] - R[:, 1, 2]) / np.where(s != 0, s, 1)
-    q[:, 2] = (R[:, 0, 2] - R[:, 2, 0]) / np.where(s != 0, s, 1)
-    q[:, 3] = (R[:, 1, 0] - R[:, 0, 1]) / np.where(s != 0, s, 1)
-    m01 = (R[:, 0, 0] >= R[:, 1, 1]) & (R[:, 0, 0] >= R[:, 2, 2]) & (s == 0)
+    positive = trace > 0
+    s = np.sqrt(np.maximum(trace + 1, _QUATERNION_EPSILON)) * 2
+    q[positive, 0] = 0.25 * s[positive]
+    q[positive, 1] = (R[positive, 2, 1] - R[positive, 1, 2]) / s[positive]
+    q[positive, 2] = (R[positive, 0, 2] - R[positive, 2, 0]) / s[positive]
+    q[positive, 3] = (R[positive, 1, 0] - R[positive, 0, 1]) / s[positive]
+    remaining = ~positive
+    m01 = remaining & (R[:, 0, 0] >= R[:, 1, 1]) & (R[:, 0, 0] >= R[:, 2, 2])
     s1 = np.sqrt(np.maximum(1 + R[:, 0, 0] - R[:, 1, 1] - R[:, 2, 2], 0)) * 2
+    s1 = np.maximum(s1, _QUATERNION_EPSILON)
     q[m01, 0] = (R[m01, 2, 1] - R[m01, 1, 2]) / s1[m01]
     q[m01, 1] = 0.25 * s1[m01]
     q[m01, 2] = (R[m01, 0, 1] + R[m01, 1, 0]) / s1[m01]
     q[m01, 3] = (R[m01, 0, 2] + R[m01, 2, 0]) / s1[m01]
-    m11 = (R[:, 1, 1] > R[:, 0, 0]) & (R[:, 1, 1] >= R[:, 2, 2]) & (s == 0)
+    m11 = remaining & ~m01 & (R[:, 1, 1] >= R[:, 2, 2])
     s2 = np.sqrt(np.maximum(1 + R[:, 1, 1] - R[:, 0, 0] - R[:, 2, 2], 0)) * 2
+    s2 = np.maximum(s2, _QUATERNION_EPSILON)
     q[m11, 0] = (R[m11, 0, 2] - R[m11, 2, 0]) / s2[m11]
     q[m11, 1] = (R[m11, 0, 1] + R[m11, 1, 0]) / s2[m11]
     q[m11, 2] = 0.25 * s2[m11]
     q[m11, 3] = (R[m11, 1, 2] + R[m11, 2, 1]) / s2[m11]
-    m21 = (R[:, 2, 2] > R[:, 0, 0]) & (R[:, 2, 2] > R[:, 1, 1]) & (s == 0)
+    m21 = remaining & ~m01 & ~m11
     s3 = np.sqrt(np.maximum(1 + R[:, 2, 2] - R[:, 0, 0] - R[:, 1, 1], 0)) * 2
+    s3 = np.maximum(s3, _QUATERNION_EPSILON)
     q[m21, 0] = (R[m21, 1, 0] - R[m21, 0, 1]) / s3[m21]
     q[m21, 1] = (R[m21, 0, 2] + R[m21, 2, 0]) / s3[m21]
     q[m21, 2] = (R[m21, 1, 2] + R[m21, 2, 1]) / s3[m21]
     q[m21, 3] = 0.25 * s3[m21]
-    return q / np.linalg.norm(q, axis=-1, keepdims=True)
+    return _normalize_quaternions(q, "matrix-derived rotation")
 
 
 def _build_gaussians(decoder: ElasticGaussianFixedlenDecoder, points_pred: dict, pred: dict):
@@ -275,6 +455,20 @@ def _build_gaussians(decoder: ElasticGaussianFixedlenDecoder, points_pred: dict,
 # ---------------------------------------------------------------------------
 # Euler flow sampler
 # ---------------------------------------------------------------------------
+
+def _ensure_finite_tensor(label: str, value: torch.Tensor) -> None:
+    finite = torch.isfinite(value)
+    if bool(finite.all().item()):
+        return
+    invalid = int((~finite).sum().item())
+    raise FloatingPointError(f"{label} contains {invalid:,} NaN/Inf value(s)")
+
+
+def _ensure_finite_mapping(label: str, values: dict) -> None:
+    for key, value in values.items():
+        if isinstance(value, torch.Tensor):
+            _ensure_finite_tensor(f"{label}.{key}", value)
+
 
 class FlowEulerCfgSampler:
     def __init__(self, sigma_min: float = 1e-5):
@@ -335,6 +529,10 @@ class FlowEulerCfgSampler:
                     sample[key] = sample[key] - pred_v[key] * dt
             else:
                 sample = sample - pred_v * dt
+            if isinstance(sample, dict):
+                _ensure_finite_mapping(f"flow sample step {i + 1}", sample)
+            else:
+                _ensure_finite_tensor(f"flow sample step {i + 1}", sample)
             if callback is not None:
                 callback(i + 1, steps)
         return sample
@@ -412,6 +610,9 @@ def load_decoder(path: str, device=None, dtype=None) -> OctreeGaussianDecoder:
 
 _CANVAS_SIZE = 1024
 _IMAGE_PATCH_SIZE = 16
+_MAX_PREPROCESS_PIXELS = 4096 * 4096
+_MAX_PREPROCESS_SIDE = 16384
+_ALPHA_BBOX_THRESHOLD = 8
 
 
 def _image_to_pil(image) -> Image.Image:
@@ -458,10 +659,42 @@ def _conditioning_canvas_size(
     )
 
 
+def _safe_preprocess_scale(width: int, height: int, target_short_side: int) -> float:
+    if width <= 0 or height <= 0:
+        raise ValueError("input image dimensions must be positive")
+    requested = target_short_side / min(width, height)
+    side_cap = _MAX_PREPROCESS_SIDE / max(width, height)
+    pixel_cap = (_MAX_PREPROCESS_PIXELS / float(width * height)) ** 0.5
+    return min(requested, side_cap, pixel_cap)
+
+
+def _has_usable_alpha(image: Image.Image) -> bool:
+    if image.mode != "RGBA":
+        return False
+    alpha = np.asarray(image.getchannel(3), dtype=np.uint8)
+    transparent = int((alpha < 250).sum())
+    minimum = max(8, int(alpha.size * 0.001))
+    return transparent >= minimum
+
+
+def _foreground_bbox(alpha: np.ndarray, threshold: int = _ALPHA_BBOX_THRESHOLD) -> list[int]:
+    if alpha.ndim != 2:
+        raise ValueError("foreground alpha mask must be two-dimensional")
+    mask = alpha >= int(threshold)
+    ys, xs = np.nonzero(mask)
+    if xs.size == 0:
+        raise ValueError(
+            "TripoSplat preprocessing produced an empty foreground mask. "
+            "Use a clearer silhouette, disable mask erosion, or provide a valid alpha channel."
+        )
+    # PIL's right/lower crop bounds are exclusive.
+    return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+
 def preprocess_image(
     image,
     rmbg: BiRefNet,
-    erode_radius: int = 1,
+    erode_radius: int = 0,
     canvas_size: int = _CANVAS_SIZE,
     prevent_upscale: bool = False,
 ) -> Image.Image:
@@ -472,20 +705,28 @@ def preprocess_image(
         prevent_upscale=prevent_upscale,
     )
     w, h = image.size
-    s = size / min(w, h)
+    s = _safe_preprocess_scale(w, h, size)
     image = image.resize((max(1, int(round(w * s))), max(1, int(round(h * s)))), Image.LANCZOS)
-    has_real_alpha = (image.mode == "RGBA"
-                      and np.array(image.getchannel(3), dtype=np.int32).min() < 255)
+    has_real_alpha = _has_usable_alpha(image)
     if not has_real_alpha:
+        if rmbg is None:
+            raise ValueError("TripoSplat background removal requires a loaded BiRefNet model")
         image = rmbg.remove_background(image.convert("RGB"))
+    if erode_radius < 0:
+        raise ValueError("mask erosion radius cannot be negative")
     if erode_radius > 0:
         image.putalpha(image.getchannel(3).filter(ImageFilter.MinFilter(2 * erode_radius + 1)))
     alpha = np.array(image.getchannel(3))
-    ys, xs = np.nonzero(alpha)
-    bbox = [xs.min(), ys.min(), xs.max(), ys.max()]
+    bbox = _foreground_bbox(alpha)
     cx, cy = (bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2
-    half = max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 2 * 1.2
-    image = image.crop([int(cx - half), int(cy - half), int(cx + half), int(cy + half)])
+    half = max(1.0, max(bbox[2] - bbox[0], bbox[3] - bbox[1]) / 2 * 1.2)
+    crop = [
+        int(np.floor(cx - half)),
+        int(np.floor(cy - half)),
+        int(np.ceil(cx + half)),
+        int(np.ceil(cy + half)),
+    ]
+    image = image.crop(crop)
     image = image.resize((size, size), Image.LANCZOS)
     bg = Image.new("RGB", (size, size), (0, 0, 0))
     bg.paste(image, mask=image.split()[3])
@@ -516,7 +757,9 @@ def encode_image(image: Image.Image, dinov3: DinoV3ViT, vae_encoder: Flux2VAEEnc
             "conditioning encoder token grids do not match: "
             f"DINO={dinov3_feat.shape[1]}, Flux VAE={vae_feat.shape[1]}"
         )
-    return {'feature1': dinov3_feat, 'feature2': vae_feat}
+    result = {'feature1': dinov3_feat, 'feature2': vae_feat}
+    _ensure_finite_mapping("image conditioning", result)
+    return result
 
 
 @torch.no_grad()
@@ -525,60 +768,158 @@ def sample_latent(flow_model: LatentSeqMMFlowModel, cond: dict,
                   generator: torch.Generator = None,
                   show_progress: bool = False, callback=None) -> dict:
     device = flow_model.device
-    neg_cond = {k: torch.zeros_like(v) for k, v in cond.items()}
+    if isinstance(guidance_scale, dict):
+        cfg_enabled = any(float(value) > 1 for value in guidance_scale.values())
+    else:
+        cfg_enabled = guidance_scale is not None and float(guidance_scale) > 1
+    prepared_cond = {"prepared_context": flow_model.prepare_condition(cond)}
+    _ensure_finite_mapping("prepared conditional context", prepared_cond)
+    prepared_neg_cond = None
+    if cfg_enabled:
+        neg_cond = {k: torch.zeros_like(v) for k, v in cond.items()}
+        prepared_neg_cond = {"prepared_context": flow_model.prepare_condition(neg_cond)}
+        _ensure_finite_mapping("prepared negative context", prepared_neg_cond)
     noise = {'latent': torch.randn(1, flow_model.q_token_length, flow_model.in_channels,
                                    device=device, generator=generator)}
     if flow_model.cam_channels is not None:
         noise['camera'] = torch.randn(1, 1, flow_model.cam_channels,
                                       device=device, generator=generator)
     sampler = FlowEulerCfgSampler()
-    return sampler.sample(flow_model, noise, cond=cond, neg_cond=neg_cond,
-                          steps=steps, guidance_scale=guidance_scale, shift=shift,
-                          show_progress=show_progress, callback=callback)
+    result = sampler.sample(
+        flow_model,
+        noise,
+        cond=prepared_cond,
+        neg_cond=prepared_neg_cond,
+        steps=steps,
+        guidance_scale=guidance_scale,
+        shift=shift,
+        show_progress=show_progress,
+        callback=callback,
+    )
+    _ensure_finite_mapping("flow result", result)
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
+def component_dtypes(device) -> dict[str, torch.dtype]:
+    target = torch.device(device)
+    if target.type == "cpu":
+        encoder_dtype = model_dtype = torch.float32
+    elif target.type == "mps":
+        encoder_dtype = model_dtype = torch.float16
+    else:
+        supports_bfloat16 = False
+        try:
+            supports_bfloat16 = bool(torch.cuda.is_bf16_supported())
+        except (AttributeError, RuntimeError):
+            pass
+        encoder_dtype = torch.bfloat16 if supports_bfloat16 else torch.float16
+        model_dtype = torch.float16
+    return {
+        "dinov3": encoder_dtype,
+        "vae_encoder": encoder_dtype,
+        "rmbg": model_dtype,
+        "flow_model": model_dtype,
+        "decoder": model_dtype,
+    }
+
+
 class TripoSplatPipeline:
+    _COMPONENT_NAMES = ("dinov3", "vae_encoder", "rmbg", "flow_model", "decoder")
+
     def __init__(self, ckpt_path: str, decoder_path: str, dinov3_path: str,
-                 flux2_vae_encoder_path: str, rmbg_path: str, device: str = "cuda"):
+                 flux2_vae_encoder_path: str, rmbg_path: str, device: str = "cuda",
+                 load_device: str = None):
         self._device = torch.device(device)
-        self.dinov3      = load_dinov3      (dinov3_path,             device=self._device, dtype=torch.bfloat16)
-        self.vae_encoder = load_vae_encoder (flux2_vae_encoder_path,  device=self._device, dtype=torch.bfloat16)
-        self.rmbg        = load_rmbg        (rmbg_path,               device=self._device, dtype=torch.float16)
-        self.flow_model  = load_flow_model  (ckpt_path,               device=self._device, dtype=torch.float16)
-        self.decoder     = load_decoder     (decoder_path,            device=self._device, dtype=torch.float16)
+        self._load_device = torch.device(load_device) if load_device is not None else self._device
+        dtypes = component_dtypes(self._device)
+        self.dinov3      = load_dinov3      (dinov3_path,             device=self._load_device, dtype=dtypes["dinov3"])
+        self.vae_encoder = load_vae_encoder (flux2_vae_encoder_path,  device=self._load_device, dtype=dtypes["vae_encoder"])
+        self.rmbg        = load_rmbg        (rmbg_path,               device=self._load_device, dtype=dtypes["rmbg"])
+        self.flow_model  = load_flow_model  (ckpt_path,               device=self._load_device, dtype=dtypes["flow_model"])
+        self.decoder     = load_decoder     (decoder_path,            device=self._load_device, dtype=dtypes["decoder"])
+
+    def _activate(self, *names: str) -> None:
+        active = set(names)
+        unknown = active.difference(self._COMPONENT_NAMES)
+        if unknown:
+            raise ValueError(f"unknown TripoSplat component(s): {', '.join(sorted(unknown))}")
+        for name in self._COMPONENT_NAMES:
+            module = getattr(self, name)
+            target = self._device if name in active else self._load_device
+            if next(module.parameters()).device != target:
+                module.to(device=target)
+
+    def _offload(self, *names: str) -> None:
+        if self._load_device == self._device:
+            return
+        for name in names:
+            getattr(self, name).to(device=self._load_device)
+        if self._device.type == "cuda":
+            torch.cuda.empty_cache()
+        elif self._device.type == "mps" and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
 
     def preprocess_image(
         self,
         image,
-        erode_radius: int = 1,
+        erode_radius: int = 0,
         canvas_size: int = _CANVAS_SIZE,
         prevent_upscale: bool = False,
     ) -> Image.Image:
-        return preprocess_image(
-            image,
-            self.rmbg,
-            erode_radius=erode_radius,
-            canvas_size=canvas_size,
-            prevent_upscale=prevent_upscale,
-        )
+        self._activate("rmbg")
+        try:
+            return preprocess_image(
+                image,
+                self.rmbg,
+                erode_radius=erode_radius,
+                canvas_size=canvas_size,
+                prevent_upscale=prevent_upscale,
+            )
+        finally:
+            self._offload("rmbg")
 
     def encode_image(self, image: Image.Image, generator: torch.Generator = None) -> dict:
-        return encode_image(image, self.dinov3, self.vae_encoder, generator=generator)
+        self._activate("dinov3", "vae_encoder")
+        try:
+            return encode_image(image, self.dinov3, self.vae_encoder, generator=generator)
+        finally:
+            self._offload("dinov3", "vae_encoder")
 
     def sample_latent(self, cond: dict, steps: int = 50, guidance_scale: float = 7.0,
                       shift: float = 3.0, generator: torch.Generator = None,
                       show_progress: bool = False, callback=None) -> dict:
-        return sample_latent(self.flow_model, cond, steps=steps, guidance_scale=guidance_scale,
-                             shift=shift, generator=generator,
-                             show_progress=show_progress, callback=callback)
+        self._activate("flow_model")
+        try:
+            return sample_latent(self.flow_model, cond, steps=steps, guidance_scale=guidance_scale,
+                                 shift=shift, generator=generator,
+                                 show_progress=show_progress, callback=callback)
+        finally:
+            self._offload("flow_model")
 
-    def decode_latent(self, latent: torch.Tensor, num_gaussians: int = 262144):
+    def decode_latent(
+        self,
+        latent: torch.Tensor,
+        num_gaussians: int = 262144,
+        generator: torch.Generator = None,
+        callback=None,
+    ):
         count = self._validate_num_gaussians(int(num_gaussians))
-        return self.decoder.decode(latent, num_gaussians=count)
+        self._activate("decoder")
+        try:
+            result = self.decoder.decode(
+                latent,
+                num_gaussians=count,
+                generator=generator,
+                callback=callback,
+            )
+            result.last_validation_report = result.validate()
+            return result
+        finally:
+            self._offload("decoder")
 
     _NUM_GAUSSIANS_MIN = 32768
     # 524K and 1.05M are experimental extensions above the upstream 262K
@@ -595,13 +936,15 @@ class TripoSplatPipeline:
         gpp = self.decoder.gaussians_per_point
         if n % gpp == 0:
             return n
-        rounded = round(n / gpp) * gpp
+        rounded = ((n + gpp // 2) // gpp) * gpp
+        if not self._NUM_GAUSSIANS_MIN <= rounded <= self._NUM_GAUSSIANS_MAX:
+            raise ValueError(f"rounded num_gaussians={rounded} is outside the supported range")
         print(f"[TripoSplatPipeline] num_gaussians={n} is not a multiple of {gpp}; rounding to {rounded}")
         return rounded
 
     @torch.no_grad()
     def run(self, image, seed: int = 42, steps: int = 20, guidance_scale: float = 3.0,
-            shift: float = 3.0, num_gaussians=262144, erode_radius: int = 1,
+            shift: float = 3.0, num_gaussians=262144, erode_radius: int = 0,
             show_progress: bool = False, callback=None,
             conditioning_resolution: int = _CANVAS_SIZE, prevent_upscale: bool = False):
         """
@@ -632,7 +975,8 @@ class TripoSplatPipeline:
             erode_radius: Pixel radius used to erode the alpha matte after
                 background removal, to avoid segmentation-border bleed before
                 compositing on black. `0` disables; `1` is a 3×3 minimum filter.
-                Recommend: 1.
+                Recommend: 0 for thin silhouettes; use 1 only to suppress a
+                visible segmentation fringe.
             conditioning_resolution: Square image resolution consumed by DINOv3
                 and the Flux VAE. The released model uses 1024. Higher values are
                 experimental and must be divisible by 16.
@@ -664,7 +1008,10 @@ class TripoSplatPipeline:
         cond = self.encode_image(prepared, generator=gen)
         out = self.sample_latent(cond, steps=steps, guidance_scale=guidance_scale, shift=shift,
                                  generator=gen, show_progress=show_progress, callback=callback)
-        gaussians = [self.decode_latent(out['latent'], num_gaussians=n) for n in counts]
+        gaussians = [
+            self.decode_latent(out['latent'], num_gaussians=n, generator=gen)
+            for n in counts
+        ]
         if isinstance(num_gaussians, (list, tuple)):
             return gaussians, prepared
         return gaussians[0], prepared

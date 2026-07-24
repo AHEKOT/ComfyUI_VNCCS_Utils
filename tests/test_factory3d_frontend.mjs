@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.14"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.18"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -37,6 +37,73 @@ test("Factory exposes scenes, generation, transform, and both export formats", (
     assert.match(studio, /duplicateObject/);
     assert.match(studio, /Scene PLY/);
     assert.match(studio, /Scene SPLAT/);
+});
+
+test("Scene objects provide layer-style grouping, visibility, rename, and drag/drop", () => {
+    assert.match(studio, /Shift-click to select multiple/);
+    assert.match(studio, /groupSelectedObjects/);
+    assert.match(studio, /selectedObjectIds = new Set/);
+    assert.match(studio, /event\.shiftKey/);
+    assert.match(studio, /card\.draggable = true/);
+    assert.match(studio, /dragstart/);
+    assert.match(studio, /drop-before/);
+    assert.match(studio, /drop-after/);
+    assert.match(studio, /drop-inside/);
+    assert.match(studio, /_beginInlineRename/);
+    assert.match(studio, /Double-click to rename/);
+    assert.match(studio, /Show object/);
+    assert.match(studio, /Hide object/);
+    assert.match(studio, /Show group/);
+    assert.match(studio, /Hide group/);
+    assert.match(studio, /Ungroup objects/);
+    assert.match(styles, /\.vnccs-i3s__group-card/);
+    assert.match(styles, /\.vnccs-i3s__inline-name/);
+    assert.match(styles, /\.vnccs-i3s__object\.is-hidden/);
+});
+
+test("Replacing a reference always derives a fresh bounded object name from its filename", () => {
+    const helperSource = studio.match(
+        /(function objectNameFromFileName\(value\) \{[\s\S]*?\n\})\n\nfunction sleep/,
+    );
+    assert.ok(helperSource, "objectNameFromFileName helper not found");
+    const parseName = Function(`${helperSource[1]}; return objectNameFromFileName;`)();
+    assert.equal(parseName("second.reference.PNG"), "second.reference");
+    assert.equal(parseName("new%20asset.webp"), "new asset");
+    assert.equal(parseName(".png"), "Object");
+    assert.equal(parseName(`${"a".repeat(90)}.jpg`).length, 80);
+
+    const acceptSource = studio.match(
+        /async _acceptSource\(file\) \{[\s\S]*?\n    \}\n\n    async _fetchJSON/,
+    );
+    assert.ok(acceptSource, "_acceptSource method not found");
+    assert.match(acceptSource[0], /this\.settings\.name = objectNameFromFileName\(file\.name\)/);
+    assert.match(acceptSource[0], /this\.els\.objectName\.value = this\.settings\.name/);
+    assert.doesNotMatch(acceptSource[0], /if \(!this\.settings\.name\)/);
+});
+
+test("Selection no longer rebuilds layer cards before a double-click can rename them", () => {
+    const selection = studio.match(
+        /_selectObject\(objectId,[\s\S]*?\n    _syncSelectionControls\(\)/,
+    );
+    assert.ok(selection, "selection methods not found");
+    assert.match(selection[0], /_syncSelectionPresentation\(\)/);
+    assert.doesNotMatch(selection[0], /_renderObjects\(\)/);
+    assert.match(studio, /name\.addEventListener\("dblclick", beginRename\)/);
+    assert.match(studio, /if \(card\) card\.draggable = false/);
+    assert.match(styles, /grid-template-columns: 36px minmax\(0,1fr\) auto/);
+    assert.match(styles, /\.vnccs-i3s__object-actions \{ grid-column: auto/);
+});
+
+test("Scene updates reuse loaded splats and group transforms fan out to every object", () => {
+    assert.match(studio, /this\.viewer\.setScene\(scene, \{ incremental \}\)/);
+    assert.match(viewer, /async setScene\(sceneData, \{ incremental = false \} = \{\}\)/);
+    assert.match(viewer, /if \(!incremental\) \{/);
+    assert.match(viewer, /existing\?\.assetPath === assetPath/);
+    assert.match(viewer, /this\.objects\.delete\(objectId\)/);
+    assert.match(viewer, /selectGroup\(groupId, objectIds = \[\]\)/);
+    assert.match(viewer, /_beginGroupTransform/);
+    assert.match(viewer, /_applyGroupTransform/);
+    assert.match(viewer, /group_id: this\.selectedGroupId/);
 });
 
 test("TripoSplat setup separates model management from persisted conditioning settings", () => {
@@ -83,7 +150,7 @@ test("Viewer uses true splats, transform controls, adaptive clipping, and no flo
     assert.match(viewer, /aggregateBudget: "platform-adaptive"/);
     assert.match(viewer, /allocation: "screen-space"/);
     assert.match(viewer, /lodRenderScale: 1\.25/);
-    assert.match(studio, /const viewportResult = await this\.viewer\.setScene/);
+    assert.match(studio, /viewportResult = await this\.viewer\.setScene/);
     assert.match(studio, /Viewport scene load incomplete/);
     assert.match(studio, /Viewport failed/);
     assert.match(styles, /\.vnccs-i3s__object\.has-viewport-error/);
@@ -103,11 +170,41 @@ test("Preview output is captured from the clean 3D viewport and persisted per sc
     assert.match(studio, /_scheduleScenePreview/);
     assert.match(studio, /this\.viewer\.capturePreview/);
     assert.match(studio, /form\.append\("image", blob, "scene-preview\.png"\)/);
+    assert.match(studio, /form\.append\("revision", String\(savedScene\.revision\)\)/);
+    assert.match(studio, /form\.append\("render_revision", String\(savedScene\.render_revision\)\)/);
     assert.match(viewer, /async capturePreview/);
+    assert.match(studio, /width: this\.exportSettings\.width/);
+    assert.match(studio, /height: this\.exportSettings\.height/);
+    assert.match(viewer, /this\.captureCamera\.aspect = targetWidth \/ targetHeight/);
+    assert.match(viewer, /this\.renderer\.setPixelRatio\(1\)/);
+    assert.match(viewer, /this\.renderer\.setSize\(targetWidth, targetHeight, false\)/);
+    assert.match(viewer, /target\.width = targetWidth/);
+    assert.match(viewer, /target\.height = targetHeight/);
     assert.match(viewer, /this\.transformHelper\.visible = false/);
     assert.match(viewer, /this\.selectionBounds\.visible = false/);
     assert.match(viewer, /context\.drawImage\(this\.canvas/);
     assert.doesNotMatch(viewer, /preserveDrawingBuffer:\s*true/);
+    assert.doesNotMatch(viewer, /maxSide/);
+});
+
+test("Scene export exposes persistent dimensions, aspect presets, and an exact camera frame", () => {
+    assert.match(studio, /Aspect ratio/);
+    assert.match(studio, /16:9 · Widescreen/);
+    assert.match(studio, /class="vnccs-i3s__input vnccs-i3s__scene-width"/);
+    assert.match(studio, /class="vnccs-i3s__input vnccs-i3s__scene-height"/);
+    assert.match(studio, /Camera frame/);
+    assert.match(studio, /Show the exact exported crop in the 3D editor/);
+    assert.match(studio, /render: \{ \.\.\.this\.exportSettings \}/);
+    assert.match(studio, /camera: camera \? \{ \.\.\.camera \} : undefined/);
+    assert.match(studio, /render_settings: \{ \.\.\.this\.exportSettings \}/);
+    assert.match(studio, /this\.viewer\?\.setCaptureSettings/);
+    assert.match(viewer, /vnccs-i3s__camera-frame/);
+    assert.match(viewer, /setCaptureSettings/);
+    assert.match(viewer, /getCaptureSettings/);
+    assert.match(viewer, /const limitingHalfFov/);
+    assert.match(viewer, /this\.captureWidth \/ Math\.max\(1, this\.captureHeight\)/);
+    assert.match(styles, /\.vnccs-i3s__camera-frame/);
+    assert.match(styles, /\.vnccs-i3s__scene-render-settings/);
 });
 
 test("Canvas transforms are the only transform UI and object actions live on cards", () => {
@@ -116,7 +213,7 @@ test("Canvas transforms are the only transform UI and object actions live on car
     assert.doesNotMatch(studio, /vnccs-i3s__selected-name/);
     assert.match(studio, /Duplicate object/);
     assert.match(studio, /confirmDeleteObject\(item\.object_id\)/);
-    assert.match(studio, /actions\.append\(ply, splat, duplicate, remove\)/);
+    assert.match(studio, /actions\.append\(visibility, ply, splat, duplicate, remove\)/);
     assert.match(styles, /\.vnccs-i3s \[hidden\] \{ display: none !important; \}/);
     assert.match(studio, /W\/E\/R: move\/rotate\/scale/);
 });
@@ -150,24 +247,52 @@ test("Factory cache executes after createLayout without a leaked local root vari
 test("Factory serializes settings, source, scene snapshot, selection, and viewer state", () => {
     const method = studio.match(/(serializeState\(\) \{[\s\S]*?\n    \})\n\n    _scheduleStateSave/);
     assert.ok(method, "serializeState method not found");
-    const serialize = Function(`return ({${method[1].replace("STATE_VERSION", "2")}}).serializeState;`)();
-    const snapshot = { name: "Remembered", objects: [{ object_id: "object-a" }] };
+    const serialize = Function(`return ({${method[1].replace("STATE_VERSION", "4")}}).serializeState;`)();
+    const snapshot = {
+        name: "Remembered",
+        objects: [{ object_id: "object-a" }, { object_id: "object-b" }],
+        layers: [{
+            type: "group",
+            group_id: "group-a",
+            name: "Group",
+            visible: true,
+            children: ["object-a", "object-b"],
+        }],
+    };
     const state = serialize.call({
         sceneId: "scene-a",
         selectedObjectId: "object-a",
+        selectedObjectIds: new Set(["object-a", "object-b"]),
+        selectedGroupId: "group-a",
+        collapsedGroupIds: new Set(["group-a"]),
         settings: { steps: 37, seed: 12 },
+        exportSettings: {
+            width: 1920,
+            height: 1080,
+            aspect: "16:9",
+            show_camera_frame: true,
+        },
         viewerState: { mode: "rotate" },
         viewer: { getState: () => ({ mode: "scale", camera: { position: [1, 2, 3] } }) },
         scene: { objects: snapshot.objects },
         sourceAsset: { url: "/reference", name: "input.png" },
         _scenePayload: () => snapshot,
     });
-    assert.equal(state.schema_version, 2);
+    assert.equal(state.schema_version, 4);
     assert.equal(state.settings.steps, 37);
     assert.equal(state.selected_object_id, "object-a");
+    assert.deepEqual(state.selected_object_ids, ["object-a", "object-b"]);
+    assert.equal(state.selected_group_id, "group-a");
+    assert.deepEqual(state.collapsed_group_ids, ["group-a"]);
     assert.deepEqual(state.scene_snapshot, snapshot);
     assert.equal(state.source.url, "/reference");
     assert.equal(state.viewer_state.mode, "scale");
+    assert.deepEqual(state.render_settings, {
+        width: 1920,
+        height: 1080,
+        aspect: "16:9",
+        show_camera_frame: true,
+    });
 });
 
 test("Factory state widget stays hidden without changing its serializable widget type", () => {
@@ -203,10 +328,11 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
+    assert.equal(typeof module.effectiveVisibleObjectIds, "function");
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.14");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.16");
     assert.equal(module.validateSplatBuffer(new ArrayBuffer(64)).byteLength, 64);
     assert.throws(
         () => module.validateSplatBuffer(new ArrayBuffer(33)),
@@ -263,6 +389,32 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
         `unexpected TripoSplat orientation: ${canonicalPoint.toArray()}`,
     );
 
+    const frameViewer = Object.create(module.Factory3DViewer.prototype);
+    frameViewer.host = { clientWidth: 1600, clientHeight: 900 };
+    frameViewer.camera = new THREE.PerspectiveCamera();
+    frameViewer.captureWidth = 1080;
+    frameViewer.captureHeight = 1920;
+    frameViewer.captureFov = 42;
+    frameViewer.cameraFrameVisible = true;
+    frameViewer.cameraFrame = { style: {} };
+    frameViewer.cameraFrameLabel = { textContent: "" };
+    frameViewer._updateCameraProjection(1600, 900);
+    frameViewer._updateCameraFrame(1600, 900);
+    assert.ok(Math.abs(frameViewer.camera.fov - 42) < 1e-9);
+    assert.equal(frameViewer.cameraFrame.style.width, "506.25px");
+    assert.equal(frameViewer.cameraFrame.style.height, "900px");
+    assert.equal(frameViewer.cameraFrame.style.left, "546.875px");
+    assert.equal(frameViewer.cameraFrameLabel.textContent, "1080 × 1920");
+
+    frameViewer.captureWidth = 1920;
+    frameViewer.captureHeight = 1080;
+    frameViewer._updateCameraProjection(900, 1600);
+    frameViewer._updateCameraFrame(900, 1600);
+    assert.ok(frameViewer.camera.fov > 42);
+    assert.equal(frameViewer.cameraFrame.style.width, "900px");
+    assert.equal(frameViewer.cameraFrame.style.height, "506.25px");
+    assert.equal(frameViewer.cameraFrame.style.top, "546.875px");
+
     const splats = [];
     for (let index = 0; index < 1000; index += 1) {
         const t = index / 999;
@@ -292,4 +444,64 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.ok(robustBounds.min.x > -2, `unexpected min x: ${robustBounds.min.x}`);
     assert.ok(robustBounds.max.x < 2, `unexpected max x: ${robustBounds.max.x}`);
     assert.ok(robustBounds.max.y < 2, `unexpected max y: ${robustBounds.max.y}`);
+
+    const visibility = module.effectiveVisibleObjectIds({
+        objects: [
+            { object_id: "object-a", visible: true },
+            { object_id: "object-b", visible: true },
+            { object_id: "object-c", visible: false },
+        ],
+        layers: [
+            {
+                type: "group",
+                group_id: "group-a",
+                visible: false,
+                children: ["object-a"],
+            },
+            { type: "object", object_id: "object-b" },
+            { type: "object", object_id: "object-c" },
+        ],
+    });
+    assert.deepEqual(Array.from(visibility), ["object-b"]);
+
+    const groupEvents = [];
+    const left = new THREE.Object3D();
+    const right = new THREE.Object3D();
+    left.position.set(-1, 0, 0);
+    right.position.set(1, 0, 0);
+    left.updateMatrixWorld(true);
+    right.updateMatrixWorld(true);
+    const groupViewer = Object.create(module.Factory3DViewer.prototype);
+    groupViewer.selectedGroupId = "group-a";
+    groupViewer.selectedGroupObjectIds = ["left", "right"];
+    groupViewer.objects = new Map([
+        ["left", { mesh: left, data: { transform: {} } }],
+        ["right", { mesh: right, data: { transform: {} } }],
+    ]);
+    groupViewer.groupPivot = new THREE.Object3D();
+    groupViewer._groupTransformStart = null;
+    groupViewer._suppressTransform = false;
+    groupViewer.options = {
+        onTransformChange: (objectId, transform, options) => {
+            groupEvents.push({ objectId, transform, options });
+        },
+    };
+    groupViewer.spark = { setDirty() {} };
+    groupViewer.selectionBounds = {
+        visible: false,
+        box: new THREE.Box3(),
+        updateMatrixWorld() {},
+    };
+    groupViewer._refreshSelectionBounds = () => {};
+    groupViewer._beginGroupTransform();
+    groupViewer.groupPivot.position.set(3, 2, 1);
+    groupViewer.groupPivot.scale.setScalar(2);
+    groupViewer.groupPivot.updateMatrixWorld(true);
+    groupViewer._applyGroupTransform(true);
+    assert.deepEqual(left.position.toArray(), [1, 2, 1]);
+    assert.deepEqual(right.position.toArray(), [5, 2, 1]);
+    assert.equal(left.scale.x, 2);
+    assert.equal(right.scale.x, 2);
+    assert.deepEqual(groupEvents.map(item => item.objectId), ["left", "right"]);
+    assert.ok(groupEvents.every(item => item.options.final && item.options.group_id === "group-a"));
 });

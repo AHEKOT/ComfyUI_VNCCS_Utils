@@ -44,12 +44,36 @@ class FactoryNodeTests(unittest.TestCase):
     def test_state_validation_accepts_opaque_ids_and_rejects_paths(self):
         valid = json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 4,
                 "scene_id": "a" * 32,
                 "selected_object_id": "b" * 32,
+                "selected_object_ids": ["b" * 32, "c" * 32],
+                "selected_group_id": "d" * 32,
+                "collapsed_group_ids": ["d" * 32],
                 "scene_snapshot": {
                     "name": "Scene",
-                    "objects": [{"object_id": "b" * 32, "transform": {}}],
+                    "render": {
+                        "width": 1920,
+                        "height": 1080,
+                        "aspect": "16:9",
+                        "show_camera_frame": True,
+                    },
+                    "camera": {
+                        "position": [2.0, 3.0, 4.0],
+                        "target": [0.0, 0.0, 0.0],
+                        "fov": 42.0,
+                    },
+                    "objects": [
+                        {"object_id": "b" * 32, "transform": {}, "visible": True},
+                        {"object_id": "c" * 32, "transform": {}, "visible": False},
+                    ],
+                    "layers": [{
+                        "type": "group",
+                        "group_id": "d" * 32,
+                        "name": "Group",
+                        "visible": True,
+                        "children": ["b" * 32, "c" * 32],
+                    }],
                 },
                 "source": {
                     "scene_id": "a" * 32,
@@ -70,6 +94,29 @@ class FactoryNodeTests(unittest.TestCase):
             self.module.VNCCS_3DFactory.VALIDATE_INPUTS(invalid_snapshot),
             str,
         )
+        duplicate_hierarchy = json.dumps(
+            {
+                "scene_id": "a" * 32,
+                "scene_snapshot": {
+                    "objects": [
+                        {"object_id": "b" * 32},
+                        {"object_id": "c" * 32},
+                    ],
+                    "layers": [
+                        {"type": "object", "object_id": "b" * 32},
+                        {
+                            "type": "group",
+                            "group_id": "d" * 32,
+                            "children": ["b" * 32, "c" * 32],
+                        },
+                    ],
+                },
+            }
+        )
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(duplicate_hierarchy),
+            str,
+        )
         invalid_source = json.dumps(
             {
                 "scene_id": "a" * 32,
@@ -81,6 +128,43 @@ class FactoryNodeTests(unittest.TestCase):
         )
         self.assertIsInstance(
             self.module.VNCCS_3DFactory.VALIDATE_INPUTS(invalid_source),
+            str,
+        )
+        invalid_render = json.dumps(
+            {
+                "scene_id": "a" * 32,
+                "scene_snapshot": {
+                    "objects": [],
+                    "layers": [],
+                    "render": {
+                        "width": 8192,
+                        "height": 1080,
+                        "aspect": "16:9",
+                        "show_camera_frame": True,
+                    },
+                },
+            }
+        )
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(invalid_render),
+            str,
+        )
+        invalid_camera = json.dumps(
+            {
+                "scene_id": "a" * 32,
+                "scene_snapshot": {
+                    "objects": [],
+                    "layers": [],
+                    "camera": {
+                        "position": [0, 0, 1],
+                        "target": [0, 0, 0],
+                        "fov": 200,
+                    },
+                },
+            }
+        )
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(invalid_camera),
             str,
         )
 
@@ -131,7 +215,7 @@ class FactoryNodeTests(unittest.TestCase):
             mock.patch.object(
                 self.module.time,
                 "monotonic",
-                side_effect=[0.0, 9.0],
+                side_effect=[0.0, 31.0],
             ),
         ):
             with self.assertRaisesRegex(RuntimeError, "no current 3D scene preview"):
