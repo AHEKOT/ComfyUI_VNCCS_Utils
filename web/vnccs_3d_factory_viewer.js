@@ -6,7 +6,39 @@ import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
-export const FACTORY_VIEWER_BUILD = "20260724.18";
+export const FACTORY_VIEWER_BUILD = "20260724.20";
+
+const DEFAULT_LIGHTING = Object.freeze({
+    preset: "day",
+    intensity: 0.72,
+    color: "#fff1d6",
+    azimuth: 325,
+    elevation: 42,
+    ambient: 0.5,
+    background: "#171b25",
+});
+
+export function normalizedLighting(value = {}) {
+    const data = { ...DEFAULT_LIGHTING, ...(value && typeof value === "object" ? value : {}) };
+    const color = /^#[0-9a-f]{6}$/i.test(String(data.color || ""))
+        ? String(data.color).toLowerCase()
+        : DEFAULT_LIGHTING.color;
+    const background = /^#[0-9a-f]{6}$/i.test(String(data.background || ""))
+        ? String(data.background).toLowerCase()
+        : DEFAULT_LIGHTING.background;
+    const preset = ["off", "day", "night", "dawn", "sunset", "custom"].includes(data.preset)
+        ? data.preset
+        : DEFAULT_LIGHTING.preset;
+    return {
+        preset,
+        intensity: Math.max(0, Math.min(3, Number(data.intensity) || 0)),
+        color,
+        azimuth: ((Number(data.azimuth) || 0) % 360 + 360) % 360,
+        elevation: Math.max(-10, Math.min(90, Number(data.elevation) || 0)),
+        ambient: Math.max(0, Math.min(1.5, Number(data.ambient) || 0)),
+        background,
+    };
+}
 
 function finiteVector(values, fallback = [0, 0, 0]) {
     return fallback.map((item, index) => {
@@ -289,6 +321,10 @@ export class Factory3DViewer {
         this._interactionReasons = new Set();
         this._lodQueue = Promise.resolve();
         this._pendingLodCandidates = [];
+        this.lighting = { ...DEFAULT_LIGHTING };
+        this._lightDirectionWorld = new THREE.Vector3();
+        this._lightDirectionView = new THREE.Vector3();
+        this._lightViewMatrix = new THREE.Matrix3();
         this._setup();
     }
 
@@ -346,6 +382,8 @@ export class Factory3DViewer {
             coneFov: 145,
             coneFoveate: 0.35,
         });
+        this._installLightingShader();
+        this.setLighting(this.lighting);
         this.scene.add(this.spark);
 
         this.controls = new OrbitControls(this.camera, this.canvas);
@@ -477,7 +515,101 @@ export class Factory3DViewer {
         this._frame = requestAnimationFrame(() => this._animate());
         if (this._capturing) return;
         this.controls.update();
+        this._updateLightingUniforms(this.camera);
         this.renderer.render(this.scene, this.camera);
+    }
+
+    _installLightingShader() {
+        const material = this.spark?.material;
+        if (!material?.vertexShader) return;
+        const uniformAnchor = "uniform float focalAdjustment;";
+        const colorAnchor = "    vRgba = rgba;";
+        if (
+            !material.vertexShader.includes(uniformAnchor)
+            || !material.vertexShader.includes(colorAnchor)
+        ) {
+            console.error(
+                "[VNCCS 3D Factory] Spark lighting shader hook was not found",
+                { build: FACTORY_VIEWER_BUILD },
+            );
+            return;
+        }
+        material.uniforms.vnccsLightDirectionView = { value: this._lightDirectionView };
+        material.uniforms.vnccsLightColor = { value: new THREE.Color(DEFAULT_LIGHTING.color) };
+        material.uniforms.vnccsLightIntensity = { value: DEFAULT_LIGHTING.intensity };
+        material.uniforms.vnccsAmbient = { value: DEFAULT_LIGHTING.ambient };
+        material.uniforms.vnccsLightingEnabled = { value: 1 };
+        material.vertexShader = material.vertexShader
+            .replace(
+                uniformAnchor,
+                `${uniformAnchor}
+uniform vec3 vnccsLightDirectionView;
+uniform vec3 vnccsLightColor;
+uniform float vnccsLightIntensity;
+uniform float vnccsAmbient;
+uniform float vnccsLightingEnabled;`,
+            )
+            .replace(
+                colorAnchor,
+                `    if (vnccsLightingEnabled > 0.5) {
+        float vnccsLightResponse = 0.65;
+        if (!enableCovSplats) {
+            vec3 vnccsLocalNormal;
+            if (scales.x <= scales.y && scales.x <= scales.z) {
+                vnccsLocalNormal = vec3(1.0, 0.0, 0.0);
+            } else if (scales.y <= scales.z) {
+                vnccsLocalNormal = vec3(0.0, 1.0, 0.0);
+            } else {
+                vnccsLocalNormal = vec3(0.0, 0.0, 1.0);
+            }
+            vec4 vnccsViewQuaternion = quatQuat(renderToViewQuat, quaternion);
+            vec3 vnccsViewNormal = normalize(quatVec(vnccsViewQuaternion, vnccsLocalNormal));
+            vnccsLightResponse = 0.18 + 0.82 * abs(dot(
+                vnccsViewNormal,
+                normalize(vnccsLightDirectionView)
+            ));
+        }
+        vec3 vnccsLightGain = vec3(vnccsAmbient)
+            + vnccsLightColor * vnccsLightIntensity * vnccsLightResponse;
+        rgba.rgb = clamp(rgba.rgb * vnccsLightGain, vec3(0.0), vec3(4.0));
+    }
+${colorAnchor}`,
+            );
+        material.needsUpdate = true;
+    }
+
+    _updateLightingUniforms(camera = this.camera) {
+        if (!this.spark?.material?.uniforms?.vnccsLightDirectionView) return;
+        camera.updateMatrixWorld(true);
+        this._lightViewMatrix.setFromMatrix4(camera.matrixWorldInverse);
+        this._lightDirectionView
+            .copy(this._lightDirectionWorld)
+            .applyMatrix3(this._lightViewMatrix)
+            .normalize();
+    }
+
+    setLighting(value = {}) {
+        this.lighting = normalizedLighting({ ...DEFAULT_LIGHTING, ...value });
+        const azimuth = THREE.MathUtils.degToRad(this.lighting.azimuth);
+        const elevation = THREE.MathUtils.degToRad(this.lighting.elevation);
+        const horizontal = Math.cos(elevation);
+        this._lightDirectionWorld.set(
+            horizontal * Math.sin(azimuth),
+            Math.sin(elevation),
+            horizontal * Math.cos(azimuth),
+        ).normalize();
+        const uniforms = this.spark?.material?.uniforms;
+        uniforms?.vnccsLightColor?.value.set(this.lighting.color);
+        if (uniforms?.vnccsLightIntensity) {
+            uniforms.vnccsLightIntensity.value = this.lighting.intensity;
+        }
+        if (uniforms?.vnccsAmbient) uniforms.vnccsAmbient.value = this.lighting.ambient;
+        if (uniforms?.vnccsLightingEnabled) {
+            uniforms.vnccsLightingEnabled.value = this.lighting.preset === "off" ? 0 : 1;
+        }
+        this.scene?.background?.set(this.lighting.background);
+        this._updateLightingUniforms(this.camera);
+        this.spark?.setDirty?.();
     }
 
     _setInteractive(reason, active) {
@@ -785,6 +917,7 @@ export class Factory3DViewer {
         const loadController = new AbortController();
         this._loadController = loadController;
         this.sceneData = sceneData || { objects: [] };
+        this.setLighting(this.sceneData.lighting);
         const source = Array.isArray(sceneData?.objects) ? sceneData.objects : [];
         const needsAssetLoading = !incremental || source.some(item => {
             const entry = this.objects.get(item.object_id);
@@ -1270,6 +1403,7 @@ export class Factory3DViewer {
             this.captureCamera.far = this.camera.far;
             this.captureCamera.updateProjectionMatrix();
             this.captureCamera.updateMatrixWorld(true);
+            this._updateLightingUniforms(this.captureCamera);
 
             // Render into an exact, device-pixel-ratio-independent drawing
             // buffer. The node output no longer inherits the widget's DOM size.
@@ -1293,6 +1427,7 @@ export class Factory3DViewer {
             // have been zoomed or the node resized while the exact-size render
             // was being encoded.
             this.resize();
+            this._updateLightingUniforms(this.camera);
             this.renderer.render(this.scene, this.camera);
         }
         return await new Promise((resolve, reject) => {

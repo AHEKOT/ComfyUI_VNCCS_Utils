@@ -31,7 +31,7 @@ from .gaussian_scene import (
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 EXPORT_FORMAT_VERSION = 3
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
@@ -58,6 +58,16 @@ _DEFAULT_CAMERA = {
     "position": [2.8, 2.1, 4.2],
     "target": [0.0, 0.0, 0.0],
     "fov": 42.0,
+}
+_LIGHTING_PRESETS = {"off", "day", "night", "dawn", "sunset", "custom"}
+_DEFAULT_LIGHTING = {
+    "preset": "day",
+    "intensity": 0.72,
+    "color": "#fff1d6",
+    "azimuth": 325.0,
+    "elevation": 42.0,
+    "ambient": 0.5,
+    "background": "#171b25",
 }
 _WEIGHT_FILES = (
     "diffusion_models/triposplat_fp16.safetensors",
@@ -184,6 +194,45 @@ def _normalize_camera(value: Any) -> dict[str, Any]:
         "position": vector("position"),
         "target": vector("target"),
         "fov": max(5.0, min(120.0, fov)),
+    }
+
+
+def _normalize_lighting(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+    preset = str(data.get("preset", _DEFAULT_LIGHTING["preset"])).lower()
+    if preset not in _LIGHTING_PRESETS:
+        preset = "custom"
+
+    def number(key: str, minimum: float, maximum: float) -> float:
+        try:
+            output = float(data.get(key, _DEFAULT_LIGHTING[key]))
+        except (TypeError, ValueError):
+            output = float(_DEFAULT_LIGHTING[key])
+        if not math.isfinite(output):
+            output = float(_DEFAULT_LIGHTING[key])
+        return max(minimum, min(maximum, output))
+
+    def color(key: str) -> str:
+        raw = str(data.get(key, _DEFAULT_LIGHTING[key])).strip().lower()
+        if re.fullmatch(r"#[0-9a-f]{6}", raw):
+            return raw
+        return str(_DEFAULT_LIGHTING[key])
+
+    try:
+        azimuth = float(data.get("azimuth", _DEFAULT_LIGHTING["azimuth"]))
+    except (TypeError, ValueError):
+        azimuth = float(_DEFAULT_LIGHTING["azimuth"])
+    if not math.isfinite(azimuth):
+        azimuth = float(_DEFAULT_LIGHTING["azimuth"])
+
+    return {
+        "preset": preset,
+        "intensity": number("intensity", 0.0, 3.0),
+        "color": color("color"),
+        "azimuth": azimuth % 360.0,
+        "elevation": number("elevation", -10.0, 90.0),
+        "ambient": number("ambient", 0.0, 1.5),
+        "background": color("background"),
     }
 
 
@@ -365,6 +414,7 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     value["layers"] = _normalize_scene_layers(value)
     value["render"] = _normalize_render_settings(value.get("render"))
     value["camera"] = _normalize_camera(value.get("camera"))
+    value["lighting"] = _normalize_lighting(value.get("lighting"))
     value["render_revision"] = max(
         0,
         int(value.get("render_revision", value.get("revision", 0))),
@@ -405,6 +455,7 @@ def create_scene(name: Any = "") -> dict[str, Any]:
             "target": list(_DEFAULT_CAMERA["target"]),
             "fov": _DEFAULT_CAMERA["fov"],
         },
+        "lighting": dict(_DEFAULT_LIGHTING),
         "exports": {},
     }
     with _STATE_LOCK:
@@ -1638,6 +1689,12 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
             camera = _normalize_camera(payload["camera"])
             if camera != _normalize_camera(scene.get("camera")):
                 scene["camera"] = camera
+                changed = True
+                preview_changed = True
+        if "lighting" in payload:
+            lighting = _normalize_lighting(payload["lighting"])
+            if lighting != _normalize_lighting(scene.get("lighting")):
+                scene["lighting"] = lighting
                 changed = True
                 preview_changed = True
         if not changed:

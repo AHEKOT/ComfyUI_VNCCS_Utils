@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.18";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.20";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -21,8 +21,8 @@ const ENDPOINTS = Object.freeze({
     jobLog: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/log`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 5;
-const FRONTEND_BUILD = "20260724.26";
+const STATE_VERSION = 6;
+const FRONTEND_BUILD = "20260724.28";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -41,6 +41,62 @@ const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     height: 1024,
     aspect: "1:1",
     show_camera_frame: false,
+});
+const DEFAULT_LIGHTING = Object.freeze({
+    preset: "day",
+    intensity: 0.72,
+    color: "#fff1d6",
+    azimuth: 325,
+    elevation: 42,
+    ambient: 0.5,
+    background: "#171b25",
+});
+const LIGHTING_PRESETS = Object.freeze({
+    off: Object.freeze({
+        label: "Off",
+        intensity: 0,
+        color: "#ffffff",
+        azimuth: 325,
+        elevation: 42,
+        ambient: 1,
+        background: "#171b25",
+    }),
+    day: Object.freeze({
+        label: "Day",
+        intensity: 0.72,
+        color: "#fff1d6",
+        azimuth: 325,
+        elevation: 42,
+        ambient: 0.5,
+        background: "#171b25",
+    }),
+    night: Object.freeze({
+        label: "Night",
+        intensity: 0.64,
+        color: "#8eaaff",
+        azimuth: 38,
+        elevation: 24,
+        ambient: 0.22,
+        background: "#090d1a",
+    }),
+    dawn: Object.freeze({
+        label: "Dawn",
+        intensity: 0.76,
+        color: "#ffb38d",
+        azimuth: 302,
+        elevation: 14,
+        ambient: 0.34,
+        background: "#211722",
+    }),
+    sunset: Object.freeze({
+        label: "Sunset",
+        intensity: 0.84,
+        color: "#ff865f",
+        azimuth: 58,
+        elevation: 11,
+        ambient: 0.28,
+        background: "#25141b",
+    }),
 });
 const ASPECT_RATIOS = Object.freeze({
     "1:1": 1,
@@ -61,6 +117,7 @@ const ICONS = Object.freeze({
     rotate: `<svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 1 0-2.3 6M20 4v7h-7"/></svg>`,
     scale: `<svg viewBox="0 0 24 24"><path d="M4 10V4h6M20 14v6h-6M4 4l6 6m10 10-6-6"/></svg>`,
     grid: `<svg viewBox="0 0 24 24"><path d="M4 5h16M3 10h18M2 15h20M1 20h22M7 3 5 21m6-18-1 18m7-18 2 18m-6-18 1 18"/></svg>`,
+    sun: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9 7 7m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>`,
     stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
     search: `<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>`,
     settings: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-2.91 1.22V21h-4v-.08A1.7 1.7 0 0 0 7.1 19.7l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.3 7.1l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 2.9 1.2l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>`,
@@ -85,7 +142,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.18", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260724.20", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -197,6 +254,7 @@ class Factory3DWidget {
         this.viewportFailures = new Map();
         this.settings = { ...DEFAULT_SETTINGS };
         this.exportSettings = { ...DEFAULT_EXPORT_SETTINGS };
+        this.lighting = { ...DEFAULT_LIGHTING };
         this.viewerState = { mode: "translate", grid: false };
         this.capabilities = null;
         this.currentJobId = "";
@@ -253,6 +311,7 @@ class Factory3DWidget {
         this._renderObjects();
         this._syncSettings();
         this._syncExportSettings();
+        this._syncLighting();
         this._setStatus("Ready", "idle");
     }
 
@@ -370,8 +429,51 @@ class Factory3DWidget {
                         <button class="vnccs-i3s__tool vnccs-i3s__mode-rotate" type="button" title="Rotate" aria-pressed="false">${ICONS.rotate}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__mode-scale" type="button" title="Scale uniformly" aria-pressed="false">${ICONS.scale}</button>
                         <span class="vnccs-i3s__tool-separator"></span>
+                        <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting" aria-pressed="false">${ICONS.sun}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-pressed="false">${ICONS.grid}</button>
                     </div>
+                    <section class="vnccs-i3s__lighting-panel" aria-label="Scene lighting" hidden>
+                        <div class="vnccs-i3s__lighting-head">
+                            <div>
+                                <div class="vnccs-i3s__lighting-title">Scene lighting</div>
+                                <div class="vnccs-i3s__lighting-subtitle">Realtime Gaussian illumination</div>
+                            </div>
+                            <button class="vnccs-i3s__lighting-close" type="button" title="Close lighting">${ICONS.close}</button>
+                        </div>
+                        <div class="vnccs-i3s__lighting-presets" role="group" aria-label="Lighting presets">
+                            ${Object.entries(LIGHTING_PRESETS).map(([key, preset]) => `
+                                <button class="vnccs-i3s__lighting-preset" type="button" data-preset="${key}" aria-pressed="false">${preset.label}</button>
+                            `).join("")}
+                        </div>
+                        <label class="vnccs-i3s__lighting-control">
+                            <span><b>Strength</b><output class="vnccs-i3s__light-intensity-value">0.72</output></span>
+                            <input class="vnccs-i3s__range vnccs-i3s__light-intensity" type="range" min="0" max="2.5" step="0.01" value="0.72" />
+                        </label>
+                        <label class="vnccs-i3s__lighting-color-row">
+                            <span>
+                                <b>Light color</b>
+                                <small>Directional tint</small>
+                            </span>
+                            <span class="vnccs-i3s__lighting-color-control">
+                                <input class="vnccs-i3s__light-color" type="color" value="#fff1d6" aria-label="Light color" />
+                                <output class="vnccs-i3s__light-color-value">#FFF1D6</output>
+                            </span>
+                        </label>
+                        <div class="vnccs-i3s__lighting-direction">
+                            <div class="vnccs-i3s__lighting-direction-head">
+                                <b>Direction</b>
+                                <span><output class="vnccs-i3s__light-azimuth-value">325°</output> · <output class="vnccs-i3s__light-elevation-value">42°</output></span>
+                            </div>
+                            <div class="vnccs-i3s__lighting-radar-row">
+                                <canvas class="vnccs-i3s__lighting-radar" width="144" height="144" aria-label="Light azimuth control"></canvas>
+                                <label class="vnccs-i3s__lighting-elevation">
+                                    <span>HIGH</span>
+                                    <input class="vnccs-i3s__light-elevation" type="range" orient="vertical" min="-10" max="90" step="1" value="42" aria-label="Light elevation" />
+                                    <span>LOW</span>
+                                </label>
+                            </div>
+                        </div>
+                    </section>
                     <div class="vnccs-i3s__viewport-help">Click: select · Shift-click: multi-select · Drag gizmo: transform · Drag empty space: orbit · W/E/R: move/rotate/scale · F: frame</div>
                     <div class="vnccs-i3s__progress">
                         <div class="vnccs-i3s__progress-copy">
@@ -480,6 +582,18 @@ class Factory3DWidget {
             modeMove: $(".vnccs-i3s__mode-move"),
             modeRotate: $(".vnccs-i3s__mode-rotate"),
             modeScale: $(".vnccs-i3s__mode-scale"),
+            lightingOpen: $(".vnccs-i3s__lighting-open"),
+            lightingPanel: $(".vnccs-i3s__lighting-panel"),
+            lightingClose: $(".vnccs-i3s__lighting-close"),
+            lightingPresets: Array.from(this.container.querySelectorAll(".vnccs-i3s__lighting-preset")),
+            lightIntensity: $(".vnccs-i3s__light-intensity"),
+            lightIntensityValue: $(".vnccs-i3s__light-intensity-value"),
+            lightColor: $(".vnccs-i3s__light-color"),
+            lightColorValue: $(".vnccs-i3s__light-color-value"),
+            lightRadar: $(".vnccs-i3s__lighting-radar"),
+            lightElevation: $(".vnccs-i3s__light-elevation"),
+            lightAzimuthValue: $(".vnccs-i3s__light-azimuth-value"),
+            lightElevationValue: $(".vnccs-i3s__light-elevation-value"),
             grid: $(".vnccs-i3s__grid"),
             progress: $(".vnccs-i3s__progress"),
             progressStage: $(".vnccs-i3s__progress-stage"),
@@ -591,6 +705,63 @@ class Factory3DWidget {
         this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
         this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
         this._listen(this.els.modeScale, "click", () => this.viewer.setMode("scale"));
+        this._listen(this.els.lightingOpen, "click", event => {
+            event.stopPropagation();
+            this._setLightingPanelOpen(this.els.lightingPanel.hidden);
+        });
+        this._listen(this.els.lightingClose, "click", () => this._setLightingPanelOpen(false));
+        this._listen(document, "pointerdown", event => {
+            if (
+                this.els.lightingPanel.hidden
+                || this.els.lightingPanel.contains(event.target)
+                || this.els.lightingOpen.contains(event.target)
+            ) return;
+            this._setLightingPanelOpen(false);
+        });
+        this._listen(document, "keydown", event => {
+            if (event.key === "Escape" && !this.els.lightingPanel.hidden) {
+                this._setLightingPanelOpen(false);
+            }
+        });
+        for (const presetButton of this.els.lightingPresets) {
+            this._listen(presetButton, "click", () => {
+                const key = presetButton.dataset.preset;
+                const preset = LIGHTING_PRESETS[key];
+                if (!preset) return;
+                this.lighting = { preset: key, ...preset };
+                delete this.lighting.label;
+                this._syncLighting();
+                this._commitLighting({ final: true });
+            });
+        }
+        this._listen(this.els.lightIntensity, "input", () => {
+            this.lighting.intensity = Number(this.els.lightIntensity.value);
+            this.lighting.preset = "custom";
+            this._syncLighting();
+            this._commitLighting();
+        });
+        this._listen(this.els.lightIntensity, "change", () => {
+            this._commitLighting({ final: true });
+        });
+        this._listen(this.els.lightColor, "input", () => {
+            this.lighting.color = this.els.lightColor.value;
+            this.lighting.preset = "custom";
+            this._syncLighting();
+            this._commitLighting();
+        });
+        this._listen(this.els.lightColor, "change", () => {
+            this._commitLighting({ final: true });
+        });
+        this._listen(this.els.lightElevation, "input", () => {
+            this.lighting.elevation = Number(this.els.lightElevation.value);
+            this.lighting.preset = "custom";
+            this._syncLighting();
+            this._commitLighting();
+        });
+        this._listen(this.els.lightElevation, "change", () => {
+            this._commitLighting({ final: true });
+        });
+        this._bindLightingRadar();
         this._listen(this.els.grid, "click", () => this.viewer.setGrid(!this.viewerState.grid));
         this._listen(this.els.cancelJob, "click", () => void this.cancelJob());
         this._listen(this.els.objectSearch, "input", () => this._renderObjects());
@@ -649,6 +820,179 @@ class Factory3DWidget {
         });
         this._listen(this.els.scenePly, "click", () => void this.exportScene("ply"));
         this._listen(this.els.sceneSplat, "click", () => void this.exportScene("splat"));
+    }
+
+    _normalizeLighting(value = {}) {
+        const data = { ...DEFAULT_LIGHTING, ...safeObject(value) };
+        const validColor = color => /^#[0-9a-f]{6}$/i.test(String(color || ""));
+        return {
+            preset: Object.hasOwn(LIGHTING_PRESETS, data.preset) || data.preset === "custom"
+                ? data.preset
+                : "day",
+            intensity: clamp(data.intensity, 0, 3),
+            color: validColor(data.color) ? String(data.color).toLowerCase() : DEFAULT_LIGHTING.color,
+            azimuth: ((Number(data.azimuth) || 0) % 360 + 360) % 360,
+            elevation: clamp(data.elevation, -10, 90),
+            ambient: clamp(data.ambient, 0, 1.5),
+            background: validColor(data.background)
+                ? String(data.background).toLowerCase()
+                : DEFAULT_LIGHTING.background,
+        };
+    }
+
+    _setLightingPanelOpen(open) {
+        this.els.lightingPanel.hidden = !open;
+        this.els.lightingOpen.setAttribute("aria-pressed", String(open));
+        if (open) this._drawLightingRadar();
+    }
+
+    _syncLighting() {
+        this.lighting = this._normalizeLighting(this.lighting);
+        this.els.lightIntensity.value = String(this.lighting.intensity);
+        this.els.lightIntensityValue.value = this.lighting.intensity.toFixed(2);
+        this.els.lightIntensityValue.textContent = this.lighting.intensity.toFixed(2);
+        this.els.lightColor.value = this.lighting.color;
+        this.els.lightColorValue.value = this.lighting.color.toUpperCase();
+        this.els.lightColorValue.textContent = this.lighting.color.toUpperCase();
+        this.els.lightElevation.value = String(this.lighting.elevation);
+        const azimuth = Math.round(this.lighting.azimuth);
+        const elevation = Math.round(this.lighting.elevation);
+        this.els.lightAzimuthValue.value = `${azimuth}°`;
+        this.els.lightAzimuthValue.textContent = `${azimuth}°`;
+        this.els.lightElevationValue.value = `${elevation}°`;
+        this.els.lightElevationValue.textContent = `${elevation}°`;
+        for (const presetButton of this.els.lightingPresets) {
+            presetButton.setAttribute(
+                "aria-pressed",
+                String(presetButton.dataset.preset === this.lighting.preset),
+            );
+        }
+        this._drawLightingRadar();
+    }
+
+    _commitLighting({ final = false } = {}) {
+        this.lighting = this._normalizeLighting(this.lighting);
+        if (this.scene) this.scene.lighting = { ...this.lighting };
+        this.viewer?.setLighting(this.lighting);
+        this._scheduleStateSave(final ? 0 : 100);
+        if (this.sceneId && this.scene) {
+            this._scheduleSceneSave(final ? 0 : 180);
+            this._scheduleScenePreview(final ? 140 : 480);
+        }
+    }
+
+    _bindLightingRadar() {
+        const canvas = this.els.lightRadar;
+        if (!canvas) return;
+        let dragging = false;
+        const update = event => {
+            const bounds = canvas.getBoundingClientRect();
+            if (!bounds.width || !bounds.height) return;
+            const x = (event.clientX - bounds.left) / bounds.width * canvas.width;
+            const y = (event.clientY - bounds.top) / bounds.height * canvas.height;
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const dx = x - centerX;
+            const dy = y - centerY;
+            if (Math.hypot(dx, dy) < 2) return;
+            this.lighting.azimuth = (Math.atan2(dx, -dy) * 180 / Math.PI + 360) % 360;
+            this.lighting.preset = "custom";
+            this._syncLighting();
+            this._commitLighting();
+        };
+        this._listen(canvas, "pointerdown", event => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            event.stopPropagation();
+            dragging = true;
+            canvas.setPointerCapture?.(event.pointerId);
+            update(event);
+        });
+        this._listen(canvas, "pointermove", event => {
+            if (dragging) update(event);
+        });
+        const finish = event => {
+            if (!dragging) return;
+            dragging = false;
+            if (canvas.hasPointerCapture?.(event.pointerId)) {
+                canvas.releasePointerCapture(event.pointerId);
+            }
+            this._commitLighting({ final: true });
+        };
+        this._listen(canvas, "pointerup", finish);
+        this._listen(canvas, "pointercancel", finish);
+    }
+
+    _drawLightingRadar() {
+        const canvas = this.els.lightRadar;
+        const context = canvas?.getContext?.("2d");
+        if (!context) return;
+        const width = canvas.width;
+        const height = canvas.height;
+        const centerX = width / 2;
+        const centerY = height / 2;
+        const radius = Math.min(width, height) / 2 - 8;
+        context.clearRect(0, 0, width, height);
+
+        const backdrop = context.createRadialGradient(
+            centerX,
+            centerY,
+            2,
+            centerX,
+            centerY,
+            radius,
+        );
+        backdrop.addColorStop(0, "rgba(62, 55, 77, .74)");
+        backdrop.addColorStop(1, "rgba(10, 9, 15, .96)");
+        context.fillStyle = backdrop;
+        context.beginPath();
+        context.arc(centerX, centerY, radius, 0, Math.PI * 2);
+        context.fill();
+
+        context.strokeStyle = "rgba(184, 169, 232, .18)";
+        context.lineWidth = 1;
+        for (const factor of [0.34, 0.67, 1]) {
+            context.beginPath();
+            context.arc(centerX, centerY, radius * factor, 0, Math.PI * 2);
+            context.stroke();
+        }
+        context.beginPath();
+        context.moveTo(centerX, centerY - radius);
+        context.lineTo(centerX, centerY + radius);
+        context.moveTo(centerX - radius, centerY);
+        context.lineTo(centerX + radius, centerY);
+        context.stroke();
+
+        const angle = this.lighting.azimuth * Math.PI / 180;
+        const elevationFactor = 0.42 + (90 - this.lighting.elevation) / 100 * 0.5;
+        const dotRadius = radius * clamp(elevationFactor, 0.38, 0.92);
+        const dotX = centerX + Math.sin(angle) * dotRadius;
+        const dotY = centerY - Math.cos(angle) * dotRadius;
+        const glow = context.createRadialGradient(dotX, dotY, 1, dotX, dotY, 18);
+        glow.addColorStop(0, `${this.lighting.color}aa`);
+        glow.addColorStop(1, `${this.lighting.color}00`);
+        context.fillStyle = glow;
+        context.beginPath();
+        context.arc(dotX, dotY, 18, 0, Math.PI * 2);
+        context.fill();
+        context.strokeStyle = "rgba(255,255,255,.54)";
+        context.lineWidth = 1.5;
+        context.beginPath();
+        context.moveTo(centerX, centerY);
+        context.lineTo(dotX, dotY);
+        context.stroke();
+        context.fillStyle = this.lighting.color;
+        context.beginPath();
+        context.arc(dotX, dotY, 5.5, 0, Math.PI * 2);
+        context.fill();
+        context.strokeStyle = "#ffffff";
+        context.stroke();
+
+        context.fillStyle = "rgba(201, 196, 215, .48)";
+        context.font = "700 8px ui-monospace, monospace";
+        context.textAlign = "center";
+        context.fillText("BACK", centerX, 13);
+        context.fillText("FRONT", centerX, height - 7);
     }
 
     _showSource({ url, name }) {
@@ -835,6 +1179,8 @@ class Factory3DWidget {
             scene.render || this.exportSettings,
         );
         this.scene.render = { ...this.exportSettings };
+        this.lighting = this._normalizeLighting(scene.lighting || this.lighting);
+        this.scene.lighting = { ...this.lighting };
         const desiredViewerState = {
             ...this.viewerState,
             camera: Object.keys(safeObject(scene.camera)).length
@@ -845,6 +1191,7 @@ class Factory3DWidget {
             ? { ...desiredViewerState.camera }
             : this.scene.camera;
         this._syncExportSettings();
+        this._syncLighting();
         if (!preserveSource) {
             this.sourceFile = null;
             if (scene.reference?.url) {
@@ -1737,6 +2084,7 @@ class Factory3DWidget {
         return {
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
+            lighting: { ...this.lighting },
             camera: camera ? { ...camera } : undefined,
             objects: (this.scene?.objects || []).map(item => ({
                 object_id: item.object_id,
@@ -1779,6 +2127,7 @@ class Factory3DWidget {
                 this.scene.exports = updated.exports;
                 this.scene.render = updated.render || this.scene.render;
                 this.scene.camera = updated.camera || this.scene.camera;
+                this.scene.lighting = updated.lighting || this.scene.lighting;
             }
             this._scheduleStateSave(0);
             return updated;
@@ -2548,6 +2897,7 @@ class Factory3DWidget {
             collapsed_group_ids: Array.from(this.collapsedGroupIds),
             settings: { ...this.settings },
             render_settings: { ...this.exportSettings },
+            lighting_settings: { ...this.lighting },
             viewer_state: this.viewer?.getState?.() || this.viewerState,
             scene_snapshot: this.scene ? this._scenePayload() : null,
             source: this.sourceAsset
@@ -2622,9 +2972,14 @@ class Factory3DWidget {
             this.exportSettings = this._normalizeExportSettings(
                 state.render_settings || safeObject(state.scene_snapshot).render,
             );
+            this.lighting = this._normalizeLighting(
+                state.lighting_settings || safeObject(state.scene_snapshot).lighting,
+            );
             this.viewerState = { ...this.viewerState, ...safeObject(state.viewer_state) };
             this._syncSettings();
             this._syncExportSettings();
+            this._syncLighting();
+            this.viewer.setLighting(this.lighting);
             this.viewer.setState(this.viewerState);
             await Promise.all([
                 this.loadCapabilities(),

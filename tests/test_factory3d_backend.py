@@ -66,7 +66,7 @@ class FactoryBackendTests(unittest.TestCase):
     def test_scenes_are_created_listed_and_updated(self):
         scene = self.factory.create_scene("First scene")
         self.assertRegex(scene["scene_id"], r"^[a-f0-9]{32}$")
-        self.assertEqual(scene["schema_version"], 3)
+        self.assertEqual(scene["schema_version"], 4)
         self.assertEqual(scene["render_revision"], 0)
         self.assertEqual(
             scene["render"],
@@ -78,6 +78,8 @@ class FactoryBackendTests(unittest.TestCase):
             },
         )
         self.assertEqual(scene["camera"]["fov"], 42.0)
+        self.assertEqual(scene["lighting"]["preset"], "day")
+        self.assertEqual(scene["lighting"]["color"], "#fff1d6")
         self.assertEqual(self.factory.list_scenes()[0]["name"], "First scene")
 
         updated = self.factory.update_scene(scene["scene_id"], {"name": "Renamed"})
@@ -86,6 +88,55 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_scene_lighting_is_normalized_persisted_and_invalidates_preview_only(self):
+        scene = self.factory.create_scene("Lighting")
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "lighting": {
+                    "preset": "sunset",
+                    "intensity": 1.25,
+                    "color": "#FF865F",
+                    "azimuth": 418,
+                    "elevation": 11,
+                    "ambient": 0.28,
+                    "background": "#25141B",
+                }
+            },
+        )
+        self.assertEqual(updated["revision"], 0)
+        self.assertEqual(updated["render_revision"], 1)
+        self.assertEqual(
+            updated["lighting"],
+            {
+                "preset": "sunset",
+                "intensity": 1.25,
+                "color": "#ff865f",
+                "azimuth": 58.0,
+                "elevation": 11.0,
+                "ambient": 0.28,
+                "background": "#25141b",
+            },
+        )
+        restored = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(restored["lighting"], updated["lighting"])
+        off = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "lighting": {
+                    "preset": "off",
+                    "intensity": 0,
+                    "color": "#ffffff",
+                    "azimuth": 325,
+                    "elevation": 42,
+                    "ambient": 1,
+                    "background": "#171b25",
+                }
+            },
+        )
+        self.assertEqual(off["lighting"]["preset"], "off")
+        self.assertEqual(off["lighting"]["background"], "#171b25")
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()

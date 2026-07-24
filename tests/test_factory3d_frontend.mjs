@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.26"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.28"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -37,6 +37,27 @@ test("Factory exposes scenes, generation, transform, and both export formats", (
     assert.match(studio, /duplicateObject/);
     assert.match(studio, /Scene PLY/);
     assert.match(studio, /Scene SPLAT/);
+});
+
+test("Factory provides persistent realtime lighting for Gaussian scenes", () => {
+    assert.match(studio, /Scene lighting/);
+    assert.match(studio, /data-preset="\$\{key\}"/);
+    assert.match(studio, /day: Object\.freeze/);
+    assert.match(studio, /off: Object\.freeze/);
+    assert.match(studio, /night: Object\.freeze/);
+    assert.match(studio, /dawn: Object\.freeze/);
+    assert.match(studio, /sunset: Object\.freeze/);
+    assert.match(studio, /lighting: \{ \.\.\.this\.lighting \}/);
+    assert.match(studio, /lighting_settings: \{ \.\.\.this\.lighting \}/);
+    assert.match(studio, /_bindLightingRadar/);
+    assert.match(viewer, /_installLightingShader/);
+    assert.match(viewer, /vnccsLightDirectionView/);
+    assert.match(viewer, /vnccsLightingEnabled/);
+    assert.match(viewer, /this\.lighting\.preset === "off" \? 0 : 1/);
+    assert.match(viewer, /if \(vnccsLightingEnabled > 0\.5\)/);
+    assert.match(viewer, /setLighting\(value = \{\}\)/);
+    assert.match(viewer, /this\._updateLightingUniforms\(this\.captureCamera\)/);
+    assert.match(styles, /\.vnccs-i3s__lighting-panel/);
 });
 
 test("Scene objects provide layer-style grouping, visibility, rename, and drag/drop", () => {
@@ -370,10 +391,31 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
+    assert.equal(typeof module.normalizedLighting, "function");
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.18");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.20");
+    assert.deepEqual(
+        module.normalizedLighting({
+            preset: "night",
+            intensity: 1.4,
+            color: "#8EAAFF",
+            azimuth: -22,
+            elevation: 24,
+            ambient: 0.22,
+            background: "#090D1A",
+        }),
+        {
+            preset: "night",
+            intensity: 1.4,
+            color: "#8eaaff",
+            azimuth: 338,
+            elevation: 24,
+            ambient: 0.22,
+            background: "#090d1a",
+        },
+    );
     assert.equal(module.validateSplatBuffer(new ArrayBuffer(64)).byteLength, 64);
     assert.throws(
         () => module.validateSplatBuffer(new ArrayBuffer(33)),
