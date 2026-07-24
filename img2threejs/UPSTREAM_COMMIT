@@ -1,7 +1,0 @@
-Repository: https://github.com/hoainho/img2threejs
-Commit: e8ff28a6ae0cb534c7b2ebc15cb3f06709262d5b
-Version: 1.2.0
-Vendored: 2026-07-22
-
-The upstream Git metadata was removed so this directory is tracked as normal
-source files by ComfyUI_VNCCS_Utils.

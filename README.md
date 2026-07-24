@@ -70,37 +70,38 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
 
-## VNCCS img2threejs Studio
+## VNCCS 3D Factory
 
-**VNCCS img2threejs Studio** is an image-to-procedural-3D workspace embedded in
-a ComfyUI node. Drop in a reference image, generate a constrained component and
-material spec with Codex, Claude, OpenAI, Azure OpenAI, or a local multimodal
-GGUF, and inspect the result in an interactive Three.js viewport.
-
-The node vendors the MIT-licensed
-[`hoainho/img2threejs`](https://github.com/hoainho/img2threejs) v1.2.0 skill and
-forge pipeline. Generated model code is never evaluated inside ComfyUI: the
-widget renders a validated JSON scene, while the upstream forge produces the
-downloadable ObjectSculptSpec and TypeScript `THREE.Group` factory.
+**VNCCS 3D Factory** is a scene-oriented image-to-3D Gaussian workspace inside
+ComfyUI. It runs the open-source
+[`VAST-AI-Research/TripoSplat`](https://github.com/VAST-AI-Research/TripoSplat)
+pipeline locally, keeps every generated object in a persistent scene, and
+renders the actual Gaussian assets through the bundled SparkJS viewport.
 
 ### Key Features
 
-* **Integrated 3D Viewport**: Orbit, frame, inspect hierarchy, toggle grid and
-  wireframe, and capture a workflow preview directly inside the node.
-* **Multi-Provider Framework**: Codex CLI, Claude API/CLI, OpenAI Responses,
-  Azure OpenAI Responses, and local multimodal GGUF through `llama.cpp`.
-* **Quality-Gated Refinement**: Send the reference and current render through a
-  focused visual-review pass instead of replacing the asset with a blind
-  one-shot generation.
-* **Safe Procedural Output**: Validated scene JSON, full ObjectSculptSpec,
-  generated TypeScript, preview image, and a retained project directory.
-* **Private Local Mode**: Pair a vision GGUF with its mmproj file; reference
-  images remain on the ComfyUI host.
-* **Graphical UX**: Provider configuration, model uploads, progress,
-  cancellation, errors, and confirmations use node-bound panels and modals—no
-  browser alert dialogs.
+* **True Gaussian Viewport**: Multiple `.ply`/`.splat` objects render together
+  with orbit, pan, detail zoom, adaptive camera clipping, selection, and an
+  optional grid—there is no synthetic floor mesh.
+* **Scene Manager**: Create and reopen scenes; generated objects, names,
+  transforms, generation settings, and exports persist on the ComfyUI host.
+* **Interactive Transforms**: Click objects in the viewport and move, rotate,
+  or uniformly scale them with visible viewport gizmos. Exact numeric fields
+  remain available in a collapsed precision panel.
+* **Local TripoSplat Pipeline**: The official pipeline runs in process with
+  ComfyUI's PyTorch device. Model setup and weight download are graphical.
+* **Object and Scene Export**: Export every transformed object separately or
+  combine the entire scene into one Gaussian PLY/SPLAT model.
+* **Observable Jobs**: Background removal, image encoding, diffusion steps,
+  Gaussian decoding, serialization, and scene insertion expose real progress.
+  Every stage is printed to the ComfyUI console and retained in a downloadable
+  per-job log.
+* **Persistent Widget State**: Scene selection, generation controls, source
+  reference, object transforms and selection, camera, grid, and transform mode
+  are saved with the workflow. Reference images are persisted on the ComfyUI
+  host rather than temporary browser file URLs.
 
-👉 **[Setup, providers, workflow, and security guide](docs/IMG2THREEJS_STUDIO.md)**
+👉 **[Setup and workflow guide](docs/VNCCS_3D_FACTORY.md)**
 
 ## Additional Nodes
 
@@ -176,12 +177,10 @@ cd ComfyUI_VNCCS_Utils
 pip install -r requirements.txt
 ```
 
-For local multimodal GGUF support, install a current native
-[`llama.cpp`](https://github.com/ggml-org/llama.cpp) build and expose
-`llama-server` (`llama-server.exe` on Windows) to the ComfyUI process. Studio
-uses native `libmtmd` architecture detection rather than legacy Python vision
-handler classes. See the detailed guide for PATH and `VNCCS_LLAMA_SERVER`
-setup.
+Open **Model setup** inside VNCCS 3D Factory to detect or download the official
+TripoSplat weights in the standard `ComfyUI/models/{diffusion_models,vae,clip_vision,background_removal}`
+folders. ComfyUI `extra_model_paths` are also searched. The inference pipeline
+runs directly in ComfyUI and does not require a separate server.
 
 Restart ComfyUI after installation.
 

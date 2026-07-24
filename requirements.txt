@@ -16,3 +16,4 @@ yacs
 timm
 einops
 roma
+tqdm

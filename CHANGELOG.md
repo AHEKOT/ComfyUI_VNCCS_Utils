@@ -1,22 +1,42 @@
 # Version 0.7.0
-## VNCCS img2threejs Studio
+## VNCCS 3D Factory
 
 ### New Features
 
-*   **Integrated procedural 3D studio**: Added a ComfyUI DOM-widget for reconstructing a reference image as a validated procedural Three.js scene, inspecting its hierarchy, refining it against a viewport screenshot, and exporting preview, ObjectSculptSpec, TypeScript, and project artifacts.
-*   **Provider framework**: Added adapters for Codex CLI, Claude API/CLI, OpenAI Responses, Azure OpenAI Responses, and local multimodal GGUF models through optional `llama-cpp-python` support.
-*   **Vendored img2threejs v1.2.0**: Included the upstream MIT-licensed skill and forge pipeline at commit `e8ff28a6ae0cb534c7b2ebc15cb3f06709262d5b`, with its prompt loaded directly from `img2threejs/SKILL.md`.
-*   **Safe Three.js preview**: Provider output is constrained to a normalized scene schema and rendered through a fixed primitive registry; generated TypeScript is never evaluated inside ComfyUI.
+* Replaced the cancelled img2threejs/LLM pipeline with the open-source
+  `VAST-AI-Research/TripoSplat` image-to-Gaussian backend.
+* Renamed the node to **VNCCS 3D Factory** while retaining the established
+  three-column Sakura Studio interface and graphical modal patterns.
+* Added persistent multi-scene management, generated-object collections,
+  interactive move/rotate/uniform-scale controls, exact numeric transforms,
+  and workflow state restoration.
+* Added individual transformed-object export and combined-scene export as
+  standards-compatible Gaussian `.ply` and `.splat` models.
+* Added the local SparkJS Gaussian renderer for true multi-object splat display
+  without a CDN, synthetic floor, or fake mesh conversion.
+* Added graphical TripoSplat model setup and official Hugging Face weight
+  download into the ComfyUI models directory.
+* The `preview` output now contains a clean render of the complete 3D scene
+  from the saved viewport camera instead of the imported reference image.
+* Reworked TripoSplat setup into dedicated model-management and inference
+  sections, with official 1024 conditioning plus experimental 1536 and 2048
+  modes.
+* Added an optional native-resolution guard that prevents smaller sources from
+  being enlarged to the selected conditioning size.
 
-### Security and Reliability
+### Reliability
 
-*   Added bounded image/model uploads, opaque job and project identifiers, progress/cancellation, path confinement, atomic artifact writes, request-only credentials with metadata redaction, explicit GGUF vision-handler selection, and upstream forge execution without shell interpolation.
-*   Registered Studio handlers through ComfyUI's route table so current frontends receive the required `/api/vnccs/img2threejs/*` aliases while legacy unprefixed endpoints remain available.
-*   Added Windows-aware Codex CLI discovery for native, npm, and IDE-extension installations, a safe `VNCCS_CODEX_CLI` override, and graphical provider diagnostics.
-*   Connected Local GGUF selectors to the shared recursive ComfyUI LLM catalog while keeping server paths opaque and Studio uploads separately managed.
-*   CLI failures now preserve redacted stdout/stderr diagnostics in job metadata, log through ComfyUI, and open a copyable graphical error modal; Codex output is validated server-side without relying on a permissive `--output-schema` invocation.
-*   Replaced the Local GGUF Qwen/LLaVA handler whitelist with native `llama-server`/`libmtmd` architecture detection, including current builds that support Qwen3.5; provider capabilities now expose the actual executable, version, and discovery source.
-*   Added a retained per-project `provider.log`, a persistent **Diagnostics** action with full-log download, and a Codex `login status` preflight that distinguishes executable discovery from authentication available to the ComfyUI process.
+* Generation exposes background removal, feature encoding, every diffusion
+  step, Gaussian decode, serialization, and scene insertion as real job
+  progress with cancellation.
+* Every backend stage is printed to the ComfyUI console and retained in a
+  downloadable per-job log with Python tracebacks on failure.
+* Scene and object metadata use opaque IDs, confined paths, bounded uploads,
+  atomic JSON writes, and revisioned exports.
+* Saved 3D previews are revision-bound, so graph execution never returns a
+  stale scene frame after object transforms, duplication, or removal.
+* Removed all provider, CLI, API-key, GGUF, llama.cpp, quality-gate,
+  ObjectSculptSpec, TypeScript-factory, and bundled img2threejs code.
 
 # Version 0.6.0
 ## Runtime Reliability and Legacy Cleanup

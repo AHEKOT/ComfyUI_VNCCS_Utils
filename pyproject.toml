@@ -1,6 +1,6 @@
 [project]
 name = "vnccs-utils"
-description = "VNCCS utility nodes: Pose Studio, UniCanvas, and img2threejs Studio."
+description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
 version = "0.7.0"
 license = {file = "LICENSE"} 
 
@@ -23,6 +23,7 @@ dependencies = [
     "timm",
     "einops",
     "roma",
+    "tqdm",
 ]
 
 classifiers = [
@@ -51,5 +52,5 @@ NodeIds = [
     "VNCCS_ModelSelector",
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
-    "VNCCS_Img2ThreeJSStudio"
+    "VNCCS_3DFactory"
 ]

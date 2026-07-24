@@ -1,4 +1,0 @@
--r requirements.txt
-# Multimodal GGUF inference uses the native llama-server executable from a
-# current llama.cpp build. See docs/IMG2THREEJS_STUDIO.md; no Python wheel can
-# provide architecture-neutral libmtmd support here.
