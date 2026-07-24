@@ -6,7 +6,7 @@ import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
-export const FACTORY_VIEWER_BUILD = "20260724.20";
+export const FACTORY_VIEWER_BUILD = "20260725.2";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -208,6 +208,54 @@ function hasFiniteBounds(box) {
 }
 
 /**
+ * Frame an untransformed TripoSplat object from its canonical front.
+ *
+ * triposplatCanonicalMatrix() makes the generated image plane face +Z, so the
+ * preview camera is always placed on +Z and looks toward -Z. Scene position,
+ * scene rotation, scene scale, and the interactive orbit camera are therefore
+ * deliberately absent from this calculation.
+ */
+export function canonicalObjectPreviewCamera(
+    bounds,
+    width = 640,
+    height = 640,
+    fov = 42,
+    padding = 1.12,
+) {
+    if (!hasFiniteBounds(bounds)) {
+        throw new Error("The Gaussian object has no finite canonical preview bounds");
+    }
+    const targetWidth = Math.max(1, Number(width) || 640);
+    const targetHeight = Math.max(1, Number(height) || 640);
+    const safeFov = Math.max(5, Math.min(120, Number(fov) || 42));
+    const safePadding = Math.max(1, Math.min(2, Number(padding) || 1.12));
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const verticalHalfFov = THREE.MathUtils.degToRad(safeFov * 0.5);
+    const horizontalHalfFov = Math.atan(
+        Math.tan(verticalHalfFov) * targetWidth / targetHeight,
+    );
+    const halfWidth = Math.max(size.x * 0.5 * safePadding, 0.00001);
+    const halfHeight = Math.max(size.y * 0.5 * safePadding, 0.00001);
+    const halfDepth = Math.max(size.z * 0.5, 0.00001);
+    const faceDistance = Math.max(
+        halfWidth / Math.tan(horizontalHalfFov),
+        halfHeight / Math.tan(verticalHalfFov),
+        0.001,
+    );
+    const distance = halfDepth + faceDistance;
+    const radius = Math.max(size.length() * 0.5, 0.001);
+    return {
+        position: new THREE.Vector3(center.x, center.y, center.z + distance),
+        target: center,
+        up: new THREE.Vector3(0, 1, 0),
+        fov: safeFov,
+        near: Math.max(0.000001, faceDistance / 100000),
+        far: Math.max(1000, distance + halfDepth + radius * 1000),
+    };
+}
+
+/**
  * Build interaction bounds from visible Gaussian centers instead of their
  * covariance radii. A single nearly transparent Gaussian with a very large
  * scale must not make selection, framing, and transform controls unusable.
@@ -316,6 +364,7 @@ export class Factory3DViewer {
         this._loadingToken = 0;
         this._loadController = null;
         this._suppressTransform = false;
+        this._suppressStateEvents = false;
         this._frame = 0;
         this._resizeObserver = null;
         this._interactionReasons = new Set();
@@ -401,7 +450,7 @@ export class Factory3DViewer {
         };
         this.controls.addEventListener("change", () => {
             this._updateClipPlanes();
-            this._emitState();
+            if (!this._suppressStateEvents) this._emitState();
         });
         this.controls.addEventListener("start", () => this._setInteractive("orbit", true));
         this.controls.addEventListener("end", () => this._setInteractive("orbit", false));
@@ -1272,7 +1321,7 @@ ${colorAnchor}`,
         };
     }
 
-    fit(objectId = "") {
+    fit(objectId = "", { emit = true } = {}) {
         const box = new THREE.Box3();
         const entries = objectId && this.objects.has(objectId)
             ? [this.objects.get(objectId)]
@@ -1308,7 +1357,7 @@ ${colorAnchor}`,
         this.controls.maxDistance = radius * 10000;
         this.controls.update();
         this._updateClipPlanes(radius);
-        this._emitState();
+        if (emit) this._emitState();
     }
 
     _updateClipPlanes(radiusHint = 0) {
@@ -1388,6 +1437,7 @@ ${colorAnchor}`,
             transform: this.transformHelper.visible,
             bounds: this.selectionBounds.visible,
         };
+        const previousCaptureState = this._capturing;
         this.grid.visible = false;
         this.transformHelper.visible = false;
         this.selectionBounds.visible = false;
@@ -1422,7 +1472,7 @@ ${colorAnchor}`,
             this.grid.visible = overlayVisibility.grid;
             this.transformHelper.visible = overlayVisibility.transform;
             this.selectionBounds.visible = overlayVisibility.bounds;
-            this._capturing = false;
+            this._capturing = previousCaptureState;
             // Re-read the local viewport after capture. The Comfy graph may
             // have been zoomed or the node resized while the exact-size render
             // was being encoded.
@@ -1438,6 +1488,121 @@ ${colorAnchor}`,
                 "image/png",
             );
         });
+    }
+
+    async captureObjectPreview(objectId, {
+        width = 640,
+        height = 640,
+    } = {}) {
+        const entry = this.objects.get(objectId);
+        if (!entry) throw new Error("The selected Gaussian object is not loaded");
+        const cameraState = {
+            position: this.camera.position.clone(),
+            quaternion: this.camera.quaternion.clone(),
+            up: this.camera.up.clone(),
+            target: this.controls.target.clone(),
+            near: this.camera.near,
+            far: this.camera.far,
+        };
+        const objectState = new Map();
+        for (const [id, value] of this.objects) {
+            const parent = value.mesh.parent;
+            objectState.set(id, {
+                parent,
+                parentIndex: parent ? parent.children.indexOf(value.mesh) : -1,
+                rootVisible: value.mesh.visible,
+                splatVisible: value.splat.visible,
+                position: value.mesh.position.clone(),
+                quaternion: value.mesh.quaternion.clone(),
+                scale: value.mesh.scale.clone(),
+            });
+        }
+        const previousSuppressState = this._suppressStateEvents;
+        const previousCaptureState = this._capturing;
+        this._suppressStateEvents = true;
+        this._capturing = true;
+        try {
+            for (const [id, value] of this.objects) {
+                const selected = id === objectId;
+                value.mesh.visible = selected;
+                value.splat.visible = selected;
+                if (!selected) value.mesh.parent?.remove(value.mesh);
+            }
+            // Remove every scene transform. The child SplatMesh retains only
+            // triposplatCanonicalMatrix(), which defines the generated
+            // object's real front independently of placement in the scene.
+            entry.mesh.position.set(0, 0, 0);
+            entry.mesh.quaternion.identity();
+            entry.mesh.scale.setScalar(1);
+            entry.mesh.updateMatrixWorld(true);
+
+            const previewCamera = canonicalObjectPreviewCamera(
+                entry.localBounds,
+                width,
+                height,
+                this.captureFov,
+            );
+            this.camera.position.copy(previewCamera.position);
+            this.camera.up.copy(previewCamera.up);
+            this.controls.target.copy(previewCamera.target);
+            this.camera.lookAt(previewCamera.target);
+            this.camera.near = previewCamera.near;
+            this.camera.far = previewCamera.far;
+            this.camera.updateProjectionMatrix();
+            this.camera.updateMatrixWorld(true);
+            this.controls.update();
+            this.spark.setDirty?.();
+            // Spark keeps a generated mapping separate from the Three scene
+            // graph. Rebuild it synchronously after isolation; otherwise the
+            // previous mapping (usually the first loaded object) can be drawn
+            // even though its Object3D has already been removed.
+            await this.spark.update({ scene: this.scene, camera: this.camera });
+            return await this.capturePreview({ width, height });
+        } finally {
+            try {
+                for (const [id, state] of objectState) {
+                    const value = this.objects.get(id);
+                    if (!value) continue;
+                    if (state.parent && value.mesh.parent !== state.parent) {
+                        state.parent.add(value.mesh);
+                        const currentIndex = state.parent.children.indexOf(value.mesh);
+                        if (
+                            state.parentIndex >= 0
+                            && currentIndex >= 0
+                            && currentIndex !== state.parentIndex
+                        ) {
+                            state.parent.children.splice(currentIndex, 1);
+                            state.parent.children.splice(state.parentIndex, 0, value.mesh);
+                        }
+                    }
+                    value.mesh.position.copy(state.position);
+                    value.mesh.quaternion.copy(state.quaternion);
+                    value.mesh.scale.copy(state.scale);
+                    value.mesh.visible = state.rootVisible;
+                    value.splat.visible = state.splatVisible;
+                    value.mesh.updateMatrixWorld(true);
+                }
+                this.camera.position.copy(cameraState.position);
+                this.camera.quaternion.copy(cameraState.quaternion);
+                this.camera.up.copy(cameraState.up);
+                this.controls.target.copy(cameraState.target);
+                this.camera.near = cameraState.near;
+                this.camera.far = cameraState.far;
+                this.camera.updateProjectionMatrix();
+                this.controls.update();
+                this._refreshSelectionBounds();
+                this.spark.setDirty?.();
+                try {
+                    await this.spark.update({ scene: this.scene, camera: this.camera });
+                } catch (error) {
+                    this.options.onError(error);
+                }
+                this.renderer.render(this.scene, this.camera);
+            } finally {
+                this._capturing = previousCaptureState;
+                this._suppressStateEvents = previousSuppressState;
+            }
+        }
     }
 
     dispose() {

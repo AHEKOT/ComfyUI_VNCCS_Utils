@@ -877,6 +877,9 @@ class FactoryBackendTests(unittest.TestCase):
             def patch(self, path):
                 return self._register("PATCH", path)
 
+            def put(self, path):
+                return self._register("PUT", path)
+
             def delete(self, path):
                 return self._register("DELETE", path)
 
@@ -912,6 +915,13 @@ class FactoryBackendTests(unittest.TestCase):
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}/export/{format_name}"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/export"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/exports/{format_name}"),
+            ("GET", "/vnccs/3d-factory/library/items"),
+            ("POST", "/vnccs/3d-factory/library/items"),
+            ("PUT", "/vnccs/3d-factory/library/items/{asset_id}"),
+            ("POST", "/vnccs/3d-factory/library/items/{asset_id}/load"),
+            ("GET", "/vnccs/3d-factory/library/items/{asset_id}/preview"),
+            ("GET", "/vnccs/3d-factory/library/items/{asset_id}/download"),
+            ("DELETE", "/vnccs/3d-factory/library/items/{asset_id}"),
         }
         self.assertTrue(expected.issubset(registered), expected.difference(registered))
 

@@ -5546,7 +5546,7 @@ class PoseStudioWidget {
         libBtn.className = "vnccs-ps-btn primary";
         libBtn.style.width = "100%";
         libBtn.style.padding = "10px";
-        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library Gallery';
+        libBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📚</span> Pose Library';
         libBtn.onclick = () => this.showLibraryModal();
         libBtnWrap.appendChild(libBtn);
         rightSidebar.appendChild(libBtnWrap);

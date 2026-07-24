@@ -91,9 +91,14 @@ renders the actual Gaussian assets through the bundled SparkJS viewport.
 * **Local TripoSplat Pipeline**: The official pipeline runs in process with
   ComfyUI's PyTorch device. Model setup and weight download are graphical.
 * **Object and Scene Export**: Export every transformed object separately or
-  combine the scene as Gaussian PLY/SPLAT or a reconstructed GLB mesh. Scene
-  PLY embeds the saved export camera and raw SPLAT is accompanied by its exact
-  camera/frame manifest.
+  combine the scene as Gaussian PLY/SPLAT/GLB. Scene PLY embeds the saved export
+  camera and raw SPLAT is accompanied by its exact camera/frame manifest. GLB
+  uses `KHR_gaussian_splatting` and preserves the actual Gaussian centers,
+  covariance, opacity, spherical-harmonic color, and export camera without
+  lossy triangle reconstruction.
+* **Gaussian Library**: Save individual objects or complete scenes with
+  automatic 3D previews, then synchronize or publish manifest-driven model
+  repositories on Hugging Face through the Pose Studio repository workflow.
 * **Observable Jobs**: Background removal, image encoding, diffusion steps,
   Gaussian decoding, serialization, and scene insertion expose real progress.
   Every stage is printed to the ComfyUI console and retained in a downloadable

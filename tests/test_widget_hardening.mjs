@@ -61,6 +61,11 @@ test("Pose Library image previews preserve their aspect ratio without cropping",
     assert.doesNotMatch(rule, /object-fit:\s*cover/);
 });
 
+test("Pose Studio library launcher uses the concise product name", () => {
+    assert.match(poseStudioSource, /> Pose Library';/);
+    assert.doesNotMatch(poseStudioSource, /Pose Library Gallery/);
+});
+
 
 test("Pose Manager regenerates missing previews after worker model load and mode entry", () => {
     const modeStart = poseStudioSource.indexOf("setInterfaceMode(mode, { sync = true } = {})");

@@ -1,11 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260724.20";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.2";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 const API_BASE = "/vnccs/3d-factory";
+const LIBRARY_BASE = `${API_BASE}/library`;
+const GAUSSIAN_LIBRARY_SCHEMA = "vnccs-3d-factory-library/v1";
 const ENDPOINTS = Object.freeze({
     capabilities: `${API_BASE}/capabilities`,
     weightsDownload: `${API_BASE}/weights/download`,
@@ -19,10 +21,20 @@ const ENDPOINTS = Object.freeze({
     job: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
     cancelJob: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/cancel`,
     jobLog: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/log`,
+    libraryItems: `${LIBRARY_BASE}/items`,
+    libraryItem: assetId => `${LIBRARY_BASE}/items/${encodeURIComponent(assetId)}`,
+    libraryLoad: assetId => `${LIBRARY_BASE}/items/${encodeURIComponent(assetId)}/load`,
+    libraryRepositories: `${LIBRARY_BASE}/repositories`,
+    libraryRepositoryAdd: `${LIBRARY_BASE}/repositories/add`,
+    libraryRepositoryToggle: `${LIBRARY_BASE}/repositories/toggle`,
+    libraryRepositoryRefresh: `${LIBRARY_BASE}/repositories/refresh`,
+    libraryRepositoryAutoRefresh: `${LIBRARY_BASE}/repositories/auto_refresh`,
+    libraryRepositoryPublish: `${LIBRARY_BASE}/repositories/publish`,
+    libraryRepositoryProgress: taskId => `${LIBRARY_BASE}/repositories/progress/${encodeURIComponent(taskId)}`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 7;
-const FRONTEND_BUILD = "20260724.30";
+const FRONTEND_BUILD = "20260725.2";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -128,6 +140,7 @@ const ICONS = Object.freeze({
     check: `<svg viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></svg>`,
     warning: `<svg viewBox="0 0 24 24"><path d="M12 3 2 21h20L12 3Z"/><path d="M12 9v5m0 3v.01"/></svg>`,
     scenes: `<svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM7 3h10M7 21h10"/></svg>`,
+    library: `<svg viewBox="0 0 24 24"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H11v17H6.5A2.5 2.5 0 0 0 4 22V5.5ZM20 5.5A2.5 2.5 0 0 0 17.5 3H13v17h4.5A2.5 2.5 0 0 1 20 22V5.5Z"/></svg>`,
     duplicate: `<svg viewBox="0 0 24 24"><rect x="8" y="8" width="11" height="11" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>`,
     eye: `<svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>`,
     eyeOff: `<svg viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.2A10.8 10.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17 17 0 0 1-2.2 2.8M6.4 6.5C3.9 8.3 2.5 12 2.5 12s3.5 6 9.5 6c1.4 0 2.7-.3 3.8-.8M9.9 9.8a3 3 0 0 0 4.2 4.3"/></svg>`,
@@ -143,7 +156,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.21", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260724.24", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -152,6 +165,14 @@ function element(tag, className = "", text = "") {
     if (className) value.className = className;
     if (text) value.textContent = text;
     return value;
+}
+
+function escapeHTML(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
 }
 
 function button(className, label = "", icon = "") {
@@ -244,6 +265,15 @@ function downloadBlob(blob, filename) {
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
+function blobToDataURL(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(reader.error || new Error("Could not read preview image"));
+        reader.readAsDataURL(blob);
+    });
+}
+
 
 class Factory3DWidget {
     constructor(node) {
@@ -283,6 +313,19 @@ class Factory3DWidget {
         this._resizeFrame = 0;
         this._modalCleanup = null;
         this._previousFocus = null;
+        this.libraryItems = [];
+        this.libraryQuery = "";
+        this.libraryActiveCategory = "All";
+        this.librarySelectedId = "";
+        this.libraryThumbSizeStorageKey = "vnccs3DFactoryLibraryPreviewSize";
+        this.libraryThumbSize = this.loadLibraryThumbnailSize();
+        this.librarySettingsMode = false;
+        this.libraryModal = null;
+        this.libraryGrid = null;
+        this.libraryInspector = null;
+        this.libraryWorkspace = null;
+        this.libraryResizeObserver = null;
+        this._libraryAutoRefreshStarted = false;
         this._suppressViewerStatePersistence = false;
         // Keep callbacks read-only until the serialized ComfyUI widget state has
         // been applied. Viewer setup emits state changes during construction.
@@ -502,6 +545,11 @@ class Factory3DWidget {
                 </div>
             </main>
             <aside class="vnccs-i3s__side vnccs-i3s__side--right" aria-label="Scene objects and export">
+                <div class="vnccs-i3s__library-launcher-wrap">
+                    <button class="vnccs-ps-btn primary vnccs-i3s__library-open" type="button">
+                        <span class="vnccs-ps-btn-icon">📚</span> Model Library
+                    </button>
+                </div>
                 <section class="vnccs-i3s__section vnccs-i3s__object-section">
                     <div class="vnccs-i3s__section-head"><span>Scene objects</span><span class="vnccs-i3s__object-count">0</span></div>
                     <div class="vnccs-i3s__section-body">
@@ -588,6 +636,7 @@ class Factory3DWidget {
             sceneName: $(".vnccs-i3s__scene-name-input"),
             sceneId: $(".vnccs-i3s__project-id"),
             sceneManager: $(".vnccs-i3s__scene-manager"),
+            libraryOpen: $(".vnccs-i3s__library-open"),
             status: $(".vnccs-i3s__status-pill"),
             viewerHost: $(".vnccs-i3s__viewer-host"),
             fit: $(".vnccs-i3s__fit"),
@@ -705,6 +754,7 @@ class Factory3DWidget {
         this._listen(this.els.donateLink, "click", event => event.stopPropagation());
         this._listen(this.els.modelSetup, "click", () => this.openModelSetup());
         this._listen(this.els.generate, "click", () => void this.generate());
+        this._listen(this.els.libraryOpen, "click", () => void this.openLibrary());
         this._listen(this.els.sceneManager, "click", () => void this.openSceneManager());
         this._listen(this.els.sceneName, "change", () => {
             if (!this.scene) return;
@@ -2555,6 +2605,916 @@ class Factory3DWidget {
         }
     }
 
+    _libraryItemQuery(item) {
+        const query = new URLSearchParams({
+            repository: item.repository || "",
+            category: item.category || "",
+        });
+        return query.toString();
+    }
+
+    getLibraryThumbnailBounds() {
+        return { min: 160, max: 520, defaultSize: 320 };
+    }
+
+    loadLibraryThumbnailSize() {
+        const bounds = this.getLibraryThumbnailBounds();
+        try {
+            const stored = Number(localStorage.getItem(this.libraryThumbSizeStorageKey));
+            if (Number.isFinite(stored)) return Math.max(bounds.min, Math.min(bounds.max, stored));
+        } catch (_error) {}
+        return bounds.defaultSize;
+    }
+
+    saveLibraryThumbnailSize(size) {
+        const bounds = this.getLibraryThumbnailBounds();
+        this.libraryThumbSize = Math.max(bounds.min, Math.min(bounds.max, Number(size) || bounds.defaultSize));
+        try { localStorage.setItem(this.libraryThumbSizeStorageKey, String(this.libraryThumbSize)); } catch (_error) {}
+        this.applyLibraryThumbnailSize();
+    }
+
+    applyLibraryThumbnailSize() {
+        const target = this.libraryWorkspace || this.libraryGrid;
+        if (!target) return;
+        target.style.setProperty("--vnccs-ps-library-thumb-size", `${this.libraryThumbSize}px`);
+        target.style.setProperty("--vnccs-ps-library-thumb-height", `${Math.round(this.libraryThumbSize * 1.3125)}px`);
+        if (this.librarySizeValue) this.librarySizeValue.textContent = `${Math.round(this.libraryThumbSize)}`;
+    }
+
+    async openLibrary() {
+        this.closeFactoryLibrary();
+        const overlay = element("div", "vnccs-ps-modal-overlay vnccs-ps-library-overlay");
+        const modal = element("div", "vnccs-ps-library-modal");
+        modal.innerHTML = `
+            <div class="vnccs-ps-library-modal-header">
+                <div class="vnccs-ps-library-modal-title">📚 Model Library</div>
+                <div class="vnccs-ps-library-header-actions">
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-save-current">
+                        <span class="vnccs-ps-btn-icon">💾</span> Save Current Model
+                    </button>
+                </div>
+                <button class="vnccs-ps-modal-close" aria-label="Close">✕</button>
+            </div>
+            <div class="vnccs-ps-library-toolbar">
+                <input class="vnccs-ps-library-search" type="search" placeholder="Search models, scenes, and tags...">
+                <label class="vnccs-ps-library-size-control" title="Preview size">
+                    <span>Preview</span>
+                    <input class="vnccs-ps-library-size-slider" type="range" min="160" max="520" step="10">
+                    <span class="vnccs-ps-library-size-value"></span>
+                </label>
+                <button class="vnccs-ps-library-menu-btn" title="Model library settings">⚙️</button>
+            </div>
+            <div class="vnccs-ps-library-categories"></div>
+            <div class="vnccs-ps-library-workspace">
+                <div class="vnccs-ps-library-modal-grid"></div>
+                <aside class="vnccs-ps-library-inspector"></aside>
+                <section class="vnccs-ps-library-settings"></section>
+            </div>
+        `;
+        this.libraryModal = modal;
+        this.libraryOverlay = overlay;
+        this.libraryGrid = modal.querySelector(".vnccs-ps-library-modal-grid");
+        this.libraryInspector = modal.querySelector(".vnccs-ps-library-inspector");
+        this.libraryWorkspace = modal.querySelector(".vnccs-ps-library-workspace");
+        this.librarySearchInput = modal.querySelector(".vnccs-ps-library-search");
+        this.librarySizeInput = modal.querySelector(".vnccs-ps-library-size-slider");
+        this.librarySizeValue = modal.querySelector(".vnccs-ps-library-size-value");
+        this.libraryCategoriesEl = modal.querySelector(".vnccs-ps-library-categories");
+        this.librarySettingsEl = modal.querySelector(".vnccs-ps-library-settings");
+        this.librarySettingsMode = false;
+        this.librarySearchInput.value = this.libraryQuery;
+        this.librarySizeInput.value = String(this.libraryThumbSize);
+        this.librarySizeInput.oninput = () => this.saveLibraryThumbnailSize(this.librarySizeInput.value);
+        this.librarySearchInput.oninput = () => {
+            this.libraryQuery = this.librarySearchInput.value;
+            this.renderLibrary();
+        };
+        modal.querySelector(".vnccs-ps-modal-close").onclick = () => this.closeFactoryLibrary();
+        modal.querySelector(".vnccs-ps-library-save-current").onclick = () => {
+            const selectedObjectId = this.selectedObjectId;
+            this.openSaveLibraryModal(
+                selectedObjectId ? "object" : "scene",
+                selectedObjectId,
+            );
+        };
+        modal.querySelector(".vnccs-ps-library-menu-btn").onclick = () => void this.toggleLibrarySettings();
+        overlay.onclick = event => { if (event.target === overlay) this.closeFactoryLibrary(); };
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        this.applyLibraryThumbnailSize();
+        this.startLibraryResizeObserver();
+        this.libraryGrid.innerHTML = '<div class="vnccs-ps-library-empty">Loading library...</div>';
+        await this.refreshLibrary();
+    }
+
+    closeFactoryLibrary() {
+        this.libraryResizeObserver?.disconnect();
+        this.libraryResizeObserver = null;
+        this.libraryOverlay?.remove();
+        this.libraryOverlay = null;
+        this.libraryModal = null;
+        this.libraryGrid = null;
+        this.libraryInspector = null;
+        this.libraryWorkspace = null;
+    }
+
+    startLibraryResizeObserver() {
+        const update = () => {
+            if (!this.libraryModal || !this.libraryWorkspace) return;
+            const width = this.libraryModal.clientWidth || 1600;
+            this.libraryModal.style.setProperty("--vnccs-ps-library-ui-scale", Math.max(.5, Math.min(1.4, width / 1600)).toFixed(3));
+            const workspaceWidth = this.libraryWorkspace.clientWidth || 510;
+            const workspaceHeight = this.libraryWorkspace.clientHeight || 900;
+            const scale = Math.max(.45, Math.min(1, Math.min(510, workspaceWidth * .38) / 510, Math.max(420, workspaceHeight - 2) / 900));
+            this.libraryWorkspace.style.setProperty("--vnccs-ps-library-inspector-scale", scale.toFixed(3));
+        };
+        if (typeof ResizeObserver !== "undefined") {
+            this.libraryResizeObserver = new ResizeObserver(update);
+            this.libraryResizeObserver.observe(this.libraryModal);
+            this.libraryResizeObserver.observe(this.libraryWorkspace);
+        }
+        update();
+    }
+
+    async refreshLibrary() {
+        try {
+            const result = await this._fetchJSON(ENDPOINTS.libraryItems);
+            if (result.schema !== GAUSSIAN_LIBRARY_SCHEMA) {
+                throw new Error(
+                    "The server returned a non-Gaussian library. Restart ComfyUI to load the 3D Factory library routes.",
+                );
+            }
+            const received = Array.isArray(result.items) ? result.items : [];
+            const rejected = received.filter(item => (
+                !item
+                || item.schema !== GAUSSIAN_LIBRARY_SCHEMA
+                || !["object", "scene"].includes(item.asset_type)
+                || !/^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
+            ));
+            if (rejected.length) {
+                console.error("[VNCCS 3D Factory] Rejected non-Gaussian library records", {
+                    rejected: rejected.length,
+                    total: received.length,
+                });
+            }
+            this.libraryItems = received.filter(item => (
+                item
+                && item.schema === GAUSSIAN_LIBRARY_SCHEMA
+                && ["object", "scene"].includes(item.asset_type)
+                && /^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
+            ));
+            this.renderLibrary();
+            this.autoRefreshLibraryRepositories();
+        } catch (error) {
+            if (this.libraryGrid) this.libraryGrid.innerHTML = `<div class="vnccs-ps-library-empty">Failed to load library.<br>${escapeHTML(errorText(error))}</div>`;
+        }
+    }
+
+    autoRefreshLibraryRepositories() {
+        if (this._libraryAutoRefreshStarted) return;
+        this._libraryAutoRefreshStarted = true;
+        void (async () => {
+            try {
+                const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryAutoRefresh, { method: "POST" });
+                if (!result.task_id) return;
+                await this._waitLibraryRepositoryTask(result.task_id);
+                await this.refreshLibrary();
+                if (this.librarySettingsMode) await this.renderLibraryRepositorySettings();
+            } catch (error) {
+                console.info("[VNCCS 3D Factory] Library repository refresh skipped", errorText(error));
+            }
+        })();
+    }
+
+    getFilteredLibraryItems() {
+        const query = this.libraryQuery.trim().toLowerCase();
+        return this.libraryItems.filter(item => {
+            if (this.libraryActiveCategory !== "All" && (item.category || "Uncategorized") !== this.libraryActiveCategory) return false;
+            if (!query) return true;
+            return [item.name, item.asset_type, item.category, item.repository, ...(item.tags || [])]
+                .join(" ").toLowerCase().includes(query);
+        });
+    }
+
+    renderLibraryCategories() {
+        if (!this.libraryCategoriesEl) return;
+        const categories = Array.from(new Set(this.libraryItems.map(item => item.category || "Uncategorized"))).sort();
+        const fragment = document.createDocumentFragment();
+        for (const category of ["All", ...categories]) {
+            const chip = element("button", `vnccs-ps-library-category-chip${category === this.libraryActiveCategory ? " active" : ""}`, category);
+            chip.onclick = () => {
+                this.libraryActiveCategory = category;
+                this.renderLibrary();
+            };
+            fragment.appendChild(chip);
+        }
+        this.libraryCategoriesEl.replaceChildren(fragment);
+    }
+
+    renderLibrary() {
+        if (!this.libraryGrid || this.librarySettingsMode) return;
+        this.renderLibraryCategories();
+        const items = this.getFilteredLibraryItems();
+        this.libraryGrid.replaceChildren();
+        if (!items.length) {
+            this.libraryGrid.innerHTML = `<div class="vnccs-ps-library-empty">${this.libraryItems.length ? "No library items match this search." : "No saved models or scenes.<br>Use Save Current Model to add one."}</div>`;
+            this.renderLibraryInspector(null);
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        for (const item of items) {
+            const card = element("div", `vnccs-ps-library-item${item.asset_id === this.librarySelectedId ? " selected" : ""}`);
+            card.dataset.assetId = item.asset_id;
+            const preview = element("div", "vnccs-ps-library-item-preview");
+            if (item.has_preview) {
+                const image = element("img");
+                image.src = apiUrl(item.preview_url);
+                image.alt = item.name;
+                image.loading = "lazy";
+                image.decoding = "async";
+                preview.appendChild(image);
+            } else {
+                preview.innerHTML = item.asset_type === "scene" ? "<span>🎬</span>" : "<span>🧊</span>";
+            }
+            const name = element("div", "vnccs-ps-library-item-name", item.name);
+            card.append(preview);
+            if (item.asset_type === "scene") card.appendChild(element("div", "vnccs-ps-library-item-type", "Scene"));
+            card.appendChild(name);
+            card.onclick = () => {
+                this.librarySelectedId = item.asset_id;
+                this.renderLibrary();
+                this.renderLibraryInspector(item);
+            };
+            card.ondblclick = () => void this.loadLibraryItem(item, card);
+            fragment.appendChild(card);
+        }
+        this.libraryGrid.appendChild(fragment);
+        this.renderLibraryInspector(items.find(item => item.asset_id === this.librarySelectedId) || null);
+    }
+
+    renderLibraryInspector(item) {
+        if (!this.libraryInspector || !this.libraryWorkspace) return;
+        if (!item) {
+            this.libraryInspector.classList.remove("visible");
+            this.libraryWorkspace.classList.remove("has-inspector");
+            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select a model or scene to inspect and load it.</div>';
+            return;
+        }
+        this.libraryInspector.classList.add("visible");
+        this.libraryWorkspace.classList.add("has-inspector");
+        const preview = item.has_preview
+            ? `<img src="${apiUrl(item.preview_url)}" alt="${escapeHTML(item.name)}" decoding="async">`
+            : (item.asset_type === "scene" ? "<span>🎬</span>" : "<span>🧊</span>");
+        const local = item.repository === "local_user_models";
+        const disabled = local ? "" : "disabled";
+        this.libraryInspector.innerHTML = `
+            <div class="vnccs-ps-library-inspector-inner">
+                <div class="vnccs-ps-library-inspector-preview">${preview}</div>
+                <div class="vnccs-ps-library-inspector-actions">
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-apply">${item.asset_type === "scene" ? "Open Scene" : "Add Model"}</button>
+                    <button class="vnccs-ps-btn vnccs-ps-library-download">Download</button>
+                </div>
+                <label class="vnccs-ps-library-field"><span>Name</span><input class="vnccs-ps-input vnccs-ps-library-edit-name" type="text" value="${escapeHTML(item.name)}" ${disabled}></label>
+                <label class="vnccs-ps-library-field"><span>Category</span><input class="vnccs-ps-input vnccs-ps-library-edit-category" type="text" value="${escapeHTML(item.category || "Uncategorized")}" ${disabled}></label>
+                <label class="vnccs-ps-library-field"><span>Repository</span><input class="vnccs-ps-input" type="text" value="${escapeHTML(item.repository)}" disabled></label>
+                <label class="vnccs-ps-library-field"><span>Tags</span><input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${escapeHTML((item.tags || []).join(", "))}" ${disabled}></label>
+                <label class="vnccs-ps-library-field"><span>Description</span><textarea class="vnccs-ps-textarea vnccs-ps-library-edit-description" ${disabled}>${escapeHTML(item.description || "")}</textarea></label>
+                <div class="vnccs-ps-library-system-tag">${item.asset_type === "scene" ? "Scene" : "Gaussian model"} · ${Number(item.gaussians || 0).toLocaleString()} splats · ${formatBytes(item.bytes)}</div>
+                ${local ? `
+                    <label class="vnccs-ps-library-field"><span>Custom Image</span><input class="vnccs-ps-library-preview-input" type="file" accept="image/*"></label>
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
+                    <button class="vnccs-ps-btn danger vnccs-ps-library-delete">Delete</button>
+                ` : ""}
+            </div>
+        `;
+        this.libraryInspector.querySelector(".vnccs-ps-library-apply").onclick = event => void this.loadLibraryItem(item, event.currentTarget);
+        this.libraryInspector.querySelector(".vnccs-ps-library-download").onclick = () => download(item.download_url);
+        this.libraryInspector.querySelector(".vnccs-ps-library-delete")?.addEventListener("click", () => this.confirmDeleteLibraryItem(item));
+        if (local) {
+            let pendingPreview = "";
+            const input = this.libraryInspector.querySelector(".vnccs-ps-library-preview-input");
+            input.onchange = async event => {
+                const file = event.target.files?.[0];
+                if (!file) return;
+                if (!file.type.startsWith("image/") || file.size > 16 * 1024 * 1024) {
+                    this.toast("Preview must be an image smaller than 16 MB.", "error");
+                    event.target.value = "";
+                    return;
+                }
+                pendingPreview = await blobToDataURL(file);
+                this.libraryInspector.querySelector(".vnccs-ps-library-inspector-preview").innerHTML =
+                    `<img src="${pendingPreview}" alt="${escapeHTML(item.name)}">`;
+            };
+            this.libraryInspector.querySelector(".vnccs-ps-library-save-edit").onclick = async event => {
+                const control = event.currentTarget;
+                const name = this.libraryInspector.querySelector(".vnccs-ps-library-edit-name").value.trim();
+                if (!name) return this.libraryInspector.querySelector(".vnccs-ps-library-edit-name").focus();
+                control.disabled = true;
+                try {
+                    const result = await this._fetchJSON(
+                        `${ENDPOINTS.libraryItem(item.asset_id)}?${this._libraryItemQuery(item)}`,
+                        {
+                            method: "PUT",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                repository: item.repository,
+                                old_category: item.category,
+                                name,
+                                category: this.libraryInspector.querySelector(".vnccs-ps-library-edit-category").value.trim(),
+                                tags: this.libraryInspector.querySelector(".vnccs-ps-library-edit-tags").value
+                                    .split(",").map(value => value.trim()).filter(Boolean),
+                                description: this.libraryInspector.querySelector(".vnccs-ps-library-edit-description").value.trim(),
+                                preview: pendingPreview,
+                            }),
+                        },
+                    );
+                    this.libraryItems = this.libraryItems.map(value => value.asset_id === item.asset_id ? result.item : value);
+                    this.librarySelectedId = result.item.asset_id;
+                    this.renderLibrary();
+                    this.toast("Library asset updated.", "success");
+                } catch (error) {
+                    control.disabled = false;
+                    this._showError("Library asset could not be updated", error);
+                }
+            };
+        }
+    }
+
+    async toggleLibrarySettings(force = null) {
+        this.librarySettingsMode = force === null ? !this.librarySettingsMode : Boolean(force);
+        this.libraryWorkspace?.classList.toggle("settings-mode", this.librarySettingsMode);
+        if (this.librarySettingsMode) this.libraryWorkspace?.classList.remove("has-inspector");
+        if (this.libraryCategoriesEl) this.libraryCategoriesEl.style.display = this.librarySettingsMode ? "none" : "";
+        if (this.librarySearchInput) {
+            this.librarySearchInput.disabled = this.librarySettingsMode;
+            this.librarySearchInput.placeholder = this.librarySettingsMode
+                ? "Repository settings"
+                : "Search models, scenes, and tags...";
+        }
+        if (this.librarySettingsMode) await this.renderLibraryRepositorySettings();
+        else this.renderLibrary();
+    }
+
+    async renderLibraryRepositorySettings() {
+        if (!this.librarySettingsEl) return;
+        this.librarySettingsEl.innerHTML = '<div class="vnccs-ps-library-empty">Loading repositories...</div>';
+        try {
+            const data = await this._fetchJSON(ENDPOINTS.libraryRepositories);
+            const repos = Array.isArray(data.repositories) ? data.repositories : [];
+            this.librarySettingsEl.innerHTML = `
+                <div class="vnccs-ps-library-settings-head">
+                    <div>
+                        <div class="vnccs-ps-library-settings-title">Library Repositories</div>
+                        <div class="vnccs-ps-library-settings-subtitle">Gaussian model and scene libraries on Hugging Face can be enabled, disabled, refreshed, or removed.</div>
+                    </div>
+                    <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to library</button>
+                </div>
+                <div class="vnccs-ps-library-local-repo"></div>
+                <div class="vnccs-ps-library-repo-notice"></div>
+                <div class="vnccs-ps-library-repo-add">
+                    <input class="vnccs-ps-input vnccs-ps-library-repo-input" type="text" placeholder="owner/repository">
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-repo-add-btn">Add Repository</button>
+                </div>
+                <div class="vnccs-ps-library-repo-list"></div>
+            `;
+            this.librarySettingsEl.querySelector(".vnccs-ps-library-settings-back").onclick = () => void this.toggleLibrarySettings(false);
+            const notice = this.librarySettingsEl.querySelector(".vnccs-ps-library-repo-notice");
+            const showNotice = (message, error = false) => {
+                notice.textContent = message;
+                notice.classList.toggle("error", error);
+                notice.classList.add("visible");
+            };
+            const local = data.local || {};
+            const localHolder = this.librarySettingsEl.querySelector(".vnccs-ps-library-local-repo");
+            localHolder.innerHTML = `
+                <div class="vnccs-ps-library-repo-card">
+                    <div>
+                        <div class="vnccs-ps-library-repo-title">Local Model Library</div>
+                        <div class="vnccs-ps-library-repo-id">local_user_models → ${escapeHTML(local.publish_repo_id || "Not linked")}</div>
+                        <div class="vnccs-ps-library-repo-meta">${Number(local.asset_count || 0)} models and scenes</div>
+                    </div>
+                    <div class="vnccs-ps-library-repo-actions">
+                        <button class="vnccs-ps-library-repo-action primary publish">Publish</button>
+                    </div>
+                    ${this.libraryRepositoryProgressMarkup()}
+                </div>
+            `;
+            localHolder.querySelector(".publish").onclick = async event => {
+                const publishConfig = await this.requestLibraryPublishRepository(local);
+                if (!publishConfig) return;
+                event.currentTarget.disabled = true;
+                try {
+                    const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryPublish, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(publishConfig),
+                    });
+                    await this._waitLibraryRepositoryTask(result.task_id, localHolder.querySelector(".vnccs-ps-library-repo-progress"));
+                    showNotice(`Published local library to ${publishConfig.repo_id}.`);
+                    await this.renderLibraryRepositorySettings();
+                } catch (error) {
+                    event.currentTarget.disabled = false;
+                    showNotice(errorText(error), true);
+                }
+            };
+            const list = this.librarySettingsEl.querySelector(".vnccs-ps-library-repo-list");
+            if (!repos.length) list.innerHTML = '<div class="vnccs-ps-library-empty">No repositories configured.</div>';
+            for (const repo of repos) {
+                const card = element("div", "vnccs-ps-library-repo-card");
+                card.innerHTML = `
+                    <div>
+                        <div class="vnccs-ps-library-repo-title">${escapeHTML(repo.title || repo.repo_id)}</div>
+                        <div class="vnccs-ps-library-repo-id">${escapeHTML(repo.repo_id)}</div>
+                        <div class="vnccs-ps-library-repo-meta">${Number(repo.asset_count || 0)} models and scenes · ${repo.enabled ? "enabled" : "disabled"}</div>
+                    </div>
+                    <div class="vnccs-ps-library-repo-actions">
+                        <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? "Disable" : "Enable"}</button>
+                        <button class="vnccs-ps-library-repo-action refresh">Refresh</button>
+                        <button class="vnccs-ps-library-repo-action danger remove" ${repo.builtin ? "disabled" : ""}>Remove</button>
+                    </div>
+                    ${this.libraryRepositoryProgressMarkup()}
+                `;
+                card.querySelector(".toggle").onclick = async () => {
+                    await this._fetchJSON(ENDPOINTS.libraryRepositoryToggle, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_id: repo.repo_id, enabled: !repo.enabled }),
+                    });
+                    await this.renderLibraryRepositorySettings();
+                };
+                card.querySelector(".refresh").onclick = async () => {
+                    const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryRefresh, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_ids: [repo.repo_id] }),
+                    });
+                    await this._waitLibraryRepositoryTask(result.task_id, card.querySelector(".vnccs-ps-library-repo-progress"));
+                    await this.refreshLibrary();
+                    await this.renderLibraryRepositorySettings();
+                };
+                card.querySelector(".remove").onclick = async () => {
+                    await this._fetchJSON(`${ENDPOINTS.libraryRepositories}/${encodeURIComponent(repo.repo_id)}`, { method: "DELETE" });
+                    await this.refreshLibrary();
+                    await this.renderLibraryRepositorySettings();
+                };
+                list.appendChild(card);
+            }
+            const addInput = this.librarySettingsEl.querySelector(".vnccs-ps-library-repo-input");
+            const addRepository = async () => {
+                const repoId = addInput.value.trim();
+                if (!repoId) return addInput.focus();
+                try {
+                    const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryAdd, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_id: repoId }),
+                    });
+                    await this._waitLibraryRepositoryTask(result.task_id);
+                    await this.refreshLibrary();
+                    await this.renderLibraryRepositorySettings();
+                } catch (error) {
+                    showNotice(errorText(error), true);
+                }
+            };
+            this.librarySettingsEl.querySelector(".vnccs-ps-library-repo-add-btn").onclick = addRepository;
+            addInput.onkeydown = event => { if (event.key === "Enter") void addRepository(); };
+        } catch (error) {
+            this.librarySettingsEl.innerHTML = `<div class="vnccs-ps-library-empty">Failed to load repositories.<br>${escapeHTML(errorText(error))}</div>`;
+        }
+    }
+
+    libraryRepositoryProgressMarkup() {
+        return `
+            <div class="vnccs-ps-library-repo-progress">
+                <div class="vnccs-ps-library-repo-progress-head">
+                    <span class="vnccs-ps-library-repo-progress-message">Preparing...</span>
+                    <span class="vnccs-ps-library-repo-progress-percent">0%</span>
+                </div>
+                <div class="vnccs-ps-library-repo-progress-track">
+                    <div class="vnccs-ps-library-repo-progress-fill"></div>
+                </div>
+            </div>
+        `;
+    }
+
+    requestLibraryPublishRepository(current = {}) {
+        return new Promise(resolve => {
+            const overlay = element("div", "vnccs-ps-modal-overlay");
+            const modal = element("div", "vnccs-ps-modal");
+            modal.style.maxWidth = "420px";
+            modal.innerHTML = `
+                <div class="vnccs-ps-modal-title">Publish Local Model Repository</div>
+                <div class="vnccs-ps-modal-content">
+                    <label class="vnccs-ps-library-field">
+                        <span>Target</span>
+                        <select class="vnccs-ps-input vnccs-ps-publish-mode">
+                            <option value="create">Create new repository</option>
+                            <option value="existing">Use existing repository</option>
+                        </select>
+                    </label>
+                    <label class="vnccs-ps-library-field">
+                        <span>Hugging Face repository</span>
+                        <input class="vnccs-ps-input vnccs-ps-publish-repo" type="text" placeholder="owner/repository" value="${escapeHTML(current.publish_repo_id || "")}">
+                    </label>
+                    <label class="vnccs-ps-library-field vnccs-ps-publish-private-row">
+                        <span>Visibility</span>
+                        <label style="display:flex;align-items:center;gap:8px;color:var(--ps-text-muted);font-size:12px;">
+                            <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
+                        </label>
+                    </label>
+                    <label class="vnccs-ps-library-field">
+                        <span>HF token ${current.has_hf_token ? "(saved)" : ""}</span>
+                        <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" placeholder="${current.has_hf_token ? "Leave empty to use saved token" : "hf_..."}">
+                    </label>
+                </div>
+                <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
+                <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+            `;
+            const mode = modal.querySelector(".vnccs-ps-publish-mode");
+            const input = modal.querySelector(".vnccs-ps-publish-repo");
+            const privateRow = modal.querySelector(".vnccs-ps-publish-private-row");
+            mode.value = current.publish_repo_id ? "existing" : "create";
+            const syncMode = () => { privateRow.style.display = mode.value === "create" ? "" : "none"; };
+            mode.onchange = syncMode;
+            syncMode();
+            const close = value => {
+                overlay.remove();
+                resolve(value);
+            };
+            modal.querySelector(".primary").onclick = () => {
+                const value = input.value.trim();
+                if (!value) return input.focus();
+                close({
+                    repo_id: value,
+                    hf_token: modal.querySelector(".vnccs-ps-publish-token").value.trim(),
+                    create: mode.value === "create",
+                    private: modal.querySelector(".vnccs-ps-publish-private").checked,
+                });
+            };
+            modal.querySelector(".cancel").onclick = () => close(null);
+            overlay.onclick = event => { if (event.target === overlay) close(null); };
+            input.onkeydown = event => {
+                if (event.key === "Enter") modal.querySelector(".primary").click();
+                if (event.key === "Escape") close(null);
+            };
+            overlay.appendChild(modal);
+            this.container.appendChild(overlay);
+            requestAnimationFrame(() => input.focus());
+        });
+    }
+
+    async loadLibraryItem(item, control) {
+        if (!this.sceneId) return;
+        control.disabled = true;
+        this._setStatus("Loading library asset", "working");
+        try {
+            const result = await this._fetchJSON(ENDPOINTS.libraryLoad(item.asset_id), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    scene_id: this.sceneId,
+                    repository: item.repository,
+                    category: item.category,
+                }),
+            });
+            this.closeFactoryLibrary();
+            await this._applyScene(result.scene);
+            if (result.object_id) this._selectObject(result.object_id);
+            this.toast(
+                result.created_scene ? "Library scene opened." : "Gaussian object added to scene.",
+                "success",
+            );
+        } catch (error) {
+            control.disabled = false;
+            this._setStatus("Library load failed", "error");
+            this._showError("Library asset could not be loaded", error);
+        }
+    }
+
+    confirmDeleteLibraryItem(item) {
+        const overlay = element("div", "vnccs-ps-modal-overlay");
+        const modal = element("div", "vnccs-ps-modal");
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">Delete Library Asset</div>
+            <div class="vnccs-ps-modal-content">
+                <div>Delete “${escapeHTML(item.name)}” from the local model library?</div>
+                <div style="color:var(--ps-text-muted)">The stored Gaussian package and preview will be removed. Models already loaded into scenes are not affected.</div>
+            </div>
+            <button class="vnccs-ps-modal-btn danger">Delete Asset</button>
+            <button class="vnccs-ps-modal-btn cancel">Cancel</button>
+        `;
+        const cancel = modal.querySelector(".cancel");
+        const remove = modal.querySelector(".danger");
+        const close = () => overlay.remove();
+        cancel.onclick = close;
+        overlay.onclick = event => { if (event.target === overlay) close(); };
+        remove.addEventListener("click", async () => {
+            remove.disabled = true;
+            cancel.disabled = true;
+            try {
+                await this._fetchJSON(
+                    `${ENDPOINTS.libraryItem(item.asset_id)}?${this._libraryItemQuery(item)}`,
+                    { method: "DELETE" },
+                );
+                close();
+                this.toast("Library asset deleted.", "success");
+                this.libraryItems = this.libraryItems.filter(value => value.asset_id !== item.asset_id);
+                this.librarySelectedId = "";
+                this.renderLibrary();
+            } catch (error) {
+                remove.disabled = false;
+                cancel.disabled = false;
+                this._showError("Library asset could not be deleted", error);
+            }
+        });
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+    }
+
+    openSaveLibraryModal(preferredType = "", requestedObjectId = this.selectedObjectId) {
+        if (!this.scene?.objects?.length) {
+            this.toast("The current scene has no models to save.", "error");
+            return;
+        }
+        const selectedObjectId = String(requestedObjectId || "");
+        const selected = this.scene.objects.find(
+            item => item.object_id === selectedObjectId,
+        ) || null;
+        const initialType = preferredType === "scene" || !selected ? "scene" : "object";
+        const overlay = element("div", "vnccs-ps-modal-overlay");
+        const modal = element("div", "vnccs-ps-modal vnccs-ps-save-library-modal");
+        modal.innerHTML = `
+            <div class="vnccs-ps-modal-title">Save Model Library Asset</div>
+            <div class="vnccs-ps-modal-content">
+                <label class="vnccs-ps-save-library-field">
+                    <span>Asset type</span>
+                    <select data-role="type" class="vnccs-ps-input">
+                        <option value="object" ${selected ? "" : "disabled"}>Selected model</option>
+                        <option value="scene">Complete scene</option>
+                    </select>
+                </label>
+                <label class="vnccs-ps-save-library-field vnccs-ps-save-library-name-field">
+                    <span>Name</span>
+                    <input data-role="name" type="text" class="vnccs-ps-input" maxlength="96" autocomplete="off">
+                    <span class="vnccs-ps-save-library-error" hidden>Name is required.</span>
+                </label>
+                <div class="vnccs-ps-save-library-meta">
+                    <label class="vnccs-ps-save-library-field">
+                        <span>Category</span>
+                        <input data-role="category" type="text" class="vnccs-ps-input" value="Uncategorized" autocomplete="off">
+                    </label>
+                    <label class="vnccs-ps-save-library-field">
+                        <span>Tags</span>
+                        <input data-role="tags" type="text" placeholder="Comma separated" class="vnccs-ps-input" autocomplete="off">
+                    </label>
+                </div>
+                <label class="vnccs-ps-save-library-field">
+                    <span>Description</span>
+                    <textarea data-role="description" class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Optional notes about this Gaussian asset"></textarea>
+                </label>
+                <label class="vnccs-ps-save-library-check">
+                    <input data-role="preview" type="checkbox" checked> Include automatically rendered preview
+                </label>
+            </div>
+            <div class="vnccs-ps-save-library-actions">
+                <button type="button" class="vnccs-ps-modal-btn cancel">Cancel</button>
+                <button type="button" class="vnccs-ps-modal-btn primary">Save to Library</button>
+            </div>
+        `;
+        const type = modal.querySelector('[data-role="type"]');
+        const name = modal.querySelector('[data-role="name"]');
+        const category = modal.querySelector('[data-role="category"]');
+        const tags = modal.querySelector('[data-role="tags"]');
+        const description = modal.querySelector('[data-role="description"]');
+        const includePreview = modal.querySelector('[data-role="preview"]');
+        const save = modal.querySelector(".primary");
+        const cancel = modal.querySelector(".cancel");
+        const syncType = () => {
+            name.value = type.value === "object" ? (selected?.name || "") : (this.scene?.name || "Untitled scene");
+            modal.querySelector(".vnccs-ps-modal-title").textContent = type.value === "object" ? "Save Model" : "Save Scene";
+        };
+        type.value = initialType;
+        type.onchange = syncType;
+        syncType();
+        const close = () => overlay.remove();
+        cancel.onclick = close;
+        overlay.onclick = event => { if (event.target === overlay) close(); };
+        const submit = async () => {
+            const assetType = type.value;
+            const isObject = assetType === "object";
+            if (!name.value.trim()) {
+                modal.querySelector(".vnccs-ps-save-library-name-field").classList.add("invalid");
+                modal.querySelector(".vnccs-ps-save-library-error").hidden = false;
+                name.focus();
+                return;
+            }
+            save.disabled = true;
+            cancel.disabled = true;
+            this._setStatus("Rendering library preview", "working");
+            try {
+                let preview = "";
+                if (includePreview.checked) {
+                    const blob = isObject
+                        ? await this.viewer.captureObjectPreview(selectedObjectId, { width: 640, height: 640 })
+                        : await this.viewer.capturePreview({ width: 640, height: 640 });
+                    preview = blob ? await blobToDataURL(blob) : "";
+                }
+                const result = await this._fetchJSON(ENDPOINTS.libraryItems, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        scene_id: this.sceneId,
+                        object_id: isObject ? selectedObjectId : "",
+                        asset_type: assetType,
+                        name: name.value.trim(),
+                        category: category.value.trim() || "Uncategorized",
+                        description: description.value.trim(),
+                        tags: tags.value.split(",").map(value => value.trim()).filter(Boolean),
+                        preview,
+                    }),
+                });
+                close();
+                this.libraryItems.unshift(result.item);
+                this.librarySelectedId = result.item.asset_id;
+                this.renderLibrary();
+                this.toast(`${isObject ? "Model" : "Scene"} saved to library.`, "success");
+                this._setStatus("Scene ready", "success");
+            } catch (error) {
+                save.disabled = false;
+                cancel.disabled = false;
+                this._setStatus("Library save failed", "error");
+                this._showError("Could not save library asset", error);
+            }
+        };
+        save.onclick = () => void submit();
+        name.onkeydown = event => { if (event.key === "Enter") void submit(); };
+        overlay.appendChild(modal);
+        this.container.appendChild(overlay);
+        requestAnimationFrame(() => {
+            name.focus();
+            name.select();
+        });
+    }
+
+    async _waitLibraryRepositoryTask(taskId, progressEl) {
+        while (!this.destroyed) {
+            const status = await this._fetchJSON(ENDPOINTS.libraryRepositoryProgress(taskId));
+            if (progressEl) {
+                const percent = Math.round(Number(status.progress) || 0);
+                progressEl.classList.add("visible");
+                progressEl.classList.toggle("error", status.status === "error");
+                progressEl.classList.toggle("success", status.status === "success");
+                const message = progressEl.querySelector(".vnccs-ps-library-repo-progress-message");
+                const percentEl = progressEl.querySelector(".vnccs-ps-library-repo-progress-percent");
+                const fill = progressEl.querySelector(".vnccs-ps-library-repo-progress-fill");
+                if (message) message.textContent = status.message || "Working...";
+                if (percentEl) percentEl.textContent = `${percent}%`;
+                if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+            }
+            if (status.status === "success") return status;
+            if (status.status === "error") throw new Error(status.message || "Repository operation failed");
+            await new Promise(resolve => setTimeout(resolve, 700));
+        }
+        throw new Error("Widget was closed");
+    }
+
+    async openLibraryRepositories() {
+        return this.toggleLibrarySettings(true);
+        /* Legacy implementation retained below only for workflow source compatibility. */
+        const body = element("div", "vnccs-i3s__library-repositories");
+        const progress = element("div", "vnccs-i3s__library-repo-progress", "Loading repositories…");
+        body.appendChild(progress);
+        const back = button("vnccs-i3s__button", "Back to library", "library");
+        const close = button("vnccs-i3s__button", "Close");
+        back.addEventListener("click", () => void this.openLibrary());
+        close.addEventListener("click", () => this.closeModal());
+        this.openModal({
+            title: "Gaussian library repositories",
+            body,
+            actions: [back, close],
+            wide: true,
+        });
+        try {
+            const data = await this._fetchJSON(ENDPOINTS.libraryRepositories);
+            body.replaceChildren();
+            const local = element("section", "vnccs-i3s__library-repo is-local");
+            const localCopy = element("div", "vnccs-i3s__library-repo-copy");
+            localCopy.append(
+                element("strong", "", "Local Gaussian Library"),
+                element("span", "", `${Number(data.local?.asset_count || 0)} saved assets`),
+            );
+            const publishRow = element("div", "vnccs-i3s__library-repo-publish");
+            const publishId = element("input", "vnccs-i3s__input");
+            publishId.placeholder = "HuggingFace owner/repository";
+            publishId.value = data.local?.publish_repo_id || "";
+            const publish = button("vnccs-i3s__button vnccs-i3s__button--primary", "Publish", "upload");
+            publish.disabled = !data.local?.has_hf_token;
+            publish.title = data.local?.has_hf_token
+                ? "Upload local packages, previews, and manifest"
+                : "Configure the Hugging Face token in VNCCS settings first";
+            publish.addEventListener("click", async () => {
+                publish.disabled = true;
+                try {
+                    const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryPublish, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_id: publishId.value.trim() }),
+                    });
+                    await this._waitLibraryRepositoryTask(result.task_id, progress);
+                    this.toast("Gaussian library published to Hugging Face.", "success");
+                    await this.openLibraryRepositories();
+                } catch (error) {
+                    publish.disabled = false;
+                    this._showError("Library publish failed", error);
+                }
+            });
+            publishRow.append(publishId, publish);
+            local.append(localCopy, publishRow);
+            body.appendChild(local);
+
+            const list = element("div", "vnccs-i3s__library-repo-list");
+            for (const repo of data.repositories || []) {
+                const card = element("section", "vnccs-i3s__library-repo");
+                const copy = element("div", "vnccs-i3s__library-repo-copy");
+                copy.append(
+                    element("strong", "", repo.title || repo.repo_id),
+                    element("span", "", `${repo.repo_id} · ${Number(repo.asset_count || 0)} assets`),
+                    element("small", "", repo.description || "Hugging Face Gaussian asset repository"),
+                );
+                const actions = element("div", "vnccs-i3s__library-repo-actions");
+                const toggle = button(
+                    "vnccs-i3s__button",
+                    repo.enabled ? "Enabled" : "Disabled",
+                    repo.enabled ? "check" : "",
+                );
+                const refresh = button("vnccs-i3s__button", "Sync", "download");
+                toggle.addEventListener("click", async () => {
+                    await this._fetchJSON(ENDPOINTS.libraryRepositoryToggle, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_id: repo.repo_id, enabled: !repo.enabled }),
+                    });
+                    await this.openLibraryRepositories();
+                });
+                refresh.addEventListener("click", async () => {
+                    refresh.disabled = true;
+                    try {
+                        const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryRefresh, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ repo_ids: [repo.repo_id] }),
+                        });
+                        await this._waitLibraryRepositoryTask(result.task_id, progress);
+                        await this.openLibraryRepositories();
+                    } catch (error) {
+                        refresh.disabled = false;
+                        this._showError("Repository sync failed", error);
+                    }
+                });
+                actions.append(toggle, refresh);
+                if (!repo.builtin) {
+                    const remove = button("vnccs-i3s__button vnccs-i3s__button--danger", "", "trash");
+                    remove.title = "Remove repository and downloaded assets";
+                    remove.addEventListener("click", async () => {
+                        await this._fetchJSON(
+                            `${ENDPOINTS.libraryRepositories}/${encodeURIComponent(repo.repo_id)}`,
+                            { method: "DELETE" },
+                        );
+                        await this.openLibraryRepositories();
+                    });
+                    actions.appendChild(remove);
+                }
+                card.append(copy, actions);
+                list.appendChild(card);
+            }
+            body.appendChild(list);
+            const add = element("section", "vnccs-i3s__library-repo-add");
+            const addId = element("input", "vnccs-i3s__input");
+            addId.placeholder = "owner/repository";
+            const addButton = button("vnccs-i3s__button", "Add repository", "library");
+            addButton.addEventListener("click", async () => {
+                addButton.disabled = true;
+                try {
+                    const result = await this._fetchJSON(ENDPOINTS.libraryRepositoryAdd, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ repo_id: addId.value.trim() }),
+                    });
+                    await this._waitLibraryRepositoryTask(result.task_id, progress);
+                    await this.openLibraryRepositories();
+                } catch (error) {
+                    addButton.disabled = false;
+                    this._showError("Repository could not be added", error);
+                }
+            });
+            add.append(addId, addButton);
+            body.append(progress, add);
+            progress.textContent = "Repository packages are synchronized by manifest and SHA256.";
+        } catch (error) {
+            body.replaceChildren(element("div", "vnccs-i3s__library-empty", errorText(error)));
+        }
+    }
+
     promptNewScene() {
         const body = element("label", "vnccs-i3s__field");
         body.appendChild(element("span", "vnccs-i3s__label", "Scene name"));
@@ -2722,8 +3682,8 @@ class Factory3DWidget {
             },
             {
                 value: "glb",
-                title: "GLB",
-                description: "Colored triangle mesh reconstructed from Gaussians.",
+                title: "GLB · Gaussian",
+                description: "Lossless KHR_gaussian_splatting scene with camera.",
             },
         ];
         for (const option of exportOptions) {
@@ -3127,7 +4087,10 @@ class Factory3DWidget {
         const width = this.container.clientWidth || DEFAULT_NODE_SIZE[0];
         const height = this.container.clientHeight || DEFAULT_NODE_SIZE[1];
         const scale = clamp(Math.min(width / 1100, height / 720), 0.72, 1.08);
-        this.container.style.setProperty("--i3-scale", scale.toFixed(3));
+        const scaleValue = scale.toFixed(3);
+        this.container.style.setProperty("--i3-scale", scaleValue);
+        this.container.style.setProperty("--vnccs-ps-ui-scale", scaleValue);
+        this.container.style.setProperty("--vnccs-ps-relative-ui-scale", scaleValue);
         this.viewer?.resize();
     }
 
@@ -3151,6 +4114,7 @@ class Factory3DWidget {
         this._customSelects?.destroy?.();
         this.viewer?.dispose();
         if (this.sourceURL?.startsWith("blob:")) URL.revokeObjectURL(this.sourceURL);
+        this.closeFactoryLibrary();
         this.closeModal();
         this.container.remove();
     }

@@ -33,13 +33,19 @@ def load_modules():
     return modules["gaussian_scene"], modules["gaussian_mesh"], modules["factory3d"]
 
 
-def write_sphere_gaussians(path: Path, count: int = 6000) -> None:
+def write_sphere_gaussians(
+    path: Path,
+    count: int = 6000,
+    *,
+    sh_rest: int = 0,
+) -> None:
     names = [
         "x", "y", "z",
         "f_dc_0", "f_dc_1", "f_dc_2",
         "opacity",
         "scale_0", "scale_1", "scale_2",
         "rot_0", "rot_1", "rot_2", "rot_3",
+        *(f"f_rest_{index}" for index in range(sh_rest)),
     ]
     dtype = np.dtype([(name, "<f4") for name in names])
     records = np.zeros(count, dtype=dtype)
@@ -58,6 +64,8 @@ def write_sphere_gaussians(path: Path, count: int = 6000) -> None:
     for index in range(3):
         records[f"scale_{index}"] = np.log(0.055)
     records["rot_0"] = 1.0
+    for index in range(sh_rest):
+        records[f"f_rest_{index}"] = np.float32(index / 100.0)
     header = [
         "ply",
         "format binary_little_endian 1.0",
@@ -69,12 +77,46 @@ def write_sphere_gaussians(path: Path, count: int = 6000) -> None:
     path.write_bytes("\n".join(header).encode("ascii") + records.tobytes())
 
 
+def parse_glb(path: Path) -> tuple[dict, bytes]:
+    payload = path.read_bytes()
+    magic, version, total = struct.unpack_from("<4sII", payload, 0)
+    if magic != b"glTF" or version != 2 or total != len(payload):
+        raise AssertionError("invalid GLB header")
+    json_length, json_kind = struct.unpack_from("<I4s", payload, 12)
+    if json_kind != b"JSON":
+        raise AssertionError("missing JSON chunk")
+    document = json.loads(payload[20 : 20 + json_length].decode("utf-8"))
+    binary_header = 20 + json_length
+    binary_length, binary_kind = struct.unpack_from("<I4s", payload, binary_header)
+    if binary_kind != b"BIN\x00":
+        raise AssertionError("missing BIN chunk")
+    binary = payload[binary_header + 8 : binary_header + 8 + binary_length]
+    return document, binary
+
+
+def read_float_attribute(
+    document: dict,
+    binary: bytes,
+    name: str,
+) -> np.ndarray:
+    primitive = document["meshes"][0]["primitives"][0]
+    accessor = document["accessors"][primitive["attributes"][name]]
+    view = document["bufferViews"][accessor["bufferView"]]
+    components = {"SCALAR": 1, "VEC3": 3, "VEC4": 4}[accessor["type"]]
+    offset = int(view.get("byteOffset", 0)) + int(accessor.get("byteOffset", 0))
+    count = int(accessor["count"]) * components
+    return np.frombuffer(binary, dtype="<f4", count=count, offset=offset).reshape(
+        int(accessor["count"]),
+        components,
+    )
+
+
 class FactoryGLBTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.gaussian, cls.mesh, cls.factory = load_modules()
 
-    def test_gaussian_surface_is_exported_as_colored_indexed_glb(self):
+    def test_gaussians_are_exported_with_khr_splat_attributes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "sphere.ply"
@@ -84,37 +126,104 @@ class FactoryGLBTests(unittest.TestCase):
                 [(source, {})],
                 target,
                 names=["Synthetic sphere"],
-                resolution=64,
             )
-            self.assertGreater(result["vertices"], 100)
-            self.assertGreater(result["triangles"], 100)
-            payload = target.read_bytes()
-            magic, version, total = struct.unpack_from("<4sII", payload, 0)
-            self.assertEqual(magic, b"glTF")
-            self.assertEqual(version, 2)
-            self.assertEqual(total, len(payload))
-            json_length, json_kind = struct.unpack_from("<I4s", payload, 12)
-            self.assertEqual(json_kind, b"JSON")
-            document = json.loads(payload[20 : 20 + json_length].decode("utf-8"))
+            self.assertEqual(result["gaussians"], 6000)
+            self.assertEqual(result["representation"], "gaussian-splatting")
+            self.assertEqual(result["extension"], "KHR_gaussian_splatting")
+            document, binary = parse_glb(target)
             self.assertEqual(document["nodes"][0]["name"], "Synthetic sphere")
+            self.assertEqual(document["extensionsUsed"], ["KHR_gaussian_splatting"])
+            primitive = document["meshes"][0]["primitives"][0]
+            self.assertEqual(primitive["mode"], 0)
+            self.assertNotIn("indices", primitive)
             attributes = document["meshes"][0]["primitives"][0]["attributes"]
             self.assertIn("POSITION", attributes)
-            self.assertIn("NORMAL", attributes)
             self.assertIn("COLOR_0", attributes)
-            self.assertIn("indices", document["meshes"][0]["primitives"][0])
+            self.assertIn("KHR_gaussian_splatting:ROTATION", attributes)
+            self.assertIn("KHR_gaussian_splatting:SCALE", attributes)
+            self.assertIn("KHR_gaussian_splatting:OPACITY", attributes)
+            self.assertIn("KHR_gaussian_splatting:SH_DEGREE_0_COEF_0", attributes)
+            scale = read_float_attribute(
+                document,
+                binary,
+                "KHR_gaussian_splatting:SCALE",
+            )
+            opacity = read_float_attribute(
+                document,
+                binary,
+                "KHR_gaussian_splatting:OPACITY",
+            )
+            self.assertTrue(np.allclose(scale, 0.055, rtol=1e-5, atol=1e-7))
+            self.assertTrue(
+                np.allclose(opacity, 1.0 / (1.0 + np.exp(-4.0)), rtol=1e-5)
+            )
+
+    def test_all_available_spherical_harmonics_are_preserved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sphere.ply"
+            target = root / "sh3.glb"
+            write_sphere_gaussians(source, count=10, sh_rest=45)
+            result = self.mesh.export_gaussian_ply_glb(
+                source,
+                target,
+                name="SH3",
+            )
+            self.assertEqual(result["sh_degree"], 3)
+            document, binary = parse_glb(target)
+            attributes = document["meshes"][0]["primitives"][0]["attributes"]
+            self.assertIn("KHR_gaussian_splatting:SH_DEGREE_3_COEF_6", attributes)
+            degree_three_first = read_float_attribute(
+                document,
+                binary,
+                "KHR_gaussian_splatting:SH_DEGREE_3_COEF_0",
+            )
+            self.assertTrue(
+                np.allclose(degree_three_first[0], [0.08, 0.23, 0.38])
+            )
+
+    def test_scene_camera_is_embedded_as_a_gltf_camera(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "sphere.ply"
+            target = root / "camera.glb"
+            write_sphere_gaussians(source, count=10)
+            metadata = {
+                "camera": {
+                    "position": [0.0, 1.0, 5.0],
+                    "target": [0.0, 0.0, 0.0],
+                    "up": [0.0, 1.0, 0.0],
+                    "fov": 50.0,
+                },
+                "render": {"width": 1920, "height": 1080},
+            }
+            result = self.mesh.export_gaussian_ply_glb(
+                source,
+                target,
+                metadata=metadata,
+            )
+            document, _binary = parse_glb(target)
+            self.assertTrue(result["camera"])
+            self.assertEqual(document["nodes"][1]["camera"], 0)
+            self.assertAlmostEqual(
+                document["cameras"][0]["perspective"]["aspectRatio"],
+                1920 / 1080,
+            )
+            self.assertEqual(document["extras"]["vnccsScene"], metadata)
 
     def test_scene_glb_is_cached_and_exposed_by_the_factory_manifest(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             original_root = self.factory._factory_root
-            original_export = self.factory.export_gaussian_scene_glb
+            original_export = self.factory.export_gaussian_ply_glb
             self.factory._factory_root = lambda: root
-            self.factory.export_gaussian_scene_glb = (
-                lambda sources, target, names=None: self.mesh.export_gaussian_scene_glb(
-                    sources,
+            self.factory.export_gaussian_ply_glb = (
+                lambda source, target, name="Gaussian scene",
+                metadata=None: self.mesh.export_gaussian_ply_glb(
+                    source,
                     target,
-                    names=names,
-                    resolution=64,
+                    name=name,
+                    metadata=metadata,
                 )
             )
             try:
@@ -155,6 +264,14 @@ class FactoryGLBTests(unittest.TestCase):
                 self.assertTrue(result["glb"].is_file())
                 restored = self.factory.load_scene(scene["scene_id"])
                 self.assertIn("glb", restored["exports"]["files"])
+                self.assertEqual(
+                    restored["exports"]["gaussian_glb"]["format_version"],
+                    self.factory.GLB_FORMAT_VERSION,
+                )
+                self.assertEqual(
+                    restored["exports"]["gaussian_glb"]["extension"],
+                    "KHR_gaussian_splatting",
+                )
                 public = self.factory._public_scene(restored)
                 self.assertTrue(public["exports"]["urls"]["glb"].endswith("/exports/glb"))
                 self.assertTrue(
@@ -162,7 +279,7 @@ class FactoryGLBTests(unittest.TestCase):
                 )
             finally:
                 self.factory._factory_root = original_root
-                self.factory.export_gaussian_scene_glb = original_export
+                self.factory.export_gaussian_ply_glb = original_export
 
 
 if __name__ == "__main__":

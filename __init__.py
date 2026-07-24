@@ -590,9 +590,8 @@ def _vnccs_register_3d_factory():
         from server import PromptServer
         from .api.factory3d import register_routes
 
-        # Register on ComfyUI's RouteTableDef. PromptServer.add_routes() creates
-        # both the modern /api-prefixed endpoints used by api.fetchApi() and
-        # their legacy unprefixed aliases from this table.
+        # Core Factory and its independent Gaussian model library are
+        # registered together on ComfyUI's /api RouteTableDef.
         register_routes(PromptServer.instance.routes)
     except Exception as exc:
         # Keep the rest of the extension importable when ComfyUI's server is

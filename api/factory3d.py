@@ -27,13 +27,14 @@ from .gaussian_scene import (
     validate_ply_payload,
     validate_splat_payload,
 )
-from .gaussian_mesh import export_gaussian_scene_glb
+from .gaussian_mesh import export_gaussian_ply_glb
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
 SCHEMA_VERSION = 4
 EXPORT_FORMAT_VERSION = 5
+GLB_FORMAT_VERSION = 3
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -1728,18 +1729,6 @@ def _scene_sources(scene: dict[str, Any], only_object_id: str = "") -> list[tupl
     return output
 
 
-def _scene_source_names(scene: dict[str, Any], only_object_id: str = "") -> list[str]:
-    visible_ids = _visible_object_ids(scene) if not only_object_id else set()
-    return [
-        str(item.get("name") or "Object")
-        for item in scene.get("objects", [])
-        if (
-            (only_object_id and item.get("object_id") == only_object_id)
-            or (not only_object_id and item.get("object_id") in visible_ids)
-        )
-    ]
-
-
 def _scene_camera_metadata(
     scene: dict[str, Any],
     *,
@@ -1934,6 +1923,8 @@ def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
             if (
                 existing.get("revision") == revision
                 and existing.get("format_version") == EXPORT_FORMAT_VERSION
+                and existing.get("gaussian_glb", {}).get("format_version")
+                == GLB_FORMAT_VERSION
                 and glb_file
             ):
                 try:
@@ -1941,12 +1932,23 @@ def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
                     return {**base, "scene": scene, "glb": glb}
                 except FileNotFoundError:
                     pass
-            sources = _scene_sources(scene)
-            names = _scene_source_names(scene)
+            camera_metadata = _scene_camera_metadata(
+                scene,
+                revision=revision,
+                render_revision=int(scene.get("render_revision", revision)),
+            )
+            scene_name = str(scene.get("name") or "Gaussian scene")
 
         export_root = resolve_scene_dir(scene_id) / "exports"
-        glb = export_root / f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}.glb"
-        mesh_result = export_gaussian_scene_glb(sources, glb, names=names)
+        glb = export_root / (
+            f"scene-glb-v{GLB_FORMAT_VERSION}-r{revision}.glb"
+        )
+        glb_result = export_gaussian_ply_glb(
+            base["ply"],
+            glb,
+            name=scene_name,
+            metadata=camera_metadata,
+        )
         relative_glb = str(glb.relative_to(resolve_scene_dir(scene_id)))
         with _STATE_LOCK:
             current = load_scene(scene_id)
@@ -1957,7 +1959,9 @@ def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
                     pass
                 if attempt == 0:
                     continue
-                raise RuntimeError("scene changed repeatedly while its GLB mesh was being exported")
+                raise RuntimeError(
+                    "scene changed repeatedly while its Gaussian GLB was being exported"
+                )
             exports = current.get("exports", {})
             if (
                 not isinstance(exports, dict)
@@ -1968,10 +1972,14 @@ def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
                     continue
                 raise RuntimeError("Gaussian scene exports changed while GLB was being written")
             exports.setdefault("files", {})["glb"] = relative_glb
-            exports["mesh"] = {
-                "vertices": mesh_result["vertices"],
-                "triangles": mesh_result["triangles"],
-                "objects": mesh_result["objects"],
+            exports.pop("mesh", None)
+            exports["gaussian_glb"] = {
+                "format_version": GLB_FORMAT_VERSION,
+                "extension": glb_result["extension"],
+                "gaussians": glb_result["gaussians"],
+                "sh_degree": glb_result["sh_degree"],
+                "camera": glb_result["camera"],
+                "bytes": glb_result["bytes"],
             }
             exports["glb_created_at"] = _now()
             _save_scene(current, bump_revision=False)
@@ -1986,18 +1994,17 @@ def _ensure_object_export(scene_id: str, object_id: str, format_name: str) -> Pa
         revision = int(scene.get("revision", 0))
         source = _object_file(scene_id, item, "ply")
         transform = item.get("transform")
+        object_name = str(item.get("name") or "Gaussian object")
     root = resolve_scene_dir(scene_id) / "exports" / "objects"
     ply = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.ply"
     splat = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.splat"
-    glb = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.glb"
+    glb = root / f"{object_id}-glb-v{GLB_FORMAT_VERSION}-r{revision}.glb"
     target = {"ply": ply, "splat": splat, "glb": glb}[format_name]
     if not target.is_file():
         if format_name == "glb":
-            export_gaussian_scene_glb(
-                [(source, transform)],
-                glb,
-                names=[str(item.get("name") or "Object")],
-            )
+            if not ply.is_file():
+                export_gaussian_scene([(source, transform)], ply)
+            export_gaussian_ply_glb(ply, glb, name=object_name)
         else:
             export_gaussian_scene(
                 [(source, transform)],
@@ -2382,6 +2389,12 @@ def register_routes(routes: Any) -> None:
         except Exception as exc:
             return _json_error(web, exc)
 
+    # The model library is part of the Factory API and must be added to the
+    # exact same ComfyUI RouteTableDef. Keeping this call inside the proven
+    # Factory registrar prevents a second, late aiohttp registration path.
+    from .factory3d_library import register_routes as register_library_routes
+
+    register_library_routes(routes)
     _REGISTERED = True
 
 

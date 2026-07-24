@@ -50,7 +50,7 @@ generation log.
    TripoSplat Gaussian decoder uses full attention. `1.05M` is the extreme
    4×-density mode, uses 32,768 decoder tokens, and is intended for finding
    hardware/runtime limits rather than routine generation.
-3. Set sampling steps, guidance, mask erosion, and seed.
+3. Set sampling steps, guidance, background removal, and seed.
 4. Choose **Generate object**.
 
 The progress panel reports the real pipeline stage. The same events are written
@@ -98,9 +98,31 @@ an integrity-bound `.camera.json` sidecar with the same data. Appending camera
 bytes to the SPLAT itself would make compatible viewers interpret them as
 corrupt Gaussians.
 
-GLB export reconstructs a colored triangle mesh from the Gaussian density
-field. It is intended for conventional mesh tools; PLY/SPLAT remain the
-lossless Gaussian scene outputs.
+GLB export follows PlayCanvas `splat-transform` and the Khronos
+`KHR_gaussian_splatting` extension. It stores the actual Gaussian centers,
+rotations, linear scales, opacity, fallback RGBA, and every available
+spherical-harmonic band. Scene GLB also contains the configured perspective
+camera. No triangle surface is reconstructed, so the export does not introduce
+the geometry and texture loss inherent in splat-to-mesh conversion. A viewer
+must support `KHR_gaussian_splatting` to render the full representation;
+standard glTF fallback is the embedded colored point cloud.
+
+## Gaussian model library
+
+The **Library** button in the scene header opens the persistent 3D Factory
+library. An individual object is stored with its native PLY/SPLAT payload and
+metadata. A scene package additionally keeps every object, layer group,
+visibility flag, transform, render size, camera, and lighting setup.
+
+Preview images are rendered automatically from the 3D viewport. Object previews
+temporarily isolate and frame only the selected object, then restore the editor
+camera and visibility without mutating the scene.
+
+Library data is stored under
+`vnccs-utils/ModelLibrary`, alongside Pose Studio's `PoseLibrary`. Its repository panel can synchronize
+manifest-driven Hugging Face model repositories and publish the local library
+with the existing VNCCS Hugging Face token. Downloaded repository entries are
+read-only; loading one always creates an independent Factory object or scene.
 
 ## ComfyUI outputs
 

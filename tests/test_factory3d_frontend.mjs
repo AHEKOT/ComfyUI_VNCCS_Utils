@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.30"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.2"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -28,6 +28,42 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /ensureScene\(safeObject\(state\.scene_snapshot\)\)/);
     assert.match(studio, /_scheduleStateSave\(options\.final \? 0 : 160\)/);
     assert.match(studio, /this\._isRestoring = true;/);
+});
+
+test("Factory provides a native Gaussian object and scene library with HF repositories", () => {
+    assert.match(studio, /> Model Library\n/);
+    assert.doesNotMatch(studio, /Model Library Gallery/);
+    assert.match(studio, /GAUSSIAN_LIBRARY_SCHEMA = "vnccs-3d-factory-library\/v1"/);
+    assert.match(studio, /Rejected non-Gaussian library records/);
+    assert.match(studio, /apiUrl\(item\.preview_url\)/);
+    assert.match(studio, /vnccs-ps-library-modal/);
+    assert.match(studio, /vnccs-ps-library-modal-header/);
+    assert.match(studio, /vnccs-ps-library-toolbar/);
+    assert.match(studio, /vnccs-ps-library-size-control/);
+    assert.match(studio, /vnccs-ps-library-categories/);
+    assert.match(studio, /vnccs-ps-library-modal-grid/);
+    assert.match(studio, /vnccs-ps-library-inspector/);
+    assert.match(studio, /vnccs-ps-library-settings/);
+    assert.match(studio, /openLibrary\(\)/);
+    assert.match(studio, /Save Current Model/);
+    assert.match(studio, /Selected model/);
+    assert.match(studio, /Complete scene/);
+    assert.match(studio, /openLibraryRepositories/);
+    assert.match(studio, /libraryRepositoryPublish/);
+    assert.match(studio, /libraryRepositoryRefresh/);
+    assert.match(viewer, /captureObjectPreview/);
+    assert.match(viewer, /canonicalObjectPreviewCamera/);
+    assert.match(viewer, /entry\.mesh\.position\.set\(0, 0, 0\)/);
+    assert.match(viewer, /entry\.mesh\.quaternion\.identity\(\)/);
+    assert.match(viewer, /if \(!selected\) value\.mesh\.parent\?\.remove\(value\.mesh\)/);
+    assert.match(viewer, /await this\.spark\.update\(\{ scene: this\.scene, camera: this\.camera \}\)/);
+    assert.match(studio, /openSaveLibraryModal\(preferredType = "", requestedObjectId = this\.selectedObjectId\)/);
+    assert.match(studio, /captureObjectPreview\(selectedObjectId,/);
+    assert.match(studio, /object_id: isObject \? selectedObjectId : ""/);
+    assert.match(styles, /\.vnccs-i3s__library-launcher-wrap/);
+    assert.match(styles, /--vnccs-ps-relative-ui-scale: 1/);
+    assert.match(studio, /setProperty\("--vnccs-ps-relative-ui-scale", scaleValue\)/);
+    assert.doesNotMatch(studio, /window\.(?:alert|confirm|prompt)/);
 });
 
 test("Factory exposes scenes, generation, transform, and all export formats", () => {
@@ -143,7 +179,7 @@ test("TripoSplat setup separates model management from persisted conditioning se
     assert.match(studio, /prevent_upscale: false/);
     assert.match(studio, /export_format: "ply"/);
     assert.match(studio, /Object and scene export/);
-    assert.match(studio, /Colored triangle mesh reconstructed from Gaussians/);
+    assert.match(studio, /Lossless KHR_gaussian_splatting scene with camera/);
     assert.match(studio, /this\.settings\.export_format = draft\.export_format/);
     assert.doesNotMatch(studio, /No API, CLI, or external inference server/);
     assert.match(studio, /form\.append\("prevent_upscale", this\.settings\.prevent_upscale \? "1" : "0"\)/);
@@ -399,12 +435,13 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
+    assert.equal(typeof module.canonicalObjectPreviewCamera, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
     assert.equal(typeof module.normalizedLighting, "function");
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260724.20");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.2");
     assert.deepEqual(
         module.normalizedLighting({
             preset: "night",
@@ -480,6 +517,112 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
         canonicalPoint.distanceTo(new THREE.Vector3(3, -2, 1)) < 1e-6,
         `unexpected TripoSplat orientation: ${canonicalPoint.toArray()}`,
     );
+    const previewBounds = new THREE.Box3(
+        new THREE.Vector3(-3, -2, -0.75),
+        new THREE.Vector3(1, 4, 1.25),
+    );
+    const previewState = module.canonicalObjectPreviewCamera(
+        previewBounds,
+        640,
+        640,
+        42,
+    );
+    assert.deepEqual(previewState.target.toArray(), [-1, 1, 0.25]);
+    assert.equal(previewState.position.x, -1);
+    assert.equal(previewState.position.y, 1);
+    assert.ok(previewState.position.z > previewBounds.max.z);
+    const previewCamera = new THREE.PerspectiveCamera(
+        previewState.fov,
+        1,
+        previewState.near,
+        previewState.far,
+    );
+    previewCamera.position.copy(previewState.position);
+    previewCamera.up.copy(previewState.up);
+    previewCamera.lookAt(previewState.target);
+    previewCamera.updateProjectionMatrix();
+    previewCamera.updateMatrixWorld(true);
+    for (const x of [previewBounds.min.x, previewBounds.max.x]) {
+        for (const y of [previewBounds.min.y, previewBounds.max.y]) {
+            for (const z of [previewBounds.min.z, previewBounds.max.z]) {
+                const projected = new THREE.Vector3(x, y, z).project(previewCamera);
+                assert.ok(Math.abs(projected.x) < 1, `preview x was cropped: ${projected.x}`);
+                assert.ok(Math.abs(projected.y) < 1, `preview y was cropped: ${projected.y}`);
+            }
+        }
+    }
+    const previewViewer = Object.create(module.Factory3DViewer.prototype);
+    previewViewer.scene = new THREE.Scene();
+    previewViewer.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
+    previewViewer.camera.position.set(9, 8, 7);
+    previewViewer.controls = {
+        target: new THREE.Vector3(1, 2, 3),
+        update() {},
+    };
+    previewViewer.captureFov = 42;
+    previewViewer._capturing = false;
+    previewViewer._suppressStateEvents = false;
+    previewViewer._refreshSelectionBounds = () => {};
+    previewViewer.renderer = { render() {} };
+    previewViewer.options = { onError(error) { throw error; } };
+    const makePreviewEntry = (id, x) => {
+        const rootObject = new THREE.Group();
+        rootObject.userData.factoryObjectId = id;
+        rootObject.position.set(x, x + 1, x + 2);
+        rootObject.rotation.set(0.1 * x, 0.2 * x, 0.3 * x);
+        rootObject.scale.setScalar(x + 1);
+        const splat = new THREE.Object3D();
+        rootObject.add(splat);
+        previewViewer.scene.add(rootObject);
+        return {
+            mesh: rootObject,
+            splat,
+            localBounds: new THREE.Box3(
+                new THREE.Vector3(-1, -2, -0.5),
+                new THREE.Vector3(1, 2, 0.5),
+            ),
+        };
+    };
+    const firstPreviewEntry = makePreviewEntry("first", 1);
+    const selectedPreviewEntry = makePreviewEntry("selected-second", 4);
+    previewViewer.objects = new Map([
+        ["first", firstPreviewEntry],
+        ["selected-second", selectedPreviewEntry],
+    ]);
+    const mappingSnapshots = [];
+    previewViewer.spark = {
+        setDirty() {},
+        async update({ scene }) {
+            mappingSnapshots.push(
+                scene.children
+                    .map(child => child.userData?.factoryObjectId)
+                    .filter(Boolean),
+            );
+        },
+    };
+    let capturedIds = [];
+    let capturedTransform = null;
+    previewViewer.capturePreview = async () => {
+        capturedIds = previewViewer.scene.children
+            .map(child => child.userData?.factoryObjectId)
+            .filter(Boolean);
+        capturedTransform = {
+            position: selectedPreviewEntry.mesh.position.toArray(),
+            scale: selectedPreviewEntry.mesh.scale.toArray(),
+        };
+        return "preview";
+    };
+    const result = await previewViewer.captureObjectPreview("selected-second");
+    assert.equal(result, "preview");
+    assert.deepEqual(mappingSnapshots[0], ["selected-second"]);
+    assert.deepEqual(capturedIds, ["selected-second"]);
+    assert.deepEqual(capturedTransform.position, [0, 0, 0]);
+    assert.deepEqual(capturedTransform.scale, [1, 1, 1]);
+    assert.equal(firstPreviewEntry.mesh.parent, previewViewer.scene);
+    assert.equal(selectedPreviewEntry.mesh.parent, previewViewer.scene);
+    assert.deepEqual(selectedPreviewEntry.mesh.position.toArray(), [4, 5, 6]);
+    assert.deepEqual(selectedPreviewEntry.mesh.scale.toArray(), [5, 5, 5]);
+    assert.deepEqual(mappingSnapshots.at(-1), ["first", "selected-second"]);
 
     const frameViewer = Object.create(module.Factory3DViewer.prototype);
     frameViewer.host = { clientWidth: 1600, clientHeight: 900 };
