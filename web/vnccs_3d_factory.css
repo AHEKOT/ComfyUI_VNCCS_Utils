@@ -480,8 +480,19 @@
 .vnccs-i3s__conditioning-summary { min-height: 48px; padding: 8px 9px; border: 1px solid rgba(0,214,143,.14); border-radius: 8px; background: rgba(0,214,143,.04); color: var(--i3-muted); font-size: .75em; line-height: 1.45; }
 .vnccs-i3s__conditioning-summary[data-tone="experimental"] { border-color: rgba(255,170,0,.2); background: rgba(255,170,0,.05); color: #c9ad78; }
 .vnccs-i3s__conditioning-summary[data-tone="extreme"] { border-color: rgba(255,91,107,.24); background: rgba(255,91,107,.055); color: #d9a0aa; }
+.vnccs-i3s__format-list { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 6px; }
+.vnccs-i3s__format-option { position: relative; min-width: 0; display: grid; grid-template-columns: 15px minmax(0,1fr); gap: 7px; align-items: start; padding: 8px; border: 1px solid var(--i3-line); border-radius: 8px; background: rgba(255,255,255,.022); cursor: pointer; transition: border-color .16s ease, background .16s ease, box-shadow .16s ease; }
+.vnccs-i3s__format-option:hover { border-color: var(--i3-line-strong); background: rgba(255,255,255,.045); }
+.vnccs-i3s__format-option:has(input:checked) { border-color: var(--i3-pink-line); background: var(--i3-pink-soft); box-shadow: 0 0 0 3px rgba(255,143,163,.045); }
+.vnccs-i3s__format-option > input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.vnccs-i3s__format-option:has(input:focus-visible) { outline: 2px solid var(--i3-pink); outline-offset: 2px; }
+.vnccs-i3s__format-option:has(input:checked) .vnccs-i3s__resolution-radio { border-color: var(--i3-pink); }
+.vnccs-i3s__format-option:has(input:checked) .vnccs-i3s__resolution-radio::after { background: var(--i3-pink); box-shadow: 0 0 7px rgba(255,143,163,.45); }
+.vnccs-i3s__format-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.vnccs-i3s__format-title { color: var(--i3-text); font-weight: 760; }
+.vnccs-i3s__format-description { color: var(--i3-dim); font-size: .68em; line-height: 1.3; }
 .vnccs-i3s__job-detail { margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--i3-dim); font: .72em var(--i3-mono); }
-.vnccs-i3s__export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.vnccs-i3s__export-grid { display: grid; grid-template-columns: 1fr; gap: 7px; }
 .vnccs-i3s__top-action { min-height: 27px; padding: 3px 8px; font-size: .8em; }
 .vnccs-i3s__danger-icon { color: #ff9ba6; }
 

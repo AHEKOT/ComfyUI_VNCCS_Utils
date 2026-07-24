@@ -90,10 +90,17 @@ uniform scale into one Gaussian model. These files contain real Gaussian
 centers, covariance transforms, colors, and opacity—not a triangle mesh or a
 renamed placeholder file.
 
-TripoSplat produces Gaussian splats, so VNCCS 3D Factory intentionally exports
-Gaussian `.ply` and `.splat`. It does not claim to produce GLB or a polygon
-mesh. Use a separate Gaussian-to-mesh reconstruction tool if a triangle mesh is
-required downstream.
+The scene PLY header also embeds the exact perspective camera used by Scene
+Export: position, target, Y-up vector, vertical FOV, output dimensions, and
+aspect ratio. Raw `.splat` has no header or metadata section—every 32-byte
+record is a Gaussian—so Scene SPLAT remains standards-compatible and downloads
+an integrity-bound `.camera.json` sidecar with the same data. Appending camera
+bytes to the SPLAT itself would make compatible viewers interpret them as
+corrupt Gaussians.
+
+GLB export reconstructs a colored triangle mesh from the Gaussian density
+field. It is intended for conventional mesh tools; PLY/SPLAT remain the
+lossless Gaussian scene outputs.
 
 ## ComfyUI outputs
 

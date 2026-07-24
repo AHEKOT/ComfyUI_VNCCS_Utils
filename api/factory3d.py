@@ -27,12 +27,13 @@ from .gaussian_scene import (
     validate_ply_payload,
     validate_splat_payload,
 )
+from .gaussian_mesh import export_gaussian_scene_glb
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
 SCHEMA_VERSION = 4
-EXPORT_FORMAT_VERSION = 3
+EXPORT_FORMAT_VERSION = 5
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -845,7 +846,7 @@ def capabilities() -> dict[str, Any]:
         "backend": "TripoSplat",
         "backend_repository": "https://github.com/VAST-AI-Research/TripoSplat",
         "backend_commit": UPSTREAM_COMMIT,
-        "formats": ["ply", "splat"],
+        "formats": ["ply", "splat", "glb"],
         "gaussian_counts": list(GAUSSIAN_COUNTS),
         "experimental_gaussian_counts": list(EXPERIMENTAL_GAUSSIAN_COUNTS),
         "conditioning_resolutions": list(CONDITIONING_RESOLUTIONS),
@@ -1615,6 +1616,7 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
             "reference": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/reference",
             "export_ply": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/ply",
             "export_splat": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/splat",
+            "export_glb": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/glb",
         }
         item.pop("files", None)
     exports = value.get("exports")
@@ -1622,6 +1624,8 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
         exports["urls"] = {
             "ply": f"{API_BASE}/scenes/{scene_id}/exports/ply",
             "splat": f"{API_BASE}/scenes/{scene_id}/exports/splat",
+            "glb": f"{API_BASE}/scenes/{scene_id}/exports/glb",
+            "camera": f"{API_BASE}/scenes/{scene_id}/exports/camera",
         }
         exports.pop("files", None)
     return value
@@ -1724,39 +1728,164 @@ def _scene_sources(scene: dict[str, Any], only_object_id: str = "") -> list[tupl
     return output
 
 
+def _scene_source_names(scene: dict[str, Any], only_object_id: str = "") -> list[str]:
+    visible_ids = _visible_object_ids(scene) if not only_object_id else set()
+    return [
+        str(item.get("name") or "Object")
+        for item in scene.get("objects", [])
+        if (
+            (only_object_id and item.get("object_id") == only_object_id)
+            or (not only_object_id and item.get("object_id") in visible_ids)
+        )
+    ]
+
+
+def _scene_camera_metadata(
+    scene: dict[str, Any],
+    *,
+    revision: int,
+    render_revision: int,
+) -> dict[str, Any]:
+    camera = _normalize_camera(scene.get("camera"))
+    render = _normalize_render_settings(scene.get("render"))
+    return {
+        "schema": "vnccs-3d-factory-gaussian-scene/v1",
+        "scene_id": scene["scene_id"],
+        "scene_revision": revision,
+        "render_revision": render_revision,
+        "coordinate_system": "right-handed-y-up",
+        "camera": {
+            "projection": "perspective",
+            "position": camera["position"],
+            "target": camera["target"],
+            "up": [0.0, 1.0, 0.0],
+            "fov": camera["fov"],
+            "fov_axis": "vertical-degrees",
+        },
+        "render": {
+            "width": render["width"],
+            "height": render["height"],
+            "aspect": render["aspect"],
+            "show_camera_frame": render["show_camera_frame"],
+        },
+    }
+
+
+def _scene_camera_fingerprint(metadata: dict[str, Any]) -> str:
+    encoded = json.dumps(
+        metadata,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
     for attempt in range(2):
         with _STATE_LOCK:
             scene = load_scene(scene_id)
             revision = int(scene.get("revision", 0))
+            render_revision = int(scene.get("render_revision", revision))
+            camera_metadata = _scene_camera_metadata(
+                scene,
+                revision=revision,
+                render_revision=render_revision,
+            )
+            camera_fingerprint = _scene_camera_fingerprint(camera_metadata)
             existing = scene.get("exports", {})
             if (
                 isinstance(existing, dict)
                 and existing.get("revision") == revision
+                and existing.get("render_revision") == render_revision
+                and existing.get("camera_fingerprint") == camera_fingerprint
                 and existing.get("format_version") == EXPORT_FORMAT_VERSION
             ):
                 try:
                     ply = _object_file(scene_id, {"files": existing["files"]}, "ply")
                     splat = _object_file(scene_id, {"files": existing["files"]}, "splat")
-                    return {"scene": scene, "ply": ply, "splat": splat}
+                    camera_manifest = _object_file(
+                        scene_id,
+                        {"files": existing["files"]},
+                        "camera",
+                    )
+                    result = {
+                        "scene": scene,
+                        "ply": ply,
+                        "splat": splat,
+                        "camera": camera_manifest,
+                    }
+                    glb_file = existing.get("files", {}).get("glb")
+                    if glb_file:
+                        try:
+                            result["glb"] = _object_file(
+                                scene_id,
+                                {"files": existing["files"]},
+                                "glb",
+                            )
+                        except FileNotFoundError:
+                            pass
+                    return result
                 except (KeyError, FileNotFoundError):
                     pass
             sources = _scene_sources(scene)
 
         export_root = resolve_scene_dir(scene_id) / "exports"
-        ply = export_root / f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}.ply"
-        splat = export_root / f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}.splat"
-        result = export_gaussian_scene(sources, ply, splat)
+        export_stem = (
+            f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}-rr{render_revision}"
+        )
+        ply = export_root / f"{export_stem}.ply"
+        splat = export_root / f"{export_stem}.splat"
+        camera_manifest = export_root / f"{export_stem}.camera.json"
+        result = export_gaussian_scene(
+            sources,
+            ply,
+            splat,
+            metadata=camera_metadata,
+        )
+        camera_manifest_value = {
+            **camera_metadata,
+            "assets": {
+                "ply": {
+                    "file": ply.name,
+                    "sha256": _sha256_file(ply),
+                    "gaussians": result["ply"]["gaussians"],
+                },
+                "splat": {
+                    "file": splat.name,
+                    "sha256": _sha256_file(splat),
+                    "gaussians": result["splat"]["gaussians"],
+                },
+            },
+        }
+        _atomic_json(camera_manifest, camera_manifest_value)
         relative_ply = str(ply.relative_to(resolve_scene_dir(scene_id)))
         relative_splat = str(splat.relative_to(resolve_scene_dir(scene_id)))
+        relative_camera = str(camera_manifest.relative_to(resolve_scene_dir(scene_id)))
         with _STATE_LOCK:
             current = load_scene(scene_id)
-            if int(current.get("revision", 0)) != revision:
+            current_camera_metadata = _scene_camera_metadata(
+                current,
+                revision=int(current.get("revision", 0)),
+                render_revision=int(current.get("render_revision", 0)),
+            )
+            if (
+                int(current.get("revision", 0)) != revision
+                or int(current.get("render_revision", revision)) != render_revision
+                or _scene_camera_fingerprint(current_camera_metadata)
+                != camera_fingerprint
+            ):
                 if attempt == 0:
                     continue
-                raise RuntimeError("scene changed repeatedly while its combined model was being exported")
+                raise RuntimeError(
+                    "scene or export camera changed repeatedly while its "
+                    "combined model was being exported"
+                )
             current["exports"] = {
                 "revision": revision,
+                "render_revision": render_revision,
+                "camera_fingerprint": camera_fingerprint,
                 "format_version": EXPORT_FORMAT_VERSION,
                 "created_at": _now(),
                 "gaussians": result["ply"]["gaussians"],
@@ -1767,7 +1896,11 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                 "dropped_gaussians": result["ply"].get("dropped_gaussians", 0),
                 "repaired_values": result["ply"].get("repaired_values", 0),
                 "objects": result["ply"]["objects"],
-                "files": {"ply": relative_ply, "splat": relative_splat},
+                "files": {
+                    "ply": relative_ply,
+                    "splat": relative_splat,
+                    "camera": relative_camera,
+                },
             }
             if (
                 result["ply"].get("dropped_gaussians", 0)
@@ -1781,8 +1914,69 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                     f"{result['ply'].get('dropped_gaussians', 0):,}",
                 )
             _save_scene(current, bump_revision=False)
-            return {"scene": current, "ply": ply, "splat": splat}
+            return {
+                "scene": current,
+                "ply": ply,
+                "splat": splat,
+                "camera": camera_manifest,
+            }
     raise RuntimeError("scene export did not stabilize")
+
+
+def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
+    for attempt in range(2):
+        base = ensure_scene_exports(scene_id)
+        with _STATE_LOCK:
+            scene = load_scene(scene_id)
+            revision = int(scene.get("revision", 0))
+            existing = scene.get("exports", {})
+            glb_file = existing.get("files", {}).get("glb") if isinstance(existing, dict) else None
+            if (
+                existing.get("revision") == revision
+                and existing.get("format_version") == EXPORT_FORMAT_VERSION
+                and glb_file
+            ):
+                try:
+                    glb = _object_file(scene_id, {"files": existing["files"]}, "glb")
+                    return {**base, "scene": scene, "glb": glb}
+                except FileNotFoundError:
+                    pass
+            sources = _scene_sources(scene)
+            names = _scene_source_names(scene)
+
+        export_root = resolve_scene_dir(scene_id) / "exports"
+        glb = export_root / f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}.glb"
+        mesh_result = export_gaussian_scene_glb(sources, glb, names=names)
+        relative_glb = str(glb.relative_to(resolve_scene_dir(scene_id)))
+        with _STATE_LOCK:
+            current = load_scene(scene_id)
+            if int(current.get("revision", 0)) != revision:
+                try:
+                    glb.unlink()
+                except OSError:
+                    pass
+                if attempt == 0:
+                    continue
+                raise RuntimeError("scene changed repeatedly while its GLB mesh was being exported")
+            exports = current.get("exports", {})
+            if (
+                not isinstance(exports, dict)
+                or exports.get("revision") != revision
+                or exports.get("format_version") != EXPORT_FORMAT_VERSION
+            ):
+                if attempt == 0:
+                    continue
+                raise RuntimeError("Gaussian scene exports changed while GLB was being written")
+            exports.setdefault("files", {})["glb"] = relative_glb
+            exports["mesh"] = {
+                "vertices": mesh_result["vertices"],
+                "triangles": mesh_result["triangles"],
+                "objects": mesh_result["objects"],
+            }
+            exports["glb_created_at"] = _now()
+            _save_scene(current, bump_revision=False)
+            return {**base, "scene": current, "glb": glb}
+    raise RuntimeError("scene GLB export did not stabilize")
 
 
 def _ensure_object_export(scene_id: str, object_id: str, format_name: str) -> Path:
@@ -1795,9 +1989,21 @@ def _ensure_object_export(scene_id: str, object_id: str, format_name: str) -> Pa
     root = resolve_scene_dir(scene_id) / "exports" / "objects"
     ply = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.ply"
     splat = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.splat"
-    target = ply if format_name == "ply" else splat
+    glb = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.glb"
+    target = {"ply": ply, "splat": splat, "glb": glb}[format_name]
     if not target.is_file():
-        export_gaussian_scene([(source, transform)], ply, splat if format_name == "splat" else None)
+        if format_name == "glb":
+            export_gaussian_scene_glb(
+                [(source, transform)],
+                glb,
+                names=[str(item.get("name") or "Object")],
+            )
+        else:
+            export_gaussian_scene(
+                [(source, transform)],
+                ply,
+                splat if format_name == "splat" else None,
+            )
     return target
 
 
@@ -2122,7 +2328,7 @@ def register_routes(routes: Any) -> None:
     async def factory_object_export(request: Any) -> Any:
         try:
             format_name = request.match_info["format_name"]
-            if format_name not in {"ply", "splat"}:
+            if format_name not in {"ply", "splat", "glb"}:
                 raise FileNotFoundError("unknown export format")
             path = await asyncio.to_thread(
                 _ensure_object_export,
@@ -2143,7 +2349,15 @@ def register_routes(routes: Any) -> None:
     async def factory_scene_export(request: Any) -> Any:
         try:
             scene_id = _validate_id(request.match_info["scene_id"], "scene id")
-            result = await asyncio.to_thread(ensure_scene_exports, scene_id)
+            try:
+                payload = await request.json()
+            except Exception:
+                payload = {}
+            format_name = str(payload.get("format", "ply")).lower() if isinstance(payload, dict) else "ply"
+            if format_name not in {"ply", "splat", "glb"}:
+                raise ValueError("unknown export format")
+            exporter = ensure_scene_glb if format_name == "glb" else ensure_scene_exports
+            result = await asyncio.to_thread(exporter, scene_id)
             return web.json_response(_public_scene(result["scene"]))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
@@ -2154,9 +2368,10 @@ def register_routes(routes: Any) -> None:
     async def factory_scene_export_download(request: Any) -> Any:
         try:
             format_name = request.match_info["format_name"]
-            if format_name not in {"ply", "splat"}:
+            if format_name not in {"ply", "splat", "glb", "camera"}:
                 raise FileNotFoundError("unknown export format")
-            result = await asyncio.to_thread(ensure_scene_exports, request.match_info["scene_id"])
+            exporter = ensure_scene_glb if format_name == "glb" else ensure_scene_exports
+            result = await asyncio.to_thread(exporter, request.match_info["scene_id"])
             path = result[format_name]
             return web.FileResponse(
                 path,

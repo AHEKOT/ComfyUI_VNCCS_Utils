@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260724\.28"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260724\.30"/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -30,13 +30,17 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /this\._isRestoring = true;/);
 });
 
-test("Factory exposes scenes, generation, transform, and both export formats", () => {
+test("Factory exposes scenes, generation, transform, and all export formats", () => {
     assert.match(studio, /Scene manager/);
     assert.match(studio, /Generate object/);
     assert.match(viewer, /TransformControls/);
     assert.match(studio, /duplicateObject/);
     assert.match(studio, /Scene PLY/);
-    assert.match(studio, /Scene SPLAT/);
+    assert.match(studio, /value: "splat"/);
+    assert.match(studio, /value: "glb"/);
+    assert.match(studio, /export_\$\{format\}/);
+    assert.match(studio, /exportScene\(this\.settings\.export_format\)/);
+    assert.match(studio, /format === "splat" && scene\.exports\.urls\.camera/);
 });
 
 test("Factory provides persistent realtime lighting for Gaussian scenes", () => {
@@ -137,11 +141,16 @@ test("TripoSplat setup separates model management from persisted conditioning se
     assert.match(studio, /Do not upscale smaller sources/);
     assert.match(studio, /conditioning_resolution: 1024/);
     assert.match(studio, /prevent_upscale: false/);
+    assert.match(studio, /export_format: "ply"/);
+    assert.match(studio, /Object and scene export/);
+    assert.match(studio, /Colored triangle mesh reconstructed from Gaussians/);
+    assert.match(studio, /this\.settings\.export_format = draft\.export_format/);
     assert.doesNotMatch(studio, /No API, CLI, or external inference server/);
     assert.match(studio, /form\.append\("prevent_upscale", this\.settings\.prevent_upscale \? "1" : "0"\)/);
     assert.match(studio, /this\.settings\.prevent_upscale \? "native cap" : ""/);
     assert.match(styles, /\.vnccs-i3s__setup-grid/);
     assert.match(styles, /\.vnccs-i3s__resolution-option:has\(input:checked\)/);
+    assert.match(styles, /\.vnccs-i3s__format-option:has\(input:checked\)/);
 });
 
 test("Generation exposes background removal and UniCanvas-style seed mode without mask erosion", () => {
@@ -273,7 +282,7 @@ test("Canvas transforms are the only transform UI and object actions live on car
     assert.doesNotMatch(studio, /vnccs-i3s__selected-name/);
     assert.match(studio, /Duplicate object/);
     assert.match(studio, /confirmDeleteObject\(item\.object_id\)/);
-    assert.match(studio, /actions\.append\(visibility, ply, splat, duplicate, remove\)/);
+    assert.match(studio, /actions\.append\(visibility, exportObject, duplicate, remove\)/);
     assert.match(styles, /\.vnccs-i3s \[hidden\] \{ display: none !important; \}/);
     assert.match(studio, /W\/E\/R: move\/rotate\/scale/);
 });

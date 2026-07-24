@@ -121,6 +121,37 @@ class GaussianSceneTests(unittest.TestCase):
             self.assertEqual(self.module.inspect_ply(merged).vertex_count, 2)
             self.assertEqual(splat.stat().st_size, 2 * 32)
 
+    def test_scene_camera_metadata_is_embedded_in_ply_without_corrupting_raw_splat(self):
+        metadata = {
+            "schema": "vnccs-3d-factory-gaussian-scene/v1",
+            "camera": {
+                "projection": "perspective",
+                "position": [3.0, 4.0, 5.0],
+                "target": [0.0, 1.0, 0.0],
+                "up": [0.0, 1.0, 0.0],
+                "fov": 55.0,
+                "fov_axis": "vertical-degrees",
+            },
+            "render": {"width": 1536, "height": 864, "aspect": "16:9"},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.ply"
+            merged = root / "scene.ply"
+            splat = root / "scene.splat"
+            self._write_ply(source)
+
+            self.module.export_gaussian_scene(
+                [(source, {})],
+                merged,
+                splat,
+                metadata=metadata,
+            )
+
+            self.assertEqual(self.module.read_ply_scene_metadata(merged), metadata)
+            self.assertEqual(splat.stat().st_size, 32)
+            self.assertNotIn(b"vnccs", splat.read_bytes().lower())
+
     def test_invalid_transform_is_bounded(self):
         transform = self.module.normalize_transform(
             {"position": [float("inf"), -9999999, "bad"], "rotation": [720, 0, 0], "scale": -1}

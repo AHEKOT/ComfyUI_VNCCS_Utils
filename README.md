@@ -91,7 +91,9 @@ renders the actual Gaussian assets through the bundled SparkJS viewport.
 * **Local TripoSplat Pipeline**: The official pipeline runs in process with
   ComfyUI's PyTorch device. Model setup and weight download are graphical.
 * **Object and Scene Export**: Export every transformed object separately or
-  combine the entire scene into one Gaussian PLY/SPLAT model.
+  combine the scene as Gaussian PLY/SPLAT or a reconstructed GLB mesh. Scene
+  PLY embeds the saved export camera and raw SPLAT is accompanied by its exact
+  camera/frame manifest.
 * **Observable Jobs**: Background removal, image encoding, diffusion steps,
   Gaussian decoding, serialization, and scene insertion expose real progress.
   Every stage is printed to the ComfyUI console and retained in a downloadable

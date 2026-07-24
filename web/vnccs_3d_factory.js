@@ -21,8 +21,8 @@ const ENDPOINTS = Object.freeze({
     jobLog: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/log`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 6;
-const FRONTEND_BUILD = "20260724.28";
+const STATE_VERSION = 7;
+const FRONTEND_BUILD = "20260724.30";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -33,6 +33,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     conditioning_resolution: 1024,
     prevent_upscale: false,
     remove_background: true,
+    export_format: "ply",
     seed: 0,
     seed_mode: "randomize",
 });
@@ -142,7 +143,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.20", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260724.21", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -229,6 +230,18 @@ function download(url) {
     document.body.appendChild(link);
     link.click();
     link.remove();
+}
+
+function downloadBlob(blob, filename) {
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = objectUrl;
+    link.rel = "noopener";
+    link.download = filename || "vnccs-3d-factory-export";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 
@@ -539,8 +552,7 @@ class Factory3DWidget {
                             <div class="vnccs-i3s__scene-render-summary">1024 × 1024 px · Camera follows the current 3D view</div>
                         </div>
                         <div class="vnccs-i3s__export-grid">
-                            <button class="vnccs-i3s__button vnccs-i3s__scene-ply" type="button">${ICONS.download}<span>Scene PLY</span></button>
-                            <button class="vnccs-i3s__button vnccs-i3s__scene-splat" type="button">${ICONS.download}<span>Scene SPLAT</span></button>
+                            <button class="vnccs-i3s__button vnccs-i3s__scene-export" type="button">${ICONS.download}<span>Scene PLY</span></button>
                         </div>
                     </div>
                 </section>
@@ -612,8 +624,7 @@ class Factory3DWidget {
             sceneHeight: $(".vnccs-i3s__scene-height"),
             sceneFrame: $(".vnccs-i3s__scene-frame"),
             sceneRenderSummary: $(".vnccs-i3s__scene-render-summary"),
-            scenePly: $(".vnccs-i3s__scene-ply"),
-            sceneSplat: $(".vnccs-i3s__scene-splat"),
+            sceneExport: $(".vnccs-i3s__scene-export"),
             toasts: $(".vnccs-i3s__toasts"),
             modalLayer: $(".vnccs-i3s__modal-layer"),
         };
@@ -818,8 +829,7 @@ class Factory3DWidget {
             event.preventDefault();
             this._moveLayer(this.dragLayer, null, "end");
         });
-        this._listen(this.els.scenePly, "click", () => void this.exportScene("ply"));
-        this._listen(this.els.sceneSplat, "click", () => void this.exportScene("splat"));
+        this._listen(this.els.sceneExport, "click", () => void this.exportScene(this.settings.export_format));
     }
 
     _normalizeLighting(value = {}) {
@@ -1645,17 +1655,18 @@ class Factory3DWidget {
             this._scheduleStateSave(0);
             this._scheduleScenePreview(120);
         });
-        const ply = button("vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button", "", "download");
-        ply.title = "Export transformed PLY";
-        ply.addEventListener("click", event => {
+        const exportFormat = ["ply", "splat", "glb"].includes(this.settings.export_format)
+            ? this.settings.export_format
+            : "ply";
+        const exportObject = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            "download",
+        );
+        exportObject.title = `Export transformed ${exportFormat.toUpperCase()}`;
+        exportObject.addEventListener("click", event => {
             event.stopPropagation();
-            download(item.urls.export_ply);
-        });
-        const splat = button("vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button", "", "cube");
-        splat.title = "Export transformed SPLAT";
-        splat.addEventListener("click", event => {
-            event.stopPropagation();
-            download(item.urls.export_splat);
+            void this.exportObject(item, exportFormat, exportObject);
         });
         const duplicate = button("vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button", "", "duplicate");
         duplicate.title = "Duplicate object";
@@ -1673,11 +1684,11 @@ class Factory3DWidget {
             event.stopPropagation();
             this.confirmDeleteObject(item.object_id);
         });
-        for (const control of [visibility, ply, splat, duplicate, remove]) {
+        for (const control of [visibility, exportObject, duplicate, remove]) {
             control.setAttribute("aria-label", control.title);
             control.addEventListener("dblclick", event => event.stopPropagation());
         }
-        actions.append(visibility, ply, splat, duplicate, remove);
+        actions.append(visibility, exportObject, duplicate, remove);
         card.append(thumbnail, copy, actions);
         card.addEventListener("click", event => {
             if (event.target.closest("button,input")) return;
@@ -2397,13 +2408,59 @@ class Factory3DWidget {
         }
         this._setStatus("Exporting scene", "working");
         try {
-            const scene = await this._fetchJSON(ENDPOINTS.exportScene(this.sceneId), { method: "POST" });
+            const scene = await this._fetchJSON(ENDPOINTS.exportScene(this.sceneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ format }),
+            });
             this.scene.exports = scene.exports;
             download(scene.exports.urls[format]);
+            if (format === "splat" && scene.exports.urls.camera) {
+                // The canonical raw SPLAT format is exactly 32 bytes per
+                // Gaussian and has no metadata section. Keep it universally
+                // readable and download the exact camera/frame as its bound
+                // JSON sidecar instead of corrupting the payload with a
+                // proprietary trailer.
+                download(scene.exports.urls.camera);
+            }
             this._setStatus("Scene exported", "success");
         } catch (error) {
             this._setStatus("Export failed", "error");
             this._showError("Scene export failed", error);
+        }
+    }
+
+    async exportObject(item, format, control = null) {
+        const url = item?.urls?.[`export_${format}`];
+        if (!url) {
+            this.toast(`${String(format).toUpperCase()} export is not available.`, "error");
+            return;
+        }
+        if (control) control.disabled = true;
+        this._setStatus(`Exporting ${String(format).toUpperCase()}`, "working");
+        try {
+            const response = await fetch(apiUrl(url), { credentials: "same-origin" });
+            if (!response.ok) {
+                let message = `${response.status} ${response.statusText}`;
+                try {
+                    const payload = await response.json();
+                    message = payload.error || message;
+                } catch (_) {}
+                throw new Error(message);
+            }
+            const disposition = response.headers.get("Content-Disposition") || "";
+            const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+            const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+            const filename = encodedName
+                ? decodeURIComponent(encodedName)
+                : plainName || `${item.name || "object"}.${format}`;
+            downloadBlob(await response.blob(), filename);
+            this._setStatus("Object exported", "success");
+        } catch (error) {
+            this._setStatus("Export failed", "error");
+            this._showError("Object export failed", error);
+        } finally {
+            if (control) control.disabled = false;
         }
     }
 
@@ -2537,6 +2594,10 @@ class Factory3DWidget {
         let preventUpscale = Boolean(
             draftSettings?.prevent_upscale ?? this.settings.prevent_upscale,
         );
+        let exportFormat = String(
+            draftSettings?.export_format ?? this.settings.export_format ?? "ply",
+        ).toLowerCase();
+        if (!["ply", "splat", "glb"].includes(exportFormat)) exportFormat = "ply";
         const body = element("div", "vnccs-i3s__setup-grid");
 
         const models = element("section", "vnccs-i3s__setup-block vnccs-i3s__setup-block--models");
@@ -2646,12 +2707,49 @@ class Factory3DWidget {
         upscaleSwitch.setAttribute("aria-checked", String(preventUpscale));
         upscaleControl.append(upscaleCopy, upscaleSwitch);
         const effective = element("div", "vnccs-i3s__conditioning-summary");
+        const exportLabel = element("div", "vnccs-i3s__label", "Object and scene export");
+        const exportList = element("div", "vnccs-i3s__format-list");
+        const exportOptions = [
+            {
+                value: "ply",
+                title: "PLY",
+                description: "Editable Gaussian PLY with complete splat data.",
+            },
+            {
+                value: "splat",
+                title: "SPLAT",
+                description: "Compact Gaussian asset for realtime viewers.",
+            },
+            {
+                value: "glb",
+                title: "GLB",
+                description: "Colored triangle mesh reconstructed from Gaussians.",
+            },
+        ];
+        for (const option of exportOptions) {
+            const choice = element("label", "vnccs-i3s__format-option");
+            const input = element("input");
+            input.type = "radio";
+            input.name = "vnccs-triposplat-export-format";
+            input.value = option.value;
+            input.checked = option.value === exportFormat;
+            const copy = element("span", "vnccs-i3s__format-copy");
+            copy.append(
+                element("span", "vnccs-i3s__format-title", option.title),
+                element("span", "vnccs-i3s__format-description", option.description),
+            );
+            choice.append(input, element("span", "vnccs-i3s__resolution-radio"), copy);
+            exportList.appendChild(choice);
+        }
         const selectedResolution = () => Number(
             resolutionList.querySelector("input:checked")?.value || 1024,
         );
         const currentDraft = () => ({
             conditioning_resolution: selectedResolution(),
             prevent_upscale: preventUpscale,
+            export_format: String(
+                exportList.querySelector("input:checked")?.value || "ply",
+            ),
         });
         const updateSummary = () => {
             const requested = selectedResolution();
@@ -2687,6 +2785,8 @@ class Factory3DWidget {
             resolutionList,
             upscaleControl,
             effective,
+            exportLabel,
+            exportList,
         );
         body.append(models, inference);
 
@@ -2701,11 +2801,14 @@ class Factory3DWidget {
             const draft = currentDraft();
             this.settings.conditioning_resolution = draft.conditioning_resolution;
             this.settings.prevent_upscale = draft.prevent_upscale;
+            this.settings.export_format = draft.export_format;
             this._syncTripoSummary();
+            this._syncSettings();
+            this._renderObjects();
             this._scheduleStateSave(0);
             this.closeModal();
             this.toast(
-                `TripoSplat conditioning set to ${draft.conditioning_resolution}×${draft.conditioning_resolution}.`,
+                `TripoSplat settings applied · ${draft.export_format.toUpperCase()} export.`,
                 "success",
             );
         });
@@ -2850,6 +2953,15 @@ class Factory3DWidget {
         this._syncBackgroundRemoval();
         this._syncSeedMode();
         this._syncDensityMode();
+        const exportFormat = ["ply", "splat", "glb"].includes(this.settings.export_format)
+            ? this.settings.export_format
+            : "ply";
+        this.settings.export_format = exportFormat;
+        const exportLabel = this.els.sceneExport?.querySelector("span:last-child");
+        if (exportLabel) exportLabel.textContent = `Scene ${exportFormat.toUpperCase()}`;
+        if (this.els.sceneExport) {
+            this.els.sceneExport.title = `Export visible scene as ${exportFormat.toUpperCase()}`;
+        }
         this._customSelects?.refresh?.();
     }
 
@@ -2969,6 +3081,11 @@ class Factory3DWidget {
                 this.settings.conditioning_resolution = Number(this.settings.conditioning_resolution);
             }
             this.settings.prevent_upscale = this.settings.prevent_upscale === true;
+            this.settings.export_format = ["ply", "splat", "glb"].includes(
+                String(this.settings.export_format).toLowerCase(),
+            )
+                ? String(this.settings.export_format).toLowerCase()
+                : "ply";
             this.exportSettings = this._normalizeExportSettings(
                 state.render_settings || safeObject(state.scene_snapshot).render,
             );

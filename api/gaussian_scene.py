@@ -8,6 +8,9 @@ standards-compatible PLY/SPLAT asset.
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import math
 import logging
 import os
@@ -23,6 +26,7 @@ LOGGER = logging.getLogger("vnccs.3d_factory.gaussian_scene")
 _MAX_HEADER_BYTES = 64 * 1024
 _MAX_VERTICES = 64 * 1024 * 1024
 _CHUNK = 65_536
+_SCENE_METADATA_COMMENT = "comment vnccs_scene_metadata_base64 "
 # TripoSplat's official Three.js viewer applies child yaw +90° around Y,
 # followed by parent pitch 180° around X. Generated model.ply/model.splat files
 # remain in TripoSplat's native export frame; every VNCCS scene/object export
@@ -521,13 +525,62 @@ def _scan_export_source(info: PlyInfo, transform: Any) -> dict[str, Any]:
     return diagnostics
 
 
-def _ply_header(count: int, dtype: np.dtype) -> bytes:
+def _encode_scene_metadata_comment(metadata: Any) -> str | None:
+    if metadata is None:
+        return None
+    if not isinstance(metadata, dict):
+        raise ValueError("Gaussian scene metadata must be an object")
+    encoded = json.dumps(
+        metadata,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("ascii")
+    token = base64.urlsafe_b64encode(encoded).decode("ascii")
+    line = f"{_SCENE_METADATA_COMMENT}{token}"
+    if len(line.encode("ascii")) > _MAX_HEADER_BYTES // 2:
+        raise ValueError("Gaussian scene metadata is too large for a PLY header")
+    return line
+
+
+def read_ply_scene_metadata(path: str | os.PathLike[str]) -> dict[str, Any] | None:
+    """Return VNCCS camera/frame metadata embedded in a Gaussian PLY header."""
+    source = Path(path).resolve()
+    header, _offset = _read_header(source)
+    try:
+        lines = header.decode("ascii").splitlines()
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"{source.name}: PLY header is not ASCII") from exc
+    matches = [
+        line[len(_SCENE_METADATA_COMMENT) :].strip()
+        for line in lines
+        if line.startswith(_SCENE_METADATA_COMMENT)
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1 or not matches[0]:
+        raise ValueError(f"{source.name}: invalid VNCCS scene metadata comment")
+    try:
+        decoded = base64.b64decode(matches[0], altchars=b"-_", validate=True)
+        value = json.loads(decoded.decode("ascii"))
+    except (ValueError, binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{source.name}: invalid VNCCS scene metadata payload") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{source.name}: VNCCS scene metadata is not an object")
+    return value
+
+
+def _ply_header(count: int, dtype: np.dtype, metadata: Any = None) -> bytes:
     lines = [
         "ply",
         "format binary_little_endian 1.0",
         "comment VNCCS 3D Factory Gaussian scene",
-        f"element vertex {count}",
     ]
+    metadata_comment = _encode_scene_metadata_comment(metadata)
+    if metadata_comment:
+        lines.append(metadata_comment)
+    lines.append(f"element vertex {count}")
     for name in dtype.names or ():
         scalar = dtype.fields[name][0].str
         scalar = scalar[1:] if scalar.startswith("|") else scalar
@@ -548,6 +601,8 @@ def _atomic_target(target: Path) -> tuple[Path, int]:
 def export_scene_ply(
     sources: Iterable[tuple[str | os.PathLike[str], Any]],
     target: str | os.PathLike[str],
+    *,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     entries = []
     for path, transform in sources:
@@ -568,7 +623,7 @@ def export_scene_ply(
     temporary, descriptor_handle = _atomic_target(output)
     try:
         with os.fdopen(descriptor_handle, "wb") as handle:
-            handle.write(_ply_header(total, entries[0][0].dtype))
+            handle.write(_ply_header(total, entries[0][0].dtype, metadata))
             for info, transform, _diagnostics in entries:
                 data = np.memmap(
                     info.path,
@@ -696,8 +751,10 @@ def export_gaussian_scene(
     sources: Iterable[tuple[str | os.PathLike[str], Any]],
     ply_target: str | os.PathLike[str],
     splat_target: str | os.PathLike[str] | None = None,
+    *,
+    metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    ply_result = export_scene_ply(sources, ply_target)
+    ply_result = export_scene_ply(sources, ply_target, metadata=metadata)
     result = {"ply": ply_result}
     if splat_target is not None:
         result["splat"] = ply_to_splat(ply_target, splat_target)

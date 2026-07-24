@@ -140,6 +140,7 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()
+        self.assertEqual(capabilities["formats"], ["ply", "splat", "glb"])
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
@@ -564,19 +565,69 @@ class FactoryBackendTests(unittest.TestCase):
         }
         self.factory._save_scene(scene, bump_revision=False)
 
-        def fake_export(_sources, ply, splat):
+        captured_metadata = {}
+
+        def fake_export(_sources, ply, splat, *, metadata=None):
+            captured_metadata.update(metadata or {})
             Path(ply).parent.mkdir(parents=True, exist_ok=True)
             Path(ply).write_bytes(b"upright")
             Path(splat).write_bytes(b"upright")
-            return {"ply": {"gaussians": 1, "objects": 1}}
+            return {
+                "ply": {"gaussians": 1, "objects": 1},
+                "splat": {"gaussians": 1},
+            }
 
         with mock.patch.object(self.factory, "export_gaussian_scene", side_effect=fake_export) as export:
             result = self.factory.ensure_scene_exports(scene["scene_id"])
 
         export.assert_called_once()
         self.assertIn(f"-v{self.factory.EXPORT_FORMAT_VERSION}-", result["ply"].name)
+        self.assertTrue(result["camera"].is_file())
+        camera_manifest = json.loads(result["camera"].read_text(encoding="utf-8"))
+        self.assertEqual(camera_manifest["camera"]["position"], [2.8, 2.1, 4.2])
+        self.assertEqual(camera_manifest["camera"]["target"], [0.0, 0.0, 0.0])
+        self.assertEqual(camera_manifest["camera"]["fov"], 42.0)
+        self.assertEqual(camera_manifest["render"]["width"], 1024)
+        self.assertEqual(camera_manifest["assets"]["splat"]["sha256"], self.factory._sha256_file(result["splat"]))
+        self.assertEqual(captured_metadata["camera"], camera_manifest["camera"])
         saved = self.factory.load_scene(scene["scene_id"])
         self.assertEqual(saved["exports"]["format_version"], self.factory.EXPORT_FORMAT_VERSION)
+        self.assertEqual(saved["exports"]["render_revision"], saved["render_revision"])
+        self.assertIn("camera", saved["exports"]["files"])
+
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "camera": {
+                    "position": [7, 6, 5],
+                    "target": [1, 2, 3],
+                    "fov": 61,
+                },
+                "render": {
+                    "width": 1920,
+                    "height": 1080,
+                    "aspect": "16:9",
+                    "show_camera_frame": True,
+                },
+            },
+        )
+        with mock.patch.object(
+            self.factory,
+            "export_gaussian_scene",
+            side_effect=fake_export,
+        ) as camera_export:
+            refreshed = self.factory.ensure_scene_exports(scene["scene_id"])
+        camera_export.assert_called_once()
+        refreshed_manifest = json.loads(refreshed["camera"].read_text(encoding="utf-8"))
+        self.assertEqual(refreshed_manifest["camera"]["position"], [7.0, 6.0, 5.0])
+        self.assertEqual(refreshed_manifest["camera"]["target"], [1.0, 2.0, 3.0])
+        self.assertEqual(refreshed_manifest["camera"]["fov"], 61.0)
+        self.assertEqual(refreshed_manifest["render"]["width"], 1920)
+        self.assertEqual(refreshed_manifest["render"]["height"], 1080)
+        self.assertEqual(
+            refreshed_manifest["render_revision"],
+            updated["render_revision"],
+        )
 
     def test_invalid_scene_identifier_is_rejected(self):
         with self.assertRaises(ValueError):
