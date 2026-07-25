@@ -45,6 +45,16 @@ _PRESET_DOWNLOAD_STATUS: dict[str, dict[str, Any]] = {}
 _PRESET_DOWNLOAD_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 _PRESET_DOWNLOAD_TIMEOUT = (10, 60)
 _PRESET_MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
+_PRESET_MODEL_SETTING_KEYS = {
+    "generation_mode",
+    "model_loader",
+    "ckpt_name",
+    "diffusion_model_name",
+    "gguf_model_name",
+    "clip_name",
+    "vae_name",
+    "clip_type",
+}
 _PRESET_MIN_MODEL_FILE_SIZE = 1024
 _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
@@ -2450,8 +2460,27 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
     return "checkpoint"
 
 
+def _get_selected_preset_model_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if str(settings.get("model_selection_mode") or "").lower() != "presets":
+        return {}
+    preset_id = str(settings.get("selected_preset_id") or "")
+    if not preset_id:
+        return {}
+    registry = _unicanvas_load_preset_registry()
+    for preset in registry.get("presets", []):
+        if not isinstance(preset, dict) or str(preset.get("id") or "") != preset_id:
+            continue
+        preset_settings = preset.get("settings")
+        if not isinstance(preset_settings, dict):
+            return {}
+        return {key: preset_settings[key] for key in _PRESET_MODEL_SETTING_KEYS if key in preset_settings}
+    return {}
+
+
 def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(gen_settings or {})
+    preset_model_settings = _get_selected_preset_model_settings(normalized)
+    normalized.update(preset_model_settings)
     loader = _get_unicanvas_model_loader(_infer_unicanvas_loader_type(normalized))
     generation_mode = loader.forced_mode or str(normalized.get("generation_mode", "illustrious")).lower()
     mode_settings = normalized.get("mode_settings", {})
@@ -2464,6 +2493,7 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(normalized)
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
+    merged.update(preset_model_settings)
     merged["generation_mode"] = module.key
     merged["generation_mode_alias"] = generation_mode
     merged["model_loader"] = loader.key

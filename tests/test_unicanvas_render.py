@@ -108,6 +108,37 @@ class UniCanvasRenderTests(unittest.TestCase):
 
         self.assertEqual(len(UNICANVAS._DRAW_PROGRESS), UNICANVAS._DRAW_PROGRESS_MAX)
 
+    def test_selected_sdxl_preset_forces_its_checkpoint(self):
+        settings = UNICANVAS._normalize_gen_settings({
+            "model_selection_mode": "presets",
+            "selected_preset_id": "sdxl",
+            "generation_mode": "sdxl",
+            "model_loader": "checkpoint",
+            "ckpt_name": r"3d\hunyuan3d-dit-v2-mv-turbo_fp16.safetensors",
+            "steps": 31,
+            "mode_settings": {
+                "sdxl": {
+                    "ckpt_name": "wrong/mode-profile.safetensors",
+                },
+            },
+        })
+
+        self.assertEqual(settings["ckpt_name"], "Illustrious/ILFlatMix.safetensors")
+        self.assertEqual(settings["model_loader"], "checkpoint")
+        self.assertEqual(settings["generation_mode"], "sdxl")
+        self.assertEqual(settings["steps"], 31)
+
+    def test_custom_checkpoint_is_not_overridden_by_preset_registry(self):
+        settings = UNICANVAS._normalize_gen_settings({
+            "model_selection_mode": "custom",
+            "selected_preset_id": "sdxl",
+            "generation_mode": "sdxl",
+            "model_loader": "checkpoint",
+            "ckpt_name": "custom/model.safetensors",
+        })
+
+        self.assertEqual(settings["ckpt_name"], "custom/model.safetensors")
+
 
 if __name__ == "__main__":
     unittest.main()

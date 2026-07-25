@@ -4,6 +4,10 @@
 
 import { app } from "../../scripts/app.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import {
+  forceUniCanvasPresetModelSettings,
+  getUniCanvasPresetModelName,
+} from "./vnccs_unicanvas_presets.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -154,6 +158,7 @@ const STYLES = `
 .vnccs-uc-model-card-status { flex:0 0 auto; color:var(--uc-danger); font-size:10px; font-weight:800; text-transform:uppercase; }
 .vnccs-uc-model-card-status.ok { color:var(--uc-good); }
 .vnccs-uc-model-card-status.progress { color:var(--uc-accent-2); }
+.vnccs-uc-model-card-model { color:#ffdce5; font-size:11px; font-weight:800; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-model-card-desc { color:var(--uc-muted); font-size:11px; line-height:1.35; }
 .vnccs-uc-model-card-actions { display:flex; align-items:center; gap:7px; }
 .vnccs-uc-model-card-download { width:100%; height:27px; border:1px solid rgba(255,143,163,.36); border-radius:8px; background:rgba(255,143,163,.1); color:#ffdce5; font:inherit; font-size:10px; font-weight:800; text-transform:uppercase; cursor:pointer; }
@@ -1632,11 +1637,13 @@ class UniCanvasWidget {
       this.fillSelect("sampler_name", this.assets.samplers || []);
       this.fillSelect("scheduler", this.assets.schedulers || []);
       this.renderLoraStackControls();
-      if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
-      if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
-      if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
-      if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
-      if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
+      if (this.settings.model_selection_mode !== "presets") {
+        if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
+        if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
+        if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
+        if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
+        if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
+      }
       this.normalizeGenerationSettings();
       await this.loadPresets();
       this.syncPromptControls();
@@ -1702,6 +1709,7 @@ class UniCanvasWidget {
   }
 
   makeSettingsPayload() {
+    this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
     return settings;
@@ -1751,8 +1759,17 @@ class UniCanvasWidget {
   getActivePreset() {
     const mode = getUniCanvasModelModule(this.settings.generation_mode).key;
     const byId = this.getPresetById(this.settings.selected_preset_id);
+    if (this.settings.model_selection_mode === "presets" && byId) return byId;
     if (byId && getUniCanvasModelModule(byId.settings?.generation_mode).key === mode) return byId;
     return (this.presets || []).find((preset) => preset.settings?.generation_mode === mode || preset.id === mode) || null;
+  }
+
+  forceSelectedPresetModelSettings() {
+    if (this.settings.model_selection_mode !== "presets") return null;
+    const preset = this.getPresetById(this.settings.selected_preset_id);
+    if (!preset) return null;
+    forceUniCanvasPresetModelSettings(this.settings, preset);
+    return preset;
   }
 
   presetAssetStatus(asset) {
@@ -1800,6 +1817,7 @@ class UniCanvasWidget {
     const statusText = status.progress ? (status.message || "Downloading") : status.installed ? "Installed" : "Download";
     const title = turbo ? preset.turbo?.asset?.name : preset.title;
     const desc = turbo ? preset.turbo?.asset?.description : preset.description;
+    const modelName = turbo ? "" : getUniCanvasPresetModelName(preset);
     const downloadAttrs = turbo ? `data-turbo-download="${this._escape(preset.id)}"` : `data-preset-download="${this._escape(preset.id)}"`;
     const downloadButton = turbo || status.installed || status.progress
       ? ""
@@ -1812,6 +1830,7 @@ class UniCanvasWidget {
         <span class="vnccs-uc-model-card-name">${this._escape(title || preset.label || preset.id)}</span>
         ${turbo ? `${statusNode}${toggle}` : statusNode}
       </span>
+      ${modelName ? `<span class="vnccs-uc-model-card-model">Model: ${this._escape(modelName)}</span>` : ""}
       ${turbo ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
       ${downloadButton}`;
     return card;
@@ -1945,6 +1964,7 @@ class UniCanvasWidget {
       model_selection_mode: "presets",
       selected_preset_id: preset.id,
     };
+    forceUniCanvasPresetModelSettings(this.settings, preset);
     this.presetRuntimeSettingsStore();
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
@@ -2094,6 +2114,7 @@ class UniCanvasWidget {
   }
 
   normalizeGenerationSettings() {
+    this.forceSelectedPresetModelSettings();
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -5179,6 +5200,7 @@ class UniCanvasWidget {
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     ctx.drawImage(img, this.bbox.x - this.origin.x, this.bbox.y - this.origin.y);
     this.invalidateLayerCaches(layer);
+    this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
     this.scheduleFullSync();
