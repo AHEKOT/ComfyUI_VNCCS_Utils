@@ -206,3 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 .DS_Store
+
+# img2threejs Studio runtime data (fallback paths outside ComfyUI)
+/output/vnccs_img2threejs/
+/models/LLM/img2threejs/

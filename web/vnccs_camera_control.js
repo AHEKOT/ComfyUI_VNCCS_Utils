@@ -1,427 +1,807 @@
-
 import { app } from "../../scripts/app.js";
+import {
+    DISTANCE_OPTIONS,
+    ELEVATION_STEPS,
+    cameraStateFromRadarPoint,
+    computeRadarGeometry,
+    elevationFromRatio,
+    parseCameraState,
+    randomizeCameraState,
+    serializeCameraState,
+} from "./vnccs_camera_control_utils.mjs";
 
-// --- Configuration Constants ---
-const CANVAS_SIZE = 320;
-const CENTER_X = 160;
-const CENTER_Y = 160;
-const RADIUS_WIDE = 140;
-const RADIUS_MEDIUM = 90;
-const RADIUS_CLOSE = 50;
+const STYLE_ID = "vnccs-camera-control-styles";
+const DOM_WIDGET_NAME = "camera_control_ui";
+const DATA_WIDGET_NAME = "camera_data";
 
-// Colors
-const COLOR_BG = "#1a1a1a";
-const COLOR_GRID_LINES = "#444";
-const COLOR_TEXT = "#888";
-const COLOR_ACTIVE = "#ffbd45";
-const COLOR_HIGHLIGHT = "#ffffff";
+const STYLES = `
+.vnccs-camera-control {
+    --vc-bg: #0a0a0f;
+    --vc-panel: rgba(20, 16, 30, 0.82);
+    --vc-surface: rgba(30, 28, 44, 0.9);
+    --vc-border: rgba(255, 255, 255, 0.08);
+    --vc-accent: #ff8fa3;
+    --vc-accent-2: #b8a9e8;
+    --vc-accent-border: rgba(255, 143, 163, 0.28);
+    --vc-text: #e8e8f0;
+    --vc-muted: #9898a8;
+    --vc-dim: #5e5e70;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    max-width: 100%;
+    max-height: 100%;
+    padding: 6px;
+    color: var(--vc-text);
+    font: 11px 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
+    overflow: hidden;
+    box-sizing: border-box;
+    pointer-events: auto;
+    position: relative;
+    user-select: none;
+}
 
-// Data
-const ELEVATION_STEPS = [-30, 0, 30, 60];
-const DISTANCE_MAP = {
-    "close-up": RADIUS_CLOSE,
-    "medium shot": RADIUS_MEDIUM,
-    "wide shot": RADIUS_WIDE
-};
-const DISTANCE_REVERSE_MAP = {
-    [RADIUS_CLOSE]: "close-up",
-    [RADIUS_MEDIUM]: "medium shot",
-    [RADIUS_WIDE]: "wide shot"
-};
+.vnccs-camera-surface {
+    position: relative;
+    display: flex;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 8px;
+    border: 1px solid var(--vc-accent-border);
+    border-radius: 12px;
+    background: var(--vc-panel);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+    box-sizing: border-box;
+}
 
-// --- Custom Widget Class ---
-class VNCCS_CameraWidget {
-    constructor(node, inputName, inputData, app) {
-        this.node = node;
-        this.inputName = inputName;
-        this.app = app;
+.vnccs-camera-surface::before {
+    content: "";
+    position: absolute;
+    z-index: 2;
+    top: 0;
+    left: 14%;
+    right: 14%;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 143, 163, 0.55), transparent);
+    pointer-events: none;
+}
 
-        // Internal State
-        this.state = {
-            azimuth: 0,
-            elevation: 0,
-            distance: "medium shot",
-            include_trigger: true
-        };
+.vnccs-camera-main {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) 52px;
+    grid-template-rows: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
 
-        // Try load initial state
-        try {
-            if (this.node.widgets && this.node.widgets[0]) {
-                const loaded = JSON.parse(this.node.widgets[0].value);
-                this.state = { ...this.state, ...loaded };
+.vnccs-camera-radar-wrap {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--vc-border);
+    border-radius: 10px;
+    background:
+        radial-gradient(circle at 50% 42%, rgba(255, 143, 163, 0.055), transparent 55%),
+        var(--vc-bg);
+    box-sizing: border-box;
+}
+
+.vnccs-camera-radar {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+    cursor: crosshair;
+}
+
+.vnccs-camera-elevation {
+    display: flex;
+    min-width: 0;
+    min-height: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 5px;
+}
+
+.vnccs-camera-elevation-title {
+    color: var(--vc-dim);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 1;
+    text-align: center;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.vnccs-camera-elevation-track {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--vc-border);
+    border-radius: 9px;
+    background: rgba(255, 255, 255, 0.025);
+    touch-action: none;
+    cursor: ns-resize;
+}
+
+.vnccs-camera-elevation-line {
+    position: absolute;
+    top: 13px;
+    bottom: 13px;
+    left: 11px;
+    width: 2px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.13);
+    pointer-events: none;
+}
+
+.vnccs-camera-elevation-step {
+    position: absolute;
+    left: 5px;
+    right: 3px;
+    display: flex;
+    min-width: 0;
+    height: 20px;
+    padding: 0;
+    align-items: center;
+    gap: 5px;
+    border: 0;
+    background: transparent;
+    color: var(--vc-muted);
+    font: 700 9px/1 'JetBrains Mono', 'Fira Code', monospace;
+    cursor: pointer;
+    transform: translateY(-50%);
+}
+
+.vnccs-camera-elevation-step::before {
+    content: "";
+    width: 10px;
+    height: 10px;
+    flex: 0 0 10px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-radius: 50%;
+    background: #1a1822;
+    box-sizing: border-box;
+}
+
+.vnccs-camera-elevation-step.active {
+    color: var(--vc-accent);
+}
+
+.vnccs-camera-elevation-step.active::before {
+    border-color: var(--vc-accent);
+    background: var(--vc-accent);
+    box-shadow: 0 0 9px rgba(255, 143, 163, 0.48);
+}
+
+.vnccs-camera-footer {
+    display: flex;
+    flex: 0 0 auto;
+    min-width: 0;
+    margin-top: 7px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.vnccs-camera-readout {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--vc-muted);
+    font: 700 9px/1.25 'JetBrains Mono', 'Fira Code', monospace;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.vnccs-camera-readout strong {
+    color: var(--vc-accent);
+    font-weight: 800;
+}
+
+.vnccs-camera-toggles {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.vnccs-camera-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--vc-muted);
+    font-size: 9px;
+    font-weight: 700;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.vnccs-camera-check input {
+    width: 12px;
+    height: 12px;
+    margin: 0;
+    accent-color: var(--vc-accent);
+    cursor: pointer;
+}
+
+.vnccs-camera-check:has(input:checked) {
+    color: var(--vc-text);
+}
+
+.vnccs-camera-random-scope {
+    display: none;
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 24px;
+    margin-top: 6px;
+    padding: 2px 3px 2px 7px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    border: 1px solid var(--vc-border);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.025);
+    box-sizing: border-box;
+}
+
+.vnccs-camera-random-scope.visible {
+    display: flex;
+}
+
+.vnccs-camera-random-scope-label {
+    overflow: hidden;
+    color: var(--vc-dim);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 1;
+    text-overflow: ellipsis;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    white-space: nowrap;
+}
+
+.vnccs-camera-random-scope-options {
+    display: grid;
+    flex: 0 0 auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 142px;
+    height: 18px;
+    padding: 1px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.28);
+}
+
+.vnccs-camera-random-scope-btn {
+    min-width: 0;
+    padding: 0 6px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--vc-muted);
+    font: 800 8px/1 'JetBrains Mono', 'Fira Code', monospace;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.vnccs-camera-random-scope-btn.active {
+    background: var(--vc-accent);
+    color: #24121a;
+    box-shadow: 0 0 7px rgba(255, 143, 163, 0.28);
+}
+
+@media (max-width: 330px) {
+    .vnccs-camera-main {
+        grid-template-columns: minmax(0, 1fr) 46px;
+        gap: 6px;
+    }
+
+    .vnccs-camera-footer {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 5px;
+    }
+}
+`;
+
+function ensureStyles() {
+    if (document.getElementById(STYLE_ID)) return;
+    const style = document.createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = STYLES;
+    document.head.appendChild(style);
+}
+
+function findWidget(node, name) {
+    return node?.widgets?.find((widget) => widget?.name === name);
+}
+
+function hideDataWidget(node) {
+    const widget = findWidget(node, DATA_WIDGET_NAME);
+    if (!widget) return null;
+
+    widget.type = "hidden";
+    widget.hidden = true;
+    widget.computeSize = () => [0, -4];
+    widget.draw = () => {};
+    if (widget.element) widget.element.style.display = "none";
+    return widget;
+}
+
+function syncDOMWidgetWidth(node) {
+    const widget = findWidget(node, DOM_WIDGET_NAME);
+    const nodeWidth = Number(node?.size?.[0]);
+    if (!widget || !Number.isFinite(nodeWidth) || nodeWidth <= 0) return;
+
+    if (!widget._vnccsWidthBound) {
+        const descriptor = Object.getOwnPropertyDescriptor(widget, "width");
+        if (!descriptor || descriptor.configurable) {
+            try {
+                Object.defineProperty(widget, "width", {
+                    configurable: true,
+                    get() {
+                        const width = Number(this._node?.size?.[0]);
+                        return Number.isFinite(width) && width > 0 ? width : undefined;
+                    },
+                    set(_value) {
+                        // DOM widget width follows the node width.
+                    },
+                });
+            } catch (_) {
+                // Older LiteGraph builds can expose a non-configurable width.
             }
-        } catch (e) { }
+        }
+        widget._vnccsWidthBound = true;
+    }
 
-        this.isDragging = false;
-        this.dragMode = null; // 'azimuth' or 'elevation'
+    widget.triggerDraw?.();
+}
 
-        // Create Canvas Element
+class VNCCSCameraWidget {
+    constructor(node) {
+        this.node = node;
+        this.state = parseCameraState(findWidget(node, DATA_WIDGET_NAME)?.value);
+        this.geometry = computeRadarGeometry(260);
+        this.draggingRadar = false;
+        this.draggingElevation = false;
+
+        ensureStyles();
+        this.buildDOM();
+        this.installEvents();
+        this.resizeObserver = typeof ResizeObserver === "function"
+            ? new ResizeObserver(() => this.resize())
+            : null;
+        this.resizeObserver?.observe(this.container);
+        this.resizeObserver?.observe(this.radarWrap);
+        this.updateUI();
+        requestAnimationFrame(() => this.resize());
+    }
+
+    buildDOM() {
+        this.container = document.createElement("div");
+        this.container.className = "vnccs-camera-control";
+
+        this.surface = document.createElement("div");
+        this.surface.className = "vnccs-camera-surface";
+
+        this.main = document.createElement("div");
+        this.main.className = "vnccs-camera-main";
+
+        this.radarWrap = document.createElement("div");
+        this.radarWrap.className = "vnccs-camera-radar-wrap";
+
         this.canvas = document.createElement("canvas");
-        this.canvas.width = CANVAS_SIZE;
-        this.canvas.height = CANVAS_SIZE;
-        this.canvas.style.borderRadius = "4px";
+        this.canvas.className = "vnccs-camera-radar";
+        this.canvas.setAttribute("aria-label", "Camera azimuth and distance radar");
         this.ctx = this.canvas.getContext("2d");
+        this.radarWrap.appendChild(this.canvas);
 
-        // UI Event Listeners
-        this.canvas.style.touchAction = "none";
-        this.canvas.addEventListener("pointerdown", (event) => this.onPointerDown(event));
+        const elevationPanel = document.createElement("div");
+        elevationPanel.className = "vnccs-camera-elevation";
 
-        // Use document for move/up to catch events outside canvas even if capture is lost
-        // although setPointerCapture is usually enough.
-        this.canvas.addEventListener("pointermove", (event) => this.onPointerMove(event));
-        this.canvas.addEventListener("pointerup", (event) => this.onPointerUp(event));
-        this.canvas.addEventListener("pointercancel", (event) => this.onPointerUp(event));
+        const elevationTitle = document.createElement("div");
+        elevationTitle.className = "vnccs-camera-elevation-title";
+        elevationTitle.textContent = "Height";
 
-        // Initial Draw
+        this.elevationTrack = document.createElement("div");
+        this.elevationTrack.className = "vnccs-camera-elevation-track";
+        this.elevationTrack.setAttribute("aria-label", "Camera elevation");
+
+        const elevationLine = document.createElement("div");
+        elevationLine.className = "vnccs-camera-elevation-line";
+        this.elevationTrack.appendChild(elevationLine);
+
+        this.elevationButtons = new Map();
+        [...ELEVATION_STEPS].reverse().forEach((elevation, index) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "vnccs-camera-elevation-step";
+            button.dataset.elevation = String(elevation);
+            button.style.top = `${8 + (index * 28)}%`;
+            button.textContent = `${elevation}°`;
+            button.title = `Elevation ${elevation}°`;
+            this.elevationButtons.set(elevation, button);
+            this.elevationTrack.appendChild(button);
+        });
+
+        elevationPanel.append(elevationTitle, this.elevationTrack);
+        this.main.append(this.radarWrap, elevationPanel);
+
+        this.footer = document.createElement("div");
+        this.footer.className = "vnccs-camera-footer";
+
+        this.readout = document.createElement("div");
+        this.readout.className = "vnccs-camera-readout";
+
+        const toggles = document.createElement("div");
+        toggles.className = "vnccs-camera-toggles";
+
+        const triggerLabel = document.createElement("label");
+        triggerLabel.className = "vnccs-camera-check";
+        this.triggerInput = document.createElement("input");
+        this.triggerInput.type = "checkbox";
+        triggerLabel.append(this.triggerInput, document.createTextNode("Trigger"));
+
+        const randomLabel = document.createElement("label");
+        randomLabel.className = "vnccs-camera-check";
+        randomLabel.title = "Choose a new camera angle, height and distance for every queued generation";
+        this.randomInput = document.createElement("input");
+        this.randomInput.type = "checkbox";
+        randomLabel.append(this.randomInput, document.createTextNode("Random"));
+
+        toggles.append(triggerLabel, randomLabel);
+        this.footer.append(this.readout, toggles);
+
+        this.randomScope = document.createElement("div");
+        this.randomScope.className = "vnccs-camera-random-scope";
+
+        const randomScopeLabel = document.createElement("span");
+        randomScopeLabel.className = "vnccs-camera-random-scope-label";
+        randomScopeLabel.textContent = "Random angle";
+
+        const randomScopeOptions = document.createElement("div");
+        randomScopeOptions.className = "vnccs-camera-random-scope-options";
+        this.randomScopeButtons = new Map();
+        [
+            ["full", "360°", "Randomize around the full 360 degrees"],
+            ["front", "Front ±45°", "Randomize only front, front-left and front-right views"],
+        ].forEach(([mode, label, title]) => {
+            const button = document.createElement("button");
+            button.type = "button";
+            button.className = "vnccs-camera-random-scope-btn";
+            button.textContent = label;
+            button.title = title;
+            button.dataset.mode = mode;
+            this.randomScopeButtons.set(mode, button);
+            randomScopeOptions.appendChild(button);
+        });
+
+        this.randomScope.append(randomScopeLabel, randomScopeOptions);
+        this.surface.append(this.main, this.footer, this.randomScope);
+        this.container.appendChild(this.surface);
+    }
+
+    installEvents() {
+        this.canvas.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            this.draggingRadar = true;
+            this.canvas.setPointerCapture?.(event.pointerId);
+            this.updateRadarFromPointer(event);
+        });
+        this.canvas.addEventListener("pointermove", (event) => {
+            if (this.draggingRadar) this.updateRadarFromPointer(event);
+        });
+        const finishRadarDrag = (event) => {
+            this.draggingRadar = false;
+            if (this.canvas.hasPointerCapture?.(event.pointerId)) {
+                this.canvas.releasePointerCapture(event.pointerId);
+            }
+        };
+        this.canvas.addEventListener("pointerup", finishRadarDrag);
+        this.canvas.addEventListener("pointercancel", finishRadarDrag);
+
+        this.elevationTrack.addEventListener("pointerdown", (event) => {
+            if (event.target?.closest?.("button")) return;
+            event.preventDefault();
+            this.draggingElevation = true;
+            this.elevationTrack.setPointerCapture?.(event.pointerId);
+            this.updateElevationFromPointer(event);
+        });
+        this.elevationTrack.addEventListener("pointermove", (event) => {
+            if (this.draggingElevation) this.updateElevationFromPointer(event);
+        });
+        const finishElevationDrag = (event) => {
+            this.draggingElevation = false;
+            if (this.elevationTrack.hasPointerCapture?.(event.pointerId)) {
+                this.elevationTrack.releasePointerCapture(event.pointerId);
+            }
+        };
+        this.elevationTrack.addEventListener("pointerup", finishElevationDrag);
+        this.elevationTrack.addEventListener("pointercancel", finishElevationDrag);
+
+        for (const [elevation, button] of this.elevationButtons) {
+            button.addEventListener("click", () => {
+                this.state.elevation = elevation;
+                this.commit();
+            });
+        }
+
+        this.triggerInput.addEventListener("change", () => {
+            this.state.include_trigger = this.triggerInput.checked;
+            this.commit();
+        });
+        this.randomInput.addEventListener("change", () => {
+            this.state.random = this.randomInput.checked;
+            this.commit();
+        });
+        for (const [mode, button] of this.randomScopeButtons) {
+            button.addEventListener("click", () => {
+                this.state.random_azimuth_mode = mode;
+                this.commit();
+            });
+        }
+    }
+
+    resize() {
+        const rect = this.radarWrap.getBoundingClientRect();
+        const cssWidth = Math.max(1, rect.width || 260);
+        const cssHeight = Math.max(1, rect.height || 260);
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const pixelWidth = Math.max(1, Math.round(cssWidth * dpr));
+        const pixelHeight = Math.max(1, Math.round(cssHeight * dpr));
+
+        if (this.canvas.width !== pixelWidth) this.canvas.width = pixelWidth;
+        if (this.canvas.height !== pixelHeight) this.canvas.height = pixelHeight;
+
+        this.cssWidth = cssWidth;
+        this.cssHeight = cssHeight;
+        this.dpr = dpr;
+        this.geometry = computeRadarGeometry(cssWidth, cssHeight);
         this.draw();
     }
 
-    // --- Drawing Logic ---
+    loadFromNode() {
+        this.state = parseCameraState(findWidget(this.node, DATA_WIDGET_NAME)?.value);
+        this.updateUI();
+    }
+
+    updateRadarFromPointer(event) {
+        const rect = this.canvas.getBoundingClientRect();
+        if (!rect.width || !rect.height) return;
+        const point = {
+            x: (event.clientX - rect.left) * (this.geometry.width / rect.width),
+            y: (event.clientY - rect.top) * (this.geometry.height / rect.height),
+        };
+        this.state = cameraStateFromRadarPoint(this.state, point, this.geometry);
+        this.commit();
+    }
+
+    updateElevationFromPointer(event) {
+        const rect = this.elevationTrack.getBoundingClientRect();
+        if (!rect.height) return;
+        this.state.elevation = elevationFromRatio((event.clientY - rect.top) / rect.height);
+        this.commit();
+    }
+
+    randomizeForQueue() {
+        if (!this.state.random) return;
+        this.state = randomizeCameraState(this.state);
+        this.commit();
+    }
+
+    commit() {
+        const dataWidget = findWidget(this.node, DATA_WIDGET_NAME);
+        if (dataWidget) dataWidget.value = serializeCameraState(this.state);
+        this.updateUI();
+        this.node?.setDirtyCanvas?.(true, true);
+    }
+
+    updateUI() {
+        this.triggerInput.checked = this.state.include_trigger;
+        this.randomInput.checked = this.state.random;
+        this.randomScope.classList.toggle("visible", this.state.random);
+        this.randomScope.setAttribute("aria-hidden", this.state.random ? "false" : "true");
+        for (const [mode, button] of this.randomScopeButtons) {
+            const active = mode === this.state.random_azimuth_mode;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+        for (const [elevation, button] of this.elevationButtons) {
+            const active = elevation === this.state.elevation;
+            button.classList.toggle("active", active);
+            button.setAttribute("aria-pressed", active ? "true" : "false");
+        }
+
+        const distanceLabel = this.state.distance === "close-up"
+            ? "CLOSE"
+            : this.state.distance === "medium shot" ? "MEDIUM" : "WIDE";
+        this.readout.innerHTML = [
+            `<strong>AZ</strong> ${this.state.azimuth}°`,
+            `<strong>EL</strong> ${this.state.elevation}°`,
+            `<strong>${distanceLabel}</strong>`,
+        ].join(" · ");
+        this.draw();
+    }
+
     draw() {
+        if (!this.ctx || !this.cssWidth || !this.cssHeight) return;
         const ctx = this.ctx;
-        ctx.fillStyle = COLOR_BG;
-        ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+        const { width, height, centerX, centerY, outerRadius, radii, size } = this.geometry;
+        ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
+        ctx.clearRect(0, 0, width, height);
 
-        this.drawFrontIndicator(ctx); // Draw this first so it's behind
-        this.drawGrid(ctx);
-        this.drawSubject(ctx);
-        this.drawCameraTriangle(ctx);
-        this.drawElevationBar(ctx);
-        this.drawInfoText(ctx);
-    }
+        const background = ctx.createRadialGradient(
+            centerX,
+            centerY,
+            0,
+            centerX,
+            centerY,
+            outerRadius * 1.2,
+        );
+        background.addColorStop(0, "rgba(30, 24, 40, 0.54)");
+        background.addColorStop(1, "rgba(8, 8, 13, 0.96)");
+        ctx.fillStyle = background;
+        ctx.fillRect(0, 0, width, height);
 
-    drawFrontIndicator(ctx) {
-        // Draw arrow from bottom towards center to indicate FRONT
         ctx.save();
-        ctx.translate(CENTER_X, CENTER_Y);
+        ctx.translate(centerX, centerY);
 
-        // Text "FRONT"
-        ctx.fillStyle = "rgba(255, 255, 255, 0.3)"; // Semi-transparent gray/white
-        ctx.font = "bold 16px sans-serif";
-        ctx.textAlign = "center";
-
-        // Position inside the circle to avoid clipping
-        // Radius is 140. Info text is at bottom.
-        // Place text at Y offset 100 (Abs Y=260)
-        ctx.fillText("FRONT", 0, RADIUS_WIDE - 40);
-
-        // Arrow pointing inward from bottom
-        ctx.beginPath();
-        // Shaft: from near rim (135) to inward (115)
-        ctx.moveTo(0, RADIUS_WIDE - 5);
-        ctx.lineTo(0, RADIUS_WIDE - 25);
-
-        // Arrowhead
-        ctx.moveTo(0, RADIUS_WIDE - 25);
-        ctx.lineTo(-5, RADIUS_WIDE - 18);
-        ctx.moveTo(0, RADIUS_WIDE - 25);
-        ctx.lineTo(5, RADIUS_WIDE - 18);
-
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.3)";
-        ctx.lineWidth = 3;
-        ctx.stroke();
-
-        ctx.restore();
-    }
-
-    drawGrid(ctx) {
-        // Draw Circles
-        ctx.strokeStyle = COLOR_GRID_LINES;
-        ctx.lineWidth = 1;
-
-        [RADIUS_CLOSE, RADIUS_MEDIUM, RADIUS_WIDE].forEach(r => {
+        if (this.state.random && this.state.random_azimuth_mode === "front") {
             ctx.beginPath();
-            ctx.arc(CENTER_X, CENTER_Y, r, 0, Math.PI * 2);
+            ctx.moveTo(0, 0);
+            ctx.arc(0, 0, outerRadius, Math.PI / 4, Math.PI * 3 / 4);
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255, 143, 163, 0.055)";
+            ctx.fill();
+            ctx.strokeStyle = "rgba(255, 143, 163, 0.22)";
+            ctx.lineWidth = 1;
             ctx.stroke();
-        });
+        }
 
-        // Draw Axes (X form for 45 degs)
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.105)";
+        ctx.lineWidth = 1;
+        for (const distance of DISTANCE_OPTIONS) {
+            ctx.beginPath();
+            ctx.arc(0, 0, radii[distance], 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
         ctx.beginPath();
-        ctx.moveTo(CENTER_X - RADIUS_WIDE, CENTER_Y);
-        ctx.lineTo(CENTER_X + RADIUS_WIDE, CENTER_Y);
-        ctx.moveTo(CENTER_X, CENTER_Y - RADIUS_WIDE);
-        ctx.lineTo(CENTER_X, CENTER_Y + RADIUS_WIDE);
-
-        // Diagonals
-        const diag = RADIUS_WIDE * 0.707;
-        ctx.moveTo(CENTER_X - diag, CENTER_Y - diag);
-        ctx.lineTo(CENTER_X + diag, CENTER_Y + diag);
-        ctx.moveTo(CENTER_X + diag, CENTER_Y - diag);
-        ctx.lineTo(CENTER_X - diag, CENTER_Y + diag);
+        for (let angle = 0; angle < 360; angle += 45) {
+            const radians = angle * Math.PI / 180;
+            ctx.moveTo(0, 0);
+            ctx.lineTo(Math.cos(radians) * outerRadius, Math.sin(radians) * outerRadius);
+        }
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.075)";
         ctx.stroke();
-    }
 
-    drawSubject(ctx) {
-        // Just a box in the center
-        ctx.fillStyle = "#666";
-        ctx.fillRect(CENTER_X - 6, CENTER_Y - 6, 12, 12);
-    }
+        ctx.fillStyle = "rgba(232, 232, 240, 0.28)";
+        ctx.font = `800 ${Math.max(7, size * 0.034)}px 'Sora', sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText("FRONT", 0, outerRadius * 0.72);
 
-    drawCameraTriangle(ctx) {
-        const r = DISTANCE_MAP[this.state.distance];
-        // Convert azimuth to math angle. 
-        // 0 deg = Front (Bottom, PI/2)
-        // 90 deg = Right (0)
-        // 180 deg = Back (Top, -PI/2)
-        // 270 deg = Left (PI)
-
-        // Formula: Angle = PI/2 - (Azimuth * PI/180)
-        const angleRad = (Math.PI / 2) - (this.state.azimuth * (Math.PI / 180));
-
-        const cx = CENTER_X + r * Math.cos(angleRad);
-        const cy = CENTER_Y + r * Math.sin(angleRad);
-
-        ctx.save();
-        ctx.translate(cx, cy);
-        ctx.rotate(angleRad + Math.PI / 2); // Point towards center
-
-        // Triangle shape
-        ctx.fillStyle = COLOR_ACTIVE;
-        ctx.strokeStyle = "#000";
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = "rgba(232, 232, 240, 0.24)";
+        ctx.lineWidth = Math.max(1.5, size * 0.008);
         ctx.beginPath();
-        ctx.moveTo(0, 10); // Pointing IN
-        ctx.lineTo(-8, -8);
-        ctx.lineTo(8, -8);
+        ctx.moveTo(0, outerRadius * 0.93);
+        ctx.lineTo(0, outerRadius * 0.79);
+        ctx.moveTo(0, outerRadius * 0.79);
+        ctx.lineTo(-size * 0.018, outerRadius * 0.83);
+        ctx.moveTo(0, outerRadius * 0.79);
+        ctx.lineTo(size * 0.018, outerRadius * 0.83);
+        ctx.stroke();
+
+        const subjectSize = Math.max(7, size * 0.034);
+        ctx.fillStyle = "#b8a9e8";
+        ctx.shadowColor = "rgba(184, 169, 232, 0.48)";
+        ctx.shadowBlur = size * 0.035;
+        ctx.fillRect(-subjectSize / 2, -subjectSize / 2, subjectSize, subjectSize);
+        ctx.shadowBlur = 0;
+
+        const radius = radii[this.state.distance];
+        const cameraAngle = (Math.PI / 2) - (this.state.azimuth * Math.PI / 180);
+        const cameraX = radius * Math.cos(cameraAngle);
+        const cameraY = radius * Math.sin(cameraAngle);
+        const triangleSize = Math.max(7, size * 0.034);
+
+        ctx.translate(cameraX, cameraY);
+        ctx.rotate(cameraAngle + Math.PI / 2);
+        ctx.fillStyle = "#ff8fa3";
+        ctx.strokeStyle = "#2a1420";
+        ctx.lineWidth = Math.max(1, size * 0.006);
+        ctx.shadowColor = "rgba(255, 143, 163, 0.58)";
+        ctx.shadowBlur = size * 0.045;
+        ctx.beginPath();
+        ctx.moveTo(0, triangleSize);
+        ctx.lineTo(-triangleSize * 0.72, -triangleSize * 0.7);
+        ctx.lineTo(triangleSize * 0.72, -triangleSize * 0.7);
         ctx.closePath();
         ctx.fill();
-        ctx.stroke(); // Add outline for visibility
-
+        ctx.shadowBlur = 0;
+        ctx.stroke();
         ctx.restore();
     }
 
-    drawElevationBar(ctx) {
-        // Simple vertical slider on the right
-        const barX = CANVAS_SIZE - 20;
-        const barH = 200;
-        const barY = (CANVAS_SIZE - barH) / 2;
-
-        // Track line
-        ctx.strokeStyle = COLOR_GRID_LINES;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(barX, barY);
-        ctx.lineTo(barX, barY + barH);
-        ctx.stroke();
-
-        // Ticks for steps
-        // -30 (Bottom) to 60 (Top)
-        // Map: range = 90. Bar Top = 60, Bar Bottom = -30.
-        ELEVATION_STEPS.forEach(step => {
-            const norm = (step + 30) / 90; // 0..1
-            const y = barY + barH - (norm * barH);
-
-            ctx.fillStyle = (step === this.state.elevation) ? COLOR_ACTIVE : "#666";
-            ctx.beginPath();
-            ctx.arc(barX, y, 4, 0, Math.PI * 2);
-            ctx.fill();
-
-            // Text label
-            if (Math.abs(step - this.state.elevation) < 0.1 || step % 30 === 0) {
-                ctx.fillStyle = "#888";
-                ctx.font = "10px sans-serif";
-                ctx.textAlign = "right";
-                ctx.fillText(step + "°", barX - 8, y + 3);
-            }
-        });
-
-        // Current Indicator Handle
-        const currentNorm = (this.state.elevation + 30) / 90;
-        const curY = barY + barH - (currentNorm * barH);
-        ctx.fillStyle = COLOR_ACTIVE;
-        ctx.beginPath();
-        ctx.arc(barX, curY, 6, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    drawInfoText(ctx) {
-        ctx.fillStyle = COLOR_TEXT;
-        ctx.font = "12px monospace";
-        ctx.textAlign = "left";
-        ctx.fillText(`Azimuth:   ${this.state.azimuth}°`, 10, CANVAS_SIZE - 40);
-        ctx.fillText(`Elevation: ${this.state.elevation}°`, 10, CANVAS_SIZE - 25);
-        ctx.fillText(`Distance:  ${this.state.distance}`, 10, CANVAS_SIZE - 10);
-
-        // Trigger status
-        ctx.fillStyle = this.state.include_trigger ? "#4a4" : "#a44";
-        ctx.fillRect(CANVAS_SIZE - 20, CANVAS_SIZE - 20, 10, 10);
-    }
-
-    // --- Interaction ---
-    onPointerDown(e) {
-        this.canvas.setPointerCapture(e.pointerId);
-        this.isDragging = true;
-        this.handlePointer(e);
-    }
-
-    onPointerMove(e) {
-        if (!this.isDragging) return;
-        this.handlePointer(e);
-    }
-
-    onPointerUp(e) {
-        this.isDragging = false;
-        this.dragMode = null;
-        this.canvas.releasePointerCapture(e.pointerId);
-    }
-
-    handlePointer(e) {
-        const rect = this.canvas.getBoundingClientRect();
-        // Calculate scale factors in case the UI is zoomed
-        const scaleX = this.canvas.width / rect.width;
-        const scaleY = this.canvas.height / rect.height;
-
-        const x = (e.clientX - rect.left) * scaleX;
-        const y = (e.clientY - rect.top) * scaleY;
-
-        if (this.dragMode === 'elevation') {
-            this.updateElevation(y);
-            return;
-        }
-
-        if (!this.dragMode) {
-            // Check Elevation Bar
-            const barX = CANVAS_SIZE - 20;
-            if (Math.abs(x - barX) < 20) {
-                this.dragMode = 'elevation';
-                this.updateElevation(y);
-                return;
-            }
-
-            // Check Trigger Box
-            if (x > CANVAS_SIZE - 30 && y > CANVAS_SIZE - 30) {
-                this.state.include_trigger = !this.state.include_trigger;
-                this.updateNode();
-                this.draw();
-                this.isDragging = false;
-                return;
-            }
-
-            this.dragMode = 'azimuth';
-        }
-
-        // Default: Azimuth/Distance
-        this.updatePos(x, y);
-    }
-
-    // Logic updates
-    updatePos(x, y) {
-        // 1. Calculate Angle
-        const dx = x - CENTER_X;
-        const dy = y - CENTER_Y;
-
-        let angleRad = Math.atan2(dy, dx);
-        let deg = (Math.PI / 2 - angleRad) * (180 / Math.PI);
-
-        // Normalize 0-360
-        if (deg < 0) deg += 360;
-        if (deg >= 360) deg -= 360;
-
-        // Snap to 45 degrees
-        this.state.azimuth = Math.round(deg / 45) * 45;
-        if (this.state.azimuth >= 360) this.state.azimuth = 0;
-
-        // 2. Calculate Distance (Radius)
-        const dist = Math.sqrt(dx * dx + dy * dy);
-
-        // SNAP LOGIC: Only change distance if we are "close" to the rings area.
-        // RADIUS_WIDE is 140. If user drags mouse way out (e.g. > 200px), 
-        // they probably just want to change the angle, not snap to "Wide" distance.
-        const activeZone = RADIUS_WIDE + 60; // 200px
-
-        if (dist < activeZone) {
-            // Snap to rings
-            const dists = [RADIUS_CLOSE, RADIUS_MEDIUM, RADIUS_WIDE];
-            const closest = dists.reduce((prev, curr) =>
-                Math.abs(curr - dist) < Math.abs(prev - dist) ? curr : prev
-            );
-            this.state.distance = DISTANCE_REVERSE_MAP[closest];
-        }
-
-        this.updateNode();
-        this.draw();
-    }
-
-    updateElevation(y) {
-        const barH = 200;
-        const barY = (CANVAS_SIZE - barH) / 2;
-
-        // Inverse map from Y to degree
-        // Y = barY + barH - (norm * barH)
-        // norm = (barY + barH - Y) / barH
-        let norm = (barY + barH - y) / barH;
-        if (norm < 0) norm = 0;
-        if (norm > 1) norm = 1;
-
-        // Deg = norm * 90 - 30
-        let deg = norm * 90 - 30;
-
-        // Snap to steps [-30, 0, 30, 60]
-        const closest = ELEVATION_STEPS.reduce((prev, curr) =>
-            Math.abs(curr - deg) < Math.abs(prev - deg) ? curr : prev
-        );
-
-        this.state.elevation = closest;
-        this.updateNode();
-        this.draw();
-    }
-
-    updateNode() {
-        // Serialize state to the hidden widget
-        if (this.node.widgets && this.node.widgets[0]) {
-            this.node.widgets[0].value = JSON.stringify(this.state);
-        }
+    dispose() {
+        this.resizeObserver?.disconnect();
     }
 }
 
-
-// --- Extension Registration ---
 app.registerExtension({
     name: "VNCCS.VisualCameraControl",
-    async beforeRegisterNodeDef(nodeType, nodeData, app) {
-        if (nodeData.name === "VNCCS_VisualPositionControl") {
-            const onNodeCreated = nodeType.prototype.onNodeCreated;
-            nodeType.prototype.onNodeCreated = function () {
-                if (onNodeCreated) {
-                    onNodeCreated.apply(this, arguments);
-                }
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (nodeData.name !== "VNCCS_VisualPositionControl") return;
 
-                // Hide the default text input (camera_data)
-                // usually mapped to widgets[0] if defined in INPUT_TYPES as required string
+        const onNodeCreated = nodeType.prototype.onNodeCreated;
+        nodeType.prototype.onNodeCreated = function () {
+            const result = onNodeCreated?.apply(this, arguments);
+            this.setSize([380, 420]);
+            const dataWidget = hideDataWidget(this);
 
-                // Add Custom Widget
-                const widget = new VNCCS_CameraWidget(this, "camera_camera", {}, app);
-                this.cameraWidget = widget;
+            this.cameraWidget = new VNCCSCameraWidget(this);
+            this.cameraDOMWidget = this.addDOMWidget(
+                DOM_WIDGET_NAME,
+                "ui",
+                this.cameraWidget.container,
+                { serialize: false, hideOnZoom: false },
+            );
 
-                // Add the canvas to the DOM of the node
-                // ComfyUI nodes have `addDOMWidget`
-                this.addDOMWidget("CameraControl", "canvas", widget.canvas, {
-                    serialize: false, // We don't serialize the canvas itself
-                    hideOnZoom: false
-                });
+            if (dataWidget) {
+                const previousBeforeQueued = dataWidget.beforeQueued;
+                dataWidget.beforeQueued = (...args) => {
+                    previousBeforeQueued?.apply(dataWidget, args);
+                    this.cameraWidget?.randomizeForQueue();
+                };
+            }
 
-                // Force initial update to sync invisible widget
-                widget.updateNode();
+            this.cameraWidget.commit();
+            syncDOMWidgetWidth(this);
+            setTimeout(() => {
+                syncDOMWidgetWidth(this);
+                this.cameraWidget?.resize();
+            }, 50);
+            return result;
+        };
 
-                // Keep dimensions nice
-                this.setSize([340, 380]);
-            };
+        const onConfigure = nodeType.prototype.onConfigure;
+        nodeType.prototype.onConfigure = function () {
+            onConfigure?.apply(this, arguments);
+            hideDataWidget(this);
+            setTimeout(() => {
+                if (!this.cameraWidget) return;
+                syncDOMWidgetWidth(this);
+                this.cameraWidget.loadFromNode();
+                this.cameraWidget.resize();
+            }, 100);
+        };
 
-            const onConfigure = nodeType.prototype.onConfigure;
-            nodeType.prototype.onConfigure = function () {
-                if (onConfigure) {
-                    onConfigure.apply(this, arguments);
-                }
-                if (this.cameraWidget && this.widgets && this.widgets[0]) {
-                    try {
-                        const loaded = JSON.parse(this.widgets[0].value);
-                        this.cameraWidget.state = { ...this.cameraWidget.state, ...loaded };
-                        this.cameraWidget.draw();
-                    } catch (e) {
-                        console.error("VNCCS_VisualPositionControl failed to parse widget state on load", e);
-                    }
-                }
-            };
-        }
-    }
+        nodeType.prototype.onResize = function () {
+            syncDOMWidgetWidth(this);
+            clearTimeout(this._vnccsCameraResizeTimer);
+            this._vnccsCameraResizeTimer = setTimeout(() => {
+                syncDOMWidgetWidth(this);
+                this.cameraWidget?.resize();
+            }, 50);
+        };
+
+        const onRemoved = nodeType.prototype.onRemoved;
+        nodeType.prototype.onRemoved = function () {
+            clearTimeout(this._vnccsCameraResizeTimer);
+            this.cameraWidget?.dispose();
+            onRemoved?.apply(this, arguments);
+        };
+    },
 });

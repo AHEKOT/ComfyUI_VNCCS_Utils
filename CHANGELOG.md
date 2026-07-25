@@ -1,3 +1,96 @@
+# Version 0.6.0
+## VNCCS 3D Factory, Pose Studio Animation, and Multi-Character Scenes
+
+### New Features
+
+*   **VNCCS 3D Factory**: First release of a scene-oriented image-to-3D Gaussian workspace inside ComfyUI.
+    *   Runs the open-source [`VAST-AI-Research/TripoSplat`](https://github.com/VAST-AI-Research/TripoSplat) pipeline locally through ComfyUI's PyTorch device, without an external inference service or API key.
+    *   Includes graphical discovery and download of the required diffusion, VAE, DINOv3, Flux VAE, and BiRefNet weights from the standard ComfyUI model folders and `extra_model_paths`.
+    *   Provides background removal, fixed or randomized seeds, sampling-step and guidance controls, Gaussian counts from 32K to 262K, experimental 524K/1.05M densities, 1024 conditioning, experimental 1536/2048 conditioning, and optional native-resolution input capping.
+    *   Reports generation progress, supports cancellation, and stores downloadable per-job logs.
+
+*   **Persistent 3D scenes and object editing**: Added host-backed scene management and multi-object composition.
+    *   Scenes can be created, reopened, renamed, and deleted; their references, objects, generation settings, transforms, visibility, camera, render settings, lighting, skydome, and exports are retained.
+    *   The layer list supports drag-and-drop ordering, visibility, inline rename, duplication, deletion, grouping, ungrouping, and group transforms.
+    *   Viewport selection and gizmos provide object and group translation, rotation, and uniform scaling.
+
+*   **Native Gaussian viewport and scene output**: Added a bundled SparkJS/Three.js viewport that renders multiple Gaussian objects together.
+    *   Supports orbit, pan, detailed zoom, adaptive clipping, selection bounds, an optional grid, and quality LOD.
+    *   The node returns a clean `preview` image of the complete scene without editor overlays.
+    *   Canonical PLY assets are converted lazily into a shared, bounded, content-addressed SPLAT cache for viewport rendering.
+
+*   **3D Factory lighting and environments**: Added persistent realtime lighting presets and custom scene lighting.
+    *   Includes Off, Day, Night, Dawn, Sunset, and Custom presets, with intensity, color, azimuth, elevation, ambient, and background controls.
+    *   JPEG, PNG, and WebP skydomes support visibility, horizontal rotation, horizon tilt, roll, exposure, blur, horizon leveling, and alignment reset.
+
+*   **Gaussian PLY export and model library**: Added reusable object and scene assets.
+    *   Object and combined-scene PLY exports bake position, rotation, and uniform scale into Gaussian centers and covariance while preserving opacity, color, and available spherical-harmonic data.
+    *   Scene export includes persistent dimensions, aspect presets, FOV, camera metadata, and an optional camera-frame overlay.
+    *   The local and Hugging Face-backed library stores objects, complete `.vnccs3d` scenes, and skydomes with generated previews.
+    *   Scene packages preserve layer order, groups, visibility, transforms, camera, render settings, lighting, and environment data; remote entries load as independent scene copies.
+
+*   **Pose Studio Animation mode**: Added a complete keyframe editor alongside the existing Image mode.
+    *   Provides a dope-sheet timeline with FPS and duration controls, playback, looping, playhead scrubbing, Auto-Key, snapping, per-bone tracks, model-rotation tracks, and anatomical track groups.
+    *   Adds Hold, Linear, Ease In, Ease Out, Easy Ease, and Smooth interpolation using normalized local quaternions and shortest-path SLERP.
+    *   Keys can be created, updated, dragged, deleted, range-selected, moved as a group, copied, pasted at the playhead, and restored through animation-aware Undo/Redo.
+    *   Dense timelines virtualize offscreen rows and key markers; hand tracks use compact collapsible finger groups.
+    *   Animation mode changes the first Pose Studio output to ComfyUI's native `VIDEO` datatype while Image mode retains the existing LIST/GRID `IMAGE` behavior.
+    *   Animation data is retained in a bounded host-side cache referenced by the workflow, including multi-character clips.
+
+*   **Mixamo FBX animation import**: Importing a Mixamo clip switches Pose Studio to Animation mode and retargets the motion into one keyed clip with automatically configured timing, including body, fingers, and toe-base landmarks.
+
+*   **Video-to-pose animation import**: Added video files as Pose Studio animation sources.
+    *   Supports common browser video formats with an interactive preview, IN/OUT range, playhead, timeline zoom, pan, fit-selection, source-FPS detection, requested capture FPS, and keyframe interval controls.
+    *   Supports up to 600 pose samples, capped by the detected source frame rate.
+    *   Includes Off, Light, Medium, and Strong quaternion stabilization plus Conservative, Balanced, and Aggressive adaptive key reduction.
+
+*   **Multi-character Pose Studio scenes**: Added support for up to four independently editable characters in one node.
+    *   Characters have stable scene slots, names, colors, body/mesh settings, X/Y/Zoom transforms, static poses, and animation clips.
+    *   The selected character exposes the existing body, pose, camera-position, and animation controls while all other characters remain visible and are included in every capture.
+    *   Pose tabs, output framing, camera angle, timeline FPS, duration, loop state, and playhead are shared across the scene; each character retains its own keyed motion.
+    *   Legacy single-character workflows migrate automatically to one Main Character.
+
+*   **Scene- and animation-aware Pose Library**: Added complete multi-character static scenes and animation scenes to local and remote pose repositories.
+    *   Animation assets support WebM/video previews, animation counts, categories, deletion, loading, repository synchronization, and publishing.
+    *   Local and Hugging Face manifests track animation JSON and preview hashes for incremental synchronization and publishing.
+
+*   **Directional Skydome for Pose Studio**: Added an optional transparent rainbow wire-grid environment for camera-direction references.
+    *   Enabling it exposes a `camera_prompt` input intended for VNCCS Visual Camera Control.
+    *   Every execution parses its resolved azimuth and elevation, rotates the skydome for that queued run, captures the updated view, and appends normalized camera wording to the lighting prompt.
+    *   Disabling the feature removes the socket, prompt merge, interface overlay, and exported skydome.
+
+### Changes to Existing Features
+
+*   **Pose Studio SAM 3D Body and Mixamo retargeting**: Source body proportions are applied before IK target generation; limb and foot fitting use measured source segments, and camera fitting accounts for the resulting character proportions and view direction.
+
+*   **Shared custom selectors**: Added one accessible dropdown implementation across Pose Studio, the animation timeline, UniCanvas, Model Manager, and 3D Factory.
+    *   Keeps native controls for serialization while replacing unreliable browser popups with themed, viewport-aware menus.
+    *   Supports keyboard navigation, disabled-option skipping, active selection highlighting, long values, and closing when the active selector is clicked again.
+
+*   **VNCCS Visual Camera Control**: Added per-execution random camera generation.
+    *   Random mode can use the complete 360° azimuth range or restrict it to Front ±45°, while elevation and distance remain randomized.
+
+*   **Pose Studio Debug Mode**: Each execution selects one complete loaded library pose; random lighting can be enabled independently while Original and Manual lighting modes remain available.
+
+*   **UniCanvas presets**: Preset mode applies the selected preset's generation backend, loader, model, CLIP, and VAE in both frontend and backend.
+    *   Runtime parameters such as steps are remembered independently for each preset.
+    *   Preset cards display the actual primary model filename, while Custom mode continues to preserve explicitly selected models.
+
+*   **Model Manager repositories**: Download progress and installed-version selection are namespaced by repository.
+    *   Repositories may contain models with the same display name without sharing status or selecting each other's installed version.
+    *   Existing non-namespaced registry keys remain available as compatibility aliases for older workflows and frontends.
+
+### Packaging
+
+*   **Pose Studio runtime assets**: Replaced the source MakeHuman asset tree and Python-side preview builder with a versioned compressed browser runtime asset while retaining live body morph controls.
+*   **Dependencies and registry metadata**: Added PyAV for animation/video handling, TripoSplat progress dependencies, and Comfy Registry entries for UniCanvas and 3D Factory.
+
+### Documentation
+
+*   Added the [VNCCS 3D Factory setup and workflow guide](docs/VNCCS_3D_FACTORY.md).
+*   Expanded the [Pose Studio usage guide](docs/VNCCS_POSE_STUDIO_USAGE.md) for Animation mode, Mixamo and video import, multi-character scenes, native VIDEO output, Directional Skydome, and camera-prompt integration.
+*   Updated the README and Model Manager guide for 3D Factory, Visual Camera Control random ranges, Directional Skydome integration, and repository behavior.
+
 # Version 0.5.3
 ## Z-Image Fun ControlNet Crash Mitigation
 

@@ -15,13 +15,10 @@ This file relies on runtime objects provided by ComfyUI.
 Includes local implementations of tensor_crop and tensor_paste to avoid impact.utils dependency.
 """
 
-import sys
 import math
 import torch
 import numpy as np
 import cv2
-import os
-from concurrent.futures import ThreadPoolExecutor
 try:
     import node_helpers
 except Exception:
@@ -63,12 +60,6 @@ except Exception:
             return samples
     comfy = _ComfyUtilsFallback()
 
-import torch
-import numpy as np
-from PIL import Image
-import os
-import cv2
-from concurrent.futures import ThreadPoolExecutor
 from nodes import MAX_RESOLUTION
 
 def _tensor_resize(image, width, height, method="lanczos"):
@@ -779,7 +770,6 @@ class VNCCS_QWEN_Detailer:
         
         # Check Kornia
         try:
-             import kornia
              from kornia.color import rgb_to_lab, lab_to_rgb
         except ImportError:
              print("[VNCCS] Warning: Kornia not found. Skipping color match. Install with 'pip install kornia'")

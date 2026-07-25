@@ -9,22 +9,30 @@ import tempfile
 import uuid
 import threading
 import asyncio
-import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from fractions import Fraction
 from aiohttp import web
 from PIL import Image
 
 DEFAULT_REPO_ID = "MIUProject/VNCCS_PoseLibrary_Main"
 LOCAL_USER_REPOSITORY = "local_user_poses"
 DEFAULT_CATEGORY = "Uncategorized"
+POSE_ASSET_TYPE = "pose"
+ANIMATION_ASSET_TYPE = "animation"
+ANIMATION_SYSTEM_TAG = "Animation"
 RESERVED_LIBRARY_JSON = {"repositories.user.json", "pose_library.json"}
-SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 MAX_PREVIEW_BYTES = 16 * 1024 * 1024
-MAX_SYNC_CAPTURE_CHARS = 64 * 1024 * 1024
+MAX_VIDEO_PREVIEW_INPUT_BYTES = 40 * 1024 * 1024
+MAX_VIDEO_PREVIEW_STORED_BYTES = 32 * 1024 * 1024
+MAX_LIBRARY_SAVE_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_POSE_REPOSITORY_FILE_BYTES = 32 * 1024 * 1024
 MAX_POSE_REPOSITORY_SYNC_BYTES = 256 * 1024 * 1024
 _REPOSITORY_PROGRESS = {}
+_REPOSITORY_PROGRESS_LOCK = threading.Lock()
+_REPOSITORY_PROGRESS_MAX = 256
+_REPOSITORY_PROGRESS_TTL_SECONDS = 60 * 60
+_REPOSITORY_PROGRESS_RUNNING_TTL_SECONDS = 24 * 60 * 60
 _BACKGROUND_REFRESH_STATE = {
     "running": False,
     "task_id": "",
@@ -33,27 +41,50 @@ _BACKGROUND_REFRESH_STATE = {
 }
 _BACKGROUND_REFRESH_LOCK = threading.Lock()
 
+def _prune_repository_progress(now=None):
+    now = time.time() if now is None else now
+    expired = []
+    for task_id, state in _REPOSITORY_PROGRESS.items():
+        age = max(0.0, now - float(state.get("updated_at", now)))
+        status = state.get("status")
+        if (status != "running" and age > _REPOSITORY_PROGRESS_TTL_SECONDS) or age > _REPOSITORY_PROGRESS_RUNNING_TTL_SECONDS:
+            expired.append(task_id)
+    for task_id in expired:
+        _REPOSITORY_PROGRESS.pop(task_id, None)
+    if len(_REPOSITORY_PROGRESS) <= _REPOSITORY_PROGRESS_MAX:
+        return
+    ordered = sorted(
+        _REPOSITORY_PROGRESS.items(),
+        key=lambda item: (item[1].get("status") == "running", float(item[1].get("updated_at", 0))),
+    )
+    for task_id, _ in ordered[:len(_REPOSITORY_PROGRESS) - _REPOSITORY_PROGRESS_MAX]:
+        _REPOSITORY_PROGRESS.pop(task_id, None)
+
 def repository_progress_start(task_id, message="Starting repository operation..."):
     if not task_id:
         return
-    _REPOSITORY_PROGRESS[task_id] = {
-        "status": "running",
-        "message": message,
-        "progress": 0,
-        "current_file": "",
-        "file_index": 0,
-        "total_files": 0,
-        "bytes_done": 0,
-        "bytes_total": 0,
-        "updated_at": time.time(),
-    }
+    with _REPOSITORY_PROGRESS_LOCK:
+        _REPOSITORY_PROGRESS[task_id] = {
+            "status": "running",
+            "message": message,
+            "progress": 0,
+            "current_file": "",
+            "file_index": 0,
+            "total_files": 0,
+            "bytes_done": 0,
+            "bytes_total": 0,
+            "updated_at": time.time(),
+        }
+        _prune_repository_progress()
 
 def repository_progress_update(task_id, **kwargs):
     if not task_id:
         return
-    state = _REPOSITORY_PROGRESS.setdefault(task_id, {"status": "running", "progress": 0})
-    state.update(kwargs)
-    state["updated_at"] = time.time()
+    with _REPOSITORY_PROGRESS_LOCK:
+        state = _REPOSITORY_PROGRESS.setdefault(task_id, {"status": "running", "progress": 0})
+        state.update(kwargs)
+        state["updated_at"] = time.time()
+        _prune_repository_progress()
 
 def repository_progress_finish(task_id, message="Done."):
     if not task_id:
@@ -66,14 +97,16 @@ def repository_progress_fail(task_id, message):
     repository_progress_update(task_id, status="error", message=str(message), progress=100)
 
 def get_repository_progress(task_id):
-    state = _REPOSITORY_PROGRESS.get(task_id)
-    if not state:
-        return {
-            "status": "unknown",
-            "message": "Waiting for repository operation...",
-            "progress": 0,
-        }
-    return dict(state)
+    with _REPOSITORY_PROGRESS_LOCK:
+        _prune_repository_progress()
+        state = _REPOSITORY_PROGRESS.get(task_id)
+        if not state:
+            return {
+                "status": "unknown",
+                "message": "Waiting for repository operation...",
+                "progress": 0,
+            }
+        return dict(state)
 
 # Base path for PoseLibrary
 def get_library_path():
@@ -238,6 +271,8 @@ def refresh_pose_repository(repo, task_id=None):
         **repo,
         "status": "unknown",
         "pose_count": int(repo.get("pose_count") or 0),
+        "animation_count": int(repo.get("animation_count") or 0),
+        "asset_count": int(repo.get("asset_count") or repo.get("pose_count") or 0),
         "last_checked": time.time(),
         "last_error": "",
     }
@@ -265,7 +300,15 @@ def refresh_pose_repository(repo, task_id=None):
                 pass
             poses = manifest.get("poses") or []
             sync_result = sync_pose_repository_files(repo, manifest, token, task_id=task_id)
-            result["pose_count"] = len(poses)
+            result["animation_count"] = sum(
+                1 for item in poses
+                if isinstance(item, dict) and (
+                    normalize_asset_type(item.get("asset_type")) == ANIMATION_ASSET_TYPE
+                    or str(item.get("json_path") or "").replace("\\", "/").startswith("animations/")
+                )
+            )
+            result["pose_count"] = len(poses) - result["animation_count"]
+            result["asset_count"] = len(poses)
             result["downloaded_count"] = sync_result["downloaded_count"]
             result["skipped_count"] = sync_result["skipped_count"]
             result["removed_count"] = sync_result["removed_count"]
@@ -277,12 +320,17 @@ def refresh_pose_repository(repo, task_id=None):
         except Exception:
             repository_progress_update(task_id, message=f"Manifest not found. Counting files in {repo_id}...", progress=50)
             files = api.list_repo_files(repo_id=repo_id, repo_type="model", token=token)
-            result["pose_count"] = len([
+            result["asset_count"] = len([
                 file for file in files
                 if file.lower().endswith(".json") and os.path.basename(file) != manifest_path
             ])
+            result["animation_count"] = len([
+                file for file in files
+                if str(file).replace("\\", "/").startswith("animations/") and file.lower().endswith(".json")
+            ])
+            result["pose_count"] = result["asset_count"] - result["animation_count"]
             result["status"] = "ok"
-            repository_progress_finish(task_id, f"Repository checked: {result['pose_count']} JSON files found, no pose manifest to sync.")
+            repository_progress_finish(task_id, f"Repository checked: {result['asset_count']} library JSON files found, no manifest to sync.")
     except Exception as exc:
         result["status"] = "error"
         result["last_error"] = str(exc)
@@ -432,19 +480,23 @@ def collect_local_pose_files():
                 continue
             meta = get_pose_meta(pose_data)
             category = meta.get("category") or DEFAULT_CATEGORY
+            asset_type = meta.get("asset_type") or POSE_ASSET_TYPE
             preview_path, preview_type = find_preview(root, name)
             preview_ext = os.path.splitext(preview_path)[1].lower() if preview_path else ""
             category_dir = category_to_dir(category)
             safe_name = sanitize_pose_name(name)
+            asset_root = "animations" if asset_type == ANIMATION_ASSET_TYPE else "poses"
+            preview_root = "animation_previews" if asset_type == ANIMATION_ASSET_TYPE else "previews"
             poses.append({
                 "name": name,
                 "category": category,
                 "tags": meta.get("tags") or [],
+                "asset_type": asset_type,
                 "json_path": path,
                 "preview_path": preview_path,
                 "preview_type": preview_type,
-                "hub_json_path": f"poses/{category_dir}/{safe_name}.json",
-                "hub_preview_path": f"previews/{category_dir}/{safe_name}{preview_ext}" if preview_path else "",
+                "hub_json_path": f"{asset_root}/{category_dir}/{safe_name}.json",
+                "hub_preview_path": f"{preview_root}/{category_dir}/{safe_name}{preview_ext}" if preview_path else "",
                 "json_sha256": sha256_file(path),
                 "preview_sha256": sha256_file(preview_path) if preview_path else "",
             })
@@ -453,11 +505,14 @@ def collect_local_pose_files():
 def get_local_repository_info():
     config = get_vnccs_user_config()
     poses = collect_local_pose_files()
+    animation_count = sum(1 for item in poses if item.get("asset_type") == ANIMATION_ASSET_TYPE)
     return {
         "repo_id": LOCAL_USER_REPOSITORY,
-        "title": "Local User Poses",
-        "description": "Poses saved locally from Pose Studio.",
-        "pose_count": len(poses),
+        "title": "Local Pose Library",
+        "description": "Poses and animations saved locally from Pose Studio.",
+        "asset_count": len(poses),
+        "pose_count": len(poses) - animation_count,
+        "animation_count": animation_count,
         "publish_repo_id": config.get("pose_library_publish_repo_id") or "",
         "has_hf_token": bool(get_hf_token()),
         "last_publish": config.get("pose_library_last_publish") or None,
@@ -498,7 +553,7 @@ def remote_file_sha256(repo_id, path_in_repo, token):
 
 def infer_category_from_hub_path(path_in_repo):
     parts = [part for part in str(path_in_repo or "").replace("\\", "/").split("/") if part]
-    if len(parts) >= 3 and parts[0] in {"poses", "previews"}:
+    if len(parts) >= 3 and parts[0] in {"poses", "previews", "animations", "animation_previews"}:
         return parts[1]
     if len(parts) >= 2:
         return parts[-2]
@@ -534,7 +589,7 @@ def cleanup_local_repository_cache(repo_id, expected_json_paths, expected_previe
     expected_json_paths = {os.path.abspath(path) for path in expected_json_paths}
     expected_preview_paths = {os.path.abspath(path) for path in expected_preview_paths if path}
     removed = []
-    preview_exts = {".webp", ".jpg", ".jpeg", ".png"}
+    preview_exts = {".webm", ".mp4", ".webp", ".jpg", ".jpeg", ".png"}
 
     for root, _dirs, files in os.walk(repo_root):
         for filename in files:
@@ -591,17 +646,6 @@ def remove_local_repository_cache(repo_id):
     shutil.rmtree(repo_root, ignore_errors=True)
     return removed_count
 
-def download_pose_repository_file_job(repo_id, token, job):
-    tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
-    try:
-        changed = copy_if_changed(tmp_path, job["target_path"], job.get("expected_sha") or "")
-        return {**job, "changed": changed, "bytes": os.path.getsize(tmp_path)}
-    finally:
-        try:
-            os.remove(tmp_path)
-        except Exception:
-            pass
-
 def sync_pose_repository_files(repo, manifest, token, task_id=None):
     """Download new/changed pose files from a Hugging Face pose repository."""
     repo_id = repo["repo_id"]
@@ -622,6 +666,11 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
         if not name:
             continue
         category = str(pose.get("category") or infer_category_from_hub_path(hub_json_path) or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
+        asset_type = (
+            ANIMATION_ASSET_TYPE
+            if str(hub_json_path).replace("\\", "/").startswith("animations/")
+            else normalize_asset_type(pose.get("asset_type"))
+        )
         pose_dir = get_pose_dir(repo_id, category)
         target_json = os.path.join(pose_dir, f"{name}.json")
         pose_states[hub_json_path] = {"changed": False, "error": False}
@@ -636,6 +685,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                     "target_path": target_json,
                     "expected_sha": pose.get("json_sha256") or "",
                     "expected_kind": "json",
+                    "asset_type": asset_type,
                 })
 
             hub_preview_path = pose.get("preview_path") or ""
@@ -652,6 +702,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None):
                             "target_path": target_preview,
                             "expected_sha": pose.get("preview_sha256") or "",
                             "expected_kind": "preview",
+                            "asset_type": asset_type,
                         })
                 except Exception as exc:
                     errors.append(f"{hub_preview_path}: {exc}")
@@ -742,6 +793,7 @@ def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
             "name": pose["name"],
             "category": pose["category"],
             "tags": pose["tags"],
+            "asset_type": pose.get("asset_type") or POSE_ASSET_TYPE,
             "json_path": pose["hub_json_path"],
             "preview_path": pose["hub_preview_path"],
             "preview_type": pose["preview_type"],
@@ -756,7 +808,7 @@ def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
 
     title = remote_manifest.get("title") if isinstance(remote_manifest, dict) else ""
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "title": title or "VNCCS Pose Library",
         "repo_id": repo_id,
         "updated_at": now,
@@ -783,7 +835,7 @@ def collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_fil
     if remote_manifest and remote_files:
         for path in remote_files:
             normalized = str(path or "").replace("\\", "/")
-            if normalized.startswith(("poses/", "previews/")) and normalized not in local_paths:
+            if normalized.startswith(("poses/", "previews/", "animations/", "animation_previews/")) and normalized not in local_paths:
                 delete_paths.add(normalized)
 
     return sorted(path for path in delete_paths if path and path != "pose_library.json")
@@ -846,7 +898,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
     if not repo_id:
         raise ValueError("Invalid Hugging Face repo id")
 
-    repository_progress_start(task_id, f"Publishing local poses to {repo_id}...")
+    repository_progress_start(task_id, f"Publishing local pose library to {repo_id}...")
     token = token or get_hf_token()
     if not token:
         repository_progress_fail(task_id, "Hugging Face token is required")
@@ -861,7 +913,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         else:
             api.repo_info(repo_id=repo_id, repo_type="model", token=token)
 
-        repository_progress_update(task_id, progress=8, message="Reading local poses...")
+        repository_progress_update(task_id, progress=8, message="Reading local poses and animations...")
         local_poses = collect_local_pose_files()
         repository_progress_update(task_id, progress=12, message="Reading remote manifest...")
         remote_manifest = load_remote_pose_manifest(repo_id, token)
@@ -910,13 +962,13 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                 upload_jobs.append({
                     "local_path": pose["json_path"],
                     "hub_path": pose["hub_json_path"],
-                    "commit_message": f"Update pose {pose['name']}",
+                    "commit_message": f"Update library item {pose['name']}",
                 })
             if preview_changed:
                 upload_jobs.append({
                     "local_path": pose["preview_path"],
                     "hub_path": pose["hub_preview_path"],
-                    "commit_message": f"Update pose preview {pose['name']}",
+                    "commit_message": f"Update library preview {pose['name']}",
                 })
             if not json_changed and not preview_changed:
                 skipped.append(pose["hub_json_path"])
@@ -924,6 +976,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                 remote_pose.get("name") != pose["name"]
                 or remote_pose.get("category") != pose["category"]
                 or remote_pose.get("tags") != pose["tags"]
+                or normalize_asset_type(remote_pose.get("asset_type")) != pose.get("asset_type", POSE_ASSET_TYPE)
                 or remote_pose.get("preview_path", "") != pose["hub_preview_path"]
                 or remote_pose.get("preview_sha256", "") != pose["preview_sha256"]
                 or remote_pose.get("json_sha256") != pose["json_sha256"]
@@ -962,7 +1015,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
                         total_files=len(upload_jobs),
                     )
             if upload_errors:
-                raise RuntimeError("Failed to upload changed pose files: " + "; ".join(upload_errors))
+                raise RuntimeError("Failed to upload changed library files: " + "; ".join(upload_errors))
 
         stale_paths = collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_files)
         if stale_paths:
@@ -1001,7 +1054,9 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
 
     result = {
         "repo_id": repo_id,
-        "pose_count": len(local_poses),
+        "asset_count": len(local_poses),
+        "pose_count": sum(1 for item in local_poses if item.get("asset_type") != ANIMATION_ASSET_TYPE),
+        "animation_count": sum(1 for item in local_poses if item.get("asset_type") == ANIMATION_ASSET_TYPE),
         "uploaded_count": len(uploaded),
         "deleted_count": len(deleted),
         "skipped_count": len(skipped),
@@ -1017,7 +1072,7 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         "pose_library_last_publish": time.time(),
         "pose_library_last_publish_result": result,
     })
-    repository_progress_finish(task_id, f"Published {len(uploaded)} files. Deleted {len(deleted)} stale files. {len(skipped)} poses unchanged.")
+    repository_progress_finish(task_id, f"Published {len(uploaded)} files. Deleted {len(deleted)} stale files. {len(skipped)} library items unchanged.")
     return result
 
 async def list_pose_repositories(request):
@@ -1050,7 +1105,9 @@ async def add_pose_repository(request):
         "manifest_path": data.get("manifest_path") or "pose_library.json",
         "enabled": True,
         "builtin": False,
+        "asset_count": 0,
         "pose_count": 0,
+        "animation_count": 0,
     })
     save_user_repositories(user_repos)
     return web.json_response({"success": True, "repositories": load_pose_repositories()})
@@ -1108,7 +1165,23 @@ def persist_refreshed_repositories(refreshed):
     for repo in refreshed:
         if repo.get("builtin"):
             override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
-            override.update({k: repo.get(k) for k in ("enabled", "pose_count", "last_checked", "last_error", "status", "sha", "updated_at", "downloaded_count", "skipped_count", "removed_count")})
+            override.update({
+                key: repo.get(key)
+                for key in (
+                    "enabled",
+                    "asset_count",
+                    "pose_count",
+                    "animation_count",
+                    "last_checked",
+                    "last_error",
+                    "status",
+                    "sha",
+                    "updated_at",
+                    "downloaded_count",
+                    "skipped_count",
+                    "removed_count",
+                )
+            })
         elif repo["repo_id"] in by_id:
             by_id[repo["repo_id"]].update(repo)
     save_user_repositories(list(by_id.values()))
@@ -1238,10 +1311,6 @@ def sanitize_pose_name(name):
     name = "".join(c for c in str(name or "") if c.isalnum() or c in "-_ ").strip()
     return name
 
-def sanitize_node_id(value):
-    cleaned = SAFE_ID_RE.sub("_", str(value or "")).strip("_")
-    return cleaned[:128]
-
 def sanitize_path_segment(value, fallback):
     value = str(value or "").strip() or fallback
     value = value.replace("\\", "_").replace("/", "_")
@@ -1281,35 +1350,73 @@ def get_raw_library_meta(pose_data):
         return {}
     return pose_data.get("_library") if isinstance(pose_data.get("_library"), dict) else {}
 
+def normalize_asset_type(value=None, pose_data=None):
+    if isinstance(pose_data, dict) and isinstance(pose_data.get("animation"), dict):
+        return ANIMATION_ASSET_TYPE
+    normalized = str(value or "").strip().lower()
+    return ANIMATION_ASSET_TYPE if normalized == ANIMATION_ASSET_TYPE else POSE_ASSET_TYPE
+
+def normalize_library_tags(tags, asset_type=POSE_ASSET_TYPE):
+    if isinstance(tags, str):
+        tags = [tag.strip() for tag in tags.split(",")]
+    normalized = []
+    seen = set()
+    for raw_tag in tags or []:
+        tag = str(raw_tag).strip()
+        if not tag:
+            continue
+        key = tag.casefold()
+        if key == ANIMATION_SYSTEM_TAG.casefold():
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(tag)
+    if asset_type == ANIMATION_ASSET_TYPE:
+        normalized.insert(0, ANIMATION_SYSTEM_TAG)
+    return normalized
+
 def get_pose_meta(pose_data):
     if not isinstance(pose_data, dict):
-        return {"repository": LOCAL_USER_REPOSITORY, "category": DEFAULT_CATEGORY, "tags": []}
+        return {
+            "repository": LOCAL_USER_REPOSITORY,
+            "category": DEFAULT_CATEGORY,
+            "tags": [],
+            "asset_type": POSE_ASSET_TYPE,
+        }
     meta = get_raw_library_meta(pose_data)
     repository = str(meta.get("repository") or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
     category = str(meta.get("category") or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
-    tags = meta.get("tags") or []
-    if isinstance(tags, str):
-        tags = [tag.strip() for tag in tags.split(",")]
-    tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-    return {"repository": repository, "category": category, "tags": tags}
+    asset_type = normalize_asset_type(meta.get("asset_type"), pose_data)
+    tags = normalize_library_tags(meta.get("tags") or [], asset_type)
+    return {
+        "repository": repository,
+        "category": category,
+        "tags": tags,
+        "asset_type": asset_type,
+    }
 
-def set_pose_meta(pose_data, repository=None, category=None, tags=None):
+def set_pose_meta(pose_data, repository=None, category=None, tags=None, asset_type=None):
     if not isinstance(pose_data, dict):
         return pose_data
     meta = pose_data.get("_library") if isinstance(pose_data.get("_library"), dict) else {}
+    resolved_asset_type = normalize_asset_type(asset_type or meta.get("asset_type"), pose_data)
+    meta["asset_type"] = resolved_asset_type
     if repository is not None:
         meta["repository"] = str(repository or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
     if category is not None:
         meta["category"] = str(category or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
     if tags is not None:
-        if isinstance(tags, str):
-            tags = [tag.strip() for tag in tags.split(",")]
-        meta["tags"] = [str(tag).strip() for tag in (tags or []) if str(tag).strip()]
+        meta["tags"] = normalize_library_tags(tags, resolved_asset_type)
+    else:
+        meta["tags"] = normalize_library_tags(meta.get("tags") or [], resolved_asset_type)
     pose_data["_library"] = meta
     return pose_data
 
 def preview_candidates(folder_path, name):
     return [
+        (os.path.join(folder_path, f"{name}.webm"), "video/webm"),
+        (os.path.join(folder_path, f"{name}.mp4"), "video/mp4"),
         (os.path.join(folder_path, f"{name}.webp"), "image/webp"),
         (os.path.join(folder_path, f"{name}.jpg"), "image/jpeg"),
         (os.path.join(folder_path, f"{name}.jpeg"), "image/jpeg"),
@@ -1327,12 +1434,21 @@ def remove_previews(folder_path, name):
         if os.path.exists(path):
             os.remove(path)
 
-def prepare_preview_file(folder_path, preview_b64):
+def decode_preview_payload(preview_b64):
     if not preview_b64:
-        return None
+        return b"", ""
+    mime_type = ""
+    encoded = preview_b64
     if "," in preview_b64:
-        preview_b64 = preview_b64.split(",", 1)[1]
-    raw = base64.b64decode(preview_b64)
+        header, encoded = preview_b64.split(",", 1)
+        if header.startswith("data:"):
+            mime_type = header[5:].split(";", 1)[0].strip().lower()
+    try:
+        return base64.b64decode(encoded, validate=True), mime_type
+    except Exception as exc:
+        raise ValueError("Preview payload is not valid base64") from exc
+
+def prepare_image_preview_file(folder_path, raw):
     if len(raw) > MAX_PREVIEW_BYTES:
         raise ValueError("Preview image is too large")
     os.makedirs(folder_path, exist_ok=True)
@@ -1344,12 +1460,127 @@ def prepare_preview_file(folder_path, preview_b64):
         os.close(fd)
         image.save(output_path, "WEBP", quality=76, method=6)
         return output_path, ".webp"
-    except Exception:
-        fd, output_path = tempfile.mkstemp(prefix="vnccs_preview_", suffix=".jpg", dir=folder_path)
-        os.close(fd)
-        with open(output_path, "wb") as f:
-            f.write(raw)
-        return output_path, ".jpg"
+    except Exception as exc:
+        raise ValueError(f"Preview image could not be decoded: {exc}") from exc
+
+def transcode_animation_preview(folder_path, raw, mime_type=""):
+    if len(raw) > MAX_VIDEO_PREVIEW_INPUT_BYTES:
+        raise ValueError("Animation preview video is too large")
+    try:
+        import av
+    except ImportError as exc:
+        raise ValueError("Animation preview transcoding requires ComfyUI's PyAV video support") from exc
+
+    suffix_by_mime = {
+        "video/webm": ".webm",
+        "video/mp4": ".mp4",
+        "video/quicktime": ".mov",
+        "video/x-matroska": ".mkv",
+        "video/ogg": ".ogv",
+    }
+    input_suffix = suffix_by_mime.get(mime_type, ".video")
+    os.makedirs(folder_path, exist_ok=True)
+    input_fd, input_path = tempfile.mkstemp(prefix="vnccs_preview_source_", suffix=input_suffix, dir=folder_path)
+    os.close(input_fd)
+    with open(input_path, "wb") as f:
+        f.write(raw)
+
+    codec_candidates = (
+        ("libsvtav1", {"crf": "40", "preset": "8"}),
+        ("libaom-av1", {"crf": "42", "cpu-used": "6", "row-mt": "1"}),
+        ("librav1e", {"speed": "8", "quantizer": "120"}),
+        ("libvpx-vp9", {"crf": "38", "b": "0", "deadline": "good", "cpu-used": "4", "row-mt": "1"}),
+    )
+    errors = []
+    try:
+        for codec_name, codec_options in codec_candidates:
+            output_fd, output_path = tempfile.mkstemp(prefix="vnccs_preview_", suffix=".webm", dir=folder_path)
+            os.close(output_fd)
+            try:
+                with av.open(input_path, mode="r") as source:
+                    if not source.streams.video:
+                        raise ValueError("Preview file contains no video stream")
+                    source_stream = source.streams.video[0]
+                    source_stream.thread_type = "AUTO"
+                    source_rate = (
+                        source_stream.average_rate
+                        or getattr(source_stream, "base_rate", None)
+                        or Fraction(24, 1)
+                    )
+                    try:
+                        source_rate = Fraction(source_rate).limit_denominator(1001)
+                    except Exception:
+                        source_rate = Fraction(24, 1)
+                    target_rate = min(source_rate, Fraction(24, 1))
+                    if target_rate <= 0:
+                        target_rate = Fraction(24, 1)
+
+                    source_width = max(2, int(source_stream.width or 2))
+                    source_height = max(2, int(source_stream.height or 2))
+                    scale = min(1.0, 768.0 / max(source_width, source_height))
+                    target_width = max(2, int(source_width * scale) // 2 * 2)
+                    target_height = max(2, int(source_height * scale) // 2 * 2)
+
+                    with av.open(output_path, mode="w", format="webm") as target:
+                        output_stream = target.add_stream(codec_name, rate=target_rate)
+                        output_stream.width = target_width
+                        output_stream.height = target_height
+                        output_stream.pix_fmt = "yuv420p"
+                        output_stream.options = codec_options
+
+                        output_index = 0
+                        source_index = 0
+                        next_time = 0.0
+                        frame_interval = 1.0 / float(target_rate)
+                        source_interval = 1.0 / max(float(source_rate), 1.0)
+                        for frame in source.decode(source_stream):
+                            frame_time = float(frame.time) if frame.time is not None else source_index * source_interval
+                            source_index += 1
+                            if frame_time + 1e-7 < next_time:
+                                continue
+                            while next_time <= frame_time + 1e-7:
+                                next_time += frame_interval
+                            encoded_frame = frame.reformat(
+                                width=target_width,
+                                height=target_height,
+                                format="yuv420p",
+                            )
+                            encoded_frame.pts = output_index
+                            encoded_frame.time_base = Fraction(target_rate.denominator, target_rate.numerator)
+                            output_index += 1
+                            for packet in output_stream.encode(encoded_frame):
+                                target.mux(packet)
+                        if output_index == 0:
+                            raise ValueError("Preview file contains no decodable video frames")
+                        for packet in output_stream.encode(None):
+                            target.mux(packet)
+
+                if os.path.getsize(output_path) > MAX_VIDEO_PREVIEW_STORED_BYTES:
+                    raise ValueError("Encoded animation preview exceeds the repository file limit")
+                return output_path, ".webm"
+            except Exception as exc:
+                errors.append(f"{codec_name}: {exc}")
+                try:
+                    os.remove(output_path)
+                except Exception:
+                    pass
+        raise ValueError("No AV1/VP9 preview encoder is available: " + "; ".join(errors))
+    finally:
+        try:
+            os.remove(input_path)
+        except Exception:
+            pass
+
+def prepare_preview_file(folder_path, preview_b64, asset_type=POSE_ASSET_TYPE):
+    if not preview_b64:
+        return None
+    raw, mime_type = decode_preview_payload(preview_b64)
+    is_video = mime_type.startswith("video/")
+    if asset_type == ANIMATION_ASSET_TYPE and is_video:
+        return transcode_animation_preview(folder_path, raw, mime_type)
+    if is_video:
+        raise ValueError("Video previews are only supported for animation library items")
+    return prepare_image_preview_file(folder_path, raw)
 
 def install_prepared_preview(folder_path, name, prepared_preview):
     if not prepared_preview:
@@ -1357,19 +1588,6 @@ def install_prepared_preview(folder_path, name, prepared_preview):
     tmp_path, ext = prepared_preview
     remove_previews(folder_path, name)
     os.replace(tmp_path, os.path.join(folder_path, f"{name}{ext}"))
-
-def save_preview(folder_path, name, preview_b64):
-    prepared_preview = None
-    try:
-        prepared_preview = prepare_preview_file(folder_path, preview_b64)
-        install_prepared_preview(folder_path, name, prepared_preview)
-        prepared_preview = None
-    finally:
-        if prepared_preview:
-            try:
-                os.remove(prepared_preview[0])
-            except Exception:
-                pass
 
 def normalize_request_repository(value):
     return str(value or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
@@ -1384,6 +1602,7 @@ def build_pose_record(name, path, pose_data, full_details=False, repository=None
     category = category or meta.get("category") or DEFAULT_CATEGORY
     preview_path, preview_type = find_preview(folder_path, name)
     preview_mtime = int(os.path.getmtime(preview_path)) if preview_path and os.path.exists(preview_path) else 0
+    asset_type = meta.get("asset_type") or POSE_ASSET_TYPE
     return {
         "id": f"{repository_to_dir(repository)}/{category_to_dir(category)}/{name}",
         "name": name,
@@ -1392,6 +1611,8 @@ def build_pose_record(name, path, pose_data, full_details=False, repository=None
         "category": category,
         "category_path": category_to_dir(category),
         "tags": meta["tags"],
+        "asset_type": asset_type,
+        "is_animation": asset_type == ANIMATION_ASSET_TYPE,
         "has_preview": preview_path is not None,
         "preview_type": preview_type,
         "preview_mtime": preview_mtime,
@@ -1506,7 +1727,7 @@ async def get_pose(request):
     preview_path, preview_type = find_preview(os.path.dirname(pose_path), name)
 
     preview_b64 = None
-    if preview_path and os.path.exists(preview_path):
+    if preview_path and os.path.exists(preview_path) and not str(preview_type or "").startswith("video/"):
         with open(preview_path, "rb") as f:
             preview_b64 = base64.b64encode(f.read()).decode("utf-8")
 
@@ -1519,12 +1740,13 @@ async def get_pose(request):
         "preview": preview_b64,
         "preview_type": preview_type,
         "tags": meta["tags"],
+        "asset_type": meta.get("asset_type") or POSE_ASSET_TYPE,
     })
 
 async def save_pose(request):
     """POST /vnccs/pose_library/save - Saves a pose with optional preview."""
     try:
-        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
+        if not expected_content_length(request, MAX_LIBRARY_SAVE_REQUEST_BYTES):
             return web.json_response({"error": "Request body is too large"}, status=413)
         data = await request.json()
     except:
@@ -1539,9 +1761,12 @@ async def save_pose(request):
     category = normalize_request_category(data.get("category"))
     old_category = data.get("old_category") or category
     tags = data.get("tags")
+    asset_type = normalize_asset_type(data.get("asset_type"), pose)
     
-    if not name or not pose:
+    if not name or not isinstance(pose, dict) or not pose:
         return web.json_response({"error": "Name and pose required"}, status=400)
+    if asset_type == ANIMATION_ASSET_TYPE and not isinstance(pose.get("animation"), dict):
+        return web.json_response({"error": "Animation library items require a complete animation state"}, status=400)
     
     # Sanitize name
     name = sanitize_pose_name(name)
@@ -1557,14 +1782,25 @@ async def save_pose(request):
         old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category)
         old_pose_dir = os.path.dirname(old_pose_path) if old_pose_path else None
 
-    pose = set_pose_meta(pose, repository=repository, category=category, tags=tags)
+    pose = set_pose_meta(
+        pose,
+        repository=repository,
+        category=category,
+        tags=tags,
+        asset_type=asset_type,
+    )
     old_preview_path = None
     prepared_preview = None
     pose_tmp_path = None
 
     try:
         if preview_b64:
-            prepared_preview = prepare_preview_file(pose_dir, preview_b64)
+            prepared_preview = await asyncio.to_thread(
+                prepare_preview_file,
+                pose_dir,
+                preview_b64,
+                asset_type,
+            )
 
         fd, pose_tmp_path = tempfile.mkstemp(prefix="vnccs_pose_", suffix=".json", dir=pose_dir)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -1589,7 +1825,9 @@ async def save_pose(request):
         if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path) and os.path.exists(old_pose_path):
             os.remove(old_pose_path)
     except ValueError as exc:
-        return web.json_response({"error": str(exc)}, status=413)
+        message = str(exc)
+        status = 413 if "too large" in message.lower() or "exceeds" in message.lower() else 400
+        return web.json_response({"error": message}, status=status)
     except Exception as exc:
         return web.json_response({"error": f"Failed to save pose: {exc}"}, status=400)
     finally:
@@ -1608,6 +1846,7 @@ async def save_pose(request):
         "name": name,
         "repository": repository,
         "category": category,
+        "asset_type": asset_type,
         "id": f"{repository_to_dir(repository)}/{category_to_dir(category)}/{name}",
         "path": os.path.relpath(pose_path, get_library_path()),
     })
@@ -1652,34 +1891,6 @@ async def get_preview(request):
     with open(preview_path, "rb") as f:
         return web.Response(body=f.read(), content_type=content_type)
 
-async def upload_pose_sync(request):
-    """POST /vnccs/pose_sync/upload_capture - Saves synchronized capture for execution."""
-    try:
-        if not expected_content_length(request, MAX_SYNC_CAPTURE_CHARS):
-            return web.json_response({"error": "capture payload is too large"}, status=413)
-        data = await request.json()
-        node_id = sanitize_node_id(data.get("node_id"))
-        if not node_id:
-             return web.json_response({"error": "No node_id"}, status=400)
-        if len(json.dumps(data, separators=(",", ":"))) > MAX_SYNC_CAPTURE_CHARS:
-            return web.json_response({"error": "capture payload is too large"}, status=413)
-             
-        import folder_paths
-        temp_dir = folder_paths.get_temp_directory()
-        # Note: we use 'debug' in the filename for backwards compatibility with the backend check
-        filepath = os.path.join(temp_dir, f"vnccs_debug_{node_id}.json")
-        temp_abs = os.path.abspath(temp_dir)
-        file_abs = os.path.abspath(filepath)
-        if file_abs != temp_abs and not file_abs.startswith(temp_abs + os.sep):
-            return web.json_response({"error": "Invalid node_id"}, status=400)
-        
-        with open(filepath, "w") as f:
-            json.dump(data, f)
-            
-        return web.json_response({"status": "ok"})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
-
 def register_routes(app):
     """Register Pose Library API routes."""
     app.router.add_get("/vnccs/pose_library/list", list_poses)
@@ -1695,5 +1906,3 @@ def register_routes(app):
     app.router.add_post("/vnccs/pose_library/repositories/refresh", refresh_pose_repositories)
     app.router.add_post("/vnccs/pose_library/repositories/auto_refresh", auto_refresh_enabled_pose_repositories)
     app.router.add_post("/vnccs/pose_library/repositories/local/publish", publish_local_pose_repository)
-    app.router.add_post("/vnccs/pose_sync/upload_capture", upload_pose_sync)
-    app.router.add_post("/vnccs/debug/upload_capture", upload_pose_sync)  # Aliased for backward compatibility

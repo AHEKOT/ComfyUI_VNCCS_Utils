@@ -1,13 +1,14 @@
 [project]
 name = "vnccs-utils"
-description = "VNCCS - Collection of utility nodes. VNCCS Pose Studio. VNCCS UniCanvas."
-version = "0.5.3"
+description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
+version = "0.6.0"
 license = {file = "LICENSE"} 
 
 dependencies = [
     "opencv-python",
     "huggingface_hub",
     "aiohttp",
+    "av",
     "kornia",
     "requests",
     "torch",
@@ -22,6 +23,7 @@ dependencies = [
     "timm",
     "einops",
     "roma",
+    "tqdm",
 ]
 
 classifiers = [
@@ -48,5 +50,7 @@ NodeIds = [
     "VNCCS_BBox_Extractor",
     "VNCCS_ModelManager",
     "VNCCS_ModelSelector",
-    "VNCCS_PoseStudio"
+    "VNCCS_PoseStudio",
+    "VNCCS_UniCanvas",
+    "VNCCS_3DFactory"
 ]

@@ -32,10 +32,12 @@ _COMFY_MODEL_OP_LOCK = threading.RLock()
 _MODEL_CACHE_MAX_ENTRIES = 1
 _MODEL_CACHE: dict[Any, tuple[Any, Any, Any]] = {}
 _LORA_CACHE: dict[str, Any] = {}
-_MODEL_PATCH_CACHE: dict[str, Any] = {}
 _SAM_CACHE: dict[str, tuple[Any, Any, Any]] = {}
 _DRAW_PROGRESS: dict[str, dict[str, Any]] = {}
 _DRAW_PROGRESS_LOCK = threading.Lock()
+_DRAW_PROGRESS_MAX = 256
+_DRAW_PROGRESS_TTL_SECONDS = 60 * 60
+_DRAW_PROGRESS_RUNNING_TTL_SECONDS = 24 * 60 * 60
 _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
 _COMFY_PROGRESS_PATCHED = False
 _COMFY_PROGRESS_LOCAL = threading.local()
@@ -43,10 +45,21 @@ _PRESET_DOWNLOAD_STATUS: dict[str, dict[str, Any]] = {}
 _PRESET_DOWNLOAD_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 _PRESET_DOWNLOAD_TIMEOUT = (10, 60)
 _PRESET_MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
+_PRESET_MODEL_SETTING_KEYS = {
+    "generation_mode",
+    "model_loader",
+    "ckpt_name",
+    "diffusion_model_name",
+    "gguf_model_name",
+    "clip_name",
+    "vae_name",
+    "clip_type",
+}
 _PRESET_MIN_MODEL_FILE_SIZE = 1024
 _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
+UNICANVAS_DEBUG = 0
 _UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
@@ -317,9 +330,6 @@ class UniCanvasModelModule:
     aliases: tuple[str, ...]
     defaults: dict[str, Any]
     is_edit_model: bool = False
-
-    def normalize_key(self, generation_mode: str) -> bool:
-        return generation_mode == self.key or generation_mode in self.aliases
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return mode in {"inpaint", "outpaint"}
@@ -1492,6 +1502,8 @@ def _get_unicanvas_model_loader(loader_type: str | None) -> UniCanvasModelLoader
 
 
 def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> None:
+    if not UNICANVAS_DEBUG:
+        return
     if data is None:
         print(f"[VNCCS UniCanvas][draw:{draw_id}] {message}", flush=True)
         return
@@ -1500,6 +1512,26 @@ def _uc_log(draw_id: str, message: str, data: dict[str, Any] | None = None) -> N
     except Exception:
         payload = str(data)
     print(f"[VNCCS UniCanvas][draw:{draw_id}] {message}: {payload}", flush=True)
+
+
+def _prune_draw_progress(now: float | None = None) -> None:
+    now = time.time() if now is None else now
+    expired = []
+    for draw_id, state in _DRAW_PROGRESS.items():
+        age = max(0.0, now - float(state.get("updated_at", now)))
+        stage = state.get("stage")
+        if (stage in {"complete", "error"} and age > _DRAW_PROGRESS_TTL_SECONDS) or age > _DRAW_PROGRESS_RUNNING_TTL_SECONDS:
+            expired.append(draw_id)
+    for draw_id in expired:
+        _DRAW_PROGRESS.pop(draw_id, None)
+    if len(_DRAW_PROGRESS) <= _DRAW_PROGRESS_MAX:
+        return
+    ordered = sorted(
+        _DRAW_PROGRESS.items(),
+        key=lambda item: (item[1].get("stage") not in {"complete", "error"}, float(item[1].get("updated_at", 0))),
+    )
+    for draw_id, _ in ordered[:len(_DRAW_PROGRESS) - _DRAW_PROGRESS_MAX]:
+        _DRAW_PROGRESS.pop(draw_id, None)
 
 
 def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
@@ -1514,10 +1546,12 @@ def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0,
     }
     with _DRAW_PROGRESS_LOCK:
         _DRAW_PROGRESS[draw_id] = payload
+        _prune_draw_progress()
 
 
 def _get_draw_progress(draw_id: str) -> dict[str, Any]:
     with _DRAW_PROGRESS_LOCK:
+        _prune_draw_progress()
         return dict(_DRAW_PROGRESS.get(draw_id) or {
             "draw_id": draw_id,
             "stage": "unknown",
@@ -1530,6 +1564,8 @@ def _get_draw_progress(draw_id: str) -> dict[str, Any]:
 
 
 def _tensor_debug(value: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if value is None:
         return {"present": False}
     if not torch.is_tensor(value):
@@ -1571,6 +1607,8 @@ def _tensor_debug(value: Any) -> dict[str, Any]:
 
 
 def _latent_debug(latent: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if not isinstance(latent, dict):
         return {"type": type(latent).__name__, "is_dict": False}
     return {
@@ -1583,6 +1621,8 @@ def _latent_debug(latent: Any) -> dict[str, Any]:
 
 
 def _conditioning_debug(conditioning: Any) -> dict[str, Any]:
+    if not UNICANVAS_DEBUG:
+        return {}
     if not isinstance(conditioning, list):
         return {"type": type(conditioning).__name__, "is_list": False}
     entries = []
@@ -1777,12 +1817,196 @@ def _apply_layer_opacity(image: Image.Image, opacity: float) -> Image.Image:
     return rgba
 
 
+_UNICANVAS_BLEND_MODES = {
+    "source-over",
+    "normal",
+    "multiply",
+    "screen",
+    "overlay",
+    "darken",
+    "lighten",
+    "color-dodge",
+    "color-burn",
+    "hard-light",
+    "soft-light",
+    "difference",
+    "exclusion",
+    "hue",
+    "saturation",
+    "color",
+    "luminosity",
+}
+
+
+def _blend_luminosity(color: np.ndarray) -> np.ndarray:
+    return color[..., 0] * 0.3 + color[..., 1] * 0.59 + color[..., 2] * 0.11
+
+
+def _blend_saturation(color: np.ndarray) -> np.ndarray:
+    return np.max(color, axis=-1) - np.min(color, axis=-1)
+
+
+def _blend_clip_color(color: np.ndarray) -> np.ndarray:
+    result = color.copy()
+    luminosity = _blend_luminosity(result)[..., None]
+    minimum = np.min(result, axis=-1, keepdims=True)
+    maximum = np.max(result, axis=-1, keepdims=True)
+
+    low = minimum < 0.0
+    low_scale = np.divide(
+        luminosity,
+        luminosity - minimum,
+        out=np.zeros_like(luminosity),
+        where=np.abs(luminosity - minimum) > 1e-7,
+    )
+    result = np.where(low, luminosity + (result - luminosity) * low_scale, result)
+
+    high = maximum > 1.0
+    high_scale = np.divide(
+        1.0 - luminosity,
+        maximum - luminosity,
+        out=np.zeros_like(luminosity),
+        where=np.abs(maximum - luminosity) > 1e-7,
+    )
+    result = np.where(high, luminosity + (result - luminosity) * high_scale, result)
+    return np.clip(result, 0.0, 1.0)
+
+
+def _blend_set_luminosity(color: np.ndarray, luminosity: np.ndarray) -> np.ndarray:
+    return _blend_clip_color(color + (luminosity - _blend_luminosity(color))[..., None])
+
+
+def _blend_set_saturation(color: np.ndarray, saturation: np.ndarray) -> np.ndarray:
+    order = np.argsort(color, axis=-1)
+    sorted_color = np.take_along_axis(color, order, axis=-1)
+    minimum = sorted_color[..., 0]
+    middle = sorted_color[..., 1]
+    maximum = sorted_color[..., 2]
+    span = maximum - minimum
+    adjusted_middle = np.divide(
+        (middle - minimum) * saturation,
+        span,
+        out=np.zeros_like(middle),
+        where=span > 1e-7,
+    )
+    adjusted_maximum = np.where(span > 1e-7, saturation, 0.0)
+    adjusted_sorted = np.stack(
+        (np.zeros_like(adjusted_middle), adjusted_middle, adjusted_maximum),
+        axis=-1,
+    )
+    result = np.empty_like(color)
+    np.put_along_axis(result, order, adjusted_sorted, axis=-1)
+    return result
+
+
+def _blend_rgb(backdrop: np.ndarray, source: np.ndarray, mode: str) -> np.ndarray:
+    if mode in {"source-over", "normal"}:
+        return source
+    if mode == "multiply":
+        return backdrop * source
+    if mode == "screen":
+        return backdrop + source - backdrop * source
+    if mode == "overlay":
+        return np.where(
+            backdrop <= 0.5,
+            2.0 * backdrop * source,
+            1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
+        )
+    if mode == "darken":
+        return np.minimum(backdrop, source)
+    if mode == "lighten":
+        return np.maximum(backdrop, source)
+    if mode == "color-dodge":
+        return np.where(
+            source >= 1.0 - 1e-7,
+            1.0,
+            np.minimum(1.0, backdrop / np.maximum(1.0 - source, 1e-7)),
+        )
+    if mode == "color-burn":
+        return np.where(
+            source <= 1e-7,
+            0.0,
+            1.0 - np.minimum(1.0, (1.0 - backdrop) / np.maximum(source, 1e-7)),
+        )
+    if mode == "hard-light":
+        return np.where(
+            source <= 0.5,
+            2.0 * backdrop * source,
+            1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source),
+        )
+    if mode == "soft-light":
+        soft_curve = np.where(
+            backdrop <= 0.25,
+            ((16.0 * backdrop - 12.0) * backdrop + 4.0) * backdrop,
+            np.sqrt(np.maximum(backdrop, 0.0)),
+        )
+        return np.where(
+            source <= 0.5,
+            backdrop - (1.0 - 2.0 * source) * backdrop * (1.0 - backdrop),
+            backdrop + (2.0 * source - 1.0) * (soft_curve - backdrop),
+        )
+    if mode == "difference":
+        return np.abs(backdrop - source)
+    if mode == "exclusion":
+        return backdrop + source - 2.0 * backdrop * source
+    if mode == "hue":
+        adjusted = _blend_set_saturation(source, _blend_saturation(backdrop))
+        return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
+    if mode == "saturation":
+        adjusted = _blend_set_saturation(backdrop, _blend_saturation(source))
+        return _blend_set_luminosity(adjusted, _blend_luminosity(backdrop))
+    if mode == "color":
+        return _blend_set_luminosity(source, _blend_luminosity(backdrop))
+    if mode == "luminosity":
+        return _blend_set_luminosity(backdrop, _blend_luminosity(source))
+    return source
+
+
+def _alpha_composite_with_blend(backdrop: Image.Image, source: Image.Image, mode: str) -> Image.Image:
+    mode = str(mode or "source-over").lower()
+    if mode not in _UNICANVAS_BLEND_MODES or mode in {"source-over", "normal"}:
+        return Image.alpha_composite(backdrop.convert("RGBA"), source.convert("RGBA"))
+
+    backdrop = backdrop.convert("RGBA")
+    source = source.convert("RGBA")
+    result = backdrop.copy()
+    width, height = backdrop.size
+    for top in range(0, height, 256):
+        bottom = min(height, top + 256)
+        box = (0, top, width, bottom)
+        backdrop_values = np.asarray(backdrop.crop(box), dtype=np.float32) / 255.0
+        source_values = np.asarray(source.crop(box), dtype=np.float32) / 255.0
+        backdrop_rgb = backdrop_values[..., :3]
+        source_rgb = source_values[..., :3]
+        backdrop_alpha = backdrop_values[..., 3:4]
+        source_alpha = source_values[..., 3:4]
+        blended_rgb = np.clip(_blend_rgb(backdrop_rgb, source_rgb, mode), 0.0, 1.0)
+        output_alpha = source_alpha + backdrop_alpha * (1.0 - source_alpha)
+        output_premultiplied = (
+            source_alpha * (1.0 - backdrop_alpha) * source_rgb
+            + source_alpha * backdrop_alpha * blended_rgb
+            + (1.0 - source_alpha) * backdrop_alpha * backdrop_rgb
+        )
+        output_rgb = np.divide(
+            output_premultiplied,
+            output_alpha,
+            out=np.zeros_like(output_premultiplied),
+            where=output_alpha > 1e-7,
+        )
+        output = np.concatenate((output_rgb, output_alpha), axis=-1)
+        output_image = Image.fromarray(np.round(np.clip(output, 0.0, 1.0) * 255.0).astype(np.uint8), "RGBA")
+        result.paste(output_image, (0, top))
+    return result
+
+
 def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
     state = _load_unicanvas_state(unicanvas_state)
     origin = _rect_from_state(state.get("origin"), {"x": 0, "y": 0, "width": 1, "height": 1})
     bbox = _rect_from_state(state.get("bbox"), {"x": 0, "y": 0, "width": 1024, "height": 1024})
     width = max(1, int(round(bbox["width"])))
     height = max(1, int(round(bbox["height"])))
+    if width * height > _MAX_PIXELS:
+        raise ValueError("UniCanvas output dimensions are too large")
     bbox_local_x = bbox["x"] - origin["x"]
     bbox_local_y = bbox["y"] - origin["y"]
     out = Image.new("RGBA", (width, height), (0, 0, 0, 0))
@@ -1817,7 +2041,12 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
         src_bottom = src_top + (inter_bottom - inter_top)
         image = image.crop((src_left, src_top, src_right, src_bottom))
         image = _apply_layer_opacity(image, _number(layer.get("opacity"), 1.0))
-        out.alpha_composite(image, (inter_left, inter_top))
+        blend_mode = str(layer.get("blendMode") or "source-over").lower()
+        if blend_mode in {"source-over", "normal"} or blend_mode not in _UNICANVAS_BLEND_MODES:
+            out.alpha_composite(image, (inter_left, inter_top))
+        else:
+            region = out.crop((inter_left, inter_top, inter_right, inter_bottom))
+            out.paste(_alpha_composite_with_blend(region, image, blend_mode), (inter_left, inter_top))
 
     return out
 
@@ -2025,59 +2254,6 @@ def _make_gradient_paste_mask(mask_image: Image.Image, fade_size_px: int, draw_i
     return paste_image
 
 
-def _infill_masked_rgb(source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
-    rgba = source_rgba.convert("RGBA")
-    alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
-    mask = np.asarray(_pil_to_mask_image(mask_image), dtype=np.uint8)
-    np_image = np.asarray(rgba, dtype=np.uint8)
-    height, width = alpha.shape
-    valid = alpha > 8
-
-    if not bool(valid.any()):
-        _uc_log(draw_id, "outpaint infill fallback", {"reason": "no valid source pixels"})
-        return Image.new("RGB", rgba.size, (127, 127, 127))
-
-    mean_color = np_image[valid, :3].mean(axis=0).astype(np.float32)
-    mean_tuple = tuple(np.round(mean_color).astype(np.uint8).tolist())
-    lowfreq = Image.new("RGB", rgba.size, mean_tuple)
-    lowfreq.paste(rgba.convert("RGB"), (0, 0), rgba.getchannel("A"))
-    blur_radius = max(24, int(round(max(width, height) / 18)))
-    lowfreq = lowfreq.filter(ImageFilter.GaussianBlur(radius=blur_radius))
-    lowfreq_width = max(8, int(round(width / 32)))
-    lowfreq_height = max(8, int(round(height / 32)))
-    lowfreq = lowfreq.resize((lowfreq_width, lowfreq_height), Image.Resampling.BICUBIC)
-    lowfreq = lowfreq.resize((width, height), Image.Resampling.BICUBIC)
-    filled = np.asarray(lowfreq, dtype=np.float32)
-
-    rng = np.random.default_rng(0)
-    noise_layers = ((128, 16.0), (64, 10.0), (32, 5.0))
-    for noise_cell, noise_strength in noise_layers:
-        noise_width = max(1, int(math.ceil(width / noise_cell)))
-        noise_height = max(1, int(math.ceil(height / noise_cell)))
-        noise = rng.normal(0.0, noise_strength, size=(noise_height, noise_width, 3)).astype(np.float32)
-        noise_image = Image.fromarray(np.clip(127.5 + noise, 0, 255).astype(np.uint8), mode="RGB")
-        noise_image = noise_image.resize((width, height), Image.Resampling.BILINEAR)
-        filled += np.asarray(noise_image, dtype=np.float32) - 127.5
-
-    result = Image.fromarray(np.clip(filled, 0, 255).astype(np.uint8), mode="RGB")
-    result.paste(rgba, (0, 0), rgba.getchannel("A"))
-    _uc_log(
-        draw_id,
-        "outpaint source infilled with low-frequency context noise",
-        {
-            "source_size": source_rgba.size,
-            "mean_color": [float(v) for v in mean_color],
-            "blur_radius": blur_radius,
-            "lowfreq_size": [lowfreq_width, lowfreq_height],
-            "noise_layers": [{"cell": cell, "strength": strength} for cell, strength in noise_layers],
-            "mask": _tensor_debug(torch.from_numpy(mask.astype(np.float32) / 255.0)[None,]),
-            "alpha": _tensor_debug(torch.from_numpy(alpha.astype(np.float32) / 255.0)[None,]),
-            "valid_source_pixels": int(valid.sum()),
-        },
-    )
-    return result
-
-
 def _sample_transparent_outpaint_rgb(source_rgba: Image.Image, draw_id: str) -> Image.Image:
     rgba = source_rgba.convert("RGBA")
     alpha = np.asarray(rgba.getchannel("A"), dtype=np.uint8)
@@ -2162,35 +2338,6 @@ def _apply_differential_diffusion(model: Any, draw_id: str, strength: float = 1.
     except Exception as exc:
         _uc_log(draw_id, "DifferentialDiffusion unavailable", {"error": str(exc)})
         return model
-
-
-def _composite_inpaint_result(
-    source: Image.Image,
-    generated: Image.Image,
-    mask_image: Image.Image,
-    output_size: tuple[int, int],
-    draw_id: str,
-) -> Image.Image:
-    base = source.convert("RGB")
-    upper = generated.convert("RGB")
-    mask = _pil_to_mask_image(mask_image)
-    if base.size != output_size:
-        base = base.resize(output_size, Image.Resampling.LANCZOS)
-    if upper.size != output_size:
-        upper = upper.resize(output_size, Image.Resampling.LANCZOS)
-    if mask.size != output_size:
-        mask = mask.resize(output_size, Image.Resampling.BILINEAR)
-    _uc_log(
-        draw_id,
-        "inpaint paste-back",
-        {
-            "base_size": base.size,
-            "upper_size": upper.size,
-            "mask_size": mask.size,
-            "mask": _tensor_debug(torch.from_numpy(np.asarray(mask, dtype=np.float32) / 255.0)[None,]),
-        },
-    )
-    return Image.composite(upper, base, mask)
 
 
 def _normalize_path(value: str) -> str:
@@ -2313,8 +2460,27 @@ def _infer_unicanvas_loader_type(settings: dict[str, Any]) -> str:
     return "checkpoint"
 
 
+def _get_selected_preset_model_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    if str(settings.get("model_selection_mode") or "").lower() != "presets":
+        return {}
+    preset_id = str(settings.get("selected_preset_id") or "")
+    if not preset_id:
+        return {}
+    registry = _unicanvas_load_preset_registry()
+    for preset in registry.get("presets", []):
+        if not isinstance(preset, dict) or str(preset.get("id") or "") != preset_id:
+            continue
+        preset_settings = preset.get("settings")
+        if not isinstance(preset_settings, dict):
+            return {}
+        return {key: preset_settings[key] for key in _PRESET_MODEL_SETTING_KEYS if key in preset_settings}
+    return {}
+
+
 def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(gen_settings or {})
+    preset_model_settings = _get_selected_preset_model_settings(normalized)
+    normalized.update(preset_model_settings)
     loader = _get_unicanvas_model_loader(_infer_unicanvas_loader_type(normalized))
     generation_mode = loader.forced_mode or str(normalized.get("generation_mode", "illustrious")).lower()
     mode_settings = normalized.get("mode_settings", {})
@@ -2327,6 +2493,7 @@ def _normalize_gen_settings(gen_settings: dict[str, Any]) -> dict[str, Any]:
     merged.update(normalized)
     if isinstance(mode_profile, dict):
         merged.update(mode_profile)
+    merged.update(preset_model_settings)
     merged["generation_mode"] = module.key
     merged["generation_mode_alias"] = generation_mode
     merged["model_loader"] = loader.key
@@ -2500,19 +2667,6 @@ def _load_model_patch(patch_name: str):
     if loaded is None:
         raise ValueError(f"Model patch not found or failed to load: {patch_name}")
     return loaded
-
-
-def _load_model_patch_cached(patch_name: str):
-    if not patch_name:
-        raise ValueError("Model patch name is required")
-    with _MODEL_CACHE_LOCK:
-        cached = _MODEL_PATCH_CACHE.get(patch_name)
-    if cached is not None:
-        return cached.clone() if hasattr(cached, "clone") else cached
-    loaded = _load_model_patch(patch_name)
-    with _MODEL_CACHE_LOCK:
-        _MODEL_PATCH_CACHE[patch_name] = loaded
-    return loaded.clone() if hasattr(loaded, "clone") else loaded
 
 
 def _preload_z_image_fun_controlnet_patch(gen_settings: dict[str, Any], mode: str, draw_id: str = "unknown") -> None:
@@ -3512,14 +3666,6 @@ def _get_unicanvas_assets() -> dict[str, Any]:
     }
 
 
-def _load_checkpoint(ckpt_name: str):
-    return _load_generation_assets({"generation_mode": "illustrious", "ckpt_name": ckpt_name})
-
-
-def _encode_prompt(clip: Any, text: str):
-    return _encode_generation_prompt(clip, text, {"generation_mode": "illustrious"})
-
-
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
     _set_draw_progress(draw_id, "queued", 0.01, 0, 0, "Queued")
@@ -3557,7 +3703,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             "inference_size": payload.get("inference_size"),
             "output_size": payload.get("output_size"),
             "source_empty": payload.get("source_empty"),
-            "frontend_debug": payload.get("debug"),
             "generation_mode": settings.get("generation_mode"),
             "model_loader": settings.get("model_loader"),
             "ckpt_name": settings.get("ckpt_name"),
@@ -3609,33 +3754,32 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     with contextlib.ExitStack() as _model_stack:
         _model_stack.enter_context(_COMFY_MODEL_OP_LOCK)
         _model_stack.enter_context(torch.inference_mode())
-        if True:
-            _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
-            model, clip, vae = _load_generation_assets(settings)
-            model, clip = model_module.clone_assets(model, clip)
-            settings["_draw_id"] = draw_id
-            _preload_z_image_fun_controlnet_patch(settings, mode, draw_id)
-            _preload_vae_for_direct_decode(vae, settings, draw_id)
-            if model_module.key == "qwen_image_edit":
-                settings["_qwen_edit_clip"] = clip
-                settings["_qwen_edit_vae"] = vae
-            _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
-            model, clip = _apply_generation_loras(model, clip, settings)
-            if model_module.key == "qwen_image_edit":
-                settings["_qwen_edit_clip"] = clip
-            _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
-            if model_module.key == "qwen_image_edit":
-                positive = []
-                negative = []
-                _uc_log(
-                    draw_id,
-                    "Qwen Image Edit prompt encoding deferred",
-                    {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
-                )
-            else:
-                positive = _encode_generation_prompt(clip, positive_text, settings)
-                negative = _encode_generation_prompt(clip, negative_text, settings)
-                model_module.validate_conditioning(positive, negative, settings)
+        _set_draw_progress(draw_id, "loading", 0.08, 0, steps, "Loading models")
+        model, clip, vae = _load_generation_assets(settings)
+        model, clip = model_module.clone_assets(model, clip)
+        settings["_draw_id"] = draw_id
+        _preload_z_image_fun_controlnet_patch(settings, mode, draw_id)
+        _preload_vae_for_direct_decode(vae, settings, draw_id)
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
+            settings["_qwen_edit_vae"] = vae
+        _set_draw_progress(draw_id, "loras", 0.14, 0, steps, "Applying LoRAs")
+        model, clip = _apply_generation_loras(model, clip, settings)
+        if model_module.key == "qwen_image_edit":
+            settings["_qwen_edit_clip"] = clip
+        _set_draw_progress(draw_id, "conditioning", 0.2, 0, steps, "Encoding prompts")
+        if model_module.key == "qwen_image_edit":
+            positive = []
+            negative = []
+            _uc_log(
+                draw_id,
+                "Qwen Image Edit prompt encoding deferred",
+                {"reason": "Qwen Image Edit 2511 needs the prepared reference image and VL image tokens"},
+            )
+        else:
+            positive = _encode_generation_prompt(clip, positive_text, settings)
+            negative = _encode_generation_prompt(clip, negative_text, settings)
+            model_module.validate_conditioning(positive, negative, settings)
 
         mask = None
         mask_image = None
@@ -3688,7 +3832,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
                 paste_mask_image = None
             if model_module.key == "qwen_image_edit" and mask is not None:
                 settings["_qwen_edit_mask"] = mask
-            if mask_image is not None:
+            if mask_image is not None and UNICANVAS_DEBUG:
                 mask_for_debug = _pil_to_mask_image(mask_image)
                 _uc_log(
                     draw_id,
@@ -3884,10 +4028,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         "generation_mode": settings.get("generation_mode", "illustrious"),
         "debug_id": draw_id,
     }
-
-
-def _run_sdxl_draw(payload: dict[str, Any]) -> dict[str, Any]:
-    return _run_unicanvas_draw(payload)
 
 
 def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:

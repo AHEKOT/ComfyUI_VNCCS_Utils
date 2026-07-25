@@ -1,5 +1,3 @@
-import { IK_CHAINS } from "./vnccs_pose_studio_core.js";
-
 const THREE_VERSION = "0.160.0";
 
 const MIXAMO_TO_MH_BONE_MAP = {
@@ -158,6 +156,23 @@ const MIXAMO_KEYPOINT_ROTATION_LAYER_BONES = [
     'foot_r', 'ball_r',
 ];
 
+const MIXAMO_FINGER_CHAINS = {
+    l: {
+        thumb: ['LeftHandThumb1', 'LeftHandThumb2', 'LeftHandThumb3'],
+        index: ['LeftHandIndex1', 'LeftHandIndex2', 'LeftHandIndex3'],
+        middle: ['LeftHandMiddle1', 'LeftHandMiddle2', 'LeftHandMiddle3'],
+        ring: ['LeftHandRing1', 'LeftHandRing2', 'LeftHandRing3'],
+        pinky: ['LeftHandPinky1', 'LeftHandPinky2', 'LeftHandPinky3'],
+    },
+    r: {
+        thumb: ['RightHandThumb1', 'RightHandThumb2', 'RightHandThumb3'],
+        index: ['RightHandIndex1', 'RightHandIndex2', 'RightHandIndex3'],
+        middle: ['RightHandMiddle1', 'RightHandMiddle2', 'RightHandMiddle3'],
+        ring: ['RightHandRing1', 'RightHandRing2', 'RightHandRing3'],
+        pinky: ['RightHandPinky1', 'RightHandPinky2', 'RightHandPinky3'],
+    },
+};
+
 let loaderPromise = null;
 
 function normalizeBoneName(name) {
@@ -208,11 +223,6 @@ function collectSourceBones(root) {
     });
 
     return { bones, normalizedBones };
-}
-
-function hasMixamoSignature(sourceBones) {
-    const requiredNames = ['hips', 'spine', 'leftupleg', 'rightupleg'];
-    return requiredNames.every((name) => sourceBones.normalizedBones[name]);
 }
 
 function buildFrameRotationMap(sourceBones, targetTHREE) {
@@ -311,7 +321,7 @@ function midpoint(a, b, THREE) {
     return pointToVector3(a, THREE).add(pointToVector3(b, THREE)).multiplyScalar(0.5);
 }
 
-function buildMixamoWorldKeypoints(sourceBones, viewer) {
+export function buildMixamoWorldKeypoints(sourceBones, viewer) {
     if (!viewer?.THREE || !viewer?._getBoneWorldPositionForImport) return null;
 
     const THREE = viewer.THREE;
@@ -331,6 +341,8 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         rightKnee: getSourceBonePoint(sourceBones, 'RightLeg'),
         leftAnkle: getSourceBonePoint(sourceBones, 'LeftFoot'),
         rightAnkle: getSourceBonePoint(sourceBones, 'RightFoot'),
+        leftToe: getSourceBonePoint(sourceBones, 'LeftToeBase'),
+        rightToe: getSourceBonePoint(sourceBones, 'RightToeBase'),
     };
 
     if (!source.pelvis) return null;
@@ -355,6 +367,8 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         rightKnee: viewer._getBoneWorldPositionForImport('calf_r'),
         leftAnkle: viewer._getBoneWorldPositionForImport('foot_l'),
         rightAnkle: viewer._getBoneWorldPositionForImport('foot_r'),
+        leftToe: viewer._getBoneWorldPositionForImport('ball_l'),
+        rightToe: viewer._getBoneWorldPositionForImport('ball_r'),
     };
     if (!rest.pelvis) return null;
 
@@ -413,6 +427,7 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         || scaledWorldPoint(worldKps.left_shoulder || rest.leftShoulder, source.leftShoulder || source.pelvis, source.leftElbow, leftArmScale);
     worldKps.right_elbow = segmentWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || source.pelvis, source.rightElbow, rightUpperArmLen)
         || scaledWorldPoint(worldKps.right_shoulder || rest.rightShoulder, source.rightShoulder || source.pelvis, source.rightElbow, rightArmScale);
+    viewer._relaxSAM3DShoulderTargets?.(worldKps, rest);
     worldKps.left_wrist = segmentWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || source.pelvis, source.leftWrist, leftLowerArmLen)
         || scaledWorldPoint(worldKps.left_elbow || worldKps.left_shoulder || rest.leftShoulder, source.leftElbow || source.leftShoulder || source.pelvis, source.leftWrist, leftArmScale);
     worldKps.right_wrist = segmentWorldPoint(worldKps.right_elbow || worldKps.right_shoulder || rest.rightShoulder, source.rightElbow || source.rightShoulder || source.pelvis, source.rightWrist, rightLowerArmLen)
@@ -425,6 +440,52 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
         || scaledWorldPoint(worldKps.left_knee || worldKps.left_hip || rest.leftHip, source.leftKnee || source.leftHip || source.pelvis, source.leftAnkle, leftLegScale);
     worldKps.right_ankle = segmentWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || source.pelvis, source.rightAnkle, rightCalfLen)
         || scaledWorldPoint(worldKps.right_knee || worldKps.right_hip || rest.rightHip, source.rightKnee || source.rightHip || source.pelvis, source.rightAnkle, rightLegScale);
+
+    const addToePoint = (side) => {
+        const sourceAnkle = side === 'l' ? source.leftAnkle : source.rightAnkle;
+        const sourceToe = side === 'l' ? source.leftToe : source.rightToe;
+        const restAnkle = side === 'l' ? rest.leftAnkle : rest.rightAnkle;
+        const restToe = side === 'l' ? rest.leftToe : rest.rightToe;
+        const worldAnkle = worldKps[side === 'l' ? 'left_ankle' : 'right_ankle'];
+        const targetLength = worldDistance(restAnkle, restToe);
+        const toe = segmentWorldPoint(worldAnkle, sourceAnkle, sourceToe, targetLength);
+        if (!toe) return;
+        worldKps[side === 'l' ? 'left_big_toe' : 'right_big_toe'] = toe;
+        worldKps[side === 'l' ? 'left_small_toe' : 'right_small_toe'] = toe.clone();
+    };
+
+    const addFingerPoints = (side) => {
+        const sourceWrist = side === 'l' ? source.leftWrist : source.rightWrist;
+        const restWrist = side === 'l' ? rest.leftWrist : rest.rightWrist;
+        const worldWrist = worldKps[side === 'l' ? 'left_wrist' : 'right_wrist'];
+        const scale = side === 'l' ? leftArmScale : rightArmScale;
+        if (!sourceWrist || !restWrist || !worldWrist) return;
+
+        for (const [finger, mixamoNames] of Object.entries(MIXAMO_FINGER_CHAINS[side])) {
+            let previousSource = sourceWrist;
+            let previousRest = restWrist;
+            let previousWorld = worldWrist;
+            for (let index = 0; index < mixamoNames.length; index++) {
+                const sourcePoint = getSourceBonePoint(sourceBones, mixamoNames[index]);
+                const targetName = `${finger}_0${index + 1}_${side}`;
+                const restPoint = viewer._getBoneWorldPositionForImport(targetName);
+                if (!sourcePoint || !restPoint) continue;
+                const targetLength = worldDistance(previousRest, restPoint);
+                const point = segmentWorldPoint(previousWorld, previousSource, sourcePoint, targetLength)
+                    || scaledWorldPoint(previousWorld, previousSource, sourcePoint, scale);
+                if (!point) continue;
+                worldKps[targetName] = point;
+                previousSource = sourcePoint;
+                previousRest = restPoint;
+                previousWorld = point;
+            }
+        }
+    };
+
+    addToePoint('l');
+    addToePoint('r');
+    addFingerPoints('l');
+    addFingerPoints('r');
 
     if (!worldKps.neck && worldKps.left_shoulder && worldKps.right_shoulder) {
         worldKps.neck = worldKps.left_shoulder.clone().add(worldKps.right_shoulder).multiplyScalar(0.5);
@@ -452,38 +513,6 @@ function buildMixamoWorldKeypoints(sourceBones, viewer) {
             source,
         },
     };
-}
-
-function applyExplicitMixamoBendTargets(viewer, worldKps) {
-    if (!viewer?.ikController?.ccdSolver || !viewer?.bones || !viewer?.skinnedMesh || !worldKps) return false;
-
-    const targets = [
-        { chainKey: 'rightArm', effector: worldKps.right_wrist, pole: worldKps.right_elbow },
-        { chainKey: 'leftArm', effector: worldKps.left_wrist, pole: worldKps.left_elbow },
-        { chainKey: 'rightLeg', effector: worldKps.right_ankle, pole: worldKps.right_knee },
-        { chainKey: 'leftLeg', effector: worldKps.left_ankle, pole: worldKps.left_knee },
-    ];
-
-    let applied = false;
-    for (const { chainKey, effector, pole } of targets) {
-        const chainDef = IK_CHAINS[chainKey];
-        if (!chainDef || !effector || !pole) continue;
-
-        const poleHelper = viewer.ikController.poleTargets?.[chainKey];
-        if (poleHelper) poleHelper.position.copy(pole);
-
-        viewer.ikController.ccdSolver.solve(chainDef, viewer.bones, effector, pole);
-        viewer.skinnedMesh.updateMatrixWorld(true);
-        applied = true;
-    }
-
-    if (applied) {
-        if (viewer.skeleton) viewer.skeleton.update();
-        viewer.skinnedMesh.updateMatrixWorld(true);
-        if (viewer.updateIKEffectorPositions) viewer.updateIKEffectorPositions();
-    }
-
-    return applied;
 }
 
 function applyMixamoRotationLayer(viewer, sourceWorldRotations, sourceRestWorldRotations, boneNames = MIXAMO_KEYPOINT_ROTATION_LAYER_BONES) {
@@ -622,7 +651,7 @@ function buildSampleTimes(duration, fps, maxFrames) {
     return times;
 }
 
-export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
+export async function importMixamoFBXAnimation(file, viewer, options = {}) {
     if (!file) throw new Error('No FBX file was selected.');
     if (!viewer?.isInitialized?.() || !viewer.THREE) throw new Error('Pose viewer is not ready.');
 
@@ -671,24 +700,29 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
 
             viewer.resetPose();
             const mixamoKeypoints = buildMixamoWorldKeypoints(sourceBones, viewer);
-            if (mixamoKeypoints?.worldKps && viewer.fitMannequinToHMR2) {
+            if (mixamoKeypoints?.worldKps && viewer.applyWorldKeypointImport) {
                 const historySnapshot = Array.isArray(viewer.history) ? viewer.history.slice() : null;
                 const futureSnapshot = Array.isArray(viewer.future) ? viewer.future.slice() : null;
                 const sourceWorldRotations = buildFrameRotationMap(sourceBones, viewer.THREE);
                 clearImportedDebugFigures(viewer);
-                viewer._hmr2WorldKps = mixamoKeypoints.worldKps;
-                viewer.fitMannequinToHMR2(0);
-                applyExplicitMixamoBendTargets(viewer, mixamoKeypoints.worldKps);
                 applyMixamoRotationLayer(viewer, sourceWorldRotations, sourceRestWorldRotations);
+                const aligned = viewer.applyWorldKeypointImport(mixamoKeypoints.worldKps, {
+                    includeSpine: false,
+                    normalizeLimbs: true,
+                    drawFigure: false,
+                    updateMarkers: false,
+                    dispatchPoseChange: false,
+                });
                 clearImportedDebugFigures(viewer);
                 if (historySnapshot) viewer.history = historySnapshot;
                 if (futureSnapshot) viewer.future = futureSnapshot;
+                if (!aligned) continue;
                 poses.push(viewer.getPose());
 
                 if (debugFrames.length < 3) {
                     debugFrames.push({
                         sampleTime,
-                        method: 'mixamo_keypoints_fk_ik',
+                        method: 'shared_world_keypoint_alignment',
                         keypoints: Object.fromEntries(Object.entries(mixamoKeypoints.worldKps).map(([name, value]) => [
                             name,
                             value ? [value.x, value.y, value.z] : null,
@@ -798,10 +832,16 @@ export async function importMixamoFBXAsPoses(file, viewer, options = {}) {
         }
 
         return {
+            poseSamples: poses,
+            // Backward-compatible alias for integrations using the old helper.
             poses,
             clipName: clip.name || file.name,
+            duration: Math.max(Number(clip.duration) || 0, sampleTimes[sampleTimes.length - 1] || 0),
+            sampleTimes,
         };
     } finally {
         URL.revokeObjectURL(fileUrl);
     }
 }
+
+export const importMixamoFBXAsPoses = importMixamoFBXAnimation;

@@ -56,31 +56,6 @@ const BODY25_NAMES = [
     // 19-24: foot keypoints (ignored)
 ];
 
-// =====================================================================
-// OpenPose joint color palette (RGB) for image parsing
-// Matches bone_colors.py JOINT_COLORS
-// =====================================================================
-const JOINT_COLORS_RGB = {
-    nose:       [0, 0, 255],
-    neck:       [0, 0, 255],       // Same as nose — disambiguate by Y
-    r_shoulder: [255, 85, 0],
-    r_elbow:    [255, 170, 0],
-    r_wrist:    [255, 255, 0],
-    l_shoulder: [85, 255, 0],
-    l_elbow:    [0, 255, 0],
-    l_wrist:    [0, 255, 85],
-    r_hip:      [0, 255, 170],
-    r_knee:     [85, 255, 0],      // Note: same as l_shoulder — disambiguate by Y
-    r_ankle:    [0, 255, 0],       // Note: same as l_elbow — disambiguate by Y
-    l_hip:      [0, 85, 255],
-    l_knee:     [0, 255, 255],
-    l_ankle:    [0, 170, 255],
-    r_eye:      [170, 0, 255],
-    l_eye:      [170, 0, 255],     // Same as r_eye — disambiguate by X
-    r_ear:      [255, 0, 170],
-    l_ear:      [255, 0, 170],     // Same as r_ear — disambiguate by X
-};
-
 // Unique colors for detection (group joints that share colors)
 const COLOR_GROUPS = [
     { color: [0, 0, 255],     joints: ["nose", "neck"],         disambiguate: "y" },      // nose above neck

@@ -32,6 +32,7 @@ Inputs:
 | --- | --- | --- | --- |
 | `pose_data` | `STRING` | hidden | Main JSON state written by the custom Pose Studio UI. |
 | `pose_image` | `IMAGE` | optional | Studio mode only. Runs SAM 3D Body image-to-pose import and applies the result to the frontend pose. Disabled in VNCCS Pose Manager mode. |
+| `camera_prompt` | `STRING` | settings-controlled socket | Connect `VNCCS Visual Camera Control`. It is available only while `Directional Skydome` is enabled. Pose Studio removes `<sks>`, rewrites the camera tokens as natural text, and appends them to each generated prompt. |
 | `unique_id` | ComfyUI hidden | hidden | Used for backend/frontend synchronization. |
 
 Outputs:
@@ -39,18 +40,33 @@ Outputs:
 | Output | Type | Notes |
 | --- | --- | --- |
 | `images` | `IMAGE` list | Rendered pose image output. In LIST mode it is one image per pose tab. In GRID mode it is a one-item list containing the grid image. |
-| `lighting_prompt` | `STRING` list | Lighting prompt aligned with `images`. |
+| `lighting_prompt` | `STRING` list | Combined lighting, per-pose, and connected camera prompt aligned with `images`. |
 
 Important backend behavior:
 
-- The node requests a fresh frontend sync before execution when `captured_images` are not already present.
+- The node requests a fresh frontend sync for every execution.
+- When `Directional Skydome` is enabled in Settings, a transparent rainbow wire-grid skydome is rendered behind the mannequin and included in captures. Pose Studio parses azimuth and elevation from each execution's resolved `camera_prompt` and rotates the grid before capture, including high- and low-angle views. Disabling the setting hides the skydome from the interface and export, removes the `camera_prompt` socket, and disables camera-prompt merging.
 - If `pose_image` is connected in Studio mode, the backend runs SAM 3D Body, sends the imported pose back to the UI, waits for sync, and then renders the updated state.
 - If `pose_data.export.interface_mode` is `manager`, `pose_image` is ignored and the frontend removes that input port.
 - Captured image payloads are limited to 16 images, 64 MiB of base64 text total, 32 MiB decoded bytes per image, and 4096 x 4096 pixels per image.
 
 ## Main Modes
 
-Pose Studio has three practical interface states:
+Pose Studio has two independent mode selectors. `interface_mode` chooses Studio
+or Pose Manager, while `editor_mode` chooses static images or animation.
+
+| Editor mode | Purpose |
+| --- | --- |
+| Image | Existing pose tabs; every tab is an independent output image. |
+| Animation | One clip per character with a shared dope-sheet duration, playhead, FPS, transport controls, Auto-Key, and interpolation presets. |
+
+The animation timeline exposes **FPS** and **Seconds**. FPS defaults to 12. The
+internal frame count is calculated automatically as `round(seconds × FPS)` and
+is not independently editable. Changing FPS does not overwrite the requested
+duration. The dope-sheet ruler and playhead use frame numbers (`0…N-1`), and
+playback advances exactly FPS frames per real-time second.
+
+Pose Studio also has three practical interface states:
 
 | Mode | Purpose |
 | --- | --- |
@@ -60,16 +76,41 @@ Pose Studio has three practical interface states:
 
 The mode is stored in `pose_data.export.interface_mode`.
 
+## Animation and Mixamo FBX Import
+
+Choose **Settings → Editing Mode → Animation** to open the timeline below the
+3D viewport. Each rig bone has its own track. Double-click a track or use its
+diamond button to create/update a key at the playhead. Keys can be dragged to a
+new frame, deleted, and assigned Hold, Linear, Ease In, Ease Out, Easy Ease, or
+Smooth interpolation. Rotation keys are stored as local quaternions and use
+shortest-path interpolation.
+
+Importing a Mixamo `.fbx` file always switches Pose Studio to Animation mode.
+The importer retargets the clip onto the current mannequin and converts the
+sampled frames into one animation clip:
+
+- frame zero becomes the single base/fallback pose;
+- each affected bone receives keys across the timeline;
+- missing sparse bone values are explicitly keyed back to rest rotation;
+- no pose tab is created for each FBX frame;
+- the clip duration and sample count configure the timeline automatically.
+
+In Animation mode, LIST output returns one image per animation frame. Short
+clips may use exact browser captures; longer clips are evaluated from the sparse
+animation data by the backend rather than being embedded as base64 images in the
+workflow.
+
 ## Quick Start
 
 1. Add `VNCCS Pose Studio`.
 2. Open the node large enough to see the embedded UI.
-3. Pose the mannequin in the center viewport.
-4. Set output dimensions in the export/camera controls.
-5. Add or edit the prompt in the prompt panel.
-6. Run the workflow.
-7. Connect `images` to downstream image/control nodes.
-8. Connect `lighting_prompt` to your text prompt composition if you want the rendered lighting described in text.
+3. Pose the main mannequin in the center viewport.
+4. Optionally expand **Characters** below Prompt and add up to three more characters.
+5. Set output dimensions in the camera controls.
+6. Add or edit the prompt in the prompt panel.
+7. Run the workflow.
+8. Connect `images` to downstream image/control nodes.
+9. Connect `lighting_prompt` to your text prompt composition if you want the rendered lighting described in text.
 
 ## Layout Overview
 
@@ -82,7 +123,8 @@ The left side contains precision controls:
 - Female and male-specific body sliders.
 - Head, limb, torso, hand/foot proportion controls.
 - Model rotation controls.
-- Camera dimensions, zoom, and offset controls.
+- Shared camera dimensions and angle controls, plus the existing Zoom/radar
+  positioning widget for the selected character.
 - Export mode controls.
 - Debug/render options.
 
@@ -107,10 +149,39 @@ The right side focuses on prompt, pose library, and lighting:
 
 - Pose Library button and modal.
 - Per-pose prompt text.
+- Collapsed-by-default Characters scene panel.
 - Lighting setup.
 - Ambient, directional, and point light controls.
 - Light position/radar controls.
 - Lighting prompt generation state.
+
+## Characters
+
+The **Characters** panel is directly below Prompt and starts collapsed. A new
+scene contains one main character. Use its four scene slots to create up to four
+characters total. Slot numbers are stable: removing Character 1
+leaves slot 1 empty instead of renumbering Characters 2–4. Click any empty slot
+to create a character there; its initial color is chosen from an unused default.
+
+Only the selected character exposes its body, pose, and animation controls. The
+other characters remain visible in the viewport as inactive models and are
+included in every output capture. Each character stores its own:
+
+- body/mesh parameters;
+- model color;
+- X/Y position and zoom from the existing Camera widget;
+- static poses;
+- animation clip.
+
+Camera angle, output dimensions, pose tabs, animation FPS, duration, loop state,
+and playhead are shared by the scene. Select a character, then use the original
+**Zoom** slider and positioning radar in **Camera**; the same widget switches to
+that character's saved X/Y/Zoom values. Changing the common duration never hides
+a late key from another character; Pose Studio keeps every character clip on the
+same usable timeline boundary.
+
+Removing a character also removes that character's poses and animation after
+confirmation. At least one character always remains in the scene.
 
 ## Pose Tabs
 
@@ -121,8 +192,10 @@ Each tab stores:
 - Bone rotations.
 - IK/FK state where applicable.
 - Model rotation.
-- Camera params for that pose when saved.
 - Per-pose prompt.
+
+Pose tabs are shared scene frames: switching a tab displays the corresponding
+pose of every character. The selected character is the one edited on that tab.
 
 In LIST output mode, every pose tab becomes a separate output image and prompt
 entry. In GRID mode, the node combines rendered poses into one grid image.
@@ -135,7 +208,7 @@ entry. In GRID mode, the node combines rendered poses into one grid image.
 
 Behavior:
 
-- Renders each pose tab separately.
+- Renders each pose tab separately, with every scene character composited into the same image.
 - Returns `images` as a list of individual image tensors.
 - Returns `lighting_prompt` as a list aligned to those images.
 
@@ -162,17 +235,22 @@ Use GRID when:
 
 ## Camera and Framing
 
-Pose Studio stores camera settings in the `export` section of `pose_data`.
+Pose Studio stores shared output dimensions and camera angles in the `export`
+section of `pose_data`. Positioning-radar and Zoom values are stored separately
+in each character's `transform` object; the selected character's values are also
+mirrored to the legacy camera fields for compatibility.
 
 Common settings:
 
 | Setting | Purpose |
 | --- | --- |
 | `view_width` / `view_height` | Output resolution. |
-| `cam_zoom` | Camera zoom/framing. |
-| camera offsets | Shift subject inside the frame. |
+| camera yaw/pitch | Shared viewing direction for the whole scene. |
+| Camera positioning radar | Moves the selected character; every character keeps its own X/Y. |
+| Camera Zoom | Scales the selected character; every character keeps its own zoom. |
 | model rotation | Rotate the mannequin without changing the viewport UI state. |
 | background color | Used for final render and grid background. |
+| `directional_skydome_enabled` | Show/export the directional skydome and expose the `camera_prompt` input. |
 
 Tips:
 
@@ -197,6 +275,22 @@ The `lighting_prompt` output is intended to be appended to your generation
 prompt. It is especially useful when you want image lighting and text prompt
 lighting to agree.
 
+### Debug Mode Lighting
+
+For each queued execution, Debug Mode selects exactly one fully loaded pose from
+the pose library and applies that library entry as saved, including its stored
+rotation and camera data. It does not add any extra random model rotation,
+camera angle, framing, zoom, or offsets.
+
+Lighting behavior is controlled separately:
+
+- With `Keep Manual Lighting` disabled, Debug Mode may generate temporary random
+  lights for that capture.
+- With `Keep Manual Lighting` enabled, the complete current lighting state is
+  preserved and random light generation is skipped.
+- `Keeping Original Lighting` takes precedence and is preserved as part of the
+  manual lighting state.
+
 ## Pose Library
 
 Pose Studio includes a local and repository-backed pose library.
@@ -204,6 +298,7 @@ Pose Studio includes a local and repository-backed pose library.
 Library features:
 
 - Save current pose.
+- Save or load a complete multi-character static scene or animation scene.
 - Load a saved pose.
 - Delete local poses.
 - Browse pose cards with previews.
@@ -230,7 +325,7 @@ local_user_poses
 
 When saving, Pose Studio writes:
 
-- A pose JSON file.
+- A scene JSON file containing every character and, for animation assets, every character clip.
 - Optional preview image.
 - Repository/category/tags metadata.
 

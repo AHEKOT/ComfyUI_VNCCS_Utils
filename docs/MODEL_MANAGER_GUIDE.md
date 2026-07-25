@@ -80,13 +80,20 @@ JSON into that hidden input:
   "azimuth": 0,
   "elevation": 0,
   "distance": "medium shot",
-  "include_trigger": true
+  "include_trigger": true,
+  "random": false,
+  "random_azimuth_mode": "full"
 }
 ```
 
 The output is the same `prompt` string as `VNCCS Position Control`.
 
 Use this node when you prefer an interactive camera UI instead of raw sliders.
+Enable `Random` to choose a different azimuth, elevation, and distance for
+every queued generation, including every item in a batched queue.
+When `Random` is enabled, choose `360°` to use every azimuth or `Front ±45°`
+to restrict azimuth to front-left (`315°`), front (`0°`), and front-right
+(`45°`). Elevation and distance remain randomized in both modes.
 If the hidden JSON is missing or invalid, the node falls back to front,
 eye-level, medium shot, with `<sks>` enabled.
 
@@ -302,6 +309,7 @@ Inputs:
 | --- | --- | --- |
 | `pose_data` | hidden `STRING` | JSON written by the custom UI. |
 | `pose_image` | optional `IMAGE` | Available in Studio mode; disabled in Pose Manager mode. When connected, it runs SAM 3D Body import and applies the result to the frontend pose. |
+| `camera_prompt` | settings-controlled `STRING` socket | Available while `Directional Skydome` is enabled. Accepts `VNCCS Visual Camera Control`; each resolved execution prompt rotates the exported skydome and is appended as natural camera text. Disabling the setting removes the socket and skydome. |
 | `unique_id` | hidden | Used for frontend/backend sync. |
 
 Outputs:
@@ -309,7 +317,7 @@ Outputs:
 | Output | Type | Notes |
 | --- | --- | --- |
 | `images` | `IMAGE` list | One image per pose tab in LIST mode, or one grid image in GRID mode. |
-| `lighting_prompt` | `STRING` list | Lighting prompt per output image. |
+| `lighting_prompt` | `STRING` list | Combined lighting, pose, and connected camera prompt per output image. |
 
 ## Troubleshooting
 

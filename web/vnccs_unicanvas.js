@@ -3,6 +3,11 @@
  */
 
 import { app } from "../../scripts/app.js";
+import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import {
+  forceUniCanvasPresetModelSettings,
+  getUniCanvasPresetModelName,
+} from "./vnccs_unicanvas_presets.mjs";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -118,12 +123,6 @@ const STYLES = `
 .vnccs-uc-select option { background:#171320; color:#e8e8f0; font-size:14px; line-height:1.35; }
 .vnccs-uc-select option:checked,
 .vnccs-uc-select option:hover { background:#3a2a3d; color:#ffdce5; }
-.vnccs-uc-select-menu { position:fixed; z-index:999999; max-height:min(70vh, 520px); overflow:auto; overscroll-behavior:contain; padding:6px; border:1px solid rgba(255,143,163,.34); border-radius:12px; background:#171320; color:#e8e8f0; box-shadow:0 16px 44px rgba(0,0,0,.58); box-sizing:border-box; pointer-events:auto; }
-.vnccs-uc-select-menu-option { min-height:32px; display:flex; align-items:center; gap:8px; padding:6px 10px; border:0; border-radius:8px; background:transparent; color:inherit; font:inherit; text-align:left; width:100%; cursor:pointer; box-sizing:border-box; }
-.vnccs-uc-select-menu-option:hover,
-.vnccs-uc-select-menu-option.active { background:rgba(255,143,163,.18); color:#ffdce5; }
-.vnccs-uc-select-menu-check { width:18px; flex:0 0 18px; color:#ff8fa3; font-weight:900; }
-.vnccs-uc-select-menu-label { flex:1 1 auto; min-width:0; overflow:visible; text-overflow:clip; white-space:nowrap; }
 .vnccs-uc-textarea { min-height:54px; height:54px; padding:7px 8px; resize:none; width:100%; box-sizing:border-box; overflow:hidden; line-height:1.28; }
 .vnccs-uc-field { display:flex; flex-direction:column; gap:4px; min-width:62px; color:var(--uc-muted); }
 .vnccs-uc-field.inline { flex-direction:row; align-items:center; }
@@ -159,6 +158,7 @@ const STYLES = `
 .vnccs-uc-model-card-status { flex:0 0 auto; color:var(--uc-danger); font-size:10px; font-weight:800; text-transform:uppercase; }
 .vnccs-uc-model-card-status.ok { color:var(--uc-good); }
 .vnccs-uc-model-card-status.progress { color:var(--uc-accent-2); }
+.vnccs-uc-model-card-model { color:#ffdce5; font-size:11px; font-weight:800; line-height:1.25; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-model-card-desc { color:var(--uc-muted); font-size:11px; line-height:1.35; }
 .vnccs-uc-model-card-actions { display:flex; align-items:center; gap:7px; }
 .vnccs-uc-model-card-download { width:100%; height:27px; border:1px solid rgba(255,143,163,.36); border-radius:8px; background:rgba(255,143,163,.1); color:#ffdce5; font:inherit; font-size:10px; font-weight:800; text-transform:uppercase; cursor:pointer; }
@@ -335,7 +335,7 @@ function enableUniCanvasGraphNavigationForwarding(root) {
       "[role='button']",
       ".vnccs-uc-tools",
       ".vnccs-uc-tool-settings",
-      ".vnccs-uc-select-menu",
+      ".vnccs-custom-select-menu",
       ".vnccs-uc-staging-popover",
       ".vnccs-uc-modal-overlay",
       ".vnccs-uc-layers",
@@ -713,9 +713,6 @@ class UniCanvasWidget {
     this.renderQueued = false;
     this.settingsSyncTimer = null;
     this.fullSyncTimer = null;
-    this.layoutLogTimer = null;
-    this.customSelectMenu = null;
-    this.customSelectSource = null;
     this.thumbnailRenderQueue = [];
     this.thumbnailRenderQueued = false;
     this.lodRenderQueue = [];
@@ -731,6 +728,8 @@ class UniCanvasWidget {
     this.presetDownloads = {};
     this.presetDownloadTimer = null;
     this.presetPickerOpen = false;
+    this._disposed = false;
+    this._eventAbortController = null;
     this.settings = makeDefaultUniCanvasSettings();
     if (!this.settings.preset_runtime_settings || typeof this.settings.preset_runtime_settings !== "object") {
       this.settings.preset_runtime_settings = {};
@@ -748,8 +747,12 @@ class UniCanvasWidget {
     };
 
     this._buildDOM();
+    this._customSelectController = installCustomSelects(this.container, {
+      theme: "unicanvas",
+    });
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
+      if (this._disposed) return;
       this._isRestoring = false;
       this.fitInitialView();
       this.renderLayerList();
@@ -1433,6 +1436,9 @@ class UniCanvasWidget {
   }
 
   _attachEvents() {
+    this._eventAbortController?.abort();
+    this._eventAbortController = new AbortController();
+    const eventSignal = this._eventAbortController.signal;
     enableUniCanvasGraphNavigationForwarding(this.container);
     this.resizeObserver = new ResizeObserver(() => this.resize());
     this.resizeObserver.observe(this.container);
@@ -1442,11 +1448,11 @@ class UniCanvasWidget {
     this.canvas.addEventListener("pointerleave", (e) => this.onPointerLeave(e));
     this.canvas.addEventListener("contextmenu", (e) => e.preventDefault());
     this.canvas.addEventListener("auxclick", (e) => e.preventDefault());
-    window.addEventListener("pointermove", (e) => this.onPointerMove(e));
-    window.addEventListener("pointerup", (e) => this.onPointerUp(e));
+    window.addEventListener("pointermove", (e) => this.onPointerMove(e), { signal: eventSignal });
+    window.addEventListener("pointerup", (e) => this.onPointerUp(e), { signal: eventSignal });
     this._flushStateBeforeUnload = () => this.flushStateUpload(true);
-    window.addEventListener("pagehide", this._flushStateBeforeUnload);
-    window.addEventListener("beforeunload", this._flushStateBeforeUnload);
+    window.addEventListener("pagehide", this._flushStateBeforeUnload, { signal: eventSignal });
+    window.addEventListener("beforeunload", this._flushStateBeforeUnload, { signal: eventSignal });
     this.container.addEventListener("keydown", (e) => {
       const target = e.target;
       if (!(target instanceof HTMLInputElement) || !NUMERIC_SETTINGS.has(target.dataset.setting) || e.key !== ",") return;
@@ -1466,24 +1472,6 @@ class UniCanvasWidget {
         if (NUMERIC_SETTINGS.has(input.dataset.setting)) this.normalizeNumericInputValue(input);
       });
     }, 0));
-    this.container.addEventListener("pointerdown", (e) => {
-      const select = e.target?.closest?.("select.vnccs-uc-select");
-      if (!(select instanceof HTMLSelectElement) || select.disabled) return;
-      e.preventDefault();
-      e.stopPropagation();
-      this.openCustomSelect(select);
-    }, true);
-    window.addEventListener("pointerdown", (e) => {
-      if (!this.customSelectMenu) return;
-      if (this.customSelectMenu.contains(e.target) || e.target === this.customSelectSource) return;
-      this.closeCustomSelect();
-    }, true);
-    window.addEventListener("keydown", (e) => {
-      if (!this.customSelectMenu || e.key !== "Escape") return;
-      e.preventDefault();
-      this.closeCustomSelect();
-    }, true);
-    window.addEventListener("resize", () => this.closeCustomSelect(), { passive: true });
     this.container.addEventListener("click", (e) => {
       const btn = e.target?.closest?.("[data-action], [data-model-selection-mode], [data-preset-picker-toggle], [data-preset-id], [data-preset-download], [data-turbo-download], [data-turbo-toggle]");
       if (!(btn instanceof HTMLElement)) return;
@@ -1649,11 +1637,13 @@ class UniCanvasWidget {
       this.fillSelect("sampler_name", this.assets.samplers || []);
       this.fillSelect("scheduler", this.assets.schedulers || []);
       this.renderLoraStackControls();
-      if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
-      if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
-      if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
-      if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
-      if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
+      if (this.settings.model_selection_mode !== "presets") {
+        if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
+        if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
+        if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
+        if (!this.settings.clip_name && this.assets.text_encoders[0]) this.settings.clip_name = this.assets.text_encoders[0];
+        if (!this.settings.vae_name && this.assets.vae_models[0]) this.settings.vae_name = this.assets.vae_models[0];
+      }
       this.normalizeGenerationSettings();
       await this.loadPresets();
       this.syncPromptControls();
@@ -1719,6 +1709,7 @@ class UniCanvasWidget {
   }
 
   makeSettingsPayload() {
+    this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
     return settings;
@@ -1768,8 +1759,17 @@ class UniCanvasWidget {
   getActivePreset() {
     const mode = getUniCanvasModelModule(this.settings.generation_mode).key;
     const byId = this.getPresetById(this.settings.selected_preset_id);
+    if (this.settings.model_selection_mode === "presets" && byId) return byId;
     if (byId && getUniCanvasModelModule(byId.settings?.generation_mode).key === mode) return byId;
     return (this.presets || []).find((preset) => preset.settings?.generation_mode === mode || preset.id === mode) || null;
+  }
+
+  forceSelectedPresetModelSettings() {
+    if (this.settings.model_selection_mode !== "presets") return null;
+    const preset = this.getPresetById(this.settings.selected_preset_id);
+    if (!preset) return null;
+    forceUniCanvasPresetModelSettings(this.settings, preset);
+    return preset;
   }
 
   presetAssetStatus(asset) {
@@ -1817,6 +1817,7 @@ class UniCanvasWidget {
     const statusText = status.progress ? (status.message || "Downloading") : status.installed ? "Installed" : "Download";
     const title = turbo ? preset.turbo?.asset?.name : preset.title;
     const desc = turbo ? preset.turbo?.asset?.description : preset.description;
+    const modelName = turbo ? "" : getUniCanvasPresetModelName(preset);
     const downloadAttrs = turbo ? `data-turbo-download="${this._escape(preset.id)}"` : `data-preset-download="${this._escape(preset.id)}"`;
     const downloadButton = turbo || status.installed || status.progress
       ? ""
@@ -1829,6 +1830,7 @@ class UniCanvasWidget {
         <span class="vnccs-uc-model-card-name">${this._escape(title || preset.label || preset.id)}</span>
         ${turbo ? `${statusNode}${toggle}` : statusNode}
       </span>
+      ${modelName ? `<span class="vnccs-uc-model-card-model">Model: ${this._escape(modelName)}</span>` : ""}
       ${turbo ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
       ${downloadButton}`;
     return card;
@@ -1962,6 +1964,7 @@ class UniCanvasWidget {
       model_selection_mode: "presets",
       selected_preset_id: preset.id,
     };
+    forceUniCanvasPresetModelSettings(this.settings, preset);
     this.presetRuntimeSettingsStore();
     const module = getUniCanvasModelModule(this.settings.generation_mode);
     this.settings.generation_mode = module.key;
@@ -2080,15 +2083,17 @@ class UniCanvasWidget {
   }
 
   startPresetDownloadPolling() {
-    if (this.presetDownloadTimer) return;
+    if (this._disposed || this.presetDownloadTimer) return;
     this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 2000);
     this.refreshPresetDownloadStatus();
   }
 
   async refreshPresetDownloadStatus() {
+    if (this._disposed) return;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets/status?t=${Date.now()}`);
       const data = await res.json();
+      if (this._disposed) return;
       if (!res.ok) throw new Error(data.error || "Status failed");
       this.presetDownloads = data || {};
       await this.loadPresets();
@@ -2109,6 +2114,7 @@ class UniCanvasWidget {
   }
 
   normalizeGenerationSettings() {
+    this.forceSelectedPresetModelSettings();
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -2263,147 +2269,6 @@ class UniCanvasWidget {
       this.fitInitialView();
     }
     this.render();
-    this.scheduleUILayoutLog("resize");
-  }
-
-  scheduleUILayoutLog(reason = "layout") {
-    clearTimeout(this.layoutLogTimer);
-    this.layoutLogTimer = setTimeout(() => {
-      this.layoutLogTimer = null;
-      this.logUILayout(reason);
-    }, 120);
-  }
-
-  logUILayout(reason = "layout") {
-    if (!this.container || !this.stageWrap) return;
-    const containerRect = this.container.getBoundingClientRect();
-    const stageRect = this.stageWrap.getBoundingClientRect();
-    const nodeWidth = Number(this.node?.size?.[0]) || 0;
-    const nodeHeight = Number(this.node?.size?.[1]) || 0;
-    const round = (value) => Math.round((Number(value) || 0) * 100) / 100;
-    const pct = (value, base) => base ? round((value / base) * 100) : 0;
-    const localRect = (el, parentRect = containerRect) => {
-      if (!el) return null;
-      const rect = el.getBoundingClientRect();
-      return {
-        x: round(rect.left - parentRect.left),
-        y: round(rect.top - parentRect.top),
-        width: round(rect.width),
-        height: round(rect.height),
-        right: round(rect.right - parentRect.left),
-        bottom: round(rect.bottom - parentRect.top),
-        widthPctOfContainer: pct(rect.width, containerRect.width),
-        heightPctOfContainer: pct(rect.height, containerRect.height),
-        widthPctOfStage: pct(rect.width, stageRect.width),
-        heightPctOfStage: pct(rect.height, stageRect.height),
-      };
-    };
-    const toolButtons = Array.from(this.tools?.querySelectorAll(".vnccs-uc-tool") || []);
-    const payload = {
-      reason,
-      nodeSize: { width: round(nodeWidth), height: round(nodeHeight) },
-      containerClient: { width: this.container.clientWidth, height: this.container.clientHeight },
-      containerRect: {
-        x: round(containerRect.left),
-        y: round(containerRect.top),
-        width: round(containerRect.width),
-        height: round(containerRect.height),
-      },
-      graphScaleFromNodeToScreen: {
-        x: nodeWidth ? round(containerRect.width / nodeWidth) : 0,
-        y: nodeHeight ? round(containerRect.height / nodeHeight) : 0,
-      },
-      cssUiScale: this.container.style.getPropertyValue("--vnccs-uc-ui-scale") || "unset",
-      parts: {
-        left: localRect(this.left),
-        stage: localRect(this.stageWrap),
-        right: localRect(this.side),
-        topBar: localRect(this.bottom),
-        toolbarInContainer: localRect(this.tools),
-        toolbarInStage: localRect(this.tools, stageRect),
-        firstTool: localRect(toolButtons[0], stageRect),
-        lastTool: localRect(toolButtons[toolButtons.length - 1], stageRect),
-      },
-      counts: {
-        toolButtons: toolButtons.length,
-      },
-    };
-    console.groupCollapsed("VNCCS UniCanvas layout");
-    console.log(payload);
-    console.table(payload.parts);
-    console.groupEnd();
-  }
-
-  openCustomSelect(select) {
-    if (this.customSelectMenu && this.customSelectSource === select) {
-      this.closeCustomSelect();
-      return;
-    }
-    this.closeCustomSelect();
-    const options = Array.from(select.options || []);
-    if (!options.length) return;
-    const rect = select.getBoundingClientRect();
-    const selectFontSize = Number.parseFloat(getComputedStyle(select).fontSize) || 14;
-    const menu = document.createElement("div");
-    menu.className = "vnccs-uc-select-menu";
-    const viewportGap = 8;
-    const longestOptionChars = options.reduce((max, option) => Math.max(max, (option.textContent || option.value || "").length), 0);
-    const desiredWidth = Math.max(rect.width, Math.min(520, 64 + longestOptionChars * Math.max(7, selectFontSize * 0.62)));
-    const menuWidth = Math.min(desiredWidth, window.innerWidth - viewportGap * 2);
-    const menuLeft = Math.min(Math.max(viewportGap, rect.left), window.innerWidth - viewportGap - menuWidth);
-    menu.style.left = `${Math.round(menuLeft)}px`;
-    menu.style.top = `${Math.round(rect.bottom + 4)}px`;
-    menu.style.width = `${Math.round(menuWidth)}px`;
-    menu.style.fontSize = `${Math.round(selectFontSize * 100) / 100}px`;
-    const availableBelow = window.innerHeight - rect.bottom - viewportGap;
-    const availableAbove = rect.top - viewportGap;
-    const maxHeight = Math.max(140, Math.min(520, Math.max(availableBelow, availableAbove)));
-    menu.style.maxHeight = `${Math.round(maxHeight)}px`;
-    if (availableBelow < 180 && availableAbove > availableBelow) {
-      menu.style.top = "";
-      menu.style.bottom = `${Math.round(window.innerHeight - rect.top + 4)}px`;
-    }
-    for (const option of options) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = "vnccs-uc-select-menu-option";
-      if (option.value === select.value) row.classList.add("active");
-      row.dataset.value = option.value;
-      row.innerHTML = `<span class="vnccs-uc-select-menu-check">${option.value === select.value ? "✓" : ""}</span><span class="vnccs-uc-select-menu-label"></span>`;
-      row.querySelector(".vnccs-uc-select-menu-label").textContent = option.textContent || option.value;
-      row.addEventListener("pointerdown", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-      });
-      row.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        this.chooseCustomSelectValue(select, option.value);
-      });
-      menu.appendChild(row);
-    }
-    menu.addEventListener("wheel", (e) => e.stopPropagation(), { passive: true });
-    document.body.appendChild(menu);
-    this.customSelectMenu = menu;
-    this.customSelectSource = select;
-    const active = menu.querySelector(".vnccs-uc-select-menu-option.active");
-    if (active) active.scrollIntoView({ block: "nearest" });
-  }
-
-  chooseCustomSelectValue(select, value) {
-    if (!(select instanceof HTMLSelectElement)) return;
-    if (select.value !== value) {
-      select.value = value;
-      select.dispatchEvent(new Event("input", { bubbles: true }));
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    }
-    this.closeCustomSelect();
-  }
-
-  closeCustomSelect() {
-    if (this.customSelectMenu) this.customSelectMenu.remove();
-    this.customSelectMenu = null;
-    this.customSelectSource = null;
   }
 
   requestRender() {
@@ -5335,6 +5200,7 @@ class UniCanvasWidget {
     const ctx = this.configureImageContext(layer.canvas.getContext("2d"));
     ctx.drawImage(img, this.bbox.x - this.origin.x, this.bbox.y - this.origin.y);
     this.invalidateLayerCaches(layer);
+    this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
     this.scheduleFullSync();
@@ -5649,48 +5515,6 @@ class UniCanvasWidget {
     return out;
   }
 
-  getCanvasAlphaStats(canvas) {
-    const data = this.getReadbackContext(canvas, false).getImageData(0, 0, canvas.width, canvas.height).data;
-    let minX = canvas.width;
-    let minY = canvas.height;
-    let maxX = -1;
-    let maxY = -1;
-    let alphaSum = 0;
-    let nonzero = 0;
-    for (let y = 0; y < canvas.height; y++) {
-      for (let x = 0; x < canvas.width; x++) {
-        const alpha = data[(y * canvas.width + x) * 4 + 3];
-        alphaSum += alpha;
-        if (alpha > 8) {
-          nonzero++;
-          if (x < minX) minX = x;
-          if (y < minY) minY = y;
-          if (x > maxX) maxX = x;
-          if (y > maxY) maxY = y;
-        }
-      }
-    }
-    return {
-      size: { width: canvas.width, height: canvas.height },
-      alphaSum,
-      nonzeroAlphaPixels: nonzero,
-      bboxAlphaGt8: nonzero ? { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 } : null,
-    };
-  }
-
-  getLayerDebugSummary() {
-    return this.layers.map((layer, index) => ({
-      index,
-      id: layer.id,
-      name: layer.name,
-      type: layer.type,
-      visible: layer.visible,
-      locked: layer.locked,
-      opacity: layer.opacity,
-      alpha: layer.type === "mask" ? this.getCanvasAlphaStats(layer.canvas) : null,
-    }));
-  }
-
   async draw() {
     this.flushSettingsToWidget();
     const { loader } = this.normalizeGenerationSettings();
@@ -5724,21 +5548,6 @@ class UniCanvasWidget {
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
     const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
-    const debug = {
-      debugId,
-      mode,
-      bbox: { ...requestBbox },
-      origin: { ...this.origin },
-      worldSize: { ...this.size },
-      view: { ...this.view },
-      inferenceSize,
-      outputSize,
-      layers: this.getLayerDebugSummary(),
-      rasterInBbox: rasterStats,
-      maskInBbox: maskStats,
-      exportedMask: this.getCanvasAlphaStats(maskCanvas),
-    };
-    console.debug("[VNCCS UniCanvas] GENERATE request", debug);
     const batchSize = Math.max(1, Math.min(99, Math.round(Number(this.settings.batch_size) || 1)));
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
@@ -5760,11 +5569,9 @@ class UniCanvasWidget {
           inference_size: inferenceSize,
           output_size: outputSize,
           settings: this.makeSettingsPayload(),
-          debug,
         }),
       });
       const data = await res.json();
-      console.debug("[VNCCS UniCanvas] GENERATE response", { debugId, data });
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const resultImages = Array.isArray(data.images) && data.images.length ? data.images : [data.image].filter(Boolean);
       if (!resultImages.length) throw new Error("Generation returned no images");
@@ -5994,6 +5801,7 @@ class UniCanvasWidget {
   }
 
   startDrawProgressPolling(drawId) {
+    if (this._disposed) return;
     this.stopDrawProgressPolling();
     const poll = async () => {
       try {
@@ -6070,7 +5878,7 @@ class UniCanvasWidget {
   }
 
   syncToNode() {
-    if (this._isRestoring) return;
+    if (this._disposed || this._isRestoring) return;
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
     clearTimeout(this.fullSyncTimer);
@@ -6152,11 +5960,12 @@ class UniCanvasWidget {
   }
 
   scheduleFullSync(delay = 900) {
-    if (this._isRestoring) return;
+    if (this._disposed || this._isRestoring) return;
     clearTimeout(this.fullSyncTimer);
     this.fullSyncTimer = window.setTimeout(() => {
       this.fullSyncTimer = null;
       const run = () => {
+        if (this._disposed) return;
         if (this.isPointerDown || this.drawInProgress) {
           this.scheduleFullSync(delay);
           return;
@@ -6264,6 +6073,7 @@ class UniCanvasWidget {
   }
 
   scheduleStateUpload() {
+    if (this._disposed) return;
     clearTimeout(this.stateUploadTimer);
     this.pendingStateUpload = true;
     this.stateUploadTimer = window.setTimeout(() => {
@@ -6569,13 +6379,35 @@ class UniCanvasWidget {
   }
 
   dispose() {
-    this.flushStateUpload(true);
-    clearTimeout(this.stateUploadTimer);
-    if (this._flushStateBeforeUnload) {
-      window.removeEventListener("pagehide", this._flushStateBeforeUnload);
-      window.removeEventListener("beforeunload", this._flushStateBeforeUnload);
+    if (this._disposed) return;
+    try {
+      void this.flushStateUpload(true);
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
+    this._disposed = true;
+    this._eventAbortController?.abort();
+    this._eventAbortController = null;
+    this.stopDrawProgressPolling();
+    if (this.presetDownloadTimer) window.clearInterval(this.presetDownloadTimer);
+    this.presetDownloadTimer = null;
+    for (const timer of [
+      this.stateUploadTimer,
+      this.settingsSyncTimer,
+      this.fullSyncTimer,
+      this.deferredCanvasCommitTimer,
+      this.snapTimeout,
+    ]) window.clearTimeout(timer);
+    this.stateUploadTimer = null;
+    this.settingsSyncTimer = null;
+    this.fullSyncTimer = null;
+    this.deferredCanvasCommitTimer = null;
+    this.snapTimeout = null;
+    this.pendingStateUpload = null;
+    this._customSelectController?.disconnect();
+    this._customSelectController = null;
     this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
   }
 }
 
@@ -6624,7 +6456,7 @@ app.registerExtension({
         stateWidget.computeSize = () => [0, -4];
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
-      setTimeout(() => {
+      this._vnccsUniCanvasInitTimer = setTimeout(() => {
         this.uniCanvasWidget?.resize();
         this.uniCanvasWidget?.fitInitialView();
         this.uniCanvasWidget?.render();
@@ -6643,7 +6475,8 @@ app.registerExtension({
     const onConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function () {
       onConfigure?.apply(this, arguments);
-      setTimeout(async () => {
+      clearTimeout(this._vnccsUniCanvasConfigureTimer);
+      this._vnccsUniCanvasConfigureTimer = setTimeout(async () => {
         if (!this.uniCanvasWidget) return;
         syncUniCanvasDOMWidgetWidth(this);
         this.uniCanvasWidget._isRestoring = true;
@@ -6658,6 +6491,9 @@ app.registerExtension({
 
     const onRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
+      clearTimeout(this._vnccsUniCanvasInitTimer);
+      clearTimeout(this._vnccsUniCanvasResizeTimer);
+      clearTimeout(this._vnccsUniCanvasConfigureTimer);
       this.uniCanvasWidget?.dispose();
       onRemoved?.apply(this, arguments);
     };

@@ -33,6 +33,101 @@ const ThreeModuleLoader = {
     }
 };
 
+export function computeSAMProjectionFrameFit({
+    modelBounds,
+    desiredBounds,
+    fov,
+    aspect,
+    modelShoulderY = null,
+    desiredShoulderY = null,
+    desiredBottomY = null,
+    safety = 1,
+    minZoom = 0.1,
+    maxZoom = 16,
+} = {}) {
+    const values = [
+        modelBounds?.width,
+        modelBounds?.height,
+        modelBounds?.centerX,
+        modelBounds?.centerY,
+        modelBounds?.depth,
+        desiredBounds?.width,
+        desiredBounds?.height,
+        desiredBounds?.centerX,
+        desiredBounds?.centerY,
+        fov,
+        aspect,
+    ].map(Number);
+    if (!values.every(Number.isFinite)) return null;
+
+    const [
+        modelWidth,
+        modelHeight,
+        modelCenterX,
+        modelCenterY,
+        modelDepth,
+        desiredWidth,
+        desiredHeight,
+        desiredCenterX,
+        desiredCenterY,
+        fovDegrees,
+        cameraAspect,
+    ] = values;
+    if (
+        modelWidth <= 1e-5
+        || modelHeight <= 1e-5
+        || modelDepth <= 1e-5
+        || desiredWidth <= 1e-5
+        || desiredHeight <= 1e-5
+        || fovDegrees <= 0
+        || cameraAspect <= 0
+    ) return null;
+
+    const modelBottomY = modelCenterY - modelHeight * 0.5;
+    const useShoulderAnchor = [
+        modelShoulderY,
+        desiredShoulderY,
+        desiredBottomY,
+    ].every(value => value !== null && value !== undefined && Number.isFinite(Number(value)));
+    const modelVerticalSpan = useShoulderAnchor
+        ? Number(modelShoulderY) - modelBottomY
+        : modelHeight;
+    const desiredVerticalSpan = useShoulderAnchor
+        ? Number(desiredShoulderY) - Number(desiredBottomY)
+        : desiredHeight;
+    if (modelVerticalSpan <= 1e-5 || desiredVerticalSpan <= 1e-5) return null;
+
+    const safeScale = Math.max(0.5, Math.min(1.5, Number(safety) || 1));
+    const zoom = Math.max(
+        Number(minZoom) || 0.1,
+        Math.min(
+            Number(maxZoom) || 16,
+            // Shoulder-to-sole height is stable across different head shapes.
+            (desiredVerticalSpan / modelVerticalSpan) * safeScale,
+        ),
+    );
+    const visibleHeight = 2 * modelDepth * Math.tan((fovDegrees * Math.PI / 180) * 0.5) / zoom;
+    const visibleWidth = visibleHeight * cameraAspect;
+    const scaledCenterX = modelCenterX * zoom;
+    const scaledAnchorY = (
+        useShoulderAnchor ? Number(modelShoulderY) : modelCenterY
+    ) * zoom;
+    const targetAnchorY = useShoulderAnchor
+        ? Number(desiredShoulderY)
+        : desiredCenterY;
+
+    return {
+        zoom,
+        offset_x: -(scaledCenterX - desiredCenterX) * visibleWidth * 0.5,
+        offset_y: -(scaledAnchorY - targetAnchorY) * visibleHeight * 0.5,
+    };
+}
+
+export function clampTwoBoneReachDistance(targetDistance, totalLength) {
+    const target = Math.max(0, Number(targetDistance) || 0);
+    const total = Math.max(0, Number(totalLength) || 0);
+    return Math.min(target, total);
+}
 
 // === IK Chain Definitions ===
 const IK_CHAINS = {
@@ -366,7 +461,7 @@ const SAM3D_TO_MH_BONE_MAP = {
 };
 
 // === Analytic 2-Bone IK Solver ===
-class AnalyticIKSolver {
+export class AnalyticIKSolver {
     constructor(THREE) {
         this.THREE = THREE;
     }
@@ -390,7 +485,7 @@ class AnalyticIKSolver {
 
         // Clamp to reachable range
         const totalLen = upperLen + lowerLen;
-        const reachDist = Math.min(targetDist, totalLen * 0.999);
+        const reachDist = clampTwoBoneReachDistance(targetDist, totalLen);
 
         // Law of cosines to find the bend angle at the middle joint
         // cos(A) = (a² + b² - c²) / (2ab)
@@ -498,12 +593,12 @@ class AnalyticIKSolver {
 
         // Calculate rotation
         const dot = currentDir.dot(targetDir);
-        if (dot > 0.9999) return; // Already aligned
+        if (dot > 1 - 1e-12) return; // Already aligned to sub-pixel precision
 
         const axis = new THREE.Vector3().crossVectors(currentDir, targetDir);
         let angle = Math.acos(Math.max(-1, Math.min(1, dot)));
 
-        if (axis.lengthSq() < 0.0001) {
+        if (axis.lengthSq() < 1e-12) {
             // Singularity: 180 degree rotation. Pick any perpendicular axis.
             if (dot < 0) {
                 const perp = new THREE.Vector3(1, 0, 0);
@@ -901,6 +996,7 @@ export class PoseViewerCore {
             onInteractionEnd: null,
             onHandHover: null,
             onHandActivate: null,
+            onBoneSelectionChange: null,
 
             syncMode: 'end',
             skinMode: 'flat_color',
@@ -927,14 +1023,28 @@ export class PoseViewerCore {
         this.renderer = null;
         this.orbit = null;
         this.transform = null;
+        this.directionalSkydome = null;
+        this.directionalSkydomeVisible = true;
+        this.directionalSkydomeOrientation = { yawDegrees: 0, pitchDegrees: 0 };
 
         this.skinnedMesh = null;
         this.skeleton = null;
         this.boneList = [];
         this.bones = {};
+        // The selected character owns the editable rig above. Other scene
+        // characters are lightweight independent rig clones with no markers,
+        // IK helpers, or TransformControls, so they remain visible but inert.
+        this.passiveCharacters = new Map();
+        this.activeCharacterAppearance = {
+            color: "#ffffff",
+            transform: { x: 0, y: 0, z: 0, zoom: 1 },
+        };
         this.modelLandmarks = {};
         this.modelLandmarkIndices = {};
         this.selectedBone = null;
+        this.hoveredBoneName = null;
+        this.externalHoveredBoneName = null;
+        this._emittingBoneSelectionChange = false;
 
         this.jointMarkers = [];
 
@@ -958,6 +1068,10 @@ export class PoseViewerCore {
         this.handScale = 1.0;
         this.footScale = 1.0;
         this.boneLengthParams = {
+            shoulder_l: 0.5,
+            shoulder_r: 0.5,
+            hip_l: 0.5,
+            hip_r: 0.5,
             upper_arm_l: 0.5,
             upper_arm_r: 0.5,
             forearm_l: 0.5,
@@ -968,12 +1082,27 @@ export class PoseViewerCore {
             shin_r: 0.5,
             spine: 0.5,
         };
+        this.shapedBoneRestPositions = {};
 
         // Managed lights array
         this.lights = [];
         this.pendingData = null;
         this.pendingLights = null;
         this.pendingBackgroundUrl = null;
+        this._lightParamsSignature = null;
+        this.cachedSkinTexture = null;
+        this.cachedSkinType = null;
+        this._cachedSkinTextureReady = false;
+        this._skinTextureLoadToken = 0;
+        this._skinTextureReady = true;
+        this._skinTexturePromise = Promise.resolve(true);
+        this._captureBatch = null;
+        this._needsRender = true;
+        this._renderFrame = null;
+        this._viewportSizeObserved = false;
+        this._viewportBufferLocked = false;
+        this._hoverPointerFrame = null;
+        this._pendingHoverPointer = null;
 
         // IK State
         this.ikController = null;
@@ -1013,7 +1142,12 @@ export class PoseViewerCore {
     }
 
     _getRaycastableJointMarkers() {
-        return (this.jointMarkers || []).filter((marker) => marker?.visible);
+        if (!this._raycastableJointMarkers) this._raycastableJointMarkers = [];
+        this._raycastableJointMarkers.length = 0;
+        for (const marker of this.jointMarkers || []) {
+            if (marker?.visible) this._raycastableJointMarkers.push(marker);
+        }
+        return this._raycastableJointMarkers;
     }
 
     _resolveHandBone(bone) {
@@ -1114,9 +1248,28 @@ export class PoseViewerCore {
         return this.initialized && this.skinnedMesh !== null;
     }
 
+    isCaptureReady() {
+        return this.isInitialized() && this._skinTextureReady !== false;
+    }
+
+    waitForCaptureReady() {
+        return this._skinTexturePromise || Promise.resolve(true);
+    }
+
     dispose() {
         this.initialized = false;
+        this._skinTextureLoadToken += 1;
+        this._skinTextureReady = false;
 
+        if (this._renderFrame) {
+            cancelAnimationFrame(this._renderFrame);
+            this._renderFrame = null;
+        }
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
         if (this.queuedSyncFrame) {
             cancelAnimationFrame(this.queuedSyncFrame);
             this.queuedSyncFrame = null;
@@ -1133,6 +1286,10 @@ export class PoseViewerCore {
             this.orbit.dispose();
             this.orbit = null;
         }
+
+        this.clearPassiveCharacters();
+        this.cachedSkinTexture?.dispose?.();
+        this.cachedSkinTexture = null;
 
         // Clean up lights
         if (this.lights) {
@@ -1176,7 +1333,17 @@ export class PoseViewerCore {
         this.skeleton = null;
         this.bones = {};
         this.boneList = [];
+        this.passiveCharacters = new Map();
+        this.shapedBoneRestPositions = {};
+        this.sceneCameraTarget = null;
         this.ikController = null;
+        this.directionalSkydome = null;
+        this._captureBatch = null;
+        this._viewportBufferLocked = false;
+        this._raycaster = null;
+        this._pointerNdc = null;
+        this._pointerWorldPosition = null;
+        this._dragIntersectPoint = null;
         this.options = null;
     }
 
@@ -1190,9 +1357,6 @@ export class PoseViewerCore {
             this.setupScene();
 
             this.initialized = true;
-
-
-            this.animate();
 
             // Apply buffered data after initialized=true
             if (this.pendingData) {
@@ -1221,6 +1385,7 @@ export class PoseViewerCore {
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color(0x1a1a2e);
+        this._createDirectionalSkydome();
 
         this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 1000);
         this.camera.position.set(0, 10, 30);
@@ -1232,7 +1397,16 @@ export class PoseViewerCore {
             preserveDrawingBuffer: true
         });
         this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        // resize() may have received the real DOM viewport while Three.js modules
+        // were still loading. In that case this is already the stable editor buffer.
+        this._viewportBufferLocked = this._viewportSizeObserved;
+        // More than 2x DPR is very costly for a preserveDrawingBuffer WebGL canvas
+        // and brings little visible benefit inside a graph node.
+        this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this._raycaster = new THREE.Raycaster();
+        this._pointerNdc = new THREE.Vector2();
+        this._pointerWorldPosition = new THREE.Vector3();
+        this._dragIntersectPoint = new THREE.Vector3();
 
         // Orbit Controls
         this.orbit = new this.OrbitControls(this.camera, this.canvas);
@@ -1324,8 +1498,11 @@ export class PoseViewerCore {
         this.lights = [defaultLight];
 
         // Capture Camera (Independent of Orbit camera)
-        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 100);
+        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 500);
         this.scene.add(this.captureCamera);
+        // The common scene camera must not jump when a differently shaped
+        // active character replaces the editor rig.
+        this.sceneCameraTarget = null;
 
         // Visual Helper - Orange Frame
         const frameGeo = new THREE.BufferGeometry().setFromPoints([
@@ -1339,11 +1516,132 @@ export class PoseViewerCore {
 
         // Events
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
-        this.canvas.addEventListener("pointermove", (e) => this.handlePointerMove(e));
+        this.canvas.addEventListener("pointermove", (e) => this.schedulePointerMove(e));
         this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
 
         this.hoveredBoneName = null;
-        this.directDrag = { active: false, chainKey: null, effector: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
+        this.directDrag = { active: false, chainKey: null, effector: null, effectorBone: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
+    }
+
+    _createDirectionalSkydome() {
+        if (!this.THREE || !this.scene || this.directionalSkydome) return;
+
+        const THREE = this.THREE;
+        const geometry = new THREE.SphereGeometry(30, 96, 48);
+        const material = new THREE.ShaderMaterial({
+            vertexShader: `
+                varying vec3 vLocalDirection;
+
+                void main() {
+                    vLocalDirection = normalize(position);
+                    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                }
+            `,
+            fragmentShader: `
+                varying vec3 vLocalDirection;
+
+                const float PI = 3.141592653589793;
+                const float TAU = 6.283185307179586;
+
+                vec3 hsvToRgb(vec3 c) {
+                    vec3 p = abs(fract(c.xxx + vec3(0.0, 0.6666667, 0.3333333)) * 6.0 - 3.0);
+                    vec3 rgb = clamp(p - 1.0, 0.0, 1.0);
+                    return c.z * mix(vec3(1.0), rgb, c.y);
+                }
+
+                void main() {
+                    vec3 direction = normalize(vLocalDirection);
+                    float longitude = atan(direction.z, direction.x);
+                    float latitude = asin(clamp(direction.y, -1.0, 1.0));
+
+                    // Color exists only on the grid. Longitude supplies the
+                    // compass direction while latitude distinguishes high/low.
+                    float hue = fract((longitude / TAU) + 0.5 + (direction.y + 1.0) * 0.16);
+                    vec3 rainbow = hsvToRgb(vec3(hue, 1.0, 1.0));
+
+                    float meridians = 1.0 - smoothstep(
+                        0.0,
+                        0.04,
+                        abs(sin(longitude * 18.0))
+                    );
+                    float parallels = 1.0 - smoothstep(
+                        0.0,
+                        0.04,
+                        abs(sin((latitude + PI * 0.5) * 18.0))
+                    );
+                    float equator = 1.0 - smoothstep(0.0, 0.018, abs(direction.y));
+                    float grid = max(max(meridians, parallels), equator);
+
+                    if (grid <= 0.001) discard;
+                    gl_FragColor = vec4(rainbow, grid * 0.48);
+                }
+            `,
+            side: THREE.BackSide,
+            depthTest: true,
+            depthWrite: false,
+            transparent: true,
+            toneMapped: false,
+        });
+
+        const skydome = new THREE.Mesh(geometry, material);
+        skydome.name = "VNCCS_DirectionalSkydome";
+        skydome.renderOrder = -1000;
+        skydome.frustumCulled = false;
+        skydome.visible = this.directionalSkydomeVisible;
+        skydome.onBeforeRender = () => {
+            if (this.meshCenter) {
+                skydome.position.copy(this.meshCenter);
+                skydome.updateMatrixWorld(true);
+            }
+        };
+
+        this.directionalSkydome = skydome;
+        this.scene.add(skydome);
+        this.setDirectionalSkydomeOrientation(
+            this.directionalSkydomeOrientation.yawDegrees,
+            this.directionalSkydomeOrientation.pitchDegrees,
+        );
+    }
+
+    setDirectionalSkydomeVisible(visible) {
+        this.directionalSkydomeVisible = visible !== false;
+        if (this.directionalSkydome) {
+            this.directionalSkydome.visible = this.directionalSkydomeVisible;
+        }
+        this.requestRender();
+    }
+
+    setDirectionalSkydomeOrientation(yawDegrees = 0, pitchDegrees = 0) {
+        const yaw = Number(yawDegrees) || 0;
+        const pitch = Number(pitchDegrees) || 0;
+        this.directionalSkydomeOrientation = {
+            yawDegrees: yaw,
+            pitchDegrees: pitch,
+        };
+
+        if (this.directionalSkydome && this.THREE) {
+            if (yaw === 0 && pitch === 0) {
+                this.directionalSkydome.quaternion.identity();
+            } else {
+                const yawQuaternion = new this.THREE.Quaternion().setFromAxisAngle(
+                    new this.THREE.Vector3(0, 1, 0),
+                    this.THREE.MathUtils.degToRad(yaw),
+                );
+                const pitchQuaternion = new this.THREE.Quaternion().setFromAxisAngle(
+                    new this.THREE.Vector3(1, 0, 0),
+                    this.THREE.MathUtils.degToRad(pitch),
+                );
+
+                // Apply compass direction first, then camera height around the
+                // screen-horizontal axis. This keeps the skydome horizon level
+                // instead of introducing roll when yaw and pitch are combined.
+                this.directionalSkydome.quaternion
+                    .copy(pitchQuaternion)
+                    .multiply(yawQuaternion)
+                    .normalize();
+            }
+        }
+        this.requestRender();
     }
 
     // === Light Management ===
@@ -1356,6 +1654,56 @@ export class PoseViewerCore {
         const THREE = this.THREE;
         if (!lightParams) return;
 
+        const sourceParams = lightParams.length
+            ? lightParams
+            : [{ type: 'ambient', color: '#ffffff', intensity: 0.5 }];
+        const signature = JSON.stringify(sourceParams.map((params) => ({
+            type: params?.type || '',
+            color: params?.color ?? '#ffffff',
+            intensity: Number(params?.intensity ?? (params?.type === 'ambient' ? 0.5 : 1.0)),
+            x: Number(params?.x ?? (params?.type === 'directional' ? 1 : 0)),
+            y: Number(params?.y ?? (params?.type === 'directional' ? 2 : 0)),
+            z: Number(params?.z ?? (params?.type === 'directional' ? 3 : 5)),
+            radius: Number(params?.radius ?? 100),
+        })));
+        if (signature === this._lightParamsSignature) return;
+
+        const matchesType = (light, params) => (
+            (params.type === 'ambient' && light?.isAmbientLight)
+            || (params.type === 'directional' && light?.isDirectionalLight)
+            || (params.type === 'point' && light?.isPointLight)
+        );
+        const setColor = (light, color) => {
+            if (!light?.color) return;
+            if (typeof color === 'string') light.color.set(color);
+            else if (Array.isArray(color)) light.color.setRGB(
+                Number(color[0] || 0) / 255,
+                Number(color[1] || 0) / 255,
+                Number(color[2] || 0) / 255,
+            );
+            else light.color.set(0xffffff);
+        };
+        const updateLight = (light, params) => {
+            setColor(light, params.color);
+            light.intensity = params.intensity ?? (params.type === 'ambient' ? 0.5 : 1.0);
+            if (params.type === 'directional') {
+                light.position.set(params.x ?? 1, params.y ?? 2, params.z ?? 3);
+            } else if (params.type === 'point') {
+                light.position.set(params.x ?? 0, params.y ?? 0, params.z ?? 5);
+                light.distance = params.radius ?? 100;
+            }
+        };
+
+        if (
+            this.lights?.length === sourceParams.length
+            && sourceParams.every((params, index) => matchesType(this.lights[index], params))
+        ) {
+            sourceParams.forEach((params, index) => updateLight(this.lights[index], params));
+            this._lightParamsSignature = signature;
+            this.requestRender();
+            return;
+        }
+
         // Remove existing managed lights
         if (this.lights && this.lights.length > 0) {
             for (const light of this.lights) {
@@ -1367,15 +1715,8 @@ export class PoseViewerCore {
 
         // Failsafe: if no lights are provided, or all were removed, add a default ambient light
         // to prevent black silhouettes. 
-        if (!lightParams || lightParams.length === 0) {
-            const defaultLight = new THREE.AmbientLight(0xffffff, 0.5);
-            this.scene.add(defaultLight);
-            this.lights.push(defaultLight);
-            return;
-        }
-
         // Create new lights from params
-        for (const params of lightParams) {
+        for (const params of sourceParams) {
             // Handle both hex string (#ffffff) and legacy RGB array formats
             let color;
             if (typeof params.color === 'string') {
@@ -1402,37 +1743,45 @@ export class PoseViewerCore {
             }
 
             if (light) {
+                updateLight(light, params);
                 this.scene.add(light);
                 this.lights.push(light);
             }
         }
 
+        this._lightParamsSignature = signature;
         this.requestRender();
     }
 
     animate() {
+        this._renderFrame = null;
         if (!this.initialized) return;
 
         // Damping requires continuous updates while active
-        if (this.orbit.enableDamping) {
-            this.orbit.update();
-        }
+        const dampingChanged = this.orbit?.enableDamping ? this.orbit.update() : false;
 
-        if (this._needsRender) {
+        if (this._needsRender || dampingChanged) {
             this._needsRender = false;
             if (this.renderer) this.renderer.render(this.scene, this.camera);
         }
 
-        requestAnimationFrame(() => this.animate());
+        if (dampingChanged) this.requestRender();
     }
 
     requestRender() {
         this._needsRender = true;
+        if (!this.initialized || this._renderFrame) return;
+        this._renderFrame = requestAnimationFrame(() => this.animate());
     }
 
     handlePointerDown(e) {
         if (!this.initialized || !this.skinnedMesh) return;
         if (e.button !== 0) return;
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
 
         // CRITICAL: Force world matrices to update before capturing positions for IK
         this.skinnedMesh.updateMatrixWorld(true);
@@ -1446,8 +1795,10 @@ export class PoseViewerCore {
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-        const raycaster = new this.THREE.Raycaster();
-        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+        const raycaster = this._raycaster || new this.THREE.Raycaster();
+        const pointer = this._pointerNdc || new this.THREE.Vector2();
+        pointer.set(x, y);
+        raycaster.setFromCamera(pointer, this.camera);
 
         // --- IK MODE: Check for pole target hit ---
         if (this.ikMode && this.ikController) {
@@ -1469,7 +1820,6 @@ export class PoseViewerCore {
 
         if (markerIntersects.length > 0) {
             // Sort by distance and pick the closest one
-            markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
             const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
@@ -1489,6 +1839,7 @@ export class PoseViewerCore {
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
                             this.directDrag.effector = effectorObj;
+                            this.directDrag.effectorBone = this.bones?.[chainDef.effector] || null;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
                             this.directDrag.hasDragged = false;
@@ -1555,7 +1906,7 @@ export class PoseViewerCore {
             let nearest = null;
             let minD = Infinity;
 
-            const wPos = new this.THREE.Vector3();
+            const wPos = this._pointerWorldPosition || new this.THREE.Vector3();
             for (const b of this.boneList) {
                 b.getWorldPosition(wPos);
                 const d = point.distanceTo(wPos);
@@ -1588,6 +1939,7 @@ export class PoseViewerCore {
                             this.directDrag.active = true;
                             this.directDrag.chainKey = chainKey;
                             this.directDrag.effector = effectorObj;
+                            this.directDrag.effectorBone = this.bones?.[chainDef.effector] || null;
                             this.directDrag.plane = new this.THREE.Plane();
                             this.directDrag.offset = new this.THREE.Vector3();
                             this.directDrag.hasDragged = false;
@@ -1650,6 +2002,28 @@ export class PoseViewerCore {
         }
     }
 
+    schedulePointerMove(e) {
+        // Direct manipulation needs every event for input fidelity. Passive hover
+        // raycasts cannot produce more visible updates than the display refresh
+        // rate, so only process the latest hover event in each frame.
+        if (this.directDrag?.active || e.buttons !== 0 || this.transform?.dragging) {
+            this.handlePointerMove(e);
+            return;
+        }
+        this._pendingHoverPointer = {
+            clientX: e.clientX,
+            clientY: e.clientY,
+            buttons: e.buttons,
+        };
+        if (this._hoverPointerFrame) return;
+        this._hoverPointerFrame = requestAnimationFrame(() => {
+            this._hoverPointerFrame = null;
+            const pending = this._pendingHoverPointer;
+            this._pendingHoverPointer = null;
+            if (pending) this.handlePointerMove(pending);
+        });
+    }
+
     handlePointerMove(e) {
         if (!this.initialized || !this.skinnedMesh) return;
 
@@ -1661,16 +2035,29 @@ export class PoseViewerCore {
             }
         }
 
+        if (!this.directDrag?.active && e.buttons !== 0) return;
+        if (!this.directDrag?.active && this.transform.dragging) {
+            if (this.hoveredBoneName || this._hoveredHandSide) {
+                this.hoveredBoneName = null;
+                this._updateHoveredHand(null);
+                this.updateMarkers();
+                this.requestRender();
+            }
+            return;
+        }
+
         const rect = this.canvas.getBoundingClientRect();
         const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
         const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-        const raycaster = new this.THREE.Raycaster();
-        raycaster.setFromCamera(new this.THREE.Vector2(x, y), this.camera);
+        const raycaster = this._raycaster || new this.THREE.Raycaster();
+        const pointer = this._pointerNdc || new this.THREE.Vector2();
+        pointer.set(x, y);
+        raycaster.setFromCamera(pointer, this.camera);
 
         // Process Direct Limb Dragging updates IK effector seamlessly in screen space
         if (this.directDrag && this.directDrag.active) {
-            const intersectPoint = new this.THREE.Vector3();
+            const intersectPoint = this._dragIntersectPoint || new this.THREE.Vector3();
             raycaster.ray.intersectPlane(this.directDrag.plane, intersectPoint);
 
             if (intersectPoint) {
@@ -1696,7 +2083,7 @@ export class PoseViewerCore {
 
                         // Snap true IK foot/hand effector target to its new dragged-along position
                         const chainDef = IK_CHAINS[this.directDrag.chainKey];
-                        const trueEffectorBone = this.boneList.find(b => b.name === chainDef.effector);
+                        const trueEffectorBone = this.directDrag.effectorBone || this.bones?.[chainDef.effector];
                         if (trueEffectorBone && this.directDrag.effector) {
                             trueEffectorBone.getWorldPosition(this.directDrag.effector.position);
                         }
@@ -1718,25 +2105,11 @@ export class PoseViewerCore {
         }
 
         // --- HOVER LOGIC ---
-        // Stop expensive raycasting if the user is holding ANY button (like right-click panning)
-        if (e.buttons !== 0) return;
-
-        // Skip hover if we are dragging via TransformControls
-        if (this.transform.dragging) {
-            if (this.hoveredBoneName || this._hoveredHandSide) {
-                this.hoveredBoneName = null;
-                this._updateHoveredHand(null);
-                this.updateMarkers();
-            }
-            return;
-        }
-
         let hitBone = null;
         let hoveredHandSide = null;
 
         const markerIntersects = raycaster.intersectObjects(this._getRaycastableJointMarkers(), false);
         if (markerIntersects.length > 0) {
-            markerIntersects.sort((a, b) => a.distance - b.distance);
             const hitMarker = markerIntersects[0].object;
             const boneIdx = hitMarker.userData?.boneIndex;
             if (boneIdx !== -1 && this.boneList[boneIdx]) {
@@ -1749,7 +2122,7 @@ export class PoseViewerCore {
                 let nearest = null;
                 let minD = Infinity;
 
-                const wPos = new this.THREE.Vector3();
+                const wPos = this._pointerWorldPosition || new this.THREE.Vector3();
                 for (const b of this.boneList) {
                     b.getWorldPosition(wPos);
                     const d = point.distanceTo(wPos);
@@ -1779,12 +2152,18 @@ export class PoseViewerCore {
 
     handlePointerUp(e) {
         if (!this.initialized || !this.skinnedMesh) return;
+        if (this._hoverPointerFrame) {
+            cancelAnimationFrame(this._hoverPointerFrame);
+            this._hoverPointerFrame = null;
+        }
+        this._pendingHoverPointer = null;
 
         if (this.directDrag && this.directDrag.active) {
             const dragged = !!this.directDrag.hasDragged;
             const clickedBone = this.directDrag.clickedBone || null;
             this.directDrag.active = false;
             this.directDrag.effector = null;
+            this.directDrag.effectorBone = null;
             this.directDrag.chainKey = null;
             this.directDrag.clickedBone = null;
             this.directDrag.hasDragged = false;
@@ -1811,9 +2190,11 @@ export class PoseViewerCore {
 
             this.transform.detach();
             if (dragged) {
-                this.selectedBone = null;
                 this.hoveredBoneName = null;
-                this.updateMarkers();
+                if (!this.deselectBone({ source: 'viewer' })) {
+                    this.updateMarkers();
+                    this.requestRender();
+                }
             } else if (clickedBone) {
                 this.selectBone(clickedBone);
             }
@@ -1822,8 +2203,27 @@ export class PoseViewerCore {
         }
     }
 
-    selectBone(bone) {
-        if (this.selectedBone === bone) return;
+    _emitBoneSelectionChange(previousBone, source) {
+        const callback = this.options?.onBoneSelectionChange;
+        if (typeof callback !== 'function' || this._emittingBoneSelectionChange) return;
+
+        this._emittingBoneSelectionChange = true;
+        try {
+            callback({
+                boneName: this.selectedBone?.name || null,
+                previousBoneName: previousBone?.name || null,
+                source,
+            });
+        } catch (error) {
+            if (typeof this.options?.onError === 'function') this.options.onError(error);
+        } finally {
+            this._emittingBoneSelectionChange = false;
+        }
+    }
+
+    selectBone(bone, { source = 'viewer' } = {}) {
+        if (!bone || !this.transform || this.selectedBone === bone) return false;
+        const previousBone = this.selectedBone;
         this.selectedBone = bone;
 
         // Attach transform for rotation (FK)
@@ -1835,13 +2235,95 @@ export class PoseViewerCore {
         if (this.selectedIKEffector) {
             this.selectedIKEffector = null;
         }
+        this.requestRender();
+        this._emitBoneSelectionChange(previousBone, source);
+        return true;
     }
 
-    deselectBone() {
-        if (!this.selectedBone) return;
+    deselectBone({ source = 'viewer' } = {}) {
+        if (!this.selectedBone) return false;
+        const previousBone = this.selectedBone;
         this.selectedBone = null;
-        this.transform.detach();
+        this.transform?.detach();
         this.updateMarkers();
+        this.requestRender();
+        this._emitBoneSelectionChange(previousBone, source);
+        return true;
+    }
+
+    /**
+     * Select a skeleton bone without needing access to the Three.js Bone object.
+     * Passing null (or an empty string) clears the selection. Unknown names are
+     * rejected without changing the current selection.
+     */
+    selectBoneByName(name) {
+        if (name === null || name === undefined || name === '') {
+            this.deselectBone({ source: 'external' });
+            return true;
+        }
+        if (typeof name !== 'string') return false;
+        if (!this.initialized || !this.transform) return false;
+
+        const bone = this.bones?.[name] || this.boneList?.find(item => item?.name === name);
+        if (!bone) return false;
+
+        this.selectBone(bone, { source: 'external' });
+        return true;
+    }
+
+    /**
+     * Return a compact editing context for the timeline Focus view: the
+     * selected bone, its IK chain, ancestors, and direct children. Keeping
+     * descendants to one level prevents selecting the pelvis from expanding
+     * the entire skeleton.
+     */
+    getBoneTimelineContext(name) {
+        if (typeof name !== 'string' || !this.bones?.[name]) return [];
+        const result = [];
+        const seen = new Set();
+        const add = boneName => {
+            if (!boneName || seen.has(boneName) || !this.bones?.[boneName]) return;
+            seen.add(boneName);
+            result.push(boneName);
+        };
+
+        add(name);
+        const chainKey = this.ikController?.getChainForBone?.(name);
+        const chain = chainKey ? IK_CHAINS[chainKey] : null;
+        for (const boneName of chain?.bones || []) add(boneName);
+        add(chain?.effector);
+        add(chain?.poleBone);
+
+        let parentName = this.bones[name]?.userData?.parentName;
+        while (parentName && this.bones[parentName]) {
+            add(parentName);
+            parentName = this.bones[parentName]?.userData?.parentName;
+        }
+        for (const bone of this.boneList || []) {
+            if (bone?.userData?.parentName === name) add(bone.name);
+        }
+        return result;
+    }
+
+    /**
+     * Add a timeline-driven marker highlight. This is deliberately independent
+     * from pointer hover and never selects a bone or attaches TransformControls.
+     */
+    setExternalHoveredBone(name) {
+        if (name !== null && name !== undefined && name !== '') {
+            if (typeof name !== 'string') return false;
+            const bone = this.bones?.[name] || this.boneList?.find(item => item?.name === name);
+            if (!bone) return false;
+            name = bone.name;
+        } else {
+            name = null;
+        }
+
+        if (this.externalHoveredBoneName === name) return true;
+        this.externalHoveredBoneName = name;
+        this.updateMarkers();
+        this.requestRender();
+        return true;
     }
 
     // === IK Methods ===
@@ -1910,8 +2392,10 @@ export class PoseViewerCore {
 
         // Deselect any bone and update markers
         if (this.selectedBone) {
+            const previousBone = this.selectedBone;
             this.selectedBone = null;
             this.updateMarkers();
+            this._emitBoneSelectionChange(previousBone, 'ik');
         }
 
 
@@ -2366,10 +2850,14 @@ export class PoseViewerCore {
 
         // Add hovered bone and its chain (if it doesn't overlap with selection)
         let hoveredBones = new Set();
-        if (this.hoveredBoneName) {
-            hoveredBones.add(this.hoveredBoneName);
+        const hoveredBoneNames = new Set([
+            this.hoveredBoneName,
+            this.externalHoveredBoneName,
+        ].filter(Boolean));
+        for (const hoveredBoneName of hoveredBoneNames) {
+            hoveredBones.add(hoveredBoneName);
             if (this.ikMode && this.ikController) {
-                const chainKey = this.ikController.getChainForBone(this.hoveredBoneName);
+                const chainKey = this.ikController.getChainForBone(hoveredBoneName);
                 if (chainKey && this.ikController.getMode(chainKey) === 'ik') {
                     const chainDef = IK_CHAINS[chainKey];
                     if (chainDef.bones) chainDef.bones.forEach(b => hoveredBones.add(b));
@@ -2411,16 +2899,40 @@ export class PoseViewerCore {
     }
 
     resize(w, h) {
+        if (!(w > 0 && h > 0)) return;
+        const profile = typeof this.options?.profileResizePhase === 'function'
+            ? this.options.profileResizePhase
+            : (_name, callback) => callback();
         this.width = w;
         this.height = h;
-        // Pass false to NOT update canvas CSS style (CSS 100% rule handles that).
-        // This prevents layout thrashing in ComfyUI node2.0 mode.
-        if (this.renderer) this.renderer.setSize(w, h, false);
-        if (this.camera) {
-            this.camera.aspect = w / h;
-            this.camera.updateProjectionMatrix();
+        this._viewportSizeObserved = true;
+
+        // WebGLRenderer.setSize() reallocates the antialiased preserved drawing
+        // buffer. Doing that for every node-resize tick is the main difference
+        // from the lightweight UniCanvas 2D path. Allocate once at the first real
+        // DOM size, then keep the editor buffer stable. CSS still fills the panel;
+        // updating camera.aspect below compensates for its current shape, so the
+        // mannequin keeps correct proportions without repeated GPU allocations.
+        if (this.renderer && !this._viewportBufferLocked) {
+            profile("Three WebGL buffer allocation", () => {
+                this.renderer.setSize(w, h, false);
+            });
+            this._viewportBufferLocked = true;
         }
-        this.requestRender();
+        if (this.camera) {
+            profile("Three camera projection", () => {
+                this.camera.aspect = w / h;
+                this.camera.updateProjectionMatrix();
+            });
+        }
+        if (this.initialized && this.renderer && this.scene && this.camera) {
+            profile("Three renderer.render", () => {
+                this.renderer.render(this.scene, this.camera);
+            });
+            this._needsRender = false;
+        } else {
+            this.requestRender();
+        }
     }
 
     loadData(data, keepCamera = false) {
@@ -2430,6 +2942,20 @@ export class PoseViewerCore {
         }
         if (!data || !data.vertices || !data.bones) return;
 
+        // A model refresh replaces every Three.js Bone instance. Preserve the
+        // logical selection by name, but detach from the obsolete skeleton
+        // before disposing it so TransformControls cannot retain a stale bone.
+        const selectedBoneName = this.selectedBone?.name || null;
+        this.transform?.detach();
+        this.selectedBone = null;
+        this.selectedIKEffector = null;
+        this.selectedPoleTarget = null;
+        this.hoveredBoneName = null;
+        // Hand hover helpers capture Bone instances in their render callback,
+        // so dispose them before replacing the skeleton.
+        this._updateHoveredHand(null);
+        this.hideHandHighlightRing();
+        this.unhighlightHandMarkers();
         this._cleanupPrevious();
 
         const { geometry, vertices, indices } = this._initMeshGeometry(data);
@@ -2439,6 +2965,7 @@ export class PoseViewerCore {
         geometry.computeBoundingBox();
         const center = geometry.boundingBox.getCenter(new THREE.Vector3());
         this.meshCenter = center.clone();
+        if (!this.sceneCameraTarget) this.sceneCameraTarget = center.clone();
         const size = geometry.boundingBox.getSize(new THREE.Vector3());
         if (!keepCamera && size.length() > 0.1 && this.orbit) {
             this.orbit.target.copy(center);
@@ -2468,8 +2995,18 @@ export class PoseViewerCore {
             this.updateFootScale(this.footScale);
         }
         this.applyBoneLengthScales();
+        this._cacheShapedRestBonePositions();
 
         this._initIKHelpers();
+        if (selectedBoneName && this.bones?.[selectedBoneName]) {
+            this.selectBone(this.bones[selectedBoneName], { source: 'external' });
+        }
+        if (this.externalHoveredBoneName && !this.bones?.[this.externalHoveredBoneName]) {
+            this.externalHoveredBoneName = null;
+        }
+        // Re-apply both restored selection and timeline hover to the freshly
+        // created marker meshes, even when there was no selected bone.
+        this.updateMarkers();
         this.requestRender();
     }
 
@@ -2500,7 +3037,65 @@ export class PoseViewerCore {
         return { geometry, vertices, indices };
     }
 
-    updateBodyVertices(vertices, bonePositions = null) {
+    _skinTextureFilename(skinType) {
+        return {
+            "naked": "skin.png",
+            "naked_marks": "skin_marks.png",
+            "dummy_white": "skin_dummy.png"
+        }[skinType] || "skin_dummy.png";
+    }
+
+    _markSkinTextureReady() {
+        this._skinTextureReady = true;
+        this._skinTexturePromise = Promise.resolve(true);
+    }
+
+    _loadSkinTexture(skinType, onReady) {
+        const token = ++this._skinTextureLoadToken;
+        const skinFile = this._skinTextureFilename(skinType);
+        this._skinTextureReady = false;
+
+        const promise = new Promise((resolve) => {
+            const texLoader = new this.THREE.TextureLoader();
+            texLoader.load(
+                `${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
+                (tex) => {
+                    if (token !== this._skinTextureLoadToken || !this.initialized) {
+                        tex?.dispose?.();
+                        resolve(false);
+                        return;
+                    }
+                    this.cachedSkinTexture = tex;
+                    this.cachedSkinType = skinType;
+                    this._cachedSkinTextureReady = true;
+                    onReady?.(tex);
+                    this._skinTextureReady = true;
+                    this.requestRender();
+                    resolve(true);
+                },
+                undefined,
+                (error) => {
+                    if (token === this._skinTextureLoadToken) {
+                        // The untextured material has a neutral fallback color,
+                        // so capture can continue without producing a silhouette.
+                        this._skinTextureReady = true;
+                        console.error(`Failed to load skin texture: ${skinFile}`, error);
+                    }
+                    resolve(false);
+                },
+            );
+        });
+        this._skinTexturePromise = promise;
+        return promise;
+    }
+
+    updateBodyVertices(
+        vertices,
+        bonePositions = null,
+        landmarks = null,
+        landmarkIndices = null,
+        indices = null,
+    ) {
         if (!this.initialized || !this.skinnedMesh || !this.skinnedMesh.geometry || !vertices) return false;
         const geometry = this.skinnedMesh.geometry;
         const position = geometry.getAttribute('position');
@@ -2508,17 +3103,30 @@ export class PoseViewerCore {
 
         const savedRotations = new Map();
         let savedMeshRotation = null;
+        let savedMeshPosition = null;
+        let savedMeshScale = null;
         if (bonePositions && this.boneList?.length && bonePositions.length >= this.boneList.length * 6) {
             for (const bone of this.boneList) {
                 savedRotations.set(bone.name, bone.rotation.clone());
                 bone.rotation.set(0, 0, 0);
             }
             savedMeshRotation = this.skinnedMesh.rotation.clone();
+            savedMeshPosition = this.skinnedMesh.position.clone();
+            savedMeshScale = this.skinnedMesh.scale.clone();
+            // The original bind pose is created before a character-specific
+            // X/Y/Zoom transform is applied. Recalculate inverses in that same
+            // neutral mesh space or the skin cancels the character transform
+            // while SkeletonHelper continues to follow the transformed bones.
             this.skinnedMesh.rotation.set(0, 0, 0);
+            this.skinnedMesh.position.set(0, 0, 0);
+            this.skinnedMesh.scale.set(1, 1, 1);
         }
 
         position.array.set(vertices);
         position.needsUpdate = true;
+        if (indices && indices.length) {
+            geometry.setIndex(new this.THREE.BufferAttribute(new Uint32Array(indices), 1));
+        }
         geometry.computeVertexNormals();
         geometry.computeBoundingBox();
         geometry.computeBoundingSphere();
@@ -2573,8 +3181,20 @@ export class PoseViewerCore {
                 if (rotation) bone.rotation.copy(rotation);
             }
             if (savedMeshRotation) this.skinnedMesh.rotation.copy(savedMeshRotation);
+            if (savedMeshPosition) this.skinnedMesh.position.copy(savedMeshPosition);
+            if (savedMeshScale) this.skinnedMesh.scale.copy(savedMeshScale);
+            this.skinnedMesh.updateMatrixWorld(true);
             if (this.skeleton) this.skeleton.update();
+            this.applyBoneLengthScales();
+            this._cacheShapedRestBonePositions();
             this.updateIKEffectorPositions?.();
+        }
+
+        if (landmarks && typeof landmarks === 'object') {
+            this.modelLandmarks = landmarks;
+        }
+        if (landmarkIndices && typeof landmarkIndices === 'object') {
+            this.modelLandmarkIndices = landmarkIndices;
         }
 
         this.requestRender();
@@ -2590,7 +3210,11 @@ export class PoseViewerCore {
         for (const bData of data.bones) {
             const bone = new THREE.Bone();
             bone.name = bData.name;
-            bone.userData = { headPos: bData.headPos, parentName: bData.parent };
+            bone.userData = {
+                headPos: bData.headPos,
+                tailPos: bData.tailPos,
+                parentName: bData.parent,
+            };
             bone.position.set(bData.headPos[0], bData.headPos[1], bData.headPos[2]);
             this.bones[bone.name] = bone;
             this.boneList.push(bone);
@@ -2616,15 +3240,26 @@ export class PoseViewerCore {
                 rotation: bone.rotation.clone()
             };
         }
+        this.shapedBoneRestPositions = Object.fromEntries(
+            this.boneList.map(bone => [bone.name, bone.position.clone()]),
+        );
 
         this.skeleton = new THREE.Skeleton(this.boneList);
 
         const vCount = vertices.length / 3;
-        const skinInds = new Float32Array(vCount * 4);
-        const skinWgts = new Float32Array(vCount * 4);
+        let skinInds = new Uint16Array(vCount * 4);
+        let skinWgts = new Float32Array(vCount * 4);
         const boneHeads = this.boneList.map(b => b.userData.headPos);
 
-        if (data.weights) {
+        if (
+            data.skinIndices
+            && data.skinWeights
+            && data.skinIndices.length === vCount * 4
+            && data.skinWeights.length === vCount * 4
+        ) {
+            skinInds = new Uint16Array(data.skinIndices);
+            skinWgts = new Float32Array(data.skinWeights);
+        } else if (data.weights) {
             const vWeights = new Array(vCount).fill(null).map(() => []);
             const boneMap = {};
             this.boneList.forEach((b, i) => boneMap[b.name] = i);
@@ -2677,28 +3312,23 @@ export class PoseViewerCore {
         }
 
         const skinType = this.currentSkinType || "dummy_white";
-        const skinFile = {
-            "naked": "skin.png",
-            "naked_marks": "skin_marks.png",
-            "dummy_white": "skin_dummy.png"
-        }[skinType] || "skin_dummy.png";
-
-        let skinTex;
-        if (this.cachedSkinTexture && this.cachedSkinType === skinType) {
-            skinTex = this.cachedSkinTexture;
-        } else {
-            const texLoader = new THREE.TextureLoader();
-            skinTex = texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-                (tex) => this.requestRender(),
-                undefined,
-                (err) => console.error("Texture failed to load", err)
-            );
-            this.cachedSkinTexture = skinTex;
-            this.cachedSkinType = skinType;
-        }
+        const textureSkinningEnabled = this.options.enableTextureSkinning
+            && this.options.skinMode !== 'flat_color';
+        const skinTex = textureSkinningEnabled
+            && this._cachedSkinTextureReady
+            && this.cachedSkinTexture
+            && this.cachedSkinType === skinType
+            ? this.cachedSkinTexture
+            : null;
 
         const material = new THREE.MeshPhongMaterial({
-            map: skinTex, color: 0xffffff, specular: 0x111111, shininess: 5, side: THREE.DoubleSide
+            map: skinTex,
+            // Never bind TextureLoader's not-yet-loaded placeholder: sampling
+            // it produces the black Pose Manager silhouettes seen on startup.
+            color: skinTex ? 0xffffff : (textureSkinningEnabled ? 0xc8b5aa : 0xaaaaaa),
+            specular: 0x111111,
+            shininess: 5,
+            side: THREE.DoubleSide
         });
 
         material.onBeforeCompile = (shader) => {
@@ -2716,8 +3346,20 @@ export class PoseViewerCore {
         rootBones.forEach(b => this.skinnedMesh.add(b));
         this.skinnedMesh["bind"](this.skeleton);
         this.scene.add(this.skinnedMesh);
+        this._applyCharacterTransform(this.skinnedMesh, this.activeCharacterAppearance?.transform);
+        this._applyActiveCharacterColor();
         this.skeletonHelper = new THREE.SkeletonHelper(this.skinnedMesh);
         this.scene.add(this.skeletonHelper);
+
+        if (!textureSkinningEnabled || skinTex) {
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
+        } else {
+            this._loadSkinTexture(skinType, (tex) => {
+                if (this.skinnedMesh?.material !== material) return;
+                this._applyTextureToAllCharacters(tex);
+            });
+        }
     }
 
     _createJointMarkers() {
@@ -2817,6 +3459,18 @@ export class PoseViewerCore {
     }
 
     _boneLengthChildrenForGroup(group) {
+        if (group === 'shoulder_l') {
+            return ['upperarm_l'];
+        }
+        if (group === 'shoulder_r') {
+            return ['upperarm_r'];
+        }
+        if (group === 'hip_l') {
+            return ['thigh_l'];
+        }
+        if (group === 'hip_r') {
+            return ['thigh_r'];
+        }
         if (group === 'upper_arm') {
             return ['lowerarm_l', 'lowerarm_r'];
         }
@@ -2859,9 +3513,21 @@ export class PoseViewerCore {
         return [];
     }
 
+    _cacheShapedRestBonePositions(boneNames = null) {
+        if (!this.shapedBoneRestPositions) this.shapedBoneRestPositions = {};
+        const names = boneNames ? new Set(boneNames) : null;
+        for (const bone of this.boneList || []) {
+            if (!names || names.has(bone.name)) {
+                this.shapedBoneRestPositions[bone.name] = bone.position.clone();
+            }
+        }
+    }
+
     updateBoneLengthScale(group, value) {
         if (!this.boneLengthParams) {
             this.boneLengthParams = {
+                shoulder_l: 0.5, shoulder_r: 0.5,
+                hip_l: 0.5, hip_r: 0.5,
                 upper_arm_l: 0.5, upper_arm_r: 0.5,
                 forearm_l: 0.5, forearm_r: 0.5,
                 thigh_l: 0.5, thigh_r: 0.5,
@@ -2872,6 +3538,8 @@ export class PoseViewerCore {
         if (group === 'arm') group = 'upper_arm';
         if (group === 'leg') group = 'thigh';
         const validGroups = [
+            'shoulder_l', 'shoulder_r',
+            'hip_l', 'hip_r',
             'upper_arm', 'upper_arm_l', 'upper_arm_r',
             'forearm', 'forearm_l', 'forearm_r',
             'thigh', 'thigh_l', 'thigh_r',
@@ -2881,17 +3549,23 @@ export class PoseViewerCore {
         if (!validGroups.includes(group)) return;
         this.boneLengthParams[group] = Number.isFinite(Number(value)) ? Number(value) : 0.5;
         const scale = this._lengthSliderToScale(this.boneLengthParams[group]);
-        for (const childName of this._boneLengthChildrenForGroup(group)) {
+        const affectedChildren = this._boneLengthChildrenForGroup(group);
+        for (const childName of affectedChildren) {
             this._setBoneOffsetScale(childName, scale);
         }
         for (const bone of this.boneList) bone.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
+        this._cacheShapedRestBonePositions(affectedChildren);
         this.updateIKEffectorPositions();
         this.requestRender();
     }
 
     applyBoneLengthScales() {
         if (!this.boneLengthParams) return;
+        this.updateBoneLengthScale('shoulder_l', this.boneLengthParams.shoulder_l ?? 0.5);
+        this.updateBoneLengthScale('shoulder_r', this.boneLengthParams.shoulder_r ?? 0.5);
+        this.updateBoneLengthScale('hip_l', this.boneLengthParams.hip_l ?? 0.5);
+        this.updateBoneLengthScale('hip_r', this.boneLengthParams.hip_r ?? 0.5);
         this.updateBoneLengthScale('upper_arm_l', this.boneLengthParams.upper_arm_l ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
         this.updateBoneLengthScale('upper_arm_r', this.boneLengthParams.upper_arm_r ?? this.boneLengthParams.upper_arm ?? this.boneLengthParams.arm ?? 0.5);
         this.updateBoneLengthScale('forearm_l', this.boneLengthParams.forearm_l ?? this.boneLengthParams.forearm ?? this.boneLengthParams.arm ?? 0.5);
@@ -2909,40 +3583,28 @@ export class PoseViewerCore {
 
         // Check configuration bypass flags to protect embedding apps (e.g WebGL Error Contexts)
         if (!this.options.enableTextureSkinning || this.options.skinMode === 'flat_color') {
-            if (this.skinnedMesh.material.map) {
-                this.skinnedMesh.material.map.dispose();
-                this.skinnedMesh.material.map = null;
-            }
-            this.skinnedMesh.material.color.setHex(0xaaaaaa);
-            this.skinnedMesh.material.needsUpdate = true;
-            this.requestRender();
+            // Maps are cache-owned and may still be referenced by a passive
+            // rig. Detach them from every character without disposing here.
+            this._applyTextureToAllCharacters(null);
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
             return;
         }
 
-        const skinFile = {
-            "naked": "skin.png",
-            "naked_marks": "skin_marks.png",
-            "dummy_white": "skin_dummy.png"
-        }[skinType] || "skin_dummy.png";
+        if (
+            this._cachedSkinTextureReady
+            && this.cachedSkinTexture
+            && this.cachedSkinType === skinType
+        ) {
+            this._applyTextureToAllCharacters(this.cachedSkinTexture);
+            this._skinTextureLoadToken += 1;
+            this._markSkinTextureReady();
+            return;
+        }
 
-        const THREE = this.THREE;
-        const texLoader = new THREE.TextureLoader();
-        texLoader.load(`${EXTENSION_URL}textures/${skinFile}?v=${Date.now()}`,
-            (tex) => {
-                // Dispose old texture to prevent memory leaks
-                if (this.skinnedMesh.material.map) {
-                    this.skinnedMesh.material.map.dispose();
-                }
-                this.skinnedMesh.material.map = tex;
-                this.skinnedMesh.material.needsUpdate = true;
-                this.cachedSkinTexture = tex;
-                this.cachedSkinType = skinType;
-
-                this.requestRender();
-            },
-            undefined,
-            (err) => console.error(`Failed to load skin texture: ${skinFile}`, err)
-        );
+        this._loadSkinTexture(skinType, (tex) => {
+            this._applyTextureToAllCharacters(tex);
+        });
     }
 
     // === Pose State Management ===
@@ -3058,6 +3720,10 @@ export class PoseViewerCore {
         // Reset all bones
         for (const b of this.boneList) {
             b.rotation.set(0, 0, 0);
+            const shapedRest = this.shapedBoneRestPositions?.[b.name];
+            const initialRest = this.initialBoneStates?.[b.name]?.position;
+            if (shapedRest) b.position.copy(shapedRest);
+            else if (initialRest) b.position.copy(initialRest);
         }
 
         // Apply bone rotations
@@ -3147,6 +3813,7 @@ export class PoseViewerCore {
         }
 
         // Update skeleton after all changes
+        this.skinnedMesh?.updateMatrixWorld?.(true);
         if (this.skeleton) {
             this.skeleton.update();
         }
@@ -3548,6 +4215,234 @@ export class PoseViewerCore {
         this.requestRender();
     }
 
+    _normalizedCharacterTransform(transform = {}) {
+        const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+        return {
+            x: Math.max(-50, Math.min(50, finite(transform.x ?? transform.offset_x, 0))),
+            y: Math.max(-50, Math.min(50, finite(transform.y ?? transform.offset_y, 0))),
+            z: Math.max(-40, Math.min(40, finite(transform.z ?? transform.depth, 0))),
+            zoom: Math.max(0.1, Math.min(7, finite(transform.zoom ?? transform.scale, 1))),
+        };
+    }
+
+    _normalizedCharacterColor(color) {
+        const text = String(color || "").trim();
+        if (/^#[0-9a-f]{6}$/i.test(text)) return text.toLowerCase();
+        if (/^#[0-9a-f]{3}$/i.test(text)) {
+            return `#${text[1]}${text[1]}${text[2]}${text[2]}${text[3]}${text[3]}`.toLowerCase();
+        }
+        return "#ffffff";
+    }
+
+    _applyCharacterTransform(mesh, transform = {}) {
+        if (!mesh) return;
+        const normalized = this._normalizedCharacterTransform(transform);
+        mesh.position.set(normalized.x, normalized.y, normalized.z);
+        mesh.scale.setScalar(normalized.zoom);
+        mesh.updateMatrixWorld(true);
+    }
+
+    _applyMaterialCharacterColor(material, color) {
+        if (!material) return;
+        const normalized = this._normalizedCharacterColor(color);
+        const materials = Array.isArray(material) ? material : [material];
+        for (const item of materials) {
+            item?.color?.set?.(normalized);
+            if (item) item.needsUpdate = true;
+        }
+    }
+
+    _applyActiveCharacterColor() {
+        if (!this.skinnedMesh?.material) return;
+        this._applyMaterialCharacterColor(
+            this.skinnedMesh.material,
+            this.activeCharacterAppearance?.color,
+        );
+    }
+
+    _setCharacterMaterialTexture(material, texture) {
+        const materials = Array.isArray(material) ? material : [material];
+        for (const item of materials) {
+            if (!item) continue;
+            item.map = texture || null;
+            item.needsUpdate = true;
+        }
+    }
+
+    _applyTextureToAllCharacters(texture) {
+        this._setCharacterMaterialTexture(this.skinnedMesh?.material, texture);
+        this._applyActiveCharacterColor();
+        for (const entry of this.passiveCharacters?.values?.() || []) {
+            this._setCharacterMaterialTexture(entry.mesh?.material, texture);
+            this._applyMaterialCharacterColor(entry.mesh?.material, entry.color);
+        }
+        this.requestRender();
+    }
+
+    setActiveCharacterAppearance({ color, transform } = {}) {
+        const current = this.activeCharacterAppearance || {};
+        this.activeCharacterAppearance = {
+            color: this._normalizedCharacterColor(color ?? current.color),
+            transform: this._normalizedCharacterTransform(transform ?? current.transform),
+        };
+        this._applyActiveCharacterColor();
+        this._applyCharacterTransform(this.skinnedMesh, this.activeCharacterAppearance.transform);
+        this.updateIKEffectorPositions?.();
+        this.updateMarkers?.();
+        this.requestRender();
+    }
+
+    resetSceneCameraTarget() {
+        this.sceneCameraTarget = null;
+    }
+
+    _disposePassiveCharacter(entry) {
+        if (!entry) return;
+        if (entry.mesh?.parent) entry.mesh.parent.remove(entry.mesh);
+        entry.mesh?.geometry?.dispose?.();
+        const materials = Array.isArray(entry.mesh?.material)
+            ? entry.mesh.material
+            : [entry.mesh?.material];
+        for (const material of materials) material?.dispose?.();
+    }
+
+    removePassiveCharacter(id) {
+        const key = String(id || "");
+        const entry = this.passiveCharacters?.get(key);
+        if (!entry) return false;
+        this._disposePassiveCharacter(entry);
+        this.passiveCharacters.delete(key);
+        this.requestRender();
+        return true;
+    }
+
+    clearPassiveCharacters() {
+        if (!this.passiveCharacters) return;
+        for (const entry of this.passiveCharacters.values()) {
+            this._disposePassiveCharacter(entry);
+        }
+        this.passiveCharacters.clear();
+        this.requestRender?.();
+    }
+
+    _cloneActiveRigForPassiveCharacter(id) {
+        if (!this.THREE || !this.scene || !this.skinnedMesh || !this.skeleton) return null;
+        const THREE = this.THREE;
+        const cloneBySource = new Map();
+        const clonedBones = this.boneList.map(source => {
+            const bone = new THREE.Bone();
+            bone.name = source.name;
+            bone.position.copy(source.position);
+            bone.quaternion.copy(source.quaternion);
+            bone.scale.copy(source.scale);
+            bone.rotation.order = source.rotation.order;
+            bone.userData = { ...source.userData };
+            cloneBySource.set(source, bone);
+            return bone;
+        });
+
+        const roots = [];
+        for (const source of this.boneList) {
+            const cloned = cloneBySource.get(source);
+            const clonedParent = cloneBySource.get(source.parent);
+            if (clonedParent) clonedParent.add(cloned);
+            else roots.push(cloned);
+        }
+
+        const boneInverses = (this.skeleton.boneInverses || []).map(matrix => matrix.clone());
+        const skeleton = new THREE.Skeleton(clonedBones, boneInverses);
+        const geometry = this.skinnedMesh.geometry.clone();
+        const material = Array.isArray(this.skinnedMesh.material)
+            ? this.skinnedMesh.material.map(item => item.clone())
+            : this.skinnedMesh.material.clone();
+        const mesh = new THREE.SkinnedMesh(geometry, material);
+        mesh.name = `VNCCS Passive Character ${id}`;
+        mesh.userData.vnccsPassiveCharacterId = String(id);
+        roots.forEach(root => mesh.add(root));
+        mesh.bind(skeleton, this.skinnedMesh.bindMatrix.clone());
+        mesh.bindMode = this.skinnedMesh.bindMode;
+        this.scene.add(mesh);
+
+        const initialPositions = new Map();
+        for (const source of this.boneList) {
+            // Clone the currently shaped rest offsets so per-character head,
+            // limb, and bone-length proportions survive passive animation.
+            const shapedRest = this.shapedBoneRestPositions?.[source.name];
+            const initialRest = this.initialBoneStates?.[source.name]?.position;
+            initialPositions.set(
+                source.name,
+                (shapedRest || initialRest || source.position).clone(),
+            );
+        }
+        return {
+            id: String(id),
+            mesh,
+            skeleton,
+            boneList: clonedBones,
+            bones: Object.fromEntries(clonedBones.map(bone => [bone.name, bone])),
+            initialPositions,
+            color: this._normalizedCharacterColor(this.activeCharacterAppearance?.color),
+        };
+    }
+
+    upsertPassiveCharacterFromActive(id, { pose = {}, color, transform } = {}) {
+        const key = String(id || "");
+        if (!key || !this.isInitialized()) return false;
+        this.removePassiveCharacter(key);
+        const entry = this._cloneActiveRigForPassiveCharacter(key);
+        if (!entry) return false;
+        this.passiveCharacters.set(key, entry);
+        this.setPassiveCharacterState(key, { pose, color, transform });
+        return true;
+    }
+
+    setPassiveCharacterState(id, { pose = {}, color, transform } = {}) {
+        const entry = this.passiveCharacters?.get(String(id || ""));
+        if (!entry) return false;
+
+        for (const bone of entry.boneList) {
+            bone.rotation.set(0, 0, 0);
+            const initial = entry.initialPositions.get(bone.name);
+            if (initial) bone.position.copy(initial);
+        }
+        for (const [name, rotation] of Object.entries(pose?.bones || {})) {
+            const bone = entry.bones[name];
+            if (!bone || !Array.isArray(rotation) || rotation.length < 3) continue;
+            bone.rotation.set(
+                (Number(rotation[0]) || 0) * Math.PI / 180,
+                (Number(rotation[1]) || 0) * Math.PI / 180,
+                (Number(rotation[2]) || 0) * Math.PI / 180,
+            );
+        }
+        for (const [chainKey, position] of Object.entries(pose?.hipBonePosition || {})) {
+            const definition = IK_CHAINS[chainKey];
+            const bone = definition?.effector ? entry.bones[definition.effector] : null;
+            if (bone && Array.isArray(position) && position.length >= 3) {
+                bone.position.set(Number(position[0]) || 0, Number(position[1]) || 0, Number(position[2]) || 0);
+            }
+        }
+        const rotation = Array.isArray(pose?.modelRotation) ? pose.modelRotation : [0, 0, 0];
+        entry.mesh.rotation.set(
+            (Number(rotation[0]) || 0) * Math.PI / 180,
+            (Number(rotation[1]) || 0) * Math.PI / 180,
+            (Number(rotation[2]) || 0) * Math.PI / 180,
+        );
+        this._applyCharacterTransform(entry.mesh, transform);
+        entry.color = this._normalizedCharacterColor(color ?? entry.color);
+        this._applyMaterialCharacterColor(entry.mesh.material, entry.color);
+        entry.skeleton.update();
+        entry.mesh.updateMatrixWorld(true);
+        this.requestRender();
+        return true;
+    }
+
+    setPassiveCharactersVisible(visible) {
+        for (const entry of this.passiveCharacters?.values?.() || []) {
+            entry.mesh.visible = visible !== false;
+        }
+        this.requestRender();
+    }
+
 
     setSkinMode(mode) {
         if (!this.options) return;
@@ -3618,7 +4513,7 @@ export class PoseViewerCore {
         if (!this.THREE || !this.captureCamera) return; // Not initialized yet
         if (this._applySAMProjectionCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg)) return;
 
-        const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+        const baseTarget = this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         // Apply offset (in world units, scaled by zoom for intuitive control)
         const target = new this.THREE.Vector3(
             baseTarget.x - offsetX,
@@ -3695,7 +4590,7 @@ export class PoseViewerCore {
         const target = this._samProjectionCameraFrame
             ? this._getSAMProjectionViewTarget(this.captureCamera)
             : (() => {
-                const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
+                const baseTarget = this.sceneCameraTarget || this.meshCenter || new this.THREE.Vector3(0, 10, 0);
                 return new this.THREE.Vector3(
                     baseTarget.x - offsetX,
                     baseTarget.y - offsetY,
@@ -3752,6 +4647,104 @@ export class PoseViewerCore {
         return Math.max(0.1, Math.min(7.0, Math.min(target / boundsW, target / boundsH)));
     }
 
+    computeModelFitFraming(width = 1024, height = 1024, yawDeg = 0, pitchDeg = 0, margin = 0.08) {
+        if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry?.attributes?.position;
+        if (!position) return null;
+
+        const point = new this.THREE.Vector3();
+        const step = Math.max(1, Math.ceil(position.count / 8000));
+        const projectedBounds = (zoom, offsetX, offsetY) => {
+            this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
+            this.captureCamera.updateMatrixWorld(true);
+            this.captureCamera.updateProjectionMatrix();
+
+            const xs = [];
+            const ys = [];
+            for (let index = 0; index < position.count; index += step) {
+                point.fromBufferAttribute(position, index);
+                if (typeof this.skinnedMesh.applyBoneTransform === 'function') {
+                    this.skinnedMesh.applyBoneTransform(index, point);
+                }
+                point.applyMatrix4(this.skinnedMesh.matrixWorld).project(this.captureCamera);
+                if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+                xs.push(point.x);
+                ys.push(point.y);
+            }
+            if (xs.length < 16 || ys.length < 16) return null;
+            xs.sort((a, b) => a - b);
+            ys.sort((a, b) => a - b);
+            const pick = (values, q) => values[
+                Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))
+            ];
+            const minX = pick(xs, 0.01);
+            const maxX = pick(xs, 0.99);
+            const minY = pick(ys, 0.01);
+            const maxY = pick(ys, 0.99);
+            return {
+                minX,
+                maxX,
+                minY,
+                maxY,
+                width: Math.max(1e-5, maxX - minX),
+                height: Math.max(1e-5, maxY - minY),
+                centerX: (minX + maxX) * 0.5,
+                centerY: (minY + maxY) * 0.5,
+            };
+        };
+
+        const baseBounds = projectedBounds(1, 0, 0);
+        if (!baseBounds) return null;
+        const target = Math.max(0.2, Math.min(0.98, 1 - Math.max(0, margin) * 2)) * 2;
+        const zoom = Math.max(
+            0.1,
+            Math.min(7.0, Math.min(target / baseBounds.width, target / baseBounds.height)),
+        );
+
+        const centeredBounds = projectedBounds(zoom, 0, 0);
+        if (!centeredBounds) return null;
+
+        // Camera offsets are world-space X/Y translations. With yaw and pitch
+        // enabled they are not identical to screen axes, so measure their
+        // projected effect and solve the small 2x2 system. This keeps every
+        // deformed pose centred instead of reusing the active pose's framing.
+        const fov = this.THREE.MathUtils.degToRad(this.captureCamera.fov || 30);
+        const visibleHeight = 2 * 45 * Math.tan(fov * 0.5) / zoom;
+        const epsilon = Math.max(0.001, visibleHeight * 0.01);
+        const xProbe = projectedBounds(zoom, epsilon, 0);
+        const yProbe = projectedBounds(zoom, 0, epsilon);
+        if (!xProbe || !yProbe) {
+            return { zoom, offsetX: 0, offsetY: 0 };
+        }
+
+        const j00 = (xProbe.centerX - centeredBounds.centerX) / epsilon;
+        const j10 = (xProbe.centerY - centeredBounds.centerY) / epsilon;
+        const j01 = (yProbe.centerX - centeredBounds.centerX) / epsilon;
+        const j11 = (yProbe.centerY - centeredBounds.centerY) / epsilon;
+        const determinant = j00 * j11 - j01 * j10;
+        if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-8) {
+            return { zoom, offsetX: 0, offsetY: 0 };
+        }
+
+        const offsetX = (
+            -centeredBounds.centerX * j11 + centeredBounds.centerY * j01
+        ) / determinant;
+        const offsetY = (
+            -j00 * centeredBounds.centerY + j10 * centeredBounds.centerX
+        ) / determinant;
+        const maxOffset = visibleHeight * 4;
+        return {
+            zoom,
+            offsetX: Math.max(-maxOffset, Math.min(maxOffset, offsetX)),
+            offsetY: Math.max(-maxOffset, Math.min(maxOffset, offsetY)),
+        };
+    }
+
     computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null, forceFallback = false) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 
@@ -3781,6 +4774,21 @@ export class PoseViewerCore {
         const sourceCamera = flattenNumbers(frame?.camera || data?.camera).slice(0, 3);
         const focalRaw = flattenNumbers(frame?.focal_length ?? data?.focal_length)[0] ?? Number(data?.focal_length);
         const sourceFocal = Number.isFinite(focalRaw) && focalRaw > 0 ? focalRaw : Math.max(imageW, imageH) * 1.2;
+        const projectSAMMeshPoint = (point) => {
+            if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
+            const x = Number(point[0]) + sourceCamera[0];
+            const y = -Number(point[1]) + sourceCamera[1];
+            const z = -Number(point[2]) + sourceCamera[2];
+            if (![x, y, z].every(Number.isFinite) || z <= 1e-5) return null;
+            const px = x * sourceFocal / z + imageW * 0.5;
+            const py = y * sourceFocal / z + imageH * 0.5;
+            return {
+                px,
+                py,
+                ndcX: (px / imageW - 0.5) * 2,
+                ndcY: (0.5 - py / imageH) * 2,
+            };
+        };
         const sourceFrame = this._samMeshOverlaySourceFrame;
         const samProjectionFrame = (() => {
             if (!sourceFrame?.pelvisWorld || !Array.isArray(sourceFrame?.pelvisSource)) return null;
@@ -3801,8 +4809,8 @@ export class PoseViewerCore {
                 },
             };
         })();
-        // Compute equivalent yaw/pitch angles from SAM camera position so the caller can
-        // apply inverse rotation to the model (used when samApplyCamera=false).
+        // Compute equivalent yaw/pitch angles for the legacy fallback used by SAM payloads
+        // that do not contain a render projection.
         const samCameraAngles = (() => {
             if (!samProjectionFrame) return { yaw_deg: 0, pitch_deg: 0 };
             const tgt = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
@@ -3816,18 +4824,6 @@ export class PoseViewerCore {
             return { yaw_deg: yaw, pitch_deg: pitch };
         })();
 
-        // NOTE: forceFallback=true skips the SAM projection path and forces bbox-based zoom/offset
-        // computation. Used when the user has disabled the SAM camera override (samApplyCamera=false).
-        if (samProjectionFrame && !forceFallback) {
-            return {
-                zoom: 1.0,
-                offset_x: 0,
-                offset_y: 0,
-                yaw_deg: 0,
-                pitch_deg: 0,
-                sam_projection: samProjectionFrame,
-            };
-        }
         const projectSourcePoint = (point) => {
             if (!Array.isArray(point) || point.length < 3 || sourceCamera.length < 3) return null;
             const x = Number(point[0]);
@@ -3846,6 +4842,33 @@ export class PoseViewerCore {
 
         let hasRenderFrameBounds = false;
         const projectedSourceBounds = (() => {
+            // Read the exact postprocessed SAM mesh without modifying it.
+            if (Array.isArray(meshData?.vertices) && meshData.vertices.length >= 16) {
+                let count = 0;
+                let minX = Infinity;
+                let minY = Infinity;
+                let maxX = -Infinity;
+                let maxY = -Infinity;
+                for (const vertex of meshData.vertices) {
+                    const point = projectSAMMeshPoint(vertex);
+                    if (!point) continue;
+                    count += 1;
+                    minX = Math.min(minX, point.px);
+                    minY = Math.min(minY, point.py);
+                    maxX = Math.max(maxX, point.px);
+                    maxY = Math.max(maxY, point.py);
+                }
+                if (count >= 16) {
+                    hasRenderFrameBounds = true;
+                    return {
+                        x1: minX,
+                        y1: minY,
+                        x2: maxX,
+                        y2: maxY,
+                    };
+                }
+            }
+
             const frameBounds = frame?.projected_bounds;
             if (frameBounds) {
                 const fx1 = Number(frameBounds.x1);
@@ -3894,12 +4917,11 @@ export class PoseViewerCore {
             if (xs.length < 2 || ys.length < 2) return null;
             xs.sort((a, b) => a - b);
             ys.sort((a, b) => a - b);
-            const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
             return {
-                x1: pick(xs, 0.01),
-                y1: pick(ys, 0.01),
-                x2: pick(xs, 0.99),
-                y2: pick(ys, 0.99),
+                x1: xs[0],
+                y1: ys[0],
+                x2: xs[xs.length - 1],
+                y2: ys[ys.length - 1],
             };
         })();
         let x1;
@@ -3933,13 +4955,20 @@ export class PoseViewerCore {
         const desiredCenterX = ((x1 + x2) * 0.5 / imageW - 0.5) * 2;
         const desiredCenterY = (0.5 - (y1 + y2) * 0.5 / imageH) * 2;
         const sourceShoulderFrame = (() => {
-            if (hasRenderFrameBounds) return null;
             if (typeof this._buildSAM3DNamedPoints !== 'function') return null;
             const named = this._buildSAM3DNamedPoints(data);
-            const projected = [
-                projectSourcePoint(named.raw_left_shoulder || named.canonical_left_shoulder),
-                projectSourcePoint(named.raw_right_shoulder || named.canonical_right_shoulder),
-            ].filter(Boolean);
+            const fittedCoordinates = Array.isArray(data?.joint_coords);
+            const projectShoulder = (side) => {
+                if (fittedCoordinates) {
+                    const fitted = named[`${side}_shoulder`];
+                    const projected = projectSAMMeshPoint(fitted);
+                    if (projected) return projected;
+                }
+                return projectSourcePoint(
+                    named[`raw_${side}_shoulder`] || named[`canonical_${side}_shoulder`],
+                );
+            };
+            const projected = [projectShoulder('left'), projectShoulder('right')].filter(Boolean);
             if (!projected.length) return null;
             const py = projected.reduce((sum, point) => sum + point.py, 0) / projected.length;
             const ndcY = projected.reduce((sum, point) => sum + point.ndcY, 0) / projected.length;
@@ -3964,6 +4993,7 @@ export class PoseViewerCore {
 
             const xs = [];
             const ys = [];
+            const depths = [];
 
             const collectMesh = (mesh) => {
                 const geometry = mesh?.geometry;
@@ -3972,34 +5002,34 @@ export class PoseViewerCore {
 
                 mesh.updateMatrixWorld(true);
                 const point = new this.THREE.Vector3();
-                const step = Math.max(1, Math.ceil(position.count / 8000));
-                for (let index = 0; index < position.count; index += step) {
+                const cameraPoint = new this.THREE.Vector3();
+                for (let index = 0; index < position.count; index++) {
                     point.fromBufferAttribute(position, index);
                     if (typeof mesh.applyBoneTransform === 'function') {
                         mesh.applyBoneTransform(index, point);
                     }
-                    point.applyMatrix4(mesh.matrixWorld).project(camera);
+                    point.applyMatrix4(mesh.matrixWorld);
+                    cameraPoint.copy(point).applyMatrix4(camera.matrixWorldInverse);
+                    if (!Number.isFinite(cameraPoint.z) || cameraPoint.z >= -1e-5) continue;
+                    depths.push(-cameraPoint.z);
+                    point.project(camera);
                     if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
                     xs.push(point.x);
                     ys.push(point.y);
                 }
             };
 
-            if (this._samMeshOverlayGroup) {
-                this._samMeshOverlayGroup.traverse((object) => {
-                    if (object?.isMesh) collectMesh(object);
-                });
-            }
-            if (xs.length < 16 && this.skinnedMesh) {
-                collectMesh(this.skinnedMesh);
-            }
+            // Capture/export contains the mannequin, not the debug SAM overlay.
+            // Always frame the geometry that will actually be rendered.
+            if (this.skinnedMesh) collectMesh(this.skinnedMesh);
 
-            if (xs.length < 16 || ys.length < 16) return null;
+            if (xs.length < 16 || ys.length < 16 || depths.length < 16) return null;
             xs.sort((a, b) => a - b);
             ys.sort((a, b) => a - b);
+            depths.sort((a, b) => a - b);
             const pick = (values, q) => values[Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))];
-            const min = new this.THREE.Vector2(pick(xs, 0.01), pick(ys, 0.01));
-            const max = new this.THREE.Vector2(pick(xs, 0.99), pick(ys, 0.99));
+            const min = new this.THREE.Vector2(xs[0], ys[0]);
+            const max = new this.THREE.Vector2(xs[xs.length - 1], ys[ys.length - 1]);
             if (!Number.isFinite(min.x) || !Number.isFinite(max.x)) return null;
             return {
                 min,
@@ -4008,6 +5038,7 @@ export class PoseViewerCore {
                 height: Math.max(1e-5, max.y - min.y),
                 centerX: (min.x + max.x) * 0.5,
                 centerY: (min.y + max.y) * 0.5,
+                depth: pick(depths, 0.5),
             };
         };
         const projectedBoneCenterY = (camera, boneNames) => {
@@ -4026,6 +5057,60 @@ export class PoseViewerCore {
             return values.reduce((sum, value) => sum + value, 0) / values.length;
         };
 
+        // Preserve SAM's camera direction, then match the complete mannequin to
+        // the source person's exact head-to-sole interval. Horizontal body width
+        // must not reduce character height.
+        if (samProjectionFrame && !forceFallback) {
+            const projectionCamera = new this.THREE.PerspectiveCamera(
+                samProjectionFrame.fov,
+                (Number(width) || 1024) / Math.max(1, Number(height) || 1024),
+                this.captureCamera.near,
+                this.captureCamera.far,
+            );
+            projectionCamera.zoom = 1.0;
+            projectionCamera.up.set(0, 1, 0);
+            projectionCamera.position.set(
+                Number(samProjectionFrame.cameraPosition.x) || 0,
+                Number(samProjectionFrame.cameraPosition.y) || 0,
+                Number(samProjectionFrame.cameraPosition.z) || 0,
+            );
+            projectionCamera.lookAt(new this.THREE.Vector3(
+                projectionCamera.position.x,
+                projectionCamera.position.y,
+                projectionCamera.position.z - 1,
+            ));
+            projectionCamera.updateMatrixWorld(true);
+            projectionCamera.updateProjectionMatrix();
+
+            const modelBounds = projectedBounds(projectionCamera);
+            const modelShoulderY = projectedBoneCenterY(
+                projectionCamera,
+                ['upperarm_l', 'upperarm_r'],
+            );
+            const fit = computeSAMProjectionFrameFit({
+                modelBounds,
+                desiredBounds: {
+                    width: desiredW * 2,
+                    height: desiredH * 2,
+                    centerX: desiredCenterX,
+                    centerY: desiredCenterY,
+                },
+                fov: projectionCamera.fov,
+                aspect: projectionCamera.aspect,
+                modelShoulderY,
+                desiredShoulderY: sourceShoulderFrame?.ndcY,
+                desiredBottomY: desiredCenterY - desiredH,
+            });
+            return {
+                zoom: fit?.zoom ?? 0.96,
+                offset_x: fit?.offset_x ?? 0,
+                offset_y: fit?.offset_y ?? 0,
+                yaw_deg: 0,
+                pitch_deg: 0,
+                sam_projection: samProjectionFrame,
+            };
+        }
+
         const baseTarget = this.meshCenter || new this.THREE.Vector3(0, 10, 0);
         const dist = 45;
         const aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
@@ -4036,6 +5121,31 @@ export class PoseViewerCore {
         this.updateCaptureCamera(width, height, 1.0, 0, 0);
         const baseBounds = projectedBounds(this.captureCamera);
         if (baseBounds) {
+            if (forceFallback) {
+                const modelShoulderY = projectedBoneCenterY(
+                    this.captureCamera,
+                    ['upperarm_l', 'upperarm_r'],
+                );
+                const fit = computeSAMProjectionFrameFit({
+                    modelBounds: baseBounds,
+                    desiredBounds: {
+                        width: desiredW * 2,
+                        height: desiredH * 2,
+                        centerX: desiredCenterX,
+                        centerY: desiredCenterY,
+                    },
+                    fov: this.captureCamera.fov,
+                    aspect: this.captureCamera.aspect,
+                    modelShoulderY,
+                    desiredShoulderY: sourceShoulderFrame?.ndcY,
+                    desiredBottomY: desiredCenterY - desiredH,
+                });
+                if (fit) {
+                    this.updateCaptureCamera(width, height, fit.zoom, fit.offset_x, fit.offset_y);
+                    return { ...fit, ...samCameraAngles };
+                }
+            }
+
             const desiredNdcW = desiredW * 2;
             const desiredNdcH = desiredH * 2;
             const zoomForW = desiredNdcW / baseBounds.width;
@@ -4085,6 +5195,67 @@ export class PoseViewerCore {
             offset_y: baseTarget.y - targetY,
             ...samCameraAngles,
         };
+    }
+
+    fitSAM3DToStandardCamera(data, width = 1024, height = 1024, meshData = null) {
+        const angleParams = this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
+        if (!angleParams) return null;
+
+        const yaw = Number(angleParams.yaw_deg) || 0;
+        const pitch = Number(angleParams.pitch_deg) || 0;
+        if (Math.abs(yaw) > 0.5 || Math.abs(pitch) > 0.5) {
+            const currentRotation = this.getPose?.()?.modelRotation || [0, 0, 0];
+            this.setModelRotation(
+                (Number(currentRotation[0]) || 0) - pitch,
+                (Number(currentRotation[1]) || 0) - yaw,
+                Number(currentRotation[2]) || 0,
+            );
+        }
+
+        // Rotation changes the projected head/sole positions, especially for
+        // high- and low-angle images. Measure again only after it is applied.
+        return this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
+    }
+
+    beginCaptureBatch(width, height) {
+        if (!this.initialized || !this.renderer || !this.THREE) return false;
+        const targetWidth = Math.max(1, Math.round(Number(width) || 1));
+        const targetHeight = Math.max(1, Math.round(Number(height) || 1));
+        if (this._captureBatch) {
+            if (this._captureBatch.width !== targetWidth || this._captureBatch.height !== targetHeight) {
+                this.renderer.setSize(targetWidth, targetHeight, false);
+                this._captureBatch.width = targetWidth;
+                this._captureBatch.height = targetHeight;
+            }
+            return false;
+        }
+
+        const originalSize = new this.THREE.Vector2();
+        this.renderer.getSize(originalSize);
+        this._captureBatch = {
+            width: targetWidth,
+            height: targetHeight,
+            originalWidth: originalSize.x,
+            originalHeight: originalSize.y,
+            originalPixelRatio: this.renderer.getPixelRatio(),
+        };
+        this.renderer.setPixelRatio(1);
+        this.renderer.setSize(targetWidth, targetHeight, false);
+        return true;
+    }
+
+    endCaptureBatch() {
+        const batch = this._captureBatch;
+        if (!batch || !this.renderer) return;
+        this._captureBatch = null;
+        this.renderer.setPixelRatio(batch.originalPixelRatio);
+        this.renderer.setSize(batch.originalWidth, batch.originalHeight, false);
+        if (this.initialized && this.scene && this.camera) {
+            // Restoring the drawing-buffer size clears it just like a viewport
+            // resize. Repaint synchronously to avoid a visible flash after capture.
+            this.renderer.render(this.scene, this.camera);
+            this._needsRender = false;
+        }
     }
 
     capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
@@ -4147,29 +5318,17 @@ export class PoseViewerCore {
         }
 
         let dataURL = null;
-        const oldPixelRatio = this.renderer.getPixelRatio();
+        const ownsCaptureBatch = !this._captureBatch;
+        this.beginCaptureBatch(width, height);
 
         try {
-            // Resize renderer to output size
-            const originalSize = new this.THREE.Vector2();
-            this.renderer.getSize(originalSize);
-
-            this.renderer.setPixelRatio(1); // Force 1:1 pixel ratio for capture
-            this.renderer.setSize(width, height, false); // false = don't update style to avoid layout thrashing
-
             // Render with Fixed Camera
             this.renderer.render(this.scene, this.captureCamera);
             dataURL = this.canvas.toDataURL("image/png");
-
-            // Restore renderer
-            this.renderer.setPixelRatio(oldPixelRatio);
-            this.renderer.setSize(originalSize.x, originalSize.y, true); // Update style back
-
         } catch (e) {
             console.error("Capture failed:", e);
         } finally {
             // Restore state
-            if (this.renderer.getPixelRatio() !== oldPixelRatio) this.renderer.setPixelRatio(oldPixelRatio);
             this.scene.background = oldBg;
 
             this.jointMarkers.forEach(m => m.visible = markersVisible && this._shouldMarkerBeVisible(m));
@@ -4197,9 +5356,7 @@ export class PoseViewerCore {
                     pole.visible = poleVisibility[key] ?? false;
                 }
             }
-
-            // Re-render viewport
-            this.renderer.render(this.scene, this.camera);
+            if (ownsCaptureBatch) this.endCaptureBatch();
         }
         return dataURL;
     }
@@ -4440,6 +5597,10 @@ export class PoseViewerCore {
         const named = this._buildSAM3DNamedPoints(overlayPose);
         const pointNames = new Set([
             'pelvis', 'neck', 'neck_01', 'neck_tail', 'head',
+            'spine_01', 'spine_02', 'spine_03',
+            'clavicle_l', 'clavicle_r',
+            'upperarm_l', 'upperarm_r', 'lowerarm_l', 'lowerarm_r', 'hand_l', 'hand_r',
+            'thigh_l', 'thigh_r', 'calf_l', 'calf_r', 'foot_l', 'foot_r',
             'canonical_nose', 'canonical_left_eye', 'canonical_right_eye',
             'canonical_left_ear', 'canonical_right_ear',
             'left_shoulder', 'right_shoulder',
@@ -4494,30 +5655,190 @@ export class PoseViewerCore {
         };
     }
 
-    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
-        const worldKps = this._samMeshOverlayWorldKps;
-        if (!worldKps?.pelvis || !this.bones || !this.skinnedMesh) return false;
+    /**
+     * Apply already-normalized world-space body landmarks through the same
+     * alignment stages used by the current image-pose importer. This is also
+     * the canonical entry point for skeletal sources such as Mixamo FBX.
+     */
+    applyWorldKeypointImport(worldKps, options = {}) {
+        if (!worldKps?.pelvis || !this.bones || !this.skinnedMesh || !this.ikController) return false;
 
         const importTargets = this._buildSAM3DImportTargetsFromWorldKps(worldKps);
         if (!importTargets) return false;
 
-        this._hmr2WorldKps = worldKps;
-        this._drawHMR2Figure(worldKps);
-        this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
+        if (options.drawFigure !== false) {
+            this._hmr2WorldKps = worldKps;
+            this._drawHMR2Figure(worldKps);
+        }
+        this._applyImportPelvisAndTorso(worldKps, options.shoulderYOffset || 0);
+        this._placeSAM3DHipRoots(importTargets.worldKps || worldKps);
         this._applySAM3DTargetIK(importTargets, {
-            normalizeLimbs: false,
-            drawNormalizedFigure: false,
+            includeSpine: options.includeSpine !== false,
+            normalizeLimbs: options.normalizeLimbs !== false,
+            normalizeArms: options.normalizeArms !== false,
+            normalizeLegs: options.normalizeLegs !== false,
+            drawNormalizedFigure: options.drawFigure !== false,
         });
-        this._applySAM3DHeadLineRetarget(worldKps);
-        this._applySAM3DHandPointRetarget(worldKps);
-        this._applySAM3DFootPointRetarget(worldKps);
+
+        const alignedWorldKps = importTargets.worldKps || worldKps;
+        if (options.alignHead !== false) this._applySAM3DHeadLineRetarget(alignedWorldKps);
+        if (options.alignHands !== false) this._applySAM3DHandPointRetarget(alignedWorldKps);
+        if (options.alignFeet !== false) {
+            this._applySAM3DFootPointRetarget(alignedWorldKps, options.footLocalRotations || null);
+        }
 
         if (this.skeleton) this.skeleton.update();
         this.skinnedMesh.updateMatrixWorld(true);
-        this.updateMarkers();
+        this.updateIKEffectorPositions?.();
+        if (options.updateMarkers !== false) this.updateMarkers();
         this.requestRender();
-        this.dispatchPoseChange();
+        if (options.dispatchPoseChange !== false) this.dispatchPoseChange();
         return true;
+    }
+
+    _placeSAM3DHipRoots(worldKps) {
+        if (!this.THREE || !this.skinnedMesh || !this.bones || !worldKps) return false;
+        this.skinnedMesh.updateMatrixWorld(true);
+        let applied = false;
+        for (const side of ['l', 'r']) {
+            const thigh = this.bones[`thigh_${side}`];
+            const target = worldKps[side === 'l' ? 'left_hip' : 'right_hip'];
+            if (!thigh?.parent || !target) continue;
+
+            // Move the complete leg from its socket. This removes pelvis-width
+            // error before IK without changing thigh/shin lengths or translating
+            // the ankle independently from the rest of the leg.
+            thigh.parent.updateMatrixWorld(true);
+            thigh.position.copy(thigh.parent.worldToLocal(target.clone()));
+            thigh.updateMatrixWorld(true);
+            applied = true;
+        }
+        if (applied) this.skinnedMesh.updateMatrixWorld(true);
+        return applied;
+    }
+
+    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
+        const worldKps = this._samMeshOverlayWorldKps;
+        const passCount = 6;
+        for (let pass = 0; pass < passCount; pass++) {
+            this.fitSAM3DJointRootLengthsToWorldKps(worldKps);
+            this.fitSAM3DLimbLengthsToWorldKps(worldKps);
+            const finalPass = pass === passCount - 1;
+            const applied = this.applyWorldKeypointImport(worldKps, {
+                shoulderYOffset,
+                // Solve the torso/head once. Later passes only converge limb-root
+                // proportions and IK, so the allowed smaller head cannot drift.
+                includeSpine: pass === 0,
+                normalizeLimbs: false,
+                footLocalRotations: this._sam3dImportedFootLocalRotations || null,
+                drawFigure: finalPass,
+                updateMarkers: finalPass,
+                dispatchPoseChange: finalPass,
+            });
+            if (!applied) return false;
+        }
+        return true;
+    }
+
+    fitSAM3DJointRootLengthsToWorldKps(worldKps) {
+        if (!worldKps || !this.bones || !this.skinnedMesh) return null;
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        const fitted = {};
+        const fitRoot = (group, parentName, childName, target) => {
+            const parent = this._getBoneWorldPositionForImport(parentName);
+            const child = this._getBoneWorldPositionForImport(childName);
+            if (!parent || !child || !target) return;
+            const currentLength = parent.distanceTo(child);
+            const currentScale = this._lengthSliderToScale(this.boneLengthParams?.[group] ?? 0.5);
+            const baseLength = currentScale > 1e-5 ? currentLength / currentScale : 0;
+            const targetLength = parent.distanceTo(target);
+            if (baseLength <= 1e-5 || targetLength <= 1e-5) return;
+            fitted[group] = Math.max(0, Math.min(1, targetLength / baseLength - 0.5));
+        };
+
+        fitRoot('shoulder_l', 'clavicle_l', 'upperarm_l', worldKps.left_shoulder);
+        fitRoot('shoulder_r', 'clavicle_r', 'upperarm_r', worldKps.right_shoulder);
+        fitRoot('hip_l', 'pelvis', 'thigh_l', worldKps.left_hip);
+        fitRoot('hip_r', 'pelvis', 'thigh_r', worldKps.right_hip);
+        for (const [group, value] of Object.entries(fitted)) {
+            this.updateBoneLengthScale(group, value);
+        }
+        return Object.keys(fitted).length ? fitted : null;
+    }
+
+    fitSAM3DLimbLengthsToWorldKps(worldKps) {
+        if (!worldKps || !this.bones || !this.skinnedMesh) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+
+        const measuredBaseLength = (rootBoneName, endBoneName, group) => {
+            const root = this._getBoneWorldPositionForImport(rootBoneName);
+            const end = this._getBoneWorldPositionForImport(endBoneName);
+            const currentLength = root && end ? root.distanceTo(end) : 0;
+            const currentSlider = Number(this.boneLengthParams?.[group]);
+            const currentScale = this._lengthSliderToScale(
+                Number.isFinite(currentSlider) ? currentSlider : 0.5,
+            );
+            if (currentLength <= 1e-5 || currentScale <= 1e-5) return 0;
+            return currentLength / currentScale;
+        };
+        const sliderValue = (targetLength, baseWorldLength) => {
+            if (targetLength <= 1e-5 || baseWorldLength <= 1e-5) return null;
+            const targetScale = targetLength / baseWorldLength;
+            return Math.max(0, Math.min(1, targetScale - 0.5));
+        };
+
+        const fitted = {};
+        const fitSide = (side) => {
+            const prefix = side === 'l' ? 'left' : 'right';
+            const shoulder = worldKps[`${prefix}_shoulder`];
+            const elbow = worldKps[`${prefix}_elbow`];
+            const wrist = worldKps[`${prefix}_wrist`];
+            if (!shoulder || !elbow || !wrist) return;
+
+            const targetUpper = shoulder.distanceTo(elbow);
+            const targetLower = elbow.distanceTo(wrist);
+            const upperGroup = `upper_arm_${side}`;
+            const lowerGroup = `forearm_${side}`;
+            const baseUpper = measuredBaseLength(`upperarm_${side}`, `lowerarm_${side}`, upperGroup);
+            const baseLower = measuredBaseLength(`lowerarm_${side}`, `hand_${side}`, lowerGroup);
+            const upperValue = sliderValue(targetUpper, baseUpper);
+            const lowerValue = sliderValue(targetLower, baseLower);
+            if (upperValue !== null) fitted[upperGroup] = upperValue;
+            if (lowerValue !== null) fitted[lowerGroup] = lowerValue;
+        };
+
+        fitSide('l');
+        fitSide('r');
+
+        const fitLeg = (side) => {
+            const prefix = side === 'l' ? 'left' : 'right';
+            const hip = worldKps[`${prefix}_hip`];
+            const knee = worldKps[`${prefix}_knee`];
+            const ankle = worldKps[`${prefix}_ankle`];
+            if (!hip || !knee || !ankle) return;
+
+            const thighGroup = `thigh_${side}`;
+            const shinGroup = `shin_${side}`;
+            const baseThigh = measuredBaseLength(`thigh_${side}`, `calf_${side}`, thighGroup);
+            const baseShin = measuredBaseLength(`calf_${side}`, `foot_${side}`, shinGroup);
+            const thighValue = sliderValue(hip.distanceTo(knee), baseThigh);
+            const shinValue = sliderValue(knee.distanceTo(ankle), baseShin);
+            if (thighValue !== null) fitted[thighGroup] = thighValue;
+            if (shinValue !== null) fitted[shinGroup] = shinValue;
+        };
+
+        fitLeg('l');
+        fitLeg('r');
+        for (const [group, value] of Object.entries(fitted)) {
+            this.updateBoneLengthScale(group, value);
+        }
+        return Object.keys(fitted).length ? fitted : null;
+    }
+
+    fitSAM3DArmLengthsToWorldKps(worldKps) {
+        return this.fitSAM3DLimbLengthsToWorldKps(worldKps);
     }
 
     _estimateCurrentModelHeight() {
@@ -4964,74 +6285,207 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
     }
 
-    _applySAM3DFootPointRetarget(worldKps) {
+    _getFootToeSurfaceData(side) {
+        if (!this.THREE || !this.skinnedMesh || !this.bones || !this.boneList) return null;
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry?.attributes?.position;
+        const skinIndex = geometry?.attributes?.skinIndex;
+        const skinWeight = geometry?.attributes?.skinWeight;
+        const foot = this.bones[`foot_${side}`];
+        const ball = this.bones[`ball_${side}`];
+        const initialBallOffset = this.initialBoneStates?.[`ball_${side}`]?.position;
+        if (!position || !skinIndex || !skinWeight || !foot || !ball || !initialBallOffset) return null;
+
+        if (this._footToeSurfaceVertexCache?.geometry !== geometry) {
+            this._footToeSurfaceVertexCache = { geometry };
+        }
+        let data = this._footToeSurfaceVertexCache[side];
+        if (!data) {
+            const footIndex = this.boneList.indexOf(foot);
+            const ballIndex = this.boneList.indexOf(ball);
+            if (footIndex < 0 || ballIndex < 0) return null;
+
+            const forward = initialBallOffset.clone().normalize();
+            const footHead = new this.THREE.Vector3(...(foot.userData?.headPos || [0, 0, 0]));
+            const candidates = [];
+            const restPoint = new this.THREE.Vector3();
+            for (let index = 0; index < position.count; index++) {
+                let relatedWeight = 0;
+                for (let slot = 0; slot < 4; slot++) {
+                    const boneIndex = skinIndex.getComponent(index, slot);
+                    if (boneIndex === footIndex || boneIndex === ballIndex) {
+                        relatedWeight += skinWeight.getComponent(index, slot);
+                    }
+                }
+                if (relatedWeight < 0.35) continue;
+                restPoint.fromBufferAttribute(position, index);
+                candidates.push({
+                    index,
+                    projection: restPoint.clone().sub(footHead).dot(forward),
+                });
+            }
+            candidates.sort((a, b) => b.projection - a.projection);
+            const indices = candidates.slice(0, 24).map((item) => item.index);
+            if (!indices.length) return null;
+
+            const restAnchor = new this.THREE.Vector3();
+            for (const index of indices) {
+                restPoint.fromBufferAttribute(position, index);
+                restAnchor.add(restPoint);
+            }
+            restAnchor.multiplyScalar(1 / indices.length);
+
+            // Bones are created in the same unrotated model-space frame as the
+            // rest vertices. This vector therefore calibrates the actual end of
+            // the rendered toes, rather than the shorter ball_* helper bone.
+            const localForward = restAnchor.clone().sub(footHead);
+            if (localForward.lengthSq() < 1e-8) localForward.copy(initialBallOffset);
+            localForward.normalize();
+            const localDorsal = new this.THREE.Vector3(0, 1, 0);
+            localDorsal.sub(localForward.clone().multiplyScalar(localDorsal.dot(localForward)));
+            if (localDorsal.lengthSq() < 1e-8) localDorsal.set(0, 0, 1);
+            localDorsal.normalize();
+            const localMedial = new this.THREE.Vector3()
+                .crossVectors(localForward, localDorsal)
+                .normalize();
+            data = { indices, restAnchor, localForward, localDorsal, localMedial };
+            this._footToeSurfaceVertexCache[side] = data;
+        }
+        return data;
+    }
+
+    _getCurrentFootToeSurfaceAnchor(side) {
+        const data = this._getFootToeSurfaceData(side);
+        const position = this.skinnedMesh?.geometry?.attributes?.position;
+        if (!data?.indices?.length || !position || typeof this.skinnedMesh.applyBoneTransform !== 'function') {
+            return null;
+        }
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+        const anchor = new this.THREE.Vector3();
+        const point = new this.THREE.Vector3();
+        for (const index of data.indices) {
+            point.fromBufferAttribute(position, index);
+            this.skinnedMesh.applyBoneTransform(index, point);
+            point.applyMatrix4(this.skinnedMesh.matrixWorld);
+            anchor.add(point);
+        }
+        return anchor.multiplyScalar(1 / data.indices.length);
+    }
+
+    _applySAM3DFootPointRetarget(worldKps, footLocalRotations = null) {
         if (!this.THREE || !this.bones || !this.skinnedMesh || !worldKps) return;
 
         const applySide = (side) => {
             const footName = `foot_${side}`;
             const foot = this.bones?.[footName];
-            if (!foot) return;
+            const ballName = `ball_${side}`;
+            const ball = this.bones?.[ballName] || foot?.children?.find((item) => item?.isBone) || null;
+            if (!foot || !ball) return;
 
             const ankle = worldKps[side === 'l' ? 'left_ankle' : 'right_ankle'];
             const bigToe = worldKps[side === 'l' ? 'left_big_toe' : 'right_big_toe'];
             const smallToe = worldKps[side === 'l' ? 'left_small_toe' : 'right_small_toe'];
             const heel = worldKps[side === 'l' ? 'left_heel' : 'right_heel'];
-            const toe = bigToe && smallToe ? bigToe.clone().add(smallToe).multiplyScalar(0.5) : (bigToe || smallToe);
-            if (!ankle || !toe) return;
+            const knee = worldKps[side === 'l' ? 'left_knee' : 'right_knee'];
+            if (!ankle || !bigToe || !smallToe) return;
 
-            const targetForward = toe.clone().sub(ankle);
+            const toeCenter = bigToe.clone().add(smallToe).multiplyScalar(0.5);
+            const surfaceData = this._getFootToeSurfaceData(side);
+            const initialBallOffset = this.initialBoneStates?.[ballName]?.position || ball.position;
+            const localForward = surfaceData?.localForward?.clone() || initialBallOffset.clone().normalize();
+            const localDorsal = surfaceData?.localDorsal?.clone() || new this.THREE.Vector3(0, 1, 0);
+            localDorsal.sub(localForward.clone().multiplyScalar(localDorsal.dot(localForward)));
+            if (localForward.lengthSq() < 1e-8 || localDorsal.lengthSq() < 1e-8) return;
+            localForward.normalize();
+            localDorsal.normalize();
+            const localMedial = new this.THREE.Vector3()
+                .crossVectors(localForward, localDorsal)
+                .normalize();
+
+            // foot_* is the ankle pivot. Its child ball_* must aim from that
+            // pivot to the SAM toe centre; heel->toe is a sole direction and is
+            // not a valid ankle-bone target (it lifts/twists the whole foot).
+            const targetForward = toeCenter.clone().sub(ankle);
             if (targetForward.lengthSq() < 1e-8) return;
+            targetForward.normalize();
 
-            const ball = this.bones?.[`ball_${side}`] || foot.children?.find((item) => item?.isBone) || null;
-            const getPos = (bone) => {
-                const position = new this.THREE.Vector3();
-                bone.getWorldPosition(position);
-                return position;
-            };
-            const footPos = getPos(foot);
+            const toeWidth = bigToe.clone().sub(smallToe).normalize();
+            const soleDirection = heel ? toeCenter.clone().sub(heel) : targetForward.clone();
+            let targetDorsal = new this.THREE.Vector3().crossVectors(toeWidth, soleDirection);
+            targetDorsal.sub(targetForward.clone().multiplyScalar(targetDorsal.dot(targetForward)));
+            if (targetDorsal.lengthSq() < 1e-8) {
+                targetDorsal.crossVectors(toeWidth, targetForward);
+            }
+            if (targetDorsal.lengthSq() < 1e-8) return;
+            targetDorsal.normalize();
 
-            const footWorld = foot.getWorldQuaternion(new this.THREE.Quaternion());
-            const currentToe = ball
-                ? getPos(ball)
-                : footPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(footWorld));
-            const currentForward = currentToe.clone().sub(footPos);
-            if (currentForward.lengthSq() < 1e-8) return;
+            // The toe triangle has two valid normals. SAM joint rotation is used
+            // only to select the correct half-space after its forward axis has been
+            // aligned to the heel-to-toe vector. This preserves SAM's sole/top
+            // choice without trusting its incompatible MHR foot bone axes.
+            const importedLocalRotation = footLocalRotations?.[footName];
+            if (importedLocalRotation && foot.parent) {
+                const hintedWorld = foot.parent.getWorldQuaternion(new this.THREE.Quaternion())
+                    .multiply(importedLocalRotation.clone())
+                    .normalize();
+                const hintedForward = localForward.clone().applyQuaternion(hintedWorld).normalize();
+                const hintedDorsal = localDorsal.clone().applyQuaternion(hintedWorld).normalize();
+                const forwardCorrection = new this.THREE.Quaternion()
+                    .setFromUnitVectors(hintedForward, targetForward);
+                hintedDorsal.applyQuaternion(forwardCorrection);
+                if (targetDorsal.dot(hintedDorsal) < 0) targetDorsal.negate();
+            } else if (knee) {
+                const targetTowardKnee = knee.clone().sub(ankle);
+                targetTowardKnee.sub(targetForward.clone().multiplyScalar(targetTowardKnee.dot(targetForward)));
+                if (targetTowardKnee.lengthSq() > 1e-8 && targetDorsal.dot(targetTowardKnee) < 0) {
+                    targetDorsal.negate();
+                }
+            }
 
-            const delta = new this.THREE.Quaternion().setFromUnitVectors(
-                currentForward.normalize(),
-                targetForward.clone().normalize(),
-            ).normalize();
-            this._applyBoneWorldDelta(foot, delta);
+            const targetMedial = new this.THREE.Vector3().crossVectors(targetForward, targetDorsal).normalize();
+
+            const localBasis = new this.THREE.Matrix4().makeBasis(localMedial, localForward, localDorsal);
+            const targetBasis = new this.THREE.Matrix4().makeBasis(targetMedial, targetForward, targetDorsal);
+            const localBasisRotation = new this.THREE.Quaternion().setFromRotationMatrix(localBasis).normalize();
+            const targetBasisRotation = new this.THREE.Quaternion().setFromRotationMatrix(targetBasis).normalize();
+            const desiredWorldRotation = targetBasisRotation.multiply(localBasisRotation.invert()).normalize();
+
+            this._setBoneWorldQuaternion(foot, desiredWorldRotation);
             this.skinnedMesh.updateMatrixWorld(true);
 
-            if (heel) {
-                const parentPos = foot.parent ? getPos(foot.parent) : null;
-                const alignedFootPos = getPos(foot);
-                const alignedToe = ball
-                    ? getPos(ball)
-                    : alignedFootPos.clone().add(new this.THREE.Vector3(0, 0, 1).applyQuaternion(foot.getWorldQuaternion(new this.THREE.Quaternion())));
-                const rollAxis = toe.clone().sub(ankle);
-                const currentPlaneRef = parentPos ? parentPos.clone().sub(alignedFootPos) : null;
-                const targetPlaneRef = heel.clone().sub(ankle);
-                if (rollAxis.lengthSq() > 1e-8 && currentPlaneRef?.lengthSq() > 1e-8 && targetPlaneRef.lengthSq() > 1e-8) {
-                    rollAxis.normalize();
-                    const currentNormal = new this.THREE.Vector3().crossVectors(
-                        alignedToe.clone().sub(alignedFootPos),
-                        currentPlaneRef,
+            // foot_* is already at the SAM ankle because the leg IK ran before
+            // this method. Rotate and uniformly scale the rendered foot around
+            // that fixed pivot so its real toe surface reaches the SAM toe. Never
+            // translate the ankle target and never change calf/foot bone offsets.
+            const targetLength = ankle.distanceTo(toeCenter);
+            if (targetLength > 1e-6 && surfaceData) {
+                for (let pass = 0; pass < 4; pass++) {
+                    const footPosition = foot.getWorldPosition(new this.THREE.Vector3());
+                    const currentToe = this._getCurrentFootToeSurfaceAnchor(side);
+                    if (!currentToe) break;
+                    const currentVector = currentToe.sub(footPosition);
+                    const currentLength = currentVector.length();
+                    if (currentLength < 1e-6) break;
+
+                    const directionCorrection = new this.THREE.Quaternion().setFromUnitVectors(
+                        currentVector.clone().multiplyScalar(1 / currentLength),
+                        targetForward
                     );
-                    const targetNormal = new this.THREE.Vector3().crossVectors(
-                        toe.clone().sub(ankle),
-                        targetPlaneRef,
-                    );
-                    currentNormal.sub(rollAxis.clone().multiplyScalar(currentNormal.dot(rollAxis)));
-                    targetNormal.sub(rollAxis.clone().multiplyScalar(targetNormal.dot(rollAxis)));
-                    if (currentNormal.lengthSq() > 1e-8 && targetNormal.lengthSq() > 1e-8) {
-                        currentNormal.normalize();
-                        targetNormal.normalize();
-                        const rollDelta = new this.THREE.Quaternion().setFromUnitVectors(currentNormal, targetNormal).normalize();
-                        this._applyBoneWorldDelta(foot, rollDelta);
-                        this.skinnedMesh.updateMatrixWorld(true);
+                    if (directionCorrection.angleTo(new this.THREE.Quaternion()) > 1e-7) {
+                        const currentWorld = foot.getWorldQuaternion(new this.THREE.Quaternion());
+                        this._setBoneWorldQuaternion(
+                            foot,
+                            directionCorrection.multiply(currentWorld).normalize()
+                        );
                     }
+
+                    const scaleRatio = targetLength / currentLength;
+                    if (Number.isFinite(scaleRatio) && Math.abs(scaleRatio - 1) > 1e-5) {
+                        foot.scale.multiplyScalar(Math.max(0.5, Math.min(2, scaleRatio)));
+                    }
+                    this.skinnedMesh.updateMatrixWorld(true);
                 }
             }
         };
@@ -5154,6 +6608,18 @@ export class PoseViewerCore {
         return { left, right };
     }
 
+    _relocateSAM3DEyeTargetsToHead(worldKps, target, currentHeadPivot) {
+        if (!this.THREE || !target?.left || !target?.right || !currentHeadPivot) return target;
+        const sourceHeadPivot = worldKps?.head || worldKps?.neck_tail || worldKps?.neck;
+        if (!sourceHeadPivot) return target;
+
+        const translation = currentHeadPivot.clone().sub(sourceHeadPivot);
+        return {
+            left: target.left.clone().add(translation),
+            right: target.right.clone().add(translation),
+        };
+    }
+
     _faceBasisQuaternion(points) {
         if (!this.THREE || !points?.left || !points?.right || !points?.nose) return null;
         const basis = this._buildFaceBasis(points.left, points.right, points.nose);
@@ -5227,10 +6693,15 @@ export class PoseViewerCore {
             const current = this._getCurrentMHFaceLandmarkPoints();
             if (!current?.left || !current?.right) break;
 
-            const targetMid = target.left.clone().add(target.right).multiplyScalar(0.5);
             const currentMid = current.left.clone().add(current.right).multiplyScalar(0.5);
             const headPivot = new this.THREE.Vector3();
             head.getWorldPosition(headPivot);
+            const relocatedTarget = this._relocateSAM3DEyeTargetsToHead(
+                worldKps,
+                target,
+                headPivot,
+            );
+            const targetMid = relocatedTarget.left.clone().add(relocatedTarget.right).multiplyScalar(0.5);
 
             const currentLook = currentMid.clone().sub(headPivot);
             const targetLook = targetMid.clone().sub(headPivot);
@@ -5251,7 +6722,7 @@ export class PoseViewerCore {
             rollAxis.normalize();
 
             const currentEyeAxis = afterLook.right.clone().sub(afterLook.left);
-            const targetEyeAxis = target.right.clone().sub(target.left);
+            const targetEyeAxis = relocatedTarget.right.clone().sub(relocatedTarget.left);
             currentEyeAxis.sub(rollAxis.clone().multiplyScalar(currentEyeAxis.dot(rollAxis)));
             targetEyeAxis.sub(rollAxis.clone().multiplyScalar(targetEyeAxis.dot(rollAxis)));
             if (currentEyeAxis.lengthSq() <= 1e-8 || targetEyeAxis.lengthSq() <= 1e-8) continue;
@@ -5265,13 +6736,14 @@ export class PoseViewerCore {
             const check = this._getCurrentMHFaceLandmarkPoints();
             if (!check?.left || !check?.right) continue;
             const checkMid = check.left.clone().add(check.right).multiplyScalar(0.5);
-            const midError = checkMid.distanceTo(targetMid);
+            const checkLook = checkMid.clone().sub(headPivot);
+            const lookError = (
+                checkLook.lengthSq() > 1e-8 && targetLook.lengthSq() > 1e-8
+                    ? 1 - Math.max(-1, Math.min(1, checkLook.normalize().dot(targetLook.clone().normalize())))
+                    : Number.POSITIVE_INFINITY
+            );
             const axisError = 1 - Math.max(-1, Math.min(1, check.right.clone().sub(check.left).normalize().dot(targetEyeAxis)));
-            if (midError < 0.02 && axisError < 0.002) break;
-        }
-
-        if (applied) {
-            this._applySAM3DEyeLinePitchTrim(1);
+            if (lookError < 0.002 && axisError < 0.002) break;
         }
 
         return applied;
@@ -6173,15 +7645,9 @@ export class PoseViewerCore {
             return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
         };
         const distWorld = (a, b) => (a && b ? a.distanceTo(b) : 0);
-        const avg = (...values) => {
-            const valid = values.filter((value) => Number.isFinite(value) && value > 1e-5);
-            if (!valid.length) return 0;
-            return valid.reduce((sum, value) => sum + value, 0) / valid.length;
-        };
-        const sliderFromScale = (scale, minScale = 0.75, maxScale = 1.25) => {
+        const sliderFromScale = (scale) => {
             if (!Number.isFinite(scale)) return 0.5;
-            const clamped = Math.max(minScale, Math.min(maxScale, scale));
-            return Math.max(0, Math.min(1, clamped - 0.5));
+            return Math.max(0, Math.min(1, scale - 0.5));
         };
 
         const rest = {
@@ -6218,18 +7684,17 @@ export class PoseViewerCore {
             const sourceLower = distArray(sourceMid, sourceEnd);
             const restUpper = distWorld(restRoot, restMid);
             const restLower = distWorld(restMid, restEnd);
-            const sourceTotal = sourceUpper + sourceLower;
-            const restTotal = restUpper + restLower;
-            if (sourceTotal <= 1e-5 || restTotal <= 1e-5 || restUpper <= 1e-5 || restLower <= 1e-5) {
+            if (
+                sourceUpper <= 1e-5
+                || sourceLower <= 1e-5
+                || restUpper <= 1e-5
+                || restLower <= 1e-5
+            ) {
                 return [0.5, 0.5];
             }
-            const targetTotal = Math.max(restTotal * 0.55, Math.min(restTotal * 1.35, sourceTotal * worldScale));
-            const upperRatio = Math.max(0.30, Math.min(0.70, sourceUpper / sourceTotal));
-            const targetUpper = targetTotal * upperRatio;
-            const targetLower = targetTotal - targetUpper;
             return [
-                sliderFromScale(targetUpper / restUpper, 0.55, 1.35),
-                sliderFromScale(targetLower / restLower, 0.55, 1.35),
+                sliderFromScale((sourceUpper * worldScale) / restUpper),
+                sliderFromScale((sourceLower * worldScale) / restLower),
             ];
         };
 
@@ -6289,7 +7754,6 @@ export class PoseViewerCore {
         if (!worldKps || !this.THREE || !this.bones || !this.skinnedMesh) return;
 
         const THREE = this.THREE;
-        const includeHead = options.includeHead !== false;
         const pelvisBone = this.bones.pelvis || this.bones.spine_01;
         if (pelvisBone && worldKps.pelvis) {
             const localTarget = worldKps.pelvis.clone();
@@ -6325,13 +7789,16 @@ export class PoseViewerCore {
             clavicle_l: 'upperarm_l',
         };
 
-        const applyFK = (boneName, parentKpName, childKpName) => {
+        const applyFK = (boneName, parentKpName, childKpName, targetFromBoneOrigin = false) => {
             const parentPoint = worldKps[parentKpName];
             const childPoint = worldKps[childKpName];
             const bone = this.bones[boneName];
             if (!parentPoint || !childPoint || !bone) return;
 
-            const targetDir = new THREE.Vector3().subVectors(childPoint, parentPoint).normalize();
+            const boneWorldPosition = new THREE.Vector3();
+            bone.getWorldPosition(boneWorldPosition);
+            const targetOrigin = targetFromBoneOrigin ? boneWorldPosition : parentPoint;
+            const targetDir = new THREE.Vector3().subVectors(childPoint, targetOrigin).normalize();
             if (targetDir.lengthSq() < 0.001) return;
 
             const childBone = childBoneMap[boneName] ? this.bones[childBoneMap[boneName]] : null;
@@ -6371,8 +7838,8 @@ export class PoseViewerCore {
             if (worldKps.left_shoulder) worldKps.left_shoulder = worldKps.left_shoulder.clone().setY(worldKps.left_shoulder.y + shoulderYOffset);
         }
 
-        applyFK('clavicle_r', 'neck', 'right_shoulder');
-        applyFK('clavicle_l', 'neck', 'left_shoulder');
+        applyFK('clavicle_r', 'neck', 'right_shoulder', true);
+        applyFK('clavicle_l', 'neck', 'left_shoulder', true);
     }
 
     _buildWorldKeypointsFromSAM3D(data) {
@@ -6461,6 +7928,8 @@ export class PoseViewerCore {
 
         const includeSpine = options.includeSpine !== false;
         const normalizeLimbs = options.normalizeLimbs !== false;
+        const normalizeArms = normalizeLimbs && options.normalizeArms !== false;
+        const normalizeLegs = normalizeLimbs && options.normalizeLegs !== false;
         const setEffectorTarget = (name, target) => {
             const effector = this.ikController?.effectors?.[name];
             if (effector && target) effector.position.copy(target);
@@ -6551,50 +8020,54 @@ export class PoseViewerCore {
         }
 
         if (normalizeLimbs) {
-            normalizeChain({
-                chainKey: 'rightArm',
-                rootBone: 'upperarm_r',
-                midBone: 'lowerarm_r',
-                endBone: 'hand_r',
-                rootKp: 'right_shoulder',
-                midKp: 'right_elbow',
-                endKp: 'right_wrist',
-                effectorName: 'hand_r',
-                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_r')),
-            });
-            normalizeChain({
-                chainKey: 'leftArm',
-                rootBone: 'upperarm_l',
-                midBone: 'lowerarm_l',
-                endBone: 'hand_l',
-                rootKp: 'left_shoulder',
-                midKp: 'left_elbow',
-                endKp: 'left_wrist',
-                effectorName: 'hand_l',
-                attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_l')),
-            });
-            normalizeChain({
-                chainKey: 'rightLeg',
-                rootBone: 'thigh_r',
-                midBone: 'calf_r',
-                endBone: 'foot_r',
-                rootKp: 'right_hip',
-                midKp: 'right_knee',
-                endKp: 'right_ankle',
-                effectorName: 'foot_r',
-                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('right_')),
-            });
-            normalizeChain({
-                chainKey: 'leftLeg',
-                rootBone: 'thigh_l',
-                midBone: 'calf_l',
-                endBone: 'foot_l',
-                rootKp: 'left_hip',
-                midKp: 'left_knee',
-                endKp: 'left_ankle',
-                effectorName: 'foot_l',
-                attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('left_')),
-            });
+            if (normalizeArms) {
+                normalizeChain({
+                    chainKey: 'rightArm',
+                    rootBone: 'upperarm_r',
+                    midBone: 'lowerarm_r',
+                    endBone: 'hand_r',
+                    rootKp: 'right_shoulder',
+                    midKp: 'right_elbow',
+                    endKp: 'right_wrist',
+                    effectorName: 'hand_r',
+                    attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_r')),
+                });
+                normalizeChain({
+                    chainKey: 'leftArm',
+                    rootBone: 'upperarm_l',
+                    midBone: 'lowerarm_l',
+                    endBone: 'hand_l',
+                    rootKp: 'left_shoulder',
+                    midKp: 'left_elbow',
+                    endKp: 'left_wrist',
+                    effectorName: 'hand_l',
+                    attachedPoints: SAM3D_FINGER_POINT_NAMES.filter((name) => name.endsWith('_l')),
+                });
+            }
+            if (normalizeLegs) {
+                normalizeChain({
+                    chainKey: 'rightLeg',
+                    rootBone: 'thigh_r',
+                    midBone: 'calf_r',
+                    endBone: 'foot_r',
+                    rootKp: 'right_hip',
+                    midKp: 'right_knee',
+                    endKp: 'right_ankle',
+                    effectorName: 'foot_r',
+                    attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('right_')),
+                });
+                normalizeChain({
+                    chainKey: 'leftLeg',
+                    rootBone: 'thigh_l',
+                    midBone: 'calf_l',
+                    endBone: 'foot_l',
+                    rootKp: 'left_hip',
+                    midKp: 'left_knee',
+                    endKp: 'left_ankle',
+                    effectorName: 'foot_l',
+                    attachedPoints: SAM3D_FOOT_POINT_NAMES.filter((name) => name.startsWith('left_')),
+                });
+            }
             if (normalizedTargets.worldKps) {
                 importTargets.worldKps = normalizedTargets.worldKps;
                 if (options.drawNormalizedFigure !== false) {
@@ -6624,6 +8097,7 @@ export class PoseViewerCore {
         if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
 
         this.recordState();
+        this._sam3dImportedFootLocalRotations = null;
         this.modelRotation = { x: 0, y: 0, z: 0 };
         if (this.skinnedMesh) {
             this.skinnedMesh.rotation.set(0, 0, 0);
@@ -6639,25 +8113,39 @@ export class PoseViewerCore {
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 
+        // Match the mannequin's limb proportions to the fitted SAM skeleton
+        // before building IK targets. Position/scale differences should be
+        // handled by body proportions and camera framing, not knee flexion.
+        this.autoFitSAM3DBoneLengths(data);
+
         const importTargets = this._buildSAM3DImportTargets(data);
         const worldKps = importTargets?.worldKps;
 
         const usedRotationImport = this._applySAM3DRotationImport(data);
+        if (usedRotationImport) {
+            const footLocalRotations = {};
+            for (const footName of ['foot_l', 'foot_r']) {
+                const foot = this.bones?.[footName];
+                if (!foot) continue;
+                footLocalRotations[footName] = foot.quaternion.clone();
+            }
+            if (Object.keys(footLocalRotations).length) {
+                this._sam3dImportedFootLocalRotations = footLocalRotations;
+            }
+        }
 
         if (worldKps?.pelvis) {
-            this._hmr2WorldKps = worldKps;
-            this._drawHMR2Figure(worldKps);
+            return this.applyWorldKeypointImport(worldKps, {
+                shoulderYOffset,
+                includeSpine: !usedRotationImport,
+                normalizeLimbs: true,
+                normalizeArms: true,
+                normalizeLegs: true,
+                footLocalRotations: this._sam3dImportedFootLocalRotations,
+            });
         }
 
         if (usedRotationImport) {
-            this._applyImportPelvisAndTorso(worldKps, shoulderYOffset, { includeHead: false });
-            this._applySAM3DTargetIK(importTargets, {
-                includeSpine: false,
-                normalizeLimbs: true,
-            });
-            this._applySAM3DHeadLineRetarget(importTargets.worldKps || worldKps);
-            this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
-            this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
             if (this.skeleton) this.skeleton.update();
             this.skinnedMesh.updateMatrixWorld(true);
             this.updateMarkers();
@@ -6665,24 +8153,7 @@ export class PoseViewerCore {
             this.dispatchPoseChange();
             return true;
         }
-        if (!worldKps || !worldKps.pelvis) return false;
-
-        this._hmr2WorldKps = worldKps;
-        this._drawHMR2Figure(worldKps);
-        this._applyImportPelvisAndTorso(worldKps, shoulderYOffset);
-
-        this._applySAM3DTargetIK(importTargets, {
-            normalizeLimbs: true,
-        });
-        this._applySAM3DHandPointRetarget(importTargets.worldKps || worldKps);
-        this._applySAM3DFootPointRetarget(importTargets.worldKps || worldKps);
-
-        if (this.skeleton) this.skeleton.update();
-        this.skinnedMesh.updateMatrixWorld(true);
-        this.updateMarkers();
-        this.requestRender();
-        this.dispatchPoseChange();
-        return true;
+        return false;
     }
 
     applyHMR2v1Import(data, smplRefHeight = 1.45, shoulderYOffset = 0) {
@@ -6819,22 +8290,20 @@ export class PoseViewerCore {
             applyFK('spine_03', '_s2', 'neck');
         }
 
-        if (includeHead) {
-            const rightEar = worldKps.right_ear;
-            const leftEar = worldKps.left_ear;
-            if (rightEar && leftEar) {
-                worldKps._earMid = new THREE.Vector3(
-                    (rightEar.x + leftEar.x) / 2,
-                    (rightEar.y + leftEar.y) / 2,
-                    (rightEar.z + leftEar.z) / 2,
-                );
-            }
-            if (worldKps._earMid) {
-                applyFK('neck_01', 'neck', '_earMid');
-                if (worldKps.nose) applyFK('head', '_earMid', 'nose');
-            } else {
-                applyFK('neck_01', 'neck', 'nose');
-            }
+        const rightEar = worldKps.right_ear;
+        const leftEar = worldKps.left_ear;
+        if (rightEar && leftEar) {
+            worldKps._earMid = new THREE.Vector3(
+                (rightEar.x + leftEar.x) / 2,
+                (rightEar.y + leftEar.y) / 2,
+                (rightEar.z + leftEar.z) / 2,
+            );
+        }
+        if (worldKps._earMid) {
+            applyFK('neck_01', 'neck', '_earMid');
+            if (worldKps.nose) applyFK('head', '_earMid', 'nose');
+        } else {
+            applyFK('neck_01', 'neck', 'nose');
         }
 
         if (shoulderYOffset !== 0) {
