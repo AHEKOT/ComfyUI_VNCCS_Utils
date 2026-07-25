@@ -110,9 +110,11 @@ standard glTF fallback is the embedded colored point cloud.
 ## Gaussian model library
 
 The **Library** button in the scene header opens the persistent 3D Factory
-library. An individual object is stored with its native PLY/SPLAT payload and
+library. An individual object is stored with its canonical Gaussian PLY and
 metadata. A scene package additionally keeps every object, layer group,
-visibility flag, transform, render size, camera, and lighting setup.
+visibility flag, transform, render size, camera, and lighting setup. SPLAT is
+a disposable viewport/export derivative and is not duplicated inside
+`.vnccs3d` packages.
 
 Preview images are rendered automatically from the 3D viewport. Object previews
 temporarily isolate and frame only the selected object, then restore the editor
@@ -131,8 +133,16 @@ When the graph executes, the node exposes:
 - `preview`: a clean render of the complete 3D scene from the current viewport
   camera, without the editor grid, selection bounds, or transform gizmo;
 - `scene_ply`: the revisioned combined PLY path;
-- `scene_splat`: the revisioned combined SPLAT path;
+- `scene_splat`: a lazily generated combined SPLAT cache path;
 - `scene_manifest`: the persistent `scene.json` path.
+
+PLY is the only permanent Gaussian source asset. The browser-facing 32-byte
+SPLAT representation is generated from PLY on first use and shared by SHA-256
+under `ComfyUI/output/vnccs_3d_factory/cache/splats/`. Identical objects and
+hard-linked duplicates therefore reuse one cached SPLAT. The cache is
+least-recently-used and capped at 8 GiB by default; set
+`VNCCS_3D_FACTORY_SPLAT_CACHE_GB` before starting ComfyUI to change the cap.
+Deleting the cache is always safe because every entry is reproducible from PLY.
 
 The browser viewport capture is saved with the scene and bound to its revision.
 If the scene changes before a fresh frame is captured, the node returns an

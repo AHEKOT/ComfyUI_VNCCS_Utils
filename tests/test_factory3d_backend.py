@@ -63,10 +63,25 @@ class FactoryBackendTests(unittest.TestCase):
         self.factory._category_roots = self.original_category_roots
         self.temporary.cleanup()
 
+    def _write_valid_ply(self, path: Path, count: int = 1) -> None:
+        names = [
+            "x", "y", "z",
+            "f_dc_0", "f_dc_1", "f_dc_2",
+            "opacity",
+            "scale_0", "scale_1", "scale_2",
+            "rot_0", "rot_1", "rot_2", "rot_3",
+        ]
+        dtype = np.dtype([(name, "<f4") for name in names])
+        records = np.zeros(count, dtype=dtype)
+        records["scale_0"] = records["scale_1"] = records["scale_2"] = -2.0
+        records["rot_0"] = 1.0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.gaussian._ply_header(count, dtype) + records.tobytes())
+
     def test_scenes_are_created_listed_and_updated(self):
         scene = self.factory.create_scene("First scene")
         self.assertRegex(scene["scene_id"], r"^[a-f0-9]{32}$")
-        self.assertEqual(scene["schema_version"], 4)
+        self.assertEqual(scene["schema_version"], 5)
         self.assertEqual(scene["render_revision"], 0)
         self.assertEqual(
             scene["render"],
@@ -88,6 +103,42 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_scenes_are_deleted_recursively_but_not_during_active_generation(self):
+        scene = self.factory.create_scene("Delete me")
+        scene_root = self.factory.resolve_scene_dir(scene["scene_id"])
+        asset = scene_root / "objects" / ("a" * 32) / "model.ply"
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"scene asset")
+
+        result = self.factory.delete_scene(scene["scene_id"])
+
+        self.assertEqual(
+            result,
+            {"scene_id": scene["scene_id"], "deleted": True},
+        )
+        self.assertFalse(scene_root.exists())
+        self.assertEqual(self.factory.list_scenes(), [])
+        with self.assertRaises(FileNotFoundError):
+            self.factory.load_scene(scene["scene_id"])
+        with self.assertRaises(FileNotFoundError):
+            self.factory.delete_scene(scene["scene_id"])
+
+        protected = self.factory.create_scene("Generating")
+        job_id = "b" * 32
+        active_job = {
+            "job_id": job_id,
+            "scene_id": protected["scene_id"],
+            "status": "running",
+        }
+        with mock.patch.dict(self.factory._JOBS, {job_id: active_job}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "generation job is active"):
+                self.factory.delete_scene(protected["scene_id"])
+            self.assertTrue(
+                self.factory.resolve_scene_dir(protected["scene_id"]).is_dir()
+            )
+            active_job["status"] = "completed"
+            self.factory.delete_scene(protected["scene_id"])
 
     def test_scene_lighting_is_normalized_persisted_and_invalidates_preview_only(self):
         scene = self.factory.create_scene("Lighting")
@@ -146,6 +197,8 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
         self.assertNotIn("erode_radius", capabilities["defaults"])
         self.assertTrue(capabilities["defaults"]["remove_background"])
+        self.assertEqual(capabilities["splat_cache"]["limit_gb"], 32)
+        self.assertEqual(capabilities["splat_cache"]["used_bytes"], 0)
         self.assertEqual(capabilities["scene_render"]["min_side"], 64)
         self.assertEqual(capabilities["scene_render"]["max_side"], 4096)
         self.assertIn("16:9", capabilities["scene_render"]["aspect_presets"])
@@ -349,6 +402,110 @@ class FactoryBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "degenerate rotation"):
             self.gaussian.validate_splat_payload(path, 1)
 
+    def test_splat_is_a_single_content_addressed_cache_derivative(self):
+        first = self.root / "first" / "model.ply"
+        second = self.root / "second" / "model.ply"
+        self._write_valid_ply(first, 2)
+        second.parent.mkdir(parents=True)
+        second.write_bytes(first.read_bytes())
+
+        first_cache = self.factory._ensure_cached_splat(first)
+        second_cache = self.factory._ensure_cached_splat(second)
+
+        self.assertEqual(first_cache, second_cache)
+        self.assertEqual(first_cache.stat().st_size, 2 * 32)
+        self.assertEqual(
+            list(self.factory._splat_cache_root().glob("v1-*.splat")),
+            [first_cache],
+        )
+
+    def test_splat_cache_limit_is_persisted_and_cache_can_be_cleared(self):
+        initial = self.factory.splat_cache_status()
+        self.assertEqual(initial["limit_gb"], 32)
+        self.assertEqual(initial["file_count"], 0)
+
+        for invalid in (0, 1025, "invalid", None):
+            with self.assertRaisesRegex(ValueError, "SPLAT cache limit"):
+                self.factory.configure_splat_cache(invalid)
+
+        configured = self.factory.configure_splat_cache(64)
+        self.assertEqual(configured["limit_gb"], 64)
+        settings = json.loads(
+            self.factory._splat_cache_settings_path().read_text(encoding="utf-8")
+        )
+        self.assertEqual(settings["limit_gb"], 64)
+
+        cache_root = self.factory._splat_cache_root()
+        (cache_root / f"v1-{'a' * 64}.splat").write_bytes(b"a" * 32)
+        (cache_root / f"v1-{'b' * 64}.splat").write_bytes(b"b" * 64)
+        populated = self.factory.splat_cache_status()
+        self.assertEqual(populated["file_count"], 2)
+        self.assertEqual(populated["used_bytes"], 96)
+
+        cleared = self.factory.clear_splat_cache()
+        self.assertEqual(cleared["deleted_files"], 2)
+        self.assertEqual(cleared["deleted_bytes"], 96)
+        self.assertEqual(cleared["file_count"], 0)
+        self.assertEqual(cleared["used_bytes"], 0)
+        self.assertTrue(self.factory._splat_cache_settings_path().is_file())
+
+    def test_splat_cache_prunes_oldest_derived_files(self):
+        root = self.factory._splat_cache_root()
+        older = root / f"v1-{'c' * 64}.splat"
+        newer = root / f"v1-{'d' * 64}.splat"
+        older.write_bytes(b"o" * 10)
+        newer.write_bytes(b"n" * 20)
+        older.touch()
+        newer.touch()
+        older_mtime = newer.stat().st_mtime - 10
+        import os
+
+        os.utime(older, (older_mtime, older_mtime))
+        with mock.patch.object(self.factory, "_splat_cache_limit_bytes", return_value=25):
+            self.factory._prune_splat_cache()
+        self.assertFalse(older.exists())
+        self.assertTrue(newer.exists())
+
+    def test_legacy_scene_splat_is_adopted_into_cache_and_metadata_is_cleaned(self):
+        scene = self.factory.create_scene("Legacy")
+        object_id = self.factory._new_id()
+        object_root = (
+            self.factory.resolve_scene_dir(scene["scene_id"])
+            / "objects"
+            / object_id
+        )
+        ply = object_root / "model.ply"
+        splat = object_root / "model.splat"
+        self._write_valid_ply(ply, 2)
+        self.gaussian.ply_to_splat(ply, splat)
+        scene["objects"].append(
+            {
+                "object_id": object_id,
+                "name": "Legacy object",
+                "transform": self.gaussian.normalize_transform({}),
+                "checksums": {
+                    "ply_sha256": self.factory._sha256_file(ply),
+                    "splat_sha256": self.factory._sha256_file(splat),
+                },
+                "files": {
+                    "ply": str(ply.relative_to(self.factory.resolve_scene_dir(scene["scene_id"]))),
+                    "splat": str(splat.relative_to(self.factory.resolve_scene_dir(scene["scene_id"]))),
+                },
+            }
+        )
+        scene["layers"] = [{"type": "object", "object_id": object_id}]
+        scene["schema_version"] = 4
+        self.factory._atomic_json(self.factory._scene_path(scene["scene_id"]), scene)
+
+        migrated = self.factory.load_scene(scene["scene_id"])
+        item = migrated["objects"][0]
+        self.assertNotIn("splat", item["files"])
+        self.assertNotIn("splat_sha256", item["checksums"])
+        self.assertFalse(splat.exists())
+        cached = self.factory._ensure_object_splat(scene["scene_id"], object_id)
+        self.assertTrue(cached.is_file())
+        self.assertEqual(cached.stat().st_size, 2 * 32)
+
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
         source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
         self.assertIn('"scene": _public_scene(scene)', source)
@@ -391,7 +548,6 @@ class FactoryBackendTests(unittest.TestCase):
             "reference": "reference.png",
             "prepared": "prepared.png",
             "ply": "model.ply",
-            "splat": "model.splat",
         }.items():
             target = object_root / name
             target.write_bytes(f"{key}-asset".encode())
@@ -567,17 +723,25 @@ class FactoryBackendTests(unittest.TestCase):
 
         captured_metadata = {}
 
-        def fake_export(_sources, ply, splat, *, metadata=None):
+        def fake_export(_sources, ply, *, metadata=None):
             captured_metadata.update(metadata or {})
             Path(ply).parent.mkdir(parents=True, exist_ok=True)
             Path(ply).write_bytes(b"upright")
-            Path(splat).write_bytes(b"upright")
             return {
                 "ply": {"gaussians": 1, "objects": 1},
-                "splat": {"gaussians": 1},
             }
 
-        with mock.patch.object(self.factory, "export_gaussian_scene", side_effect=fake_export) as export:
+        cached_splat = self.root / "cache" / "splats" / "v1-test.splat"
+        cached_splat.parent.mkdir(parents=True)
+        cached_splat.write_bytes(b"upright")
+        with (
+            mock.patch.object(
+                self.factory,
+                "export_gaussian_scene",
+                side_effect=fake_export,
+            ) as export,
+            mock.patch.object(self.factory, "_ensure_cached_splat", return_value=cached_splat),
+        ):
             result = self.factory.ensure_scene_exports(scene["scene_id"])
 
         export.assert_called_once()
@@ -611,11 +775,14 @@ class FactoryBackendTests(unittest.TestCase):
                 },
             },
         )
-        with mock.patch.object(
-            self.factory,
-            "export_gaussian_scene",
-            side_effect=fake_export,
-        ) as camera_export:
+        with (
+            mock.patch.object(
+                self.factory,
+                "export_gaussian_scene",
+                side_effect=fake_export,
+            ) as camera_export,
+            mock.patch.object(self.factory, "_ensure_cached_splat", return_value=cached_splat),
+        ):
             refreshed = self.factory.ensure_scene_exports(scene["scene_id"])
         camera_export.assert_called_once()
         refreshed_manifest = json.loads(refreshed["camera"].read_text(encoding="utf-8"))
@@ -895,11 +1062,15 @@ class FactoryBackendTests(unittest.TestCase):
         registered = {(method, path) for method, path, _handler in routes.definitions}
         expected = {
             ("GET", "/vnccs/3d-factory/capabilities"),
+            ("GET", "/vnccs/3d-factory/splat-cache"),
+            ("POST", "/vnccs/3d-factory/splat-cache/settings"),
+            ("POST", "/vnccs/3d-factory/splat-cache/clear"),
             ("POST", "/vnccs/3d-factory/weights/download"),
             ("GET", "/vnccs/3d-factory/scenes"),
             ("POST", "/vnccs/3d-factory/scenes"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}"),
             ("PATCH", "/vnccs/3d-factory/scenes/{scene_id}"),
+            ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/preview"),

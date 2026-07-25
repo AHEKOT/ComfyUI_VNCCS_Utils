@@ -17,7 +17,9 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.2"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.6"/);
+    assert.doesNotMatch(studio, /vnccs-i3s__brand/);
+    assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
@@ -68,6 +70,12 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
 
 test("Factory exposes scenes, generation, transform, and all export formats", () => {
     assert.match(studio, /Scene manager/);
+    assert.match(studio, /confirmDeleteScene\(scene\)/);
+    assert.match(studio, /skipSceneDeleteConfirmation/);
+    assert.match(studio, /Don’t ask again for scene deletions during this session/);
+    assert.match(studio, /ENDPOINTS\.scene\(sceneId\), \{ method: "DELETE" \}/);
+    assert.match(styles, /\.vnccs-i3s__scene-card-actions/);
+    assert.match(styles, /\.vnccs-i3s__delete-confirm-option/);
     assert.match(studio, /Generate object/);
     assert.match(viewer, /TransformControls/);
     assert.match(studio, /duplicateObject/);
@@ -167,9 +175,10 @@ test("Scene updates reuse loaded splats and group transforms fan out to every ob
     assert.match(viewer, /group_id: this\.selectedGroupId/);
 });
 
-test("TripoSplat setup separates model management from persisted conditioning settings", () => {
+test("TripoSplat setup separates models, inference, and persisted SPLAT cache settings", () => {
     assert.match(studio, /vnccs-i3s__setup-block--models/);
     assert.match(studio, /vnccs-i3s__setup-block--settings/);
+    assert.match(studio, /vnccs-i3s__setup-block--cache/);
     assert.match(studio, /Conditioning resolution/);
     assert.match(studio, /1024 × 1024/);
     assert.match(studio, /1536 × 1536/);
@@ -178,13 +187,21 @@ test("TripoSplat setup separates model management from persisted conditioning se
     assert.match(studio, /conditioning_resolution: 1024/);
     assert.match(studio, /prevent_upscale: false/);
     assert.match(studio, /export_format: "ply"/);
+    assert.match(studio, /splat_cache_limit_gb: 32/);
     assert.match(studio, /Object and scene export/);
     assert.match(studio, /Lossless KHR_gaussian_splatting scene with camera/);
+    assert.match(studio, /SPLAT cache/);
+    assert.match(studio, /Clear cache/);
+    assert.match(studio, /ENDPOINTS\.splatCacheSettings/);
+    assert.match(studio, /ENDPOINTS\.splatCacheClear/);
     assert.match(studio, /this\.settings\.export_format = draft\.export_format/);
+    assert.match(studio, /this\.settings\.splat_cache_limit_gb = draft\.splat_cache_limit_gb/);
     assert.doesNotMatch(studio, /No API, CLI, or external inference server/);
     assert.match(studio, /form\.append\("prevent_upscale", this\.settings\.prevent_upscale \? "1" : "0"\)/);
     assert.match(studio, /this\.settings\.prevent_upscale \? "native cap" : ""/);
     assert.match(styles, /\.vnccs-i3s__setup-grid/);
+    assert.match(styles, /\.vnccs-i3s__setup-block--cache/);
+    assert.match(styles, /\.vnccs-i3s__cache-limit-controls/);
     assert.match(styles, /\.vnccs-i3s__resolution-option:has\(input:checked\)/);
     assert.match(styles, /\.vnccs-i3s__format-option:has\(input:checked\)/);
 });
@@ -332,6 +349,16 @@ test("Factory preserves the accepted Sakura three-column Studio interface", () =
     assert.match(studio, /vnccs-i3s__side--left/);
     assert.match(studio, /vnccs-i3s__center/);
     assert.match(studio, /vnccs-i3s__side--right/);
+});
+
+test("Factory DOM widget follows node resize like Pose Studio", () => {
+    assert.match(studio, /widget\.triggerDraw\?\.\(\)/);
+    assert.match(studio, /function scheduleDOMWidgetWidth\(node\)/);
+    assert.match(studio, /scheduleDOMWidgetWidth\(this\)/);
+    assert.match(studio, /requestAnimationFrame\(\(\) => syncDOMWidgetWidth\(this\)\)/);
+    assert.match(studio, /this\.onResize\?\.\(this\.size\)/);
+    assert.match(styles, /\.vnccs-i3s \{[\s\S]*?min-width: 0;[\s\S]*?min-height: 0;/);
+    assert.doesNotMatch(styles, /\.vnccs-i3s \{[\s\S]*?min-height: 610px;/);
 });
 
 test("Factory cache executes after createLayout without a leaked local root variable", () => {

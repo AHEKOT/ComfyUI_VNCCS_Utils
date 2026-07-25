@@ -2,7 +2,9 @@
 
 The library deliberately stores native Factory data instead of converting it:
 each entry is a small metadata record, an automatic PNG preview, and a
-``.vnccs3d`` ZIP containing Gaussian PLY/SPLAT files plus scene metadata.
+``.vnccs3d`` ZIP containing canonical Gaussian PLY files plus scene metadata.
+Compact SPLAT files are disposable derivatives generated in the shared Factory
+cache and are never duplicated inside a library package.
 Repositories use the same manifest-driven Hugging Face workflow as Pose
 Studio, but keep their state in a separate namespace.
 """
@@ -214,11 +216,11 @@ def _object_payload(
 ) -> dict[str, Any]:
     output = json.loads(json.dumps(item))
     files: dict[str, str] = {}
-    for key in ("reference", "prepared", "ply", "splat"):
+    for key in ("reference", "prepared", "ply"):
         try:
             source = factory._object_file(scene["scene_id"], item, key)
         except FileNotFoundError:
-            if key in {"ply", "splat"}:
+            if key == "ply":
                 raise
             continue
         target = f"{prefix}/{source.name}"
@@ -307,6 +309,80 @@ def _public_record(record: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def _strip_manifest_splats(manifest: dict[str, Any]) -> bool:
+    payload = manifest.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    stored_objects: list[Any]
+    if manifest.get("asset_type") == "object":
+        stored_objects = [payload.get("object")]
+    else:
+        scene = payload.get("scene")
+        stored_objects = scene.get("objects", []) if isinstance(scene, dict) else []
+    changed = False
+    for item in stored_objects:
+        files = item.get("files") if isinstance(item, dict) else None
+        if isinstance(files, dict) and files.pop("splat", None) is not None:
+            changed = True
+        checksums = item.get("checksums") if isinstance(item, dict) else None
+        if isinstance(checksums, dict) and checksums.pop("splat_sha256", None) is not None:
+            changed = True
+        validation = item.get("validation") if isinstance(item, dict) else None
+        if isinstance(validation, dict) and validation.pop("splat", None) is not None:
+            changed = True
+    return changed
+
+
+def _migrate_package_to_ply_only(
+    paths: dict[str, Path],
+    record: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove reproducible SPLAT members from a legacy library package."""
+    source = paths["package"]
+    temporary = source.with_name(f".{source.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        with zipfile.ZipFile(source, "r", allowZip64=True) as archive:
+            manifest = json.loads(archive.read("manifest.json"))
+            changed = _strip_manifest_splats(manifest)
+            members = archive.infolist()
+            changed = changed or any(
+                PurePosixPath(member.filename).suffix.lower() == ".splat"
+                for member in members
+            )
+            if not changed:
+                return record
+            with zipfile.ZipFile(temporary, "w", allowZip64=True) as output:
+                for member in members:
+                    path = _safe_member(member)
+                    if path == PurePosixPath("manifest.json") or path.suffix.lower() == ".splat":
+                        continue
+                    if member.is_dir():
+                        output.writestr(member, b"")
+                        continue
+                    with archive.open(member) as input_stream, output.open(
+                        member,
+                        mode="w",
+                        force_zip64=True,
+                    ) as output_stream:
+                        shutil.copyfileobj(
+                            input_stream,
+                            output_stream,
+                            length=4 * 1024 * 1024,
+                        )
+                output.writestr(
+                    "manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                    compress_type=zipfile.ZIP_STORED,
+                )
+        os.replace(temporary, source)
+        record["bytes"] = source.stat().st_size
+        record["sha256"] = _sha256(source)
+        _atomic_json(paths["meta"], record)
+        return record
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def _read_records() -> list[dict[str, Any]]:
     enabled = {
         item["repo_id"]
@@ -331,6 +407,7 @@ def _read_records() -> list[dict[str, Any]]:
                     value["asset_id"],
                 )
                 if paths["package"].is_file():
+                    value = _migrate_package_to_ply_only(paths, value)
                     records.append(value)
         except Exception:
             continue
@@ -359,6 +436,7 @@ def _find_record(
             continue
         paths = _paths(value["repository"], value["category"], safe_id)
         if paths["package"].is_file():
+            value = _migrate_package_to_ply_only(paths, value)
             return value, paths
     raise FileNotFoundError("library asset was not found")
 
@@ -503,7 +581,11 @@ def _install_object(
     installed: dict[str, str] = {}
     try:
         for key, member_name in (stored.get("files") or {}).items():
-            if key not in {"reference", "prepared", "ply", "splat"}:
+            # Legacy v1 packages may still contain a SPLAT member. It is
+            # intentionally ignored: PLY is the source of truth and the
+            # viewport obtains its compact representation from the shared
+            # content-addressed cache.
+            if key not in {"reference", "prepared", "ply"}:
                 continue
             member = archive.getinfo(str(member_name))
             _safe_member(member)
@@ -512,7 +594,6 @@ def _install_object(
                 "reference": "reference.png",
                 "prepared": "prepared.png",
                 "ply": "model.ply",
-                "splat": "model.splat",
             }[key]
             target = object_root / target_name
             with archive.open(member) as source, target.open("wb") as output:
@@ -521,7 +602,7 @@ def _install_object(
                 with Image.open(target) as image:
                     image.convert("RGBA").save(target, "PNG")
             installed[key] = str(target.relative_to(root))
-        if not {"ply", "splat"}.issubset(installed):
+        if "ply" not in installed:
             raise ValueError("Gaussian object package is incomplete")
         item = json.loads(json.dumps(stored))
         item["object_id"] = object_id

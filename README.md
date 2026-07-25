@@ -80,9 +80,11 @@ renders the actual Gaussian assets through the bundled SparkJS viewport.
 
 ### Key Features
 
-* **True Gaussian Viewport**: Multiple `.ply`/`.splat` objects render together
+* **True Gaussian Viewport**: Multiple Gaussian PLY objects render together
   with orbit, pan, detail zoom, adaptive camera clipping, selection, and an
-  optional grid—there is no synthetic floor mesh.
+  optional grid—there is no synthetic floor mesh. Compact SPLAT payloads are
+  generated lazily in one bounded, content-addressed cache rather than stored
+  beside every model.
 * **Scene Manager**: Create and reopen scenes; generated objects, names,
   transforms, generation settings, and exports persist on the ComfyUI host.
 * **Interactive Transforms**: Click objects in the viewport and move, rotate,
@@ -97,8 +99,9 @@ renders the actual Gaussian assets through the bundled SparkJS viewport.
   covariance, opacity, spherical-harmonic color, and export camera without
   lossy triangle reconstruction.
 * **Gaussian Library**: Save individual objects or complete scenes with
-  automatic 3D previews, then synchronize or publish manifest-driven model
-  repositories on Hugging Face through the Pose Studio repository workflow.
+  automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
+  then synchronize or publish manifest-driven model repositories on Hugging
+  Face through the Pose Studio repository workflow.
 * **Observable Jobs**: Background removal, image encoding, diffusion steps,
   Gaussian decoding, serialization, and scene insertion expose real progress.
   Every stage is printed to the ComfyUI console and retained in a downloadable

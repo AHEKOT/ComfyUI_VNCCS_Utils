@@ -28,9 +28,10 @@ _MAX_VERTICES = 64 * 1024 * 1024
 _CHUNK = 65_536
 _SCENE_METADATA_COMMENT = "comment vnccs_scene_metadata_base64 "
 # TripoSplat's official Three.js viewer applies child yaw +90° around Y,
-# followed by parent pitch 180° around X. Generated model.ply/model.splat files
-# remain in TripoSplat's native export frame; every VNCCS scene/object export
-# bakes this canonical orientation before its editable scene transform.
+# followed by parent pitch 180° around X. Canonical model.ply files and their
+# disposable cached SPLAT derivatives remain in TripoSplat's native export
+# frame; every VNCCS scene/object export bakes this canonical orientation
+# before its editable scene transform.
 _CANONICAL_ORIENTATION = np.asarray(
     [
         [0.0, 0.0, 1.0],

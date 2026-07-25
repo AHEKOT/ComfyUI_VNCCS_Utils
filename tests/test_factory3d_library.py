@@ -1,9 +1,11 @@
 import importlib.util
 import io
+import json
 import sys
 import tempfile
 import types
 import unittest
+import zipfile
 from pathlib import Path
 
 from PIL import Image
@@ -77,7 +79,6 @@ class FactoryLibraryTests(unittest.TestCase):
             object_root / "prepared.png"
         )
         (object_root / "model.ply").write_bytes(b"synthetic-ply")
-        (object_root / "model.splat").write_bytes(b"\0" * 32)
         scene["objects"].append(
             {
                 "object_id": object_id,
@@ -89,7 +90,6 @@ class FactoryLibraryTests(unittest.TestCase):
                 "files": {
                     "prepared": f"objects/{object_id}/prepared.png",
                     "ply": f"objects/{object_id}/model.ply",
-                    "splat": f"objects/{object_id}/model.splat",
                 },
             }
         )
@@ -114,6 +114,17 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertEqual(record["gaussians"], 1)
         self.assertTrue(record["has_preview"])
         self.assertEqual(len(self.library._read_records()), 1)
+        paths = self.library._paths(
+            record["repository"],
+            record["category"],
+            record["asset_id"],
+        )
+        with zipfile.ZipFile(paths["package"], "r") as archive:
+            self.assertFalse(
+                any(Path(name).suffix.lower() == ".splat" for name in archive.namelist())
+            )
+            manifest = json.loads(archive.read("manifest.json"))
+            self.assertNotIn("splat", manifest["payload"]["object"]["files"])
 
         result = self.library.load_asset(
             record["asset_id"],
@@ -125,6 +136,7 @@ class FactoryLibraryTests(unittest.TestCase):
         restored = self.factory.load_scene(scene["scene_id"])
         self.assertEqual(len(restored["objects"]), 2)
         imported = self.factory._object_by_id(restored, result["object_id"])
+        self.assertNotIn("splat", imported["files"])
         self.assertEqual(
             self.factory._object_file(restored["scene_id"], imported, "ply").read_bytes(),
             b"synthetic-ply",
@@ -199,6 +211,51 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertEqual(restored["lighting"]["preset"], "sunset")
         self.assertEqual(restored["layers"][0]["type"], "group")
         self.assertEqual(len(restored["layers"][0]["children"]), 1)
+
+    def test_legacy_package_splat_is_removed_during_library_migration(self):
+        scene, object_id = self.make_scene()
+        record = self.library.save_asset(
+            {
+                "scene_id": scene["scene_id"],
+                "object_id": object_id,
+                "asset_type": "object",
+                "name": "Legacy object",
+            }
+        )
+        paths = self.library._paths(
+            record["repository"],
+            record["category"],
+            record["asset_id"],
+        )
+        with zipfile.ZipFile(paths["package"], "r") as archive:
+            members = {
+                name: archive.read(name)
+                for name in archive.namelist()
+                if name != "manifest.json"
+            }
+            manifest = json.loads(archive.read("manifest.json"))
+        manifest["payload"]["object"]["files"]["splat"] = "payload/object/model.splat"
+        temporary = paths["package"].with_suffix(".legacy")
+        with zipfile.ZipFile(temporary, "w", allowZip64=True) as archive:
+            for name, data in members.items():
+                archive.writestr(name, data, compress_type=zipfile.ZIP_STORED)
+            archive.writestr(
+                "payload/object/model.splat",
+                b"\0" * 32,
+                compress_type=zipfile.ZIP_STORED,
+            )
+            archive.writestr(
+                "manifest.json",
+                json.dumps(manifest).encode(),
+                compress_type=zipfile.ZIP_STORED,
+            )
+        temporary.replace(paths["package"])
+
+        self.assertEqual(len(self.library._read_records()), 1)
+        with zipfile.ZipFile(paths["package"], "r") as archive:
+            self.assertNotIn("payload/object/model.splat", archive.namelist())
+            migrated = json.loads(archive.read("manifest.json"))
+            self.assertNotIn("splat", migrated["payload"]["object"]["files"])
 
     def test_pose_or_foreign_records_can_never_enter_factory_library(self):
         foreign_id = "a" * 24

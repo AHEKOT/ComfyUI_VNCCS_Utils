@@ -10,6 +10,9 @@ const LIBRARY_BASE = `${API_BASE}/library`;
 const GAUSSIAN_LIBRARY_SCHEMA = "vnccs-3d-factory-library/v1";
 const ENDPOINTS = Object.freeze({
     capabilities: `${API_BASE}/capabilities`,
+    splatCache: `${API_BASE}/splat-cache`,
+    splatCacheSettings: `${API_BASE}/splat-cache/settings`,
+    splatCacheClear: `${API_BASE}/splat-cache/clear`,
     weightsDownload: `${API_BASE}/weights/download`,
     scenes: `${API_BASE}/scenes`,
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
@@ -33,8 +36,8 @@ const ENDPOINTS = Object.freeze({
     libraryRepositoryProgress: taskId => `${LIBRARY_BASE}/repositories/progress/${encodeURIComponent(taskId)}`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 7;
-const FRONTEND_BUILD = "20260725.2";
+const STATE_VERSION = 8;
+const FRONTEND_BUILD = "20260725.6";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -46,6 +49,7 @@ const DEFAULT_SETTINGS = Object.freeze({
     prevent_upscale: false,
     remove_background: true,
     export_format: "ply",
+    splat_cache_limit_gb: 32,
     seed: 0,
     seed_mode: "randomize",
 });
@@ -156,7 +160,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260724.24", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260725.4", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -203,6 +207,10 @@ function formatBytes(value) {
     if (size < 1024 ** 2) return `${Math.round(size / 1024)} KB`;
     if (size < 1024 ** 3) return `${(size / 1024 ** 2).toFixed(1)} MB`;
     return `${(size / 1024 ** 3).toFixed(2)} GB`;
+}
+
+function formatCacheBytes(value) {
+    return Number(value) > 0 ? formatBytes(value) : "0 B";
 }
 
 function errorText(error, fallback = "The operation could not be completed.") {
@@ -313,6 +321,7 @@ class Factory3DWidget {
         this._resizeFrame = 0;
         this._modalCleanup = null;
         this._previousFocus = null;
+        this.skipSceneDeleteConfirmation = false;
         this.libraryItems = [];
         this.libraryQuery = "";
         this.libraryActiveCategory = "All";
@@ -377,13 +386,6 @@ class Factory3DWidget {
         root.setAttribute("aria-label", "VNCCS 3D Factory");
         root.innerHTML = `
             <aside class="vnccs-i3s__side vnccs-i3s__side--left" aria-label="Reference and generation settings">
-                <div class="vnccs-i3s__brand">
-                    <div class="vnccs-i3s__brand-mark">${ICONS.cube}</div>
-                    <div class="vnccs-i3s__brand-copy">
-                        <div class="vnccs-i3s__brand-title">VNCCS 3D Factory</div>
-                        <div class="vnccs-i3s__brand-subtitle">Image to Gaussian scene</div>
-                    </div>
-                </div>
                 <section class="vnccs-i3s__section">
                     <div class="vnccs-i3s__section-head"><span>Reference</span></div>
                     <div class="vnccs-i3s__section-body">
@@ -2540,7 +2542,7 @@ class Factory3DWidget {
         const body = element("div");
         body.append(
             element("div", "vnccs-i3s__failure-summary", `Remove “${item.name}” from this scene?`),
-            element("div", "vnccs-i3s__hint", "Its generated PLY, SPLAT, reference, and cached exports will be deleted from the Factory scene."),
+            element("div", "vnccs-i3s__hint", "Its generated PLY, reference, and scene-specific exports will be deleted from the Factory scene."),
         );
         const cancel = button("vnccs-i3s__button", "Cancel");
         const remove = button("vnccs-i3s__button vnccs-i3s__button--danger", "Remove", "trash");
@@ -2596,13 +2598,125 @@ class Factory3DWidget {
                         this._showError("Scene could not be opened", error);
                     }
                 });
-                card.append(copy, open);
+                const remove = button(
+                    "vnccs-i3s__button vnccs-i3s__button--danger vnccs-i3s__icon-button",
+                    "",
+                    "trash",
+                );
+                remove.title = `Delete ${scene.name}`;
+                remove.setAttribute("aria-label", `Delete ${scene.name}`);
+                remove.addEventListener("click", () => {
+                    if (this.skipSceneDeleteConfirmation) {
+                        void this.deleteScene(scene, remove);
+                    } else {
+                        this.confirmDeleteScene(scene);
+                    }
+                });
+                const actions = element("div", "vnccs-i3s__scene-card-actions");
+                actions.append(open, remove);
+                card.append(copy, actions);
                 cards.appendChild(card);
             }
             if (!cards.children.length) cards.appendChild(element("div", "vnccs-i3s__tree-empty", "No saved scenes."));
         } catch (error) {
             cards.replaceChildren(element("div", "vnccs-i3s__tree-empty", errorText(error)));
         }
+    }
+
+    confirmDeleteScene(scene) {
+        if (!scene?.scene_id) return;
+        const body = element("div", "vnccs-i3s__delete-confirm");
+        body.append(
+            element(
+                "div",
+                "vnccs-i3s__failure-summary",
+                `Permanently delete “${scene.name || "Untitled scene"}”?`,
+            ),
+            element(
+                "div",
+                "vnccs-i3s__hint",
+                `${scene.object_count || 0} objects and all scene-specific references and exports will be deleted.`,
+            ),
+        );
+        const option = element("label", "vnccs-i3s__delete-confirm-option");
+        const skip = element("input");
+        skip.type = "checkbox";
+        option.append(
+            skip,
+            element("span", "", "Don’t ask again for scene deletions during this session"),
+        );
+        body.appendChild(option);
+        const cancel = button("vnccs-i3s__button", "Cancel");
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--danger",
+            "Delete scene",
+            "trash",
+        );
+        cancel.addEventListener("click", () => void this.openSceneManager());
+        remove.addEventListener("click", async () => {
+            remove.disabled = true;
+            this.skipSceneDeleteConfirmation = skip.checked;
+            await this.deleteScene(scene, remove);
+        });
+        this.openModal({
+            title: "Delete scene",
+            body,
+            actions: [cancel, remove],
+            initialFocus: cancel,
+        });
+    }
+
+    async deleteScene(scene, control = null) {
+        const sceneId = String(scene?.scene_id || "");
+        if (!sceneId) return;
+        if (control) control.disabled = true;
+        const deletingCurrent = sceneId === this.sceneId;
+        try {
+            if (deletingCurrent) {
+                clearTimeout(this._sceneSaveTimer);
+                clearTimeout(this._previewSaveTimer);
+                this._sceneSaveTimer = 0;
+                this._previewSaveTimer = 0;
+                await Promise.all([this._sceneSaveSerial, this._previewSaveSerial]);
+            }
+            await this._fetchJSON(ENDPOINTS.scene(sceneId), { method: "DELETE" });
+        } catch (error) {
+            if (control?.isConnected) control.disabled = false;
+            this._showError("Scene deletion failed", error);
+            return;
+        }
+
+        this.toast(`Scene “${scene?.name || "Untitled scene"}” deleted.`, "success");
+        if (deletingCurrent) {
+            clearTimeout(this._saveTimer);
+            this._saveTimer = 0;
+            this.sceneId = "";
+            this.scene = null;
+            this.selectedObjectId = "";
+            this.selectedObjectIds.clear();
+            this.selectedGroupId = "";
+            this.collapsedGroupIds.clear();
+            try {
+                const data = await this._fetchJSON(ENDPOINTS.scenes);
+                const nextScene = data.scenes?.[0];
+                if (nextScene?.scene_id) {
+                    await this.loadScene(nextScene.scene_id);
+                } else {
+                    await this.createScene("Untitled scene");
+                }
+            } catch (error) {
+                await this.viewer.setScene({ objects: [], lighting: this.lighting });
+                this._restoreSourceAsset(null);
+                this.els.sceneName.value = "Untitled scene";
+                this.els.sceneId.textContent = "";
+                this._updateSceneSummary();
+                this._renderObjects();
+                this.syncToNode();
+                this._showError("Scene deleted, but a replacement scene could not be opened", error);
+                return;
+            }
+        }
+        await this.openSceneManager();
     }
 
     _libraryItemQuery(item) {
@@ -3558,6 +3672,15 @@ class Factory3DWidget {
             draftSettings?.export_format ?? this.settings.export_format ?? "ply",
         ).toLowerCase();
         if (!["ply", "splat", "glb"].includes(exportFormat)) exportFormat = "ply";
+        let cacheStatus = safeObject(capabilities?.splat_cache);
+        let cacheLimitGB = Math.round(clamp(
+            draftSettings?.splat_cache_limit_gb
+                ?? cacheStatus.limit_gb
+                ?? this.settings.splat_cache_limit_gb
+                ?? 32,
+            1,
+            1024,
+        ));
         const body = element("div", "vnccs-i3s__setup-grid");
 
         const models = element("section", "vnccs-i3s__setup-block vnccs-i3s__setup-block--models");
@@ -3701,6 +3824,115 @@ class Factory3DWidget {
             choice.append(input, element("span", "vnccs-i3s__resolution-radio"), copy);
             exportList.appendChild(choice);
         }
+
+        const cache = element(
+            "section",
+            "vnccs-i3s__setup-block vnccs-i3s__setup-block--cache",
+        );
+        const cacheHead = element("div", "vnccs-i3s__setup-head");
+        const cacheTitle = element("div");
+        cacheTitle.append(
+            element("div", "vnccs-i3s__setup-title", "SPLAT cache"),
+            element(
+                "div",
+                "vnccs-i3s__setup-subtitle",
+                "Realtime derivatives shared by identical PLY models.",
+            ),
+        );
+        const clearCache = button(
+            "vnccs-i3s__button vnccs-i3s__button--danger vnccs-i3s__setup-action",
+            "Clear cache",
+            "trash",
+        );
+        cacheHead.append(cacheTitle, clearCache);
+
+        const cacheStats = element("div", "vnccs-i3s__cache-stats");
+        const usedValue = element("strong", "", "0 B");
+        const filesValue = element("strong", "", "0");
+        const freeValue = element("strong", "", "—");
+        for (const [label, value] of [
+            ["Used", usedValue],
+            ["Cached files", filesValue],
+            ["Disk available", freeValue],
+        ]) {
+            const metric = element("div", "vnccs-i3s__cache-stat");
+            metric.append(
+                element("span", "", label),
+                value,
+            );
+            cacheStats.appendChild(metric);
+        }
+
+        const cacheUsage = element("div", "vnccs-i3s__cache-usage");
+        const cacheUsageBar = element("span", "vnccs-i3s__cache-usage-bar");
+        cacheUsage.appendChild(cacheUsageBar);
+
+        const cacheLimitLabel = element("div", "vnccs-i3s__label");
+        cacheLimitLabel.append(
+            element("span", "", "Cache limit"),
+            element("span", "vnccs-i3s__cache-limit-caption", `${cacheLimitGB} GiB`),
+        );
+        const cacheLimitControls = element("div", "vnccs-i3s__cache-limit-controls");
+        const cacheLimitRange = element("input", "vnccs-i3s__range");
+        cacheLimitRange.type = "range";
+        cacheLimitRange.min = "1";
+        cacheLimitRange.max = "1024";
+        cacheLimitRange.step = "1";
+        cacheLimitRange.value = String(cacheLimitGB);
+        cacheLimitRange.setAttribute("aria-label", "SPLAT cache limit in GiB");
+        const cacheLimitInput = element("input", "vnccs-i3s__input");
+        cacheLimitInput.type = "number";
+        cacheLimitInput.min = "1";
+        cacheLimitInput.max = "1024";
+        cacheLimitInput.step = "1";
+        cacheLimitInput.value = String(cacheLimitGB);
+        cacheLimitControls.append(
+            cacheLimitRange,
+            cacheLimitInput,
+            element("span", "vnccs-i3s__cache-unit", "GiB"),
+        );
+        const cacheHint = element(
+            "div",
+            "vnccs-i3s__cache-hint",
+            "The cache is rebuilt from PLY when needed. Clearing it never removes models or scenes.",
+        );
+
+        const updateCacheStatus = value => {
+            cacheStatus = safeObject(value);
+            const used = Math.max(0, Number(cacheStatus.used_bytes) || 0);
+            const limit = Math.max(1, Number(cacheStatus.limit_bytes) || cacheLimitGB * 1024 ** 3);
+            usedValue.textContent = formatCacheBytes(used);
+            filesValue.textContent = String(Math.max(0, Number(cacheStatus.file_count) || 0));
+            freeValue.textContent = Number(cacheStatus.disk_free_bytes) > 0
+                ? formatCacheBytes(cacheStatus.disk_free_bytes)
+                : "—";
+            cacheUsageBar.style.width = `${clamp(used / limit * 100, 0, 100)}%`;
+            cacheUsage.title = `${formatCacheBytes(used)} of ${formatCacheBytes(limit)}`;
+        };
+        const syncCacheLimit = (value, source) => {
+            cacheLimitGB = Math.round(clamp(value, 1, 1024));
+            cacheLimitRange.value = String(cacheLimitGB);
+            cacheLimitInput.value = String(cacheLimitGB);
+            cacheLimitLabel.querySelector(".vnccs-i3s__cache-limit-caption").textContent =
+                `${cacheLimitGB} GiB`;
+            if (source === cacheLimitInput) cacheLimitInput.value = String(cacheLimitGB);
+        };
+        cacheLimitRange.addEventListener("input", () => {
+            syncCacheLimit(cacheLimitRange.value, cacheLimitRange);
+        });
+        cacheLimitInput.addEventListener("change", () => {
+            syncCacheLimit(cacheLimitInput.value, cacheLimitInput);
+        });
+        cache.append(
+            cacheHead,
+            cacheStats,
+            cacheUsage,
+            cacheLimitLabel,
+            cacheLimitControls,
+            cacheHint,
+        );
+        updateCacheStatus(cacheStatus);
+
         const selectedResolution = () => Number(
             resolutionList.querySelector("input:checked")?.value || 1024,
         );
@@ -3710,6 +3942,7 @@ class Factory3DWidget {
             export_format: String(
                 exportList.querySelector("input:checked")?.value || "ply",
             ),
+            splat_cache_limit_gb: cacheLimitGB,
         });
         const updateSummary = () => {
             const requested = selectedResolution();
@@ -3748,7 +3981,7 @@ class Factory3DWidget {
             exportLabel,
             exportList,
         );
-        body.append(models, inference);
+        body.append(models, inference, cache);
 
         const close = button("vnccs-i3s__button", "Close");
         const apply = button(
@@ -3757,20 +3990,64 @@ class Factory3DWidget {
             "check",
         );
         close.addEventListener("click", () => this.closeModal());
-        apply.addEventListener("click", () => {
+        clearCache.addEventListener("click", async () => {
+            clearCache.disabled = true;
+            const label = clearCache.querySelector("span:last-child");
+            if (label) label.textContent = "Clearing…";
+            try {
+                const result = await this._fetchJSON(
+                    ENDPOINTS.splatCacheClear,
+                    { method: "POST" },
+                );
+                updateCacheStatus(result);
+                if (this.capabilities) this.capabilities.splat_cache = result;
+                this.toast(
+                    `SPLAT cache cleared · ${Number(result.deleted_files) || 0} files removed.`,
+                    "success",
+                );
+            } catch (error) {
+                this._showError("SPLAT cache cleanup failed", error);
+            } finally {
+                clearCache.disabled = false;
+                if (label) label.textContent = "Clear cache";
+            }
+        });
+        apply.addEventListener("click", async () => {
             const draft = currentDraft();
-            this.settings.conditioning_resolution = draft.conditioning_resolution;
-            this.settings.prevent_upscale = draft.prevent_upscale;
-            this.settings.export_format = draft.export_format;
-            this._syncTripoSummary();
-            this._syncSettings();
-            this._renderObjects();
-            this._scheduleStateSave(0);
-            this.closeModal();
-            this.toast(
-                `TripoSplat settings applied · ${draft.export_format.toUpperCase()} export.`,
-                "success",
-            );
+            apply.disabled = true;
+            close.disabled = true;
+            clearCache.disabled = true;
+            try {
+                const cacheResult = await this._fetchJSON(
+                    ENDPOINTS.splatCacheSettings,
+                    {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            limit_gb: draft.splat_cache_limit_gb,
+                        }),
+                    },
+                );
+                if (this.capabilities) this.capabilities.splat_cache = cacheResult;
+                this.settings.conditioning_resolution = draft.conditioning_resolution;
+                this.settings.prevent_upscale = draft.prevent_upscale;
+                this.settings.export_format = draft.export_format;
+                this.settings.splat_cache_limit_gb = draft.splat_cache_limit_gb;
+                this._syncTripoSummary();
+                this._syncSettings();
+                this._renderObjects();
+                this._scheduleStateSave(0);
+                this.closeModal();
+                this.toast(
+                    `TripoSplat settings applied · ${draft.export_format.toUpperCase()} export · ${draft.splat_cache_limit_gb} GiB cache.`,
+                    "success",
+                );
+            } catch (error) {
+                apply.disabled = false;
+                close.disabled = false;
+                clearCache.disabled = false;
+                this._showError("TripoSplat settings failed", error);
+            }
         });
         modelAction.addEventListener("click", async () => {
             if (weights.ready) {
@@ -4046,6 +4323,11 @@ class Factory3DWidget {
             )
                 ? String(this.settings.export_format).toLowerCase()
                 : "ply";
+            this.settings.splat_cache_limit_gb = Math.round(clamp(
+                this.settings.splat_cache_limit_gb,
+                1,
+                1024,
+            ));
             this.exportSettings = this._normalizeExportSettings(
                 state.render_settings || safeObject(state.scene_snapshot).render,
             );
@@ -4327,18 +4609,33 @@ function hideFactoryDataWidget(node) {
 
 function syncDOMWidgetWidth(node) {
     const widget = node?.widgets?.find(item => item.name === "factory_ui");
-    if (!widget || widget._vnccsFactoryWidthBound) return;
-    try {
-        Object.defineProperty(widget, "width", {
-            configurable: true,
-            get() {
-                const width = Number(this._node?.size?.[0] ?? node?.size?.[0]);
-                return Number.isFinite(width) && width > 0 ? width : undefined;
-            },
-            set() {},
-        });
-        widget._vnccsFactoryWidthBound = true;
-    } catch (_) {}
+    const nodeWidth = Number(node?.size?.[0]);
+    if (!widget || !Number.isFinite(nodeWidth) || nodeWidth <= 0) return;
+    if (!widget._vnccsFactoryWidthBound) {
+        try {
+            Object.defineProperty(widget, "width", {
+                configurable: true,
+                get() {
+                    const width = Number(this._node?.size?.[0] ?? node?.size?.[0]);
+                    return Number.isFinite(width) && width > 0 ? width : undefined;
+                },
+                set() {
+                    // ComfyUI may restore a stale width from an older layout.
+                    // Keep the DOM widget tied to the live LiteGraph node.
+                },
+            });
+            widget._vnccsFactoryWidthBound = true;
+        } catch (_) {}
+    }
+    widget.triggerDraw?.();
+}
+
+function scheduleDOMWidgetWidth(node) {
+    if (!node || node._vnccsFactoryWidthFrame) return;
+    node._vnccsFactoryWidthFrame = requestAnimationFrame(() => {
+        node._vnccsFactoryWidthFrame = 0;
+        syncDOMWidgetWidth(node);
+    });
 }
 
 
@@ -4367,21 +4664,25 @@ app.registerExtension({
                 { serialize: false, hideOnZoom: false },
             );
             syncDOMWidgetWidth(this);
+            requestAnimationFrame(() => syncDOMWidgetWidth(this));
             this._vnccsFactoryInit = setTimeout(() => {
                 this._vnccsFactoryInit = 0;
                 if (this._vnccsFactoryConfigured) return;
                 hideFactoryDataWidget(this);
-                void factory.restoreFromNode().finally(() => factory.resize());
+                void factory.restoreFromNode().finally(() => this.onResize?.(this.size));
             }, 400);
         };
         nodeType.prototype.onResize = function () {
             originalResize?.apply(this, arguments);
             if (!this.vnccs3DFactory) return;
-            cancelAnimationFrame(this._vnccsFactoryResize);
-            this._vnccsFactoryResize = requestAnimationFrame(() => {
+            // Match Pose Studio: let the DOM widget fill its wrapper and ask
+            // ComfyUI to redraw that wrapper at most once per display frame.
+            scheduleDOMWidgetWidth(this);
+            clearTimeout(this._vnccsFactoryResizeTimer);
+            this._vnccsFactoryResizeTimer = setTimeout(() => {
                 syncDOMWidgetWidth(this);
                 this.vnccs3DFactory?.resize();
-            });
+            }, 50);
         };
         nodeType.prototype.onConfigure = function () {
             this._vnccsFactoryConfigured = true;
@@ -4389,11 +4690,12 @@ app.registerExtension({
             this._vnccsFactoryInit = 0;
             originalConfigure?.apply(this, arguments);
             hideFactoryDataWidget(this);
+            syncDOMWidgetWidth(this);
             clearTimeout(this._vnccsFactoryConfigure);
             this._vnccsFactoryConfigure = setTimeout(() => {
                 this._vnccsFactoryConfigure = 0;
                 hideFactoryDataWidget(this);
-                void this.vnccs3DFactory?.restoreFromNode().finally(() => this.vnccs3DFactory?.resize());
+                void this.vnccs3DFactory?.restoreFromNode().finally(() => this.onResize?.(this.size));
             }, 40);
         };
         nodeType.prototype.onSerialize = function () {
@@ -4403,7 +4705,11 @@ app.registerExtension({
         nodeType.prototype.onRemoved = function () {
             clearTimeout(this._vnccsFactoryInit);
             clearTimeout(this._vnccsFactoryConfigure);
-            cancelAnimationFrame(this._vnccsFactoryResize);
+            clearTimeout(this._vnccsFactoryResizeTimer);
+            if (this._vnccsFactoryWidthFrame) {
+                cancelAnimationFrame(this._vnccsFactoryWidthFrame);
+                this._vnccsFactoryWidthFrame = 0;
+            }
             this.vnccs3DFactory?.dispose();
             this.vnccs3DFactory = null;
             this.vnccs3DFactoryDOMWidget = null;

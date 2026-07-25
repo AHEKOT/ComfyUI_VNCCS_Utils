@@ -24,6 +24,7 @@ from .gaussian_scene import (
     export_gaussian_scene,
     inspect_ply,
     normalize_transform,
+    ply_to_splat,
     validate_ply_payload,
     validate_splat_payload,
 )
@@ -32,8 +33,8 @@ from .gaussian_mesh import export_gaussian_ply_glb
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 4
-EXPORT_FORMAT_VERSION = 5
+SCHEMA_VERSION = 5
+EXPORT_FORMAT_VERSION = 6
 GLB_FORMAT_VERSION = 3
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
@@ -43,6 +44,9 @@ MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_SCENE_JSON_BYTES = 2 * 1024 * 1024
 MAX_JOB_LOG_LINES = 800
 MAX_ACTIVE_JOBS = 2
+DEFAULT_SPLAT_CACHE_LIMIT_GB = 32
+MIN_SPLAT_CACHE_LIMIT_GB = 1
+MAX_SPLAT_CACHE_LIMIT_GB = 1024
 GAUSSIAN_COUNTS = (32768, 65536, 131072, 262144, 524288, 1048576)
 EXPERIMENTAL_GAUSSIAN_COUNTS = (524288, 1048576)
 CONDITIONING_RESOLUTIONS = (1024, 1536, 2048)
@@ -81,6 +85,8 @@ _WEIGHT_FILES = (
 
 _STATE_LOCK = threading.RLock()
 _INFERENCE_LOCK = threading.Lock()
+_SPLAT_CACHE_LOCK = threading.RLock()
+_PLY_HASH_CACHE: dict[tuple[int, int, int, int], str] = {}
 _PIPELINE: Any = None
 _PIPELINE_SIGNATURE: tuple[Any, ...] | None = None
 _JOBS: dict[str, dict[str, Any]] = {}
@@ -118,6 +124,31 @@ def _model_root() -> Path:
         return Path(folder_paths.models_dir).resolve()
     except Exception:
         return Path.cwd().resolve() / "models"
+
+
+def _splat_cache_root() -> Path:
+    """Return the disposable, content-addressed viewport/export SPLAT cache."""
+    root = (_factory_root() / "cache" / "splats").resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _splat_cache_settings_path() -> Path:
+    return _splat_cache_root().parent / "settings.json"
+
+
+def _splat_cache_limit_gb() -> int:
+    path = _splat_cache_settings_path()
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        limit = int(value.get("limit_gb", DEFAULT_SPLAT_CACHE_LIMIT_GB))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+        limit = DEFAULT_SPLAT_CACHE_LIMIT_GB
+    return max(MIN_SPLAT_CACHE_LIMIT_GB, min(MAX_SPLAT_CACHE_LIMIT_GB, limit))
+
+
+def _splat_cache_limit_bytes() -> int:
+    return _splat_cache_limit_gb() * 1024**3
 
 
 def _category_roots(category: str) -> list[Path]:
@@ -402,6 +433,85 @@ def _atomic_json(path: Path, value: Any) -> None:
             pass
 
 
+def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
+    """Adopt legacy per-object SPLAT files into the shared cache once."""
+    if int(scene.get("schema_version", 0) or 0) >= SCHEMA_VERSION:
+        return
+    scene_root = path.parent.resolve()
+    changed = True
+    for item in scene.get("objects", []):
+        if not isinstance(item, dict):
+            continue
+        files = item.get("files")
+        if not isinstance(files, dict):
+            continue
+        ply_relative = files.get("ply")
+        splat_relative = files.get("splat")
+        if not isinstance(ply_relative, str) or not isinstance(splat_relative, str):
+            continue
+        ply_path = (scene_root / ply_relative).resolve()
+        splat_path = (scene_root / splat_relative).resolve()
+        if (
+            scene_root not in ply_path.parents
+            or scene_root not in splat_path.parents
+            or not ply_path.is_file()
+        ):
+            continue
+        if splat_path.is_file():
+            try:
+                digest = _verified_ply_sha256(
+                    ply_path,
+                    str(item.get("checksums", {}).get("ply_sha256") or ""),
+                )
+                info = inspect_ply(ply_path)
+                cache_path = _splat_cache_root() / f"v1-{digest}.splat"
+                with _SPLAT_CACHE_LOCK:
+                    if (
+                        splat_path.stat().st_size == info.vertex_count * 32
+                        and not cache_path.is_file()
+                    ):
+                        os.replace(splat_path, cache_path)
+                    else:
+                        splat_path.unlink(missing_ok=True)
+            except Exception:
+                LOGGER.warning(
+                    "Could not adopt legacy object SPLAT %s; it will be "
+                    "regenerated from PLY when requested",
+                    splat_path,
+                    exc_info=True,
+                )
+                try:
+                    splat_path.unlink()
+                except OSError:
+                    pass
+        files.pop("splat", None)
+        checksums = item.get("checksums")
+        if isinstance(checksums, dict):
+            checksums.pop("splat_sha256", None)
+        validation = item.get("validation")
+        if isinstance(validation, dict):
+            validation.pop("splat", None)
+        changed = True
+
+    # Scene and object export SPLATs are also reproducible from their PLY
+    # counterparts. They must not survive as permanent per-scene duplicates.
+    for splat_path in scene_root.rglob("*.splat"):
+        try:
+            splat_path.unlink()
+            changed = True
+        except OSError:
+            LOGGER.debug("Could not remove legacy export SPLAT %s", splat_path, exc_info=True)
+    exports = scene.get("exports")
+    if isinstance(exports, dict) and isinstance(exports.get("files"), dict):
+        if exports["files"].pop("splat", None) is not None:
+            changed = True
+
+    scene["schema_version"] = SCHEMA_VERSION
+    if changed:
+        _atomic_json(path, scene)
+        _prune_splat_cache()
+
+
 def load_scene(scene_id: str) -> dict[str, Any]:
     path = _scene_path(scene_id)
     if not path.is_file():
@@ -411,6 +521,7 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("scene_id") != scene_id:
         raise ValueError("scene metadata is invalid")
+    _migrate_scene_to_ply_only(path, value)
     if not isinstance(value.get("objects"), list):
         value["objects"] = []
     value["layers"] = _normalize_scene_layers(value)
@@ -492,6 +603,30 @@ def list_scenes(limit: int = 100) -> list[dict[str, Any]]:
     return entries[: max(1, min(500, int(limit)))]
 
 
+def delete_scene(scene_id: str) -> dict[str, Any]:
+    safe_id = _validate_id(scene_id, "scene id")
+    with _STATE_LOCK:
+        # Load the manifest before removing anything so missing or malformed
+        # scenes fail without touching the filesystem.
+        load_scene(safe_id)
+        active_job = next(
+            (
+                job
+                for job in _JOBS.values()
+                if job.get("scene_id") == safe_id
+                and job.get("status") in {"queued", "running"}
+            ),
+            None,
+        )
+        if active_job is not None:
+            raise RuntimeError(
+                "Scene cannot be deleted while its generation job is active"
+            )
+        target = resolve_scene_dir(safe_id)
+        shutil.rmtree(target)
+    return {"scene_id": safe_id, "deleted": True}
+
+
 def _object_by_id(scene: dict[str, Any], object_id: str) -> dict[str, Any]:
     safe_id = _validate_id(object_id, "object id")
     for item in scene.get("objects", []):
@@ -525,7 +660,6 @@ def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
         "reference": "reference.png",
         "prepared": "prepared.png",
         "ply": "model.ply",
-        "splat": "model.splat",
     }
     try:
         with _STATE_LOCK:
@@ -537,7 +671,7 @@ def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
                 try:
                     source = _object_file(safe_scene_id, source_item, key)
                 except FileNotFoundError:
-                    if key in {"ply", "splat"}:
+                    if key == "ply":
                         raise
                     continue
                 target = duplicate_root / file_name
@@ -871,6 +1005,7 @@ def capabilities() -> dict[str, Any]:
         "torch_version": torch_version,
         "runtime_error": error,
         "weights": _weights_status(),
+        "splat_cache": splat_cache_status(),
     }
 
 
@@ -1229,6 +1364,200 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _ply_file_identity(path: Path) -> tuple[int, int, int, int]:
+    stat = path.stat()
+    return (
+        int(getattr(stat, "st_dev", 0)),
+        int(getattr(stat, "st_ino", 0)),
+        int(stat.st_size),
+        int(stat.st_mtime_ns),
+    )
+
+
+def _remember_ply_sha256(path: Path, digest: str) -> None:
+    key = _ply_file_identity(path)
+    with _SPLAT_CACHE_LOCK:
+        if len(_PLY_HASH_CACHE) >= 4096:
+            _PLY_HASH_CACHE.clear()
+        _PLY_HASH_CACHE[key] = digest
+
+
+def _verified_ply_sha256(path: Path, claimed: str = "") -> str:
+    """Hash a PLY once per immutable file identity and reject stale metadata."""
+    key = _ply_file_identity(path)
+    with _SPLAT_CACHE_LOCK:
+        digest = _PLY_HASH_CACHE.get(key)
+    if digest is None:
+        digest = _sha256_file(path)
+        _remember_ply_sha256(path, digest)
+    expected = str(claimed or "").lower()
+    if re.fullmatch(r"[a-f0-9]{64}", expected) and expected != digest:
+        LOGGER.warning(
+            "Ignoring stale PLY checksum metadata for %s: expected %s, actual %s",
+            path,
+            expected[:16],
+            digest[:16],
+        )
+    return digest
+
+
+def _prune_splat_cache(*, keep: Path | None = None) -> None:
+    """Evict least-recently-used derived SPLAT files above the cache budget."""
+    root = _splat_cache_root()
+    entries: list[tuple[float, int, Path]] = []
+    total = 0
+    for path in root.glob("v1-*.splat"):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        total += stat.st_size
+        entries.append((stat.st_mtime, stat.st_size, path))
+    limit = _splat_cache_limit_bytes()
+    for _mtime, size, path in sorted(entries):
+        if total <= limit:
+            break
+        if keep is not None and path == keep:
+            continue
+        try:
+            path.unlink()
+            total -= size
+        except OSError:
+            LOGGER.debug("Could not evict cached SPLAT %s", path, exc_info=True)
+
+
+def splat_cache_status() -> dict[str, Any]:
+    root = _splat_cache_root()
+    files = 0
+    used_bytes = 0
+    with _SPLAT_CACHE_LOCK:
+        for path in root.glob("v1-*.splat"):
+            try:
+                used_bytes += path.stat().st_size
+                files += 1
+            except OSError:
+                continue
+    limit_gb = _splat_cache_limit_gb()
+    limit_bytes = limit_gb * 1024**3
+    try:
+        disk_free_bytes = shutil.disk_usage(root).free
+    except OSError:
+        disk_free_bytes = 0
+    return {
+        "limit_gb": limit_gb,
+        "limit_bytes": limit_bytes,
+        "used_bytes": used_bytes,
+        "file_count": files,
+        "usage_ratio": used_bytes / limit_bytes if limit_bytes else 0.0,
+        "disk_free_bytes": disk_free_bytes,
+    }
+
+
+def configure_splat_cache(limit_gb: Any) -> dict[str, Any]:
+    try:
+        value = int(limit_gb)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("SPLAT cache limit must be an integer number of GiB") from exc
+    if not MIN_SPLAT_CACHE_LIMIT_GB <= value <= MAX_SPLAT_CACHE_LIMIT_GB:
+        raise ValueError(
+            f"SPLAT cache limit must be between "
+            f"{MIN_SPLAT_CACHE_LIMIT_GB} and {MAX_SPLAT_CACHE_LIMIT_GB} GiB"
+        )
+    _atomic_json(
+        _splat_cache_settings_path(),
+        {
+            "schema": "vnccs-3d-factory-splat-cache/v1",
+            "limit_gb": value,
+            "updated_at": _now(),
+        },
+    )
+    with _SPLAT_CACHE_LOCK:
+        _prune_splat_cache()
+    return splat_cache_status()
+
+
+def clear_splat_cache() -> dict[str, Any]:
+    deleted_files = 0
+    deleted_bytes = 0
+    failed_files = 0
+    with _SPLAT_CACHE_LOCK:
+        for path in _splat_cache_root().glob("v1-*.splat"):
+            try:
+                size = path.stat().st_size
+                path.unlink()
+                deleted_files += 1
+                deleted_bytes += size
+            except OSError:
+                failed_files += 1
+                LOGGER.warning("Could not clear cached SPLAT %s", path, exc_info=True)
+    return {
+        **splat_cache_status(),
+        "deleted_files": deleted_files,
+        "deleted_bytes": deleted_bytes,
+        "failed_files": failed_files,
+    }
+
+
+def _ensure_cached_splat(
+    ply_path: str | os.PathLike[str],
+    *,
+    ply_sha256: str = "",
+) -> Path:
+    """Materialize a validated compact SPLAT derived from an immutable PLY."""
+    source = Path(ply_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(source)
+    digest = _verified_ply_sha256(source, str(ply_sha256 or ""))
+    info = inspect_ply(source)
+    expected_bytes = info.vertex_count * 32
+    target = _splat_cache_root() / f"v1-{digest}.splat"
+    with _SPLAT_CACHE_LOCK:
+        try:
+            valid_cached_file = (
+                target.is_file()
+                and target.stat().st_size == expected_bytes
+            )
+        except OSError:
+            valid_cached_file = False
+        if not valid_cached_file:
+            target.unlink(missing_ok=True)
+            started = time.monotonic()
+            LOGGER.info(
+                "Building derived SPLAT cache for %s (%s Gaussians, sha256=%s)",
+                source,
+                f"{info.vertex_count:,}",
+                digest[:16],
+            )
+            ply_to_splat(source, target)
+            validation = validate_splat_payload(
+                target,
+                expected_gaussians=info.vertex_count,
+            )
+            LOGGER.info(
+                "Derived SPLAT cache ready: %s (%s bytes, %s invalid values, %.2fs)",
+                target,
+                f"{target.stat().st_size:,}",
+                f"{validation['invalid_values']:,}",
+                time.monotonic() - started,
+            )
+            _prune_splat_cache(keep=target)
+        else:
+            try:
+                os.utime(target, None)
+            except OSError:
+                pass
+    return target
+
+
+def _ensure_object_splat(scene_id: str, object_id: str) -> Path:
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        item = _object_by_id(scene, object_id)
+        source = _object_file(scene_id, item, "ply")
+        checksum = str(item.get("checksums", {}).get("ply_sha256") or "")
+    return _ensure_cached_splat(source, ply_sha256=checksum)
+
+
 def _generate_object(
     job: dict[str, Any],
     image_bytes: bytes,
@@ -1441,7 +1770,6 @@ def _generate_object(
             _check_cancel(job)
 
             ply_path = object_root / "model.ply"
-            splat_path = object_root / "model.splat"
             _emit(job, "serialize", 92, "Writing Gaussian PLY", detail=f"{gaussian_count:,} splats")
 
             def ply_callback(completed: int, total: int) -> None:
@@ -1468,10 +1796,11 @@ def _generate_object(
                 )
             ply_validation = validate_ply_payload(ply_path)
             ply_hash = _sha256_file(ply_path)
+            _remember_ply_sha256(ply_path, ply_hash)
             _emit(
                 job,
                 "validate",
-                94,
+                96,
                 "Validated Gaussian PLY",
                 detail=(
                     f"{ply_info.vertex_count:,} splats · {ply_path.stat().st_size:,} bytes · "
@@ -1481,46 +1810,12 @@ def _generate_object(
                     f"sha256={ply_hash[:16]}"
                 ),
             )
-            _emit(job, "serialize", 96, "Writing compact SPLAT", detail=f"{gaussian_count:,} splats")
-
-            def splat_callback(completed: int, total: int) -> None:
-                _check_cancel(job)
-                _emit(
-                    job,
-                    "serialize",
-                    96.0 + (float(completed) / max(1, total)),
-                    "Writing compact SPLAT",
-                    detail=f"{completed:,}/{total:,} splats",
-                )
-
-            gaussian.save_splat(
-                splat_path,
-                callback=splat_callback,
-                _validated_report=gaussian_report,
-            )
-            expected_splat_bytes = gaussian_count * 32
-            if splat_path.stat().st_size != expected_splat_bytes:
-                raise RuntimeError(
-                    f"serialized SPLAT is {splat_path.stat().st_size:,} bytes; "
-                    f"expected {expected_splat_bytes:,}"
-                )
-            splat_validation = validate_splat_payload(
-                splat_path,
-                expected_gaussians=gaussian_count,
-            )
-            splat_hash = _sha256_file(splat_path)
             _emit(
                 job,
-                "validate",
+                "cache",
                 97,
-                "Validated compact SPLAT",
-                detail=(
-                    f"{gaussian_count:,} splats · {expected_splat_bytes:,} bytes · "
-                    f"{splat_validation['invalid_values']} invalid values · "
-                    f"{splat_validation['invalid_scales']} invalid scales · "
-                    f"{splat_validation['invalid_rotations']} invalid rotations · "
-                    f"sha256={splat_hash[:16]}"
-                ),
+                "PLY committed as the source asset",
+                detail="Compact SPLAT will be generated once in the shared cache when requested",
             )
             del gaussian, latent
 
@@ -1534,7 +1829,6 @@ def _generate_object(
             "seed": seed,
             "checksums": {
                 "ply_sha256": ply_hash,
-                "splat_sha256": splat_hash,
             },
             "validation": {
                 "tensor_ranges": gaussian_report["ranges"],
@@ -1542,11 +1836,6 @@ def _generate_object(
                     "invalid_values": ply_validation["invalid_values"],
                     "invalid_scales": ply_validation["invalid_scales"],
                     "invalid_quaternions": ply_validation["invalid_quaternions"],
-                },
-                "splat": {
-                    "invalid_values": splat_validation["invalid_values"],
-                    "invalid_scales": splat_validation["invalid_scales"],
-                    "invalid_rotations": splat_validation["invalid_rotations"],
                 },
             },
             "settings": {
@@ -1562,7 +1851,6 @@ def _generate_object(
                 "reference": str(relative_root / "reference.png"),
                 "prepared": str(relative_root / "prepared.png"),
                 "ply": str(relative_root / "model.ply"),
-                "splat": str(relative_root / "model.splat"),
             },
         }
         _emit(job, "scene", 98, "Adding object to scene", detail=object_name)
@@ -1793,11 +2081,14 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
             ):
                 try:
                     ply = _object_file(scene_id, {"files": existing["files"]}, "ply")
-                    splat = _object_file(scene_id, {"files": existing["files"]}, "splat")
                     camera_manifest = _object_file(
                         scene_id,
                         {"files": existing["files"]},
                         "camera",
+                    )
+                    splat = _ensure_cached_splat(
+                        ply,
+                        ply_sha256=str(existing.get("ply_sha256") or ""),
                     )
                     result = {
                         "scene": scene,
@@ -1825,32 +2116,33 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
             f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}-rr{render_revision}"
         )
         ply = export_root / f"{export_stem}.ply"
-        splat = export_root / f"{export_stem}.splat"
         camera_manifest = export_root / f"{export_stem}.camera.json"
         result = export_gaussian_scene(
             sources,
             ply,
-            splat,
             metadata=camera_metadata,
         )
+        ply_sha256 = _sha256_file(ply)
+        _remember_ply_sha256(ply, ply_sha256)
+        splat = _ensure_cached_splat(ply, ply_sha256=ply_sha256)
         camera_manifest_value = {
             **camera_metadata,
             "assets": {
                 "ply": {
                     "file": ply.name,
-                    "sha256": _sha256_file(ply),
+                    "sha256": ply_sha256,
                     "gaussians": result["ply"]["gaussians"],
                 },
                 "splat": {
-                    "file": splat.name,
+                    "cache_file": splat.name,
                     "sha256": _sha256_file(splat),
-                    "gaussians": result["splat"]["gaussians"],
+                    "gaussians": result["ply"]["gaussians"],
+                    "derived_from": ply_sha256,
                 },
             },
         }
         _atomic_json(camera_manifest, camera_manifest_value)
         relative_ply = str(ply.relative_to(resolve_scene_dir(scene_id)))
-        relative_splat = str(splat.relative_to(resolve_scene_dir(scene_id)))
         relative_camera = str(camera_manifest.relative_to(resolve_scene_dir(scene_id)))
         with _STATE_LOCK:
             current = load_scene(scene_id)
@@ -1876,6 +2168,7 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                 "render_revision": render_revision,
                 "camera_fingerprint": camera_fingerprint,
                 "format_version": EXPORT_FORMAT_VERSION,
+                "ply_sha256": ply_sha256,
                 "created_at": _now(),
                 "gaussians": result["ply"]["gaussians"],
                 "source_gaussians": result["ply"].get(
@@ -1887,7 +2180,6 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                 "objects": result["ply"]["objects"],
                 "files": {
                     "ply": relative_ply,
-                    "splat": relative_splat,
                     "camera": relative_camera,
                 },
             }
@@ -1997,20 +2289,21 @@ def _ensure_object_export(scene_id: str, object_id: str, format_name: str) -> Pa
         object_name = str(item.get("name") or "Gaussian object")
     root = resolve_scene_dir(scene_id) / "exports" / "objects"
     ply = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.ply"
-    splat = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.splat"
     glb = root / f"{object_id}-glb-v{GLB_FORMAT_VERSION}-r{revision}.glb"
-    target = {"ply": ply, "splat": splat, "glb": glb}[format_name]
+    target = {"ply": ply, "glb": glb}.get(format_name)
+    if format_name == "splat":
+        if not ply.is_file():
+            export_gaussian_scene([(source, transform)], ply)
+        return _ensure_cached_splat(ply)
+    if target is None:
+        raise ValueError("unknown object export format")
     if not target.is_file():
         if format_name == "glb":
             if not ply.is_file():
                 export_gaussian_scene([(source, transform)], ply)
             export_gaussian_ply_glb(ply, glb, name=object_name)
         else:
-            export_gaussian_scene(
-                [(source, transform)],
-                ply,
-                splat if format_name == "splat" else None,
-            )
+            export_gaussian_scene([(source, transform)], ply)
     return target
 
 
@@ -2037,6 +2330,31 @@ def register_routes(routes: Any) -> None:
     @routes.get(f"{API_BASE}/capabilities")
     async def factory_capabilities(_request: Any) -> Any:
         return web.json_response(capabilities())
+
+    @routes.get(f"{API_BASE}/splat-cache")
+    async def factory_splat_cache_status(_request: Any) -> Any:
+        return web.json_response(await asyncio.to_thread(splat_cache_status))
+
+    @routes.post(f"{API_BASE}/splat-cache/settings")
+    async def factory_splat_cache_settings(request: Any) -> Any:
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("SPLAT cache settings must be an object")
+            status = await asyncio.to_thread(
+                configure_splat_cache,
+                payload.get("limit_gb"),
+            )
+            return web.json_response(status)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/splat-cache/clear")
+    async def factory_splat_cache_clear(_request: Any) -> Any:
+        try:
+            return web.json_response(await asyncio.to_thread(clear_splat_cache))
+        except Exception as exc:
+            return _json_error(web, exc)
 
     @routes.post(f"{API_BASE}/weights/download")
     async def factory_weights_download(_request: Any) -> Any:
@@ -2083,6 +2401,21 @@ def register_routes(routes: Any) -> None:
             return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.delete(f"{API_BASE}/scenes/{{scene_id}}")
+    async def factory_scene_delete(request: Any) -> Any:
+        try:
+            result = await asyncio.to_thread(
+                delete_scene,
+                request.match_info["scene_id"],
+            )
+            return web.json_response(result)
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except RuntimeError as exc:
+            return _json_error(web, exc, 409)
         except Exception as exc:
             return _json_error(web, exc)
 
@@ -2272,7 +2605,15 @@ def register_routes(routes: Any) -> None:
                 raise FileNotFoundError("unknown object asset")
             scene = load_scene(request.match_info["scene_id"])
             item = _object_by_id(scene, request.match_info["object_id"])
-            return web.FileResponse(_object_file(scene["scene_id"], item, kind))
+            if kind == "splat":
+                path = await asyncio.to_thread(
+                    _ensure_object_splat,
+                    scene["scene_id"],
+                    item["object_id"],
+                )
+            else:
+                path = _object_file(scene["scene_id"], item, kind)
+            return web.FileResponse(path)
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:
@@ -2343,9 +2684,13 @@ def register_routes(routes: Any) -> None:
                 request.match_info["object_id"],
                 format_name,
             )
+            download_name = (
+                f"{_validate_id(request.match_info['object_id'], 'object id')}"
+                f".{format_name}"
+            )
             return web.FileResponse(
                 path,
-                headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+                headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
             )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
@@ -2380,9 +2725,14 @@ def register_routes(routes: Any) -> None:
             exporter = ensure_scene_glb if format_name == "glb" else ensure_scene_exports
             result = await asyncio.to_thread(exporter, request.match_info["scene_id"])
             path = result[format_name]
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            suffix = "json" if format_name == "camera" else format_name
             return web.FileResponse(
                 path,
-                headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
+                headers={
+                    "Content-Disposition":
+                    f'attachment; filename="scene-{scene_id}.{suffix}"'
+                },
             )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
