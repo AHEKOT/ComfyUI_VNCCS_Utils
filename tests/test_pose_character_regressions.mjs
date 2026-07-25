@@ -21,38 +21,22 @@ const methodSource = (source, signature, nextSignature) => {
     return source.slice(start, end);
 };
 
-test("Pose Studio entrypoint does not require newly-added character helper exports", () => {
-    const characterImport = poseStudioSource.match(
-        /import\s*\{([\s\S]*?)\}\s*from\s*["']\.\/vnccs_pose_characters\.mjs["']/,
-    );
-    assert.ok(characterImport, "character helper import must exist");
-    assert.doesNotMatch(
-        characterImport[1],
-        /legacyCameraFramingToCharacterTransform/,
-        "a new required named export can prevent the complete widget entrypoint from loading",
+test("Pose Studio imports one strict version of its transform-track modules", () => {
+    assert.match(
+        poseStudioSource,
+        /from "\.\/vnccs_pose_animation\.mjs\?v=[^"]+"/,
     );
     assert.match(
         poseStudioSource,
-        /const legacyCameraFramingToCharacterTransform = /,
-        "legacy framing migration remains available without a fragile module import",
-    );
-});
-
-test("Pose Studio pins the transform-track animation module instead of using quaternion fallbacks", () => {
-    assert.match(
-        poseStudioSource,
-        /import \* as PoseAnimation from "\.\/vnccs_pose_animation\.mjs\?v=[^"]+"/,
-        "the entrypoint must not reuse an older animation module that treats zoom as a quaternion",
+        /from "\.\/vnccs_pose_characters\.mjs\?v=[^"]+"/,
     );
     assert.doesNotMatch(
         poseStudioSource,
-        /PoseAnimation\.setCharacterTransformKeyframe\s*\|\|/,
-        "a generic old setTrackKeyframe fallback corrupts scalar zoom keys",
+        /import \* as PoseAnimation/,
     );
     assert.doesNotMatch(
         poseStudioSource,
-        /PoseAnimation\.evaluateCharacterTransform\s*\|\|/,
-        "playback must use the matching transform-track evaluator",
+        /legacyCameraFramingToCharacterTransform|migrateLegacyFraming|fallbackTransform/,
     );
 });
 
@@ -134,26 +118,23 @@ test("per-character position and zoom are evaluated for playback and full captur
     );
 });
 
-test("legacy library poses restore their saved crop and zoom before editor commit", () => {
-    const restoreMethod = methodSource(
+test("library poses key their saved crop and zoom before editor commit", () => {
+    const framingMethod = methodSource(
         poseStudioSource,
-        "restorePoseCameraParams(pose, { migrateLegacyFraming = false } = {})",
+        "applyLibraryPoseFraming(cameraParams)",
         "\n    async loadCharacterSceneLibraryAsset(",
     );
     assert.match(
-        restoreMethod,
-        /if \(frame === 0\) \{\s*animationState\.baseTransform = \{ \.\.\.transform \};\s*\}/,
-        "only a frame-zero library pose may replace the animation framing baseline",
+        framingMethod,
+        /if \(frame === 0\) animationState\.baseTransform = \{ \.\.\.transform \};/,
     );
     assert.match(
-        restoreMethod,
+        framingMethod,
         /setCharacterTransformKeyframe\(\s*animationState,\s*CHARACTER_POSITION_TRACK,\s*frame,\s*transform,/,
-        "library pose position must be keyed on the active frame",
     );
     assert.match(
-        restoreMethod,
+        framingMethod,
         /setCharacterTransformKeyframe\(\s*animationState,\s*CHARACTER_ZOOM_TRACK,\s*frame,\s*transform,/,
-        "library pose zoom must be keyed on the active frame",
     );
 
     const loadMethod = methodSource(
@@ -161,32 +142,24 @@ test("legacy library poses restore their saved crop and zoom before editor commi
         "async loadFromLibrary(poseOrName)",
         "\n    showSettingsModal()",
     );
-    const snapshotCamera = loadMethod.indexOf("const legacyCameraParams = (");
+    const snapshotCamera = loadMethod.indexOf("const savedFraming = (");
     const stripCamera = loadMethod.indexOf(
-        "const legacyPose = this.stripSceneCameraFromPose(legacyPoseSource)",
+        "const pose = this.stripSceneCameraFromPose(poseSource)",
     );
-    const applyPose = loadMethod.indexOf("this.viewer.setPose(legacyPose, true)");
+    const applyPose = loadMethod.indexOf("this.viewer.setPose(pose, true)");
     const restoreCamera = loadMethod.indexOf(
-        "this.restorePoseCameraParams({",
+        "this.applyLibraryPoseFraming(savedFraming)",
         applyPose,
-    );
-    const migrateLegacyFraming = loadMethod.indexOf(
-        "migrateLegacyFraming: true",
-        restoreCamera,
     );
     const commitPose = loadMethod.indexOf(
         "this.commitViewerPoseToCurrentEditor()",
         restoreCamera,
     );
 
-    assert.ok(snapshotCamera >= 0, "legacy cameraParams must be preserved before pose cleanup");
+    assert.ok(snapshotCamera >= 0, "cameraParams must be preserved before pose cleanup");
     assert.ok(stripCamera > snapshotCamera, "pose-local camera data is stripped only after it is saved");
     assert.ok(applyPose > stripCamera, "the skeletal pose is applied before restoring its framing");
     assert.ok(restoreCamera > applyPose, "saved crop and zoom are restored after applying the pose");
-    assert.ok(
-        migrateLegacyFraming > restoreCamera,
-        "legacy camera zoom must be converted around the mesh pivot instead of copied to mesh.scale",
-    );
     assert.ok(commitPose > restoreCamera, "the restored framing reaches the active character transform");
 });
 

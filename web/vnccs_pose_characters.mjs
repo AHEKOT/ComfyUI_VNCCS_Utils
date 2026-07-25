@@ -49,28 +49,34 @@ export function normalizeCharacterTransform(source = {}) {
     };
 }
 
-/**
- * Convert the old single-character capture camera into the scene character
- * transform used by the current shared-camera renderer.
- *
- * Legacy camera zoom enlarged the model around the camera target. Applying the
- * same number directly as mesh.scale enlarges around the mesh origin instead,
- * which moves a waist-up pose out of its saved frame. Compensating around the
- * original camera target preserves that framing.
- */
-export function legacyCameraFramingToCharacterTransform(cameraParams = {}, pivot = {}) {
-    const zoom = clamp(finite(cameraParams.zoom, 1), 0.1, 7);
-    const offsetX = finite(cameraParams.offset_x, 0);
-    const offsetY = finite(cameraParams.offset_y, 0);
-    const pivotX = finite(pivot.x, 0);
-    const pivotY = finite(pivot.y, 0);
-    const pivotZ = finite(pivot.z, 0);
-    return normalizeCharacterTransform({
+export function cameraFramingToCharacterTransform(cameraParams, pivot) {
+    const values = [
+        cameraParams?.zoom,
+        cameraParams?.offset_x,
+        cameraParams?.offset_y,
+        pivot?.x,
+        pivot?.y,
+        pivot?.z,
+    ].map(Number);
+    if (values.some(value => !Number.isFinite(value))) {
+        throw new TypeError("Pose framing requires finite zoom, offsets, and model pivot.");
+    }
+    const [zoom, offsetX, offsetY, pivotX, pivotY, pivotZ] = values;
+    const transform = {
         x: (1 - zoom) * pivotX + zoom * offsetX,
         y: (1 - zoom) * pivotY + zoom * offsetY,
         z: (1 - zoom) * pivotZ,
         zoom,
-    });
+    };
+    if (
+        transform.x < -50 || transform.x > 50
+        || transform.y < -50 || transform.y > 50
+        || transform.z < -40 || transform.z > 40
+        || transform.zoom < 0.1 || transform.zoom > 7
+    ) {
+        throw new RangeError("Pose framing is outside the supported character transform range.");
+    }
+    return transform;
 }
 
 export function nextCharacterId(characters = []) {

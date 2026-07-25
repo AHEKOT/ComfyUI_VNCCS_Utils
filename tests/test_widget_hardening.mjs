@@ -137,6 +137,20 @@ test("each Pose Manager model generation restarts preview capture from the first
     );
 });
 
+test("Pose Manager independently fits and centers every deformed pose preview", () => {
+    const refreshStart = poseStudioSource.indexOf("refreshAllManagerPreviews(generation");
+    const refreshEnd = poseStudioSource.indexOf("\n    updateExistingPoseManagerDetailCards", refreshStart);
+    const refreshMethod = poseStudioSource.slice(refreshStart, refreshEnd);
+    assert.match(refreshMethod, /viewer\.setPose\(pose, true\);[\s\S]*computeModelFitFraming\?\.\(/);
+    assert.match(
+        refreshMethod,
+        /viewer\.capture\([\s\S]*framing\?\.zoom \?\? 1,[\s\S]*framing\?\.offsetX \?\? 0,[\s\S]*framing\?\.offsetY \?\? 0/,
+    );
+
+    assert.match(poseStudioCoreSource, /computeModelFitFraming\(/);
+    assert.match(poseStudioCoreSource, /const determinant = j00 \* j11 - j01 \* j10;/);
+});
+
 
 test("animation timeline fills its viewport and exposes mouse-draggable horizontal scrolling", () => {
     assert.match(poseAnimationSource, /viewportWidth: this\.body\?\.clientWidth/);

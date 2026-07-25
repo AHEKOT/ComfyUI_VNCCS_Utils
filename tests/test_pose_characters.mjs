@@ -4,8 +4,8 @@ import test from "node:test";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
+    cameraFramingToCharacterTransform,
     createPoseStudioCharacter,
-    legacyCameraFramingToCharacterTransform,
     nextCharacterColor,
     nextCharacterSlot,
     normalizeCharacterColor,
@@ -137,9 +137,9 @@ test("character colors and transforms are normalized and bounded", () => {
     assert.deepEqual(second.transform, { x: 1, y: 2, z: 3, zoom: 4 });
 });
 
-test("legacy camera framing converts zoom around the saved camera target", () => {
+test("saved camera framing converts zoom around the model camera target", () => {
     const pivot = { x: 2, y: 10, z: -1 };
-    const transform = legacyCameraFramingToCharacterTransform({
+    const transform = cameraFramingToCharacterTransform({
         zoom: 2,
         offset_x: 1.5,
         offset_y: -2,
@@ -160,6 +160,16 @@ test("legacy camera framing converts zoom around the saved camera target", () =>
         y: pivot.y + 2 * -2,
         z: pivot.z,
     });
+});
+
+test("saved camera framing rejects incomplete data instead of inventing defaults", () => {
+    assert.throws(
+        () => cameraFramingToCharacterTransform(
+            { zoom: 2, offset_x: 1 },
+            { x: 0, y: 1, z: 0 },
+        ),
+        /requires finite zoom, offsets, and model pivot/,
+    );
 });
 
 

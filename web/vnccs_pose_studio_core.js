@@ -4647,6 +4647,104 @@ export class PoseViewerCore {
         return Math.max(0.1, Math.min(7.0, Math.min(target / boundsW, target / boundsH)));
     }
 
+    computeModelFitFraming(width = 1024, height = 1024, yawDeg = 0, pitchDeg = 0, margin = 0.08) {
+        if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
+
+        this.skinnedMesh.updateMatrixWorld(true);
+        if (this.skeleton) this.skeleton.update();
+
+        const geometry = this.skinnedMesh.geometry;
+        const position = geometry?.attributes?.position;
+        if (!position) return null;
+
+        const point = new this.THREE.Vector3();
+        const step = Math.max(1, Math.ceil(position.count / 8000));
+        const projectedBounds = (zoom, offsetX, offsetY) => {
+            this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
+            this.captureCamera.updateMatrixWorld(true);
+            this.captureCamera.updateProjectionMatrix();
+
+            const xs = [];
+            const ys = [];
+            for (let index = 0; index < position.count; index += step) {
+                point.fromBufferAttribute(position, index);
+                if (typeof this.skinnedMesh.applyBoneTransform === 'function') {
+                    this.skinnedMesh.applyBoneTransform(index, point);
+                }
+                point.applyMatrix4(this.skinnedMesh.matrixWorld).project(this.captureCamera);
+                if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || !Number.isFinite(point.z)) continue;
+                xs.push(point.x);
+                ys.push(point.y);
+            }
+            if (xs.length < 16 || ys.length < 16) return null;
+            xs.sort((a, b) => a - b);
+            ys.sort((a, b) => a - b);
+            const pick = (values, q) => values[
+                Math.max(0, Math.min(values.length - 1, Math.floor((values.length - 1) * q)))
+            ];
+            const minX = pick(xs, 0.01);
+            const maxX = pick(xs, 0.99);
+            const minY = pick(ys, 0.01);
+            const maxY = pick(ys, 0.99);
+            return {
+                minX,
+                maxX,
+                minY,
+                maxY,
+                width: Math.max(1e-5, maxX - minX),
+                height: Math.max(1e-5, maxY - minY),
+                centerX: (minX + maxX) * 0.5,
+                centerY: (minY + maxY) * 0.5,
+            };
+        };
+
+        const baseBounds = projectedBounds(1, 0, 0);
+        if (!baseBounds) return null;
+        const target = Math.max(0.2, Math.min(0.98, 1 - Math.max(0, margin) * 2)) * 2;
+        const zoom = Math.max(
+            0.1,
+            Math.min(7.0, Math.min(target / baseBounds.width, target / baseBounds.height)),
+        );
+
+        const centeredBounds = projectedBounds(zoom, 0, 0);
+        if (!centeredBounds) return null;
+
+        // Camera offsets are world-space X/Y translations. With yaw and pitch
+        // enabled they are not identical to screen axes, so measure their
+        // projected effect and solve the small 2x2 system. This keeps every
+        // deformed pose centred instead of reusing the active pose's framing.
+        const fov = this.THREE.MathUtils.degToRad(this.captureCamera.fov || 30);
+        const visibleHeight = 2 * 45 * Math.tan(fov * 0.5) / zoom;
+        const epsilon = Math.max(0.001, visibleHeight * 0.01);
+        const xProbe = projectedBounds(zoom, epsilon, 0);
+        const yProbe = projectedBounds(zoom, 0, epsilon);
+        if (!xProbe || !yProbe) {
+            return { zoom, offsetX: 0, offsetY: 0 };
+        }
+
+        const j00 = (xProbe.centerX - centeredBounds.centerX) / epsilon;
+        const j10 = (xProbe.centerY - centeredBounds.centerY) / epsilon;
+        const j01 = (yProbe.centerX - centeredBounds.centerX) / epsilon;
+        const j11 = (yProbe.centerY - centeredBounds.centerY) / epsilon;
+        const determinant = j00 * j11 - j01 * j10;
+        if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-8) {
+            return { zoom, offsetX: 0, offsetY: 0 };
+        }
+
+        const offsetX = (
+            -centeredBounds.centerX * j11 + centeredBounds.centerY * j01
+        ) / determinant;
+        const offsetY = (
+            -j00 * centeredBounds.centerY + j10 * centeredBounds.centerX
+        ) / determinant;
+        const maxOffset = visibleHeight * 4;
+        return {
+            zoom,
+            offsetX: Math.max(-maxOffset, Math.min(maxOffset, offsetX)),
+            offsetY: Math.max(-maxOffset, Math.min(maxOffset, offsetY)),
+        };
+    }
+
     computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null, forceFallback = false) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 

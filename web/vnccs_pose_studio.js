@@ -17,6 +17,7 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
+    cameraFramingToCharacterTransform,
     createPoseStudioCharacter,
     nextCharacterColor,
     nextCharacterId,
@@ -25,7 +26,7 @@ import {
     normalizeCharacterTransform,
     normalizePoseStudioCharacters,
     serializePoseStudioCharacter,
-} from "./vnccs_pose_characters.mjs";
+} from "./vnccs_pose_characters.mjs?v=20260725.1";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -44,9 +45,7 @@ import {
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./vnccs_video_import.mjs";
-import * as PoseAnimation from "./vnccs_pose_animation.mjs?v=20260725.1";
-
-const {
+import {
     CHARACTER_POSITION_TRACK,
     CHARACTER_ZOOM_TRACK,
     MODEL_ROTATION_TRACK,
@@ -71,29 +70,7 @@ const {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} = PoseAnimation;
-
-// Keep this migration local to the entry module. Adding a new required named
-// export to a long-lived browser module makes the entire widget fail to load
-// when an older dependency instance is already present in the module map.
-const legacyCameraFramingToCharacterTransform = (cameraParams = {}, pivot = {}) => {
-    const finiteNumber = (value, fallback) => {
-        const number = Number(value);
-        return Number.isFinite(number) ? number : fallback;
-    };
-    const zoom = Math.max(0.1, Math.min(7, finiteNumber(cameraParams.zoom, 1)));
-    const offsetX = finiteNumber(cameraParams.offset_x, 0);
-    const offsetY = finiteNumber(cameraParams.offset_y, 0);
-    const pivotX = finiteNumber(pivot.x, 0);
-    const pivotY = finiteNumber(pivot.y, 0);
-    const pivotZ = finiteNumber(pivot.z, 0);
-    return normalizeCharacterTransform({
-        x: (1 - zoom) * pivotX + zoom * offsetX,
-        y: (1 - zoom) * pivotY + zoom * offsetY,
-        z: (1 - zoom) * pivotZ,
-        zoom,
-    });
-};
+} from "./vnccs_pose_animation.mjs?v=20260725.2";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -5205,7 +5182,7 @@ class PoseStudioWidget {
                 character.transform,
                 this.animationState.defaultInterpolation,
             );
-            this.animationState.currentFrame = Math.round(Number(frame) || 0);
+            this.animationState.currentFrame = frame;
             this.animationTimeline?.renderTracks();
             this.animationTimeline?.updatePlayheads();
             this.syncToNode(false, { skipCapture: true });
@@ -5250,7 +5227,7 @@ class PoseStudioWidget {
         if (!this.isAnimationMode()) {
             const character = this.getActiveCharacter();
             if (character?.animationState) {
-                character.animationState.baseTransform = normalizeCharacterTransform(nextTransform);
+                character.animationState.baseTransform = { ...nextTransform };
             }
             return [];
         }
@@ -5258,8 +5235,8 @@ class PoseStudioWidget {
             !this.animationState?.autoKey
             || this._applyingAnimationPose
         ) return [];
-        const previous = normalizeCharacterTransform(previousTransform);
-        const next = normalizeCharacterTransform(nextTransform);
+        const previous = previousTransform;
+        const next = nextTransform;
         const changedTracks = [];
         if (
             Math.abs(previous.x - next.x) > 1e-6
@@ -5467,11 +5444,7 @@ class PoseStudioWidget {
                     const characterFallback = character.poses?.[this.activeTab]
                         || character.poses?.[0]
                         || fallbackPose;
-                    const state = normalizeAnimationState(
-                        source,
-                        characterFallback,
-                        character.transform,
-                    );
+                    const state = normalizeAnimationState(source, characterFallback);
                     state.currentFrame = Math.min(state.frameCount - 1, restoredFrame);
                     character.animationState = state;
                     character.animation = source;
@@ -5479,13 +5452,9 @@ class PoseStudioWidget {
                 restored = this.getActiveCharacter()?.animationState || null;
             }
             if (!restored) {
-                const activeCharacter = this.getActiveCharacter();
-                restored = normalizeAnimationState(
-                    cachedAnimation,
-                    fallbackPose,
-                    activeCharacter?.transform,
-                );
+                restored = normalizeAnimationState(cachedAnimation, fallbackPose);
                 restored.currentFrame = Math.min(restored.frameCount - 1, restoredFrame);
+                const activeCharacter = this.getActiveCharacter();
                 if (activeCharacter) activeCharacter.animationState = restored;
             }
             const cacheBelongsToNode = this.animationCacheIdBelongsToNode(sourceCacheId);
@@ -5558,7 +5527,6 @@ class PoseStudioWidget {
         this.animationState = restoreAnimationStateSnapshot(snapshot, {
             currentFrame,
             fallbackPose: this.animationState.basePose || {},
-            fallbackTransform: activeCharacter?.transform,
         });
         if (activeCharacter) activeCharacter.animationState = this.animationState;
         this._animationInitialized = true;
@@ -5889,7 +5857,7 @@ class PoseStudioWidget {
         if (!character.animationState) {
             const fallbackPose = character.poses[this.activeTab] || character.poses[0] || {};
             character.animationState = character.animation && typeof character.animation === "object"
-                ? normalizeAnimationState(character.animation, fallbackPose, character.transform)
+                ? normalizeAnimationState(character.animation, fallbackPose)
                 : createDefaultAnimationState(fallbackPose, {
                     baseTransform: character.transform,
                 });
@@ -6007,16 +5975,13 @@ class PoseStudioWidget {
     characterTransformForScene(character, { frame = null } = {}) {
         if (!character?.animationState) this.ensureCharacterRuntime(character);
         if (!this.isAnimationMode()) {
-            return normalizeCharacterTransform(character.transform);
+            return { ...character.transform };
         }
-        const targetFrame = frame == null
-            ? this.sharedTimeline?.currentFrame ?? this.animationState?.currentFrame ?? 0
-            : frame;
-        return normalizeCharacterTransform(evaluateCharacterTransform(
+        const targetFrame = frame ?? this.sharedTimeline.currentFrame;
+        return evaluateCharacterTransform(
             character.animationState,
             targetFrame,
-            character.transform,
-        ));
+        );
     }
 
     updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {}) {
@@ -6515,7 +6480,7 @@ class PoseStudioWidget {
     persistActivePoseCameraParams() {
         const character = this.getActiveCharacter();
         if (!character) return;
-        const previousTransform = normalizeCharacterTransform(character.transform);
+        const previousTransform = { ...character.transform };
         const nextTransform = normalizeCharacterTransform({
             ...character.transform,
             x: this.exportParams.cam_offset_x,
@@ -7002,7 +6967,23 @@ class PoseStudioWidget {
                     this.viewer.updateLights(this.lightParams);
                 }
 
-                const nextCapture = this.viewer.capture(w, h, 1, bg, 0, 0, yaw, pitch);
+                const framing = this.viewer.computeModelFitFraming?.(
+                    w,
+                    h,
+                    yaw,
+                    pitch,
+                    0.08,
+                );
+                const nextCapture = this.viewer.capture(
+                    w,
+                    h,
+                    framing?.zoom ?? 1,
+                    bg,
+                    framing?.offsetX ?? 0,
+                    framing?.offsetY ?? 0,
+                    yaw,
+                    pitch,
+                );
                 this.setPoseCapture(i, nextCapture);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
@@ -7260,7 +7241,7 @@ class PoseStudioWidget {
                 0.08,
             );
             if (!Number.isFinite(zoom)) return false;
-            const previousTransform = normalizeCharacterTransform(activeCharacter.transform);
+            const previousTransform = { ...activeCharacter.transform };
             const currentZoom = Number(activeCharacter.transform?.zoom) || 1;
             activeCharacter.transform = normalizeCharacterTransform({
                 ...activeCharacter.transform,
@@ -9925,12 +9906,8 @@ class PoseStudioWidget {
                 const data = JSON.parse(event.target.result);
 
                 if (data?.type === "pose_animation" && data.animation && typeof data.animation === "object") {
+                    this.animationState = normalizeAnimationState(data.animation, this.poses[this.activeTab] || {});
                     const activeCharacter = this.getActiveCharacter();
-                    this.animationState = normalizeAnimationState(
-                        data.animation,
-                        this.poses[this.activeTab] || {},
-                        activeCharacter?.transform,
-                    );
                     if (activeCharacter) activeCharacter.animationState = this.animationState;
                     this.retimeAllCharacterAnimations({
                         fps: this.animationState.fps,
@@ -11453,76 +11430,62 @@ class PoseStudioWidget {
         }
     }
 
-    restorePoseCameraParams(pose, { migrateLegacyFraming = false } = {}) {
-        const params = pose?.cameraParams;
-        if (!params) return false;
-
-        if (migrateLegacyFraming) {
-            const pivot = (
-                this.viewer?.sceneCameraTarget
-                || this.viewer?.meshCenter
-                || { x: 0, y: 0, z: 0 }
-            );
-            const transform = legacyCameraFramingToCharacterTransform(params, pivot);
-            const character = this.getActiveCharacter();
-            if (character) {
-                character.transform = transform;
-                const animationState = this.isAnimationMode()
-                    ? (this.animationState || character.animationState)
-                    : null;
-                if (animationState) {
-                    const frame = Math.max(0, Math.min(
-                        Math.max(0, Number(animationState.frameCount || 1) - 1),
-                        Math.round(Number(animationState.currentFrame) || 0),
-                    ));
-                    // A library pose is an explicit edit, just like committing
-                    // its bone rotations. Store its framing on this exact frame
-                    // even when AUTO is disabled. Frame zero also becomes the
-                    // baseline used by a later full-body key.
-                    if (frame === 0) {
-                        animationState.baseTransform = { ...transform };
-                    }
-                    setCharacterTransformKeyframe(
-                        animationState,
-                        CHARACTER_POSITION_TRACK,
-                        frame,
-                        transform,
-                        animationState.defaultInterpolation,
-                    );
-                    setCharacterTransformKeyframe(
-                        animationState,
-                        CHARACTER_ZOOM_TRACK,
-                        frame,
-                        transform,
-                        animationState.defaultInterpolation,
-                    );
-                    character.animationState = animationState;
-                    this.animationState = animationState;
-                    this.animationTimeline?.renderTracks();
-                    this.animationTimeline?.updatePlayheads();
-                } else if (character.animationState) {
-                    character.animationState.baseTransform = { ...transform };
-                }
-                this.viewer?.setActiveCharacterAppearance?.({
-                    color: character.color,
-                    transform,
-                });
-            }
-            this.exportParams.cam_offset_x = transform.x;
-            this.exportParams.cam_offset_y = transform.y;
-            this.exportParams.cam_zoom = transform.zoom;
-        } else {
-            this.exportParams.cam_offset_x = Number(params.offset_x ?? 0);
-            this.exportParams.cam_offset_y = Number(params.offset_y ?? 0);
-            this.exportParams.cam_zoom = Number(params.zoom ?? 1.0);
-            this.persistActivePoseCameraParams();
+    applyLibraryPoseFraming(cameraParams) {
+        const character = this.getActiveCharacter();
+        if (!character) throw new Error("Cannot apply pose framing without an active character.");
+        if (!this.viewer?.sceneCameraTarget) {
+            throw new Error("Cannot apply pose framing before the model camera target is ready.");
         }
-        this.exportParams.cam_yaw_deg = Number(params.yaw_deg ?? 0);
-        this.exportParams.cam_pitch_deg = Number(params.pitch_deg ?? 0);
+
+        const yaw = Number(cameraParams.yaw_deg);
+        const pitch = Number(cameraParams.pitch_deg);
+        if (!Number.isFinite(yaw) || !Number.isFinite(pitch)) {
+            throw new TypeError("Pose framing requires finite camera angles.");
+        }
+        const transform = cameraFramingToCharacterTransform(
+            cameraParams,
+            this.viewer.sceneCameraTarget,
+        );
+        character.transform = transform;
+
+        if (this.isAnimationMode()) {
+            const animationState = this.animationState;
+            const frame = animationState.currentFrame;
+            if (frame === 0) animationState.baseTransform = { ...transform };
+            setCharacterTransformKeyframe(
+                animationState,
+                CHARACTER_POSITION_TRACK,
+                frame,
+                transform,
+                animationState.defaultInterpolation,
+            );
+            setCharacterTransformKeyframe(
+                animationState,
+                CHARACTER_ZOOM_TRACK,
+                frame,
+                transform,
+                animationState.defaultInterpolation,
+            );
+            character.animationState = animationState;
+            this.animationTimeline?.renderTracks();
+            this.animationTimeline?.updatePlayheads();
+        } else {
+            character.animationState.baseTransform = { ...transform };
+        }
+
+        this.exportParams.cam_offset_x = transform.x;
+        this.exportParams.cam_offset_y = transform.y;
+        this.exportParams.cam_zoom = transform.zoom;
+        this.exportParams.cam_yaw_deg = yaw;
+        this.exportParams.cam_pitch_deg = pitch;
+
+        this.viewer.setActiveCharacterAppearance({
+            color: character.color,
+            transform,
+        });
         this.syncCameraWidgets();
         this.applyCameraToViewer(true);
-        this.viewer?.setCameraParams?.(this.currentCameraParams());
-        return true;
+        this.viewer.setCameraParams(this.currentCameraParams());
     }
 
     async loadCharacterSceneLibraryAsset(asset, { animation = false } = {}) {
@@ -11572,7 +11535,7 @@ class PoseStudioWidget {
         for (const character of this.characters) {
             const fallbackPose = character.poses[this.activeTab] || character.poses[0] || {};
             character.animationState = character.animation && typeof character.animation === "object"
-                ? normalizeAnimationState(character.animation, fallbackPose, character.transform)
+                ? normalizeAnimationState(character.animation, fallbackPose)
                 : createDefaultAnimationState(fallbackPose, {
                     baseTransform: character.transform,
                 });
@@ -11620,12 +11583,8 @@ class PoseStudioWidget {
         const fallbackPose = source.basePose && typeof source.basePose === "object"
             ? source.basePose
             : {};
+        this.animationState = normalizeAnimationState(source, fallbackPose);
         const activeCharacter = this.getActiveCharacter();
-        this.animationState = normalizeAnimationState(
-            source,
-            fallbackPose,
-            activeCharacter?.transform,
-        );
         this.animationState.basePose = this.animationState.basePose || {};
         this.animationState.basePose.prompt = (
             this.animationState.basePose.prompt
@@ -11687,26 +11646,20 @@ class PoseStudioWidget {
                 } else if (assetType === "animation") {
                     this.loadAnimationLibraryAsset(data.pose);
                 } else {
-                    const legacyPoseSource = JSON.parse(JSON.stringify(data.pose));
-                    const legacyCameraParams = (
-                        legacyPoseSource.cameraParams
-                        && typeof legacyPoseSource.cameraParams === "object"
+                    const poseSource = JSON.parse(JSON.stringify(data.pose));
+                    const savedFraming = (
+                        poseSource.cameraParams
+                        && typeof poseSource.cameraParams === "object"
                     )
-                        ? { ...legacyPoseSource.cameraParams }
+                        ? { ...poseSource.cameraParams }
                         : null;
-                    const legacyPose = this.stripSceneCameraFromPose(legacyPoseSource);
-                    this.viewer.setPose(legacyPose, true);
-                    if (legacyCameraParams) {
-                        this.restorePoseCameraParams({
-                            cameraParams: legacyCameraParams,
-                        }, {
-                            migrateLegacyFraming: true,
-                        });
-                    }
+                    const pose = this.stripSceneCameraFromPose(poseSource);
+                    this.viewer.setPose(pose, true);
+                    if (savedFraming) this.applyLibraryPoseFraming(savedFraming);
                     if (this.isAnimationMode()) {
-                        this.animationState.basePose.prompt = legacyPose.prompt ?? this.animationState.basePose.prompt ?? "";
+                        this.animationState.basePose.prompt = pose.prompt ?? this.animationState.basePose.prompt ?? "";
                     } else {
-                        this.setPosePrompt(this.activeTab, legacyPose.prompt ?? "");
+                        this.setPosePrompt(this.activeTab, pose.prompt ?? "");
                     }
                     this.syncPromptFieldToActiveTab();
                     this.updateRotationSliders();
@@ -13972,11 +13925,7 @@ class PoseStudioWidget {
                     ? restoredAnimationSource.cacheId
                     : null;
                 this._animationCacheRevision = Math.max(0, Math.floor(Number(restoredAnimationSource.revision) || 0));
-                this.animationState = normalizeAnimationState(
-                    restoredAnimationSource,
-                    this.poses[this.activeTab] || {},
-                    restoredActiveCharacter?.transform,
-                );
+                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
                 this._animationInitialized = true;
             } else if (restoredAnimationSource && typeof restoredAnimationSource === "object") {
                 ++this._animationCacheRestoreToken;
@@ -13984,11 +13933,7 @@ class PoseStudioWidget {
                 this._animationCacheRestorePromise = null;
                 this._animationCacheId = null;
                 this._animationCacheRevision = 0;
-                this.animationState = normalizeAnimationState(
-                    restoredAnimationSource,
-                    this.poses[this.activeTab] || {},
-                    restoredActiveCharacter?.transform,
-                );
+                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
                 this._animationInitialized = true;
             } else {
                 ++this._animationCacheRestoreToken;

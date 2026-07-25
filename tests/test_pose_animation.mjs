@@ -41,10 +41,12 @@ import {
     selectRandomLibraryPoseData,
     setTrackKeyframeFromEuler,
     setCharacterTransformKeyframe,
+    setTrackKeyframe,
     timelineContentPointToPosition,
     timelineFingerGroupIdForTrack,
     timelineGroupIdForTrack,
     timelineViewportToContentPoint,
+    validatedAnimationCharacterTransform,
 } from "../web/vnccs_pose_animation.mjs";
 
 const angleDistance = (a, b) => Math.abs(((b - a + 540) % 360) - 180);
@@ -212,20 +214,38 @@ test("waist-up frame zero interpolates to a full-body framing on the last frame"
     assert.ok(middle.y > waistUp.y && middle.y < fullBody.y);
 });
 
-test("legacy character animations inherit their existing static placement", () => {
-    const state = normalizeAnimationState(
-        {
-            schemaVersion: 2,
-            frameCount: 12,
-            duration: 1,
-            fps: 12,
-            tracks: {},
-        },
-        {},
-        { x: 6, y: -4, z: 2, zoom: 1.75 },
+test("transform tracks reject aliases and wrong value shapes instead of normalizing them", () => {
+    assert.throws(
+        () => validatedAnimationCharacterTransform({
+            offset_x: 1,
+            offset_y: 2,
+            depth: 0,
+            scale: 2,
+        }),
+        /requires finite x, y, z, and zoom/,
     );
-    assert.deepEqual(state.baseTransform, { x: 6, y: -4, z: 2, zoom: 1.75 });
-    assert.deepEqual(evaluateCharacterTransform(state, 8), state.baseTransform);
+
+    const state = createDefaultAnimationState({});
+    assert.throws(
+        () => setTrackKeyframe(
+            state,
+            CHARACTER_ZOOM_TRACK,
+            0,
+            [2.5],
+            "linear",
+        ),
+        /zoom key must be a finite number/,
+    );
+    assert.throws(
+        () => setTrackKeyframe(
+            state,
+            CHARACTER_POSITION_TRACK,
+            0,
+            { x: 1, y: 2 },
+            "linear",
+        ),
+        /position key must be \[x, y\]/,
+    );
 });
 
 test("position and zoom keys survive snapshots and mixed clipboard operations", () => {
@@ -238,14 +258,14 @@ test("position and zoom keys survive snapshots and mixed clipboard operations", 
         state,
         CHARACTER_POSITION_TRACK,
         4,
-        { x: 5, y: -2, zoom: 1 },
+        { x: 5, y: -2, z: 0, zoom: 1 },
         "easeInOut",
     );
     const zoomKey = setCharacterTransformKeyframe(
         state,
         CHARACTER_ZOOM_TRACK,
         7,
-        { x: 5, y: -2, zoom: 2.5 },
+        { x: 5, y: -2, z: 0, zoom: 2.5 },
         "smooth",
     );
     const clipboard = copyKeyframeSelection(state, [
@@ -259,6 +279,9 @@ test("position and zoom keys survive snapshots and mixed clipboard operations", 
     );
     assert.equal(restored.tracks[CHARACTER_POSITION_TRACK].valueType, "vector2");
     assert.equal(restored.tracks[CHARACTER_ZOOM_TRACK].valueType, "scalar");
+    assert.ok(restored.tracks[CHARACTER_ZOOM_TRACK].keys.every(
+        key => typeof key.value === "number",
+    ));
     assert.deepEqual(
         restored.tracks[CHARACTER_POSITION_TRACK].keys.map(key => key.frame),
         [0, 4, 12],
