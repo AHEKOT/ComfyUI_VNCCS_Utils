@@ -32,12 +32,10 @@ class FactoryNodeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_node_module()
 
-    def test_node_contract_exposes_scene_assets_and_persistent_state(self):
+    def test_node_contract_exposes_only_the_scene_render(self):
         node = self.module.VNCCS_3DFactory
-        self.assertEqual(
-            node.RETURN_NAMES,
-            ("preview", "scene_ply", "scene_splat", "scene_manifest"),
-        )
+        self.assertEqual(node.RETURN_TYPES, ("IMAGE",))
+        self.assertEqual(node.RETURN_NAMES, ("preview",))
         self.assertIn("factory_data", node.INPUT_TYPES()["required"])
         self.assertEqual(node.CATEGORY, "VNCCS/3D")
 
@@ -183,7 +181,6 @@ class FactoryNodeTests(unittest.TestCase):
                 }],
             },
             _scene_preview_file=lambda _scene: preview_path,
-            ensure_scene_exports=lambda _scene_id: None,
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         state = json.dumps({"schema_version": 2, "scene_id": scene_id})
@@ -205,7 +202,6 @@ class FactoryNodeTests(unittest.TestCase):
             load_scene=lambda _scene_id: scene,
             update_scene=lambda _scene_id, _snapshot: scene,
             _scene_preview_file=mock.Mock(side_effect=FileNotFoundError("stale")),
-            ensure_scene_exports=mock.Mock(),
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         state = json.dumps({"schema_version": 2, "scene_id": scene_id})
@@ -220,7 +216,6 @@ class FactoryNodeTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "current 3D scene preview"):
                 self.module.VNCCS_3DFactory().load_scene(state)
-        backend.ensure_scene_exports.assert_called_once_with(scene_id)
 
     def test_execution_requests_a_token_bound_preview_from_the_live_widget(self):
         scene_id = "a" * 32
@@ -250,7 +245,6 @@ class FactoryNodeTests(unittest.TestCase):
         backend = types.SimpleNamespace(
             load_scene=lambda _scene_id: scene,
             _scene_preview_file=preview_file,
-            ensure_scene_exports=lambda _scene_id: None,
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         server = types.ModuleType("server")

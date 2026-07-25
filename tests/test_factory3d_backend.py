@@ -81,7 +81,7 @@ class FactoryBackendTests(unittest.TestCase):
     def test_scenes_are_created_listed_and_updated(self):
         scene = self.factory.create_scene("First scene")
         self.assertRegex(scene["scene_id"], r"^[a-f0-9]{32}$")
-        self.assertEqual(scene["schema_version"], 5)
+        self.assertEqual(scene["schema_version"], self.factory.SCHEMA_VERSION)
         self.assertEqual(scene["render_revision"], 0)
         self.assertEqual(
             scene["render"],
@@ -191,7 +191,7 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()
-        self.assertEqual(capabilities["formats"], ["ply", "splat", "glb"])
+        self.assertEqual(capabilities["formats"], ["ply"])
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
@@ -466,18 +466,20 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertFalse(older.exists())
         self.assertTrue(newer.exists())
 
-    def test_legacy_scene_splat_is_adopted_into_cache_and_metadata_is_cleaned(self):
+    def test_legacy_scene_assets_migrate_to_ply_only_storage_and_shared_cache(self):
         scene = self.factory.create_scene("Legacy")
+        scene_root = self.factory.resolve_scene_dir(scene["scene_id"])
         object_id = self.factory._new_id()
-        object_root = (
-            self.factory.resolve_scene_dir(scene["scene_id"])
-            / "objects"
-            / object_id
-        )
+        object_root = scene_root / "objects" / object_id
         ply = object_root / "model.ply"
         splat = object_root / "model.splat"
         self._write_valid_ply(ply, 2)
         self.gaussian.ply_to_splat(ply, splat)
+        export_ply = scene_root / "exports" / "scene.ply"
+        retired_export = scene_root / "exports" / "scene.retired"
+        export_ply.parent.mkdir(parents=True)
+        export_ply.write_bytes(b"canonical")
+        retired_export.write_bytes(b"retired")
         scene["objects"].append(
             {
                 "object_id": object_id,
@@ -494,7 +496,15 @@ class FactoryBackendTests(unittest.TestCase):
             }
         )
         scene["layers"] = [{"type": "object", "object_id": object_id}]
-        scene["schema_version"] = 4
+        scene["exports"] = {
+            "revision": 0,
+            "files": {
+                "ply": str(export_ply.relative_to(scene_root)),
+                "retired": str(retired_export.relative_to(scene_root)),
+            },
+            "retired_metadata": {"enabled": True},
+        }
+        scene["schema_version"] = self.factory.SCHEMA_VERSION - 1
         self.factory._atomic_json(self.factory._scene_path(scene["scene_id"]), scene)
 
         migrated = self.factory.load_scene(scene["scene_id"])
@@ -502,6 +512,10 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertNotIn("splat", item["files"])
         self.assertNotIn("splat_sha256", item["checksums"])
         self.assertFalse(splat.exists())
+        self.assertTrue(export_ply.is_file())
+        self.assertFalse(retired_export.exists())
+        self.assertEqual(set(migrated["exports"]["files"]), {"ply"})
+        self.assertNotIn("retired_metadata", migrated["exports"])
         cached = self.factory._ensure_object_splat(scene["scene_id"], object_id)
         self.assertTrue(cached.is_file())
         self.assertEqual(cached.stat().st_size, 2 * 32)
@@ -731,33 +745,24 @@ class FactoryBackendTests(unittest.TestCase):
                 "ply": {"gaussians": 1, "objects": 1},
             }
 
-        cached_splat = self.root / "cache" / "splats" / "v1-test.splat"
-        cached_splat.parent.mkdir(parents=True)
-        cached_splat.write_bytes(b"upright")
-        with (
-            mock.patch.object(
-                self.factory,
-                "export_gaussian_scene",
-                side_effect=fake_export,
-            ) as export,
-            mock.patch.object(self.factory, "_ensure_cached_splat", return_value=cached_splat),
-        ):
-            result = self.factory.ensure_scene_exports(scene["scene_id"])
+        with mock.patch.object(
+            self.factory,
+            "export_gaussian_scene",
+            side_effect=fake_export,
+        ) as export:
+            result = self.factory.ensure_scene_ply_export(scene["scene_id"])
 
         export.assert_called_once()
         self.assertIn(f"-v{self.factory.EXPORT_FORMAT_VERSION}-", result["ply"].name)
-        self.assertTrue(result["camera"].is_file())
-        camera_manifest = json.loads(result["camera"].read_text(encoding="utf-8"))
-        self.assertEqual(camera_manifest["camera"]["position"], [2.8, 2.1, 4.2])
-        self.assertEqual(camera_manifest["camera"]["target"], [0.0, 0.0, 0.0])
-        self.assertEqual(camera_manifest["camera"]["fov"], 42.0)
-        self.assertEqual(camera_manifest["render"]["width"], 1024)
-        self.assertEqual(camera_manifest["assets"]["splat"]["sha256"], self.factory._sha256_file(result["splat"]))
-        self.assertEqual(captured_metadata["camera"], camera_manifest["camera"])
+        self.assertEqual(set(result), {"scene", "ply"})
+        self.assertEqual(captured_metadata["camera"]["position"], [2.8, 2.1, 4.2])
+        self.assertEqual(captured_metadata["camera"]["target"], [0.0, 0.0, 0.0])
+        self.assertEqual(captured_metadata["camera"]["fov"], 42.0)
+        self.assertEqual(captured_metadata["render"]["width"], 1024)
         saved = self.factory.load_scene(scene["scene_id"])
         self.assertEqual(saved["exports"]["format_version"], self.factory.EXPORT_FORMAT_VERSION)
         self.assertEqual(saved["exports"]["render_revision"], saved["render_revision"])
-        self.assertIn("camera", saved["exports"]["files"])
+        self.assertEqual(set(saved["exports"]["files"]), {"ply"})
 
         updated = self.factory.update_scene(
             scene["scene_id"],
@@ -775,24 +780,20 @@ class FactoryBackendTests(unittest.TestCase):
                 },
             },
         )
-        with (
-            mock.patch.object(
-                self.factory,
-                "export_gaussian_scene",
-                side_effect=fake_export,
-            ) as camera_export,
-            mock.patch.object(self.factory, "_ensure_cached_splat", return_value=cached_splat),
-        ):
-            refreshed = self.factory.ensure_scene_exports(scene["scene_id"])
+        with mock.patch.object(
+            self.factory,
+            "export_gaussian_scene",
+            side_effect=fake_export,
+        ) as camera_export:
+            self.factory.ensure_scene_ply_export(scene["scene_id"])
         camera_export.assert_called_once()
-        refreshed_manifest = json.loads(refreshed["camera"].read_text(encoding="utf-8"))
-        self.assertEqual(refreshed_manifest["camera"]["position"], [7.0, 6.0, 5.0])
-        self.assertEqual(refreshed_manifest["camera"]["target"], [1.0, 2.0, 3.0])
-        self.assertEqual(refreshed_manifest["camera"]["fov"], 61.0)
-        self.assertEqual(refreshed_manifest["render"]["width"], 1920)
-        self.assertEqual(refreshed_manifest["render"]["height"], 1080)
+        self.assertEqual(captured_metadata["camera"]["position"], [7.0, 6.0, 5.0])
+        self.assertEqual(captured_metadata["camera"]["target"], [1.0, 2.0, 3.0])
+        self.assertEqual(captured_metadata["camera"]["fov"], 61.0)
+        self.assertEqual(captured_metadata["render"]["width"], 1920)
+        self.assertEqual(captured_metadata["render"]["height"], 1080)
         self.assertEqual(
-            refreshed_manifest["render_revision"],
+            captured_metadata["render_revision"],
             updated["render_revision"],
         )
 
@@ -1131,9 +1132,9 @@ class FactoryBackendTests(unittest.TestCase):
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}/duplicate"),
             ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}/asset/{kind}"),
-            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}/export/{format_name}"),
+            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}/export/ply"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/export"),
-            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/exports/{format_name}"),
+            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/exports/ply"),
             ("GET", "/vnccs/3d-factory/library/items"),
             ("POST", "/vnccs/3d-factory/library/items"),
             ("PUT", "/vnccs/3d-factory/library/items/{asset_id}"),

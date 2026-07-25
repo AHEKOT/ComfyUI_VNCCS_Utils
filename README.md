@@ -1,6 +1,6 @@
 # ComfyUI VNCCS Utils
 
-A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
+A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
 
 <table>
 <tr>
@@ -18,6 +18,53 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 </table>
 
 ---
+
+## VNCCS 3D Factory
+
+<p align="center">
+  <img src="images/3d-factory-logo.png" alt="VNCCS 3D Factory logo" width="360">
+</p>
+
+**VNCCS 3D Factory** is a scene-oriented image-to-3D Gaussian workspace inside
+ComfyUI. It runs the open-source
+[`VAST-AI-Research/TripoSplat`](https://github.com/VAST-AI-Research/TripoSplat)
+pipeline locally, turns reference images into editable 3D Gaussian models, keeps
+every generated object in a persistent scene, and renders the actual Gaussian
+assets through the bundled SparkJS viewport.
+
+### Key Features
+
+* **True Gaussian Viewport**: Multiple Gaussian PLY objects render together
+  with orbit, pan, detail zoom, adaptive camera clipping, selection, and an
+  optional grid—there is no synthetic floor mesh. Compact SPLAT payloads are
+  generated lazily in one bounded, content-addressed cache rather than stored
+  beside every model.
+* **Scene Manager**: Create and reopen scenes; generated objects, names,
+  transforms, generation settings, and exports persist on the ComfyUI host.
+* **Interactive Transforms**: Click objects in the viewport and move, rotate,
+  or uniformly scale them with visible viewport gizmos. Exact numeric fields
+  remain available in a collapsed precision panel.
+* **Local TripoSplat Pipeline**: The official pipeline runs in process with
+  ComfyUI's PyTorch device. Model setup and weight download are graphical.
+* **Object and Scene PLY Export**: Export every transformed object separately
+  or combine the visible scene as an editable Gaussian PLY. The export bakes
+  transforms into the actual Gaussian centers and covariance, preserves
+  opacity and spherical-harmonic color data, and embeds the saved scene camera
+  without lossy triangle reconstruction.
+* **Gaussian Library**: Save individual objects or complete scenes with
+  automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
+  then synchronize or publish manifest-driven model repositories on Hugging
+  Face through the Pose Studio repository workflow.
+* **Observable Jobs**: Background removal, image encoding, diffusion steps,
+  Gaussian decoding, serialization, and scene insertion expose real progress.
+  Every stage is printed to the ComfyUI console and retained in a downloadable
+  per-job log.
+* **Persistent Widget State**: Scene selection, generation controls, source
+  reference, object transforms and selection, camera, grid, and transform mode
+  are saved with the workflow. Reference images are persisted on the ComfyUI
+  host rather than temporary browser file URLs.
+
+👉 **[Setup and workflow guide](docs/VNCCS_3D_FACTORY.md)**
 
 ## VNCCS UniCanvas
 
@@ -69,49 +116,6 @@ VNCCS is developed independently. Support helps keep the project moving.<br><br>
 *   **Flexible Export Modes**: Output poses as a list or as a grid, with configurable background color.
 
 👉 **[Detailed Usage Guide](docs/VNCCS_POSE_STUDIO_USAGE.md)**
-
-## VNCCS 3D Factory
-
-**VNCCS 3D Factory** is a scene-oriented image-to-3D Gaussian workspace inside
-ComfyUI. It runs the open-source
-[`VAST-AI-Research/TripoSplat`](https://github.com/VAST-AI-Research/TripoSplat)
-pipeline locally, keeps every generated object in a persistent scene, and
-renders the actual Gaussian assets through the bundled SparkJS viewport.
-
-### Key Features
-
-* **True Gaussian Viewport**: Multiple Gaussian PLY objects render together
-  with orbit, pan, detail zoom, adaptive camera clipping, selection, and an
-  optional grid—there is no synthetic floor mesh. Compact SPLAT payloads are
-  generated lazily in one bounded, content-addressed cache rather than stored
-  beside every model.
-* **Scene Manager**: Create and reopen scenes; generated objects, names,
-  transforms, generation settings, and exports persist on the ComfyUI host.
-* **Interactive Transforms**: Click objects in the viewport and move, rotate,
-  or uniformly scale them with visible viewport gizmos. Exact numeric fields
-  remain available in a collapsed precision panel.
-* **Local TripoSplat Pipeline**: The official pipeline runs in process with
-  ComfyUI's PyTorch device. Model setup and weight download are graphical.
-* **Object and Scene Export**: Export every transformed object separately or
-  combine the scene as Gaussian PLY/SPLAT/GLB. Scene PLY embeds the saved export
-  camera and raw SPLAT is accompanied by its exact camera/frame manifest. GLB
-  uses `KHR_gaussian_splatting` and preserves the actual Gaussian centers,
-  covariance, opacity, spherical-harmonic color, and export camera without
-  lossy triangle reconstruction.
-* **Gaussian Library**: Save individual objects or complete scenes with
-  automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
-  then synchronize or publish manifest-driven model repositories on Hugging
-  Face through the Pose Studio repository workflow.
-* **Observable Jobs**: Background removal, image encoding, diffusion steps,
-  Gaussian decoding, serialization, and scene insertion expose real progress.
-  Every stage is printed to the ComfyUI console and retained in a downloadable
-  per-job log.
-* **Persistent Widget State**: Scene selection, generation controls, source
-  reference, object transforms and selection, camera, grid, and transform mode
-  are saved with the workflow. Reference images are persisted on the ComfyUI
-  host rather than temporary browser file URLs.
-
-👉 **[Setup and workflow guide](docs/VNCCS_3D_FACTORY.md)**
 
 ## Additional Nodes
 

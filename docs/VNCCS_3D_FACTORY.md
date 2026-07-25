@@ -65,7 +65,7 @@ then:
 
 - drag the colored viewport gizmo to move, rotate, or uniformly scale it;
 - switch tools with the viewport buttons or `W` / `E` / `R`;
-- export its current transformed state as PLY or SPLAT from its object card;
+- export its current transformed state as PLY from its object card;
 - duplicate it as an independently transformable scene object;
 - remove it from its object card after a graphical confirmation.
 
@@ -80,32 +80,19 @@ survive a browser reload and workflow reopen.
 
 The workflow state also carries a compact transform snapshot. When ComfyUI
 executes the node, that snapshot is reconciled with the persistent scene before
-the combined output is exported, so a just-moved object cannot be omitted by a
+the scene render is captured, so a just-moved object cannot be omitted by a
 pending UI autosave.
 
 ## Scene export
 
-**Scene PLY** and **Scene SPLAT** bake every object's position, rotation, and
-uniform scale into one Gaussian model. These files contain real Gaussian
-centers, covariance transforms, colors, and opacity—not a triangle mesh or a
-renamed placeholder file.
+**Scene PLY** bakes every visible object's position, rotation, and uniform
+scale into one Gaussian model. The file contains real Gaussian centers,
+covariance transforms, colors, spherical-harmonic data, and opacity—not a
+triangle mesh or a renamed placeholder file.
 
 The scene PLY header also embeds the exact perspective camera used by Scene
 Export: position, target, Y-up vector, vertical FOV, output dimensions, and
-aspect ratio. Raw `.splat` has no header or metadata section—every 32-byte
-record is a Gaussian—so Scene SPLAT remains standards-compatible and downloads
-an integrity-bound `.camera.json` sidecar with the same data. Appending camera
-bytes to the SPLAT itself would make compatible viewers interpret them as
-corrupt Gaussians.
-
-GLB export follows PlayCanvas `splat-transform` and the Khronos
-`KHR_gaussian_splatting` extension. It stores the actual Gaussian centers,
-rotations, linear scales, opacity, fallback RGBA, and every available
-spherical-harmonic band. Scene GLB also contains the configured perspective
-camera. No triangle surface is reconstructed, so the export does not introduce
-the geometry and texture loss inherent in splat-to-mesh conversion. A viewer
-must support `KHR_gaussian_splatting` to render the full representation;
-standard glTF fallback is the embedded colored point cloud.
+aspect ratio. PLY is the only public object and scene export format.
 
 ## Gaussian model library
 
@@ -113,7 +100,7 @@ The **Library** button in the scene header opens the persistent 3D Factory
 library. An individual object is stored with its canonical Gaussian PLY and
 metadata. A scene package additionally keeps every object, layer group,
 visibility flag, transform, render size, camera, and lighting setup. SPLAT is
-a disposable viewport/export derivative and is not duplicated inside
+a disposable internal viewport derivative and is not duplicated inside
 `.vnccs3d` packages.
 
 Preview images are rendered automatically from the 3D viewport. Object previews
@@ -128,13 +115,10 @@ read-only; loading one always creates an independent Factory object or scene.
 
 ## ComfyUI outputs
 
-When the graph executes, the node exposes:
-
-- `preview`: a clean render of the complete 3D scene from the current viewport
-  camera, without the editor grid, selection bounds, or transform gizmo;
-- `scene_ply`: the revisioned combined PLY path;
-- `scene_splat`: a lazily generated combined SPLAT cache path;
-- `scene_manifest`: the persistent `scene.json` path.
+When the graph executes, the node exposes only `preview`: a clean render of the
+complete 3D scene from the current viewport camera, without the editor grid,
+selection bounds, or transform gizmo. Internal PLY/SPLAT asset paths and the
+scene manifest are not exposed as graph outputs.
 
 PLY is the only permanent Gaussian source asset. The browser-facing 32-byte
 SPLAT representation is generated from PLY on first use and shared by SHA-256
@@ -145,6 +129,5 @@ least-recently-used and capped at 8 GiB by default; set
 Deleting the cache is always safe because every entry is reproducible from PLY.
 
 The browser viewport capture is saved with the scene and bound to its revision.
-If the scene changes before a fresh frame is captured, the node returns an
-empty preview rather than silently substituting an input/reference image or an
-outdated 3D render.
+If a current capture cannot be obtained, execution fails explicitly rather
+than silently substituting an input/reference image or an outdated 3D render.

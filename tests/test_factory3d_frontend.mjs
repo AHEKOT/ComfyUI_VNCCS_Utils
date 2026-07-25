@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.16"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.17"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -68,7 +68,7 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
     assert.doesNotMatch(studio, /window\.(?:alert|confirm|prompt)/);
 });
 
-test("Factory exposes scenes, generation, transform, and all export formats", () => {
+test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /Scene manager/);
     assert.match(studio, /confirmDeleteScene\(scene\)/);
     assert.match(studio, /skipSceneDeleteConfirmation/);
@@ -80,11 +80,9 @@ test("Factory exposes scenes, generation, transform, and all export formats", ()
     assert.match(viewer, /TransformControls/);
     assert.match(studio, /duplicateObject/);
     assert.match(studio, /Scene PLY/);
-    assert.match(studio, /value: "splat"/);
-    assert.match(studio, /value: "glb"/);
-    assert.match(studio, /export_\$\{format\}/);
-    assert.match(studio, /exportScene\(this\.settings\.export_format\)/);
-    assert.match(studio, /format === "splat" && scene\.exports\.urls\.camera/);
+    assert.match(studio, /item\?\.urls\?\.export_ply/);
+    assert.match(studio, /exportScene\(\)/);
+    assert.match(studio, /download\(scene\.exports\.urls\.ply\)/);
 });
 
 test("Factory provides persistent realtime lighting for Gaussian scenes", () => {
@@ -249,15 +247,13 @@ test("TripoSplat setup separates models, inference, and persisted SPLAT cache se
     assert.match(studio, /Do not upscale smaller sources/);
     assert.match(studio, /conditioning_resolution: 1024/);
     assert.match(studio, /prevent_upscale: false/);
-    assert.match(studio, /export_format: "ply"/);
     assert.match(studio, /splat_cache_limit_gb: 32/);
-    assert.match(studio, /Object and scene export/);
-    assert.match(studio, /Lossless KHR_gaussian_splatting scene with camera/);
+    assert.doesNotMatch(studio, /Object and scene export/);
+    assert.doesNotMatch(studio, /vnccs-triposplat-export-format/);
     assert.match(studio, /SPLAT cache/);
     assert.match(studio, /Clear cache/);
     assert.match(studio, /ENDPOINTS\.splatCacheSettings/);
     assert.match(studio, /ENDPOINTS\.splatCacheClear/);
-    assert.match(studio, /this\.settings\.export_format = draft\.export_format/);
     assert.match(studio, /this\.settings\.splat_cache_limit_gb = draft\.splat_cache_limit_gb/);
     assert.doesNotMatch(studio, /No API, CLI, or external inference server/);
     assert.match(studio, /form\.append\("prevent_upscale", this\.settings\.prevent_upscale \? "1" : "0"\)/);
@@ -266,7 +262,7 @@ test("TripoSplat setup separates models, inference, and persisted SPLAT cache se
     assert.match(styles, /\.vnccs-i3s__setup-block--cache/);
     assert.match(styles, /\.vnccs-i3s__cache-limit-controls/);
     assert.match(styles, /\.vnccs-i3s__resolution-option:has\(input:checked\)/);
-    assert.match(styles, /\.vnccs-i3s__format-option:has\(input:checked\)/);
+    assert.doesNotMatch(styles, /\.vnccs-i3s__format-option/);
 });
 
 test("Generation exposes background removal and UniCanvas-style seed mode without mask erosion", () => {

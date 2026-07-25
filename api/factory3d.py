@@ -28,14 +28,12 @@ from .gaussian_scene import (
     validate_ply_payload,
     validate_splat_payload,
 )
-from .gaussian_mesh import export_gaussian_ply_glb
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 5
-EXPORT_FORMAT_VERSION = 6
-GLB_FORMAT_VERSION = 3
+SCHEMA_VERSION = 6
+EXPORT_FORMAT_VERSION = 7
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
@@ -490,7 +488,7 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 
 def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
-    """Adopt legacy per-object SPLAT files into the shared cache once."""
+    """Keep PLY as the only permanent source and public export asset."""
     if int(scene.get("schema_version", 0) or 0) >= SCHEMA_VERSION:
         return
     scene_root = path.parent.resolve()
@@ -549,18 +547,49 @@ def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
             validation.pop("splat", None)
         changed = True
 
-    # Scene and object export SPLATs are also reproducible from their PLY
-    # counterparts. They must not survive as permanent per-scene duplicates.
-    for splat_path in scene_root.rglob("*.splat"):
-        try:
-            splat_path.unlink()
-            changed = True
-        except OSError:
-            LOGGER.debug("Could not remove legacy export SPLAT %s", splat_path, exc_info=True)
+    # Remove every retired scene/object export derivative. Canonical PLY files
+    # remain and the browser SPLAT representation lives only in the shared
+    # content-addressed cache.
+    export_root = scene_root / "exports"
+    if export_root.is_dir():
+        for export_path in export_root.rglob("*"):
+            if not export_path.is_file() or export_path.suffix.lower() == ".ply":
+                continue
+            try:
+                export_path.unlink()
+                changed = True
+            except OSError:
+                LOGGER.debug(
+                    "Could not remove retired export asset %s",
+                    export_path,
+                    exc_info=True,
+                )
     exports = scene.get("exports")
-    if isinstance(exports, dict) and isinstance(exports.get("files"), dict):
-        if exports["files"].pop("splat", None) is not None:
-            changed = True
+    if isinstance(exports, dict):
+        allowed_keys = {
+            "revision",
+            "render_revision",
+            "camera_fingerprint",
+            "format_version",
+            "ply_sha256",
+            "created_at",
+            "gaussians",
+            "source_gaussians",
+            "dropped_gaussians",
+            "repaired_values",
+            "objects",
+            "files",
+        }
+        for key in list(exports):
+            if key not in allowed_keys:
+                exports.pop(key, None)
+                changed = True
+        files = exports.get("files")
+        if isinstance(files, dict):
+            for key in list(files):
+                if key != "ply":
+                    files.pop(key, None)
+                    changed = True
 
     scene["schema_version"] = SCHEMA_VERSION
     if changed:
@@ -1151,7 +1180,7 @@ def capabilities() -> dict[str, Any]:
         "backend": "TripoSplat",
         "backend_repository": "https://github.com/VAST-AI-Research/TripoSplat",
         "backend_commit": UPSTREAM_COMMIT,
-        "formats": ["ply", "splat", "glb"],
+        "formats": ["ply"],
         "gaussian_counts": list(GAUSSIAN_COUNTS),
         "experimental_gaussian_counts": list(EXPERIMENTAL_GAUSSIAN_COUNTS),
         "conditioning_resolutions": list(CONDITIONING_RESOLUTIONS),
@@ -2081,17 +2110,12 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
             "thumbnail": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/prepared",
             "reference": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/reference",
             "export_ply": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/ply",
-            "export_splat": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/splat",
-            "export_glb": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/glb",
         }
         item.pop("files", None)
     exports = value.get("exports")
     if isinstance(exports, dict) and exports.get("revision") is not None:
         exports["urls"] = {
             "ply": f"{API_BASE}/scenes/{scene_id}/exports/ply",
-            "splat": f"{API_BASE}/scenes/{scene_id}/exports/splat",
-            "glb": f"{API_BASE}/scenes/{scene_id}/exports/glb",
-            "camera": f"{API_BASE}/scenes/{scene_id}/exports/camera",
         }
         exports.pop("files", None)
     return value
@@ -2255,7 +2279,7 @@ def _scene_camera_fingerprint(metadata: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
+def ensure_scene_ply_export(scene_id: str) -> dict[str, Any]:
     for attempt in range(2):
         with _STATE_LOCK:
             scene = load_scene(scene_id)
@@ -2277,32 +2301,7 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
             ):
                 try:
                     ply = _object_file(scene_id, {"files": existing["files"]}, "ply")
-                    camera_manifest = _object_file(
-                        scene_id,
-                        {"files": existing["files"]},
-                        "camera",
-                    )
-                    splat = _ensure_cached_splat(
-                        ply,
-                        ply_sha256=str(existing.get("ply_sha256") or ""),
-                    )
-                    result = {
-                        "scene": scene,
-                        "ply": ply,
-                        "splat": splat,
-                        "camera": camera_manifest,
-                    }
-                    glb_file = existing.get("files", {}).get("glb")
-                    if glb_file:
-                        try:
-                            result["glb"] = _object_file(
-                                scene_id,
-                                {"files": existing["files"]},
-                                "glb",
-                            )
-                        except FileNotFoundError:
-                            pass
-                    return result
+                    return {"scene": scene, "ply": ply}
                 except (KeyError, FileNotFoundError):
                     pass
             sources = _scene_sources(scene)
@@ -2312,7 +2311,6 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
             f"scene-v{EXPORT_FORMAT_VERSION}-r{revision}-rr{render_revision}"
         )
         ply = export_root / f"{export_stem}.ply"
-        camera_manifest = export_root / f"{export_stem}.camera.json"
         result = export_gaussian_scene(
             sources,
             ply,
@@ -2320,26 +2318,7 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
         )
         ply_sha256 = _sha256_file(ply)
         _remember_ply_sha256(ply, ply_sha256)
-        splat = _ensure_cached_splat(ply, ply_sha256=ply_sha256)
-        camera_manifest_value = {
-            **camera_metadata,
-            "assets": {
-                "ply": {
-                    "file": ply.name,
-                    "sha256": ply_sha256,
-                    "gaussians": result["ply"]["gaussians"],
-                },
-                "splat": {
-                    "cache_file": splat.name,
-                    "sha256": _sha256_file(splat),
-                    "gaussians": result["ply"]["gaussians"],
-                    "derived_from": ply_sha256,
-                },
-            },
-        }
-        _atomic_json(camera_manifest, camera_manifest_value)
         relative_ply = str(ply.relative_to(resolve_scene_dir(scene_id)))
-        relative_camera = str(camera_manifest.relative_to(resolve_scene_dir(scene_id)))
         with _STATE_LOCK:
             current = load_scene(scene_id)
             current_camera_metadata = _scene_camera_metadata(
@@ -2376,7 +2355,6 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                 "objects": result["ply"]["objects"],
                 "files": {
                     "ply": relative_ply,
-                    "camera": relative_camera,
                 },
             }
             if (
@@ -2391,116 +2369,22 @@ def ensure_scene_exports(scene_id: str) -> dict[str, Any]:
                     f"{result['ply'].get('dropped_gaussians', 0):,}",
                 )
             _save_scene(current, bump_revision=False)
-            return {
-                "scene": current,
-                "ply": ply,
-                "splat": splat,
-                "camera": camera_manifest,
-            }
+            return {"scene": current, "ply": ply}
     raise RuntimeError("scene export did not stabilize")
 
 
-def ensure_scene_glb(scene_id: str) -> dict[str, Any]:
-    for attempt in range(2):
-        base = ensure_scene_exports(scene_id)
-        with _STATE_LOCK:
-            scene = load_scene(scene_id)
-            revision = int(scene.get("revision", 0))
-            existing = scene.get("exports", {})
-            glb_file = existing.get("files", {}).get("glb") if isinstance(existing, dict) else None
-            if (
-                existing.get("revision") == revision
-                and existing.get("format_version") == EXPORT_FORMAT_VERSION
-                and existing.get("gaussian_glb", {}).get("format_version")
-                == GLB_FORMAT_VERSION
-                and glb_file
-            ):
-                try:
-                    glb = _object_file(scene_id, {"files": existing["files"]}, "glb")
-                    return {**base, "scene": scene, "glb": glb}
-                except FileNotFoundError:
-                    pass
-            camera_metadata = _scene_camera_metadata(
-                scene,
-                revision=revision,
-                render_revision=int(scene.get("render_revision", revision)),
-            )
-            scene_name = str(scene.get("name") or "Gaussian scene")
-
-        export_root = resolve_scene_dir(scene_id) / "exports"
-        glb = export_root / (
-            f"scene-glb-v{GLB_FORMAT_VERSION}-r{revision}.glb"
-        )
-        glb_result = export_gaussian_ply_glb(
-            base["ply"],
-            glb,
-            name=scene_name,
-            metadata=camera_metadata,
-        )
-        relative_glb = str(glb.relative_to(resolve_scene_dir(scene_id)))
-        with _STATE_LOCK:
-            current = load_scene(scene_id)
-            if int(current.get("revision", 0)) != revision:
-                try:
-                    glb.unlink()
-                except OSError:
-                    pass
-                if attempt == 0:
-                    continue
-                raise RuntimeError(
-                    "scene changed repeatedly while its Gaussian GLB was being exported"
-                )
-            exports = current.get("exports", {})
-            if (
-                not isinstance(exports, dict)
-                or exports.get("revision") != revision
-                or exports.get("format_version") != EXPORT_FORMAT_VERSION
-            ):
-                if attempt == 0:
-                    continue
-                raise RuntimeError("Gaussian scene exports changed while GLB was being written")
-            exports.setdefault("files", {})["glb"] = relative_glb
-            exports.pop("mesh", None)
-            exports["gaussian_glb"] = {
-                "format_version": GLB_FORMAT_VERSION,
-                "extension": glb_result["extension"],
-                "gaussians": glb_result["gaussians"],
-                "sh_degree": glb_result["sh_degree"],
-                "camera": glb_result["camera"],
-                "bytes": glb_result["bytes"],
-            }
-            exports["glb_created_at"] = _now()
-            _save_scene(current, bump_revision=False)
-            return {**base, "scene": current, "glb": glb}
-    raise RuntimeError("scene GLB export did not stabilize")
-
-
-def _ensure_object_export(scene_id: str, object_id: str, format_name: str) -> Path:
+def _ensure_object_ply_export(scene_id: str, object_id: str) -> Path:
     with _STATE_LOCK:
         scene = load_scene(scene_id)
         item = _object_by_id(scene, object_id)
         revision = int(scene.get("revision", 0))
         source = _object_file(scene_id, item, "ply")
         transform = item.get("transform")
-        object_name = str(item.get("name") or "Gaussian object")
     root = resolve_scene_dir(scene_id) / "exports" / "objects"
     ply = root / f"{object_id}-v{EXPORT_FORMAT_VERSION}-r{revision}.ply"
-    glb = root / f"{object_id}-glb-v{GLB_FORMAT_VERSION}-r{revision}.glb"
-    target = {"ply": ply, "glb": glb}.get(format_name)
-    if format_name == "splat":
-        if not ply.is_file():
-            export_gaussian_scene([(source, transform)], ply)
-        return _ensure_cached_splat(ply)
-    if target is None:
-        raise ValueError("unknown object export format")
-    if not target.is_file():
-        if format_name == "glb":
-            if not ply.is_file():
-                export_gaussian_scene([(source, transform)], ply)
-            export_gaussian_ply_glb(ply, glb, name=object_name)
-        else:
-            export_gaussian_scene([(source, transform)], ply)
-    return target
+    if not ply.is_file():
+        export_gaussian_scene([(source, transform)], ply)
+    return ply
 
 
 def _json_error(web: Any, exc: Exception, status: int = 400) -> Any:
@@ -2911,22 +2795,15 @@ def register_routes(routes: Any) -> None:
         except Exception as exc:
             return _json_error(web, exc)
 
-    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/objects/{{object_id}}/export/{{format_name}}")
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/objects/{{object_id}}/export/ply")
     async def factory_object_export(request: Any) -> Any:
         try:
-            format_name = request.match_info["format_name"]
-            if format_name not in {"ply", "splat", "glb"}:
-                raise FileNotFoundError("unknown export format")
             path = await asyncio.to_thread(
-                _ensure_object_export,
+                _ensure_object_ply_export,
                 request.match_info["scene_id"],
                 request.match_info["object_id"],
-                format_name,
             )
-            download_name = (
-                f"{_validate_id(request.match_info['object_id'], 'object id')}"
-                f".{format_name}"
-            )
+            download_name = f"{_validate_id(request.match_info['object_id'], 'object id')}.ply"
             return web.FileResponse(
                 path,
                 headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
@@ -2940,37 +2817,27 @@ def register_routes(routes: Any) -> None:
     async def factory_scene_export(request: Any) -> Any:
         try:
             scene_id = _validate_id(request.match_info["scene_id"], "scene id")
-            try:
-                payload = await request.json()
-            except Exception:
-                payload = {}
-            format_name = str(payload.get("format", "ply")).lower() if isinstance(payload, dict) else "ply"
-            if format_name not in {"ply", "splat", "glb"}:
-                raise ValueError("unknown export format")
-            exporter = ensure_scene_glb if format_name == "glb" else ensure_scene_exports
-            result = await asyncio.to_thread(exporter, scene_id)
+            result = await asyncio.to_thread(ensure_scene_ply_export, scene_id)
             return web.json_response(_public_scene(result["scene"]))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:
             return _json_error(web, exc)
 
-    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/exports/{{format_name}}")
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/exports/ply")
     async def factory_scene_export_download(request: Any) -> Any:
         try:
-            format_name = request.match_info["format_name"]
-            if format_name not in {"ply", "splat", "glb", "camera"}:
-                raise FileNotFoundError("unknown export format")
-            exporter = ensure_scene_glb if format_name == "glb" else ensure_scene_exports
-            result = await asyncio.to_thread(exporter, request.match_info["scene_id"])
-            path = result[format_name]
+            result = await asyncio.to_thread(
+                ensure_scene_ply_export,
+                request.match_info["scene_id"],
+            )
+            path = result["ply"]
             scene_id = _validate_id(request.match_info["scene_id"], "scene id")
-            suffix = "json" if format_name == "camera" else format_name
             return web.FileResponse(
                 path,
                 headers={
                     "Content-Disposition":
-                    f'attachment; filename="scene-{scene_id}.{suffix}"'
+                    f'attachment; filename="scene-{scene_id}.ply"'
                 },
             )
         except FileNotFoundError as exc:

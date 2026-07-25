@@ -38,7 +38,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 9;
-const FRONTEND_BUILD = "20260725.16";
+const FRONTEND_BUILD = "20260725.17";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -50,7 +50,6 @@ const DEFAULT_SETTINGS = Object.freeze({
     conditioning_resolution: 1024,
     prevent_upscale: false,
     remove_background: true,
-    export_format: "ply",
     splat_cache_limit_gb: 32,
     seed: 0,
     seed_mode: "randomize",
@@ -171,7 +170,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260725.5", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260725.6", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -1027,7 +1026,7 @@ class Factory3DWidget {
             event.preventDefault();
             this._moveLayer(this.dragLayer, null, "end");
         });
-        this._listen(this.els.sceneExport, "click", () => void this.exportScene(this.settings.export_format));
+        this._listen(this.els.sceneExport, "click", () => void this.exportScene());
     }
 
     _normalizeLighting(value = {}) {
@@ -2179,18 +2178,15 @@ class Factory3DWidget {
             this._scheduleStateSave(0);
             this._scheduleScenePreview(120);
         });
-        const exportFormat = ["ply", "splat", "glb"].includes(this.settings.export_format)
-            ? this.settings.export_format
-            : "ply";
         const exportObject = button(
             "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
             "",
             "download",
         );
-        exportObject.title = `Export transformed ${exportFormat.toUpperCase()}`;
+        exportObject.title = "Export transformed PLY";
         exportObject.addEventListener("click", event => {
             event.stopPropagation();
-            void this.exportObject(item, exportFormat, exportObject);
+            void this.exportObject(item, exportObject);
         });
         const duplicate = button("vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button", "", "duplicate");
         duplicate.title = "Duplicate object";
@@ -2933,7 +2929,7 @@ class Factory3DWidget {
         }
     }
 
-    async exportScene(format) {
+    async exportScene() {
         if (!this._effectiveVisibleObjectIds().size) {
             this.toast("Show at least one object before exporting the scene.", "error");
             return;
@@ -2949,19 +2945,9 @@ class Factory3DWidget {
         try {
             const scene = await this._fetchJSON(ENDPOINTS.exportScene(this.sceneId), {
                 method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ format }),
             });
             this.scene.exports = scene.exports;
-            download(scene.exports.urls[format]);
-            if (format === "splat" && scene.exports.urls.camera) {
-                // The canonical raw SPLAT format is exactly 32 bytes per
-                // Gaussian and has no metadata section. Keep it universally
-                // readable and download the exact camera/frame as its bound
-                // JSON sidecar instead of corrupting the payload with a
-                // proprietary trailer.
-                download(scene.exports.urls.camera);
-            }
+            download(scene.exports.urls.ply);
             this._setStatus("Scene exported", "success");
         } catch (error) {
             this._setStatus("Export failed", "error");
@@ -2969,14 +2955,14 @@ class Factory3DWidget {
         }
     }
 
-    async exportObject(item, format, control = null) {
-        const url = item?.urls?.[`export_${format}`];
+    async exportObject(item, control = null) {
+        const url = item?.urls?.export_ply;
         if (!url) {
-            this.toast(`${String(format).toUpperCase()} export is not available.`, "error");
+            this.toast("PLY export is not available.", "error");
             return;
         }
         if (control) control.disabled = true;
-        this._setStatus(`Exporting ${String(format).toUpperCase()}`, "working");
+        this._setStatus("Exporting PLY", "working");
         try {
             const response = await fetch(apiUrl(url), { credentials: "same-origin" });
             if (!response.ok) {
@@ -2992,7 +2978,7 @@ class Factory3DWidget {
             const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
             const filename = encodedName
                 ? decodeURIComponent(encodedName)
-                : plainName || `${item.name || "object"}.${format}`;
+                : plainName || `${item.name || "object"}.ply`;
             downloadBlob(await response.blob(), filename);
             this._setStatus("Object exported", "success");
         } catch (error) {
@@ -4208,10 +4194,6 @@ class Factory3DWidget {
         let preventUpscale = Boolean(
             draftSettings?.prevent_upscale ?? this.settings.prevent_upscale,
         );
-        let exportFormat = String(
-            draftSettings?.export_format ?? this.settings.export_format ?? "ply",
-        ).toLowerCase();
-        if (!["ply", "splat", "glb"].includes(exportFormat)) exportFormat = "ply";
         let cacheStatus = safeObject(capabilities?.splat_cache);
         let cacheLimitGB = Math.round(clamp(
             draftSettings?.splat_cache_limit_gb
@@ -4330,41 +4312,6 @@ class Factory3DWidget {
         upscaleSwitch.setAttribute("aria-checked", String(preventUpscale));
         upscaleControl.append(upscaleCopy, upscaleSwitch);
         const effective = element("div", "vnccs-i3s__conditioning-summary");
-        const exportLabel = element("div", "vnccs-i3s__label", "Object and scene export");
-        const exportList = element("div", "vnccs-i3s__format-list");
-        const exportOptions = [
-            {
-                value: "ply",
-                title: "PLY",
-                description: "Editable Gaussian PLY with complete splat data.",
-            },
-            {
-                value: "splat",
-                title: "SPLAT",
-                description: "Compact Gaussian asset for realtime viewers.",
-            },
-            {
-                value: "glb",
-                title: "GLB · Gaussian",
-                description: "Lossless KHR_gaussian_splatting scene with camera.",
-            },
-        ];
-        for (const option of exportOptions) {
-            const choice = element("label", "vnccs-i3s__format-option");
-            const input = element("input");
-            input.type = "radio";
-            input.name = "vnccs-triposplat-export-format";
-            input.value = option.value;
-            input.checked = option.value === exportFormat;
-            const copy = element("span", "vnccs-i3s__format-copy");
-            copy.append(
-                element("span", "vnccs-i3s__format-title", option.title),
-                element("span", "vnccs-i3s__format-description", option.description),
-            );
-            choice.append(input, element("span", "vnccs-i3s__resolution-radio"), copy);
-            exportList.appendChild(choice);
-        }
-
         const cache = element(
             "section",
             "vnccs-i3s__setup-block vnccs-i3s__setup-block--cache",
@@ -4479,9 +4426,6 @@ class Factory3DWidget {
         const currentDraft = () => ({
             conditioning_resolution: selectedResolution(),
             prevent_upscale: preventUpscale,
-            export_format: String(
-                exportList.querySelector("input:checked")?.value || "ply",
-            ),
             splat_cache_limit_gb: cacheLimitGB,
         });
         const updateSummary = () => {
@@ -4518,8 +4462,6 @@ class Factory3DWidget {
             resolutionList,
             upscaleControl,
             effective,
-            exportLabel,
-            exportList,
         );
         body.append(models, inference, cache);
 
@@ -4571,7 +4513,6 @@ class Factory3DWidget {
                 if (this.capabilities) this.capabilities.splat_cache = cacheResult;
                 this.settings.conditioning_resolution = draft.conditioning_resolution;
                 this.settings.prevent_upscale = draft.prevent_upscale;
-                this.settings.export_format = draft.export_format;
                 this.settings.splat_cache_limit_gb = draft.splat_cache_limit_gb;
                 this._syncTripoSummary();
                 this._syncSettings();
@@ -4579,7 +4520,7 @@ class Factory3DWidget {
                 this._scheduleStateSave(0);
                 this.closeModal();
                 this.toast(
-                    `TripoSplat settings applied · ${draft.export_format.toUpperCase()} export · ${draft.splat_cache_limit_gb} GiB cache.`,
+                    `TripoSplat settings applied · ${draft.splat_cache_limit_gb} GiB cache.`,
                     "success",
                 );
             } catch (error) {
@@ -4730,14 +4671,10 @@ class Factory3DWidget {
         this._syncBackgroundRemoval();
         this._syncSeedMode();
         this._syncDensityMode();
-        const exportFormat = ["ply", "splat", "glb"].includes(this.settings.export_format)
-            ? this.settings.export_format
-            : "ply";
-        this.settings.export_format = exportFormat;
         const exportLabel = this.els.sceneExport?.querySelector("span:last-child");
-        if (exportLabel) exportLabel.textContent = `Scene ${exportFormat.toUpperCase()}`;
+        if (exportLabel) exportLabel.textContent = "Scene PLY";
         if (this.els.sceneExport) {
-            this.els.sceneExport.title = `Export visible scene as ${exportFormat.toUpperCase()}`;
+            this.els.sceneExport.title = "Export visible scene as PLY";
         }
         this._customSelects?.refresh?.();
     }
@@ -4860,11 +4797,7 @@ class Factory3DWidget {
                 this.settings.conditioning_resolution = Number(this.settings.conditioning_resolution);
             }
             this.settings.prevent_upscale = this.settings.prevent_upscale === true;
-            this.settings.export_format = ["ply", "splat", "glb"].includes(
-                String(this.settings.export_format).toLowerCase(),
-            )
-                ? String(this.settings.export_format).toLowerCase()
-                : "ply";
+            delete this.settings.export_format;
             this.settings.splat_cache_limit_gb = Math.round(clamp(
                 this.settings.splat_cache_limit_gb,
                 1,

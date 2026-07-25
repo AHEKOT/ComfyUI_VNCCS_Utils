@@ -24,7 +24,6 @@ def load_modules():
     modules = {}
     for name in (
         "gaussian_scene",
-        "gaussian_mesh",
         "factory3d",
         "factory3d_library",
     ):

@@ -267,10 +267,10 @@ def _backend():
 
 
 class VNCCS_3DFactory:
-    """Expose a saved Factory scene and its Gaussian exports to the graph."""
+    """Render a saved Factory scene into the ComfyUI graph."""
 
-    RETURN_TYPES = ("IMAGE", "STRING", "STRING", "STRING")
-    RETURN_NAMES = ("preview", "scene_ply", "scene_splat", "scene_manifest")
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("preview",)
     FUNCTION = "load_scene"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -320,7 +320,7 @@ class VNCCS_3DFactory:
         state = _parse_state(factory_data)
         scene_id = str(state.get("scene_id") or "")
         if not scene_id:
-            return (_empty_image(), "", "", "")
+            return (_empty_image(),)
 
         backend = _backend()
         try:
@@ -334,9 +334,6 @@ class VNCCS_3DFactory:
         if scene.get("objects"):
             capture_token = uuid.uuid4().hex if unique_id is not None else ""
             requested = _request_scene_preview(unique_id, scene, capture_token)
-            # Export failures must fail the node with their real traceback.
-            # Returning empty paths made a broken export look successful.
-            exports = backend.ensure_scene_exports(scene_id)
             preview_path = _wait_for_scene_preview(
                 backend,
                 scene_id,
@@ -345,10 +342,4 @@ class VNCCS_3DFactory:
             preview = _preview_tensor(preview_path)
         else:
             preview = _empty_image()
-            exports = None
-        return (
-            preview,
-            str(exports["ply"]) if exports else "",
-            str(exports["splat"]) if exports else "",
-            str(backend.resolve_scene_dir(scene_id) / "scene.json"),
-        )
+        return (preview,)
