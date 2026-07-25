@@ -68,6 +68,7 @@
         var(--i3-bg);
     color: var(--i3-text);
     font: calc(11px * var(--i3-scale))/1.42 var(--i3-font);
+    contain: layout paint style;
     isolation: isolate;
     pointer-events: auto;
     user-select: none;
@@ -101,7 +102,7 @@
 .vnccs-i3s__center { min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; position: relative; }
 
 .vnccs-i3s__donate-link { flex: 0 0 auto; display: block; width: 100%; margin-top: auto; padding: 0 4px 4px; box-sizing: border-box; z-index: 3; background: rgba(6,5,12,.92); box-shadow: 0 -8px 18px rgba(6,5,12,.82); }
-.vnccs-i3s__donate-link img { display: block; width: 100%; height: auto; border-radius: 10px; }
+.vnccs-i3s__donate-link img { display: block; width: 100%; height: auto; aspect-ratio: 1859 / 525; border-radius: 10px; }
 
 .vnccs-i3s__section { flex: none; border: 1px solid var(--i3-line); border-radius: var(--i3-radius); background: rgba(255,255,255,.018); overflow: visible; }
 .vnccs-i3s__section-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: calc(8px * var(--i3-scale)) calc(9px * var(--i3-scale)); color: var(--i3-muted); text-transform: uppercase; letter-spacing: .11em; font-weight: 750; font-size: .77em; }

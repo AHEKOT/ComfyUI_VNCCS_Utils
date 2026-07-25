@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.18"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.20"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -134,14 +134,18 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
         viewer,
         /vnccsLightField|_updateLightingBounds|_installLightingShader|material\.vertexShader/,
     );
-    const animationLoop = viewer.match(
-        /_animate\(\) \{[\s\S]*?\n    \}\n\n    _attachDirectionalLighting/,
+    const demandRender = viewer.match(
+        /_renderFrame\(time\) \{[\s\S]*?\n    \}\n\n    _attachDirectionalLighting/,
     );
-    assert.ok(animationLoop, "viewer animation loop not found");
+    assert.ok(demandRender, "viewer demand-render loop not found");
     assert.doesNotMatch(
-        animationLoop[0],
+        demandRender[0],
         /this\._syncDirectionalLighting|_updateLightingUniforms/,
     );
+    assert.doesNotMatch(viewer, /_animate\(\)/);
+    assert.match(viewer, /this\.spark\.onDirty = \(\) => this\.invalidate\(\)/);
+    assert.match(viewer, /new IntersectionObserver/);
+    assert.match(viewer, /document\.visibilityState !== "hidden"/);
     assert.match(viewer, /setLighting\(value = \{\}\)/);
     assert.match(viewer, /for \(const entry of this\.objects\.values\(\)\)/);
     assert.match(styles, /\.vnccs-i3s__lighting-panel/);
@@ -311,35 +315,49 @@ test("Viewer uses true splats, transform controls, adaptive clipping, and no flo
     assert.match(viewer, /SparkRenderer/);
     assert.match(viewer, /fileType: "splat"/);
     assert.match(viewer, /fileBytes/);
-    assert.match(viewer, /const createMesh = lod =>/);
-    assert.match(viewer, /lod: lod \? "quality" : false/);
-    assert.match(viewer, /full-splat-visible; quality-lod-queued/);
-    assert.match(viewer, /Quality LOD unavailable; keeping full SPLAT/);
-    assert.match(viewer, /this\._pendingLodCandidates = lodCandidates/);
-    assert.match(viewer, /startPendingLodUpgrades/);
+    assert.match(viewer, /const createMesh = \(\) =>/);
+    assert.match(viewer, /lod: false/);
+    assert.doesNotMatch(viewer, /lod: usesLod \? "quality" : false/);
+    assert.doesNotMatch(viewer, /nonLod: usesLod/);
+    assert.match(viewer, /raycastable: false/);
+    assert.match(viewer, /editable: false/);
+    assert.doesNotMatch(viewer, /startPendingLodUpgrades|_pendingLodCandidates/);
+    assert.doesNotMatch(viewer, /fileBytes\.slice\(0\)/);
     assert.match(viewer, /_waitForRenderable/);
     assert.match(studio, /Loading generated object/);
     assert.match(studio, /generatedScene = safeObject\(job\.result\?\.scene\)/);
     assert.match(studio, /this\.els\.cancelJob\.disabled = !visible \|\| !this\.currentJobId \|\| value >= 100/);
-    assert.match(viewer, /prepareSplatBuffer/);
+    assert.match(viewer, /prepareSplatBufferAsync/);
+    assert.match(viewer, /await yieldToMainThread\(\)/);
     assert.doesNotMatch(viewer, /lodSplatCount:/);
-    assert.match(viewer, /builder: "quality"/);
-    assert.match(viewer, /aggregateBudget: "platform-adaptive"/);
-    assert.match(viewer, /allocation: "screen-space"/);
-    assert.match(viewer, /lodRenderScale: 1\.25/);
+    assert.match(viewer, /enabled: false,\s*builder: "none"/);
+    assert.match(viewer, /lodRenderScale: 1,/);
+    assert.match(viewer, /minSortIntervalMs: 32/);
     assert.match(studio, /viewportResult = await this\.viewer\.setScene/);
     assert.match(studio, /Viewport scene load incomplete/);
     assert.match(studio, /Viewport failed/);
     assert.match(styles, /\.vnccs-i3s__object\.has-viewport-error/);
     assert.match(styles, /Loading Gaussian scene/);
     assert.match(viewer, /_setInteractive\("orbit", true\)/);
-    assert.match(viewer, /Math\.min\(this\._nativePixelRatio, 1\)/);
+    assert.match(viewer, /pixelBudget/);
     assert.doesNotMatch(viewer, /new SplatMesh\(\{\s*url:/);
     assert.match(viewer, /TransformControls/);
     assert.match(viewer, /boundedObjectHit/);
     assert.match(viewer, /selectionBounds/);
     assert.match(viewer, /_updateClipPlanes/);
     assert.doesNotMatch(viewer, /PlaneGeometry/);
+    assert.doesNotMatch(viewer, /intersectObjects\(meshes/);
+});
+
+test("Factory avoids background canvas churn and defers expensive convenience captures", () => {
+    assert.doesNotMatch(studio, /setDirtyCanvas/);
+    assert.doesNotMatch(studio, /app\.graph\?\.setDirtyCanvas/);
+    assert.match(studio, /requestIdleCallback\(save, \{ timeout: 8000 \}\)/);
+    assert.match(studio, /Math\.max\(1000, Number\(delay\) \|\| 0\)/);
+    assert.match(studio, /automatic[\s\S]*?2_200_000/);
+    assert.match(studio, /document\.createDocumentFragment\(\)/);
+    assert.match(studio, /thumbnail\.loading = "lazy"/);
+    assert.match(styles, /contain: layout paint style/);
 });
 
 test("Preview output is captured from the clean 3D viewport and persisted per scene", () => {
@@ -533,7 +551,8 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.13");
+    assert.equal(typeof module.prepareSplatBufferAsync, "function");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.15");
     const modifierState = module.createDirectionalLightingModifier();
     assert.equal(typeof modifierState.modifier.apply, "function");
     assert.deepEqual(modifierState.objectCenter.value.toArray(), [0, 0, 0]);
@@ -633,6 +652,23 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(repaired.diagnostics.invalid, 1);
     assert.equal(repaired.diagnostics.visible, 1);
     assert.equal(new DataView(repaired.buffer).getUint8(27), 0);
+    const asyncRepaired = await module.prepareSplatBufferAsync(
+        splatBuffer,
+        "async SPLAT",
+        { chunkRecords: 1024 },
+    );
+    assert.equal(asyncRepaired.diagnostics.invalid, 1);
+    assert.equal(asyncRepaired.diagnostics.visible, 1);
+    const aborted = new AbortController();
+    aborted.abort();
+    await assert.rejects(
+        module.prepareSplatBufferAsync(
+            splatBuffer,
+            "cancelled SPLAT",
+            { signal: aborted.signal },
+        ),
+        error => error?.name === "AbortError",
+    );
     const mesh = new THREE.Object3D();
     mesh.position.set(3, 0, 0);
     const entries = new Map([[

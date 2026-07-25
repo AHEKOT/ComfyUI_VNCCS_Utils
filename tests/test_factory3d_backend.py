@@ -814,11 +814,20 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(reference["name"], "my reference.png")
         self.assertEqual((reference["width"], reference["height"]), (3, 2))
         self.assertTrue(self.factory._scene_reference_file(saved).is_file())
+        preview_path = self.factory._scene_reference_preview_file(saved)
+        self.assertTrue(preview_path.is_file())
+        with Image.open(preview_path) as preview:
+            self.assertLessEqual(max(preview.size), 640)
         public = self.factory._public_scene(saved)["reference"]
         self.assertNotIn("file", public)
+        self.assertNotIn("preview_file", public)
         self.assertEqual(
             public["url"],
             f"/vnccs/3d-factory/scenes/{scene['scene_id']}/reference",
+        )
+        self.assertRegex(
+            public["preview_url"],
+            rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/reference/preview\?v=\d+$",
         )
 
     def test_skydome_image_settings_and_public_asset_are_scene_persistent(self):
@@ -837,6 +846,11 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(sky["name"], "Mountain Sunset")
         self.assertEqual((sky["width"], sky["height"]), (512, 256))
         self.assertTrue(self.factory._scene_skydome_file(saved).is_file())
+        viewport_path = self.factory._scene_skydome_viewport_file(saved)
+        self.assertTrue(viewport_path.is_file())
+        with Image.open(viewport_path) as viewport:
+            self.assertLessEqual(viewport.width, 2048)
+            self.assertLessEqual(viewport.height, 1024)
         self.assertEqual(saved["revision"], 0)
         self.assertEqual(saved["render_revision"], 1)
 
@@ -857,6 +871,10 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertNotIn("file", public)
         self.assertRegex(
             public["url"],
+            rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/skydome/viewport\?v=\d+$",
+        )
+        self.assertRegex(
+            public["source_url"],
             rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/skydome\?v=\d+$",
         )
 
@@ -1119,8 +1137,10 @@ class FactoryBackendTests(unittest.TestCase):
             ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
+            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/reference/preview"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
+            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/skydome/viewport"),
             ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/preview"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/preview"),

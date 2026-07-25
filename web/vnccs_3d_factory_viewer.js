@@ -9,9 +9,13 @@ import {
 
 
 const EMPTY = () => {};
-const LOD_MIN_GAUSSIANS = 262_145;
+const HEAVY_SCENE_GAUSSIANS = 262_145;
+const SPLAT_SCAN_CHUNK = 16_384;
+const SPLAT_BOUND_SAMPLES = 4_096;
+const INTERACTIVE_FRAME_MS = 1000 / 30;
+const LIGHTING_UPDATE_MS = 1000 / 15;
 const LIGHTING_BASE_RESPONSE = 0.65;
-export const FACTORY_VIEWER_BUILD = "20260725.13";
+export const FACTORY_VIEWER_BUILD = "20260725.15";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -249,66 +253,135 @@ export function validateSplatBuffer(buffer, label = "SPLAT asset") {
     return buffer;
 }
 
-export function prepareSplatBuffer(buffer, label = "SPLAT asset") {
-    validateSplatBuffer(buffer, label);
-    const count = buffer.byteLength / 32;
-    const source = new DataView(buffer);
-    let output = null;
-    let target = source;
-    let invalid = 0;
-    let visible = 0;
-    const makeWritable = () => {
-        if (!output) {
-            output = buffer.slice(0);
-            target = new DataView(output);
-        }
-    };
-    for (let index = 0; index < count; index += 1) {
+function scanSplatRange(buffer, source, state, start, end) {
+    for (let index = start; index < end; index += 1) {
         const offset = index * 32;
-        const values = [
-            source.getFloat32(offset, true),
-            source.getFloat32(offset + 4, true),
-            source.getFloat32(offset + 8, true),
-            source.getFloat32(offset + 12, true),
-            source.getFloat32(offset + 16, true),
-            source.getFloat32(offset + 20, true),
-        ];
-        const valid = values.every(Number.isFinite)
-            && values.slice(0, 3).every(value => Math.abs(value) <= 1_000_000)
-            && values.slice(3).every(value => value > 0 && value <= 1_000_000);
+        const x = source.getFloat32(offset, true);
+        const y = source.getFloat32(offset + 4, true);
+        const z = source.getFloat32(offset + 8, true);
+        const sx = source.getFloat32(offset + 12, true);
+        const sy = source.getFloat32(offset + 16, true);
+        const sz = source.getFloat32(offset + 20, true);
+        const valid = Number.isFinite(x)
+            && Number.isFinite(y)
+            && Number.isFinite(z)
+            && Number.isFinite(sx)
+            && Number.isFinite(sy)
+            && Number.isFinite(sz)
+            && Math.abs(x) <= 1_000_000
+            && Math.abs(y) <= 1_000_000
+            && Math.abs(z) <= 1_000_000
+            && sx > 0
+            && sy > 0
+            && sz > 0
+            && sx <= 1_000_000
+            && sy <= 1_000_000
+            && sz <= 1_000_000;
         if (!valid) {
-            makeWritable();
-            invalid += 1;
-            target.setFloat32(offset, 0, true);
-            target.setFloat32(offset + 4, 0, true);
-            target.setFloat32(offset + 8, 0, true);
-            target.setFloat32(offset + 12, 0.000001, true);
-            target.setFloat32(offset + 16, 0.000001, true);
-            target.setFloat32(offset + 20, 0.000001, true);
-            target.setUint8(offset + 27, 0);
-            target.setUint8(offset + 28, 255);
-            target.setUint8(offset + 29, 128);
-            target.setUint8(offset + 30, 128);
-            target.setUint8(offset + 31, 128);
+            if (!state.output) {
+                state.output = buffer.slice(0);
+                state.target = new DataView(state.output);
+            }
+            state.invalid += 1;
+            state.target.setFloat32(offset, 0, true);
+            state.target.setFloat32(offset + 4, 0, true);
+            state.target.setFloat32(offset + 8, 0, true);
+            state.target.setFloat32(offset + 12, 0.000001, true);
+            state.target.setFloat32(offset + 16, 0.000001, true);
+            state.target.setFloat32(offset + 20, 0.000001, true);
+            state.target.setUint8(offset + 27, 0);
+            state.target.setUint8(offset + 28, 255);
+            state.target.setUint8(offset + 29, 128);
+            state.target.setUint8(offset + 30, 128);
+            state.target.setUint8(offset + 31, 128);
             continue;
         }
-        if (source.getUint8(offset + 27) > 0) visible += 1;
+        if (source.getUint8(offset + 27) <= 0) continue;
+        state.visible += 1;
+        if (index % state.sampleStride === 0) {
+            state.coordinates[0].push(x);
+            state.coordinates[1].push(y);
+            state.coordinates[2].push(z);
+        }
     }
-    if (!visible) {
+}
+
+function splatScanState(buffer) {
+    const count = buffer.byteLength / 32;
+    return {
+        count,
+        output: null,
+        target: new DataView(buffer),
+        invalid: 0,
+        visible: 0,
+        sampleStride: Math.max(1, Math.ceil(count / SPLAT_BOUND_SAMPLES)),
+        coordinates: [[], [], []],
+    };
+}
+
+function splatScanResult(buffer, label, state) {
+    if (!state.visible) {
         throw new Error(
-            `${label} contains ${count.toLocaleString()} records but no finite visible Gaussians`
-            + (invalid ? ` (${invalid.toLocaleString()} invalid records)` : ""),
+            `${label} contains ${state.count.toLocaleString()} records but no finite visible Gaussians`
+            + (state.invalid ? ` (${state.invalid.toLocaleString()} invalid records)` : ""),
         );
     }
     return {
-        buffer: output || buffer,
+        buffer: state.output || buffer,
+        bounds: robustCoordinateBounds(state.coordinates),
         diagnostics: {
-            gaussians: count,
-            visible,
-            invalid,
-            repaired: Boolean(output),
+            gaussians: state.count,
+            visible: state.visible,
+            invalid: state.invalid,
+            repaired: Boolean(state.output),
         },
     };
+}
+
+function abortError() {
+    const error = new Error("SPLAT preparation was cancelled");
+    error.name = "AbortError";
+    return error;
+}
+
+async function yieldToMainThread() {
+    if (globalThis.scheduler?.yield) {
+        await globalThis.scheduler.yield();
+        return;
+    }
+    await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+export function prepareSplatBuffer(buffer, label = "SPLAT asset") {
+    validateSplatBuffer(buffer, label);
+    const source = new DataView(buffer);
+    const state = splatScanState(buffer);
+    scanSplatRange(buffer, source, state, 0, state.count);
+    return splatScanResult(buffer, label, state);
+}
+
+export async function prepareSplatBufferAsync(
+    buffer,
+    label = "SPLAT asset",
+    { signal, chunkRecords = SPLAT_SCAN_CHUNK } = {},
+) {
+    validateSplatBuffer(buffer, label);
+    const source = new DataView(buffer);
+    const state = splatScanState(buffer);
+    const chunk = Math.max(1_024, Math.floor(Number(chunkRecords) || SPLAT_SCAN_CHUNK));
+    for (let start = 0; start < state.count; start += chunk) {
+        if (signal?.aborted) throw abortError();
+        scanSplatRange(
+            buffer,
+            source,
+            state,
+            start,
+            Math.min(state.count, start + chunk),
+        );
+        if (start + chunk < state.count) await yieldToMainThread();
+    }
+    if (signal?.aborted) throw abortError();
+    return splatScanResult(buffer, label, state);
 }
 
 function paddedBounds(box) {
@@ -388,49 +461,43 @@ export function canonicalObjectPreviewCamera(
  * scale must not make selection, framing, and transform controls unusable.
  */
 export function computeRobustSplatBounds(mesh, options = {}) {
-    const maxSamples = Math.max(256, Number(options.maxSamples) || 16384);
+    const maxSamples = Math.max(256, Number(options.maxSamples) || SPLAT_BOUND_SAMPLES);
     const opacityThreshold = Math.max(0, Number(options.opacityThreshold) || 0.01);
-    const trimFraction = Math.max(0, Math.min(0.02, Number(options.trimFraction) || 0.002));
     const splatCount = Math.max(0, Number(mesh?.numSplats) || 0);
     const stride = Math.max(1, Math.ceil(splatCount / maxSamples));
     const coordinates = [[], [], []];
 
     try {
-        mesh.forEachSplat((index, center, _scales, _quaternion, opacity) => {
-            if (index % stride !== 0) return;
-            if (Number.isFinite(opacity) && opacity < opacityThreshold) return;
-            const values = [Number(center?.x), Number(center?.y), Number(center?.z)];
-            if (!values.every(Number.isFinite)) return;
-            coordinates[0].push(values[0]);
-            coordinates[1].push(values[1]);
-            coordinates[2].push(values[2]);
-        });
+        const splats = mesh?.splats;
+        if (typeof splats?.getSplat === "function") {
+            for (let index = 0; index < splatCount; index += stride) {
+                const { center, opacity } = splats.getSplat(index);
+                if (Number.isFinite(opacity) && opacity < opacityThreshold) continue;
+                const x = Number(center?.x);
+                const y = Number(center?.y);
+                const z = Number(center?.z);
+                if (![x, y, z].every(Number.isFinite)) continue;
+                coordinates[0].push(x);
+                coordinates[1].push(y);
+                coordinates[2].push(z);
+            }
+        } else {
+            mesh.forEachSplat((index, center, _scales, _quaternion, opacity) => {
+                if (index % stride !== 0) return;
+                if (Number.isFinite(opacity) && opacity < opacityThreshold) return;
+                const x = Number(center?.x);
+                const y = Number(center?.y);
+                const z = Number(center?.z);
+                if (![x, y, z].every(Number.isFinite)) return;
+                coordinates[0].push(x);
+                coordinates[1].push(y);
+                coordinates[2].push(z);
+            });
+        }
     } catch (_) {}
 
-    const sampleCount = coordinates[0].length;
-    if (sampleCount >= 8) {
-        for (const axis of coordinates) axis.sort((left, right) => left - right);
-        const trim = sampleCount >= 128
-            ? Math.min(
-                Math.floor(sampleCount * trimFraction),
-                Math.floor((sampleCount - 2) / 2),
-            )
-            : 0;
-        const last = sampleCount - 1 - trim;
-        const box = new THREE.Box3(
-            new THREE.Vector3(
-                coordinates[0][trim],
-                coordinates[1][trim],
-                coordinates[2][trim],
-            ),
-            new THREE.Vector3(
-                coordinates[0][last],
-                coordinates[1][last],
-                coordinates[2][last],
-            ),
-        );
-        if (!box.isEmpty()) return paddedBounds(box);
-    }
+    const sampled = robustCoordinateBounds(coordinates, options);
+    if (hasFiniteBounds(sampled)) return sampled;
 
     try {
         const box = paddedBounds(mesh.getBoundingBox(true).clone());
@@ -441,6 +508,35 @@ export function computeRobustSplatBounds(mesh, options = {}) {
             new THREE.Vector3(0.5, 0.5, 0.5),
         );
     }
+}
+
+function robustCoordinateBounds(coordinates, options = {}) {
+    const trimFraction = Math.max(
+        0,
+        Math.min(0.02, Number(options.trimFraction) || 0.002),
+    );
+    const sampleCount = coordinates?.[0]?.length || 0;
+    if (sampleCount < 8) return new THREE.Box3();
+    for (const axis of coordinates) axis.sort((left, right) => left - right);
+    const trim = sampleCount >= 128
+        ? Math.min(
+            Math.floor(sampleCount * trimFraction),
+            Math.floor((sampleCount - 2) / 2),
+        )
+        : 0;
+    const last = sampleCount - 1 - trim;
+    return paddedBounds(new THREE.Box3(
+        new THREE.Vector3(
+            coordinates[0][trim],
+            coordinates[1][trim],
+            coordinates[2][trim],
+        ),
+        new THREE.Vector3(
+            coordinates[0][last],
+            coordinates[1][last],
+            coordinates[2][last],
+        ),
+    ));
 }
 
 export function boundedObjectHit(ray, entries) {
@@ -493,10 +589,23 @@ export class Factory3DViewer {
         this._suppressTransform = false;
         this._suppressStateEvents = false;
         this._frame = 0;
+        this._renderRequested = false;
+        this._lastRenderTime = 0;
+        this._cameraStateDirty = false;
+        this._viewportVisible = true;
+        this._documentVisible = document.visibilityState !== "hidden";
+        this._viewportWidth = 0;
+        this._viewportHeight = 0;
+        this._currentPixelRatio = 0;
         this._resizeObserver = null;
+        this._intersectionObserver = null;
+        this._visibilityHandler = null;
         this._interactionReasons = new Set();
-        this._lodQueue = Promise.resolve();
-        this._pendingLodCandidates = [];
+        this._qualityInteractionReasons = new Set();
+        this._interactiveQuality = false;
+        this._qualityRestoreTimer = 0;
+        this._lightingUpdateTimer = 0;
+        this._pendingLightingEntries = new Set();
         this.lighting = { ...DEFAULT_LIGHTING };
         this._lightColor = new THREE.Color(DEFAULT_LIGHTING.color);
         this._lightBaseGain = new THREE.Vector3(1, 1, 1);
@@ -545,11 +654,13 @@ export class Factory3DViewer {
             canvas: this.canvas,
             antialias: false,
             alpha: false,
+            depth: true,
+            stencil: false,
             powerPreference: "high-performance",
         });
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-        this._nativePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-        this.renderer.setPixelRatio(this._nativePixelRatio);
+        this._nativePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
+        this.renderer.setPixelRatio(1);
 
         // Spark 2.x keeps sorting, frustum selection, and LoD traversal in
         // workers. Do not impose a fixed aggregate splat cap here: Spark's
@@ -559,13 +670,17 @@ export class Factory3DViewer {
         this.spark = new SparkRenderer({
             renderer: this.renderer,
             maxStdDev: Math.sqrt(5),
-            minSortIntervalMs: 16,
-            lodRenderScale: 1.25,
+            minSortIntervalMs: 32,
+            lodRenderScale: 1,
             behindFoveate: 0.1,
             coneFov0: 100,
             coneFov: 145,
             coneFoveate: 0.35,
         });
+        // Spark marks itself dirty again when worker-side sorting or mapping
+        // finishes. That callback is what makes render-on-demand safe: a new
+        // frame is requested only when the GPU output can actually change.
+        this.spark.onDirty = () => this.invalidate();
         this.setLighting(this.lighting);
         this.scene.add(this.spark);
 
@@ -584,7 +699,8 @@ export class Factory3DViewer {
         };
         this.controls.addEventListener("change", () => {
             this._updateClipPlanes();
-            if (!this._suppressStateEvents) this._emitState();
+            this._cameraStateDirty = !this._suppressStateEvents;
+            this.invalidate();
         });
         this.controls.addEventListener("start", () => this._setInteractive("orbit", true));
         this.controls.addEventListener("end", () => this._setInteractive("orbit", false));
@@ -639,8 +755,10 @@ export class Factory3DViewer {
                         this.options.onTransformChange(this.selectedId, transform, { final: true });
                     }
                 }
+                this._flushDirectionalLighting();
                 this._emitState();
             }
+            this.invalidate();
         });
         this.transform.addEventListener("mouseDown", () => {
             if (this.selectedGroupId) {
@@ -689,16 +807,88 @@ export class Factory3DViewer {
 
         this._resizeObserver = new ResizeObserver(() => this.resize());
         this._resizeObserver.observe(this.host);
+        if (typeof IntersectionObserver !== "undefined") {
+            this._intersectionObserver = new IntersectionObserver(entries => {
+                const entry = entries[entries.length - 1];
+                this._setViewportVisible(Boolean(entry?.isIntersecting));
+            }, { rootMargin: "128px" });
+            this._intersectionObserver.observe(this.host);
+        }
+        this._visibilityHandler = () => {
+            this._documentVisible = document.visibilityState !== "hidden";
+            if (this._documentVisible) {
+                this.resize();
+                this.invalidate();
+            } else {
+                this._cancelScheduledFrame();
+            }
+        };
+        document.addEventListener("visibilitychange", this._visibilityHandler);
         this.resize();
-        this._animate();
+        this.invalidate();
     }
 
-    _animate() {
+    _canRenderViewport() {
+        return Boolean(
+            !this._disposed
+            && !this._capturing
+            && this._documentVisible
+            && this._viewportVisible
+            && this.host?.isConnected,
+        );
+    }
+
+    _cancelScheduledFrame() {
+        if (this._frame) cancelAnimationFrame(this._frame);
+        this._frame = 0;
+    }
+
+    _setViewportVisible(visible) {
+        const next = Boolean(visible);
+        if (this._viewportVisible === next) return;
+        this._viewportVisible = next;
+        if (next) {
+            this.resize();
+            this.invalidate();
+        } else {
+            this._cancelScheduledFrame();
+        }
+    }
+
+    invalidate() {
         if (this._disposed) return;
-        this._frame = requestAnimationFrame(() => this._animate());
-        if (this._capturing) return;
-        this.controls.update();
+        this._renderRequested = true;
+        if (this._frame || !this._canRenderViewport()) return;
+        this._frame = requestAnimationFrame(time => this._renderFrame(time));
+    }
+
+    _renderFrame(time) {
+        this._frame = 0;
+        if (!this._canRenderViewport()) return;
+        const interactive = this._interactiveQuality;
+        if (
+            interactive
+            && this._lastRenderTime
+            && time - this._lastRenderTime < INTERACTIVE_FRAME_MS
+        ) {
+            this.invalidate();
+            return;
+        }
+        this._renderRequested = false;
+        const deltaSeconds = this._lastRenderTime
+            ? Math.min(0.1, Math.max(0, time - this._lastRenderTime) / 1000)
+            : null;
+        const cameraChanged = this.controls.update(deltaSeconds);
         this.renderer.render(this.scene, this.camera);
+        this._lastRenderTime = time;
+        if (this._interactionReasons.size || cameraChanged || this._renderRequested) {
+            this.invalidate();
+            return;
+        }
+        if (this._cameraStateDirty) {
+            this._cameraStateDirty = false;
+            this._emitState();
+        }
     }
 
     _attachDirectionalLighting(entry) {
@@ -739,6 +929,33 @@ export class Factory3DViewer {
         if (regenerate) entry.splat.updateVersion();
     }
 
+    _scheduleDirectionalLighting(entry, { immediate = false } = {}) {
+        if (entry) this._pendingLightingEntries.add(entry);
+        if (immediate) {
+            this._flushDirectionalLighting();
+            return;
+        }
+        if (this._lightingUpdateTimer) return;
+        this._lightingUpdateTimer = setTimeout(
+            () => this._flushDirectionalLighting(),
+            LIGHTING_UPDATE_MS,
+        );
+    }
+
+    _flushDirectionalLighting() {
+        clearTimeout(this._lightingUpdateTimer);
+        this._lightingUpdateTimer = 0;
+        let regenerated = false;
+        for (const entry of this._pendingLightingEntries) {
+            if (!entry || !this.objects.has(entry.data?.object_id)) continue;
+            this._syncDirectionalLighting(entry);
+            regenerated = true;
+        }
+        this._pendingLightingEntries.clear();
+        if (regenerated) this.spark?.setDirty?.();
+        this.invalidate();
+    }
+
     setLighting(value = {}) {
         this.lighting = normalizedLighting({ ...DEFAULT_LIGHTING, ...value });
         lightSourceDirection(
@@ -773,6 +990,7 @@ export class Factory3DViewer {
         }
         if (regenerated) this.spark?.setDirty?.();
         this._applySkydomeSettings();
+        this.invalidate();
     }
 
     _applySkydomeSettings() {
@@ -797,6 +1015,21 @@ export class Factory3DViewer {
             this.scene.backgroundIntensity = 1;
             this.scene.backgroundBlurriness = 0;
         }
+        this.invalidate();
+    }
+
+    async _loadSkydomeTexture(assetPath) {
+        const texture = await new THREE.TextureLoader().loadAsync(
+            this.options.resolveAssetURL(assetPath),
+        );
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.mapping = THREE.EquirectangularReflectionMapping;
+        texture.anisotropy = Math.min(
+            2,
+            this.renderer?.capabilities?.getMaxAnisotropy?.() || 1,
+        );
+        texture.needsUpdate = true;
+        return texture;
     }
 
     async setSkydome(value = null) {
@@ -815,24 +1048,16 @@ export class Factory3DViewer {
             return this.skydome;
         }
         try {
-            const texture = await new THREE.TextureLoader().loadAsync(
-                this.options.resolveAssetURL(assetPath),
-            );
+            const texture = await this._loadSkydomeTexture(assetPath);
             if (token !== this._skydomeLoadToken || this._disposed) {
                 texture.dispose();
                 return null;
             }
-            texture.colorSpace = THREE.SRGBColorSpace;
-            texture.mapping = THREE.EquirectangularReflectionMapping;
-            texture.anisotropy = Math.min(
-                8,
-                this.renderer?.capabilities?.getMaxAnisotropy?.() || 1,
-            );
-            texture.needsUpdate = true;
             this.skydomeTexture?.dispose?.();
             this.skydomeTexture = texture;
             this.skydomeAssetPath = assetPath;
             this._applySkydomeSettings();
+            this.invalidate();
             return this.skydome;
         } catch (error) {
             if (token !== this._skydomeLoadToken || this._disposed) return null;
@@ -857,15 +1082,86 @@ export class Factory3DViewer {
         return Boolean(this.skydomeTexture && this.skydome?.visible !== false);
     }
 
+    isViewportVisible() {
+        return Boolean(this._viewportVisible && this._documentVisible && this.host?.isConnected);
+    }
+
+    setEditorInteraction(reason, active) {
+        const key = String(reason || "control");
+        if (active) {
+            this._qualityInteractionReasons.add(key);
+            this._beginInteractiveQuality();
+        } else if (this._qualityInteractionReasons.delete(key)) {
+            this._scheduleQualityRestore();
+        }
+        this.invalidate();
+    }
+
+    _beginInteractiveQuality() {
+        clearTimeout(this._qualityRestoreTimer);
+        this._qualityRestoreTimer = 0;
+        if (!this._interactiveQuality) {
+            this._interactiveQuality = true;
+            this.resize();
+        }
+    }
+
+    _scheduleQualityRestore() {
+        if (
+            !this._interactiveQuality
+            || this._interactionReasons.size
+            || this._qualityInteractionReasons.size
+            || this._qualityRestoreTimer
+        ) return;
+        // Restoring a large high-DPI drawing buffer directly inside pointerup
+        // increases INP. Keep the lightweight buffer through damping, then
+        // draw one sharp idle frame.
+        this._qualityRestoreTimer = setTimeout(() => {
+            this._qualityRestoreTimer = 0;
+            if (
+                this._disposed
+                || this._interactionReasons.size
+                || this._qualityInteractionReasons.size
+            ) return;
+            this._interactiveQuality = false;
+            if (!this._documentVisible || !this._viewportVisible) return;
+            this.resize();
+            this.invalidate();
+        }, 180);
+    }
+
     _setInteractive(reason, active) {
-        if (active) this._interactionReasons.add(reason);
-        else this._interactionReasons.delete(reason);
-        const ratio = this._interactionReasons.size
-            ? Math.min(this._nativePixelRatio, 1)
-            : this._nativePixelRatio;
-        if (Math.abs(this.renderer.getPixelRatio() - ratio) < 1e-6) return;
-        this.renderer.setPixelRatio(ratio);
-        this.resize();
+        if (active) {
+            this._interactionReasons.add(reason);
+            this._beginInteractiveQuality();
+        } else if (this._interactionReasons.delete(reason)) {
+            this._scheduleQualityRestore();
+        }
+        this.invalidate();
+    }
+
+    _totalGaussianCount() {
+        let total = 0;
+        for (const entry of this.objects?.values?.() || []) {
+            if (entry.mesh?.visible !== false) total += Number(entry.splat?.numSplats) || 0;
+        }
+        return total;
+    }
+
+    _desiredPixelRatio(width, height) {
+        const interactive = Boolean(this._interactiveQuality);
+        const heavy = this._totalGaussianCount() >= HEAVY_SCENE_GAUSSIANS;
+        const nativeRatio = Number.isFinite(this._nativePixelRatio)
+            ? this._nativePixelRatio
+            : 1;
+        const base = interactive
+            ? Math.min(nativeRatio, heavy ? 0.85 : 1)
+            : nativeRatio;
+        const pixelBudget = interactive
+            ? (heavy ? 900_000 : 1_250_000)
+            : 2_200_000;
+        const budgetRatio = Math.sqrt(pixelBudget / Math.max(1, width * height));
+        return Math.max(0.5, Math.min(base, budgetRatio));
     }
 
     resize() {
@@ -886,9 +1182,24 @@ export class Factory3DViewer {
             1,
             Math.floor(Number(this.host.clientHeight) || rect.height),
         );
+        const pixelRatio = this._desiredPixelRatio(width, height);
+        const sizeChanged = width !== this._viewportWidth || height !== this._viewportHeight;
+        const currentPixelRatio = Number.isFinite(this._currentPixelRatio)
+            ? this._currentPixelRatio
+            : pixelRatio;
+        const ratioChanged = Math.abs(pixelRatio - currentPixelRatio) > 1e-4;
         this._updateCameraProjection(width, height);
-        this.renderer.setSize(width, height, false);
         this._updateCameraFrame(width, height);
+        if (ratioChanged) {
+            this.renderer.setPixelRatio(pixelRatio);
+            this._currentPixelRatio = pixelRatio;
+        }
+        if (sizeChanged) {
+            this.renderer.setSize(width, height, false);
+            this._viewportWidth = width;
+            this._viewportHeight = height;
+        }
+        if (sizeChanged || ratioChanged) this.invalidate();
     }
 
     _cameraFrameLayout(width = 0, height = 0) {
@@ -959,22 +1270,11 @@ export class Factory3DViewer {
             -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
         );
         this.raycaster.setFromCamera(this.pointer, this.camera);
-        const meshes = Array.from(this.objects.values(), entry => entry.splat || entry.mesh);
-        let hits = [];
-        try {
-            hits = this.raycaster.intersectObjects(meshes, false);
-        } catch (error) {
-            this.options.onError(error);
-        }
-        if (hits[0]) {
-            const objectId = hits[0].object?.userData?.factoryObjectId;
-            if (objectId && this.objects.has(objectId)) {
-                this.select(objectId, { additive: event.shiftKey });
-                return;
-            }
-        }
-        const fallback = boundedObjectHit(this.raycaster.ray, this.objects);
-        this.select(fallback?.objectId || "", { additive: event.shiftKey });
+        // Per-Gaussian raycasting creates long pointer tasks on dense scenes.
+        // Robust trimmed bounds already describe every object well enough for
+        // editor selection and keep this operation O(number of objects).
+        const hit = boundedObjectHit(this.raycaster.ray, this.objects);
+        this.select(hit?.objectId || "", { additive: event.shiftKey });
     }
 
     _applyTransform(mesh, value) {
@@ -1039,8 +1339,9 @@ export class Factory3DViewer {
         const transform = this._meshTransform(entry.mesh);
         entry.data.transform = transform;
         this._refreshSelectionBounds();
-        this._syncDirectionalLighting(entry);
+        if (this.mode === "rotate") this._scheduleDirectionalLighting(entry);
         this.spark.setDirty?.();
+        this.invalidate();
         this.options.onTransformChange(this.selectedId, transform, { final: !this.transform.dragging });
     }
 
@@ -1120,14 +1421,16 @@ export class Factory3DViewer {
             this._suppressTransform = false;
             const transform = this._meshTransform(entry.mesh);
             entry.data.transform = transform;
-            this._syncDirectionalLighting(entry);
+            if (this.mode === "rotate") this._scheduleDirectionalLighting(entry);
             this.options.onTransformChange(objectId, transform, {
                 final,
                 group_id: this.selectedGroupId,
             });
         }
         this._refreshSelectionBounds();
+        if (final && this.mode === "rotate") this._flushDirectionalLighting();
         this.spark.setDirty?.();
+        this.invalidate();
         if (final) {
             this._groupTransformStart = null;
         }
@@ -1174,7 +1477,6 @@ export class Factory3DViewer {
             const entry = this.objects.get(item.object_id);
             return !entry || entry.assetPath !== item.urls?.splat;
         });
-        this._pendingLodCandidates = [];
         this.options.onLoadingChange(needsAssetLoading);
         if (!incremental) {
             this.transform.detach();
@@ -1201,7 +1503,6 @@ export class Factory3DViewer {
         }
         const visibleIds = effectiveVisibleObjectIds(sceneData);
         const failures = [];
-        const lodCandidates = [];
         for (const item of source) {
             if (token !== this._loadingToken || this._disposed) return;
             let mesh = null;
@@ -1234,7 +1535,7 @@ export class Factory3DViewer {
                 const response = await fetch(assetURL, {
                     signal: loadController.signal,
                     credentials: "same-origin",
-                    cache: "no-store",
+                    cache: "default",
                 });
                 if (!response.ok) {
                     let detail = "";
@@ -1245,22 +1546,26 @@ export class Factory3DViewer {
                         + (detail ? ` — ${detail}` : ""),
                     );
                 }
-                const preparedAsset = prepareSplatBuffer(
+                const preparedAsset = await prepareSplatBufferAsync(
                     await response.arrayBuffer(),
                     `SPLAT object ${item.object_id}`,
+                    { signal: loadController.signal },
                 );
                 const fileBytes = preparedAsset.buffer;
                 const gaussianCount = fileBytes.byteLength / 32;
-                const usesLod = gaussianCount >= LOD_MIN_GAUSSIANS;
-                const createMesh = lod => {
+                const createMesh = () => {
                     const value = new SplatMesh({
-                        fileBytes: lod ? fileBytes.slice(0) : fileBytes,
+                        fileBytes,
                         fileType: "splat",
                         fileName: `${item.object_id}.splat`,
-                        lod: lod ? "quality" : false,
-                        lodAbove: LOD_MIN_GAUSSIANS,
-                        nonLod: lod,
-                        raycastable: true,
+                        // Runtime LoD generation is intentionally disabled.
+                        // Spark's Bhatt builder can take tens of seconds per
+                        // 524k object and expands it to roughly twice as many
+                        // records before anything becomes visible. The source
+                        // SPLAT is already compact and decodes directly.
+                        lod: false,
+                        editable: false,
+                        raycastable: false,
                     });
                     value.name = item.name || item.object_id;
                     value.userData.factoryObjectId = item.object_id;
@@ -1268,10 +1573,9 @@ export class Factory3DViewer {
                     value.updateMatrix();
                     return value;
                 };
-                // Decode the original SPLAT first. It becomes visible as soon as
-                // this promise resolves; expensive quality-LoD construction is
-                // queued only after the complete object is already usable.
-                mesh = createMesh(false);
+                // Decode exactly once and make the source SPLAT visible as soon
+                // as Spark has uploaded it. Do not queue any derived mesh.
+                mesh = createMesh();
                 objectRoot = new THREE.Group();
                 objectRoot.name = item.name || item.object_id;
                 objectRoot.userData.factoryObjectId = item.object_id;
@@ -1288,7 +1592,9 @@ export class Factory3DViewer {
                 }
                 this._applyTransform(objectRoot, item.transform);
                 objectRoot.visible = visibleIds.has(item.object_id);
-                const splatBounds = computeRobustSplatBounds(mesh);
+                const splatBounds = hasFiniteBounds(preparedAsset.bounds)
+                    ? preparedAsset.bounds
+                    : computeRobustSplatBounds(mesh);
                 const localBounds = splatBounds.clone().applyMatrix4(mesh.matrix);
                 if (!hasFiniteBounds(localBounds)) {
                     throw new Error(
@@ -1305,37 +1611,27 @@ export class Factory3DViewer {
                 };
                 this.objects.set(item.object_id, entry);
                 this._attachDirectionalLighting(entry);
+                this.spark.setDirty?.();
+                this.resize();
+                this.invalidate();
                 console.info("[VNCCS 3D Factory][viewport] SPLAT ready", {
                     build: FACTORY_VIEWER_BUILD,
                     objectId: item.object_id,
                     bytes: fileBytes.byteLength,
                     gaussians: gaussianCount,
                     payload: preparedAsset.diagnostics,
-                    lod: usesLod
-                        ? {
-                            enabled: false,
-                            builder: "quality",
-                            aggregateBudget: "platform-adaptive",
-                            allocation: "screen-space",
-                            workerGenerated: true,
-                            state: "full-splat-visible; quality-lod-queued",
-                        }
-                        : { enabled: false },
+                    lod: {
+                        enabled: false,
+                        builder: "none",
+                        singlePass: true,
+                        meshRebuild: false,
+                    },
                     interactionBounds: {
                         min: localBounds.min.toArray(),
                         max: localBounds.max.toArray(),
                     },
                     elapsedMs: Math.round(performance.now() - loadStarted),
                 });
-                if (usesLod) {
-                    lodCandidates.push({
-                        token,
-                        item,
-                        objectRoot,
-                        baseMesh: mesh,
-                        fileBytes,
-                    });
-                }
             } catch (error) {
                 if (error?.name === "AbortError") return;
                 if (objectRoot) this.scene.remove(objectRoot);
@@ -1358,92 +1654,9 @@ export class Factory3DViewer {
             else this.select("");
         }
         if (this.objects.size && (!incremental || previousCount === 0)) this.fit();
-        // The widget starts these only after it has captured the mandatory
-        // current-revision preview. This keeps quality-LoD workers from
-        // starving either initial object decoding or the export render.
-        this._pendingLodCandidates = lodCandidates;
+        this.resize();
+        this.invalidate();
         return { loaded: this.objects.size, failures };
-    }
-
-    startPendingLodUpgrades() {
-        const candidates = this._pendingLodCandidates;
-        this._pendingLodCandidates = [];
-        for (const candidate of candidates) this._queueLodUpgrade(candidate);
-    }
-
-    _queueLodUpgrade({ token, item, objectRoot, baseMesh, fileBytes }) {
-        const upgrade = async () => {
-            if (token !== this._loadingToken || this._disposed) return;
-            const started = performance.now();
-            let lodMesh = null;
-            try {
-                console.info("[VNCCS 3D Factory][viewport] Building background quality LOD", {
-                    build: FACTORY_VIEWER_BUILD,
-                    objectId: item.object_id,
-                    gaussians: fileBytes.byteLength / 32,
-                });
-                lodMesh = new SplatMesh({
-                    fileBytes: fileBytes.slice(0),
-                    fileType: "splat",
-                    fileName: `${item.object_id}.splat`,
-                    lod: "quality",
-                    lodAbove: LOD_MIN_GAUSSIANS,
-                    nonLod: true,
-                    raycastable: true,
-                });
-                lodMesh.name = item.name || item.object_id;
-                lodMesh.userData.factoryObjectId = item.object_id;
-                lodMesh.setRotationFromMatrix(triposplatCanonicalMatrix());
-                lodMesh.updateMatrix();
-                await lodMesh.initialized;
-                if (!Number.isFinite(lodMesh.numSplats) || lodMesh.numSplats < 1) {
-                    throw new Error(`quality LOD decoded to zero Gaussians`);
-                }
-                const entry = this.objects.get(item.object_id);
-                if (
-                    token !== this._loadingToken
-                    || this._disposed
-                    || !entry
-                    || entry.mesh !== objectRoot
-                    || entry.splat !== baseMesh
-                ) {
-                    lodMesh.dispose?.();
-                    return;
-                }
-                const splatBounds = computeRobustSplatBounds(lodMesh);
-                const localBounds = splatBounds.clone().applyMatrix4(lodMesh.matrix);
-                if (!hasFiniteBounds(localBounds)) {
-                    throw new Error("quality LOD produced no finite interaction bounds");
-                }
-                objectRoot.remove(baseMesh);
-                objectRoot.add(lodMesh);
-                entry.splat = lodMesh;
-                entry.localBounds = localBounds;
-                entry.splatBounds = splatBounds;
-                lodMesh.objectModifier = entry.lightingModifier?.modifier;
-                lodMesh.updateGenerator();
-                this._syncDirectionalLighting(entry, { regenerate: false });
-                baseMesh.dispose?.();
-                if (this.selectedId === item.object_id) this._refreshSelectionBounds();
-                this.spark.setDirty?.();
-                console.info("[VNCCS 3D Factory][viewport] Background quality LOD ready", {
-                    build: FACTORY_VIEWER_BUILD,
-                    objectId: item.object_id,
-                    gaussians: lodMesh.numSplats,
-                    elapsedMs: Math.round(performance.now() - started),
-                });
-            } catch (error) {
-                lodMesh?.dispose?.();
-                // The complete non-LoD mesh stays active. LOD is an optional
-                // viewport optimization and must never make an object disappear.
-                console.warn("[VNCCS 3D Factory][viewport] Quality LOD unavailable; keeping full SPLAT", {
-                    build: FACTORY_VIEWER_BUILD,
-                    objectId: item.object_id,
-                    error,
-                });
-            }
-        };
-        this._lodQueue = this._lodQueue.catch(() => null).then(upgrade);
     }
 
     updateObject(objectId, value) {
@@ -1463,6 +1676,8 @@ export class Factory3DViewer {
             this._refreshSelectionBounds();
         }
         this.spark.setDirty?.();
+        if (this.host?.getBoundingClientRect) this.resize();
+        this.invalidate();
     }
 
     applySceneVisibility(sceneData = this.sceneData) {
@@ -1473,6 +1688,8 @@ export class Factory3DViewer {
         }
         this._refreshSelectionBounds();
         this.spark.setDirty?.();
+        if (this.host?.getBoundingClientRect) this.resize();
+        this.invalidate();
     }
 
     setGroupVisibility(
@@ -1512,6 +1729,8 @@ export class Factory3DViewer {
             }
         }
         this.spark.setDirty?.();
+        if (this.host?.getBoundingClientRect) this.resize();
+        this.invalidate();
     }
 
     select(objectId, { additive = false } = {}) {
@@ -1525,6 +1744,7 @@ export class Factory3DViewer {
         this._refreshSelectionBounds();
         this.options.onSelectionChange(id, { additive });
         this._emitState();
+        this.invalidate();
     }
 
     selectGroup(groupId, objectIds = []) {
@@ -1537,6 +1757,7 @@ export class Factory3DViewer {
         else this.transform.detach();
         this._refreshSelectionBounds();
         this._emitState();
+        this.invalidate();
     }
 
     setMode(mode) {
@@ -1547,12 +1768,14 @@ export class Factory3DViewer {
         this.transform.showY = true;
         this.transform.showZ = true;
         this._emitState();
+        this.invalidate();
     }
 
     setGrid(visible) {
         this.gridVisible = Boolean(visible);
         this.grid.visible = this.gridVisible;
         this._emitState();
+        this.invalidate();
     }
 
     setCaptureSettings(value = {}) {
@@ -1566,6 +1789,7 @@ export class Factory3DViewer {
         this._updateCameraProjection();
         this._updateCameraFrame();
         this.spark.setDirty?.();
+        this.invalidate();
     }
 
     getCaptureSettings() {
@@ -1612,13 +1836,24 @@ export class Factory3DViewer {
         this.controls.maxDistance = radius * 10000;
         this.controls.update();
         this._updateClipPlanes(radius);
-        if (emit) this._emitState();
+        this.invalidate();
+        if (emit) {
+            this._cameraStateDirty = false;
+            this._emitState();
+        }
     }
 
     _updateClipPlanes(radiusHint = 0) {
         const distance = Math.max(this.camera.position.distanceTo(this.controls.target), radiusHint, 0.001);
-        this.camera.near = Math.max(0.000001, distance / 100000);
-        this.camera.far = Math.max(1000, distance * 100000);
+        const near = Math.max(0.000001, distance / 100000);
+        const far = Math.max(1000, distance * 100000);
+        const changed = (
+            Math.abs(this.camera.near - near) > Math.max(1e-9, near * 1e-5)
+            || Math.abs(this.camera.far - far) > Math.max(1e-3, far * 1e-5)
+        );
+        if (!changed) return;
+        this.camera.near = near;
+        this.camera.far = far;
         this.camera.updateProjectionMatrix();
     }
 
@@ -1649,6 +1884,8 @@ export class Factory3DViewer {
         this._updateCameraProjection();
         this._updateCameraFrame();
         this._updateClipPlanes();
+        this._cameraStateDirty = false;
+        this.invalidate();
     }
 
     _emitState() {
@@ -1656,14 +1893,15 @@ export class Factory3DViewer {
     }
 
     async _waitForRenderable(timeoutMs = 15000) {
+        if (Number(this.spark.activeSplats) > 0) {
+            return Number(this.spark.activeSplats);
+        }
         const started = performance.now();
-        let frames = 0;
         this.spark.setDirty?.();
         while (!this._disposed && performance.now() - started < timeoutMs) {
             await new Promise(resolve => setTimeout(resolve, 32));
             this.renderer.render(this.scene, this.camera);
-            frames += 1;
-            if (frames >= 2 && Number(this.spark.activeSplats) > 0) {
+            if (Number(this.spark.activeSplats) > 0) {
                 return Number(this.spark.activeSplats);
             }
         }
@@ -1680,10 +1918,36 @@ export class Factory3DViewer {
         if (!this.objects.size && !this.hasVisibleSkydome()) return null;
         const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 1024)));
         const targetHeight = Math.max(64, Math.min(4096, Math.round(Number(height) || 1024)));
+        let captureSkydomeTexture = null;
+        const editorSkydomeTexture = this.skydomeTexture;
+        const skydomeSource = String(this.skydome?.source_url || "");
+        if (
+            this.hasVisibleSkydome()
+            && skydomeSource
+            && Math.max(targetWidth, targetHeight) > 2048
+        ) {
+            try {
+                captureSkydomeTexture = await this._loadSkydomeTexture(skydomeSource);
+            } catch (error) {
+                console.warn(
+                    "[VNCCS 3D Factory][viewport] Full-resolution skydome unavailable for export",
+                    error,
+                );
+            }
+        }
         const hasVisibleObjects = Array.from(this.objects.values()).some(
             entry => entry.mesh?.visible !== false,
         );
-        if (hasVisibleObjects) await this._waitForRenderable();
+        try {
+            if (hasVisibleObjects) await this._waitForRenderable();
+        } catch (error) {
+            captureSkydomeTexture?.dispose?.();
+            throw error;
+        }
+        if (this._disposed) {
+            captureSkydomeTexture?.dispose?.();
+            throw new Error("3D viewport was disposed while preparing the preview");
+        }
 
         let target = null;
         const originalPixelRatio = this.renderer.getPixelRatio();
@@ -1697,6 +1961,10 @@ export class Factory3DViewer {
         this.transformHelper.visible = false;
         this.selectionBounds.visible = false;
         this._capturing = true;
+        if (captureSkydomeTexture) {
+            this.skydomeTexture = captureSkydomeTexture;
+            this._applySkydomeSettings();
+        }
 
         try {
             this.captureCamera.position.copy(this.camera.position);
@@ -1723,6 +1991,14 @@ export class Factory3DViewer {
             context.drawImage(this.canvas, 0, 0, targetWidth, targetHeight);
         } finally {
             this.renderer.setPixelRatio(originalPixelRatio);
+            this._currentPixelRatio = originalPixelRatio;
+            this._viewportWidth = 0;
+            this._viewportHeight = 0;
+            if (captureSkydomeTexture) {
+                this.skydomeTexture = editorSkydomeTexture;
+                this._applySkydomeSettings();
+                captureSkydomeTexture.dispose();
+            }
             this.grid.visible = overlayVisibility.grid;
             this.transformHelper.visible = overlayVisibility.transform;
             this.selectionBounds.visible = overlayVisibility.bounds;
@@ -1732,6 +2008,7 @@ export class Factory3DViewer {
             // was being encoded.
             this.resize();
             this.renderer.render(this.scene, this.camera);
+            this.invalidate();
         }
         return await new Promise((resolve, reject) => {
             target.toBlob(
@@ -1865,11 +2142,20 @@ export class Factory3DViewer {
         this._disposed = true;
         this._loadingToken += 1;
         this._skydomeLoadToken += 1;
-        this._pendingLodCandidates = [];
         this._loadController?.abort();
         this._loadController = null;
-        cancelAnimationFrame(this._frame);
+        clearTimeout(this._lightingUpdateTimer);
+        clearTimeout(this._qualityRestoreTimer);
+        this._lightingUpdateTimer = 0;
+        this._qualityRestoreTimer = 0;
+        this._pendingLightingEntries.clear();
+        this._qualityInteractionReasons.clear();
+        this._cancelScheduledFrame();
         this._resizeObserver?.disconnect();
+        this._intersectionObserver?.disconnect();
+        if (this._visibilityHandler) {
+            document.removeEventListener("visibilitychange", this._visibilityHandler);
+        }
         this.transform.detach();
         this.transform.dispose();
         this.scene.remove(this.transformHelper);
@@ -1883,6 +2169,7 @@ export class Factory3DViewer {
         this.skydomeTexture = null;
         this.skydome = null;
         this.scene.remove(this.spark);
+        this.spark.onDirty = null;
         this.spark?.dispose?.();
         this.grid.geometry.dispose();
         this.grid.material.dispose();

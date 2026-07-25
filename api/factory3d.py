@@ -41,6 +41,9 @@ MAX_PREVIEW_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_SKYDOME_BYTES = 64 * 1024 * 1024
 MAX_SKYDOME_PIXELS = 8192 * 4096
+REFERENCE_PREVIEW_SIZE = (640, 640)
+SKYDOME_VIEWPORT_SIZE = (2048, 1024)
+OBJECT_THUMBNAIL_SIZE = (256, 256)
 MAX_SCENE_JSON_BYTES = 2 * 1024 * 1024
 MAX_JOB_LOG_LINES = 800
 MAX_ACTIVE_JOBS = 2
@@ -816,6 +819,19 @@ def _scene_reference_file(scene: dict[str, Any]) -> Path:
     return target
 
 
+def _scene_reference_preview_file(scene: dict[str, Any]) -> Path:
+    root = resolve_scene_dir(scene["scene_id"])
+    relative = scene.get("reference", {}).get("preview_file")
+    if isinstance(relative, str) and relative:
+        target = (root / relative).resolve()
+        if root in target.parents and target.is_file():
+            return target
+    for target in sorted((root / "reference").glob("preview.*")):
+        if target.is_file():
+            return target
+    return _scene_reference_file(scene)
+
+
 def _scene_skydome_file(scene: dict[str, Any]) -> Path:
     relative = scene.get("skydome", {}).get("file")
     if not isinstance(relative, str) or not relative:
@@ -824,6 +840,103 @@ def _scene_skydome_file(scene: dict[str, Any]) -> Path:
     target = (root / relative).resolve()
     if root not in target.parents or not target.is_file():
         raise FileNotFoundError("scene skydome image is missing")
+    return target
+
+
+def _scene_skydome_viewport_file(scene: dict[str, Any]) -> Path:
+    root = resolve_scene_dir(scene["scene_id"])
+    relative = scene.get("skydome", {}).get("viewport_file")
+    if isinstance(relative, str) and relative:
+        target = (root / relative).resolve()
+        if root in target.parents and target.is_file():
+            return target
+    for target in sorted((root / "skydome").glob("viewport.*")):
+        if target.is_file():
+            return target
+    return _scene_skydome_file(scene)
+
+
+def _write_browser_preview(
+    image: Image.Image,
+    directory: Path,
+    stem: str,
+    maximum_size: tuple[int, int],
+    quality: int,
+) -> tuple[Path, str, int, int]:
+    preview = ImageOps.exif_transpose(image).copy()
+    preview.thumbnail(maximum_size, Image.Resampling.LANCZOS)
+    if preview.mode not in {"RGB", "RGBA"}:
+        preview = preview.convert("RGBA" if "transparency" in preview.info else "RGB")
+    directory.mkdir(parents=True, exist_ok=True)
+    attempts = [
+        (directory / f"{stem}.webp", "WEBP", "image/webp", {"quality": quality, "method": 4}),
+        (directory / f"{stem}.png", "PNG", "image/png", {"optimize": True}),
+    ]
+    last_error: Exception | None = None
+    for target, image_format, mime, options in attempts:
+        temporary = directory / f".{stem}.{secrets.token_hex(6)}.tmp"
+        try:
+            preview.save(temporary, format=image_format, **options)
+            os.replace(temporary, target)
+            for candidate in directory.glob(f"{stem}.*"):
+                if candidate != target:
+                    candidate.unlink(missing_ok=True)
+            return target, mime, preview.width, preview.height
+        except Exception as exc:
+            last_error = exc
+        finally:
+            temporary.unlink(missing_ok=True)
+    raise RuntimeError("could not create browser image preview") from last_error
+
+
+def _ensure_scene_reference_preview(scene: dict[str, Any]) -> Path:
+    source = _scene_reference_file(scene)
+    existing = _scene_reference_preview_file(scene)
+    if existing != source:
+        return existing
+    with Image.open(source) as image:
+        image.load()
+        target, _mime, _width, _height = _write_browser_preview(
+            image,
+            source.parent,
+            "preview",
+            REFERENCE_PREVIEW_SIZE,
+            84,
+        )
+    return target
+
+
+def _ensure_scene_skydome_viewport(scene: dict[str, Any]) -> Path:
+    source = _scene_skydome_file(scene)
+    existing = _scene_skydome_viewport_file(scene)
+    if existing != source:
+        return existing
+    with Image.open(source) as image:
+        image.load()
+        target, _mime, _width, _height = _write_browser_preview(
+            image,
+            source.parent,
+            "viewport",
+            SKYDOME_VIEWPORT_SIZE,
+            88,
+        )
+    return target
+
+
+def _ensure_object_thumbnail(scene_id: str, item: dict[str, Any]) -> Path:
+    source = _object_file(scene_id, item, "prepared")
+    for target in sorted(source.parent.glob("thumbnail.*")):
+        if target.is_file():
+            return target
+    with Image.open(source) as image:
+        image.load()
+        target, _mime, _width, _height = _write_browser_preview(
+            image,
+            source.parent,
+            "thumbnail",
+            OBJECT_THUMBNAIL_SIZE,
+            82,
+        )
     return target
 
 
@@ -876,6 +989,13 @@ def store_scene_reference(
             temporary.unlink()
         except OSError:
             pass
+    preview_target, preview_mime, preview_width, preview_height = _write_browser_preview(
+        image,
+        reference_root,
+        "preview",
+        REFERENCE_PREVIEW_SIZE,
+        84,
+    )
     with _STATE_LOCK:
         scene = load_scene(scene_id)
         scene["reference"] = {
@@ -885,6 +1005,11 @@ def store_scene_reference(
             "width": image.width,
             "height": image.height,
             "size": target.stat().st_size,
+            "preview_file": str(preview_target.relative_to(root)),
+            "preview_mime": preview_mime,
+            "preview_width": preview_width,
+            "preview_height": preview_height,
+            "preview_size": preview_target.stat().st_size,
             "updated_at": _now(),
         }
         _save_scene(scene, bump_revision=False)
@@ -944,6 +1069,17 @@ def store_scene_skydome(
             os.replace(temporary, target)
         finally:
             temporary.unlink(missing_ok=True)
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image.load()
+            viewport_target, viewport_mime, viewport_width, viewport_height = (
+                _write_browser_preview(
+                    image,
+                    skydome_root,
+                    "viewport",
+                    SKYDOME_VIEWPORT_SIZE,
+                    88,
+                )
+            )
         settings = _normalize_skydome_settings(previous)
         scene["skydome"] = {
             "skydome_id": (
@@ -963,6 +1099,11 @@ def store_scene_skydome(
             "width": width,
             "height": height,
             "size": target.stat().st_size,
+            "viewport_file": str(viewport_target.relative_to(root)),
+            "viewport_mime": viewport_mime,
+            "viewport_width": viewport_width,
+            "viewport_height": viewport_height,
+            "viewport_size": viewport_target.stat().st_size,
             "updated_at": _now(),
             **settings,
         }
@@ -2082,14 +2223,24 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
     reference = value.get("reference")
     if isinstance(reference, dict):
         reference["url"] = f"{API_BASE}/scenes/{scene_id}/reference"
+        reference["preview_url"] = (
+            f"{API_BASE}/scenes/{scene_id}/reference/preview"
+            f"?v={int(float(reference.get('updated_at', 0) or 0) * 1000)}"
+        )
         reference.pop("file", None)
+        reference.pop("preview_file", None)
     skydome = value.get("skydome")
     if isinstance(skydome, dict):
         skydome["url"] = (
+            f"{API_BASE}/scenes/{scene_id}/skydome/viewport"
+            f"?v={int(float(skydome.get('updated_at', 0) or 0) * 1000)}"
+        )
+        skydome["source_url"] = (
             f"{API_BASE}/scenes/{scene_id}/skydome"
             f"?v={int(float(skydome.get('updated_at', 0) or 0) * 1000)}"
         )
         skydome.pop("file", None)
+        skydome.pop("viewport_file", None)
     preview = value.get("preview")
     if isinstance(preview, dict):
         render = _normalize_render_settings(value.get("render"))
@@ -2107,7 +2258,7 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
         item["urls"] = {
             "splat": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/splat",
             "ply": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/ply",
-            "thumbnail": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/prepared",
+            "thumbnail": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/thumbnail",
             "reference": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/asset/reference",
             "export_ply": f"{API_BASE}/scenes/{scene_id}/objects/{object_id}/export/ply",
         }
@@ -2510,8 +2661,12 @@ def register_routes(routes: Any) -> None:
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
                 raise ValueError("missing image")
-            image_bytes = image_field.file.read(MAX_UPLOAD_BYTES + 1)
-            scene = store_scene_reference(
+            image_bytes = await asyncio.to_thread(
+                image_field.file.read,
+                MAX_UPLOAD_BYTES + 1,
+            )
+            scene = await asyncio.to_thread(
+                store_scene_reference,
                 scene_id,
                 image_bytes,
                 getattr(image_field, "filename", "reference.png"),
@@ -2532,6 +2687,19 @@ def register_routes(routes: Any) -> None:
         except Exception as exc:
             return _json_error(web, exc)
 
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/reference/preview")
+    async def factory_scene_reference_preview_get(request: Any) -> Any:
+        try:
+            scene = load_scene(request.match_info["scene_id"])
+            return web.FileResponse(
+                await asyncio.to_thread(_ensure_scene_reference_preview, scene),
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
     @routes.post(f"{API_BASE}/scenes/{{scene_id}}/skydome")
     async def factory_scene_skydome_upload(request: Any) -> Any:
         try:
@@ -2543,8 +2711,12 @@ def register_routes(routes: Any) -> None:
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
                 raise ValueError("missing skydome image")
-            image_bytes = image_field.file.read(MAX_SKYDOME_BYTES + 1)
-            scene = store_scene_skydome(
+            image_bytes = await asyncio.to_thread(
+                image_field.file.read,
+                MAX_SKYDOME_BYTES + 1,
+            )
+            scene = await asyncio.to_thread(
+                store_scene_skydome,
                 scene_id,
                 image_bytes,
                 getattr(image_field, "filename", "skydome.jpg"),
@@ -2560,6 +2732,19 @@ def register_routes(routes: Any) -> None:
         try:
             scene = load_scene(request.match_info["scene_id"])
             return web.FileResponse(_scene_skydome_file(scene))
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/skydome/viewport")
+    async def factory_scene_skydome_viewport_get(request: Any) -> Any:
+        try:
+            scene = load_scene(request.match_info["scene_id"])
+            return web.FileResponse(
+                await asyncio.to_thread(_ensure_scene_skydome_viewport, scene),
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:
@@ -2724,7 +2909,7 @@ def register_routes(routes: Any) -> None:
     async def factory_object_asset(request: Any) -> Any:
         try:
             kind = request.match_info["kind"]
-            if kind not in {"ply", "splat", "prepared", "reference"}:
+            if kind not in {"ply", "splat", "prepared", "reference", "thumbnail"}:
                 raise FileNotFoundError("unknown object asset")
             scene = load_scene(request.match_info["scene_id"])
             item = _object_by_id(scene, request.match_info["object_id"])
@@ -2734,9 +2919,18 @@ def register_routes(routes: Any) -> None:
                     scene["scene_id"],
                     item["object_id"],
                 )
+            elif kind == "thumbnail":
+                path = await asyncio.to_thread(
+                    _ensure_object_thumbnail,
+                    scene["scene_id"],
+                    item,
+                )
             else:
                 path = _object_file(scene["scene_id"], item, kind)
-            return web.FileResponse(path)
+            return web.FileResponse(
+                path,
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:

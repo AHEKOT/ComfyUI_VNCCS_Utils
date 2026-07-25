@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.13";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.15";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -38,7 +38,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 9;
-const FRONTEND_BUILD = "20260725.18";
+const FRONTEND_BUILD = "20260725.20";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -170,7 +170,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260725.6", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260725.7", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -231,6 +231,22 @@ function errorText(error, fallback = "The operation could not be completed.") {
 
 function safeObject(value) {
     return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function numericArraysEqual(left, right, epsilon = 1e-6) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) {
+        return false;
+    }
+    return left.every((value, index) => (
+        Number.isFinite(Number(value))
+        && Math.abs(Number(value) - Number(right[index])) <= epsilon
+    ));
+}
+
+function cameraStatesEqual(left = {}, right = {}) {
+    return numericArraysEqual(left.position, right.position)
+        && numericArraysEqual(left.target, right.target)
+        && Math.abs(Number(left.fov || 0) - Number(right.fov || 0)) <= 1e-6;
 }
 
 function objectNameFromFileName(value) {
@@ -326,10 +342,14 @@ class Factory3DWidget {
         this._saveTimer = 0;
         this._sceneSaveTimer = 0;
         this._previewSaveTimer = 0;
+        this._previewIdleHandle = 0;
+        this._lightingApplyTimer = 0;
+        this._searchRenderFrame = 0;
         this._sceneSaveSerial = Promise.resolve();
         this._previewSaveSerial = Promise.resolve();
         this._restoreSerial = Promise.resolve();
         this._resizeFrame = 0;
+        this._uiScaleValue = "";
         this._modalCleanup = null;
         this._previousFocus = null;
         this.skipSceneDeleteConfirmation = false;
@@ -360,11 +380,16 @@ class Factory3DWidget {
             }),
             onTransformChange: (id, transform, options) => this._onViewerTransform(id, transform, options),
             onStateChange: state => {
-                const previousCamera = JSON.stringify(this.viewerState.camera || {});
+                const previousState = this.viewerState;
+                const cameraChanged = !cameraStatesEqual(
+                    previousState.camera || {},
+                    state.camera || {},
+                );
+                const toolbarChanged = previousState.mode !== state.mode
+                    || previousState.grid !== state.grid;
                 this.viewerState = { ...this.viewerState, ...state };
-                this._syncToolbar();
+                if (toolbarChanged) this._syncToolbar();
                 this._scheduleStateSave();
-                const cameraChanged = previousCamera !== JSON.stringify(state.camera || {});
                 if (
                     cameraChanged
                     && !this._isRestoring
@@ -373,7 +398,7 @@ class Factory3DWidget {
                 ) {
                     this.scene.camera = { ...state.camera };
                     this._scheduleSceneSave(220);
-                    this._scheduleScenePreview(420);
+                    this._scheduleScenePreview(1000);
                 }
             },
             onLoadingChange: loading => this.els.viewerHost.classList.toggle("is-loading", loading),
@@ -408,7 +433,7 @@ class Factory3DWidget {
                                 <span class="vnccs-i3s__drop-title">Drop a reference image</span>
                                 <span class="vnccs-i3s__drop-meta">PNG, JPEG or WebP · up to 32 MB</span>
                             </div>
-                            <img class="vnccs-i3s__source-preview" alt="Selected reference" />
+                            <img class="vnccs-i3s__source-preview" alt="Selected reference" decoding="async" />
                             <div class="vnccs-i3s__source-overlay">
                                 <span class="vnccs-i3s__source-name"></span>
                                 <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__source-change" type="button">Replace</button>
@@ -470,7 +495,7 @@ class Factory3DWidget {
                     </div>
                 </section>
                 <a class="vnccs-i3s__donate-link" href="https://www.buymeacoffee.com/MIUProject" target="_blank" rel="noopener noreferrer" title="Support MIUProject">
-                    <img src="${VNCCS_DONATE_BANNER_URL}" alt="Support MIUProject" />
+                    <img src="${VNCCS_DONATE_BANNER_URL}" alt="Support MIUProject" width="1859" height="525" decoding="async" />
                 </a>
             </aside>
             <main class="vnccs-i3s__center">
@@ -972,7 +997,13 @@ class Factory3DWidget {
         this._bindLightingRadar();
         this._listen(this.els.grid, "click", () => this.viewer.setGrid(!this.viewerState.grid));
         this._listen(this.els.cancelJob, "click", () => void this.cancelJob());
-        this._listen(this.els.objectSearch, "input", () => this._renderObjects());
+        this._listen(this.els.objectSearch, "input", () => {
+            if (this._searchRenderFrame) return;
+            this._searchRenderFrame = requestAnimationFrame(() => {
+                this._searchRenderFrame = 0;
+                if (!this.destroyed) this._renderObjects();
+            });
+        });
         this._listen(this.els.groupSelected, "click", () => void this.groupSelectedObjects());
         this._listen(this.els.sceneAspect, "change", () => {
             const aspect = this.els.sceneAspect.value;
@@ -1069,6 +1100,8 @@ class Factory3DWidget {
         if (open) {
             this._setLightingPanelOpen(false);
             this._syncSkydome();
+        } else {
+            this.viewer?.setEditorInteraction("skydome", false);
         }
     }
 
@@ -1092,6 +1125,8 @@ class Factory3DWidget {
                 const image = element("img");
                 image.src = previewURL;
                 image.alt = "";
+                image.loading = "lazy";
+                image.decoding = "async";
                 this.els.skydomePreview.replaceChildren(image);
             } else {
                 this.els.skydomePreview.innerHTML = ICONS.image;
@@ -1130,6 +1165,7 @@ class Factory3DWidget {
     _commitSkydome({ final = false } = {}) {
         if (!this.scene?.skydome) return;
         this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
+        this.viewer?.setEditorInteraction("skydome", !final);
         this.viewer?.updateSkydome(this.scene.skydome);
         this._scheduleStateSave(final ? 0 : 100);
         this._scheduleSceneSave(final ? 0 : 180);
@@ -1225,6 +1261,8 @@ class Factory3DWidget {
         if (open) {
             this._setSkydomePanelOpen(false);
             this._drawLightingRadar();
+        } else {
+            this.viewer?.setEditorInteraction("lighting", false);
         }
     }
 
@@ -1255,7 +1293,20 @@ class Factory3DWidget {
     _commitLighting({ final = false } = {}) {
         this.lighting = this._normalizeLighting(this.lighting);
         if (this.scene) this.scene.lighting = { ...this.lighting };
-        this.viewer?.setLighting(this.lighting);
+        this.viewer?.setEditorInteraction("lighting", !final);
+        if (final) {
+            clearTimeout(this._lightingApplyTimer);
+            this._lightingApplyTimer = 0;
+            this.viewer?.setLighting(this.lighting);
+        } else if (!this._lightingApplyTimer) {
+            // Recoloring a Gaussian generator touches every splat. Coalesce
+            // high-frequency range/radar pointer events so controls remain
+            // responsive while still providing a live ~15 fps light preview.
+            this._lightingApplyTimer = setTimeout(() => {
+                this._lightingApplyTimer = 0;
+                if (!this.destroyed) this.viewer?.setLighting(this.lighting);
+            }, 1000 / 15);
+        }
         this._scheduleStateSave(final ? 0 : 100);
         if (this.sceneId && this.scene) {
             this._scheduleSceneSave(final ? 0 : 180);
@@ -1395,14 +1446,20 @@ class Factory3DWidget {
         const value = safeObject(asset);
         const assetSceneId = String(value.scene_id || this.sceneId || "");
         const expectedURL = assetSceneId ? ENDPOINTS.reference(assetSceneId) : "";
+        const expectedPreviewURL = expectedURL ? `${expectedURL}/preview` : "";
         if (!value.url || value.url !== expectedURL || assetSceneId !== this.sceneId) {
             this.sourceAsset = null;
             this.sourceFile = null;
             this._showSource({ url: "", name: "" });
             return;
         }
+        const previewURL = String(value.preview_url || "");
         this.sourceAsset = {
             url: String(value.url),
+            preview_url: (
+                previewURL === expectedPreviewURL
+                || previewURL.startsWith(`${expectedPreviewURL}?`)
+            ) ? previewURL : "",
             name: String(value.name || "reference.png"),
             mime: String(value.mime || "image/png"),
             width: Number(value.width) || 0,
@@ -1413,7 +1470,7 @@ class Factory3DWidget {
         };
         this.sourceFile = null;
         this._showSource({
-            url: apiUrl(this.sourceAsset.url),
+            url: apiUrl(this.sourceAsset.preview_url || this.sourceAsset.url),
             name: this.sourceAsset.name,
         });
     }
@@ -1448,6 +1505,10 @@ class Factory3DWidget {
             if (this.sourceFile === file) {
                 this.sourceAsset = { ...asset, scene_id: this.sceneId };
                 if (this.scene) this.scene.reference = { ...asset };
+                this._showSource({
+                    url: apiUrl(asset.preview_url || asset.url),
+                    name: asset.name || file.name,
+                });
                 this._scheduleStateSave(0);
                 this._setStatus("Reference saved", "success");
             }
@@ -1646,25 +1707,16 @@ class Factory3DWidget {
         this._renderObjects();
         this._scheduleStateSave();
         this.syncToNode();
-        let previewError = null;
         const loaded = Number(viewportResult.loaded) || 0;
-        if (loaded > 0 || this.viewer.hasVisibleSkydome()) {
-            this._setStatus("Saving scene preview", "working");
-            try {
-                const preview = await this._saveScenePreviewNow();
-                if (!preview) throw new Error("The viewport did not produce a scene preview");
-            } catch (error) {
-                previewError = error;
-                console.error("[VNCCS 3D Factory] Mandatory scene preview export failed", {
-                    build: FRONTEND_BUILD,
-                    sceneId: this.sceneId,
-                    error,
-                });
-            } finally {
-                this.viewer.startPendingLodUpgrades();
-            }
-        } else {
-            this.viewer.startPendingLodUpgrades();
+        if (
+            (loaded > 0 || this.viewer.hasVisibleSkydome())
+            && !scene.preview?.url
+        ) {
+            // The graph execution handshake always requests an exact current
+            // render. An ordinary scene open should not block LCP/INP on a
+            // 1024–4096 px PNG encode and upload; refresh the convenience
+            // preview only after the editor has gone idle.
+            this._scheduleScenePreview(1800);
         }
         if (viewportFailures.length) {
             const failureDetails = viewportFailures.map(item => ({
@@ -1680,9 +1732,6 @@ class Factory3DWidget {
                 failures: failureDetails,
             });
             this._setStatus(loaded ? "Scene partially loaded" : "Viewport failed", "error");
-        } else if (previewError) {
-            this._setStatus("Preview export failed", "error");
-            this._showError("Scene preview export failed", previewError);
         } else {
             this._setStatus("Scene ready", "success");
         }
@@ -1957,21 +2006,23 @@ class Factory3DWidget {
         const skydome = this.scene?.skydome || null;
         const layers = this._normalizeSceneLayers();
         this.els.objectList.replaceChildren();
+        const fragment = document.createDocumentFragment();
         this._syncSelectionControls();
         let rendered = 0;
         if (skydome && (!query || skydome.name.toLowerCase().includes(query) || "skydome background environment".includes(query))) {
-            this.els.objectList.appendChild(this._createSkydomeCard(skydome));
+            fragment.appendChild(this._createSkydomeCard(skydome));
             rendered += 1;
         }
         if (!objects.size && !skydome) {
-            this.els.objectList.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
+            fragment.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
+            this.els.objectList.appendChild(fragment);
             return;
         }
         for (const layer of layers) {
             if (layer.type === "object") {
                 const item = objects.get(layer.object_id);
                 if (!item || (query && !item.name.toLowerCase().includes(query))) continue;
-                this.els.objectList.appendChild(this._createObjectCard(item, ""));
+                fragment.appendChild(this._createObjectCard(item, ""));
                 rendered += 1;
                 continue;
             }
@@ -1997,12 +2048,13 @@ class Factory3DWidget {
                 childList.appendChild(element("div", "vnccs-i3s__group-empty", "Drop objects here"));
             }
             wrapper.append(groupCard, childList);
-            this.els.objectList.appendChild(wrapper);
+            fragment.appendChild(wrapper);
             rendered += 1;
         }
         if (!rendered) {
-            this.els.objectList.appendChild(element("div", "vnccs-i3s__tree-empty", "No matching objects."));
+            fragment.appendChild(element("div", "vnccs-i3s__tree-empty", "No matching objects."));
         }
+        this.els.objectList.appendChild(fragment);
     }
 
     _createSkydomeCard(skydome) {
@@ -2017,6 +2069,10 @@ class Factory3DWidget {
         const thumbnail = element("img", "vnccs-i3s__object-thumb");
         thumbnail.src = apiUrl(skydome.url);
         thumbnail.alt = "";
+        thumbnail.loading = "lazy";
+        thumbnail.decoding = "async";
+        thumbnail.width = 36;
+        thumbnail.height = 36;
         const copy = element("div", "vnccs-i3s__object-copy");
         const name = element("div", "vnccs-i3s__object-name", skydome.name || "Skydome");
         name.title = "Double-click to rename";
@@ -2121,6 +2177,10 @@ class Factory3DWidget {
         const thumbnail = element("img", "vnccs-i3s__object-thumb");
         thumbnail.src = apiUrl(item.urls.thumbnail);
         thumbnail.alt = "";
+        thumbnail.loading = "lazy";
+        thumbnail.decoding = "async";
+        thumbnail.width = 36;
+        thumbnail.height = 36;
         const copy = element("div", "vnccs-i3s__object-copy");
         const name = element("div", "vnccs-i3s__object-name", item.name);
         name.title = "Double-click to rename";
@@ -2697,16 +2757,51 @@ class Factory3DWidget {
     _scheduleScenePreview(delay = 480) {
         if (this._isRestoring || this.destroyed || !this.sceneId || !this._hasRenderableScene()) return;
         clearTimeout(this._previewSaveTimer);
+        if (this._previewIdleHandle && typeof cancelIdleCallback === "function") {
+            cancelIdleCallback(this._previewIdleHandle);
+        }
+        this._previewIdleHandle = 0;
+        const idleDelay = Math.max(1000, Number(delay) || 0);
         this._previewSaveTimer = setTimeout(
-            () => void this._saveScenePreviewNow().catch(() => {}),
-            delay,
+            () => {
+                this._previewSaveTimer = 0;
+                if (
+                    document.visibilityState === "hidden"
+                    || !this.viewer?.isViewportVisible?.()
+                ) {
+                    return;
+                }
+                const save = () => {
+                    this._previewIdleHandle = 0;
+                    void this._saveScenePreviewNow({ automatic: true }).catch(() => {});
+                };
+                if (typeof requestIdleCallback === "function") {
+                    this._previewIdleHandle = requestIdleCallback(save, { timeout: 8000 });
+                } else {
+                    save();
+                }
+            },
+            idleDelay,
         );
     }
 
-    async _saveScenePreviewNow({ captureToken = "" } = {}) {
+    async _saveScenePreviewNow({ captureToken = "", automatic = false } = {}) {
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
+        if (this._previewIdleHandle && typeof cancelIdleCallback === "function") {
+            cancelIdleCallback(this._previewIdleHandle);
+        }
+        this._previewIdleHandle = 0;
         if (this.destroyed || !this.sceneId || !this._hasRenderableScene()) return null;
+        if (
+            automatic
+            && this.exportSettings.width * this.exportSettings.height > 2_200_000
+        ) {
+            // Exact large renders remain available through the execution
+            // handshake, but should never appear as a surprise multi-megapixel
+            // PNG encode during ordinary editing.
+            return null;
+        }
         const sceneId = this.sceneId;
         const operation = this._previewSaveSerial.then(async () => {
             if (this.destroyed || this.sceneId !== sceneId || !this._hasRenderableScene()) return null;
@@ -4755,8 +4850,6 @@ class Factory3DWidget {
         if (widget.value !== value) {
             widget.value = value;
             widget.callback?.(value);
-            this.node.setDirtyCanvas?.(true, true);
-            app.graph?.setDirtyCanvas?.(true, true);
         }
     }
 
@@ -4836,7 +4929,6 @@ class Factory3DWidget {
         } finally {
             this._isRestoring = false;
             this.syncToNode();
-            this._scheduleScenePreview(160);
         }
     }
 
@@ -4851,9 +4943,12 @@ class Factory3DWidget {
         const height = this.container.clientHeight || DEFAULT_NODE_SIZE[1];
         const scale = clamp(Math.min(width / 1100, height / 720), 0.72, 1.08);
         const scaleValue = scale.toFixed(3);
-        this.container.style.setProperty("--i3-scale", scaleValue);
-        this.container.style.setProperty("--vnccs-ps-ui-scale", scaleValue);
-        this.container.style.setProperty("--vnccs-ps-relative-ui-scale", scaleValue);
+        if (scaleValue !== this._uiScaleValue) {
+            this._uiScaleValue = scaleValue;
+            this.container.style.setProperty("--i3-scale", scaleValue);
+            this.container.style.setProperty("--vnccs-ps-ui-scale", scaleValue);
+            this.container.style.setProperty("--vnccs-ps-relative-ui-scale", scaleValue);
+        }
         this.viewer?.resize();
     }
 
@@ -4868,6 +4963,11 @@ class Factory3DWidget {
         clearTimeout(this._saveTimer);
         clearTimeout(this._sceneSaveTimer);
         clearTimeout(this._previewSaveTimer);
+        clearTimeout(this._lightingApplyTimer);
+        if (this._previewIdleHandle && typeof cancelIdleCallback === "function") {
+            cancelIdleCallback(this._previewIdleHandle);
+        }
+        if (this._searchRenderFrame) cancelAnimationFrame(this._searchRenderFrame);
         for (const timer of this._timers) clearTimeout(timer);
         this._timers.clear();
         for (const remove of this._listeners) remove();
