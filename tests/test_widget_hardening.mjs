@@ -146,9 +146,53 @@ test("Pose Manager independently fits and centers every deformed pose preview", 
         refreshMethod,
         /viewer\.capture\([\s\S]*framing\?\.zoom \?\? 1,[\s\S]*framing\?\.offsetX \?\? 0,[\s\S]*framing\?\.offsetY \?\? 0/,
     );
+    assert.match(
+        refreshMethod,
+        /finally \{[\s\S]*viewer\.updateCaptureCamera\?\.\(w, h, 1, 0, 0, yaw, pitch\);/,
+        "manager preview fitting must not leak its temporary camera into Studio or library poses",
+    );
 
     assert.match(poseStudioCoreSource, /computeModelFitFraming\(/);
     assert.match(poseStudioCoreSource, /const determinant = j00 \* j11 - j01 \* j10;/);
+});
+
+test("Reset clears library framing together with the pose", () => {
+    const fitStart = poseStudioSource.indexOf("\n    fitActiveRestPoseToFrame() {");
+    const resetStart = poseStudioSource.indexOf("\n    resetCurrentPose() {");
+    const resetEnd = poseStudioSource.indexOf("\n    resetCurrentAnimation()", resetStart);
+    const fitMethod = poseStudioSource.slice(fitStart, resetStart);
+    const resetMethod = poseStudioSource.slice(resetStart, resetEnd);
+    assert.match(fitMethod, /viewer\.computeModelFitFraming\(/);
+    assert.match(fitMethod, /cameraFramingToCharacterTransform\(/);
+    assert.match(fitMethod, /active\.transform = \{ \.\.\.transform \};/);
+    assert.match(resetMethod, /viewer\.resetPose\(\);[\s\S]*fitActiveRestPoseToFrame\(\);/);
+    assert.match(
+        resetMethod,
+        /syncToNode\(false, \{ skipCapture: true, skipCaptureUpload: true \}\);/,
+    );
+    assert.match(resetMethod, /this\.poseCaptures\[this\.activeTab\] = null;/);
+
+    const clearStart = poseAnimationSource.indexOf("export function createClearedAnimationState");
+    const clearEnd = poseAnimationSource.indexOf("\nexport function serializeAnimationStateSnapshot", clearStart);
+    const clearMethod = poseAnimationSource.slice(clearStart, clearEnd);
+    assert.match(clearMethod, /baseTransform: DEFAULT_ANIMATION_CHARACTER_TRANSFORM/);
+    assert.doesNotMatch(clearMethod, /previous\.baseTransform/);
+});
+
+test("state-only sync can suppress capture-cache upload retries", () => {
+    const syncStart = poseStudioSource.indexOf("\n    syncToNode(fullCapture = false, options = {})");
+    const syncEnd = poseStudioSource.indexOf("\n    loadFromNode()", syncStart);
+    const syncMethod = poseStudioSource.slice(syncStart, syncEnd);
+    assert.match(
+        syncMethod,
+        /if \(options\.skipCaptureUpload !== true\) \{[\s\S]*this\.queueCaptureUpload\(captureId\);/,
+    );
+
+    const uploadStart = poseStudioSource.indexOf("\n    queueCaptureUpload(captureId)");
+    const uploadEnd = poseStudioSource.indexOf("\n    syncToNode(", uploadStart);
+    const uploadMethod = poseStudioSource.slice(uploadStart, uploadEnd);
+    assert.match(uploadMethod, /captures\.every\(capture => typeof capture === "string" && capture\.length > 0\)/);
+    assert.match(uploadMethod, /error\?\.status !== 413/);
 });
 
 

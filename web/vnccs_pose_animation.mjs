@@ -347,7 +347,7 @@ export function createClearedAnimationState(previousState, neutralPose = {}) {
         autoKey: previous.autoKey,
         snap: previous.snap,
         defaultInterpolation: previous.defaultInterpolation,
-        baseTransform: validatedAnimationCharacterTransform(previous.baseTransform),
+        baseTransform: DEFAULT_ANIMATION_CHARACTER_TRANSFORM,
         tracks: {},
     });
 }

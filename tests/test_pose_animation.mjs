@@ -709,6 +709,7 @@ test("animation reset clears every track while preserving timeline settings", ()
     assert.equal(cleared.fps, state.fps);
     assert.equal(cleared.loop, false);
     assert.equal(cleared.autoKey, false);
+    assert.deepEqual(cleared.baseTransform, { x: 0, y: 0, z: 0, zoom: 1 });
 });
 
 test("one history or library snapshot restores all keys and animation settings", () => {

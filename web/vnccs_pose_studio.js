@@ -6944,6 +6944,8 @@ class PoseStudioWidget {
         const h = this.exportParams.view_height || 1024;
         const bg = this.exportParams.bg_color || [40, 40, 40];
         const isOriginalLighting = this.exportParams.keepOriginalLighting;
+        const yaw = this.exportParams.cam_yaw_deg || 0;
+        const pitch = this.exportParams.cam_pitch_deg || 0;
 
         if (!this.poseCaptures) this.poseCaptures = [];
         if (!this.lightingPrompts) this.lightingPrompts = [];
@@ -6958,8 +6960,6 @@ class PoseStudioWidget {
                 const pose = this.poses[i] || {};
                 this.viewer.setPose(pose, true);
                 this.updateCharacterScene({ poseIndex: i });
-                const yaw = this.exportParams.cam_yaw_deg || 0;
-                const pitch = this.exportParams.cam_pitch_deg || 0;
 
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
@@ -6996,6 +6996,10 @@ class PoseStudioWidget {
             this.viewer.setPose(originalPose, true);
             this.updateCharacterScene({ poseIndex: this.activeTab });
             this.viewer.updateLights(originalLights);
+            // Per-card fitting temporarily moves the shared capture camera.
+            // Restore its neutral scene framing so opening Studio or applying a
+            // library pose cannot inherit the final manager card's offsets.
+            this.viewer.updateCaptureCamera?.(w, h, 1, 0, 0, yaw, pitch);
             if (captureBatchStarted) this.viewer.endCaptureBatch?.();
         }
 
@@ -8619,23 +8623,72 @@ class PoseStudioWidget {
 
 
 
+    fitActiveRestPoseToFrame() {
+        const active = this.getActiveCharacter();
+        if (!active) throw new Error("Cannot fit rest pose without an active character.");
+        if (!this.viewer?.isInitialized?.() || !this.viewer.sceneCameraTarget) {
+            throw new Error("Cannot fit rest pose before the model camera target is ready.");
+        }
+
+        const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
+        this.viewer.setActiveCharacterAppearance({
+            color: active.color,
+            transform: neutralTransform,
+        });
+        const framing = this.viewer.computeModelFitFraming(
+            this.exportParams.view_width || 1024,
+            this.exportParams.view_height || 1024,
+            this.exportParams.cam_yaw_deg || 0,
+            this.exportParams.cam_pitch_deg || 0,
+            0.08,
+        );
+        if (!framing) throw new Error("Cannot measure rest-pose framing.");
+
+        const transform = cameraFramingToCharacterTransform({
+            zoom: framing.zoom,
+            offset_x: framing.offsetX,
+            offset_y: framing.offsetY,
+        }, this.viewer.sceneCameraTarget);
+        active.transform = { ...transform };
+        if (active.animationState) {
+            active.animationState.baseTransform = { ...transform };
+        }
+        this.exportParams.cam_offset_x = transform.x;
+        this.exportParams.cam_offset_y = transform.y;
+        this.exportParams.cam_zoom = transform.zoom;
+        this.viewer.setActiveCharacterAppearance({
+            color: active.color,
+            transform,
+        });
+        this.syncCameraWidgets();
+        return transform;
+    }
+
     resetCurrentPose() {
         if (this.isAnimationMode()) {
             this.resetCurrentAnimation();
             return;
         }
         this.clearSAMCameraMode();
+        const active = this.getActiveCharacter();
         if (this.viewer) {
             this.viewer.recordState(); // Undo support
             this.viewer.resetPose();
+            this.fitActiveRestPoseToFrame();
+            this.updateCharacterScene({ poseIndex: this.activeTab });
             this.updateRotationSliders();
             this.applyCameraToViewer(true);
         }
         this.poses[this.activeTab] = {};
-        const active = this.getActiveCharacter();
         if (active) active.poses = this.poses;
         this.setPosePrompt(this.activeTab, "");
-        this.syncToNode(false);
+        if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.length) {
+            this.poseCaptures[this.activeTab] = null;
+        }
+        if (Array.isArray(this.lightingPrompts) && this.activeTab < this.lightingPrompts.length) {
+            this.lightingPrompts[this.activeTab] = "";
+        }
+        this.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
     }
 
     resetCurrentAnimation() {
@@ -8650,9 +8703,11 @@ class PoseStudioWidget {
 
         this.clearSAMCameraMode();
         this._applyingAnimationPose = true;
+        let resetTransform = null;
         try {
             if (this.viewer?.isInitialized?.()) {
                 this.viewer.resetPose();
+                resetTransform = this.fitActiveRestPoseToFrame();
                 this.applyCameraToViewer(true);
                 this.viewer.setCameraParams?.(this.currentCameraParams());
             }
@@ -8670,6 +8725,9 @@ class PoseStudioWidget {
 
         this.animationState = createClearedAnimationState(previous, neutralPose);
         const activeCharacter = this.getActiveCharacter();
+        if (resetTransform) {
+            this.animationState.baseTransform = { ...resetTransform };
+        }
         if (activeCharacter) activeCharacter.animationState = this.animationState;
         this._animationInitialized = true;
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(neutralPose));
@@ -13398,7 +13456,11 @@ class PoseStudioWidget {
 
     queueCaptureUpload(captureId) {
         const captures = this.poseCaptures || [];
-        if (!captureId || !captures.some(capture => typeof capture === "string" && capture.length > 0)) return;
+        if (
+            !captureId
+            || captures.length === 0
+            || !captures.every(capture => typeof capture === "string" && capture.length > 0)
+        ) return;
         const prompts = this.lightingPrompts || [];
         const previous = this._lastCaptureUploadSnapshot;
         const unchanged = previous
@@ -13424,9 +13486,16 @@ class PoseStudioWidget {
                 lighting_prompts: snapshot.prompts,
             })
         }).then(response => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            if (!response.ok) {
+                const error = new Error(`HTTP ${response.status}`);
+                error.status = response.status;
+                throw error;
+            }
         }).catch(error => {
-            if (this._lastCaptureUploadSnapshot === snapshot) {
+            // A 413 is deterministic for this exact snapshot. Keep it marked
+            // as attempted so ordinary UI state changes do not hammer the same
+            // oversized request again; a new capture produces a new snapshot.
+            if (error?.status !== 413 && this._lastCaptureUploadSnapshot === snapshot) {
                 this._lastCaptureUploadSnapshot = null;
             }
             console.warn("[VNCCS PoseStudio] Capture upload failed:", error);
@@ -13728,8 +13797,12 @@ class PoseStudioWidget {
             background_url: this.exportParams.background_url || null
         };
 
-        // Upload captures only when image or prompt content changed.
-        this.queueCaptureUpload(captureId);
+        // Upload captures only when image or prompt content changed. State-only
+        // actions such as Reset must not retry a previously rejected large PNG
+        // payload merely because the pose JSON changed.
+        if (options.skipCaptureUpload !== true) {
+            this.queueCaptureUpload(captureId);
+        }
 
         const widget = this.getNodeWidget("pose_data");
         if (widget) {
