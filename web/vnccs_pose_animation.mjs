@@ -11,6 +11,12 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";
+export const CHARACTER_POSITION_TRACK = "@characterPosition";
+export const CHARACTER_ZOOM_TRACK = "@characterZoom";
+export const CHARACTER_TRANSFORM_TRACKS = Object.freeze([
+    CHARACTER_POSITION_TRACK,
+    CHARACTER_ZOOM_TRACK,
+]);
 export const POSE_ANIMATION_CACHE_STORAGE = "server_cache";
 export const MIN_FRAME_COUNT = 2;
 export const MAX_FRAME_COUNT = 600;
@@ -187,6 +193,40 @@ function normalizePose(pose) {
     return normalized;
 }
 
+export function normalizeAnimationCharacterTransform(source = {}) {
+    return {
+        x: clamp(finiteNumber(source.x ?? source.offset_x, 0), -50, 50),
+        y: clamp(finiteNumber(source.y ?? source.offset_y, 0), -50, 50),
+        z: clamp(finiteNumber(source.z ?? source.depth, 0), -40, 40),
+        zoom: clamp(finiteNumber(source.zoom ?? source.scale, 1), 0.1, 7),
+    };
+}
+
+export function isCharacterTransformTrack(trackName) {
+    return CHARACTER_TRANSFORM_TRACKS.includes(trackName);
+}
+
+function valueTypeForTrack(trackName) {
+    if (trackName === CHARACTER_POSITION_TRACK) return "vector2";
+    if (trackName === CHARACTER_ZOOM_TRACK) return "scalar";
+    return "quaternion";
+}
+
+function normalizeTrackValue(trackName, value) {
+    if (trackName === CHARACTER_POSITION_TRACK) {
+        const source = Array.isArray(value) ? value : [value?.x, value?.y];
+        return [
+            clamp(finiteNumber(source[0]), -50, 50),
+            clamp(finiteNumber(source[1]), -50, 50),
+        ];
+    }
+    if (trackName === CHARACTER_ZOOM_TRACK) {
+        const source = Array.isArray(value) ? value[0] : value;
+        return [clamp(finiteNumber(source, 1), 0.1, 7)];
+    }
+    return normalizeQuaternion(value);
+}
+
 export function getPoseTrackEuler(pose, trackName) {
     if (trackName === MODEL_ROTATION_TRACK) {
         return (pose?.modelRotation || [0, 0, 0]).slice(0, 3).map(value => finiteNumber(value));
@@ -194,13 +234,21 @@ export function getPoseTrackEuler(pose, trackName) {
     return (pose?.bones?.[trackName] || [0, 0, 0]).slice(0, 3).map(value => finiteNumber(value));
 }
 
-function normalizeKeyframe(key, lastFrame, sourceLastFrame = lastFrame) {
+function normalizeKeyframe(key, trackName, lastFrame, sourceLastFrame = lastFrame) {
     if (!key || typeof key !== "object") return null;
     const rawFrame = Number(key.frame);
     if (!Number.isFinite(rawFrame)) return null;
     let value = key.value ?? key.rotation;
-    if (Array.isArray(value) && value.length === 3) value = eulerDegreesToQuaternion(value);
-    if (!Array.isArray(value) || value.length < 4) return null;
+    if (
+        !isCharacterTransformTrack(trackName)
+        && Array.isArray(value)
+        && value.length === 3
+    ) {
+        value = eulerDegreesToQuaternion(value);
+    }
+    if (!Array.isArray(value) && trackName !== CHARACTER_ZOOM_TRACK) return null;
+    if (trackName === CHARACTER_POSITION_TRACK && value.length < 2) return null;
+    if (!isCharacterTransformTrack(trackName) && value.length < 4) return null;
     return {
         id: String(key.id || createKeyId()),
         frame: clamp(
@@ -208,20 +256,20 @@ function normalizeKeyframe(key, lastFrame, sourceLastFrame = lastFrame) {
             0,
             lastFrame,
         ),
-        value: normalizeQuaternion(value),
+        value: normalizeTrackValue(trackName, value),
         interpolation: INTERPOLATION_NAMES.has(key.interpolation) ? key.interpolation : "linear",
     };
 }
 
-function normalizeTrack(track, lastFrame, sourceLastFrame = lastFrame) {
+function normalizeTrack(trackName, track, lastFrame, sourceLastFrame = lastFrame) {
     const sourceKeys = Array.isArray(track) ? track : (track?.keys || track?.keyframes || []);
     const byFrame = new Map();
     for (const sourceKey of sourceKeys) {
-        const key = normalizeKeyframe(sourceKey, lastFrame, sourceLastFrame);
+        const key = normalizeKeyframe(sourceKey, trackName, lastFrame, sourceLastFrame);
         if (key) byFrame.set(key.frame, key);
     }
     return {
-        valueType: "quaternion",
+        valueType: valueTypeForTrack(trackName),
         keys: Array.from(byFrame.values()).sort((a, b) => a.frame - b.frame),
     };
 }
@@ -254,6 +302,7 @@ export function createClearedAnimationState(previousState, neutralPose = {}) {
         autoKey: previous.autoKey,
         snap: previous.snap,
         defaultInterpolation: previous.defaultInterpolation,
+        baseTransform: normalizeAnimationCharacterTransform(previous.baseTransform),
         tracks: {},
     });
 }
@@ -294,17 +343,21 @@ export function createAnimationCacheReference(state, {
             ? source.defaultInterpolation
             : "linear",
         basePose: cloneJSON(source.basePose, {}),
+        baseTransform: normalizeAnimationCharacterTransform(source.baseTransform),
         trackCount: Object.keys(source.tracks || {}).length,
     };
 }
 
-export function restoreAnimationStateSnapshot(snapshot, { currentFrame = 0, fallbackPose = {} } = {}) {
+export function restoreAnimationStateSnapshot(
+    snapshot,
+    { currentFrame = 0, fallbackPose = {}, fallbackTransform = {} } = {},
+) {
     const restored = typeof snapshot === "string" ? JSON.parse(snapshot) : cloneJSON(snapshot, {});
     restored.currentFrame = currentFrame;
-    return normalizeAnimationState(restored, fallbackPose);
+    return normalizeAnimationState(restored, fallbackPose, fallbackTransform);
 }
 
-export function normalizeAnimationState(source = {}, fallbackPose = {}) {
+export function normalizeAnimationState(source = {}, fallbackPose = {}, fallbackTransform = {}) {
     const raw = source && typeof source === "object" ? source : {};
     const sourceFrameCount = clamp(Math.round(finiteNumber(raw.frameCount ?? raw.frame_count, 24)), MIN_FRAME_COUNT, MAX_FRAME_COUNT);
     const schemaVersion = Math.round(finiteNumber(raw.schemaVersion ?? raw.schema_version, 1));
@@ -343,6 +396,9 @@ export function normalizeAnimationState(source = {}, fallbackPose = {}) {
             ? raw.defaultInterpolation
             : "easeInOut",
         basePose: normalizePose(raw.basePose ?? raw.base_pose ?? fallbackPose),
+        baseTransform: normalizeAnimationCharacterTransform(
+            raw.baseTransform ?? raw.base_transform ?? fallbackTransform,
+        ),
         tracks: {},
     };
 
@@ -351,7 +407,7 @@ export function normalizeAnimationState(source = {}, fallbackPose = {}) {
         : (raw.tracks || {});
     if (sourceTracks && typeof sourceTracks === "object") {
         for (const [trackName, track] of Object.entries(sourceTracks)) {
-            const normalized = normalizeTrack(track, frameCount - 1, sourceLastFrame);
+            const normalized = normalizeTrack(trackName, track, frameCount - 1, sourceLastFrame);
             if (normalized.keys.length) state.tracks[trackName] = normalized;
         }
     }
@@ -366,13 +422,22 @@ function baseQuaternionForTrack(state, trackName) {
     return eulerDegreesToQuaternion(getPoseTrackEuler(state?.basePose || {}, trackName));
 }
 
-export function evaluateTrackQuaternion(state, trackName, frameValue) {
+function baseValueForTrack(state, trackName) {
+    const transform = normalizeAnimationCharacterTransform(state?.baseTransform);
+    if (trackName === CHARACTER_POSITION_TRACK) return [transform.x, transform.y];
+    if (trackName === CHARACTER_ZOOM_TRACK) return [transform.zoom];
+    return baseQuaternionForTrack(state, trackName);
+}
+
+export function evaluateTrackValue(state, trackName, frameValue) {
     const track = state?.tracks?.[trackName];
     const keys = track?.keys || [];
-    if (!keys.length) return baseQuaternionForTrack(state, trackName);
+    if (!keys.length) return baseValueForTrack(state, trackName);
     const frame = clamp(finiteNumber(frameValue), 0, Math.max(0, state.frameCount - 1));
-    if (frame <= keys[0].frame) return normalizeQuaternion(keys[0].value);
-    if (frame >= keys[keys.length - 1].frame) return normalizeQuaternion(keys[keys.length - 1].value);
+    if (frame <= keys[0].frame) return normalizeTrackValue(trackName, keys[0].value);
+    if (frame >= keys[keys.length - 1].frame) {
+        return normalizeTrackValue(trackName, keys[keys.length - 1].value);
+    }
 
     let low = 1;
     let high = keys.length - 1;
@@ -386,7 +451,33 @@ export function evaluateTrackQuaternion(state, trackName, frameValue) {
     const right = keys[rightIndex];
     const span = Math.max(1, right.frame - left.frame);
     const t = applyInterpolation((frame - left.frame) / span, left.interpolation);
-    return slerpQuaternion(left.value, right.value, t);
+    if (valueTypeForTrack(trackName) === "quaternion") {
+        return slerpQuaternion(left.value, right.value, t);
+    }
+    const leftValue = normalizeTrackValue(trackName, left.value);
+    const rightValue = normalizeTrackValue(trackName, right.value);
+    return leftValue.map((value, index) => (
+        value + (rightValue[index] - value) * t
+    ));
+}
+
+export function evaluateTrackQuaternion(state, trackName, frameValue) {
+    if (isCharacterTransformTrack(trackName)) return [0, 0, 0, 1];
+    return evaluateTrackValue(state, trackName, frameValue);
+}
+
+export function evaluateCharacterTransform(state, frameValue, fallbackTransform = {}) {
+    const base = normalizeAnimationCharacterTransform(
+        state?.baseTransform ?? fallbackTransform,
+    );
+    const position = evaluateTrackValue(state, CHARACTER_POSITION_TRACK, frameValue);
+    const zoom = evaluateTrackValue(state, CHARACTER_ZOOM_TRACK, frameValue);
+    return normalizeAnimationCharacterTransform({
+        ...base,
+        x: position[0],
+        y: position[1],
+        zoom: zoom[0],
+    });
 }
 
 export function evaluateAnimationFrame(state, frameValue) {
@@ -405,6 +496,7 @@ export function evaluateAnimationFrame(state, frameValue) {
             : [0, 0, 0],
     };
     for (const trackName of Object.keys(state.tracks || {})) {
+        if (isCharacterTransformTrack(trackName)) continue;
         const value = quaternionToEulerDegrees(evaluateTrackQuaternion(state, trackName, normalizedFrame));
         if (trackName === MODEL_ROTATION_TRACK) pose.modelRotation = value;
         else pose.bones[trackName] = value;
@@ -522,13 +614,16 @@ export function createAnimationStateFromPoses(poses, options = {}) {
     return state;
 }
 
-export function setTrackKeyframe(state, trackName, frameValue, quaternionValue, interpolation) {
+export function setTrackKeyframe(state, trackName, frameValue, trackValue, interpolation) {
     if (!state || !trackName) return null;
     const frame = clamp(Math.round(finiteNumber(frameValue)), 0, state.frameCount - 1);
     const type = INTERPOLATION_NAMES.has(interpolation) ? interpolation : state.defaultInterpolation;
     let track = state.tracks[trackName];
     if (!track) {
-        track = state.tracks[trackName] = { valueType: "quaternion", keys: [] };
+        track = state.tracks[trackName] = {
+            valueType: valueTypeForTrack(trackName),
+            keys: [],
+        };
     }
 
     // A first key later than frame zero gets an implicit baseline key, so the
@@ -537,19 +632,19 @@ export function setTrackKeyframe(state, trackName, frameValue, quaternionValue, 
         track.keys.push({
             id: createKeyId(),
             frame: 0,
-            value: baseQuaternionForTrack(state, trackName),
+            value: baseValueForTrack(state, trackName),
             interpolation: type,
         });
     }
 
     let key = track.keys.find(item => item.frame === frame);
     if (key) {
-        key.value = normalizeQuaternion(quaternionValue);
+        key.value = normalizeTrackValue(trackName, trackValue);
     } else {
         key = {
             id: createKeyId(),
             frame,
-            value: normalizeQuaternion(quaternionValue),
+            value: normalizeTrackValue(trackName, trackValue),
             interpolation: type,
         };
         track.keys.push(key);
@@ -560,6 +655,35 @@ export function setTrackKeyframe(state, trackName, frameValue, quaternionValue, 
 
 export function setTrackKeyframeFromEuler(state, trackName, frame, eulerValue, interpolation) {
     return setTrackKeyframe(state, trackName, frame, eulerDegreesToQuaternion(eulerValue), interpolation);
+}
+
+export function setCharacterTransformKeyframe(
+    state,
+    trackName,
+    frame,
+    transform,
+    interpolation,
+) {
+    const normalized = normalizeAnimationCharacterTransform(transform);
+    if (trackName === CHARACTER_POSITION_TRACK) {
+        return setTrackKeyframe(
+            state,
+            trackName,
+            frame,
+            [normalized.x, normalized.y],
+            interpolation,
+        );
+    }
+    if (trackName === CHARACTER_ZOOM_TRACK) {
+        return setTrackKeyframe(
+            state,
+            trackName,
+            frame,
+            [normalized.zoom],
+            interpolation,
+        );
+    }
+    return null;
 }
 
 export function deleteTrackKeyframe(state, trackName, frameValue) {
@@ -681,7 +805,7 @@ export function copyKeyframeSelection(state, selections) {
         keys: resolved.map(({ trackName, key }) => ({
             trackName,
             offset: key.frame - firstFrame,
-            value: normalizeQuaternion(key.value),
+            value: normalizeTrackValue(trackName, key.value),
             interpolation: INTERPOLATION_NAMES.has(key.interpolation) ? key.interpolation : "linear",
         })),
     };
@@ -701,12 +825,17 @@ export function pasteKeyframeSelection(state, clipboard, startFrameValue) {
     for (const item of validKeys) {
         const frame = clamp(startFrame + Math.max(0, Math.round(finiteNumber(item.offset))), 0, state.frameCount - 1);
         let track = state.tracks[item.trackName];
-        if (!track) track = state.tracks[item.trackName] = { valueType: "quaternion", keys: [] };
+        if (!track) {
+            track = state.tracks[item.trackName] = {
+                valueType: valueTypeForTrack(item.trackName),
+                keys: [],
+            };
+        }
         track.keys = track.keys.filter(key => key.frame !== frame);
         const key = {
             id: createKeyId(),
             frame,
-            value: normalizeQuaternion(item.value),
+            value: normalizeTrackValue(item.trackName, item.value),
             interpolation: INTERPOLATION_NAMES.has(item.interpolation) ? item.interpolation : state.defaultInterpolation,
         };
         track.keys.push(key);
@@ -915,7 +1044,7 @@ function trackSide(name) {
 }
 
 export function timelineGroupIdForTrack(name) {
-    if (name === MODEL_ROTATION_TRACK) return "scene";
+    if (name === MODEL_ROTATION_TRACK || isCharacterTransformTrack(name)) return "scene";
     const clean = cleanBoneName(name).toLowerCase();
     const side = trackSide(clean);
     const isHand = /(hand|wrist|thumb|index|middle|ring|pinky|little|finger|digit)/.test(clean);
@@ -965,6 +1094,8 @@ function numberedPartLabel(base, number) {
 
 export function humanizeBoneName(name) {
     if (name === MODEL_ROTATION_TRACK) return "Model Rotation";
+    if (name === CHARACTER_POSITION_TRACK) return "Position in Frame";
+    if (name === CHARACTER_ZOOM_TRACK) return "Model Zoom";
     const raw = cleanBoneName(name);
     const lower = raw.toLowerCase();
     const side = sidePrefix(raw);
@@ -1072,7 +1203,11 @@ export function buildTimelineRows({
         const groupMatchesSearch = !query || group.label.toLowerCase().includes(query);
         let candidates = group.trackNames.filter(trackName => {
             if (trackName === activeTrack) return true;
-            if (viewMode === "animated" && !timelineTrackHasKeys(state, trackName)) return false;
+            if (
+                viewMode === "animated"
+                && !timelineTrackHasKeys(state, trackName)
+                && !isCharacterTransformTrack(trackName)
+            ) return false;
             if (
                 viewMode === "focus"
                 && (focused.size ? !focused.has(trackName) : group.id !== activeGroup)
@@ -1444,7 +1579,7 @@ export class PoseAnimationTimeline {
         this.status = document.createElement("span");
         this.status.className = "vnccs-ps-tl-status";
 
-        this.addKeyButton = this._button("◆", "Add/update key for the selected bone", () => {
+        this.addKeyButton = this._button("◆", "Add/update key for the selected track", () => {
             const trackName = this.getPreferredTrack();
             if (trackName) this.onRequestKey(trackName, this.state.currentFrame);
         }, "key");
@@ -1526,7 +1661,7 @@ export class PoseAnimationTimeline {
         this.searchInput = document.createElement("input");
         this.searchInput.type = "search";
         this.searchInput.className = "vnccs-ps-tl-search";
-        this.searchInput.placeholder = "Find bone…";
+        this.searchInput.placeholder = "Find track…";
         this.searchInput.addEventListener("input", () => {
             this.search = this.searchInput.value.trim().toLowerCase();
             this.body.scrollTop = 0;
@@ -2202,7 +2337,12 @@ export class PoseAnimationTimeline {
     }
 
     _allTrackNames() {
-        const names = [MODEL_ROTATION_TRACK, ...this.boneNames];
+        const names = [
+            CHARACTER_POSITION_TRACK,
+            CHARACTER_ZOOM_TRACK,
+            MODEL_ROTATION_TRACK,
+            ...this.boneNames,
+        ];
         for (const name of Object.keys(this.state.tracks || {})) {
             if (!names.includes(name)) names.push(name);
         }

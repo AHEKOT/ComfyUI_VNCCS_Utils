@@ -21,6 +21,41 @@ const methodSource = (source, signature, nextSignature) => {
     return source.slice(start, end);
 };
 
+test("Pose Studio entrypoint does not require newly-added character helper exports", () => {
+    const characterImport = poseStudioSource.match(
+        /import\s*\{([\s\S]*?)\}\s*from\s*["']\.\/vnccs_pose_characters\.mjs["']/,
+    );
+    assert.ok(characterImport, "character helper import must exist");
+    assert.doesNotMatch(
+        characterImport[1],
+        /legacyCameraFramingToCharacterTransform/,
+        "a new required named export can prevent the complete widget entrypoint from loading",
+    );
+    assert.match(
+        poseStudioSource,
+        /const legacyCameraFramingToCharacterTransform = /,
+        "legacy framing migration remains available without a fragile module import",
+    );
+});
+
+test("Pose Studio pins the transform-track animation module instead of using quaternion fallbacks", () => {
+    assert.match(
+        poseStudioSource,
+        /import \* as PoseAnimation from "\.\/vnccs_pose_animation\.mjs\?v=[^"]+"/,
+        "the entrypoint must not reuse an older animation module that treats zoom as a quaternion",
+    );
+    assert.doesNotMatch(
+        poseStudioSource,
+        /PoseAnimation\.setCharacterTransformKeyframe\s*\|\|/,
+        "a generic old setTrackKeyframe fallback corrupts scalar zoom keys",
+    );
+    assert.doesNotMatch(
+        poseStudioSource,
+        /PoseAnimation\.evaluateCharacterTransform\s*\|\|/,
+        "playback must use the matching transform-track evaluator",
+    );
+});
+
 
 test("scene animation cache stores all character clips in one compact bundle", () => {
     const buildMethod = methodSource(
@@ -66,6 +101,93 @@ test("scene animation cache restores each clip by stable character id", () => {
     );
     assert.match(restoreMethod, /character\.animationState = state/);
     assert.match(restoreMethod, /this\.retimeAllCharacterAnimations\(this\.sharedTimeline\)/);
+});
+
+test("per-character position and zoom are evaluated for playback and full capture", () => {
+    const frameMethod = methodSource(
+        poseStudioSource,
+        "applyAnimationFrame(frame, { transient = false, updateTimeline = true } = {})",
+        "\n    addAnimationKey(",
+    );
+    assert.match(frameMethod, /this\.characterTransformForScene\(activeCharacter/);
+    assert.match(frameMethod, /this\.exportParams\.cam_offset_x = transform\.x/);
+    assert.match(frameMethod, /this\.exportParams\.cam_offset_y = transform\.y/);
+    assert.match(frameMethod, /this\.exportParams\.cam_zoom = transform\.zoom/);
+
+    const sceneMethod = methodSource(
+        poseStudioSource,
+        "updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {})",
+        "\n    syncCharacterEditorControls()",
+    );
+    assert.match(sceneMethod, /const activeTransform = this\.characterTransformForScene\(active, \{ frame \}\)/);
+    assert.match(sceneMethod, /const transform = this\.characterTransformForScene\(character, \{ frame \}\)/);
+    assert.match(sceneMethod, /this\.viewer\.setPassiveCharacterState\(character\.id,[\s\S]*transform,/);
+
+    const persistMethod = methodSource(
+        poseStudioSource,
+        "persistActivePoseCameraParams()",
+        "\n    currentCameraParams()",
+    );
+    assert.match(
+        persistMethod,
+        /this\.captureAnimationTransformEdits\(previousTransform, nextTransform\)/,
+    );
+});
+
+test("legacy library poses restore their saved crop and zoom before editor commit", () => {
+    const restoreMethod = methodSource(
+        poseStudioSource,
+        "restorePoseCameraParams(pose, { migrateLegacyFraming = false } = {})",
+        "\n    async loadCharacterSceneLibraryAsset(",
+    );
+    assert.match(
+        restoreMethod,
+        /if \(frame === 0\) \{\s*animationState\.baseTransform = \{ \.\.\.transform \};\s*\}/,
+        "only a frame-zero library pose may replace the animation framing baseline",
+    );
+    assert.match(
+        restoreMethod,
+        /setCharacterTransformKeyframe\(\s*animationState,\s*CHARACTER_POSITION_TRACK,\s*frame,\s*transform,/,
+        "library pose position must be keyed on the active frame",
+    );
+    assert.match(
+        restoreMethod,
+        /setCharacterTransformKeyframe\(\s*animationState,\s*CHARACTER_ZOOM_TRACK,\s*frame,\s*transform,/,
+        "library pose zoom must be keyed on the active frame",
+    );
+
+    const loadMethod = methodSource(
+        poseStudioSource,
+        "async loadFromLibrary(poseOrName)",
+        "\n    showSettingsModal()",
+    );
+    const snapshotCamera = loadMethod.indexOf("const legacyCameraParams = (");
+    const stripCamera = loadMethod.indexOf(
+        "const legacyPose = this.stripSceneCameraFromPose(legacyPoseSource)",
+    );
+    const applyPose = loadMethod.indexOf("this.viewer.setPose(legacyPose, true)");
+    const restoreCamera = loadMethod.indexOf(
+        "this.restorePoseCameraParams({",
+        applyPose,
+    );
+    const migrateLegacyFraming = loadMethod.indexOf(
+        "migrateLegacyFraming: true",
+        restoreCamera,
+    );
+    const commitPose = loadMethod.indexOf(
+        "this.commitViewerPoseToCurrentEditor()",
+        restoreCamera,
+    );
+
+    assert.ok(snapshotCamera >= 0, "legacy cameraParams must be preserved before pose cleanup");
+    assert.ok(stripCamera > snapshotCamera, "pose-local camera data is stripped only after it is saved");
+    assert.ok(applyPose > stripCamera, "the skeletal pose is applied before restoring its framing");
+    assert.ok(restoreCamera > applyPose, "saved crop and zoom are restored after applying the pose");
+    assert.ok(
+        migrateLegacyFraming > restoreCamera,
+        "legacy camera zoom must be converted around the mesh pivot instead of copied to mesh.scale",
+    );
+    assert.ok(commitPose > restoreCamera, "the restored framing reaches the active character transform");
 });
 
 

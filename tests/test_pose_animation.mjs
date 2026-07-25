@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+    CHARACTER_POSITION_TRACK,
+    CHARACTER_ZOOM_TRACK,
     MODEL_ROTATION_TRACK,
     TIMELINE_ROW_HEIGHT,
     aggregateTimelineKeyFrames,
@@ -17,6 +19,7 @@ import {
     computeTimelineLaneWidth,
     eulerDegreesToQuaternion,
     evaluateAnimationFrame,
+    evaluateCharacterTransform,
     findChangedPoseTracks,
     findNearestKeyframeAtPosition,
     findKeyframesInRange,
@@ -37,6 +40,7 @@ import {
     serializeAnimationStateSnapshot,
     selectRandomLibraryPoseData,
     setTrackKeyframeFromEuler,
+    setCharacterTransformKeyframe,
     timelineContentPointToPosition,
     timelineFingerGroupIdForTrack,
     timelineGroupIdForTrack,
@@ -113,6 +117,156 @@ test("first late key creates an implicit frame-zero baseline", () => {
     setTrackKeyframeFromEuler(state, "head", 10, [30, 0, 0], "linear");
     assert.deepEqual(state.tracks.head.keys.map(key => key.frame), [0, 10]);
     assert.ok(angleDistance(evaluateAnimationFrame(state, 0).bones.head[0], 5) < 1e-6);
+});
+
+test("each character animates position in frame and zoom with ordinary keyframe interpolation", () => {
+    const state = createDefaultAnimationState({}, {
+        frameCount: 11,
+        duration: 1,
+        fps: 11,
+        baseTransform: { x: -2, y: 1, z: 4, zoom: 1 },
+    });
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_POSITION_TRACK,
+        10,
+        { x: 8, y: -3, z: 4, zoom: 1 },
+        "linear",
+    );
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_ZOOM_TRACK,
+        10,
+        { x: 8, y: -3, z: 4, zoom: 3 },
+        "linear",
+    );
+
+    assert.deepEqual(state.tracks[CHARACTER_POSITION_TRACK].keys.map(key => key.frame), [0, 10]);
+    assert.deepEqual(state.tracks[CHARACTER_ZOOM_TRACK].keys.map(key => key.frame), [0, 10]);
+    assert.deepEqual(evaluateCharacterTransform(state, 0), {
+        x: -2,
+        y: 1,
+        z: 4,
+        zoom: 1,
+    });
+    assert.deepEqual(evaluateCharacterTransform(state, 5), {
+        x: 3,
+        y: -1,
+        z: 4,
+        zoom: 2,
+    });
+    assert.deepEqual(evaluateCharacterTransform(state, 10), {
+        x: 8,
+        y: -3,
+        z: 4,
+        zoom: 3,
+    });
+    assert.equal(CHARACTER_POSITION_TRACK in evaluateAnimationFrame(state, 5).bones, false);
+    assert.equal(CHARACTER_ZOOM_TRACK in evaluateAnimationFrame(state, 5).bones, false);
+});
+
+test("waist-up frame zero interpolates to a full-body framing on the last frame", () => {
+    const state = createDefaultAnimationState({}, {
+        frameCount: 24,
+        duration: 2,
+        fps: 12,
+    });
+    const waistUp = { x: -0.65, y: -2.84, z: 0, zoom: 2.72 };
+    const fullBody = { x: 0, y: 0, z: 0, zoom: 1.63 };
+
+    state.baseTransform = { ...waistUp };
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_POSITION_TRACK,
+        0,
+        waistUp,
+        "linear",
+    );
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_ZOOM_TRACK,
+        0,
+        waistUp,
+        "linear",
+    );
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_POSITION_TRACK,
+        23,
+        fullBody,
+        "linear",
+    );
+    setCharacterTransformKeyframe(
+        state,
+        CHARACTER_ZOOM_TRACK,
+        23,
+        fullBody,
+        "linear",
+    );
+
+    assert.deepEqual(evaluateCharacterTransform(state, 0), waistUp);
+    assert.deepEqual(evaluateCharacterTransform(state, 23), fullBody);
+    const middle = evaluateCharacterTransform(state, 11.5);
+    assert.ok(middle.zoom < waistUp.zoom && middle.zoom > fullBody.zoom);
+    assert.ok(middle.x > waistUp.x && middle.x < fullBody.x);
+    assert.ok(middle.y > waistUp.y && middle.y < fullBody.y);
+});
+
+test("legacy character animations inherit their existing static placement", () => {
+    const state = normalizeAnimationState(
+        {
+            schemaVersion: 2,
+            frameCount: 12,
+            duration: 1,
+            fps: 12,
+            tracks: {},
+        },
+        {},
+        { x: 6, y: -4, z: 2, zoom: 1.75 },
+    );
+    assert.deepEqual(state.baseTransform, { x: 6, y: -4, z: 2, zoom: 1.75 });
+    assert.deepEqual(evaluateCharacterTransform(state, 8), state.baseTransform);
+});
+
+test("position and zoom keys survive snapshots and mixed clipboard operations", () => {
+    const state = createDefaultAnimationState({}, {
+        duration: 2,
+        fps: 12,
+        baseTransform: { x: 0, y: 0, z: 0, zoom: 1 },
+    });
+    const positionKey = setCharacterTransformKeyframe(
+        state,
+        CHARACTER_POSITION_TRACK,
+        4,
+        { x: 5, y: -2, zoom: 1 },
+        "easeInOut",
+    );
+    const zoomKey = setCharacterTransformKeyframe(
+        state,
+        CHARACTER_ZOOM_TRACK,
+        7,
+        { x: 5, y: -2, zoom: 2.5 },
+        "smooth",
+    );
+    const clipboard = copyKeyframeSelection(state, [
+        { trackName: CHARACTER_POSITION_TRACK, keyId: positionKey.id },
+        { trackName: CHARACTER_ZOOM_TRACK, keyId: zoomKey.id },
+    ]);
+    pasteKeyframeSelection(state, clipboard, 12);
+
+    const restored = restoreAnimationStateSnapshot(
+        serializeAnimationStateSnapshot(state),
+    );
+    assert.equal(restored.tracks[CHARACTER_POSITION_TRACK].valueType, "vector2");
+    assert.equal(restored.tracks[CHARACTER_ZOOM_TRACK].valueType, "scalar");
+    assert.deepEqual(
+        restored.tracks[CHARACTER_POSITION_TRACK].keys.map(key => key.frame),
+        [0, 4, 12],
+    );
+    assert.deepEqual(
+        restored.tracks[CHARACTER_ZOOM_TRACK].keys.map(key => key.frame),
+        [0, 7, 15],
+    );
 });
 
 test("retiming preserves normalized key positions", () => {
@@ -244,6 +398,10 @@ test("timeline groups use anatomical labels and stable body regions", () => {
     assert.equal(humanizeBoneName("mixamorigLeftArm"), "Left Upper Arm");
     assert.equal(humanizeBoneName("index_01_l"), "Left Index Finger — Base");
     assert.equal(humanizeBoneName("Spine02"), "Spine 02");
+    assert.equal(humanizeBoneName(CHARACTER_POSITION_TRACK), "Position in Frame");
+    assert.equal(humanizeBoneName(CHARACTER_ZOOM_TRACK), "Model Zoom");
+    assert.equal(timelineGroupIdForTrack(CHARACTER_POSITION_TRACK), "scene");
+    assert.equal(timelineGroupIdForTrack(CHARACTER_ZOOM_TRACK), "scene");
     assert.equal(timelineGroupIdForTrack(MODEL_ROTATION_TRACK), "scene");
     assert.equal(timelineGroupIdForTrack("upperarm_l"), "leftArm");
     assert.equal(timelineGroupIdForTrack("RightForeArm"), "rightArm");
@@ -259,6 +417,25 @@ test("timeline groups use anatomical labels and stable body regions", () => {
         MODEL_ROTATION_TRACK, "head", "upperarm_l", "hand_l", "thigh_r", "custom_helper",
     ]);
     assert.deepEqual(groups.map(group => group.id), ["scene", "torso", "leftArm", "rightLeg", "leftHand", "other"]);
+});
+
+test("position and zoom tracks remain available before their first keyframe", () => {
+    const state = createDefaultAnimationState({}, {
+        baseTransform: { x: 1, y: 2, z: 0, zoom: 1.5 },
+    });
+    const rows = buildTimelineRows({
+        state,
+        trackNames: [
+            CHARACTER_POSITION_TRACK,
+            CHARACTER_ZOOM_TRACK,
+            MODEL_ROTATION_TRACK,
+        ],
+        viewMode: "animated",
+        activeTrack: MODEL_ROTATION_TRACK,
+        expandedGroups: new Set(["scene"]),
+    });
+    assert.ok(rows.some(row => row.trackName === CHARACTER_POSITION_TRACK));
+    assert.ok(rows.some(row => row.trackName === CHARACTER_ZOOM_TRACK));
 });
 
 test("expanded hands remain compact through collapsible per-finger groups", () => {

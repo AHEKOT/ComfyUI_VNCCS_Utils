@@ -5,6 +5,7 @@ import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     createPoseStudioCharacter,
+    legacyCameraFramingToCharacterTransform,
     nextCharacterColor,
     nextCharacterSlot,
     normalizeCharacterColor,
@@ -134,6 +135,31 @@ test("character colors and transforms are normalized and bounded", () => {
     assert.equal(second.slot, 1);
     assert.equal(second.color, DEFAULT_CHARACTER_COLORS[1]);
     assert.deepEqual(second.transform, { x: 1, y: 2, z: 3, zoom: 4 });
+});
+
+test("legacy camera framing converts zoom around the saved camera target", () => {
+    const pivot = { x: 2, y: 10, z: -1 };
+    const transform = legacyCameraFramingToCharacterTransform({
+        zoom: 2,
+        offset_x: 1.5,
+        offset_y: -2,
+    }, pivot);
+
+    assert.deepEqual(transform, {
+        x: 1,
+        y: -14,
+        z: 1,
+        zoom: 2,
+    });
+    assert.deepEqual({
+        x: pivot.x * transform.zoom + transform.x,
+        y: pivot.y * transform.zoom + transform.y,
+        z: pivot.z * transform.zoom + transform.z,
+    }, {
+        x: pivot.x + 2 * 1.5,
+        y: pivot.y + 2 * -2,
+        z: pivot.z,
+    });
 });
 
 

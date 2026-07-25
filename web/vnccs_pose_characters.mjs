@@ -49,6 +49,30 @@ export function normalizeCharacterTransform(source = {}) {
     };
 }
 
+/**
+ * Convert the old single-character capture camera into the scene character
+ * transform used by the current shared-camera renderer.
+ *
+ * Legacy camera zoom enlarged the model around the camera target. Applying the
+ * same number directly as mesh.scale enlarges around the mesh origin instead,
+ * which moves a waist-up pose out of its saved frame. Compensating around the
+ * original camera target preserves that framing.
+ */
+export function legacyCameraFramingToCharacterTransform(cameraParams = {}, pivot = {}) {
+    const zoom = clamp(finite(cameraParams.zoom, 1), 0.1, 7);
+    const offsetX = finite(cameraParams.offset_x, 0);
+    const offsetY = finite(cameraParams.offset_y, 0);
+    const pivotX = finite(pivot.x, 0);
+    const pivotY = finite(pivot.y, 0);
+    const pivotZ = finite(pivot.z, 0);
+    return normalizeCharacterTransform({
+        x: (1 - zoom) * pivotX + zoom * offsetX,
+        y: (1 - zoom) * pivotY + zoom * offsetY,
+        z: (1 - zoom) * pivotZ,
+        zoom,
+    });
+}
+
 export function nextCharacterId(characters = []) {
     const occupied = new Set(characters.map(character => String(character?.id || "")));
     for (let index = 1; index < 10000; index += 1) {

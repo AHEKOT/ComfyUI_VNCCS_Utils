@@ -44,7 +44,11 @@ import {
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
 } from "./vnccs_video_import.mjs";
-import {
+import * as PoseAnimation from "./vnccs_pose_animation.mjs?v=20260725.1";
+
+const {
+    CHARACTER_POSITION_TRACK,
+    CHARACTER_ZOOM_TRACK,
     MODEL_ROTATION_TRACK,
     PoseAnimationTimeline,
     createAnimationCacheReference,
@@ -52,9 +56,11 @@ import {
     createAnimationStateFromPoses,
     createDefaultAnimationState,
     evaluateAnimationFrame,
+    evaluateCharacterTransform,
     findChangedPoseTracks,
     getPoseTrackEuler,
     isAnimationCacheReference,
+    isCharacterTransformTrack,
     normalizeAnimationState,
     resolveCaptureCameraParams,
     resolveDebugLightingMode,
@@ -63,8 +69,31 @@ import {
     sampleAnimationFrames,
     selectRandomLibraryPoseData,
     serializeAnimationStateSnapshot,
+    setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./vnccs_pose_animation.mjs";
+} = PoseAnimation;
+
+// Keep this migration local to the entry module. Adding a new required named
+// export to a long-lived browser module makes the entire widget fail to load
+// when an older dependency instance is already present in the module map.
+const legacyCameraFramingToCharacterTransform = (cameraParams = {}, pivot = {}) => {
+    const finiteNumber = (value, fallback) => {
+        const number = Number(value);
+        return Number.isFinite(number) ? number : fallback;
+    };
+    const zoom = Math.max(0.1, Math.min(7, finiteNumber(cameraParams.zoom, 1)));
+    const offsetX = finiteNumber(cameraParams.offset_x, 0);
+    const offsetY = finiteNumber(cameraParams.offset_y, 0);
+    const pivotX = finiteNumber(pivot.x, 0);
+    const pivotY = finiteNumber(pivot.y, 0);
+    const pivotZ = finiteNumber(pivot.z, 0);
+    return normalizeCharacterTransform({
+        x: (1 - zoom) * pivotX + zoom * offsetX,
+        y: (1 - zoom) * pivotY + zoom * offsetY,
+        z: (1 - zoom) * pivotZ,
+        zoom,
+    });
+};
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -3985,7 +4014,9 @@ class PoseStudioWidget {
         this.posePrompts = [""]; // User prompt per pose tab
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
-        this.animationState = createDefaultAnimationState({});
+        this.animationState = createDefaultAnimationState({}, {
+            baseTransform: { x: 0, y: 0, z: 0, zoom: 1 },
+        });
         this.animationTimeline = null;
         this._applyingAnimationPose = false;
         this._animationUndoStack = [];
@@ -5020,19 +5051,32 @@ class PoseStudioWidget {
             },
             onRequestKey: (trackName, frame) => this.addAnimationKey(trackName, frame),
             onTrackSelect: (trackName) => {
-                if (!trackName || trackName === MODEL_ROTATION_TRACK) {
+                if (
+                    !trackName
+                    || trackName === MODEL_ROTATION_TRACK
+                    || isCharacterTransformTrack(trackName)
+                ) {
                     this.viewer?.selectBoneByName?.(null);
                     return;
                 }
                 this.viewer?.selectBoneByName?.(trackName);
             },
             onTrackHover: (trackName) => {
-                const boneName = trackName && trackName !== MODEL_ROTATION_TRACK ? trackName : null;
+                const boneName = (
+                    trackName
+                    && trackName !== MODEL_ROTATION_TRACK
+                    && !isCharacterTransformTrack(trackName)
+                ) ? trackName : null;
                 this.viewer?.setExternalHoveredBone?.(boneName);
             },
-            getPreferredTrack: () => this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK,
+            getPreferredTrack: () => {
+                const activeTrack = this.animationTimeline?.activeTrack;
+                if (isCharacterTransformTrack(activeTrack)) return activeTrack;
+                return this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK;
+            },
             getFocusTracks: (trackName) => {
                 if (!trackName || trackName === MODEL_ROTATION_TRACK) return [MODEL_ROTATION_TRACK];
+                if (isCharacterTransformTrack(trackName)) return [trackName];
                 return this.viewer?.getBoneTimelineContext?.(trackName) || [trackName];
             },
         });
@@ -5051,8 +5095,10 @@ class PoseStudioWidget {
             : (this.poses[this.activeTab] || {});
         this.stripSceneCameraFromPose(pose);
         pose.prompt = this.getPosePrompt(this.activeTab);
-        this.animationState = createDefaultAnimationState(pose);
         const active = this.getActiveCharacter();
+        this.animationState = createDefaultAnimationState(pose, {
+            baseTransform: active?.transform,
+        });
         if (active) active.animationState = this.animationState;
         this.retimeAllCharacterAnimations({
             fps: this.sharedTimeline?.fps ?? this.animationState.fps,
@@ -5124,6 +5170,17 @@ class PoseStudioWidget {
                 character.animationState.currentFrame = Math.min(character.animationState.frameCount - 1, nextFrame);
             }
         }
+        const activeCharacter = this.getActiveCharacter();
+        if (activeCharacter) {
+            const transform = this.characterTransformForScene(activeCharacter, {
+                frame: nextFrame,
+            });
+            activeCharacter.transform = transform;
+            this.exportParams.cam_offset_x = transform.x;
+            this.exportParams.cam_offset_y = transform.y;
+            this.exportParams.cam_zoom = transform.zoom;
+            this.syncCameraWidgets();
+        }
         if (this.viewer?.isInitialized?.()) {
             this._applyingAnimationPose = true;
             this.viewer.setPose(evaluateAnimationFrame(this.animationState, nextFrame), true);
@@ -5138,6 +5195,22 @@ class PoseStudioWidget {
 
     addAnimationKey(trackName, frame = this.animationState.currentFrame) {
         if (!this.isAnimationMode() || !trackName) return;
+        if (isCharacterTransformTrack(trackName)) {
+            const character = this.getActiveCharacter();
+            if (!character) return;
+            setCharacterTransformKeyframe(
+                this.animationState,
+                trackName,
+                frame,
+                character.transform,
+                this.animationState.defaultInterpolation,
+            );
+            this.animationState.currentFrame = Math.round(Number(frame) || 0);
+            this.animationTimeline?.renderTracks();
+            this.animationTimeline?.updatePlayheads();
+            this.syncToNode(false, { skipCapture: true });
+            return;
+        }
         const pose = this.viewer?.isInitialized?.()
             ? this.viewer.getPose()
             : evaluateAnimationFrame(this.animationState, frame);
@@ -5170,6 +5243,46 @@ class PoseStudioWidget {
             );
         }
         if (changedTracks.length) this.animationTimeline?.renderTracks();
+        return changedTracks;
+    }
+
+    captureAnimationTransformEdits(previousTransform, nextTransform) {
+        if (!this.isAnimationMode()) {
+            const character = this.getActiveCharacter();
+            if (character?.animationState) {
+                character.animationState.baseTransform = normalizeCharacterTransform(nextTransform);
+            }
+            return [];
+        }
+        if (
+            !this.animationState?.autoKey
+            || this._applyingAnimationPose
+        ) return [];
+        const previous = normalizeCharacterTransform(previousTransform);
+        const next = normalizeCharacterTransform(nextTransform);
+        const changedTracks = [];
+        if (
+            Math.abs(previous.x - next.x) > 1e-6
+            || Math.abs(previous.y - next.y) > 1e-6
+        ) {
+            changedTracks.push(CHARACTER_POSITION_TRACK);
+        }
+        if (Math.abs(previous.zoom - next.zoom) > 1e-6) {
+            changedTracks.push(CHARACTER_ZOOM_TRACK);
+        }
+        for (const trackName of changedTracks) {
+            const alreadyKeyed = this.animationState.tracks?.[trackName]?.keys?.some(
+                key => key.frame === this.animationState.currentFrame,
+            );
+            setCharacterTransformKeyframe(
+                this.animationState,
+                trackName,
+                this.animationState.currentFrame,
+                next,
+                this.animationState.defaultInterpolation,
+            );
+            if (!alreadyKeyed) this.animationTimeline?.renderTracks();
+        }
         return changedTracks;
     }
 
@@ -5354,7 +5467,11 @@ class PoseStudioWidget {
                     const characterFallback = character.poses?.[this.activeTab]
                         || character.poses?.[0]
                         || fallbackPose;
-                    const state = normalizeAnimationState(source, characterFallback);
+                    const state = normalizeAnimationState(
+                        source,
+                        characterFallback,
+                        character.transform,
+                    );
                     state.currentFrame = Math.min(state.frameCount - 1, restoredFrame);
                     character.animationState = state;
                     character.animation = source;
@@ -5362,9 +5479,13 @@ class PoseStudioWidget {
                 restored = this.getActiveCharacter()?.animationState || null;
             }
             if (!restored) {
-                restored = normalizeAnimationState(cachedAnimation, fallbackPose);
-                restored.currentFrame = Math.min(restored.frameCount - 1, restoredFrame);
                 const activeCharacter = this.getActiveCharacter();
+                restored = normalizeAnimationState(
+                    cachedAnimation,
+                    fallbackPose,
+                    activeCharacter?.transform,
+                );
+                restored.currentFrame = Math.min(restored.frameCount - 1, restoredFrame);
                 if (activeCharacter) activeCharacter.animationState = restored;
             }
             const cacheBelongsToNode = this.animationCacheIdBelongsToNode(sourceCacheId);
@@ -5433,10 +5554,13 @@ class PoseStudioWidget {
     restoreAnimationSnapshot(snapshot) {
         if (!snapshot) return;
         const currentFrame = this.animationState.currentFrame;
+        const activeCharacter = this.getActiveCharacter();
         this.animationState = restoreAnimationStateSnapshot(snapshot, {
             currentFrame,
             fallbackPose: this.animationState.basePose || {},
+            fallbackTransform: activeCharacter?.transform,
         });
+        if (activeCharacter) activeCharacter.animationState = this.animationState;
         this._animationInitialized = true;
         this.animationTimeline?.setState(this.animationState);
         this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
@@ -5765,8 +5889,10 @@ class PoseStudioWidget {
         if (!character.animationState) {
             const fallbackPose = character.poses[this.activeTab] || character.poses[0] || {};
             character.animationState = character.animation && typeof character.animation === "object"
-                ? normalizeAnimationState(character.animation, fallbackPose)
-                : createDefaultAnimationState(fallbackPose);
+                ? normalizeAnimationState(character.animation, fallbackPose, character.transform)
+                : createDefaultAnimationState(fallbackPose, {
+                    baseTransform: character.transform,
+                });
         }
         if (this.sharedTimeline) {
             retimeAnimationTiming(character.animationState, {
@@ -5878,6 +6004,21 @@ class PoseStudioWidget {
         return character.poses[poseIndex] || character.poses[0] || {};
     }
 
+    characterTransformForScene(character, { frame = null } = {}) {
+        if (!character?.animationState) this.ensureCharacterRuntime(character);
+        if (!this.isAnimationMode()) {
+            return normalizeCharacterTransform(character.transform);
+        }
+        const targetFrame = frame == null
+            ? this.sharedTimeline?.currentFrame ?? this.animationState?.currentFrame ?? 0
+            : frame;
+        return normalizeCharacterTransform(evaluateCharacterTransform(
+            character.animationState,
+            targetFrame,
+            character.transform,
+        ));
+    }
+
     updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {}) {
         if (!this.viewer?.isInitialized?.()) return;
         const active = this.getActiveCharacter();
@@ -5888,25 +6029,27 @@ class PoseStudioWidget {
                 this.viewer.removePassiveCharacter?.(id);
             }
         }
+        const activeTransform = this.characterTransformForScene(active, { frame });
         this.viewer.setActiveCharacterAppearance({
             color: active.color,
-            transform: active.transform,
+            transform: activeTransform,
         });
 
         for (const character of this.characters) {
             if (character.id === active.id) continue;
             const pose = this.characterPoseForScene(character, { frame, poseIndex });
+            const transform = this.characterTransformForScene(character, { frame });
             if (!this.viewer.passiveCharacters?.has?.(character.id) && rebuildMissing) {
                 this.viewer.upsertPassiveCharacterFromActive(character.id, {
                     pose,
                     color: character.color,
-                    transform: character.transform,
+                    transform,
                 });
             } else {
                 this.viewer.setPassiveCharacterState(character.id, {
                     pose,
                     color: character.color,
-                    transform: character.transform,
+                    transform,
                 });
             }
         }
@@ -5935,7 +6078,11 @@ class PoseStudioWidget {
         const id = nextCharacterId(this.characters);
         const spread = [0, 3, -3, 6][slot] ?? slot * 3;
         const poses = Array.from({ length: Math.max(1, this.poses.length) }, () => ({}));
-        const animationState = createDefaultAnimationState(poses[this.activeTab] || poses[0]);
+        const initialTransform = { x: spread, y: 0, z: 0, zoom: 1 };
+        const animationState = createDefaultAnimationState(
+            poses[this.activeTab] || poses[0],
+            { baseTransform: initialTransform },
+        );
         retimeAnimationTiming(animationState, {
             fps: this.sharedTimeline.fps,
             duration: this.sharedTimeline.duration,
@@ -5948,7 +6095,7 @@ class PoseStudioWidget {
             slot,
             name: `Character ${slot + 1}`,
             color: nextCharacterColor(this.characters, slot),
-            transform: { x: spread, y: 0, z: 0, zoom: 1 },
+            transform: initialTransform,
             mesh: JSON.parse(JSON.stringify(this.meshParams)),
             poses,
             animation: animationState,
@@ -5961,7 +6108,7 @@ class PoseStudioWidget {
             this.viewer.upsertPassiveCharacterFromActive(character.id, {
                 pose: this.characterPoseForScene(character),
                 color: character.color,
-                transform: character.transform,
+                transform: this.characterTransformForScene(character),
             });
         }
         this.renderCharactersUI();
@@ -6054,7 +6201,7 @@ class PoseStudioWidget {
                 this.viewer.upsertPassiveCharacterFromActive(previous.id, {
                     pose: this.characterPoseForScene(previous),
                     color: previous.color,
-                    transform: previous.transform,
+                    transform: this.characterTransformForScene(previous),
                 });
             }
 
@@ -6070,6 +6217,9 @@ class PoseStudioWidget {
                 currentFrame: this.sharedTimeline.currentFrame,
             });
             target.animationState = this.animationState;
+            target.transform = this.characterTransformForScene(target, {
+                frame: this.sharedTimeline.currentFrame,
+            });
             this.exportParams.cam_offset_x = target.transform.x;
             this.exportParams.cam_offset_y = target.transform.y;
             this.exportParams.cam_zoom = target.transform.zoom;
@@ -6365,15 +6515,18 @@ class PoseStudioWidget {
     persistActivePoseCameraParams() {
         const character = this.getActiveCharacter();
         if (!character) return;
-        character.transform = normalizeCharacterTransform({
+        const previousTransform = normalizeCharacterTransform(character.transform);
+        const nextTransform = normalizeCharacterTransform({
             ...character.transform,
             x: this.exportParams.cam_offset_x,
             y: this.exportParams.cam_offset_y,
             zoom: this.exportParams.cam_zoom,
         });
+        character.transform = nextTransform;
+        this.captureAnimationTransformEdits(previousTransform, nextTransform);
         this.viewer?.setActiveCharacterAppearance?.({
             color: character.color,
-            transform: character.transform,
+            transform: nextTransform,
         });
     }
 
@@ -7107,6 +7260,7 @@ class PoseStudioWidget {
                 0.08,
             );
             if (!Number.isFinite(zoom)) return false;
+            const previousTransform = normalizeCharacterTransform(activeCharacter.transform);
             const currentZoom = Number(activeCharacter.transform?.zoom) || 1;
             activeCharacter.transform = normalizeCharacterTransform({
                 ...activeCharacter.transform,
@@ -7114,6 +7268,7 @@ class PoseStudioWidget {
                 // so its result is a relative correction, not an absolute zoom.
                 zoom: currentZoom * zoom,
             });
+            this.captureAnimationTransformEdits(previousTransform, activeCharacter.transform);
             this.exportParams.cam_zoom = activeCharacter.transform.zoom;
             this.viewer.setActiveCharacterAppearance({
                 color: activeCharacter.color,
@@ -8544,7 +8699,7 @@ class PoseStudioWidget {
         this.animationTimeline?.setState(this.animationState);
         this.updateTabs();
         this.syncPromptFieldToActiveTab();
-        this.updateRotationSliders();
+        this.applyAnimationFrame(0, { transient: true });
         this.updateCaptureCameraPreview();
         this.syncToNode(false, { skipCapture: true });
     }
@@ -9770,8 +9925,12 @@ class PoseStudioWidget {
                 const data = JSON.parse(event.target.result);
 
                 if (data?.type === "pose_animation" && data.animation && typeof data.animation === "object") {
-                    this.animationState = normalizeAnimationState(data.animation, this.poses[this.activeTab] || {});
                     const activeCharacter = this.getActiveCharacter();
+                    this.animationState = normalizeAnimationState(
+                        data.animation,
+                        this.poses[this.activeTab] || {},
+                        activeCharacter?.transform,
+                    );
                     if (activeCharacter) activeCharacter.animationState = this.animationState;
                     this.retimeAllCharacterAnimations({
                         fps: this.animationState.fps,
@@ -11294,16 +11453,72 @@ class PoseStudioWidget {
         }
     }
 
-    restorePoseCameraParams(pose) {
+    restorePoseCameraParams(pose, { migrateLegacyFraming = false } = {}) {
         const params = pose?.cameraParams;
         if (!params) return false;
 
-        this.exportParams.cam_offset_x = Number(params.offset_x ?? 0);
-        this.exportParams.cam_offset_y = Number(params.offset_y ?? 0);
-        this.exportParams.cam_zoom = Number(params.zoom ?? 1.0);
+        if (migrateLegacyFraming) {
+            const pivot = (
+                this.viewer?.sceneCameraTarget
+                || this.viewer?.meshCenter
+                || { x: 0, y: 0, z: 0 }
+            );
+            const transform = legacyCameraFramingToCharacterTransform(params, pivot);
+            const character = this.getActiveCharacter();
+            if (character) {
+                character.transform = transform;
+                const animationState = this.isAnimationMode()
+                    ? (this.animationState || character.animationState)
+                    : null;
+                if (animationState) {
+                    const frame = Math.max(0, Math.min(
+                        Math.max(0, Number(animationState.frameCount || 1) - 1),
+                        Math.round(Number(animationState.currentFrame) || 0),
+                    ));
+                    // A library pose is an explicit edit, just like committing
+                    // its bone rotations. Store its framing on this exact frame
+                    // even when AUTO is disabled. Frame zero also becomes the
+                    // baseline used by a later full-body key.
+                    if (frame === 0) {
+                        animationState.baseTransform = { ...transform };
+                    }
+                    setCharacterTransformKeyframe(
+                        animationState,
+                        CHARACTER_POSITION_TRACK,
+                        frame,
+                        transform,
+                        animationState.defaultInterpolation,
+                    );
+                    setCharacterTransformKeyframe(
+                        animationState,
+                        CHARACTER_ZOOM_TRACK,
+                        frame,
+                        transform,
+                        animationState.defaultInterpolation,
+                    );
+                    character.animationState = animationState;
+                    this.animationState = animationState;
+                    this.animationTimeline?.renderTracks();
+                    this.animationTimeline?.updatePlayheads();
+                } else if (character.animationState) {
+                    character.animationState.baseTransform = { ...transform };
+                }
+                this.viewer?.setActiveCharacterAppearance?.({
+                    color: character.color,
+                    transform,
+                });
+            }
+            this.exportParams.cam_offset_x = transform.x;
+            this.exportParams.cam_offset_y = transform.y;
+            this.exportParams.cam_zoom = transform.zoom;
+        } else {
+            this.exportParams.cam_offset_x = Number(params.offset_x ?? 0);
+            this.exportParams.cam_offset_y = Number(params.offset_y ?? 0);
+            this.exportParams.cam_zoom = Number(params.zoom ?? 1.0);
+            this.persistActivePoseCameraParams();
+        }
         this.exportParams.cam_yaw_deg = Number(params.yaw_deg ?? 0);
         this.exportParams.cam_pitch_deg = Number(params.pitch_deg ?? 0);
-        this.persistActivePoseCameraParams();
         this.syncCameraWidgets();
         this.applyCameraToViewer(true);
         this.viewer?.setCameraParams?.(this.currentCameraParams());
@@ -11357,8 +11572,10 @@ class PoseStudioWidget {
         for (const character of this.characters) {
             const fallbackPose = character.poses[this.activeTab] || character.poses[0] || {};
             character.animationState = character.animation && typeof character.animation === "object"
-                ? normalizeAnimationState(character.animation, fallbackPose)
-                : createDefaultAnimationState(fallbackPose);
+                ? normalizeAnimationState(character.animation, fallbackPose, character.transform)
+                : createDefaultAnimationState(fallbackPose, {
+                    baseTransform: character.transform,
+                });
         }
 
         this.meshParams = active.mesh;
@@ -11403,7 +11620,12 @@ class PoseStudioWidget {
         const fallbackPose = source.basePose && typeof source.basePose === "object"
             ? source.basePose
             : {};
-        this.animationState = normalizeAnimationState(source, fallbackPose);
+        const activeCharacter = this.getActiveCharacter();
+        this.animationState = normalizeAnimationState(
+            source,
+            fallbackPose,
+            activeCharacter?.transform,
+        );
         this.animationState.basePose = this.animationState.basePose || {};
         this.animationState.basePose.prompt = (
             this.animationState.basePose.prompt
@@ -11412,7 +11634,6 @@ class PoseStudioWidget {
         );
         this.stripSceneCameraFromPose(this.animationState.basePose);
         this.animationState.currentFrame = 0;
-        const activeCharacter = this.getActiveCharacter();
         if (activeCharacter) activeCharacter.animationState = this.animationState;
         this.retimeAllCharacterAnimations({
             fps: this.animationState.fps,
@@ -11466,8 +11687,22 @@ class PoseStudioWidget {
                 } else if (assetType === "animation") {
                     this.loadAnimationLibraryAsset(data.pose);
                 } else {
-                    const legacyPose = this.stripSceneCameraFromPose(JSON.parse(JSON.stringify(data.pose)));
+                    const legacyPoseSource = JSON.parse(JSON.stringify(data.pose));
+                    const legacyCameraParams = (
+                        legacyPoseSource.cameraParams
+                        && typeof legacyPoseSource.cameraParams === "object"
+                    )
+                        ? { ...legacyPoseSource.cameraParams }
+                        : null;
+                    const legacyPose = this.stripSceneCameraFromPose(legacyPoseSource);
                     this.viewer.setPose(legacyPose, true);
+                    if (legacyCameraParams) {
+                        this.restorePoseCameraParams({
+                            cameraParams: legacyCameraParams,
+                        }, {
+                            migrateLegacyFraming: true,
+                        });
+                    }
                     if (this.isAnimationMode()) {
                         this.animationState.basePose.prompt = legacyPose.prompt ?? this.animationState.basePose.prompt ?? "";
                     } else {
@@ -13737,7 +13972,11 @@ class PoseStudioWidget {
                     ? restoredAnimationSource.cacheId
                     : null;
                 this._animationCacheRevision = Math.max(0, Math.floor(Number(restoredAnimationSource.revision) || 0));
-                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
+                this.animationState = normalizeAnimationState(
+                    restoredAnimationSource,
+                    this.poses[this.activeTab] || {},
+                    restoredActiveCharacter?.transform,
+                );
                 this._animationInitialized = true;
             } else if (restoredAnimationSource && typeof restoredAnimationSource === "object") {
                 ++this._animationCacheRestoreToken;
@@ -13745,7 +13984,11 @@ class PoseStudioWidget {
                 this._animationCacheRestorePromise = null;
                 this._animationCacheId = null;
                 this._animationCacheRevision = 0;
-                this.animationState = normalizeAnimationState(restoredAnimationSource, this.poses[this.activeTab] || {});
+                this.animationState = normalizeAnimationState(
+                    restoredAnimationSource,
+                    this.poses[this.activeTab] || {},
+                    restoredActiveCharacter?.transform,
+                );
                 this._animationInitialized = true;
             } else {
                 ++this._animationCacheRestoreToken;
@@ -13753,7 +13996,10 @@ class PoseStudioWidget {
                 this._animationCacheRestorePromise = null;
                 this._animationCacheId = null;
                 this._animationCacheRevision = 0;
-                this.animationState = createDefaultAnimationState(this.poses[this.activeTab] || {});
+                this.animationState = createDefaultAnimationState(
+                    this.poses[this.activeTab] || {},
+                    { baseTransform: restoredActiveCharacter?.transform },
+                );
                 this._animationInitialized = false;
             }
             if (restoredActiveCharacter) restoredActiveCharacter.animationState = this.animationState;
@@ -14239,10 +14485,23 @@ app.registerExtension({
             });
         };
 
+        const hidePoseDataWidget = (node) => {
+            const poseWidget = node?.widgets?.find(widget => widget.name === "pose_data");
+            if (!poseWidget) return;
+            poseWidget.type = "hidden";
+            poseWidget.computeSize = () => [0, -4];
+            poseWidget.hidden = true;
+            if (poseWidget.element) poseWidget.element.style.display = "none";
+        };
+
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (onCreated) onCreated.apply(this, arguments);
 
+            // pose_data is internal state, never user-facing UI. Hide it before
+            // constructing the DOM widget so a later initialization exception
+            // cannot expand megabytes of JSON across the ComfyUI canvas.
+            hidePoseDataWidget(this);
             this.setSize([900, 740]);
 
             // Create widget
@@ -14268,19 +14527,6 @@ app.registerExtension({
                 }
             }, 1000);
 
-            // Hide pose_data widget (must work in both legacy LiteGraph and node2.0 Vue modes)
-            const poseWidget = this.widgets?.find(w => w.name === "pose_data");
-            if (poseWidget) {
-                // Legacy LiteGraph mode
-                poseWidget.type = "hidden";
-                poseWidget.computeSize = () => [0, -4];
-                // Node 2.0 Vue mode
-                poseWidget.hidden = true;
-                // Hide DOM element if it exists (node2.0 creates input elements)
-                if (poseWidget.element) {
-                    poseWidget.element.style.display = "none";
-                }
-            }
             // Load model after initialization
             this._vnccsPoseInitTimer = setTimeout(() => {
                 this.studioWidget.loadFromNode();
