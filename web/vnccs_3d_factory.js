@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.12";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.13";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -38,7 +38,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 9;
-const FRONTEND_BUILD = "20260725.17";
+const FRONTEND_BUILD = "20260725.18";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
@@ -2288,8 +2288,14 @@ class Factory3DWidget {
         visibility.title = group.visible === false ? "Show group" : "Hide group";
         visibility.addEventListener("click", event => {
             event.stopPropagation();
-            group.visible = group.visible === false;
-            this.viewer.applySceneVisibility(this.scene);
+            const nextVisible = group.visible === false;
+            group.visible = nextVisible;
+            this.viewer.setGroupVisibility(
+                group.group_id,
+                group.children,
+                nextVisible,
+                this.scene,
+            );
             this._updateSceneSummary();
             this._renderObjects();
             this._scheduleSceneSave(0);

@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.17"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.18"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -185,6 +185,8 @@ test("Scene objects provide layer-style grouping, visibility, rename, and drag/d
     assert.match(studio, /Hide object/);
     assert.match(studio, /Show group/);
     assert.match(studio, /Hide group/);
+    assert.match(studio, /this\.viewer\.setGroupVisibility\(/);
+    assert.match(viewer, /setGroupVisibility\(/);
     assert.match(studio, /Ungroup objects/);
     assert.match(styles, /\.vnccs-i3s__group-card/);
     assert.match(styles, /\.vnccs-i3s__inline-name/);
@@ -531,7 +533,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.12");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.13");
     const modifierState = module.createDirectionalLightingModifier();
     assert.equal(typeof modifierState.modifier.apply, "function");
     assert.deepEqual(modifierState.objectCenter.value.toArray(), [0, 0, 0]);
@@ -894,6 +896,58 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
         ],
     });
     assert.deepEqual(Array.from(visibility), ["object-b"]);
+
+    const groupLayer = {
+        type: "group",
+        group_id: "group-visibility",
+        visible: true,
+        children: ["visible-child", "hidden-child"],
+    };
+    const visibleChild = new THREE.Object3D();
+    const hiddenChild = new THREE.Object3D();
+    let detachCount = 0;
+    let configureCount = 0;
+    const visibilityViewer = Object.create(module.Factory3DViewer.prototype);
+    visibilityViewer.sceneData = {
+        objects: [
+            { object_id: "visible-child", visible: true },
+            { object_id: "hidden-child", visible: false },
+        ],
+        layers: [groupLayer],
+    };
+    visibilityViewer.objects = new Map([
+        ["visible-child", { mesh: visibleChild }],
+        ["hidden-child", { mesh: hiddenChild }],
+    ]);
+    visibilityViewer.selectedGroupId = groupLayer.group_id;
+    visibilityViewer.transform = { detach: () => { detachCount += 1; } };
+    visibilityViewer.selectionBounds = {
+        visible: true,
+        box: new THREE.Box3(),
+    };
+    visibilityViewer._configureGroupPivot = () => { configureCount += 1; };
+    visibilityViewer.spark = { setDirty() {} };
+    visibilityViewer.setGroupVisibility(
+        groupLayer.group_id,
+        groupLayer.children,
+        false,
+        visibilityViewer.sceneData,
+    );
+    assert.equal(groupLayer.visible, false);
+    assert.equal(visibleChild.visible, false);
+    assert.equal(hiddenChild.visible, false);
+    assert.equal(visibilityViewer.selectionBounds.visible, false);
+    assert.equal(detachCount, 1);
+    visibilityViewer.setGroupVisibility(
+        groupLayer.group_id,
+        groupLayer.children,
+        true,
+        visibilityViewer.sceneData,
+    );
+    assert.equal(groupLayer.visible, true);
+    assert.equal(visibleChild.visible, true);
+    assert.equal(hiddenChild.visible, false);
+    assert.equal(configureCount, 1);
 
     const groupEvents = [];
     const left = new THREE.Object3D();

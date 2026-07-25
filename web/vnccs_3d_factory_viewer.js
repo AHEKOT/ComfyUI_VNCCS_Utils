@@ -11,7 +11,7 @@ import {
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
 const LIGHTING_BASE_RESPONSE = 0.65;
-export const FACTORY_VIEWER_BUILD = "20260725.12";
+export const FACTORY_VIEWER_BUILD = "20260725.13";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -1472,6 +1472,45 @@ export class Factory3DViewer {
             entry.mesh.visible = visibleIds.has(objectId);
         }
         this._refreshSelectionBounds();
+        this.spark.setDirty?.();
+    }
+
+    setGroupVisibility(
+        groupId,
+        objectIds = [],
+        visible = true,
+        sceneData = this.sceneData,
+    ) {
+        this.sceneData = sceneData || this.sceneData;
+        const group = (Array.isArray(this.sceneData?.layers) ? this.sceneData.layers : [])
+            .find(layer => layer?.type === "group" && layer.group_id === groupId);
+        const children = Array.from(new Set(
+            Array.isArray(group?.children) ? group.children : objectIds,
+        ));
+        const objects = new Map(
+            (Array.isArray(this.sceneData?.objects) ? this.sceneData.objects : [])
+                .filter(item => item?.object_id)
+                .map(item => [item.object_id, item]),
+        );
+        const showGroup = Boolean(visible);
+        if (group) group.visible = showGroup;
+        let hasVisibleChild = false;
+        for (const objectId of children) {
+            const entry = this.objects.get(objectId);
+            if (!entry) continue;
+            const childVisible = showGroup && objects.get(objectId)?.visible !== false;
+            entry.mesh.visible = childVisible;
+            hasVisibleChild ||= childVisible;
+        }
+        if (this.selectedGroupId === groupId) {
+            if (hasVisibleChild) {
+                this._configureGroupPivot();
+            } else {
+                this.transform.detach();
+                this.selectionBounds.visible = false;
+                this.selectionBounds.box.makeEmpty();
+            }
+        }
         this.spark.setDirty?.();
     }
 
