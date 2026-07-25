@@ -6,7 +6,8 @@ import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
-export const FACTORY_VIEWER_BUILD = "20260725.2";
+const LIGHTING_BASE_RESPONSE = 0.65;
+export const FACTORY_VIEWER_BUILD = "20260725.6";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -16,6 +17,15 @@ const DEFAULT_LIGHTING = Object.freeze({
     elevation: 42,
     ambient: 0.5,
     background: "#171b25",
+});
+
+const DEFAULT_SKYDOME = Object.freeze({
+    visible: true,
+    yaw: 0,
+    pitch: 0,
+    roll: 0,
+    exposure: 0,
+    blur: 0,
 });
 
 export function normalizedLighting(value = {}) {
@@ -37,6 +47,29 @@ export function normalizedLighting(value = {}) {
         elevation: Math.max(-10, Math.min(90, Number(data.elevation) || 0)),
         ambient: Math.max(0, Math.min(1.5, Number(data.ambient) || 0)),
         background,
+    };
+}
+
+export function normalizedSkydome(value = {}) {
+    const source = value && typeof value === "object" ? value : {};
+    const data = { ...DEFAULT_SKYDOME, ...source };
+    const bounded = (key, minimum, maximum) => {
+        const number = Number(data[key]);
+        return Math.max(
+            minimum,
+            Math.min(maximum, Number.isFinite(number) ? number : DEFAULT_SKYDOME[key]),
+        );
+    };
+    return {
+        ...source,
+        type: "skydome",
+        projection: "equirectangular",
+        visible: data.visible !== false,
+        yaw: bounded("yaw", -180, 180),
+        pitch: bounded("pitch", -90, 90),
+        roll: bounded("roll", -180, 180),
+        exposure: bounded("exposure", -4, 4),
+        blur: bounded("blur", 0, 1),
     };
 }
 
@@ -371,6 +404,13 @@ export class Factory3DViewer {
         this._lodQueue = Promise.resolve();
         this._pendingLodCandidates = [];
         this.lighting = { ...DEFAULT_LIGHTING };
+        this._lightColor = new THREE.Color(DEFAULT_LIGHTING.color);
+        this._lightBaseGain = new THREE.Vector3(1, 1, 1);
+        this._lightDirectionalScale = new THREE.Vector3();
+        this.skydome = null;
+        this.skydomeTexture = null;
+        this.skydomeAssetPath = "";
+        this._skydomeLoadToken = 0;
         this._lightDirectionWorld = new THREE.Vector3();
         this._lightDirectionView = new THREE.Vector3();
         this._lightViewMatrix = new THREE.Matrix3();
@@ -450,6 +490,7 @@ export class Factory3DViewer {
         };
         this.controls.addEventListener("change", () => {
             this._updateClipPlanes();
+            this._updateLightingUniforms(this.camera);
             if (!this._suppressStateEvents) this._emitState();
         });
         this.controls.addEventListener("start", () => this._setInteractive("orbit", true));
@@ -564,7 +605,6 @@ export class Factory3DViewer {
         this._frame = requestAnimationFrame(() => this._animate());
         if (this._capturing) return;
         this.controls.update();
-        this._updateLightingUniforms(this.camera);
         this.renderer.render(this.scene, this.camera);
     }
 
@@ -573,9 +613,11 @@ export class Factory3DViewer {
         if (!material?.vertexShader) return;
         const uniformAnchor = "uniform float focalAdjustment;";
         const colorAnchor = "    vRgba = rgba;";
+        const covarianceAnchor = "        mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);";
         if (
             !material.vertexShader.includes(uniformAnchor)
             || !material.vertexShader.includes(colorAnchor)
+            || !material.vertexShader.includes(covarianceAnchor)
         ) {
             console.error(
                 "[VNCCS 3D Factory] Spark lighting shader hook was not found",
@@ -584,45 +626,58 @@ export class Factory3DViewer {
             return;
         }
         material.uniforms.vnccsLightDirectionView = { value: this._lightDirectionView };
-        material.uniforms.vnccsLightColor = { value: new THREE.Color(DEFAULT_LIGHTING.color) };
-        material.uniforms.vnccsLightIntensity = { value: DEFAULT_LIGHTING.intensity };
-        material.uniforms.vnccsAmbient = { value: DEFAULT_LIGHTING.ambient };
+        material.uniforms.vnccsLightBaseGain = { value: this._lightBaseGain };
+        material.uniforms.vnccsLightDirectionalScale = {
+            value: this._lightDirectionalScale,
+        };
         material.uniforms.vnccsLightingEnabled = { value: 1 };
         material.vertexShader = material.vertexShader
             .replace(
                 uniformAnchor,
                 `${uniformAnchor}
 uniform vec3 vnccsLightDirectionView;
-uniform vec3 vnccsLightColor;
-uniform float vnccsLightIntensity;
-uniform float vnccsAmbient;
+uniform vec3 vnccsLightBaseGain;
+uniform vec3 vnccsLightDirectionalScale;
 uniform float vnccsLightingEnabled;`,
             )
             .replace(
                 colorAnchor,
-                `    if (vnccsLightingEnabled > 0.5) {
-        float vnccsLightResponse = 0.65;
-        if (!enableCovSplats) {
-            vec3 vnccsLocalNormal;
-            if (scales.x <= scales.y && scales.x <= scales.z) {
-                vnccsLocalNormal = vec3(1.0, 0.0, 0.0);
-            } else if (scales.y <= scales.z) {
-                vnccsLocalNormal = vec3(0.0, 1.0, 0.0);
-            } else {
-                vnccsLocalNormal = vec3(0.0, 0.0, 1.0);
-            }
-            vec4 vnccsViewQuaternion = quatQuat(renderToViewQuat, quaternion);
-            vec3 vnccsViewNormal = normalize(quatVec(vnccsViewQuaternion, vnccsLocalNormal));
-            vnccsLightResponse = 0.18 + 0.82 * abs(dot(
-                vnccsViewNormal,
-                normalize(vnccsLightDirectionView)
-            ));
-        }
-        vec3 vnccsLightGain = vec3(vnccsAmbient)
-            + vnccsLightColor * vnccsLightIntensity * vnccsLightResponse;
-        rgba.rgb = clamp(rgba.rgb * vnccsLightGain, vec3(0.0), vec3(4.0));
+                `${colorAnchor}
+    if (vnccsLightingEnabled > 0.5) {
+        vRgba.rgb = clamp(
+            vRgba.rgb * vnccsLightBaseGain,
+            vec3(0.0),
+            vec3(4.0)
+        );
     }
-${colorAnchor}`,
+`,
+            )
+            .replace(
+                covarianceAnchor,
+                `${covarianceAnchor}
+        if (vnccsLightingEnabled > 0.5) {
+            float vnccsMinScale = min(scales.x, min(scales.y, scales.z));
+            vec3 vnccsViewNormal;
+            if (scales.z == vnccsMinScale) {
+                vnccsViewNormal = RS[2] / max(scales.z, 0.000001);
+            } else if (scales.y == vnccsMinScale) {
+                vnccsViewNormal = RS[1] / max(scales.y, 0.000001);
+            } else {
+                vnccsViewNormal = RS[0] / max(scales.x, 0.000001);
+            }
+            float vnccsLightResponse = 0.5 + 0.3 * abs(dot(
+                vnccsViewNormal,
+                vnccsLightDirectionView
+            ));
+            vRgba.rgb = clamp(
+                vRgba.rgb
+                    + rgba.rgb
+                    * vnccsLightDirectionalScale
+                    * (vnccsLightResponse - 0.65),
+                vec3(0.0),
+                vec3(4.0)
+            );
+        }`,
             );
         material.needsUpdate = true;
     }
@@ -647,18 +702,110 @@ ${colorAnchor}`,
             Math.sin(elevation),
             horizontal * Math.cos(azimuth),
         ).normalize();
+        this._lightColor.set(this.lighting.color);
+        // Preserve the original color equation, split into a constant CPU-side
+        // term and a small directional GPU correction.
+        this._lightBaseGain.set(
+            this.lighting.ambient
+                + this._lightColor.r * this.lighting.intensity * LIGHTING_BASE_RESPONSE,
+            this.lighting.ambient
+                + this._lightColor.g * this.lighting.intensity * LIGHTING_BASE_RESPONSE,
+            this.lighting.ambient
+                + this._lightColor.b * this.lighting.intensity * LIGHTING_BASE_RESPONSE,
+        );
+        this._lightDirectionalScale.set(
+            this._lightColor.r * this.lighting.intensity,
+            this._lightColor.g * this.lighting.intensity,
+            this._lightColor.b * this.lighting.intensity,
+        );
         const uniforms = this.spark?.material?.uniforms;
-        uniforms?.vnccsLightColor?.value.set(this.lighting.color);
-        if (uniforms?.vnccsLightIntensity) {
-            uniforms.vnccsLightIntensity.value = this.lighting.intensity;
-        }
-        if (uniforms?.vnccsAmbient) uniforms.vnccsAmbient.value = this.lighting.ambient;
         if (uniforms?.vnccsLightingEnabled) {
             uniforms.vnccsLightingEnabled.value = this.lighting.preset === "off" ? 0 : 1;
         }
-        this.scene?.background?.set(this.lighting.background);
+        this._applySkydomeSettings();
         this._updateLightingUniforms(this.camera);
-        this.spark?.setDirty?.();
+    }
+
+    _applySkydomeSettings() {
+        if (!this.scene) return;
+        if (this.skydomeTexture && this.skydome?.visible !== false) {
+            this.scene.background = this.skydomeTexture;
+            this.scene.backgroundRotation?.set(
+                radians(this.skydome.pitch),
+                radians(this.skydome.yaw),
+                radians(this.skydome.roll),
+                "YXZ",
+            );
+            this.scene.backgroundIntensity = 2 ** this.skydome.exposure;
+            this.scene.backgroundBlurriness = this.skydome.blur;
+        } else {
+            if (this.scene.background?.isColor) {
+                this.scene.background.set(this.lighting.background);
+            } else {
+                this.scene.background = new THREE.Color(this.lighting.background);
+            }
+            this.scene.backgroundRotation?.set(0, 0, 0);
+            this.scene.backgroundIntensity = 1;
+            this.scene.backgroundBlurriness = 0;
+        }
+    }
+
+    async setSkydome(value = null) {
+        const token = ++this._skydomeLoadToken;
+        this.skydome = value?.url ? normalizedSkydome(value) : null;
+        const assetPath = String(this.skydome?.url || "");
+        if (!assetPath) {
+            this.skydomeAssetPath = "";
+            this.skydomeTexture?.dispose?.();
+            this.skydomeTexture = null;
+            this._applySkydomeSettings();
+            return null;
+        }
+        if (assetPath === this.skydomeAssetPath && this.skydomeTexture) {
+            this._applySkydomeSettings();
+            return this.skydome;
+        }
+        try {
+            const texture = await new THREE.TextureLoader().loadAsync(
+                this.options.resolveAssetURL(assetPath),
+            );
+            if (token !== this._skydomeLoadToken || this._disposed) {
+                texture.dispose();
+                return null;
+            }
+            texture.colorSpace = THREE.SRGBColorSpace;
+            texture.mapping = THREE.EquirectangularReflectionMapping;
+            texture.anisotropy = Math.min(
+                8,
+                this.renderer?.capabilities?.getMaxAnisotropy?.() || 1,
+            );
+            texture.needsUpdate = true;
+            this.skydomeTexture?.dispose?.();
+            this.skydomeTexture = texture;
+            this.skydomeAssetPath = assetPath;
+            this._applySkydomeSettings();
+            return this.skydome;
+        } catch (error) {
+            if (token !== this._skydomeLoadToken || this._disposed) return null;
+            this.skydomeAssetPath = "";
+            this.skydomeTexture?.dispose?.();
+            this.skydomeTexture = null;
+            this._applySkydomeSettings();
+            this.options.onError(
+                new Error(`Skydome image could not be loaded: ${error?.message || error}`),
+            );
+            return null;
+        }
+    }
+
+    updateSkydome(value = null) {
+        if (!value || !this.skydome) return;
+        this.skydome = normalizedSkydome({ ...this.skydome, ...value });
+        this._applySkydomeSettings();
+    }
+
+    hasVisibleSkydome() {
+        return Boolean(this.skydomeTexture && this.skydome?.visible !== false);
     }
 
     _setInteractive(reason, active) {
@@ -967,6 +1114,7 @@ ${colorAnchor}`,
         this._loadController = loadController;
         this.sceneData = sceneData || { objects: [] };
         this.setLighting(this.sceneData.lighting);
+        const skydomePromise = this.setSkydome(this.sceneData.skydome);
         const source = Array.isArray(sceneData?.objects) ? sceneData.objects : [];
         const needsAssetLoading = !incremental || source.some(item => {
             const entry = this.objects.get(item.object_id);
@@ -1137,6 +1285,7 @@ ${colorAnchor}`,
                 this.options.onError(error);
             }
         }
+        await skydomePromise;
         if (token === this._loadingToken) {
             if (needsAssetLoading) this.options.onLoadingChange(false);
             if (this._loadController === loadController) this._loadController = null;
@@ -1422,7 +1571,7 @@ ${colorAnchor}`,
         height = this.captureHeight,
     } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
-        if (!this.objects.size) return null;
+        if (!this.objects.size && !this.hasVisibleSkydome()) return null;
         const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 1024)));
         const targetHeight = Math.max(64, Math.min(4096, Math.round(Number(height) || 1024)));
         const hasVisibleObjects = Array.from(this.objects.values()).some(
@@ -1609,6 +1758,7 @@ ${colorAnchor}`,
         if (this._disposed) return;
         this._disposed = true;
         this._loadingToken += 1;
+        this._skydomeLoadToken += 1;
         this._pendingLodCandidates = [];
         this._loadController?.abort();
         this._loadController = null;
@@ -1623,6 +1773,9 @@ ${colorAnchor}`,
         this.controls.dispose();
         for (const entry of this.objects.values()) entry.splat?.dispose?.();
         this.objects.clear();
+        this.skydomeTexture?.dispose?.();
+        this.skydomeTexture = null;
+        this.skydome = null;
         this.scene.remove(this.spark);
         this.spark?.dispose?.();
         this.grid.geometry.dispose();

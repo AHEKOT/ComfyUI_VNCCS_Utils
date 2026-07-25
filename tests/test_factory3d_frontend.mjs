@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.6"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.10"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -47,7 +47,7 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
     assert.match(studio, /vnccs-ps-library-inspector/);
     assert.match(studio, /vnccs-ps-library-settings/);
     assert.match(studio, /openLibrary\(\)/);
-    assert.match(studio, /Save Current Model/);
+    assert.match(studio, /Save Current Asset/);
     assert.match(studio, /Selected model/);
     assert.match(studio, /Complete scene/);
     assert.match(studio, /openLibraryRepositories/);
@@ -98,14 +98,59 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
     assert.match(studio, /lighting: \{ \.\.\.this\.lighting \}/);
     assert.match(studio, /lighting_settings: \{ \.\.\.this\.lighting \}/);
     assert.match(studio, /_bindLightingRadar/);
+    assert.match(
+        studio,
+        /lightingClose: \$\("\.vnccs-i3s__lighting-panel \.vnccs-i3s__lighting-close"\)/,
+    );
     assert.match(viewer, /_installLightingShader/);
     assert.match(viewer, /vnccsLightDirectionView/);
     assert.match(viewer, /vnccsLightingEnabled/);
+    assert.match(viewer, /vnccsLightBaseGain/);
+    assert.match(viewer, /vnccsLightDirectionalScale/);
     assert.match(viewer, /this\.lighting\.preset === "off" \? 0 : 1/);
     assert.match(viewer, /if \(vnccsLightingEnabled > 0\.5\)/);
+    assert.match(
+        viewer,
+        /this\._lightColor\.r \* this\.lighting\.intensity \* LIGHTING_BASE_RESPONSE/,
+    );
+    assert.match(
+        viewer,
+        /this\._lightColor\.r \* this\.lighting\.intensity,/,
+    );
+    assert.match(viewer, /vnccsLightResponse = 0\.5 \+ 0\.3 \* abs/);
+    assert.match(viewer, /\(vnccsLightResponse - 0\.65\)/);
+    assert.doesNotMatch(viewer, /lightingEnvelope|_lightTint|backgroundGain/);
+    assert.match(viewer, /vnccsViewNormal = RS\[/);
+    assert.doesNotMatch(viewer, /vnccsNormalWeights|vnccsAxisResponse|vnccsInverseScale/);
+    const animationLoop = viewer.match(/_animate\(\) \{[\s\S]*?\n    \}\n\n    _installLightingShader/);
+    assert.ok(animationLoop, "viewer animation loop not found");
+    assert.doesNotMatch(animationLoop[0], /_updateLightingUniforms/);
+    assert.match(viewer, /this\._updateLightingUniforms\(this\.camera\);[\s\S]*?_emitState/);
     assert.match(viewer, /setLighting\(value = \{\}\)/);
     assert.match(viewer, /this\._updateLightingUniforms\(this\.captureCamera\)/);
     assert.match(styles, /\.vnccs-i3s__lighting-panel/);
+});
+
+test("Factory provides a persistent equirectangular skydome with professional controls", () => {
+    assert.match(studio, /ENDPOINTS\.skydome\(this\.sceneId\)/);
+    assert.match(studio, /title="Skydome"/);
+    assert.match(studio, /Equirectangular environment background/);
+    assert.match(studio, /Horizontal rotation/);
+    assert.match(studio, /Horizon tilt/);
+    assert.match(studio, /Horizon roll/);
+    assert.match(studio, /Background blur/);
+    assert.match(studio, /Level horizon/);
+    assert.match(studio, /Reset alignment/);
+    assert.match(studio, /asset_type: assetType/);
+    assert.match(studio, /<option value="skydome"/);
+    assert.match(studio, /selected_skydome: this\.selectedSkydome/);
+    assert.match(studio, /vnccs-i3s__skydome-object/);
+    assert.match(viewer, /THREE\.EquirectangularReflectionMapping/);
+    assert.match(viewer, /scene\.backgroundRotation/);
+    assert.match(viewer, /scene\.backgroundIntensity = 2 \*\* this\.skydome\.exposure/);
+    assert.match(viewer, /scene\.backgroundBlurriness = this\.skydome\.blur/);
+    assert.match(viewer, /hasVisibleSkydome/);
+    assert.match(styles, /\.vnccs-i3s__skydome-panel/);
 });
 
 test("Scene objects provide layer-style grouping, visibility, rename, and drag/drop", () => {
@@ -465,10 +510,11 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.canonicalObjectPreviewCamera, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
     assert.equal(typeof module.normalizedLighting, "function");
+    assert.equal(typeof module.normalizedSkydome, "function");
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.2");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.6");
     assert.deepEqual(
         module.normalizedLighting({
             preset: "night",
@@ -487,6 +533,27 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             elevation: 24,
             ambient: 0.22,
             background: "#090d1a",
+        },
+    );
+    assert.deepEqual(
+        module.normalizedSkydome({
+            url: "/sky.jpg",
+            yaw: 250,
+            pitch: -120,
+            roll: -220,
+            exposure: 8,
+            blur: 4,
+        }),
+        {
+            url: "/sky.jpg",
+            type: "skydome",
+            projection: "equirectangular",
+            visible: true,
+            yaw: 180,
+            pitch: -90,
+            roll: -180,
+            exposure: 4,
+            blur: 1,
         },
     );
     assert.equal(module.validateSplatBuffer(new ArrayBuffer(64)).byteLength, 64);

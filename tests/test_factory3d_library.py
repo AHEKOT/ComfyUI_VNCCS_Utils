@@ -165,6 +165,15 @@ class FactoryLibraryTests(unittest.TestCase):
 
     def test_scene_package_preserves_camera_render_lighting_and_layers(self):
         scene, object_id = self.make_scene()
+        sky_stream = io.BytesIO()
+        Image.new("RGB", (512, 256), (30, 80, 160)).save(sky_stream, "JPEG")
+        self.factory.store_scene_skydome(
+            scene["scene_id"],
+            sky_stream.getvalue(),
+            "Studio sky.jpg",
+        )
+        scene = self.factory.load_scene(scene["scene_id"])
+        scene["skydome"].update({"yaw": 72, "pitch": -4, "exposure": 0.6})
         scene["camera"] = {"position": [8, 7, 6], "target": [1, 2, 3], "fov": 55}
         scene["render"] = {
             "width": 1600,
@@ -211,6 +220,62 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertEqual(restored["lighting"]["preset"], "sunset")
         self.assertEqual(restored["layers"][0]["type"], "group")
         self.assertEqual(len(restored["layers"][0]["children"]), 1)
+        self.assertEqual(restored["skydome"]["type"], "skydome")
+        self.assertEqual(restored["skydome"]["yaw"], 72.0)
+        self.assertEqual(restored["skydome"]["pitch"], -4.0)
+        self.assertEqual(restored["skydome"]["exposure"], 0.6)
+        with Image.open(self.factory._scene_skydome_file(restored)) as restored_sky:
+            self.assertEqual(restored_sky.size, (512, 256))
+
+    def test_skydome_library_asset_has_fixed_type_and_replaces_scene_background(self):
+        source, _object_id = self.make_scene()
+        sky_stream = io.BytesIO()
+        Image.new("RGB", (640, 320), (120, 55, 180)).save(sky_stream, "PNG")
+        self.factory.store_scene_skydome(
+            source["scene_id"],
+            sky_stream.getvalue(),
+            "Nebula.png",
+        )
+        source = self.factory.update_scene(
+            source["scene_id"],
+            {
+                "skydome": {
+                    "yaw": -115,
+                    "pitch": 8,
+                    "roll": 2,
+                    "exposure": -0.4,
+                    "blur": 0.15,
+                }
+            },
+        )
+        record = self.library.save_asset(
+            {
+                "scene_id": source["scene_id"],
+                "asset_type": "skydome",
+                "name": "Saved nebula",
+                "category": "Environments",
+            }
+        )
+        self.assertEqual(record["asset_type"], "skydome")
+        self.assertEqual(record["gaussians"], 0)
+        self.assertTrue(record["has_preview"])
+
+        target = self.factory.create_scene("Target")
+        result = self.library.load_asset(
+            record["asset_id"],
+            repository=record["repository"],
+            category=record["category"],
+            scene_id=target["scene_id"],
+        )
+        self.assertFalse(result["created_scene"])
+        self.assertRegex(result["skydome_id"], r"^[a-f0-9]{32}$")
+        restored = self.factory.load_scene(target["scene_id"])
+        self.assertEqual(restored["skydome"]["type"], "skydome")
+        self.assertEqual(restored["skydome"]["name"], "Saved nebula")
+        self.assertEqual(restored["skydome"]["yaw"], -115.0)
+        self.assertEqual(restored["skydome"]["blur"], 0.15)
+        with Image.open(self.factory._scene_skydome_file(restored)) as restored_sky:
+            self.assertEqual(restored_sky.size, (640, 320))
 
     def test_legacy_package_splat_is_removed_during_library_migration(self):
         scene, object_id = self.make_scene()

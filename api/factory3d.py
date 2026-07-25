@@ -41,6 +41,8 @@ UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_PREVIEW_BYTES = 64 * 1024 * 1024
 MAX_IMAGE_PIXELS = 4096 * 4096
+MAX_SKYDOME_BYTES = 64 * 1024 * 1024
+MAX_SKYDOME_PIXELS = 8192 * 4096
 MAX_SCENE_JSON_BYTES = 2 * 1024 * 1024
 MAX_JOB_LOG_LINES = 800
 MAX_ACTIVE_JOBS = 2
@@ -74,6 +76,14 @@ _DEFAULT_LIGHTING = {
     "elevation": 42.0,
     "ambient": 0.5,
     "background": "#171b25",
+}
+_DEFAULT_SKYDOME_SETTINGS = {
+    "visible": True,
+    "yaw": 0.0,
+    "pitch": 0.0,
+    "roll": 0.0,
+    "exposure": 0.0,
+    "blur": 0.0,
 }
 _WEIGHT_FILES = (
     "diffusion_models/triposplat_fp16.safetensors",
@@ -267,6 +277,52 @@ def _normalize_lighting(value: Any) -> dict[str, Any]:
         "ambient": number("ambient", 0.0, 1.5),
         "background": color("background"),
     }
+
+
+def _normalize_skydome_settings(value: Any) -> dict[str, Any]:
+    data = value if isinstance(value, dict) else {}
+
+    def number(key: str, minimum: float, maximum: float) -> float:
+        try:
+            output = float(data.get(key, _DEFAULT_SKYDOME_SETTINGS[key]))
+        except (TypeError, ValueError):
+            output = float(_DEFAULT_SKYDOME_SETTINGS[key])
+        if not math.isfinite(output):
+            output = float(_DEFAULT_SKYDOME_SETTINGS[key])
+        return max(minimum, min(maximum, output))
+
+    return {
+        "visible": data.get("visible") is not False,
+        "yaw": number("yaw", -180.0, 180.0),
+        "pitch": number("pitch", -90.0, 90.0),
+        "roll": number("roll", -180.0, 180.0),
+        "exposure": number("exposure", -4.0, 4.0),
+        "blur": number("blur", 0.0, 1.0),
+    }
+
+
+def _normalize_scene_skydome(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict) or not isinstance(value.get("file"), str):
+        return None
+    output = json.loads(json.dumps(value))
+    skydome_id = str(output.get("skydome_id") or "")
+    output["skydome_id"] = skydome_id if _ID_RE.fullmatch(skydome_id) else _new_id()
+    output["type"] = "skydome"
+    output["name"] = _clean_name(output.get("name"), "Skydome", 96)
+    output["projection"] = "equirectangular"
+    output.update(_normalize_skydome_settings(output))
+    for key in ("width", "height", "size"):
+        try:
+            output[key] = max(0, int(output.get(key, 0)))
+        except (TypeError, ValueError):
+            output[key] = 0
+    try:
+        output["updated_at"] = float(output.get("updated_at", 0))
+    except (TypeError, ValueError):
+        output["updated_at"] = 0.0
+    if not math.isfinite(output["updated_at"]):
+        output["updated_at"] = 0.0
+    return output
 
 
 def _normalize_scene_layers(
@@ -528,6 +584,11 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     value["render"] = _normalize_render_settings(value.get("render"))
     value["camera"] = _normalize_camera(value.get("camera"))
     value["lighting"] = _normalize_lighting(value.get("lighting"))
+    skydome = _normalize_scene_skydome(value.get("skydome"))
+    if skydome is None:
+        value.pop("skydome", None)
+    else:
+        value["skydome"] = skydome
     value["render_revision"] = max(
         0,
         int(value.get("render_revision", value.get("revision", 0))),
@@ -726,6 +787,17 @@ def _scene_reference_file(scene: dict[str, Any]) -> Path:
     return target
 
 
+def _scene_skydome_file(scene: dict[str, Any]) -> Path:
+    relative = scene.get("skydome", {}).get("file")
+    if not isinstance(relative, str) or not relative:
+        raise FileNotFoundError("scene has no skydome image")
+    root = resolve_scene_dir(scene["scene_id"])
+    target = (root / relative).resolve()
+    if root not in target.parents or not target.is_file():
+        raise FileNotFoundError("scene skydome image is missing")
+    return target
+
+
 def _scene_preview_file(
     scene: dict[str, Any],
     expected_capture_token: str = "",
@@ -788,6 +860,104 @@ def store_scene_reference(
         }
         _save_scene(scene, bump_revision=False)
         return scene
+
+
+def _inspect_skydome_image(image_bytes: bytes) -> tuple[str, str, int, int]:
+    if not image_bytes or len(image_bytes) > MAX_SKYDOME_BYTES:
+        raise ValueError("skydome image is empty or too large")
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image_format = str(image.format or "").upper()
+            width, height = image.size
+            if (
+                width <= 0
+                or height <= 0
+                or width > 16384
+                or height > 16384
+                or width * height > MAX_SKYDOME_PIXELS
+            ):
+                raise ValueError("skydome image dimensions are too large")
+            image.verify()
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError("skydome image is invalid") from exc
+    formats = {
+        "JPEG": (".jpg", "image/jpeg"),
+        "PNG": (".png", "image/png"),
+        "WEBP": (".webp", "image/webp"),
+    }
+    if image_format not in formats:
+        raise ValueError("skydome must be a JPEG, PNG, or WebP image")
+    suffix, mime = formats[image_format]
+    return suffix, mime, width, height
+
+
+def store_scene_skydome(
+    scene_id: str,
+    image_bytes: bytes,
+    file_name: Any = "skydome.jpg",
+) -> dict[str, Any]:
+    suffix, mime, width, height = _inspect_skydome_image(image_bytes)
+    root = resolve_scene_dir(scene_id)
+    skydome_root = root / "skydome"
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        previous = _normalize_scene_skydome(scene.get("skydome"))
+        skydome_root.mkdir(parents=True, exist_ok=True)
+        target = skydome_root / f"source{suffix}"
+        temporary = skydome_root / f".source.{secrets.token_hex(6)}.tmp"
+        try:
+            temporary.write_bytes(image_bytes)
+            for candidate in skydome_root.glob("source.*"):
+                if candidate != target:
+                    candidate.unlink(missing_ok=True)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        settings = _normalize_skydome_settings(previous)
+        scene["skydome"] = {
+            "skydome_id": (
+                previous["skydome_id"]
+                if previous is not None
+                else _new_id()
+            ),
+            "type": "skydome",
+            "name": _clean_name(
+                Path(str(file_name or "")).stem,
+                previous.get("name", "Skydome") if previous else "Skydome",
+                96,
+            ),
+            "projection": "equirectangular",
+            "file": str(target.relative_to(root)),
+            "mime": mime,
+            "width": width,
+            "height": height,
+            "size": target.stat().st_size,
+            "updated_at": _now(),
+            **settings,
+        }
+        scene["render_revision"] = max(
+            0,
+            int(scene.get("render_revision", scene.get("revision", 0))),
+        ) + 1
+        return _save_scene(scene, bump_revision=False)
+
+
+def remove_scene_skydome(scene_id: str) -> dict[str, Any]:
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        if not isinstance(scene.get("skydome"), dict):
+            raise FileNotFoundError("scene has no skydome")
+        scene.pop("skydome", None)
+        target = resolve_scene_dir(scene_id) / "skydome"
+        if target.is_dir() and target.parent == resolve_scene_dir(scene_id):
+            shutil.rmtree(target)
+        scene["render_revision"] = max(
+            0,
+            int(scene.get("render_revision", scene.get("revision", 0))),
+        ) + 1
+        return _save_scene(scene, bump_revision=False)
 
 
 def store_scene_preview(
@@ -1884,6 +2054,13 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
     if isinstance(reference, dict):
         reference["url"] = f"{API_BASE}/scenes/{scene_id}/reference"
         reference.pop("file", None)
+    skydome = value.get("skydome")
+    if isinstance(skydome, dict):
+        skydome["url"] = (
+            f"{API_BASE}/scenes/{scene_id}/skydome"
+            f"?v={int(float(skydome.get('updated_at', 0) or 0) * 1000)}"
+        )
+        skydome.pop("file", None)
     preview = value.get("preview")
     if isinstance(preview, dict):
         render = _normalize_render_settings(value.get("render"))
@@ -1990,6 +2167,25 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                 scene["lighting"] = lighting
                 changed = True
                 preview_changed = True
+        if "skydome" in payload and isinstance(scene.get("skydome"), dict):
+            incoming = payload.get("skydome")
+            if isinstance(incoming, dict):
+                current = _normalize_scene_skydome(scene["skydome"])
+                if current is not None:
+                    updated = {
+                        **current,
+                        **_normalize_skydome_settings({**current, **incoming}),
+                    }
+                    if "name" in incoming:
+                        updated["name"] = _clean_name(
+                            incoming.get("name"),
+                            current["name"],
+                            96,
+                        )
+                    if updated != current:
+                        scene["skydome"] = updated
+                        changed = True
+                        preview_changed = True
         if not changed:
             return scene
         render_changed = render_changed or visible_before != _visible_object_ids(scene)
@@ -2447,6 +2643,49 @@ def register_routes(routes: Any) -> None:
         try:
             scene = load_scene(request.match_info["scene_id"])
             return web.FileResponse(_scene_reference_file(scene))
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/skydome")
+    async def factory_scene_skydome_upload(request: Any) -> Any:
+        try:
+            if not _content_length_ok(request, MAX_SKYDOME_BYTES + 1024 * 1024):
+                return web.json_response({"error": "skydome upload is too large"}, status=413)
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            load_scene(scene_id)
+            post = await request.post()
+            image_field = post.get("image")
+            if image_field is None or not hasattr(image_field, "file"):
+                raise ValueError("missing skydome image")
+            image_bytes = image_field.file.read(MAX_SKYDOME_BYTES + 1)
+            scene = store_scene_skydome(
+                scene_id,
+                image_bytes,
+                getattr(image_field, "filename", "skydome.jpg"),
+            )
+            return web.json_response(_public_scene(scene), status=201)
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/skydome")
+    async def factory_scene_skydome_get(request: Any) -> Any:
+        try:
+            scene = load_scene(request.match_info["scene_id"])
+            return web.FileResponse(_scene_skydome_file(scene))
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.delete(f"{API_BASE}/scenes/{{scene_id}}/skydome")
+    async def factory_scene_skydome_delete(request: Any) -> Any:
+        try:
+            scene = remove_scene_skydome(request.match_info["scene_id"])
+            return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:

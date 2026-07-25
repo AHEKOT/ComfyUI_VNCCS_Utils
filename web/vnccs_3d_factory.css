@@ -240,7 +240,8 @@
 .vnccs-i3s__tool[aria-pressed="true"] { color: var(--i3-pink-hi); background: var(--i3-pink-soft); }
 .vnccs-i3s__tool-separator { width: 1px; height: 17px; flex: none; background: var(--i3-line-strong); margin: 0 2px; }
 .vnccs-i3s__toolbar .vnccs-i3s__select { width: 94px; min-height: 27px; height: 27px; padding: 2px 6px; border: 0; background: transparent; color: var(--i3-muted); font-size: .82em; }
-.vnccs-i3s__lighting-panel {
+.vnccs-i3s__lighting-panel,
+.vnccs-i3s__skydome-panel {
     position: absolute;
     top: 47px;
     left: 50%;
@@ -254,7 +255,9 @@
     box-shadow: 0 18px 48px rgba(0,0,0,.52), 0 0 0 1px rgba(255,255,255,.025) inset;
     backdrop-filter: blur(16px);
 }
-.vnccs-i3s__lighting-panel[hidden] { display: none; }
+.vnccs-i3s__skydome-panel { width: min(390px, calc(100% - 24px)); max-height: calc(100% - 92px); overflow: auto; }
+.vnccs-i3s__lighting-panel[hidden],
+.vnccs-i3s__skydome-panel[hidden] { display: none; }
 .vnccs-i3s__lighting-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
 .vnccs-i3s__lighting-title { color: var(--i3-text); font-weight: 780; letter-spacing: .01em; }
 .vnccs-i3s__lighting-subtitle { margin-top: 2px; color: var(--i3-dim); font-size: .71em; }
@@ -332,6 +335,41 @@
     accent-color: var(--i3-pink);
     cursor: ns-resize;
 }
+.vnccs-i3s__skydome-source {
+    display: grid;
+    grid-template-columns: 52px minmax(0,1fr) auto;
+    gap: 9px;
+    align-items: center;
+    padding: 8px;
+    border: 1px solid var(--i3-line);
+    border-radius: 10px;
+    background: rgba(0,0,0,.2);
+}
+.vnccs-i3s__skydome-preview {
+    width: 52px;
+    height: 38px;
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    border: 1px solid var(--i3-line-strong);
+    border-radius: 7px;
+    background: #09080d;
+    color: var(--i3-lavender);
+}
+.vnccs-i3s__skydome-preview img { width: 100%; height: 100%; object-fit: cover; }
+.vnccs-i3s__skydome-preview svg { width: 21px; height: 21px; }
+.vnccs-i3s__skydome-source-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.vnccs-i3s__skydome-source-copy b,
+.vnccs-i3s__skydome-source-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-i3s__skydome-source-copy b { color: var(--i3-text); font-size: .84em; }
+.vnccs-i3s__skydome-source-copy span { color: var(--i3-dim); font: .65em var(--i3-mono); }
+.vnccs-i3s__skydome-upload { min-height: 29px; padding: 5px 8px; }
+.vnccs-i3s__skydome-settings { margin-top: 9px; }
+.vnccs-i3s__skydome-visible-row { padding: 6px 1px 9px; }
+.vnccs-i3s__skydome-angle-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.vnccs-i3s__skydome-angle-grid .vnccs-i3s__lighting-control { min-width: 0; }
+.vnccs-i3s__skydome-actions { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; padding-top: 9px; border-top: 1px solid rgba(184,169,232,.1); }
+.vnccs-i3s__skydome-actions .vnccs-i3s__skydome-remove { grid-column: 1 / -1; }
 .vnccs-i3s__viewport-help { position: absolute; left: 10px; bottom: 9px; z-index: 3; color: rgba(154,152,170,.55); font-size: .74em; pointer-events: none; }
 
 .vnccs-i3s__progress { position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 5; display: none; align-items: center; gap: 10px; padding: 9px 10px; border: 1px solid var(--i3-pink-line); border-radius: 10px; background: rgba(16,13,23,.91); box-shadow: 0 12px 32px rgba(0,0,0,.4); backdrop-filter: blur(10px); }
@@ -433,6 +471,8 @@
 .vnccs-i3s__object-list { min-height: 86px; max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px; }
 .vnccs-i3s__object-section .vnccs-i3s__object-list { flex: 1; max-height: none; }
 .vnccs-i3s__object { display: grid; grid-template-columns: 36px minmax(0,1fr) auto; gap: 6px; align-items: center; min-height: 46px; padding: 4px 5px; border: 1px solid var(--i3-line); border-radius: 8px; background: rgba(255,255,255,.022); cursor: grab; transition: opacity .15s ease, border-color .15s ease, background .15s ease, transform .15s ease; }
+.vnccs-i3s__skydome-object { cursor: pointer; border-color: rgba(184,169,232,.22); background: linear-gradient(90deg, rgba(184,169,232,.07), rgba(255,255,255,.018)); }
+.vnccs-i3s__skydome-object .vnccs-i3s__object-thumb { object-fit: cover; }
 .vnccs-i3s__object:hover { border-color: var(--i3-line-strong); background: rgba(255,255,255,.045); }
 .vnccs-i3s__object.is-selected { border-color: var(--i3-pink-line); background: var(--i3-pink-soft); }
 .vnccs-i3s__object.is-primary { box-shadow: inset 3px 0 var(--i3-pink); }

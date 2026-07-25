@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.2";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.6";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -17,6 +17,7 @@ const ENDPOINTS = Object.freeze({
     scenes: `${API_BASE}/scenes`,
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
+    skydome: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/skydome`,
     preview: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview`,
     previewError: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview/error`,
     generate: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/generate`,
@@ -36,9 +37,10 @@ const ENDPOINTS = Object.freeze({
     libraryRepositoryProgress: taskId => `${LIBRARY_BASE}/repositories/progress/${encodeURIComponent(taskId)}`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 8;
-const FRONTEND_BUILD = "20260725.6";
+const STATE_VERSION = 9;
+const FRONTEND_BUILD = "20260725.10";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
     name: "",
@@ -67,6 +69,14 @@ const DEFAULT_LIGHTING = Object.freeze({
     elevation: 42,
     ambient: 0.5,
     background: "#171b25",
+});
+const DEFAULT_SKYDOME = Object.freeze({
+    visible: true,
+    yaw: 0,
+    pitch: 0,
+    roll: 0,
+    exposure: 0,
+    blur: 0,
 });
 const LIGHTING_PRESETS = Object.freeze({
     off: Object.freeze({
@@ -135,6 +145,7 @@ const ICONS = Object.freeze({
     scale: `<svg viewBox="0 0 24 24"><path d="M4 10V4h6M20 14v6h-6M4 4l6 6m10 10-6-6"/></svg>`,
     grid: `<svg viewBox="0 0 24 24"><path d="M4 5h16M3 10h18M2 15h20M1 20h22M7 3 5 21m6-18-1 18m7-18 2 18m-6-18 1 18"/></svg>`,
     sun: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5"/><path d="M12 2v3m0 14v3M2 12h3m14 0h3M4.9 4.9 7 7m10 10 2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1"/></svg>`,
+    image: `<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9" r="1.5"/><path d="m4 17 5-5 3.5 3.5 2.5-2.5 5 5"/></svg>`,
     stop: `<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>`,
     search: `<svg viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></svg>`,
     settings: `<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-2.91 1.22V21h-4v-.08A1.7 1.7 0 0 0 7.1 19.7l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.3 7.1l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 10 3.08V3h4v.08a1.7 1.7 0 0 0 2.9 1.2l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>`,
@@ -160,7 +171,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260725.4", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260725.5", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -300,6 +311,7 @@ class Factory3DWidget {
         this.selectedObjectId = "";
         this.selectedObjectIds = new Set();
         this.selectedGroupId = "";
+        this.selectedSkydome = false;
         this.collapsedGroupIds = new Set();
         this.dragLayer = null;
         this.viewportFailures = new Map();
@@ -377,6 +389,7 @@ class Factory3DWidget {
         this._syncSettings();
         this._syncExportSettings();
         this._syncLighting();
+        this._syncSkydome();
         this._setStatus("Ready", "idle");
     }
 
@@ -487,9 +500,64 @@ class Factory3DWidget {
                         <button class="vnccs-i3s__tool vnccs-i3s__mode-rotate" type="button" title="Rotate" aria-pressed="false">${ICONS.rotate}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__mode-scale" type="button" title="Scale uniformly" aria-pressed="false">${ICONS.scale}</button>
                         <span class="vnccs-i3s__tool-separator"></span>
+                        <button class="vnccs-i3s__tool vnccs-i3s__skydome-open" type="button" title="Skydome" aria-pressed="false">${ICONS.image}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting" aria-pressed="false">${ICONS.sun}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-pressed="false">${ICONS.grid}</button>
                     </div>
+                    <section class="vnccs-i3s__skydome-panel" aria-label="Skydome controls" hidden>
+                        <div class="vnccs-i3s__lighting-head">
+                            <div>
+                                <div class="vnccs-i3s__lighting-title">Skydome</div>
+                                <div class="vnccs-i3s__lighting-subtitle">Equirectangular environment background</div>
+                            </div>
+                            <button class="vnccs-i3s__skydome-close vnccs-i3s__lighting-close" type="button" title="Close skydome controls">${ICONS.close}</button>
+                        </div>
+                        <input class="vnccs-i3s__skydome-input" type="file" accept="image/jpeg,image/png,image/webp" hidden />
+                        <div class="vnccs-i3s__skydome-source">
+                            <div class="vnccs-i3s__skydome-preview">${ICONS.image}</div>
+                            <div class="vnccs-i3s__skydome-source-copy">
+                                <b class="vnccs-i3s__skydome-name">No skydome loaded</b>
+                                <span class="vnccs-i3s__skydome-meta">JPEG, PNG or WebP · equirectangular</span>
+                            </div>
+                            <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__skydome-upload" type="button">${ICONS.upload}<span>Load</span></button>
+                        </div>
+                        <div class="vnccs-i3s__skydome-settings" hidden>
+                            <div class="vnccs-i3s__switch-row vnccs-i3s__skydome-visible-row">
+                                <div>
+                                    <div class="vnccs-i3s__scene-frame-title">Visible in background</div>
+                                    <div class="vnccs-i3s__scene-frame-copy">Keeps the skydome available without rendering it.</div>
+                                </div>
+                                <button class="vnccs-i3s__switch vnccs-i3s__skydome-visible" type="button" role="switch" aria-checked="true" aria-label="Show skydome"></button>
+                            </div>
+                            <label class="vnccs-i3s__lighting-control">
+                                <span><b>Horizontal rotation</b><output class="vnccs-i3s__skydome-yaw-value">0°</output></span>
+                                <input class="vnccs-i3s__range vnccs-i3s__skydome-yaw" type="range" min="-180" max="180" step="1" value="0" />
+                            </label>
+                            <div class="vnccs-i3s__skydome-angle-grid">
+                                <label class="vnccs-i3s__lighting-control">
+                                    <span><b>Horizon tilt</b><output class="vnccs-i3s__skydome-pitch-value">0°</output></span>
+                                    <input class="vnccs-i3s__range vnccs-i3s__skydome-pitch" type="range" min="-90" max="90" step="1" value="0" />
+                                </label>
+                                <label class="vnccs-i3s__lighting-control">
+                                    <span><b>Horizon roll</b><output class="vnccs-i3s__skydome-roll-value">0°</output></span>
+                                    <input class="vnccs-i3s__range vnccs-i3s__skydome-roll" type="range" min="-180" max="180" step="1" value="0" />
+                                </label>
+                            </div>
+                            <label class="vnccs-i3s__lighting-control">
+                                <span><b>Exposure</b><output class="vnccs-i3s__skydome-exposure-value">0.0 EV</output></span>
+                                <input class="vnccs-i3s__range vnccs-i3s__skydome-exposure" type="range" min="-4" max="4" step="0.1" value="0" />
+                            </label>
+                            <label class="vnccs-i3s__lighting-control">
+                                <span><b>Background blur</b><output class="vnccs-i3s__skydome-blur-value">0%</output></span>
+                                <input class="vnccs-i3s__range vnccs-i3s__skydome-blur" type="range" min="0" max="1" step="0.01" value="0" />
+                            </label>
+                            <div class="vnccs-i3s__skydome-actions">
+                                <button class="vnccs-i3s__button vnccs-i3s__skydome-level" type="button">Level horizon</button>
+                                <button class="vnccs-i3s__button vnccs-i3s__skydome-reset" type="button">Reset alignment</button>
+                                <button class="vnccs-i3s__button vnccs-i3s__button--danger vnccs-i3s__skydome-remove" type="button">${ICONS.trash}<span>Remove</span></button>
+                            </div>
+                        </div>
+                    </section>
                     <section class="vnccs-i3s__lighting-panel" aria-label="Scene lighting" hidden>
                         <div class="vnccs-i3s__lighting-head">
                             <div>
@@ -645,9 +713,32 @@ class Factory3DWidget {
             modeMove: $(".vnccs-i3s__mode-move"),
             modeRotate: $(".vnccs-i3s__mode-rotate"),
             modeScale: $(".vnccs-i3s__mode-scale"),
+            skydomeOpen: $(".vnccs-i3s__skydome-open"),
+            skydomePanel: $(".vnccs-i3s__skydome-panel"),
+            skydomeClose: $(".vnccs-i3s__skydome-close"),
+            skydomeInput: $(".vnccs-i3s__skydome-input"),
+            skydomeUpload: $(".vnccs-i3s__skydome-upload"),
+            skydomePreview: $(".vnccs-i3s__skydome-preview"),
+            skydomeName: $(".vnccs-i3s__skydome-name"),
+            skydomeMeta: $(".vnccs-i3s__skydome-meta"),
+            skydomeSettings: $(".vnccs-i3s__skydome-settings"),
+            skydomeVisible: $(".vnccs-i3s__skydome-visible"),
+            skydomeYaw: $(".vnccs-i3s__skydome-yaw"),
+            skydomeYawValue: $(".vnccs-i3s__skydome-yaw-value"),
+            skydomePitch: $(".vnccs-i3s__skydome-pitch"),
+            skydomePitchValue: $(".vnccs-i3s__skydome-pitch-value"),
+            skydomeRoll: $(".vnccs-i3s__skydome-roll"),
+            skydomeRollValue: $(".vnccs-i3s__skydome-roll-value"),
+            skydomeExposure: $(".vnccs-i3s__skydome-exposure"),
+            skydomeExposureValue: $(".vnccs-i3s__skydome-exposure-value"),
+            skydomeBlur: $(".vnccs-i3s__skydome-blur"),
+            skydomeBlurValue: $(".vnccs-i3s__skydome-blur-value"),
+            skydomeLevel: $(".vnccs-i3s__skydome-level"),
+            skydomeReset: $(".vnccs-i3s__skydome-reset"),
+            skydomeRemove: $(".vnccs-i3s__skydome-remove"),
             lightingOpen: $(".vnccs-i3s__lighting-open"),
             lightingPanel: $(".vnccs-i3s__lighting-panel"),
-            lightingClose: $(".vnccs-i3s__lighting-close"),
+            lightingClose: $(".vnccs-i3s__lighting-panel .vnccs-i3s__lighting-close"),
             lightingPresets: Array.from(this.container.querySelectorAll(".vnccs-i3s__lighting-preset")),
             lightIntensity: $(".vnccs-i3s__light-intensity"),
             lightIntensityValue: $(".vnccs-i3s__light-intensity-value"),
@@ -768,6 +859,54 @@ class Factory3DWidget {
         this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
         this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
         this._listen(this.els.modeScale, "click", () => this.viewer.setMode("scale"));
+        this._listen(this.els.skydomeOpen, "click", event => {
+            event.stopPropagation();
+            this._setSkydomePanelOpen(this.els.skydomePanel.hidden);
+        });
+        this._listen(this.els.skydomeClose, "click", () => this._setSkydomePanelOpen(false));
+        this._listen(this.els.skydomeUpload, "click", () => this.els.skydomeInput.click());
+        this._listen(this.els.skydomeInput, "change", () => {
+            const file = this.els.skydomeInput.files?.[0];
+            this.els.skydomeInput.value = "";
+            if (file) void this.uploadSkydome(file);
+        });
+        this._listen(this.els.skydomeVisible, "click", () => {
+            if (!this.scene?.skydome) return;
+            this.scene.skydome.visible = this.scene.skydome.visible === false;
+            this._syncSkydome();
+            this._commitSkydome({ final: true });
+            this._updateSceneSummary();
+            this._renderObjects();
+        });
+        for (const [control, key] of [
+            [this.els.skydomeYaw, "yaw"],
+            [this.els.skydomePitch, "pitch"],
+            [this.els.skydomeRoll, "roll"],
+            [this.els.skydomeExposure, "exposure"],
+            [this.els.skydomeBlur, "blur"],
+        ]) {
+            this._listen(control, "input", () => {
+                if (!this.scene?.skydome) return;
+                this.scene.skydome[key] = Number(control.value);
+                this._syncSkydome();
+                this._commitSkydome();
+            });
+            this._listen(control, "change", () => this._commitSkydome({ final: true }));
+        }
+        this._listen(this.els.skydomeLevel, "click", () => {
+            if (!this.scene?.skydome) return;
+            this.scene.skydome.pitch = 0;
+            this.scene.skydome.roll = 0;
+            this._syncSkydome();
+            this._commitSkydome({ final: true });
+        });
+        this._listen(this.els.skydomeReset, "click", () => {
+            if (!this.scene?.skydome) return;
+            Object.assign(this.scene.skydome, { yaw: 0, pitch: 0, roll: 0 });
+            this._syncSkydome();
+            this._commitSkydome({ final: true });
+        });
+        this._listen(this.els.skydomeRemove, "click", () => void this.removeSkydome());
         this._listen(this.els.lightingOpen, "click", event => {
             event.stopPropagation();
             this._setLightingPanelOpen(this.els.lightingPanel.hidden);
@@ -775,15 +914,22 @@ class Factory3DWidget {
         this._listen(this.els.lightingClose, "click", () => this._setLightingPanelOpen(false));
         this._listen(document, "pointerdown", event => {
             if (
-                this.els.lightingPanel.hidden
-                || this.els.lightingPanel.contains(event.target)
-                || this.els.lightingOpen.contains(event.target)
-            ) return;
-            this._setLightingPanelOpen(false);
+                !this.els.lightingPanel.hidden
+                && !this.els.lightingPanel.contains(event.target)
+                && !this.els.lightingOpen.contains(event.target)
+            ) this._setLightingPanelOpen(false);
+            if (
+                !this.els.skydomePanel.hidden
+                && !this.els.skydomePanel.contains(event.target)
+                && !this.els.skydomeOpen.contains(event.target)
+            ) this._setSkydomePanelOpen(false);
         });
         this._listen(document, "keydown", event => {
             if (event.key === "Escape" && !this.els.lightingPanel.hidden) {
                 this._setLightingPanelOpen(false);
+            }
+            if (event.key === "Escape" && !this.els.skydomePanel.hidden) {
+                this._setSkydomePanelOpen(false);
             }
         });
         for (const presetButton of this.els.lightingPresets) {
@@ -902,10 +1048,185 @@ class Factory3DWidget {
         };
     }
 
+    _normalizeSkydome(value = {}) {
+        const source = safeObject(value);
+        const data = { ...DEFAULT_SKYDOME, ...source };
+        return {
+            ...source,
+            type: "skydome",
+            projection: "equirectangular",
+            visible: data.visible !== false,
+            yaw: clamp(data.yaw, -180, 180),
+            pitch: clamp(data.pitch, -90, 90),
+            roll: clamp(data.roll, -180, 180),
+            exposure: clamp(data.exposure, -4, 4),
+            blur: clamp(data.blur, 0, 1),
+        };
+    }
+
+    _setSkydomePanelOpen(open) {
+        this.els.skydomePanel.hidden = !open;
+        this.els.skydomeOpen.setAttribute("aria-pressed", String(open));
+        if (open) {
+            this._setLightingPanelOpen(false);
+            this._syncSkydome();
+        }
+    }
+
+    _syncSkydome() {
+        const skydome = this.scene?.skydome
+            ? this._normalizeSkydome(this.scene.skydome)
+            : null;
+        if (skydome) this.scene.skydome = skydome;
+        this.els.skydomeSettings.hidden = !skydome;
+        this.els.skydomeUpload.querySelector("span:last-child").textContent = skydome
+            ? "Replace"
+            : "Load";
+        this.els.skydomeName.textContent = skydome?.name || "No skydome loaded";
+        this.els.skydomeMeta.textContent = skydome
+            ? `${Number(skydome.width || 0).toLocaleString()} × ${Number(skydome.height || 0).toLocaleString()} · ${formatBytes(skydome.size)} · equirectangular`
+            : "JPEG, PNG or WebP · equirectangular";
+        const previewURL = skydome?.url ? apiUrl(skydome.url) : "";
+        if (this.els.skydomePreview.dataset.url !== previewURL) {
+            this.els.skydomePreview.dataset.url = previewURL;
+            if (previewURL) {
+                const image = element("img");
+                image.src = previewURL;
+                image.alt = "";
+                this.els.skydomePreview.replaceChildren(image);
+            } else {
+                this.els.skydomePreview.innerHTML = ICONS.image;
+            }
+        }
+        const disabled = !skydome;
+        for (const control of [
+            this.els.skydomeVisible,
+            this.els.skydomeYaw,
+            this.els.skydomePitch,
+            this.els.skydomeRoll,
+            this.els.skydomeExposure,
+            this.els.skydomeBlur,
+            this.els.skydomeLevel,
+            this.els.skydomeReset,
+            this.els.skydomeRemove,
+        ]) control.disabled = disabled;
+        if (!skydome) return;
+        this.els.skydomeVisible.setAttribute("aria-checked", String(skydome.visible));
+        this.els.skydomeYaw.value = String(skydome.yaw);
+        this.els.skydomePitch.value = String(skydome.pitch);
+        this.els.skydomeRoll.value = String(skydome.roll);
+        this.els.skydomeExposure.value = String(skydome.exposure);
+        this.els.skydomeBlur.value = String(skydome.blur);
+        const setOutput = (output, value) => {
+            output.value = value;
+            output.textContent = value;
+        };
+        setOutput(this.els.skydomeYawValue, `${Math.round(skydome.yaw)}°`);
+        setOutput(this.els.skydomePitchValue, `${Math.round(skydome.pitch)}°`);
+        setOutput(this.els.skydomeRollValue, `${Math.round(skydome.roll)}°`);
+        setOutput(this.els.skydomeExposureValue, `${skydome.exposure.toFixed(1)} EV`);
+        setOutput(this.els.skydomeBlurValue, `${Math.round(skydome.blur * 100)}%`);
+    }
+
+    _commitSkydome({ final = false } = {}) {
+        if (!this.scene?.skydome) return;
+        this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
+        this.viewer?.updateSkydome(this.scene.skydome);
+        this._scheduleStateSave(final ? 0 : 100);
+        this._scheduleSceneSave(final ? 0 : 180);
+        this._scheduleScenePreview(final ? 140 : 480);
+    }
+
+    async uploadSkydome(file) {
+        if (!this.sceneId || !this.scene) return;
+        if (
+            !["image/jpeg", "image/png", "image/webp"].includes(file.type)
+            || file.size > MAX_SKYDOME_BYTES
+        ) {
+            this.toast("Skydome must be a JPEG, PNG or WebP image smaller than 64 MB.", "error");
+            return;
+        }
+        this.els.skydomeUpload.disabled = true;
+        this._setStatus("Uploading skydome", "working");
+        try {
+            const body = new FormData();
+            body.append("image", file, file.name || "skydome");
+            const scene = await this._fetchJSON(ENDPOINTS.skydome(this.sceneId), {
+                method: "POST",
+                body,
+            });
+            this.selectedSkydome = true;
+            await this._applyScene(scene, { preserveSource: true });
+            this._selectSkydome();
+            this._setSkydomePanelOpen(true);
+            this.toast("Skydome loaded.", "success");
+        } catch (error) {
+            this._setStatus("Skydome upload failed", "error");
+            this._showError("Skydome could not be loaded", error);
+        } finally {
+            this.els.skydomeUpload.disabled = false;
+        }
+    }
+
+    removeSkydome() {
+        if (!this.scene?.skydome || !this.sceneId) return;
+        const body = element("div");
+        body.append(
+            element(
+                "div",
+                "vnccs-i3s__failure-summary",
+                `Remove skydome “${this.scene.skydome.name || "Skydome"}” from this scene?`,
+            ),
+            element(
+                "div",
+                "vnccs-i3s__hint",
+                "The source image and its scene-specific settings will be deleted. Library copies are not affected.",
+            ),
+        );
+        const cancel = button("vnccs-i3s__button", "Cancel");
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--danger",
+            "Remove skydome",
+            "trash",
+        );
+        cancel.addEventListener("click", () => this.closeModal());
+        remove.addEventListener("click", () => void this._deleteSkydomeNow(remove));
+        this.openModal({
+            title: "Remove skydome",
+            body,
+            actions: [cancel, remove],
+            initialFocus: cancel,
+        });
+    }
+
+    async _deleteSkydomeNow(control = null) {
+        if (!this.scene?.skydome || !this.sceneId) return;
+        if (control) control.disabled = true;
+        this.els.skydomeRemove.disabled = true;
+        try {
+            const scene = await this._fetchJSON(ENDPOINTS.skydome(this.sceneId), {
+                method: "DELETE",
+            });
+            this.closeModal();
+            this.selectedSkydome = false;
+            await this._applyScene(scene, { preserveSource: true });
+            this._setSkydomePanelOpen(true);
+            this.toast("Skydome removed.", "success");
+        } catch (error) {
+            if (control?.isConnected) control.disabled = false;
+            this._showError("Skydome could not be removed", error);
+        } finally {
+            this.els.skydomeRemove.disabled = false;
+        }
+    }
+
     _setLightingPanelOpen(open) {
         this.els.lightingPanel.hidden = !open;
         this.els.lightingOpen.setAttribute("aria-pressed", String(open));
-        if (open) this._drawLightingRadar();
+        if (open) {
+            this._setSkydomePanelOpen(false);
+            this._drawLightingRadar();
+        }
     }
 
     _syncLighting() {
@@ -1233,9 +1554,13 @@ class Factory3DWidget {
         );
         const desiredGroupId = this.selectedGroupId;
         const desiredObjectIds = new Set(this.selectedObjectIds);
+        const desiredSkydome = incremental && this.selectedSkydome;
         if (this.selectedObjectId) desiredObjectIds.add(this.selectedObjectId);
         this.scene = scene;
         this.sceneId = scene.scene_id;
+        if (this.scene.skydome) {
+            this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
+        }
         this._normalizeSceneLayers();
         this.exportSettings = this._normalizeExportSettings(
             scene.render || this.exportSettings,
@@ -1254,6 +1579,7 @@ class Factory3DWidget {
             : this.scene.camera;
         this._syncExportSettings();
         this._syncLighting();
+        this._syncSkydome();
         if (!preserveSource) {
             this.sourceFile = null;
             if (scene.reference?.url) {
@@ -1289,12 +1615,16 @@ class Factory3DWidget {
             viewportFailures.map(item => [item.objectId, errorText(item.error)]),
         );
         const desiredGroup = this._groupById(desiredGroupId);
-        if (desiredGroup) {
+        if (desiredSkydome && scene.skydome) {
+            this._selectSkydome();
+        } else if (desiredGroup) {
+            this.selectedSkydome = false;
             this.selectedGroupId = desiredGroup.group_id;
             this.selectedObjectIds.clear();
             this.selectedObjectId = "";
             this.viewer.selectGroup(desiredGroup.group_id, desiredGroup.children);
         } else {
+            this.selectedSkydome = false;
             this.selectedGroupId = "";
             this.selectedObjectIds = new Set(
                 Array.from(desiredObjectIds).filter(
@@ -1319,7 +1649,7 @@ class Factory3DWidget {
         this.syncToNode();
         let previewError = null;
         const loaded = Number(viewportResult.loaded) || 0;
-        if (loaded > 0) {
+        if (loaded > 0 || this.viewer.hasVisibleSkydome()) {
             this._setStatus("Saving scene preview", "working");
             try {
                 const preview = await this._saveScenePreviewNow();
@@ -1516,21 +1846,49 @@ class Factory3DWidget {
 
     _updateSceneSummary() {
         const objects = this.scene?.objects || [];
+        const skydome = this.scene?.skydome || null;
         const visibleIds = this._effectiveVisibleObjectIds();
-        this.container.classList.toggle("has-scene", Boolean(objects.length));
-        this.els.objectCount.textContent = String(objects.length);
-        this.els.sceneSummary.textContent = objects.length
-            ? `${visibleIds.size}/${objects.length} visible · ${objects.reduce(
+        this.container.classList.toggle("has-scene", Boolean(objects.length || skydome));
+        this.els.objectCount.textContent = String(objects.length + (skydome ? 1 : 0));
+        const gaussianSummary = objects.length
+            ? `${visibleIds.size}/${objects.length} models visible · ${objects.reduce(
                 (sum, item) => sum + (visibleIds.has(item.object_id) ? Number(item.gaussians) || 0 : 0),
                 0,
             ).toLocaleString()} Gaussians`
-            : "No objects in this scene.";
+            : "No Gaussian models";
+        this.els.sceneSummary.textContent = skydome
+            ? `${gaussianSummary} · Skydome ${skydome.visible === false ? "hidden" : "visible"}`
+            : objects.length
+                ? gaussianSummary
+                : "No objects in this scene.";
+    }
+
+    _hasRenderableScene() {
+        return Boolean(
+            this.scene?.objects?.length
+            || (this.scene?.skydome && this.scene.skydome.visible !== false),
+        );
+    }
+
+    _selectSkydome() {
+        if (!this.scene?.skydome) {
+            this.selectedSkydome = false;
+            return;
+        }
+        this.selectedGroupId = "";
+        this.selectedObjectIds.clear();
+        this.selectedObjectId = "";
+        this.viewer.select("");
+        this.selectedSkydome = true;
+        this._syncSelectionPresentation();
+        this._scheduleStateSave();
     }
 
     _selectObject(objectId, { fromViewer = false, additive = false } = {}) {
         const valid = this.scene?.objects?.some(item => item.object_id === objectId)
             ? objectId
             : "";
+        this.selectedSkydome = false;
         this.selectedGroupId = "";
         if (!additive) {
             this.selectedObjectIds = new Set(valid ? [valid] : []);
@@ -1548,6 +1906,7 @@ class Factory3DWidget {
 
     _selectGroup(groupId) {
         const group = this._groupById(groupId);
+        this.selectedSkydome = false;
         this.selectedGroupId = group?.group_id || "";
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
@@ -1562,6 +1921,8 @@ class Factory3DWidget {
         this.els.groupSelected.disabled = count < 2;
         this.els.selectionCount.textContent = count
             ? `${count} selected`
+            : this.selectedSkydome
+                ? "Skydome selected"
             : this.selectedGroupId
                 ? "Group selected"
                 : "Shift-click to select multiple";
@@ -1570,8 +1931,14 @@ class Factory3DWidget {
     _syncSelectionPresentation() {
         for (const card of this.els.objectList.querySelectorAll(".vnccs-i3s__object")) {
             const objectId = card.dataset.objectId || "";
-            card.classList.toggle("is-selected", this.selectedObjectIds.has(objectId));
-            card.classList.toggle("is-primary", objectId === this.selectedObjectId);
+            card.classList.toggle(
+                "is-selected",
+                Boolean(objectId && this.selectedObjectIds.has(objectId)),
+            );
+            card.classList.toggle(
+                "is-primary",
+                Boolean(objectId && objectId === this.selectedObjectId),
+            );
         }
         for (const card of this.els.objectList.querySelectorAll(".vnccs-i3s__group-card")) {
             const groupId = card.dataset.groupId
@@ -1579,20 +1946,28 @@ class Factory3DWidget {
                 || "";
             card.classList.toggle("is-selected", groupId === this.selectedGroupId);
         }
+        const skydomeCard = this.els.objectList.querySelector(".vnccs-i3s__skydome-object");
+        skydomeCard?.classList.toggle("is-selected", this.selectedSkydome);
+        skydomeCard?.classList.toggle("is-primary", this.selectedSkydome);
         this._syncSelectionControls();
     }
 
     _renderObjects() {
         const query = this.els.objectSearch.value.trim().toLowerCase();
         const objects = new Map((this.scene?.objects || []).map(item => [item.object_id, item]));
+        const skydome = this.scene?.skydome || null;
         const layers = this._normalizeSceneLayers();
         this.els.objectList.replaceChildren();
         this._syncSelectionControls();
-        if (!objects.size) {
+        let rendered = 0;
+        if (skydome && (!query || skydome.name.toLowerCase().includes(query) || "skydome background environment".includes(query))) {
+            this.els.objectList.appendChild(this._createSkydomeCard(skydome));
+            rendered += 1;
+        }
+        if (!objects.size && !skydome) {
             this.els.objectList.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
             return;
         }
-        let rendered = 0;
         for (const layer of layers) {
             if (layer.type === "object") {
                 const item = objects.get(layer.object_id);
@@ -1629,6 +2004,103 @@ class Factory3DWidget {
         if (!rendered) {
             this.els.objectList.appendChild(element("div", "vnccs-i3s__tree-empty", "No matching objects."));
         }
+    }
+
+    _createSkydomeCard(skydome) {
+        const card = element(
+            "div",
+            `vnccs-i3s__object vnccs-i3s__skydome-object`
+                + `${this.selectedSkydome ? " is-selected is-primary" : ""}`
+                + `${skydome.visible === false ? " is-hidden" : ""}`,
+        );
+        card.tabIndex = 0;
+        card.dataset.skydomeId = skydome.skydome_id || "";
+        const thumbnail = element("img", "vnccs-i3s__object-thumb");
+        thumbnail.src = apiUrl(skydome.url);
+        thumbnail.alt = "";
+        const copy = element("div", "vnccs-i3s__object-copy");
+        const name = element("div", "vnccs-i3s__object-name", skydome.name || "Skydome");
+        name.title = "Double-click to rename";
+        name.tabIndex = 0;
+        name.setAttribute("role", "button");
+        const beginRename = event => {
+            event.stopPropagation();
+            this._beginInlineRename(name, skydome.name || "Skydome", next => {
+                skydome.name = next;
+                this._syncSkydome();
+                this._renderObjects();
+                this._commitSkydome({ final: true });
+            });
+        };
+        name.addEventListener("dblclick", beginRename);
+        name.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === "F2") {
+                event.preventDefault();
+                beginRename(event);
+            }
+        });
+        copy.append(
+            name,
+            element(
+                "div",
+                "vnccs-i3s__object-meta",
+                `Skydome · ${Number(skydome.width || 0).toLocaleString()} × ${Number(skydome.height || 0).toLocaleString()}`,
+            ),
+        );
+        const actions = element("div", "vnccs-i3s__object-actions");
+        const visibility = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            skydome.visible === false ? "eyeOff" : "eye",
+        );
+        visibility.title = skydome.visible === false ? "Show skydome" : "Hide skydome";
+        visibility.addEventListener("click", event => {
+            event.stopPropagation();
+            skydome.visible = skydome.visible === false;
+            this._syncSkydome();
+            this._commitSkydome({ final: true });
+            this._updateSceneSummary();
+            this._renderObjects();
+        });
+        const save = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            "library",
+        );
+        save.title = "Save skydome to library";
+        save.addEventListener("click", event => {
+            event.stopPropagation();
+            this.openSaveLibraryModal("skydome", "");
+        });
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__button--danger vnccs-i3s__icon-button",
+            "",
+            "trash",
+        );
+        remove.title = "Remove skydome";
+        remove.addEventListener("click", event => {
+            event.stopPropagation();
+            void this.removeSkydome();
+        });
+        for (const control of [visibility, save, remove]) {
+            control.setAttribute("aria-label", control.title);
+            control.addEventListener("dblclick", event => event.stopPropagation());
+        }
+        actions.append(visibility, save, remove);
+        card.append(thumbnail, copy, actions);
+        card.addEventListener("click", event => {
+            if (event.target.closest("button,input")) return;
+            this._selectSkydome();
+            this._setSkydomePanelOpen(true);
+        });
+        card.addEventListener("keydown", event => {
+            if (event.target === card && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                this._selectSkydome();
+                this._setSkydomePanelOpen(true);
+            }
+        });
+        return card;
     }
 
     _createObjectCard(item, groupId) {
@@ -2082,6 +2554,7 @@ class Factory3DWidget {
         layers.splice(Math.min(insertion, layers.length), 0, group);
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
+        this.selectedSkydome = false;
         this.selectedGroupId = group.group_id;
         this.collapsedGroupIds.delete(group.group_id);
         const visibleAfter = this._effectiveVisibleObjectIds();
@@ -2117,6 +2590,7 @@ class Factory3DWidget {
         this.selectedGroupId = "";
         this.selectedObjectIds = new Set(group.children);
         this.selectedObjectId = group.children[0] || "";
+        this.selectedSkydome = false;
         const visibleAfter = this._effectiveVisibleObjectIds();
         const visibilityChanged = (
             visibleBefore.size !== visibleAfter.size
@@ -2148,6 +2622,17 @@ class Factory3DWidget {
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
             lighting: { ...this.lighting },
+            skydome: this.scene?.skydome
+                ? {
+                    name: this.scene.skydome.name,
+                    visible: this.scene.skydome.visible !== false,
+                    yaw: this.scene.skydome.yaw,
+                    pitch: this.scene.skydome.pitch,
+                    roll: this.scene.skydome.roll,
+                    exposure: this.scene.skydome.exposure,
+                    blur: this.scene.skydome.blur,
+                }
+                : undefined,
             camera: camera ? { ...camera } : undefined,
             objects: (this.scene?.objects || []).map(item => ({
                 object_id: item.object_id,
@@ -2191,6 +2676,7 @@ class Factory3DWidget {
                 this.scene.render = updated.render || this.scene.render;
                 this.scene.camera = updated.camera || this.scene.camera;
                 this.scene.lighting = updated.lighting || this.scene.lighting;
+                this.scene.skydome = updated.skydome || this.scene.skydome;
             }
             this._scheduleStateSave(0);
             return updated;
@@ -2207,7 +2693,7 @@ class Factory3DWidget {
     }
 
     _scheduleScenePreview(delay = 480) {
-        if (this._isRestoring || this.destroyed || !this.sceneId || !this.scene?.objects?.length) return;
+        if (this._isRestoring || this.destroyed || !this.sceneId || !this._hasRenderableScene()) return;
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = setTimeout(
             () => void this._saveScenePreviewNow().catch(() => {}),
@@ -2218,10 +2704,10 @@ class Factory3DWidget {
     async _saveScenePreviewNow({ captureToken = "" } = {}) {
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
-        if (this.destroyed || !this.sceneId || !this.scene?.objects?.length) return null;
+        if (this.destroyed || !this.sceneId || !this._hasRenderableScene()) return null;
         const sceneId = this.sceneId;
         const operation = this._previewSaveSerial.then(async () => {
-            if (this.destroyed || this.sceneId !== sceneId || !this.scene?.objects?.length) return null;
+            if (this.destroyed || this.sceneId !== sceneId || !this._hasRenderableScene()) return null;
             // Commit transforms first so the preview revision always describes
             // the same scene state that the graph will export.
             const savedScene = await this._saveSceneNow({ showError: false });
@@ -2289,8 +2775,8 @@ class Factory3DWidget {
                     `The widget has scene ${this.sceneId || "none"} open; execution requested ${sceneId}.`,
                 );
             }
-            if (!this.scene?.objects?.length) {
-                throw new Error("The requested scene has no loaded Gaussian objects.");
+            if (!this._hasRenderableScene()) {
+                throw new Error("The requested scene has no visible renderable content.");
             }
             console.info("[VNCCS 3D Factory][viewport] Execution preview requested", {
                 sceneId,
@@ -2392,6 +2878,7 @@ class Factory3DWidget {
                                 generatedObjectId ? [generatedObjectId] : [],
                             );
                             this.selectedGroupId = "";
+                            this.selectedSkydome = false;
                             this._setStatus("Loading result", "working");
                             this._setProgress(
                                 true,
@@ -2695,6 +3182,7 @@ class Factory3DWidget {
             this.selectedObjectId = "";
             this.selectedObjectIds.clear();
             this.selectedGroupId = "";
+            this.selectedSkydome = false;
             this.collapsedGroupIds.clear();
             try {
                 const data = await this._fetchJSON(ENDPOINTS.scenes);
@@ -2764,7 +3252,7 @@ class Factory3DWidget {
                 <div class="vnccs-ps-library-modal-title">📚 Model Library</div>
                 <div class="vnccs-ps-library-header-actions">
                     <button class="vnccs-ps-btn primary vnccs-ps-library-save-current">
-                        <span class="vnccs-ps-btn-icon">💾</span> Save Current Model
+                        <span class="vnccs-ps-btn-icon">💾</span> Save Current Asset
                     </button>
                 </div>
                 <button class="vnccs-ps-modal-close" aria-label="Close">✕</button>
@@ -2807,7 +3295,7 @@ class Factory3DWidget {
         modal.querySelector(".vnccs-ps-library-save-current").onclick = () => {
             const selectedObjectId = this.selectedObjectId;
             this.openSaveLibraryModal(
-                selectedObjectId ? "object" : "scene",
+                this.selectedSkydome ? "skydome" : selectedObjectId ? "object" : "scene",
                 selectedObjectId,
             );
         };
@@ -2862,7 +3350,7 @@ class Factory3DWidget {
             const rejected = received.filter(item => (
                 !item
                 || item.schema !== GAUSSIAN_LIBRARY_SCHEMA
-                || !["object", "scene"].includes(item.asset_type)
+                || !["object", "scene", "skydome"].includes(item.asset_type)
                 || !/^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
             ));
             if (rejected.length) {
@@ -2874,7 +3362,7 @@ class Factory3DWidget {
             this.libraryItems = received.filter(item => (
                 item
                 && item.schema === GAUSSIAN_LIBRARY_SCHEMA
-                && ["object", "scene"].includes(item.asset_type)
+                && ["object", "scene", "skydome"].includes(item.asset_type)
                 && /^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
             ));
             this.renderLibrary();
@@ -2931,7 +3419,7 @@ class Factory3DWidget {
         const items = this.getFilteredLibraryItems();
         this.libraryGrid.replaceChildren();
         if (!items.length) {
-            this.libraryGrid.innerHTML = `<div class="vnccs-ps-library-empty">${this.libraryItems.length ? "No library items match this search." : "No saved models or scenes.<br>Use Save Current Model to add one."}</div>`;
+            this.libraryGrid.innerHTML = `<div class="vnccs-ps-library-empty">${this.libraryItems.length ? "No library items match this search." : "No saved assets.<br>Use Save Current Asset to add one."}</div>`;
             this.renderLibraryInspector(null);
             return;
         }
@@ -2948,11 +3436,21 @@ class Factory3DWidget {
                 image.decoding = "async";
                 preview.appendChild(image);
             } else {
-                preview.innerHTML = item.asset_type === "scene" ? "<span>🎬</span>" : "<span>🧊</span>";
+                preview.innerHTML = item.asset_type === "scene"
+                    ? "<span>🎬</span>"
+                    : item.asset_type === "skydome"
+                        ? "<span>🌐</span>"
+                        : "<span>🧊</span>";
             }
             const name = element("div", "vnccs-ps-library-item-name", item.name);
             card.append(preview);
-            if (item.asset_type === "scene") card.appendChild(element("div", "vnccs-ps-library-item-type", "Scene"));
+            if (item.asset_type !== "object") {
+                card.appendChild(element(
+                    "div",
+                    "vnccs-ps-library-item-type",
+                    item.asset_type === "scene" ? "Scene" : "Skydome",
+                ));
+            }
             card.appendChild(name);
             card.onclick = () => {
                 this.librarySelectedId = item.asset_id;
@@ -2971,21 +3469,37 @@ class Factory3DWidget {
         if (!item) {
             this.libraryInspector.classList.remove("visible");
             this.libraryWorkspace.classList.remove("has-inspector");
-            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select a model or scene to inspect and load it.</div>';
+            this.libraryInspector.innerHTML = '<div class="vnccs-ps-library-inspector-empty">Select an asset to inspect and load it.</div>';
             return;
         }
         this.libraryInspector.classList.add("visible");
         this.libraryWorkspace.classList.add("has-inspector");
         const preview = item.has_preview
             ? `<img src="${apiUrl(item.preview_url)}" alt="${escapeHTML(item.name)}" decoding="async">`
-            : (item.asset_type === "scene" ? "<span>🎬</span>" : "<span>🧊</span>");
+            : (
+                item.asset_type === "scene"
+                    ? "<span>🎬</span>"
+                    : item.asset_type === "skydome"
+                        ? "<span>🌐</span>"
+                        : "<span>🧊</span>"
+            );
+        const applyLabel = item.asset_type === "scene"
+            ? "Open Scene"
+            : item.asset_type === "skydome"
+                ? "Use Skydome"
+                : "Add Model";
+        const assetLabel = item.asset_type === "scene"
+            ? "Scene"
+            : item.asset_type === "skydome"
+                ? "Skydome"
+                : "Gaussian model";
         const local = item.repository === "local_user_models";
         const disabled = local ? "" : "disabled";
         this.libraryInspector.innerHTML = `
             <div class="vnccs-ps-library-inspector-inner">
                 <div class="vnccs-ps-library-inspector-preview">${preview}</div>
                 <div class="vnccs-ps-library-inspector-actions">
-                    <button class="vnccs-ps-btn primary vnccs-ps-library-apply">${item.asset_type === "scene" ? "Open Scene" : "Add Model"}</button>
+                    <button class="vnccs-ps-btn primary vnccs-ps-library-apply">${applyLabel}</button>
                     <button class="vnccs-ps-btn vnccs-ps-library-download">Download</button>
                 </div>
                 <label class="vnccs-ps-library-field"><span>Name</span><input class="vnccs-ps-input vnccs-ps-library-edit-name" type="text" value="${escapeHTML(item.name)}" ${disabled}></label>
@@ -2993,7 +3507,7 @@ class Factory3DWidget {
                 <label class="vnccs-ps-library-field"><span>Repository</span><input class="vnccs-ps-input" type="text" value="${escapeHTML(item.repository)}" disabled></label>
                 <label class="vnccs-ps-library-field"><span>Tags</span><input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${escapeHTML((item.tags || []).join(", "))}" ${disabled}></label>
                 <label class="vnccs-ps-library-field"><span>Description</span><textarea class="vnccs-ps-textarea vnccs-ps-library-edit-description" ${disabled}>${escapeHTML(item.description || "")}</textarea></label>
-                <div class="vnccs-ps-library-system-tag">${item.asset_type === "scene" ? "Scene" : "Gaussian model"} · ${Number(item.gaussians || 0).toLocaleString()} splats · ${formatBytes(item.bytes)}</div>
+                <div class="vnccs-ps-library-system-tag">${assetLabel}${item.asset_type === "skydome" ? "" : ` · ${Number(item.gaussians || 0).toLocaleString()} splats`} · ${formatBytes(item.bytes)}</div>
                 ${local ? `
                     <label class="vnccs-ps-library-field"><span>Custom Image</span><input class="vnccs-ps-library-preview-input" type="file" accept="image/*"></label>
                     <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
@@ -3293,9 +3807,18 @@ class Factory3DWidget {
             });
             this.closeFactoryLibrary();
             await this._applyScene(result.scene);
-            if (result.object_id) this._selectObject(result.object_id);
+            if (result.skydome_id) {
+                this._selectSkydome();
+                this._setSkydomePanelOpen(true);
+            } else if (result.object_id) {
+                this._selectObject(result.object_id);
+            }
             this.toast(
-                result.created_scene ? "Library scene opened." : "Gaussian object added to scene.",
+                result.created_scene
+                    ? "Library scene opened."
+                    : result.skydome_id
+                        ? "Library skydome applied to scene."
+                        : "Gaussian object added to scene.",
                 "success",
             );
         } catch (error) {
@@ -3312,7 +3835,7 @@ class Factory3DWidget {
             <div class="vnccs-ps-modal-title">Delete Library Asset</div>
             <div class="vnccs-ps-modal-content">
                 <div>Delete “${escapeHTML(item.name)}” from the local model library?</div>
-                <div style="color:var(--ps-text-muted)">The stored Gaussian package and preview will be removed. Models already loaded into scenes are not affected.</div>
+                <div style="color:var(--ps-text-muted)">The stored package and preview will be removed. Copies already loaded into scenes are not affected.</div>
             </div>
             <button class="vnccs-ps-modal-btn danger">Delete Asset</button>
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
@@ -3346,15 +3869,19 @@ class Factory3DWidget {
     }
 
     openSaveLibraryModal(preferredType = "", requestedObjectId = this.selectedObjectId) {
-        if (!this.scene?.objects?.length) {
-            this.toast("The current scene has no models to save.", "error");
+        if (!this.scene?.objects?.length && !this.scene?.skydome) {
+            this.toast("The current scene has no assets to save.", "error");
             return;
         }
         const selectedObjectId = String(requestedObjectId || "");
         const selected = this.scene.objects.find(
             item => item.object_id === selectedObjectId,
         ) || null;
-        const initialType = preferredType === "scene" || !selected ? "scene" : "object";
+        const initialType = preferredType === "skydome" && this.scene?.skydome
+            ? "skydome"
+            : preferredType === "scene" || !selected
+                ? "scene"
+                : "object";
         const overlay = element("div", "vnccs-ps-modal-overlay");
         const modal = element("div", "vnccs-ps-modal vnccs-ps-save-library-modal");
         modal.innerHTML = `
@@ -3364,6 +3891,7 @@ class Factory3DWidget {
                     <span>Asset type</span>
                     <select data-role="type" class="vnccs-ps-input">
                         <option value="object" ${selected ? "" : "disabled"}>Selected model</option>
+                        <option value="skydome" ${this.scene?.skydome ? "" : "disabled"}>Skydome</option>
                         <option value="scene">Complete scene</option>
                     </select>
                 </label>
@@ -3384,7 +3912,7 @@ class Factory3DWidget {
                 </div>
                 <label class="vnccs-ps-save-library-field">
                     <span>Description</span>
-                    <textarea data-role="description" class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Optional notes about this Gaussian asset"></textarea>
+                    <textarea data-role="description" class="vnccs-ps-textarea vnccs-ps-save-prompt" placeholder="Optional notes about this library asset"></textarea>
                 </label>
                 <label class="vnccs-ps-save-library-check">
                     <input data-role="preview" type="checkbox" checked> Include automatically rendered preview
@@ -3404,8 +3932,16 @@ class Factory3DWidget {
         const save = modal.querySelector(".primary");
         const cancel = modal.querySelector(".cancel");
         const syncType = () => {
-            name.value = type.value === "object" ? (selected?.name || "") : (this.scene?.name || "Untitled scene");
-            modal.querySelector(".vnccs-ps-modal-title").textContent = type.value === "object" ? "Save Model" : "Save Scene";
+            name.value = type.value === "object"
+                ? (selected?.name || "")
+                : type.value === "skydome"
+                    ? (this.scene?.skydome?.name || "Skydome")
+                    : (this.scene?.name || "Untitled scene");
+            modal.querySelector(".vnccs-ps-modal-title").textContent = type.value === "object"
+                ? "Save Model"
+                : type.value === "skydome"
+                    ? "Save Skydome"
+                    : "Save Scene";
         };
         type.value = initialType;
         type.onchange = syncType;
@@ -3416,6 +3952,7 @@ class Factory3DWidget {
         const submit = async () => {
             const assetType = type.value;
             const isObject = assetType === "object";
+            const isSkydome = assetType === "skydome";
             if (!name.value.trim()) {
                 modal.querySelector(".vnccs-ps-save-library-name-field").classList.add("invalid");
                 modal.querySelector(".vnccs-ps-save-library-error").hidden = false;
@@ -3451,7 +3988,10 @@ class Factory3DWidget {
                 this.libraryItems.unshift(result.item);
                 this.librarySelectedId = result.item.asset_id;
                 this.renderLibrary();
-                this.toast(`${isObject ? "Model" : "Scene"} saved to library.`, "success");
+                this.toast(
+                    `${isObject ? "Model" : isSkydome ? "Skydome" : "Scene"} saved to library.`,
+                    "success",
+                );
                 this._setStatus("Scene ready", "success");
             } catch (error) {
                 save.disabled = false;
@@ -4243,6 +4783,7 @@ class Factory3DWidget {
             selected_object_id: this.selectedObjectId,
             selected_object_ids: Array.from(this.selectedObjectIds),
             selected_group_id: this.selectedGroupId,
+            selected_skydome: this.selectedSkydome,
             collapsed_group_ids: Array.from(this.collapsedGroupIds),
             settings: { ...this.settings },
             render_settings: { ...this.exportSettings },
@@ -4294,6 +4835,7 @@ class Factory3DWidget {
             );
             if (this.selectedObjectId) this.selectedObjectIds.add(this.selectedObjectId);
             this.selectedGroupId = String(state.selected_group_id || "");
+            this.selectedSkydome = state.selected_skydome === true;
             this.collapsedGroupIds = new Set(
                 Array.isArray(state.collapsed_group_ids)
                     ? state.collapsed_group_ids.map(String)

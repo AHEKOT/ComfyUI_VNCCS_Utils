@@ -184,9 +184,18 @@ def _decode_preview(value: Any) -> bytes:
         return output.getvalue()
 
 
-def _fallback_preview(scene: dict[str, Any], object_id: str = "") -> bytes:
+def _fallback_preview(
+    scene: dict[str, Any],
+    object_id: str = "",
+    asset_type: str = "",
+) -> bytes:
     path: Path | None = None
-    if object_id:
+    if asset_type == "skydome":
+        try:
+            path = factory._scene_skydome_file(scene)
+        except FileNotFoundError:
+            path = None
+    elif object_id:
         item = factory._object_by_id(scene, object_id)
         for key in ("prepared", "reference"):
             try:
@@ -199,7 +208,16 @@ def _fallback_preview(scene: dict[str, Any], object_id: str = "") -> bytes:
             path = factory._scene_preview_file(scene)
         except FileNotFoundError:
             path = None
-    return path.read_bytes() if path and path.is_file() else b""
+    if not path or not path.is_file():
+        return b""
+    if asset_type != "skydome":
+        return path.read_bytes()
+    with Image.open(path) as image:
+        image = image.convert("RGB")
+        image.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+        output = io.BytesIO()
+        image.save(output, "PNG", optimize=True)
+        return output.getvalue()
 
 
 def _zip_write_file(archive: zipfile.ZipFile, source: Path, target: str) -> None:
@@ -230,6 +248,22 @@ def _object_payload(
     return output
 
 
+def _skydome_payload(
+    archive: zipfile.ZipFile,
+    scene: dict[str, Any],
+    prefix: str = "payload/skydome",
+) -> dict[str, Any]:
+    stored = factory._normalize_scene_skydome(scene.get("skydome"))
+    if stored is None:
+        raise ValueError("the scene has no skydome")
+    source = factory._scene_skydome_file(scene)
+    member = f"{prefix}/source{source.suffix.lower()}"
+    _zip_write_file(archive, source, member)
+    output = json.loads(json.dumps(stored))
+    output["file"] = member
+    return output
+
+
 def _build_package(
     scene: dict[str, Any],
     target: Path,
@@ -248,6 +282,9 @@ def _build_package(
                 payload = {"object": stored}
                 item_count = 1
                 gaussian_count = int(item.get("gaussians", 0) or 0)
+            elif asset_type == "skydome":
+                payload = {"skydome": _skydome_payload(archive, scene)}
+                item_count = 1
             else:
                 stored_objects = []
                 for item in scene.get("objects", []):
@@ -264,6 +301,12 @@ def _build_package(
                 snapshot["objects"] = stored_objects
                 snapshot.pop("preview", None)
                 snapshot["exports"] = {}
+                if isinstance(snapshot.get("skydome"), dict):
+                    snapshot["skydome"] = _skydome_payload(
+                        archive,
+                        scene,
+                        "payload/scene-skydome",
+                    )
                 if isinstance(snapshot.get("reference"), dict):
                     try:
                         reference = factory._scene_reference_file(scene)
@@ -316,6 +359,8 @@ def _strip_manifest_splats(manifest: dict[str, Any]) -> bool:
     stored_objects: list[Any]
     if manifest.get("asset_type") == "object":
         stored_objects = [payload.get("object")]
+    elif manifest.get("asset_type") == "skydome":
+        stored_objects = []
     else:
         scene = payload.get("scene")
         stored_objects = scene.get("objects", []) if isinstance(scene, dict) else []
@@ -444,8 +489,8 @@ def _find_record(
 def save_asset(payload: dict[str, Any]) -> dict[str, Any]:
     scene = factory.load_scene(str(payload.get("scene_id") or ""))
     asset_type = str(payload.get("asset_type") or "object").lower()
-    if asset_type not in {"object", "scene"}:
-        raise ValueError("asset_type must be object or scene")
+    if asset_type not in {"object", "scene", "skydome"}:
+        raise ValueError("asset_type must be object, scene, or skydome")
     object_id = str(payload.get("object_id") or "") if asset_type == "object" else ""
     item = factory._object_by_id(scene, object_id) if object_id else None
     repository = LOCAL_REPOSITORY
@@ -454,9 +499,19 @@ def save_asset(payload: dict[str, Any]) -> dict[str, Any]:
     paths = _paths(repository, category, asset_id)
     display_name = _name(
         payload.get("name"),
-        item.get("name", "Gaussian object") if item else scene.get("name", "Gaussian scene"),
+        (
+            item.get("name", "Gaussian object")
+            if item
+            else scene.get("skydome", {}).get("name", "Skydome")
+            if asset_type == "skydome"
+            else scene.get("name", "Gaussian scene")
+        ),
     )
-    preview = _decode_preview(payload.get("preview")) or _fallback_preview(scene, object_id)
+    preview = _decode_preview(payload.get("preview")) or _fallback_preview(
+        scene,
+        object_id,
+        asset_type,
+    )
     stats = _build_package(
         scene,
         paths["package"],
@@ -618,6 +673,50 @@ def _install_object(
         raise
 
 
+def _install_skydome(
+    archive: zipfile.ZipFile,
+    stored: dict[str, Any],
+    scene: dict[str, Any],
+) -> str:
+    if not isinstance(stored, dict) or not stored.get("file"):
+        raise ValueError("skydome package is incomplete")
+    member = archive.getinfo(str(stored["file"]))
+    _safe_member(member)
+    if member.file_size <= 0 or member.file_size > factory.MAX_SKYDOME_BYTES:
+        raise ValueError("skydome image is empty or too large")
+    image_bytes = archive.read(member)
+    suffix, mime, width, height = factory._inspect_skydome_image(image_bytes)
+    root = factory.resolve_scene_dir(scene["scene_id"])
+    skydome_root = root / "skydome"
+    skydome_root.mkdir(parents=True, exist_ok=True)
+    target = skydome_root / f"source{suffix}"
+    temporary = skydome_root / f".source.{secrets.token_hex(6)}.tmp"
+    try:
+        temporary.write_bytes(image_bytes)
+        for candidate in skydome_root.glob("source.*"):
+            if candidate != target:
+                candidate.unlink(missing_ok=True)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    normalized = factory._normalize_skydome_settings(stored)
+    skydome_id = factory._new_id()
+    scene["skydome"] = {
+        "skydome_id": skydome_id,
+        "type": "skydome",
+        "name": _name(stored.get("name"), "Skydome"),
+        "projection": "equirectangular",
+        "file": str(target.relative_to(root)),
+        "mime": mime,
+        "width": width,
+        "height": height,
+        "size": target.stat().st_size,
+        "updated_at": time.time(),
+        **normalized,
+    }
+    return skydome_id
+
+
 def load_asset(
     asset_id: str,
     *,
@@ -643,6 +742,26 @@ def load_asset(
             return {
                 "scene": factory._public_scene(scene),
                 "object_id": object_id,
+                "created_scene": False,
+            }
+        if asset_type == "skydome":
+            with factory._STATE_LOCK:
+                scene = factory.load_scene(scene_id)
+                skydome_id = _install_skydome(
+                    archive,
+                    payload.get("skydome") or {},
+                    scene,
+                )
+                scene["skydome"]["name"] = _name(record.get("name"), "Skydome")
+                scene["render_revision"] = max(
+                    0,
+                    int(scene.get("render_revision", scene.get("revision", 0))),
+                ) + 1
+                factory._save_scene(scene, bump_revision=False)
+            return {
+                "scene": factory._public_scene(scene),
+                "object_id": "",
+                "skydome_id": skydome_id,
                 "created_scene": False,
             }
         if asset_type != "scene":
@@ -678,6 +797,9 @@ def load_asset(
                 scene["render"] = factory._normalize_render_settings(stored_scene.get("render"))
                 scene["camera"] = factory._normalize_camera(stored_scene.get("camera"))
                 scene["lighting"] = factory._normalize_lighting(stored_scene.get("lighting"))
+                stored_skydome = stored_scene.get("skydome")
+                if isinstance(stored_skydome, dict):
+                    _install_skydome(archive, stored_skydome, scene)
                 stored_reference = stored_scene.get("reference")
                 if isinstance(stored_reference, dict) and stored_reference.get("file"):
                     member = archive.getinfo(str(stored_reference["file"]))

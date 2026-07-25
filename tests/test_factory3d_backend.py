@@ -820,6 +820,51 @@ class FactoryBackendTests(unittest.TestCase):
             f"/vnccs/3d-factory/scenes/{scene['scene_id']}/reference",
         )
 
+    def test_skydome_image_settings_and_public_asset_are_scene_persistent(self):
+        scene = self.factory.create_scene("Sky")
+        stream = io.BytesIO()
+        Image.new("RGB", (512, 256), (25, 90, 170)).save(stream, "JPEG")
+
+        saved = self.factory.store_scene_skydome(
+            scene["scene_id"],
+            stream.getvalue(),
+            "Mountain Sunset.jpg",
+        )
+        sky = saved["skydome"]
+        self.assertEqual(sky["type"], "skydome")
+        self.assertEqual(sky["projection"], "equirectangular")
+        self.assertEqual(sky["name"], "Mountain Sunset")
+        self.assertEqual((sky["width"], sky["height"]), (512, 256))
+        self.assertTrue(self.factory._scene_skydome_file(saved).is_file())
+        self.assertEqual(saved["revision"], 0)
+        self.assertEqual(saved["render_revision"], 1)
+
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {"skydome": {"yaw": 143, "pitch": -12, "exposure": 1.4}},
+        )
+        self.assertEqual(updated["skydome"]["yaw"], 143.0)
+        self.assertEqual(updated["skydome"]["pitch"], -12.0)
+        self.assertEqual(updated["skydome"]["exposure"], 1.4)
+        self.assertEqual(updated["skydome"]["roll"], 0.0)
+        self.assertTrue(updated["skydome"]["visible"])
+        self.assertEqual(updated["revision"], 0)
+        self.assertEqual(updated["render_revision"], 2)
+
+        public = self.factory._public_scene(updated)["skydome"]
+        self.assertEqual(public["type"], "skydome")
+        self.assertNotIn("file", public)
+        self.assertRegex(
+            public["url"],
+            rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/skydome\?v=\d+$",
+        )
+
+        removed = self.factory.remove_scene_skydome(scene["scene_id"])
+        self.assertNotIn("skydome", removed)
+        self.assertEqual(removed["render_revision"], 3)
+        with self.assertRaises(FileNotFoundError):
+            self.factory._scene_skydome_file(removed)
+
     def test_scene_preview_is_a_revision_bound_3d_render(self):
         scene = self.factory.create_scene("Scene")
         scene = self.factory.update_scene(
@@ -1073,6 +1118,9 @@ class FactoryBackendTests(unittest.TestCase):
             ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/reference"),
+            ("POST", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
+            ("GET", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
+            ("DELETE", "/vnccs/3d-factory/scenes/{scene_id}/skydome"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/preview"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}/preview"),
             ("POST", "/vnccs/3d-factory/scenes/{scene_id}/generate"),
