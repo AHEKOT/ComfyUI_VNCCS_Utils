@@ -1,13 +1,17 @@
 import * as THREE from "./vendor/spark/three.module.js";
 import { OrbitControls } from "./vendor/spark/OrbitControls.js";
 import { TransformControls } from "./vendor/spark/TransformControls.js";
-import { SparkRenderer, SplatMesh } from "./vendor/spark/spark.module.js";
+import {
+    dyno,
+    SparkRenderer,
+    SplatMesh,
+} from "./vendor/spark/spark.module.js";
 
 
 const EMPTY = () => {};
 const LOD_MIN_GAUSSIANS = 262_145;
 const LIGHTING_BASE_RESPONSE = 0.65;
-export const FACTORY_VIEWER_BUILD = "20260725.6";
+export const FACTORY_VIEWER_BUILD = "20260725.12";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -47,6 +51,96 @@ export function normalizedLighting(value = {}) {
         elevation: Math.max(-10, Math.min(90, Number(data.elevation) || 0)),
         ambient: Math.max(0, Math.min(1.5, Number(data.ambient) || 0)),
         background,
+    };
+}
+
+export function lightSourceDirection(
+    azimuthDegrees = 0,
+    elevationDegrees = 0,
+    target = new THREE.Vector3(),
+) {
+    const azimuth = THREE.MathUtils.degToRad(azimuthDegrees);
+    const elevation = THREE.MathUtils.degToRad(elevationDegrees);
+    const horizontal = Math.cos(elevation);
+    // Match Pose Studio/THREE.DirectionalLight exactly: the radar dot is the
+    // source position and the implicit target is the world origin. Rays stay
+    // parallel across the scene; this vector points from the target back to
+    // the source, which is the vector used by Lambert-style lighting.
+    // 0° = BACK (-Z), 90° = RIGHT (+X), 180° = FRONT (+Z).
+    return target.set(
+        horizontal * Math.sin(azimuth),
+        Math.sin(elevation),
+        -horizontal * Math.cos(azimuth),
+    ).normalize();
+}
+
+export function createDirectionalLightingModifier() {
+    const objectCenter = dyno.dynoVec3(new THREE.Vector3());
+    const inverseHalfSize = dyno.dynoVec3(new THREE.Vector3(1, 1, 1));
+    const lightSource = dyno.dynoVec3(new THREE.Vector3(0, 1, 0));
+    const baseGain = dyno.dynoVec3(new THREE.Vector3(1, 1, 1));
+    const directionalScale = dyno.dynoVec3(new THREE.Vector3());
+    const lighting = new dyno.Dyno({
+        inTypes: {
+            gsplat: dyno.Gsplat,
+            objectCenter: "vec3",
+            inverseHalfSize: "vec3",
+            lightSource: "vec3",
+            baseGain: "vec3",
+            directionalScale: "vec3",
+        },
+        outTypes: { gsplat: dyno.Gsplat },
+        inputs: {
+            objectCenter,
+            inverseHalfSize,
+            lightSource,
+            baseGain,
+            directionalScale,
+        },
+        globals: () => [dyno.defineGsplat],
+        statements: ({ inputs, outputs }) => dyno.unindentLines(`
+            ${outputs.gsplat} = ${inputs.gsplat};
+            if (isGsplatActive(${outputs.gsplat}.flags)) {
+                vec3 vnccsObjectOffset = (
+                    ${outputs.gsplat}.center - ${inputs.objectCenter}
+                ) * ${inputs.inverseHalfSize};
+                float vnccsObjectDistanceSquared = dot(
+                    vnccsObjectOffset,
+                    vnccsObjectOffset
+                );
+                float vnccsSourceFacing = dot(
+                    vnccsObjectOffset * inversesqrt(max(
+                        vnccsObjectDistanceSquared,
+                        0.000001
+                    )),
+                    ${inputs.lightSource}
+                );
+                float vnccsLightCoordinate = clamp(
+                    0.56 + 0.56 * vnccsSourceFacing,
+                    0.0,
+                    1.0
+                );
+                float vnccsShapedLight = vnccsLightCoordinate * vnccsLightCoordinate
+                    * (3.0 - 2.0 * vnccsLightCoordinate);
+                float vnccsLightResponse = 0.12 + 0.88 * vnccsShapedLight;
+                ${outputs.gsplat}.rgba.rgb = clamp(
+                    ${outputs.gsplat}.rgba.rgb * (
+                        ${inputs.baseGain}
+                        + ${inputs.directionalScale} * (vnccsLightResponse - 0.65)
+                    ),
+                    vec3(0.0),
+                    vec3(4.0)
+                );
+            }
+        `),
+    });
+    return {
+        modifier: lighting,
+        objectCenter,
+        inverseHalfSize,
+        lightSource,
+        baseGain,
+        directionalScale,
     };
 }
 
@@ -411,9 +505,10 @@ export class Factory3DViewer {
         this.skydomeTexture = null;
         this.skydomeAssetPath = "";
         this._skydomeLoadToken = 0;
-        this._lightDirectionWorld = new THREE.Vector3();
-        this._lightDirectionView = new THREE.Vector3();
-        this._lightViewMatrix = new THREE.Matrix3();
+        this._lightSourceWorld = new THREE.Vector3();
+        this._lightingCenterScratch = new THREE.Vector3();
+        this._lightingSizeScratch = new THREE.Vector3();
+        this._lightingQuaternionScratch = new THREE.Quaternion();
         this._setup();
     }
 
@@ -471,7 +566,6 @@ export class Factory3DViewer {
             coneFov: 145,
             coneFoveate: 0.35,
         });
-        this._installLightingShader();
         this.setLighting(this.lighting);
         this.scene.add(this.spark);
 
@@ -490,7 +584,6 @@ export class Factory3DViewer {
         };
         this.controls.addEventListener("change", () => {
             this._updateClipPlanes();
-            this._updateLightingUniforms(this.camera);
             if (!this._suppressStateEvents) this._emitState();
         });
         this.controls.addEventListener("start", () => this._setInteractive("orbit", true));
@@ -608,100 +701,51 @@ export class Factory3DViewer {
         this.renderer.render(this.scene, this.camera);
     }
 
-    _installLightingShader() {
-        const material = this.spark?.material;
-        if (!material?.vertexShader) return;
-        const uniformAnchor = "uniform float focalAdjustment;";
-        const colorAnchor = "    vRgba = rgba;";
-        const covarianceAnchor = "        mat3 RS = scaleQuaternionToMatrix(scales, viewQuaternion);";
-        if (
-            !material.vertexShader.includes(uniformAnchor)
-            || !material.vertexShader.includes(colorAnchor)
-            || !material.vertexShader.includes(covarianceAnchor)
-        ) {
-            console.error(
-                "[VNCCS 3D Factory] Spark lighting shader hook was not found",
-                { build: FACTORY_VIEWER_BUILD },
-            );
-            return;
-        }
-        material.uniforms.vnccsLightDirectionView = { value: this._lightDirectionView };
-        material.uniforms.vnccsLightBaseGain = { value: this._lightBaseGain };
-        material.uniforms.vnccsLightDirectionalScale = {
-            value: this._lightDirectionalScale,
-        };
-        material.uniforms.vnccsLightingEnabled = { value: 1 };
-        material.vertexShader = material.vertexShader
-            .replace(
-                uniformAnchor,
-                `${uniformAnchor}
-uniform vec3 vnccsLightDirectionView;
-uniform vec3 vnccsLightBaseGain;
-uniform vec3 vnccsLightDirectionalScale;
-uniform float vnccsLightingEnabled;`,
-            )
-            .replace(
-                colorAnchor,
-                `${colorAnchor}
-    if (vnccsLightingEnabled > 0.5) {
-        vRgba.rgb = clamp(
-            vRgba.rgb * vnccsLightBaseGain,
-            vec3(0.0),
-            vec3(4.0)
-        );
-    }
-`,
-            )
-            .replace(
-                covarianceAnchor,
-                `${covarianceAnchor}
-        if (vnccsLightingEnabled > 0.5) {
-            float vnccsMinScale = min(scales.x, min(scales.y, scales.z));
-            vec3 vnccsViewNormal;
-            if (scales.z == vnccsMinScale) {
-                vnccsViewNormal = RS[2] / max(scales.z, 0.000001);
-            } else if (scales.y == vnccsMinScale) {
-                vnccsViewNormal = RS[1] / max(scales.y, 0.000001);
-            } else {
-                vnccsViewNormal = RS[0] / max(scales.x, 0.000001);
-            }
-            float vnccsLightResponse = 0.5 + 0.3 * abs(dot(
-                vnccsViewNormal,
-                vnccsLightDirectionView
-            ));
-            vRgba.rgb = clamp(
-                vRgba.rgb
-                    + rgba.rgb
-                    * vnccsLightDirectionalScale
-                    * (vnccsLightResponse - 0.65),
-                vec3(0.0),
-                vec3(4.0)
-            );
-        }`,
-            );
-        material.needsUpdate = true;
+    _attachDirectionalLighting(entry) {
+        if (!entry?.splat || !entry?.splatBounds) return;
+        const lightingModifier = createDirectionalLightingModifier();
+        entry.lightingModifier = lightingModifier;
+        entry.splat.objectModifier = lightingModifier.modifier;
+        entry.splat.updateGenerator();
+        this._syncDirectionalLighting(entry, { regenerate: false });
     }
 
-    _updateLightingUniforms(camera = this.camera) {
-        if (!this.spark?.material?.uniforms?.vnccsLightDirectionView) return;
-        camera.updateMatrixWorld(true);
-        this._lightViewMatrix.setFromMatrix4(camera.matrixWorldInverse);
-        this._lightDirectionView
-            .copy(this._lightDirectionWorld)
-            .applyMatrix3(this._lightViewMatrix)
+    _syncDirectionalLighting(entry, { regenerate = true } = {}) {
+        const state = entry?.lightingModifier;
+        if (!state || !entry?.mesh || !entry?.splat || !entry?.splatBounds) return;
+        this._lightingCenterScratch ||= new THREE.Vector3();
+        this._lightingSizeScratch ||= new THREE.Vector3();
+        this._lightingQuaternionScratch ||= new THREE.Quaternion();
+        entry.mesh.updateMatrixWorld(true);
+        entry.splatBounds.getCenter(this._lightingCenterScratch);
+        entry.splatBounds.getSize(this._lightingSizeScratch);
+        state.objectCenter.value.copy(this._lightingCenterScratch);
+        state.inverseHalfSize.value.set(
+            2 / Math.max(this._lightingSizeScratch.x, 0.001),
+            2 / Math.max(this._lightingSizeScratch.y, 0.001),
+            2 / Math.max(this._lightingSizeScratch.z, 0.001),
+        );
+        entry.splat
+            .getWorldQuaternion(this._lightingQuaternionScratch)
+            .invert();
+        // Keep the source fixed in world space like a sun. Only express that
+        // same parallel direction in this SplatMesh's local coordinate frame.
+        state.lightSource.value
+            .copy(this._lightSourceWorld)
+            .applyQuaternion(this._lightingQuaternionScratch)
             .normalize();
+        state.baseGain.value.copy(this._lightBaseGain);
+        state.directionalScale.value.copy(this._lightDirectionalScale);
+        if (regenerate) entry.splat.updateVersion();
     }
 
     setLighting(value = {}) {
         this.lighting = normalizedLighting({ ...DEFAULT_LIGHTING, ...value });
-        const azimuth = THREE.MathUtils.degToRad(this.lighting.azimuth);
-        const elevation = THREE.MathUtils.degToRad(this.lighting.elevation);
-        const horizontal = Math.cos(elevation);
-        this._lightDirectionWorld.set(
-            horizontal * Math.sin(azimuth),
-            Math.sin(elevation),
-            horizontal * Math.cos(azimuth),
-        ).normalize();
+        lightSourceDirection(
+            this.lighting.azimuth,
+            this.lighting.elevation,
+            this._lightSourceWorld,
+        );
         this._lightColor.set(this.lighting.color);
         // Preserve the original color equation, split into a constant CPU-side
         // term and a small directional GPU correction.
@@ -718,12 +762,17 @@ uniform float vnccsLightingEnabled;`,
             this._lightColor.g * this.lighting.intensity,
             this._lightColor.b * this.lighting.intensity,
         );
-        const uniforms = this.spark?.material?.uniforms;
-        if (uniforms?.vnccsLightingEnabled) {
-            uniforms.vnccsLightingEnabled.value = this.lighting.preset === "off" ? 0 : 1;
+        if (this.lighting.preset === "off") {
+            this._lightBaseGain.set(1, 1, 1);
+            this._lightDirectionalScale.set(0, 0, 0);
         }
+        let regenerated = false;
+        for (const entry of this.objects.values()) {
+            this._syncDirectionalLighting(entry);
+            regenerated = true;
+        }
+        if (regenerated) this.spark?.setDirty?.();
         this._applySkydomeSettings();
-        this._updateLightingUniforms(this.camera);
     }
 
     _applySkydomeSettings() {
@@ -990,6 +1039,8 @@ uniform float vnccsLightingEnabled;`,
         const transform = this._meshTransform(entry.mesh);
         entry.data.transform = transform;
         this._refreshSelectionBounds();
+        this._syncDirectionalLighting(entry);
+        this.spark.setDirty?.();
         this.options.onTransformChange(this.selectedId, transform, { final: !this.transform.dragging });
     }
 
@@ -1069,6 +1120,7 @@ uniform float vnccsLightingEnabled;`,
             this._suppressTransform = false;
             const transform = this._meshTransform(entry.mesh);
             entry.data.transform = transform;
+            this._syncDirectionalLighting(entry);
             this.options.onTransformChange(objectId, transform, {
                 final,
                 group_id: this.selectedGroupId,
@@ -1076,7 +1128,9 @@ uniform float vnccsLightingEnabled;`,
         }
         this._refreshSelectionBounds();
         this.spark.setDirty?.();
-        if (final) this._groupTransformStart = null;
+        if (final) {
+            this._groupTransformStart = null;
+        }
     }
 
     _refreshSelectionBounds() {
@@ -1162,6 +1216,7 @@ uniform float vnccsLightingEnabled;`,
                     existing.splat.name = item.name || item.object_id;
                     existing.mesh.visible = visibleIds.has(item.object_id);
                     this._applyTransform(existing.mesh, item.transform);
+                    this._syncDirectionalLighting(existing);
                     continue;
                 }
                 if (existing) {
@@ -1233,19 +1288,23 @@ uniform float vnccsLightingEnabled;`,
                 }
                 this._applyTransform(objectRoot, item.transform);
                 objectRoot.visible = visibleIds.has(item.object_id);
-                const localBounds = computeRobustSplatBounds(mesh).applyMatrix4(mesh.matrix);
+                const splatBounds = computeRobustSplatBounds(mesh);
+                const localBounds = splatBounds.clone().applyMatrix4(mesh.matrix);
                 if (!hasFiniteBounds(localBounds)) {
                     throw new Error(
                         `SPLAT object ${item.object_id} has no finite interaction bounds after decoding`,
                     );
                 }
-                this.objects.set(item.object_id, {
+                const entry = {
                     mesh: objectRoot,
                     splat: mesh,
                     data: item,
                     localBounds,
+                    splatBounds,
                     assetPath,
-                });
+                };
+                this.objects.set(item.object_id, entry);
+                this._attachDirectionalLighting(entry);
                 console.info("[VNCCS 3D Factory][viewport] SPLAT ready", {
                     build: FACTORY_VIEWER_BUILD,
                     objectId: item.object_id,
@@ -1351,7 +1410,8 @@ uniform float vnccsLightingEnabled;`,
                     lodMesh.dispose?.();
                     return;
                 }
-                const localBounds = computeRobustSplatBounds(lodMesh).applyMatrix4(lodMesh.matrix);
+                const splatBounds = computeRobustSplatBounds(lodMesh);
+                const localBounds = splatBounds.clone().applyMatrix4(lodMesh.matrix);
                 if (!hasFiniteBounds(localBounds)) {
                     throw new Error("quality LOD produced no finite interaction bounds");
                 }
@@ -1359,6 +1419,10 @@ uniform float vnccsLightingEnabled;`,
                 objectRoot.add(lodMesh);
                 entry.splat = lodMesh;
                 entry.localBounds = localBounds;
+                entry.splatBounds = splatBounds;
+                lodMesh.objectModifier = entry.lightingModifier?.modifier;
+                lodMesh.updateGenerator();
+                this._syncDirectionalLighting(entry, { regenerate: false });
                 baseMesh.dispose?.();
                 if (this.selectedId === item.object_id) this._refreshSelectionBounds();
                 this.spark.setDirty?.();
@@ -1391,7 +1455,10 @@ uniform float vnccsLightingEnabled;`,
             entry.splat.name = value.name || objectId;
         }
         if ("visible" in value) entry.mesh.visible = value.visible !== false;
-        if (value.transform) this._applyTransform(entry.mesh, value.transform);
+        if (value.transform) {
+            this._applyTransform(entry.mesh, value.transform);
+            this._syncDirectionalLighting(entry);
+        }
         if (objectId === this.selectedId || this.selectedGroupObjectIds.includes(objectId)) {
             this._refreshSelectionBounds();
         }
@@ -1602,7 +1669,6 @@ uniform float vnccsLightingEnabled;`,
             this.captureCamera.far = this.camera.far;
             this.captureCamera.updateProjectionMatrix();
             this.captureCamera.updateMatrixWorld(true);
-            this._updateLightingUniforms(this.captureCamera);
 
             // Render into an exact, device-pixel-ratio-independent drawing
             // buffer. The node output no longer inherits the widget's DOM size.
@@ -1626,7 +1692,6 @@ uniform float vnccsLightingEnabled;`,
             // have been zoomed or the node resized while the exact-size render
             // was being encoded.
             this.resize();
-            this._updateLightingUniforms(this.camera);
             this.renderer.render(this.scene, this.camera);
         }
         return await new Promise((resolve, reject) => {
@@ -1684,6 +1749,7 @@ uniform float vnccsLightingEnabled;`,
             entry.mesh.quaternion.identity();
             entry.mesh.scale.setScalar(1);
             entry.mesh.updateMatrixWorld(true);
+            this._syncDirectionalLighting(entry);
 
             const previewCamera = canonicalObjectPreviewCamera(
                 entry.localBounds,
@@ -1730,6 +1796,7 @@ uniform float vnccsLightingEnabled;`,
                     value.mesh.visible = state.rootVisible;
                     value.splat.visible = state.splatVisible;
                     value.mesh.updateMatrixWorld(true);
+                    this._syncDirectionalLighting(value);
                 }
                 this.camera.position.copy(cameraState.position);
                 this.camera.quaternion.copy(cameraState.quaternion);

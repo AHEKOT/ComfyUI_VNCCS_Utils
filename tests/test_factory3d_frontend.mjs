@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.10"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260725\.16"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -102,13 +102,11 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
         studio,
         /lightingClose: \$\("\.vnccs-i3s__lighting-panel \.vnccs-i3s__lighting-close"\)/,
     );
-    assert.match(viewer, /_installLightingShader/);
-    assert.match(viewer, /vnccsLightDirectionView/);
-    assert.match(viewer, /vnccsLightingEnabled/);
-    assert.match(viewer, /vnccsLightBaseGain/);
-    assert.match(viewer, /vnccsLightDirectionalScale/);
-    assert.match(viewer, /this\.lighting\.preset === "off" \? 0 : 1/);
-    assert.match(viewer, /if \(vnccsLightingEnabled > 0\.5\)/);
+    assert.match(viewer, /createDirectionalLightingModifier/);
+    assert.match(viewer, /modifier: lighting/);
+    assert.match(viewer, /entry\.splat\.objectModifier = lightingModifier\.modifier/);
+    assert.match(viewer, /entry\.splatBounds\.getCenter\(this\._lightingCenterScratch\)/);
+    assert.match(viewer, /entry\.splatBounds\.getSize\(this\._lightingSizeScratch\)/);
     assert.match(
         viewer,
         /this\._lightColor\.r \* this\.lighting\.intensity \* LIGHTING_BASE_RESPONSE/,
@@ -117,17 +115,37 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
         viewer,
         /this\._lightColor\.r \* this\.lighting\.intensity,/,
     );
-    assert.match(viewer, /vnccsLightResponse = 0\.5 \+ 0\.3 \* abs/);
+    assert.match(
+        viewer,
+        /\$\{outputs\.gsplat\}\.center - \$\{inputs\.objectCenter\}[\s\S]*?\* \$\{inputs\.inverseHalfSize\}/,
+    );
+    assert.match(viewer, /vnccsObjectOffset \* inversesqrt/);
+    assert.match(
+        viewer,
+        /dot\([\s\S]*?vnccsObjectOffset \* inversesqrt[\s\S]*?\$\{inputs\.lightSource\}/,
+    );
+    assert.match(viewer, /0\.56 \+ 0\.56 \* vnccsSourceFacing/);
+    assert.match(viewer, /0\.12 \+ 0\.88 \* vnccsShapedLight/);
     assert.match(viewer, /\(vnccsLightResponse - 0\.65\)/);
     assert.doesNotMatch(viewer, /lightingEnvelope|_lightTint|backgroundGain/);
-    assert.match(viewer, /vnccsViewNormal = RS\[/);
-    assert.doesNotMatch(viewer, /vnccsNormalWeights|vnccsAxisResponse|vnccsInverseScale/);
-    const animationLoop = viewer.match(/_animate\(\) \{[\s\S]*?\n    \}\n\n    _installLightingShader/);
+    assert.doesNotMatch(
+        viewer,
+        /vnccsViewNormal|vnccsNormalConfidence|vnccsLambert|vnccsNormalWeights|vnccsAxisResponse/,
+    );
+    assert.doesNotMatch(
+        viewer,
+        /vnccsLightField|_updateLightingBounds|_installLightingShader|material\.vertexShader/,
+    );
+    const animationLoop = viewer.match(
+        /_animate\(\) \{[\s\S]*?\n    \}\n\n    _attachDirectionalLighting/,
+    );
     assert.ok(animationLoop, "viewer animation loop not found");
-    assert.doesNotMatch(animationLoop[0], /_updateLightingUniforms/);
-    assert.match(viewer, /this\._updateLightingUniforms\(this\.camera\);[\s\S]*?_emitState/);
+    assert.doesNotMatch(
+        animationLoop[0],
+        /this\._syncDirectionalLighting|_updateLightingUniforms/,
+    );
     assert.match(viewer, /setLighting\(value = \{\}\)/);
-    assert.match(viewer, /this\._updateLightingUniforms\(this\.captureCamera\)/);
+    assert.match(viewer, /for \(const entry of this\.objects\.values\(\)\)/);
     assert.match(styles, /\.vnccs-i3s__lighting-panel/);
 });
 
@@ -504,17 +522,47 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
         `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?test=${Date.now()}`
     );
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const SPARK = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "spark.module.js")).href);
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
     assert.equal(typeof module.canonicalObjectPreviewCamera, "function");
+    assert.equal(typeof module.createDirectionalLightingModifier, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
+    assert.equal(typeof module.lightSourceDirection, "function");
     assert.equal(typeof module.normalizedLighting, "function");
     assert.equal(typeof module.normalizedSkydome, "function");
     assert.equal(typeof module.triposplatCanonicalMatrix, "function");
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.6");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.12");
+    const modifierState = module.createDirectionalLightingModifier();
+    assert.equal(typeof modifierState.modifier.apply, "function");
+    assert.deepEqual(modifierState.objectCenter.value.toArray(), [0, 0, 0]);
+    assert.deepEqual(modifierState.inverseHalfSize.value.toArray(), [1, 1, 1]);
+    assert.deepEqual(modifierState.lightSource.value.toArray(), [0, 1, 0]);
+    const modifierSplats = new SPARK.PackedSplats();
+    modifierSplats.pushSplat(
+        new THREE.Vector3(),
+        new THREE.Vector3(1, 1, 1),
+        new THREE.Quaternion(),
+        1,
+        new THREE.Color(),
+    );
+    const modifierMesh = new SPARK.SplatMesh({ packedSplats: modifierSplats });
+    modifierMesh.objectModifier = modifierState.modifier;
+    modifierMesh.constructGenerator(modifierMesh.context);
+    const modifierProgram = modifierSplats.prepareProgramMaterial(modifierMesh.generator);
+    assert.match(modifierProgram.program.shader, /vnccsSourceFacing/);
+    modifierMesh.dispose();
+    const backSource = module.lightSourceDirection(0, 0);
+    const rightSource = module.lightSourceDirection(90, 0);
+    const frontSource = module.lightSourceDirection(180, 0);
+    const highSource = module.lightSourceDirection(0, 90);
+    assert.ok(backSource.distanceTo(new THREE.Vector3(0, 0, -1)) < 1e-6);
+    assert.ok(rightSource.distanceTo(new THREE.Vector3(1, 0, 0)) < 1e-6);
+    assert.ok(frontSource.distanceTo(new THREE.Vector3(0, 0, 1)) < 1e-6);
+    assert.ok(highSource.distanceTo(new THREE.Vector3(0, 1, 0)) < 1e-6);
     assert.deepEqual(
         module.normalizedLighting({
             preset: "night",
