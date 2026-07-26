@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260725.15";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260726.18";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -19,8 +19,10 @@ const ENDPOINTS = Object.freeze({
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
     skydome: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/skydome`,
     preview: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview`,
+    captureSet: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/capture-set`,
     previewError: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview/error`,
     generate: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/generate`,
+    importObject: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/import`,
     exportScene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/export`,
     job: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
     cancelJob: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/cancel`,
@@ -37,9 +39,10 @@ const ENDPOINTS = Object.freeze({
     libraryRepositoryProgress: taskId => `${LIBRARY_BASE}/repositories/progress/${encodeURIComponent(taskId)}`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 9;
-const FRONTEND_BUILD = "20260725.20";
+const STATE_VERSION = 10;
+const FRONTEND_BUILD = "20260726.4";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
+const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
@@ -162,6 +165,8 @@ const ICONS = Object.freeze({
     ungroup: `<svg viewBox="0 0 24 24"><rect x="3" y="5" width="8" height="8" rx="1"/><rect x="13" y="11" width="8" height="8" rx="1"/><path d="M8 16H5v-3m11-5h3v3"/></svg>`,
     chevron: `<svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>`,
     dice: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" class="fill"/><circle cx="15.5" cy="8.5" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="8.5" cy="15.5" r="1.4" class="fill"/><circle cx="15.5" cy="15.5" r="1.4" class="fill"/></svg>`,
+    camera: `<svg viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h7.2l1.4 2h3v11H4v-11Z"/><circle cx="12" cy="13" r="3.5"/></svg>`,
+    cameraAdd: `<svg viewBox="0 0 24 24"><path d="M3 8h3l1.5-2h7L16 8h2v4"/><path d="M12 19H3V8m16 7v6m-3-3h6"/><circle cx="10" cy="13" r="3"/></svg>`,
 });
 
 
@@ -170,7 +175,7 @@ function installStyles() {
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260725.7", import.meta.url).href;
+    link.href = new URL("./vnccs_3d_factory.css?v=20260726.2", import.meta.url).href;
     document.head.appendChild(link);
 }
 
@@ -246,6 +251,7 @@ function numericArraysEqual(left, right, epsilon = 1e-6) {
 function cameraStatesEqual(left = {}, right = {}) {
     return numericArraysEqual(left.position, right.position)
         && numericArraysEqual(left.target, right.target)
+        && numericArraysEqual(left.up || [0, 1, 0], right.up || [0, 1, 0])
         && Math.abs(Number(left.fov || 0) - Number(right.fov || 0)) <= 1e-6;
 }
 
@@ -327,6 +333,10 @@ class Factory3DWidget {
         this.selectedObjectIds = new Set();
         this.selectedGroupId = "";
         this.selectedSkydome = false;
+        this.selectedCameraId = "";
+        this._cameraReturnState = null;
+        this._cameraSelectionTransition = false;
+        this._cameraPadPointer = null;
         this.collapsedGroupIds = new Set();
         this.dragLayer = null;
         this.viewportFailures = new Map();
@@ -337,6 +347,7 @@ class Factory3DWidget {
         this.capabilities = null;
         this.currentJobId = "";
         this.currentJobToken = 0;
+        this.importingPly = false;
         this._listeners = [];
         this._timers = new Set();
         this._saveTimer = 0;
@@ -394,6 +405,7 @@ class Factory3DWidget {
                     cameraChanged
                     && !this._isRestoring
                     && !this._suppressViewerStatePersistence
+                    && !this.selectedCameraId
                     && this.scene
                 ) {
                     this.scene.camera = { ...state.camera };
@@ -410,6 +422,7 @@ class Factory3DWidget {
         this._resizeObserver.observe(this.container);
         this._navigationCleanup = enableCanvasNavigationForwarding(this.container);
         this._renderObjects();
+        this._renderCameras();
         this._syncSettings();
         this._syncExportSettings();
         this._syncLighting();
@@ -492,6 +505,37 @@ class Factory3DWidget {
                             </span>
                         </label>
                         <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__generate" type="button">${ICONS.play}<span>Generate object</span></button>
+                    </div>
+                </section>
+                <section class="vnccs-i3s__section vnccs-i3s__camera-section">
+                    <div class="vnccs-i3s__section-head">
+                        <span>Camera</span>
+                        <span class="vnccs-i3s__camera-count">0</span>
+                    </div>
+                    <div class="vnccs-i3s__section-body">
+                        <div class="vnccs-i3s__camera-look" role="slider" tabindex="0"
+                            aria-label="First-person camera look control"
+                            aria-valuetext="Drag to look left, right, up or down">
+                            <span class="vnccs-i3s__camera-look-axis vnccs-i3s__camera-look-axis--x"></span>
+                            <span class="vnccs-i3s__camera-look-axis vnccs-i3s__camera-look-axis--y"></span>
+                            <span class="vnccs-i3s__camera-look-arrow vnccs-i3s__camera-look-arrow--up">⌃</span>
+                            <span class="vnccs-i3s__camera-look-arrow vnccs-i3s__camera-look-arrow--right">›</span>
+                            <span class="vnccs-i3s__camera-look-arrow vnccs-i3s__camera-look-arrow--down">⌄</span>
+                            <span class="vnccs-i3s__camera-look-arrow vnccs-i3s__camera-look-arrow--left">‹</span>
+                            <span class="vnccs-i3s__camera-look-reticle" aria-hidden="true"></span>
+                        </div>
+                        <div class="vnccs-i3s__camera-help">Drag to look</div>
+                        <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__camera-add" type="button">
+                            ${ICONS.cameraAdd}<span>Add camera</span>
+                        </button>
+                        <div class="vnccs-i3s__camera-manager" aria-label="Saved cameras">
+                            <div class="vnccs-i3s__camera-group-head">
+                                <span>${ICONS.camera}</span>
+                                <strong>Cameras</strong>
+                                <span class="vnccs-i3s__camera-group-count">0</span>
+                            </div>
+                            <div class="vnccs-i3s__camera-list"></div>
+                        </div>
                     </div>
                 </section>
                 <a class="vnccs-i3s__donate-link" href="https://www.buymeacoffee.com/MIUProject" target="_blank" rel="noopener noreferrer" title="Support MIUProject">
@@ -643,6 +687,10 @@ class Factory3DWidget {
                     <button class="vnccs-ps-btn primary vnccs-i3s__library-open" type="button">
                         <span class="vnccs-ps-btn-icon">📚</span> Model Library
                     </button>
+                    <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import a Gaussian PLY into the active scene">
+                        ${ICONS.upload}<span>Import PLY</span>
+                    </button>
+                    <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" accept=".ply,application/octet-stream" tabindex="-1" />
                 </div>
                 <section class="vnccs-i3s__section vnccs-i3s__object-section">
                     <div class="vnccs-i3s__section-head"><span>Scene objects</span><span class="vnccs-i3s__object-count">0</span></div>
@@ -726,11 +774,19 @@ class Factory3DWidget {
             seed: $(".vnccs-i3s__seed"),
             seedDice: $(".vnccs-i3s__seed-dice"),
             generate: $(".vnccs-i3s__generate"),
+            cameraLook: $(".vnccs-i3s__camera-look"),
+            cameraReticle: $(".vnccs-i3s__camera-look-reticle"),
+            cameraAdd: $(".vnccs-i3s__camera-add"),
+            cameraCount: $(".vnccs-i3s__camera-count"),
+            cameraGroupCount: $(".vnccs-i3s__camera-group-count"),
+            cameraList: $(".vnccs-i3s__camera-list"),
             donateLink: $(".vnccs-i3s__donate-link"),
             sceneName: $(".vnccs-i3s__scene-name-input"),
             sceneId: $(".vnccs-i3s__project-id"),
             sceneManager: $(".vnccs-i3s__scene-manager"),
             libraryOpen: $(".vnccs-i3s__library-open"),
+            plyImport: $(".vnccs-i3s__ply-import"),
+            plyInput: $(".vnccs-i3s__ply-input"),
             status: $(".vnccs-i3s__status-pill"),
             viewerHost: $(".vnccs-i3s__viewer-host"),
             fit: $(".vnccs-i3s__fit"),
@@ -871,7 +927,21 @@ class Factory3DWidget {
         this._listen(this.els.donateLink, "click", event => event.stopPropagation());
         this._listen(this.els.modelSetup, "click", () => this.openModelSetup());
         this._listen(this.els.generate, "click", () => void this.generate());
+        this._bindCameraControls();
+        this._listen(this.els.cameraAdd, "click", () => void this.addCamera());
         this._listen(this.els.libraryOpen, "click", () => void this.openLibrary());
+        this._listen(this.els.plyImport, "click", () => {
+            if (this.currentJobId || this.importingPly) {
+                this.toast("Wait for the active Factory job to finish.", "error");
+                return;
+            }
+            this.els.plyInput.click();
+        });
+        this._listen(this.els.plyInput, "change", () => {
+            const file = this.els.plyInput.files?.[0];
+            this.els.plyInput.value = "";
+            if (file) void this.importPly(file);
+        });
         this._listen(this.els.sceneManager, "click", () => void this.openSceneManager());
         this._listen(this.els.sceneName, "change", () => {
             if (!this.scene) return;
@@ -1058,6 +1128,247 @@ class Factory3DWidget {
             this._moveLayer(this.dragLayer, null, "end");
         });
         this._listen(this.els.sceneExport, "click", () => void this.exportScene());
+    }
+
+    _normalizeCameraState(value = {}, fallback = {}) {
+        const source = safeObject(value);
+        const previous = safeObject(fallback);
+        const vector = (key, defaultValue) => {
+            const raw = Array.isArray(source[key]) ? source[key] : previous[key];
+            return Array.isArray(raw) && raw.length === 3 && raw.every(item => Number.isFinite(Number(item)))
+                ? raw.map(Number)
+                : [...defaultValue];
+        };
+        return {
+            position: vector("position", [2.8, 2.1, 4.2]),
+            target: vector("target", [0, 0, 0]),
+            up: vector("up", [0, 1, 0]),
+            fov: clamp(source.fov ?? previous.fov ?? 42, 5, 120),
+        };
+    }
+
+    _normalizeSceneCameras(value) {
+        const output = [];
+        const seen = new Set();
+        for (const [index, raw] of (Array.isArray(value) ? value : []).slice(0, 32).entries()) {
+            const camera = safeObject(raw);
+            const cameraId = String(camera.camera_id || "");
+            if (!/^[a-f0-9]{32}$/.test(cameraId) || seen.has(cameraId)) continue;
+            seen.add(cameraId);
+            output.push({
+                camera_id: cameraId,
+                name: String(camera.name || `Camera ${index + 1}`).slice(0, 80),
+                created_at: Number.isFinite(Number(camera.created_at))
+                    ? Number(camera.created_at)
+                    : 0,
+                ...this._normalizeCameraState(camera),
+            });
+        }
+        return output;
+    }
+
+    _bindCameraControls() {
+        const rotate = delta => {
+            this.viewer?.rotateCameraFPV?.(delta);
+            if (this.selectedCameraId && this.scene) {
+                const camera = this.scene.cameras?.find(
+                    item => item.camera_id === this.selectedCameraId,
+                );
+                if (camera) {
+                    Object.assign(camera, this.viewer.getCameraState());
+                    this._scheduleSceneSave(140);
+                    this._scheduleStateSave(140);
+                }
+            }
+        };
+        const resetPad = () => {
+            this._cameraPadPointer = null;
+            this.els.cameraLook.classList.remove("is-active");
+            this.els.cameraReticle.style.transform = "";
+        };
+        this._listen(this.els.cameraLook, "pointerdown", event => {
+            if (event.button !== 0) return;
+            event.preventDefault();
+            this.els.cameraLook.setPointerCapture?.(event.pointerId);
+            this._cameraPadPointer = {
+                id: event.pointerId,
+                x: event.clientX,
+                y: event.clientY,
+                offsetX: 0,
+                offsetY: 0,
+            };
+            this.els.cameraLook.classList.add("is-active");
+        });
+        this._listen(this.els.cameraLook, "pointermove", event => {
+            const pointer = this._cameraPadPointer;
+            if (!pointer || pointer.id !== event.pointerId) return;
+            event.preventDefault();
+            const deltaX = event.clientX - pointer.x;
+            const deltaY = event.clientY - pointer.y;
+            pointer.x = event.clientX;
+            pointer.y = event.clientY;
+            pointer.offsetX = clamp(pointer.offsetX + deltaX, -34, 34);
+            pointer.offsetY = clamp(pointer.offsetY + deltaY, -34, 34);
+            this.els.cameraReticle.style.transform = (
+                `translate(${pointer.offsetX}px, ${pointer.offsetY}px)`
+            );
+            rotate({ yaw: -deltaX * 0.18, pitch: -deltaY * 0.18 });
+        });
+        for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) {
+            this._listen(this.els.cameraLook, type, resetPad);
+        }
+        this._listen(this.els.cameraLook, "keydown", event => {
+            const delta = {
+                ArrowLeft: { yaw: 2 },
+                ArrowRight: { yaw: -2 },
+                ArrowUp: { pitch: 2 },
+                ArrowDown: { pitch: -2 },
+            }[event.key];
+            if (!delta) return;
+            event.preventDefault();
+            rotate(delta);
+        });
+    }
+
+    async addCamera() {
+        if (!this.sceneId) await this.ensureScene();
+        if (!this.scene) return;
+        this.scene.cameras = this._normalizeSceneCameras(this.scene.cameras);
+        if (this.scene.cameras.length >= 32) {
+            this.toast("A scene can contain up to 32 cameras.", "error");
+            return;
+        }
+        const camera = {
+            camera_id: randomLayerId(),
+            name: `Camera ${this.scene.cameras.length + 1}`,
+            created_at: Date.now() / 1000,
+            ...this._normalizeCameraState(this.viewer.getCameraState()),
+        };
+        this.scene.cameras.push(camera);
+        this._renderCameras();
+        this._updateSceneSummary();
+        await this._saveSceneNow();
+        this.toast(`${camera.name} added.`, "success");
+    }
+
+    _selectCamera(cameraId) {
+        const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
+        if (!camera) return;
+        if (this.selectedCameraId === cameraId) {
+            this._exitCameraView({ restore: true });
+            return;
+        }
+        if (!this.selectedCameraId) {
+            this._cameraReturnState = this._normalizeCameraState(
+                this.viewer.getCameraState(),
+                this.scene?.camera,
+            );
+        }
+        this._cameraSelectionTransition = true;
+        try {
+            this.selectedObjectId = "";
+            this.selectedObjectIds.clear();
+            this.selectedGroupId = "";
+            this.selectedSkydome = false;
+            this.viewer.select("");
+            this.selectedCameraId = cameraId;
+            this.viewer.setCameraState(camera, { emit: false });
+        } finally {
+            this._cameraSelectionTransition = false;
+        }
+        this._syncSelectionPresentation();
+        this._renderCameras();
+        this._scheduleStateSave();
+    }
+
+    _exitCameraView({ restore = true } = {}) {
+        if (!this.selectedCameraId && !this._cameraReturnState) return;
+        const returnState = this._cameraReturnState;
+        this._cameraSelectionTransition = true;
+        try {
+            this.selectedCameraId = "";
+            this._cameraReturnState = null;
+            if (restore && returnState) {
+                this.viewer.setCameraState(returnState, { emit: false });
+                this.viewerState = {
+                    ...this.viewerState,
+                    camera: this._normalizeCameraState(returnState),
+                };
+            }
+        } finally {
+            this._cameraSelectionTransition = false;
+        }
+        this._renderCameras();
+        this._scheduleStateSave();
+    }
+
+    async _deleteCamera(cameraId) {
+        if (!this.scene) return;
+        const camera = this.scene.cameras?.find(item => item.camera_id === cameraId);
+        if (!camera) return;
+        if (this.selectedCameraId === cameraId) this._exitCameraView({ restore: true });
+        this.scene.cameras = this.scene.cameras.filter(
+            item => item.camera_id !== cameraId,
+        );
+        this._renderCameras();
+        this._updateSceneSummary();
+        await this._saveSceneNow();
+        this.toast(`${camera.name} removed.`, "success");
+    }
+
+    _renderCameras() {
+        const cameras = this._normalizeSceneCameras(this.scene?.cameras);
+        if (this.scene) this.scene.cameras = cameras;
+        this.els.cameraCount.textContent = String(cameras.length);
+        this.els.cameraGroupCount.textContent = String(cameras.length);
+        this.els.cameraAdd.disabled = !this.scene || cameras.length >= 32;
+        this.els.cameraList.replaceChildren();
+        if (!cameras.length) {
+            this.els.cameraList.appendChild(
+                element("div", "vnccs-i3s__camera-empty", "No saved cameras"),
+            );
+            return;
+        }
+        const fragment = document.createDocumentFragment();
+        for (const [index, camera] of cameras.entries()) {
+            const card = element(
+                "div",
+                `vnccs-i3s__camera-item${
+                    camera.camera_id === this.selectedCameraId ? " is-selected" : ""
+                }`,
+            );
+            card.dataset.cameraId = camera.camera_id;
+            card.tabIndex = 0;
+            card.setAttribute("role", "button");
+            card.setAttribute("aria-pressed", String(camera.camera_id === this.selectedCameraId));
+            card.innerHTML = `
+                <span class="vnccs-i3s__camera-index">${index + 1}</span>
+                <span class="vnccs-i3s__camera-item-icon">${ICONS.camera}</span>
+                <span class="vnccs-i3s__camera-item-name"></span>
+                <button class="vnccs-i3s__camera-delete" type="button"
+                    title="Delete camera" aria-label="Delete camera">${ICONS.trash}</button>
+            `;
+            card.querySelector(".vnccs-i3s__camera-item-name").textContent = camera.name;
+            card.querySelector(".vnccs-i3s__camera-delete").setAttribute(
+                "aria-label",
+                `Delete ${camera.name}`,
+            );
+            this._listen(card, "click", event => {
+                if (event.target.closest(".vnccs-i3s__camera-delete")) return;
+                this._selectCamera(camera.camera_id);
+            });
+            this._listen(card, "keydown", event => {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                event.preventDefault();
+                this._selectCamera(camera.camera_id);
+            });
+            this._listen(card.querySelector(".vnccs-i3s__camera-delete"), "click", event => {
+                event.stopPropagation();
+                void this._deleteCamera(camera.camera_id);
+            });
+            fragment.appendChild(card);
+        }
+        this.els.cameraList.appendChild(fragment);
     }
 
     _normalizeLighting(value = {}) {
@@ -1615,9 +1926,13 @@ class Factory3DWidget {
         const desiredGroupId = this.selectedGroupId;
         const desiredObjectIds = new Set(this.selectedObjectIds);
         const desiredSkydome = incremental && this.selectedSkydome;
+        const desiredCameraId = incremental ? this.selectedCameraId : "";
+        this.selectedCameraId = "";
+        this._cameraReturnState = null;
         if (this.selectedObjectId) desiredObjectIds.add(this.selectedObjectId);
         this.scene = scene;
         this.sceneId = scene.scene_id;
+        this.scene.cameras = this._normalizeSceneCameras(scene.cameras);
         if (this.scene.skydome) {
             this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
         }
@@ -1704,7 +2019,11 @@ class Factory3DWidget {
                 additive: this.selectedObjectIds.size > 1,
             });
         }
+        if (this.scene.cameras.some(camera => camera.camera_id === desiredCameraId)) {
+            this._selectCamera(desiredCameraId);
+        }
         this._renderObjects();
+        this._renderCameras();
         this._scheduleStateSave();
         this.syncToNode();
         const loaded = Number(viewportResult.loaded) || 0;
@@ -1895,6 +2214,7 @@ class Factory3DWidget {
     _updateSceneSummary() {
         const objects = this.scene?.objects || [];
         const skydome = this.scene?.skydome || null;
+        const cameraCount = this.scene?.cameras?.length || 0;
         const visibleIds = this._effectiveVisibleObjectIds();
         this.container.classList.toggle("has-scene", Boolean(objects.length || skydome));
         this.els.objectCount.textContent = String(objects.length + (skydome ? 1 : 0));
@@ -1904,11 +2224,14 @@ class Factory3DWidget {
                 0,
             ).toLocaleString()} Gaussians`
             : "No Gaussian models";
-        this.els.sceneSummary.textContent = skydome
+        const contentSummary = skydome
             ? `${gaussianSummary} · Skydome ${skydome.visible === false ? "hidden" : "visible"}`
             : objects.length
                 ? gaussianSummary
                 : "No objects in this scene.";
+        this.els.sceneSummary.textContent = cameraCount
+            ? `${contentSummary} · ${cameraCount} camera${cameraCount === 1 ? "" : "s"}`
+            : contentSummary;
     }
 
     _hasRenderableScene() {
@@ -1919,6 +2242,9 @@ class Factory3DWidget {
     }
 
     _selectSkydome() {
+        if (this.selectedCameraId && !this._cameraSelectionTransition) {
+            this._exitCameraView({ restore: true });
+        }
         if (!this.scene?.skydome) {
             this.selectedSkydome = false;
             return;
@@ -1933,6 +2259,9 @@ class Factory3DWidget {
     }
 
     _selectObject(objectId, { fromViewer = false, additive = false } = {}) {
+        if (this.selectedCameraId && !this._cameraSelectionTransition) {
+            this._exitCameraView({ restore: true });
+        }
         const valid = this.scene?.objects?.some(item => item.object_id === objectId)
             ? objectId
             : "";
@@ -1953,6 +2282,9 @@ class Factory3DWidget {
     }
 
     _selectGroup(groupId) {
+        if (this.selectedCameraId && !this._cameraSelectionTransition) {
+            this._exitCameraView({ restore: true });
+        }
         const group = this._groupById(groupId);
         this.selectedSkydome = false;
         this.selectedGroupId = group?.group_id || "";
@@ -2208,6 +2540,8 @@ class Factory3DWidget {
             item.settings?.effective_conditioning_resolution
             || item.settings?.conditioning_resolution,
         );
+        const importedPly = item.source?.type === "ply_import"
+            || item.settings?.source === "ply_import";
         copy.append(
             name,
             element(
@@ -2216,8 +2550,9 @@ class Factory3DWidget {
                 [
                     viewportFailure ? "Viewport failed" : "",
                     `${Number(item.gaussians || 0).toLocaleString()} splats`,
+                    importedPly ? "Imported PLY" : "",
                     conditioning ? `${conditioning}² input` : "",
-                    `seed ${item.seed}`,
+                    !importedPly && item.seed !== undefined ? `seed ${item.seed}` : "",
                 ].filter(Boolean).join(" · "),
             ),
         );
@@ -2679,7 +3014,9 @@ class Factory3DWidget {
     }
 
     _scenePayload() {
-        const camera = this.viewer?.getState?.().camera || this.viewerState.camera;
+        const camera = this.selectedCameraId
+            ? this.scene?.camera
+            : this.viewer?.getCameraState?.() || this.viewerState.camera;
         return {
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
@@ -2696,6 +3033,12 @@ class Factory3DWidget {
                 }
                 : undefined,
             camera: camera ? { ...camera } : undefined,
+            cameras: this._normalizeSceneCameras(this.scene?.cameras).map(saved => ({
+                ...saved,
+                position: [...saved.position],
+                target: [...saved.target],
+                up: [...saved.up],
+            })),
             objects: (this.scene?.objects || []).map(item => ({
                 object_id: item.object_id,
                 name: item.name,
@@ -2737,6 +3080,9 @@ class Factory3DWidget {
                 this.scene.exports = updated.exports;
                 this.scene.render = updated.render || this.scene.render;
                 this.scene.camera = updated.camera || this.scene.camera;
+                this.scene.cameras = this._normalizeSceneCameras(
+                    updated.cameras || this.scene.cameras,
+                );
                 this.scene.lighting = updated.lighting || this.scene.lighting;
                 this.scene.skydome = updated.skydome || this.scene.skydome;
             }
@@ -2842,6 +3188,54 @@ class Factory3DWidget {
         }
     }
 
+    async _saveExecutionCaptureSet(captureToken) {
+        clearTimeout(this._previewSaveTimer);
+        this._previewSaveTimer = 0;
+        const sceneId = this.sceneId;
+        const operation = this._previewSaveSerial.then(async () => {
+            if (this.destroyed || !sceneId || this.sceneId !== sceneId) return null;
+            const savedScene = await this._saveSceneNow({ showError: false });
+            if (this.destroyed || this.sceneId !== sceneId) return null;
+            const cameras = this._normalizeSceneCameras(savedScene.cameras);
+            const dimensions = {
+                width: Number(savedScene.render?.width) || this.exportSettings.width,
+                height: Number(savedScene.render?.height) || this.exportSettings.height,
+            };
+            const current = await this.viewer.capturePreview({
+                ...dimensions,
+                cameraState: this.viewer.getCameraState(),
+            });
+            if (!current) throw new Error("The current 3D view could not be captured.");
+            const form = new FormData();
+            form.append("current", current, "current.png");
+            form.append(
+                "camera_ids",
+                JSON.stringify(cameras.map(camera => camera.camera_id)),
+            );
+            for (const camera of cameras) {
+                const blob = await this.viewer.capturePreview({
+                    ...dimensions,
+                    cameraState: camera,
+                });
+                if (!blob) throw new Error(`${camera.name} could not be captured.`);
+                form.append(`camera_${camera.camera_id}`, blob, `${camera.camera_id}.png`);
+            }
+            form.append("revision", String(savedScene.revision));
+            form.append("render_revision", String(savedScene.render_revision));
+            form.append("capture_token", captureToken);
+            const result = await this._fetchJSON(ENDPOINTS.captureSet(sceneId), {
+                method: "POST",
+                body: form,
+            });
+            if (this.sceneId === sceneId && this.scene && result.preview) {
+                this.scene.preview = result.preview;
+            }
+            return result;
+        });
+        this._previewSaveSerial = operation.catch(() => null);
+        return await operation;
+    }
+
     async _reportExecutionPreviewFailure(sceneId, captureToken, error) {
         if (!sceneId || !captureToken) return;
         try {
@@ -2872,9 +3266,6 @@ class Factory3DWidget {
                     `The widget has scene ${this.sceneId || "none"} open; execution requested ${sceneId}.`,
                 );
             }
-            if (!this._hasRenderableScene()) {
-                throw new Error("The requested scene has no visible renderable content.");
-            }
             console.info("[VNCCS 3D Factory][viewport] Execution preview requested", {
                 sceneId,
                 captureToken,
@@ -2882,13 +3273,14 @@ class Factory3DWidget {
                 renderRevision: detail.render_revision,
                 documentVisible: document.visibilityState,
             });
-            const preview = await this._saveScenePreviewNow({ captureToken });
-            if (!preview) throw new Error("The 3D viewport returned no execution preview.");
+            const captureSet = await this._saveExecutionCaptureSet(captureToken);
+            if (!captureSet) throw new Error("The 3D viewport returned no execution captures.");
             console.info("[VNCCS 3D Factory][viewport] Execution preview completed", {
                 sceneId,
                 captureToken,
-                width: preview.width,
-                height: preview.height,
+                cameraCount: captureSet.camera_count,
+                width: captureSet.preview?.width,
+                height: captureSet.preview?.height,
             });
         } catch (error) {
             console.error("[VNCCS 3D Factory] Execution preview failed", {
@@ -2939,6 +3331,55 @@ class Factory3DWidget {
             await this._monitorJob(job.job_id);
         } catch (error) {
             if (!error?.factoryErrorShown) this._showError("Generation failed", error);
+        }
+    }
+
+    async importPly(file) {
+        if (!file || this.currentJobId || this.importingPly) return;
+        if (!/\.ply$/i.test(String(file.name || ""))) {
+            this.toast("Choose a .ply Gaussian file.", "error");
+            return;
+        }
+        if (!file.size || file.size > MAX_PLY_BYTES) {
+            this.toast(`PLY files must be between 1 byte and ${formatBytes(MAX_PLY_BYTES)}.`, "error");
+            return;
+        }
+        this.importingPly = true;
+        this.els.plyImport.disabled = true;
+        this._setStatus("Importing PLY", "working");
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            const sceneId = this.sceneId;
+            const form = new FormData();
+            form.append("ply", file, file.name || "model.ply");
+            form.append("name", objectNameFromFileName(file.name));
+            const result = await this._fetchJSON(ENDPOINTS.importObject(sceneId), {
+                method: "POST",
+                body: form,
+            });
+            if (this.sceneId !== sceneId) {
+                this._setStatus("PLY imported", "success");
+                this.toast("PLY was added to the scene where the import started.", "success");
+                return;
+            }
+            await this._applyScene(result.scene, { preserveSource: true });
+            this._selectObject(result.object_id);
+            if (this.viewportFailures.has(result.object_id)) {
+                this._setStatus("Imported; preview failed", "error");
+                this.toast("PLY was added, but the viewport could not render it.", "error");
+                return;
+            }
+            this.viewer.fit(result.object_id);
+            this._scheduleScenePreview(120);
+            this._scheduleStateSave(0);
+            this._setStatus("PLY imported", "success");
+            this.toast("PLY added to the active scene.", "success");
+        } catch (error) {
+            this._setStatus("PLY import failed", "error");
+            this._showError("PLY could not be imported", error);
+        } finally {
+            this.importingPly = false;
+            if (this.els.plyImport.isConnected) this.els.plyImport.disabled = false;
         }
     }
 
@@ -4054,7 +4495,9 @@ class Factory3DWidget {
                 if (includePreview.checked) {
                     const blob = isObject
                         ? await this.viewer.captureObjectPreview(selectedObjectId, { width: 640, height: 640 })
-                        : await this.viewer.capturePreview({ width: 640, height: 640 });
+                        : isSkydome
+                            ? await this.viewer.captureSkydomePreview({ width: 640, height: 640 })
+                            : await this.viewer.capturePreview({ width: 640, height: 640 });
                     preview = blob ? await blobToDataURL(blob) : "";
                 }
                 const result = await this._fetchJSON(ENDPOINTS.libraryItems, {

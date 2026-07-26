@@ -93,6 +93,8 @@ class FactoryBackendTests(unittest.TestCase):
             },
         )
         self.assertEqual(scene["camera"]["fov"], 42.0)
+        self.assertEqual(scene["camera"]["up"], [0.0, 1.0, 0.0])
+        self.assertEqual(scene["cameras"], [])
         self.assertEqual(scene["lighting"]["preset"], "day")
         self.assertEqual(scene["lighting"]["color"], "#fff1d6")
         self.assertEqual(self.factory.list_scenes()[0]["name"], "First scene")
@@ -103,6 +105,34 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_saved_cameras_are_normalized_and_invalidate_capture_revision(self):
+        scene = self.factory.create_scene("Camera scene")
+        camera_id = "c" * 32
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "cameras": [{
+                    "camera_id": camera_id,
+                    "name": "Hero camera",
+                    "created_at": 10,
+                    "position": [4, 3, 2],
+                    "target": [0, 0, 0],
+                    "up": [0, 2, 0],
+                    "fov": 56,
+                }],
+            },
+        )
+        self.assertEqual(updated["revision"], 0)
+        self.assertEqual(updated["render_revision"], 1)
+        self.assertEqual(updated["cameras"][0]["camera_id"], camera_id)
+        self.assertEqual(updated["cameras"][0]["up"], [0.0, 1.0, 0.0])
+        self.assertEqual(self.factory.list_scenes()[0]["camera_count"], 1)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            self.factory.update_scene(
+                scene["scene_id"],
+                {"cameras": [updated["cameras"][0], updated["cameras"][0]]},
+            )
 
     def test_scenes_are_deleted_recursively_but_not_during_active_generation(self):
         scene = self.factory.create_scene("Delete me")
@@ -201,6 +231,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(capabilities["splat_cache"]["used_bytes"], 0)
         self.assertEqual(capabilities["scene_render"]["min_side"], 64)
         self.assertEqual(capabilities["scene_render"]["max_side"], 4096)
+        self.assertEqual(capabilities["scene_render"]["max_cameras"], 32)
         self.assertIn("16:9", capabilities["scene_render"]["aspect_presets"])
         settings = self.factory._generation_settings({"num_gaussians": "524288"})
         self.assertEqual(settings["num_gaussians"], 524288)
@@ -601,6 +632,115 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(group["group_id"], group_id)
         self.assertEqual(group["children"], [object_id, result["object_id"]])
 
+    def test_gaussian_ply_import_is_committed_to_scene_and_builds_viewport_asset(self):
+        scene = self.factory.create_scene("Imported models")
+        source_path = self.root / "ready-model.ply"
+        self._write_valid_ply(source_path, count=3)
+        source_info = self.gaussian.inspect_ply(source_path)
+        source_records = np.memmap(
+            source_path,
+            mode="r+",
+            dtype=source_info.dtype,
+            offset=source_info.data_offset,
+            shape=(source_info.vertex_count,),
+        )
+        source_records["x"] = 1.0
+        source_records["y"] = 2.0
+        source_records["z"] = 3.0
+        source_records.flush()
+        del source_records
+        source_bytes = source_path.read_bytes()
+
+        result = self.factory.import_ply_object(
+            scene["scene_id"],
+            io.BytesIO(source_bytes),
+            "..\\Ready Model.PLY",
+        )
+
+        restored = self.factory.load_scene(scene["scene_id"])
+        imported = self.factory._object_by_id(restored, result["object_id"])
+        self.assertEqual(imported["name"], "Ready Model")
+        self.assertEqual(imported["gaussians"], 3)
+        self.assertTrue(imported["visible"])
+        self.assertEqual(imported["source"]["type"], "ply_import")
+        self.assertEqual(imported["source"]["filename"], "Ready Model.PLY")
+        self.assertEqual(imported["source"]["size"], len(source_bytes))
+        self.assertEqual(imported["settings"]["source"], "ply_import")
+        self.assertEqual(
+            restored["layers"][-1],
+            {"type": "object", "object_id": result["object_id"]},
+        )
+        stored_ply = self.factory._object_file(scene["scene_id"], imported, "ply")
+        self.assertNotEqual(stored_ply.read_bytes(), source_bytes)
+        stored_info = self.gaussian.inspect_ply(stored_ply)
+        stored_records = np.memmap(
+            stored_ply,
+            mode="r",
+            dtype=stored_info.dtype,
+            offset=stored_info.data_offset,
+            shape=(stored_info.vertex_count,),
+        )
+        np.testing.assert_allclose(stored_records["x"], 3.0)
+        np.testing.assert_allclose(stored_records["y"], -2.0)
+        np.testing.assert_allclose(stored_records["z"], 1.0)
+        del stored_records
+        self.assertEqual(
+            imported["checksums"]["ply_sha256"],
+            self.factory._sha256_file(stored_ply),
+        )
+        thumbnail = self.factory._ensure_object_thumbnail(
+            scene["scene_id"],
+            imported,
+        )
+        self.assertTrue(thumbnail.is_file())
+        exported_ply = self.factory._ensure_object_ply_export(
+            scene["scene_id"],
+            imported["object_id"],
+        )
+        exported_info = self.gaussian.inspect_ply(exported_ply)
+        exported_records = np.memmap(
+            exported_ply,
+            mode="r",
+            dtype=exported_info.dtype,
+            offset=exported_info.data_offset,
+            shape=(exported_info.vertex_count,),
+        )
+        np.testing.assert_allclose(exported_records["x"], 1.0)
+        np.testing.assert_allclose(exported_records["y"], 2.0)
+        np.testing.assert_allclose(exported_records["z"], 3.0)
+        del exported_records
+        viewport = self.factory._ensure_object_splat(
+            scene["scene_id"],
+            imported["object_id"],
+        )
+        self.assertEqual(viewport.stat().st_size, 3 * 32)
+        public = self.factory._public_scene(restored)
+        public_item = self.factory._object_by_id(public, imported["object_id"])
+        self.assertIn("/asset/splat", public_item["urls"]["splat"])
+        self.assertIn("/asset/thumbnail", public_item["urls"]["thumbnail"])
+
+    def test_invalid_or_oversized_ply_import_does_not_add_partial_object(self):
+        scene = self.factory.create_scene("Reject imports")
+
+        with self.assertRaisesRegex(ValueError, "PLY header|not a PLY file"):
+            self.factory.import_ply_object(
+                scene["scene_id"],
+                io.BytesIO(b"not a PLY"),
+                "broken.ply",
+            )
+        self.assertEqual(self.factory.load_scene(scene["scene_id"])["objects"], [])
+
+        with mock.patch.object(self.factory, "MAX_PLY_UPLOAD_BYTES", 4):
+            with self.assertRaisesRegex(ValueError, "too large"):
+                self.factory.import_ply_object(
+                    scene["scene_id"],
+                    io.BytesIO(b"12345"),
+                    "oversized.ply",
+                )
+        self.assertEqual(self.factory.load_scene(scene["scene_id"])["objects"], [])
+        object_root = self.factory.resolve_scene_dir(scene["scene_id"]) / "objects"
+        self.assertEqual(list(object_root.iterdir()), [])
+
     def test_scene_layers_preserve_order_groups_visibility_and_render_revision(self):
         scene = self.factory.create_scene("Layered")
         object_ids = [self.factory._new_id() for _ in range(3)]
@@ -734,6 +874,20 @@ class FactoryBackendTests(unittest.TestCase):
             },
         }
         self.factory._save_scene(scene, bump_revision=False)
+        saved_camera_id = "f" * 32
+        self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "cameras": [{
+                    "camera_id": saved_camera_id,
+                    "name": "Camera 1",
+                    "position": [6, 5, 4],
+                    "target": [1, 0, 0],
+                    "up": [0, 1, 0],
+                    "fov": 50,
+                }],
+            },
+        )
 
         captured_metadata = {}
 
@@ -758,6 +912,9 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(captured_metadata["camera"]["position"], [2.8, 2.1, 4.2])
         self.assertEqual(captured_metadata["camera"]["target"], [0.0, 0.0, 0.0])
         self.assertEqual(captured_metadata["camera"]["fov"], 42.0)
+        self.assertEqual(captured_metadata["schema"], "vnccs-3d-factory-gaussian-scene/v2")
+        self.assertEqual(captured_metadata["cameras"][0]["camera_id"], saved_camera_id)
+        self.assertEqual(captured_metadata["cameras"][0]["position"], [6.0, 5.0, 4.0])
         self.assertEqual(captured_metadata["render"]["width"], 1024)
         saved = self.factory.load_scene(scene["scene_id"])
         self.assertEqual(saved["exports"]["format_version"], self.factory.EXPORT_FORMAT_VERSION)
@@ -964,6 +1121,77 @@ class FactoryBackendTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(FileNotFoundError, "stale"):
             self.factory._scene_preview_file(changed)
+
+    def test_execution_capture_set_is_atomic_ordered_and_scene_export_sized(self):
+        scene = self.factory.create_scene("Camera captures")
+        camera_ids = ["a" * 32, "b" * 32]
+        scene = self.factory.update_scene(
+            scene["scene_id"],
+            {
+                "render": {
+                    "width": 320,
+                    "height": 180,
+                    "aspect": "16:9",
+                    "show_camera_frame": False,
+                },
+                "cameras": [
+                    {
+                        "camera_id": camera_id,
+                        "name": f"Camera {index + 1}",
+                        "position": [index + 1, 2, 3],
+                        "target": [0, 0, 0],
+                        "up": [0, 1, 0],
+                        "fov": 42 + index,
+                    }
+                    for index, camera_id in enumerate(camera_ids)
+                ],
+            },
+        )
+
+        def png(color):
+            stream = io.BytesIO()
+            Image.new("RGB", (320, 180), color).save(stream, format="PNG")
+            return stream.getvalue()
+
+        token = "c" * 32
+        saved = self.factory.store_scene_capture_set(
+            scene["scene_id"],
+            png((10, 20, 30)),
+            {
+                camera_ids[0]: png((40, 50, 60)),
+                camera_ids[1]: png((70, 80, 90)),
+            },
+            camera_ids,
+            scene["revision"],
+            scene["render_revision"],
+            token,
+        )
+        paths = self.factory._scene_capture_files(saved, token)
+        self.assertEqual(len(paths), 3)
+        self.assertEqual(paths[0].name, "current.png")
+        self.assertEqual([path.stem for path in paths[1:]], camera_ids)
+        self.assertEqual(saved["preview_sync"]["camera_count"], 2)
+        self.assertNotIn("capture_set", self.factory._public_scene(saved))
+
+        changed = self.factory.update_scene(
+            scene["scene_id"],
+            {"cameras": [scene["cameras"][1]]},
+        )
+        with self.assertRaisesRegex(FileNotFoundError, "stale"):
+            self.factory._scene_capture_files(changed)
+
+        wrong = io.BytesIO()
+        Image.new("RGB", (321, 180), (1, 2, 3)).save(wrong, format="PNG")
+        with self.assertRaisesRegex(ValueError, "Scene Export"):
+            self.factory.store_scene_capture_set(
+                scene["scene_id"],
+                wrong.getvalue(),
+                {camera_ids[1]: png((1, 2, 3))},
+                [camera_ids[1]],
+                changed["revision"],
+                changed["render_revision"],
+                "d" * 32,
+            )
 
     def test_scene_render_dimensions_and_camera_invalidate_only_the_preview(self):
         scene = self.factory.create_scene("Camera")

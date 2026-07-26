@@ -103,8 +103,8 @@ test("per-character position and zoom are evaluated for playback and full captur
         "updateCharacterScene({ frame = null, poseIndex = this.activeTab, rebuildMissing = true } = {})",
         "\n    syncCharacterEditorControls()",
     );
-    assert.match(sceneMethod, /const activeTransform = this\.characterTransformForScene\(active, \{ frame \}\)/);
-    assert.match(sceneMethod, /const transform = this\.characterTransformForScene\(character, \{ frame \}\)/);
+    assert.match(sceneMethod, /const activeTransform = this\.characterTransformForScene\(active, \{ frame, poseIndex \}\)/);
+    assert.match(sceneMethod, /const transform = this\.characterTransformForScene\(character, \{ frame, poseIndex \}\)/);
     assert.match(sceneMethod, /this\.viewer\.setPassiveCharacterState\(character\.id,[\s\S]*transform,/);
 
     const persistMethod = methodSource(
@@ -115,6 +115,62 @@ test("per-character position and zoom are evaluated for playback and full captur
     assert.match(
         persistMethod,
         /this\.captureAnimationTransformEdits\(previousTransform, nextTransform\)/,
+    );
+});
+
+test("image pose tabs keep independent camera framing", () => {
+    const persistMethod = methodSource(
+        poseStudioSource,
+        "persistActivePoseCameraParams()",
+        "\n    currentCameraParams()",
+    );
+    assert.match(
+        persistMethod,
+        /pose\.cameraParams = \{ \.\.\.cameraParams \}/,
+    );
+    assert.match(persistMethod, /this\.poses\[this\.activeTab\] = pose/);
+
+    const switchMethod = methodSource(
+        poseStudioSource,
+        "switchTab(index)",
+        "\n    addTab(",
+    );
+    const saveCamera = switchMethod.indexOf(
+        "savedPose.cameraParams = this.currentCameraParams()",
+    );
+    const changeTab = switchMethod.indexOf("this.activeTab = index");
+    const restoreCamera = switchMethod.indexOf(
+        "this.restoreActivePoseCameraParams({ updateViewer: false })",
+    );
+    assert.ok(saveCamera >= 0 && saveCamera < changeTab);
+    assert.ok(restoreCamera > changeTab);
+
+    const transformMethod = methodSource(
+        poseStudioSource,
+        "characterTransformForScene(character, { frame = null, poseIndex = this.activeTab } = {})",
+        "\n    updateCharacterScene(",
+    );
+    assert.match(
+        transformMethod,
+        /this\.cameraParamsForPose\(\s*character\.poses\[poseIndex\]/,
+    );
+
+    const syncMethod = methodSource(
+        poseStudioSource,
+        "syncToNode(fullCapture = false, options = {})",
+        "\n    loadFromNode()",
+    );
+    assert.match(
+        syncMethod,
+        /syncPose\.cameraParams = this\.currentCameraParams\(\)/,
+    );
+    assert.match(
+        syncMethod,
+        /const poseCamera = resolveCaptureCameraParams\(\s*capturePoses\[i\]\?\.cameraParams/,
+    );
+    assert.doesNotMatch(
+        syncMethod,
+        /serialized\.poses = serialized\.poses\.map\(pose => this\.stripSceneCameraFromPose\(pose\)\)/,
     );
 });
 

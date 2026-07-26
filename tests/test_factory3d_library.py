@@ -173,7 +173,21 @@ class FactoryLibraryTests(unittest.TestCase):
         )
         scene = self.factory.load_scene(scene["scene_id"])
         scene["skydome"].update({"yaw": 72, "pitch": -4, "exposure": 0.6})
-        scene["camera"] = {"position": [8, 7, 6], "target": [1, 2, 3], "fov": 55}
+        scene["camera"] = {
+            "position": [8, 7, 6],
+            "target": [1, 2, 3],
+            "up": [0, 1, 0],
+            "fov": 55,
+        }
+        saved_camera_id = self.factory._new_id()
+        scene["cameras"] = [{
+            "camera_id": saved_camera_id,
+            "name": "Detail camera",
+            "position": [3, 2, 1],
+            "target": [0, 0, 0],
+            "up": [0, 1, 0],
+            "fov": 48,
+        }]
         scene["render"] = {
             "width": 1600,
             "height": 900,
@@ -215,6 +229,9 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertTrue(result["created_scene"])
         restored = self.factory.load_scene(result["scene"]["scene_id"])
         self.assertEqual(restored["camera"]["position"], [8.0, 7.0, 6.0])
+        self.assertEqual(len(restored["cameras"]), 1)
+        self.assertNotEqual(restored["cameras"][0]["camera_id"], saved_camera_id)
+        self.assertEqual(restored["cameras"][0]["position"], [3.0, 2.0, 1.0])
         self.assertEqual(restored["render"]["width"], 1600)
         self.assertEqual(restored["lighting"]["preset"], "sunset")
         self.assertEqual(restored["layers"][0]["type"], "group")

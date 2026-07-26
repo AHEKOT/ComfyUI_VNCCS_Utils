@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260725\.20"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260726\.4"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -54,6 +54,8 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
     assert.match(studio, /libraryRepositoryPublish/);
     assert.match(studio, /libraryRepositoryRefresh/);
     assert.match(viewer, /captureObjectPreview/);
+    assert.match(viewer, /captureSkydomePreview/);
+    assert.match(studio, /this\.viewer\.captureSkydomePreview/);
     assert.match(viewer, /canonicalObjectPreviewCamera/);
     assert.match(viewer, /entry\.mesh\.position\.set\(0, 0, 0\)/);
     assert.match(viewer, /entry\.mesh\.quaternion\.identity\(\)/);
@@ -83,6 +85,25 @@ test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /item\?\.urls\?\.export_ply/);
     assert.match(studio, /exportScene\(\)/);
     assert.match(studio, /download\(scene\.exports\.urls\.ply\)/);
+});
+
+test("Factory imports an existing Gaussian PLY into the scene and viewport", () => {
+    assert.match(studio, />Import PLY</);
+    assert.match(studio, /accept="\.ply,application\/octet-stream"/);
+    assert.match(
+        studio,
+        /importObject: sceneId => `\$\{API_BASE\}\/scenes\/\$\{encodeURIComponent\(sceneId\)\}\/objects\/import`/,
+    );
+    const importMethod = studio.match(
+        /async importPly\(file\) \{[\s\S]*?\n    \}\n\n    async _monitorJob/,
+    );
+    assert.ok(importMethod, "PLY import method not found");
+    assert.match(importMethod[0], /form\.append\("ply", file/);
+    assert.match(importMethod[0], /await this\._applyScene\(result\.scene, \{ preserveSource: true \}\)/);
+    assert.match(importMethod[0], /this\._selectObject\(result\.object_id\)/);
+    assert.match(importMethod[0], /this\.viewer\.fit\(result\.object_id\)/);
+    assert.match(importMethod[0], /this\._scheduleScenePreview\(120\)/);
+    assert.match(styles, /\.vnccs-i3s__ply-import/);
 });
 
 test("Factory provides persistent realtime lighting for Gaussian scenes", () => {
@@ -388,6 +409,42 @@ test("Preview output is captured from the clean 3D viewport and persisted per sc
     assert.doesNotMatch(viewer, /maxSide/);
 });
 
+test("Camera block provides graphical FPV control, one Cameras group, and LIST capture order", () => {
+    const cameraBlock = studio.match(
+        /<section class="vnccs-i3s__section vnccs-i3s__camera-section">[\s\S]*?<\/section>/,
+    )?.[0] || "";
+    assert.match(cameraBlock, />Camera</);
+    assert.match(cameraBlock, /vnccs-i3s__camera-look/);
+    assert.doesNotMatch(cameraBlock, /camera-roll|Roll camera|slider to roll/);
+    assert.match(cameraBlock, />Add camera</);
+    assert.match(cameraBlock, /<strong>Cameras<\/strong>/);
+    assert.doesNotMatch(cameraBlock, /type="text"/);
+    assert.doesNotMatch(cameraBlock, /type="number"/);
+    const cameraControls = studio.match(
+        /_bindCameraControls\(\) \{[\s\S]*?\n    \}\n\n    async addCamera/,
+    )?.[0] || "";
+    assert.match(cameraControls, /setPointerCapture\?\.\(event\.pointerId\)/);
+    assert.match(cameraControls, /rotate\(\{ yaw: -deltaX \* 0\.18, pitch: -deltaY \* 0\.18 \}\)/);
+    assert.doesNotMatch(cameraControls, /cameraRoll|roll\s*:/);
+    assert.match(studio, /async addCamera\(\)/);
+    assert.match(studio, /_selectCamera\(cameraId\)/);
+    assert.match(studio, /_exitCameraView\(\{ restore = true \}/);
+    assert.match(studio, /this\._cameraReturnState = this\._normalizeCameraState/);
+    assert.match(studio, /cameras: this\._normalizeSceneCameras/);
+    assert.match(viewer, /rotateCameraFPV/);
+    assert.match(viewer, /this\.camera\.up\.copy\(worldUp\)/);
+    assert.match(viewer, /this\.camera\.lookAt\(this\.controls\.target\)/);
+    assert.doesNotMatch(viewer, /new THREE\.Euler\(pitchRadians, yawRadians, rollRadians/);
+    assert.match(viewer, /cameraState = null/);
+    assert.match(studio, /captureSet: sceneId =>/);
+    assert.match(studio, /form\.append\("current", current, "current\.png"\)/);
+    assert.match(studio, /for \(const camera of cameras\)/);
+    assert.match(studio, /camera_\$\{camera\.camera_id\}/);
+    assert.match(studio, /_saveExecutionCaptureSet\(captureToken\)/);
+    assert.match(styles, /vnccs-i3s__camera-look-reticle/);
+    assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
+});
+
 test("Scene export exposes persistent dimensions, aspect presets, and an exact camera frame", () => {
     assert.match(studio, /Aspect ratio/);
     assert.match(studio, /16:9 · Widescreen/);
@@ -552,7 +609,47 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260725.15");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260726.18");
+    const fpvViewer = Object.create(module.Factory3DViewer.prototype);
+    fpvViewer.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
+    fpvViewer.camera.position.set(1, 2, 3);
+    fpvViewer.controls = {
+        target: new THREE.Vector3(1, 2, 2),
+        update() {},
+    };
+    fpvViewer.camera.lookAt(fpvViewer.controls.target);
+    fpvViewer.captureFov = 42;
+    fpvViewer._disposed = false;
+    fpvViewer.invalidate = () => {};
+    fpvViewer.options = { onStateChange() {} };
+    const fpvPosition = fpvViewer.camera.position.clone();
+    for (const delta of [
+        { yaw: 18, pitch: -7 },
+        { yaw: -9, pitch: 4 },
+        { yaw: 13, pitch: -3 },
+        { yaw: -5, pitch: 6 },
+    ]) {
+        fpvViewer.rotateCameraFPV(delta, { emit: false });
+    }
+    assert.deepEqual(fpvViewer.camera.position.toArray(), fpvPosition.toArray());
+    assert.ok(
+        Math.abs(fpvViewer.camera.position.distanceTo(fpvViewer.controls.target) - 1) < 1e-9,
+    );
+    assert.deepEqual(fpvViewer.camera.up.toArray(), [0, 1, 0]);
+    const fpvForward = fpvViewer.controls.target.clone()
+        .sub(fpvViewer.camera.position)
+        .normalize();
+    const expectedScreenUp = new THREE.Vector3(0, 1, 0)
+        .addScaledVector(fpvForward, -fpvForward.y)
+        .normalize();
+    const actualScreenUp = new THREE.Vector3(0, 1, 0)
+        .applyQuaternion(fpvViewer.camera.quaternion)
+        .normalize();
+    assert.ok(
+        actualScreenUp.distanceTo(expectedScreenUp) < 1e-9,
+        "yaw/pitch look input must not accumulate camera roll",
+    );
+    assert.deepEqual(fpvViewer.getCameraState().position, [1, 2, 3]);
     const modifierState = module.createDirectionalLightingModifier();
     assert.equal(typeof modifierState.modifier.apply, "function");
     assert.deepEqual(modifierState.objectCenter.value.toArray(), [0, 0, 0]);
@@ -776,6 +873,33 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             );
         },
     };
+    previewViewer.invalidate = () => {};
+    previewViewer.skydome = { visible: false };
+    previewViewer.skydomeTexture = {};
+    previewViewer._applySkydomeSettings = () => {};
+    selectedPreviewEntry.mesh.visible = false;
+    selectedPreviewEntry.splat.visible = false;
+    let skydomeCaptureIds = null;
+    let skydomeWasVisible = false;
+    previewViewer.capturePreview = async () => {
+        skydomeCaptureIds = previewViewer.scene.children
+            .map(child => child.userData?.factoryObjectId)
+            .filter(Boolean);
+        skydomeWasVisible = previewViewer.skydome.visible;
+        return "skydome-preview";
+    };
+    const skydomePreview = await previewViewer.captureSkydomePreview();
+    assert.equal(skydomePreview, "skydome-preview");
+    assert.deepEqual(skydomeCaptureIds, []);
+    assert.equal(skydomeWasVisible, true);
+    assert.equal(previewViewer.skydome.visible, false);
+    assert.equal(firstPreviewEntry.mesh.parent, previewViewer.scene);
+    assert.equal(selectedPreviewEntry.mesh.parent, previewViewer.scene);
+    assert.equal(firstPreviewEntry.mesh.visible, true);
+    assert.equal(selectedPreviewEntry.mesh.visible, false);
+    assert.equal(selectedPreviewEntry.splat.visible, false);
+    mappingSnapshots.length = 0;
+
     let capturedIds = [];
     let capturedTransform = null;
     previewViewer.capturePreview = async () => {

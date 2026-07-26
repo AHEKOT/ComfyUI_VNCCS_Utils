@@ -16,9 +16,10 @@ import torch
 from PIL import Image
 
 
-_EMPTY_STATE = '{"schema_version":4,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
+_EMPTY_STATE = '{"schema_version":10,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
 _MAX_STATE_CHARS = 2 * 1024 * 1024
 _MAX_PREVIEW_PIXELS = 4096 * 4096
+_MAX_SCENE_CAMERAS = 32
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -130,12 +131,13 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 raise ValueError("3D Factory scene snapshot has an invalid aspect preset")
             if "show_camera_frame" in render and not isinstance(render["show_camera_frame"], bool):
                 raise ValueError("3D Factory scene snapshot has invalid camera-frame visibility")
-        camera = snapshot.get("camera")
-        if camera is not None:
+        def validate_camera(camera: Any, label: str) -> None:
             if not isinstance(camera, dict):
-                raise ValueError("3D Factory scene snapshot has invalid camera settings")
-            for key in ("position", "target"):
+                raise ValueError(f"3D Factory scene snapshot has invalid {label}")
+            for key in ("position", "target", "up"):
                 vector = camera.get(key)
+                if key == "up" and vector is None:
+                    continue
                 if (
                     not isinstance(vector, list)
                     or len(vector) != 3
@@ -146,7 +148,9 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                         for item in vector
                     )
                 ):
-                    raise ValueError("3D Factory scene snapshot has an invalid camera vector")
+                    raise ValueError(
+                        f"3D Factory scene snapshot has an invalid {label} vector"
+                    )
             fov = camera.get("fov")
             if (
                 not isinstance(fov, (int, float))
@@ -154,7 +158,35 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 or not math.isfinite(float(fov))
                 or not 5 <= float(fov) <= 120
             ):
-                raise ValueError("3D Factory scene snapshot has an invalid camera FOV")
+                raise ValueError(f"3D Factory scene snapshot has an invalid {label} FOV")
+
+        camera = snapshot.get("camera")
+        if camera is not None:
+            validate_camera(camera, "camera")
+        cameras = snapshot.get("cameras", [])
+        if not isinstance(cameras, list) or len(cameras) > _MAX_SCENE_CAMERAS:
+            raise ValueError("3D Factory scene snapshot has an invalid saved camera list")
+        camera_ids: set[str] = set()
+        for saved_camera in cameras:
+            camera_id = (
+                saved_camera.get("camera_id")
+                if isinstance(saved_camera, dict)
+                else None
+            )
+            if (
+                not isinstance(camera_id, str)
+                or not _ID_RE.fullmatch(camera_id)
+                or camera_id in camera_ids
+            ):
+                raise ValueError(
+                    "3D Factory scene snapshot contains an invalid saved camera id"
+                )
+            if "name" in saved_camera and not isinstance(saved_camera["name"], str):
+                raise ValueError(
+                    "3D Factory scene snapshot contains an invalid saved camera name"
+                )
+            validate_camera(saved_camera, "saved camera")
+            camera_ids.add(camera_id)
     return value
 
 
@@ -260,6 +292,57 @@ def _wait_for_scene_preview(
     ) from last_error
 
 
+def _wait_for_scene_capture_set(
+    backend: Any,
+    scene_id: str,
+    timeout: float = 60.0,
+    capture_token: str = "",
+) -> list[Path]:
+    """Wait for the current view and all saved-camera renders as one revision."""
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    last_error: Exception | None = None
+    saved_capture_set: list[Path] | None = None
+    while True:
+        scene = backend.load_scene(scene_id)
+        if capture_token:
+            sync = scene.get("preview_sync")
+            if (
+                isinstance(sync, dict)
+                and sync.get("capture_token") == capture_token
+                and sync.get("status") == "failed"
+            ):
+                raise RuntimeError(
+                    "3D Factory execution camera capture failed in the viewport: "
+                    f"{sync.get('error') or 'unknown capture error'}"
+                )
+        try:
+            if capture_token:
+                return backend._scene_capture_files(scene, capture_token)
+            return backend._scene_capture_files(scene)
+        except FileNotFoundError as exc:
+            last_error = exc
+            if capture_token:
+                try:
+                    saved_capture_set = backend._scene_capture_files(scene)
+                except FileNotFoundError:
+                    saved_capture_set = None
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.1)
+    if saved_capture_set is not None:
+        print(
+            "[VNCCS 3D Factory] Fresh camera capture timed out; using the "
+            "revision-matched saved capture set.",
+            flush=True,
+        )
+        return saved_capture_set
+    raise RuntimeError(
+        "3D Factory could not obtain the current view and saved-camera images. "
+        "Keep the 3D Factory widget open for execution and save the scene after "
+        f"camera changes. Last capture check: {last_error}"
+    ) from last_error
+
+
 def _backend():
     from ..api import factory3d
 
@@ -271,6 +354,7 @@ class VNCCS_3DFactory:
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("preview",)
+    OUTPUT_IS_LIST = (True,)
     FUNCTION = "load_scene"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -320,7 +404,7 @@ class VNCCS_3DFactory:
         state = _parse_state(factory_data)
         scene_id = str(state.get("scene_id") or "")
         if not scene_id:
-            return (_empty_image(),)
+            return ([_empty_image()],)
 
         backend = _backend()
         try:
@@ -331,15 +415,31 @@ class VNCCS_3DFactory:
         except (FileNotFoundError, ValueError) as exc:
             raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 
-        if scene.get("objects"):
+        has_renderable_scene = bool(
+            scene.get("objects") or scene.get("skydome") or scene.get("cameras")
+        )
+        if has_renderable_scene:
             capture_token = uuid.uuid4().hex if unique_id is not None else ""
             requested = _request_scene_preview(unique_id, scene, capture_token)
-            preview_path = _wait_for_scene_preview(
-                backend,
-                scene_id,
-                capture_token=capture_token if requested else "",
-            )
-            preview = _preview_tensor(preview_path)
+            if requested:
+                capture_paths = _wait_for_scene_capture_set(
+                    backend,
+                    scene_id,
+                    capture_token=capture_token,
+                )
+            else:
+                try:
+                    capture_paths = backend._scene_capture_files(scene)
+                except FileNotFoundError:
+                    if scene.get("cameras"):
+                        raise RuntimeError(
+                            "3D Factory has saved cameras but no matching camera "
+                            "capture set. Open the node widget and run it again."
+                        )
+                    capture_paths = [
+                        _wait_for_scene_preview(backend, scene_id, timeout=0.0)
+                    ]
+            previews = [_preview_tensor(path) for path in capture_paths]
         else:
-            preview = _empty_image()
-        return (preview,)
+            previews = [_empty_image()]
+        return (previews,)

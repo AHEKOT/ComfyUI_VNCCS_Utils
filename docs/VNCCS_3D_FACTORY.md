@@ -69,9 +69,29 @@ then:
 - duplicate it as an independently transformable scene object;
 - remove it from its object card after a graphical confirmation.
 
-Scene selection, generation settings, camera position, transform mode, grid,
-and selected object are stored in the workflow. Scene data and Gaussian assets
-remain under `ComfyUI/output/vnccs_3d_factory/scenes/`.
+Choose **Import PLY** above the scene-object list to add an existing Gaussian
+PLY directly to the active scene. Factory validates the complete payload,
+normalizes its coordinate convention, stores it as a persistent scene object,
+and immediately loads its derived SPLAT into the viewport. The imported object
+is selected and framed automatically. This accepts binary little-endian
+Gaussian PLY files with position, DC color, opacity, scale, and quaternion
+fields; polygon-mesh PLY files are rejected with an explicit error.
+
+The **Camera** block below TripoSplat provides first-person camera rotation
+without changing the viewport's normal orbit controls. Drag the graphical pad
+to look left/right/up/down from the current camera position, or use its
+keyboard arrows. The graphical roll slider rotates the horizon and returns to
+center after each adjustment; there are no numeric camera fields.
+
+Choose **Add camera** to store the current position, target, up vector, and FOV.
+Saved entries live in one **Cameras** group. Selecting one shows the viewport
+from that camera. Selecting it again, clicking empty viewport space, or
+selecting a scene object restores the editor camera that was active before the
+saved camera was opened. A scene supports up to 32 saved cameras.
+
+Scene selection, generation settings, current and saved cameras, transform
+mode, grid, and selected object are stored in the workflow. Scene data and
+Gaussian assets remain under `ComfyUI/output/vnccs_3d_factory/scenes/`.
 
 The selected reference image is copied into the active scene as soon as it is
 chosen. The workflow stores its scene URL and metadata rather than a temporary
@@ -90,18 +110,20 @@ scale into one Gaussian model. The file contains real Gaussian centers,
 covariance transforms, colors, spherical-harmonic data, and opacity—not a
 triangle mesh or a renamed placeholder file.
 
-The scene PLY header also embeds the exact perspective camera used by Scene
-Export: position, target, Y-up vector, vertical FOV, output dimensions, and
-aspect ratio. PLY is the only public object and scene export format.
+The scene PLY header also embeds the current perspective camera and every entry
+in the **Cameras** group: stable camera ID, name, position, target, up vector,
+and vertical FOV. The shared Scene Export dimensions and aspect ratio are
+included once in the same metadata. PLY is the only public object and scene
+export format.
 
 ## Gaussian model library
 
 The **Library** button in the scene header opens the persistent 3D Factory
 library. An individual object is stored with its canonical Gaussian PLY and
 metadata. A scene package additionally keeps every object, layer group,
-visibility flag, transform, render size, camera, and lighting setup. SPLAT is
-a disposable internal viewport derivative and is not duplicated inside
-`.vnccs3d` packages.
+visibility flag, transform, render size, current and saved cameras, and
+lighting setup. SPLAT is a disposable internal viewport derivative and is not
+duplicated inside `.vnccs3d` packages.
 
 Preview images are rendered automatically from the 3D viewport. Object previews
 temporarily isolate and frame only the selected object, then restore the editor
@@ -115,10 +137,13 @@ read-only; loading one always creates an independent Factory object or scene.
 
 ## ComfyUI outputs
 
-When the graph executes, the node exposes only `preview`: a clean render of the
-complete 3D scene from the current viewport camera, without the editor grid,
-selection bounds, or transform gizmo. Internal PLY/SPLAT asset paths and the
-scene manifest are not exposed as graph outputs.
+When the graph executes, `preview` is an `IMAGE` LIST. Item 0 is a clean render
+from the current visible viewport camera. The remaining items follow the
+**Cameras** group in manager order. Every item uses the same width, height, and
+PNG capture format configured by **Scene Export**, while retaining its saved
+camera's own position, orientation, and FOV. Editor grid, selection bounds,
+and transform gizmos are excluded. Internal PLY/SPLAT asset paths and the scene
+manifest are not exposed as graph outputs.
 
 PLY is the only permanent Gaussian source asset. The browser-facing 32-byte
 SPLAT representation is generated from PLY on first use and shared by SHA-256
@@ -128,6 +153,8 @@ least-recently-used and capped at 8 GiB by default; set
 `VNCCS_3D_FACTORY_SPLAT_CACHE_GB` before starting ComfyUI to change the cap.
 Deleting the cache is always safe because every entry is reproducible from PLY.
 
-The browser viewport capture is saved with the scene and bound to its revision.
-If a current capture cannot be obtained, execution fails explicitly rather
-than silently substituting an input/reference image or an outdated 3D render.
+The browser uploads the current view and all saved-camera images as one
+revision-bound capture set. The backend publishes it only after every frame
+has passed Scene Export dimension validation. If a complete current set cannot
+be obtained, execution fails explicitly rather than silently mixing revisions
+or substituting an input/reference image or outdated 3D render.

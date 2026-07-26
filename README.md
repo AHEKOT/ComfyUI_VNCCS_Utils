@@ -41,16 +41,23 @@ assets through the bundled SparkJS viewport.
   beside every model.
 * **Scene Manager**: Create and reopen scenes; generated objects, names,
   transforms, generation settings, and exports persist on the ComfyUI host.
+* **Gaussian PLY Import**: Add an existing validated Gaussian PLY to the active
+  scene; it appears immediately in the object list and live viewport.
 * **Interactive Transforms**: Click objects in the viewport and move, rotate,
   or uniformly scale them with visible viewport gizmos. Exact numeric fields
   remain available in a collapsed precision panel.
+* **Saved Scene Cameras**: A graphical FPV look pad and roll control rotate the
+  camera in place without changing normal viewport orbit behavior. Add up to
+  32 named scene cameras, click one to inspect its exact view, and receive the
+  current view followed by every saved camera as an ordered ComfyUI `IMAGE`
+  LIST at the shared Scene Export resolution.
 * **Local TripoSplat Pipeline**: The official pipeline runs in process with
   ComfyUI's PyTorch device. Model setup and weight download are graphical.
 * **Object and Scene PLY Export**: Export every transformed object separately
   or combine the visible scene as an editable Gaussian PLY. The export bakes
   transforms into the actual Gaussian centers and covariance, preserves
-  opacity and spherical-harmonic color data, and embeds the saved scene camera
-  without lossy triangle reconstruction.
+  opacity and spherical-harmonic color data, and embeds the current camera plus
+  every saved scene camera without lossy triangle reconstruction.
 * **Gaussian Library**: Save individual objects or complete scenes with
   automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
   then synchronize or publish manifest-driven model repositories on Hugging
@@ -60,9 +67,9 @@ assets through the bundled SparkJS viewport.
   Every stage is printed to the ComfyUI console and retained in a downloadable
   per-job log.
 * **Persistent Widget State**: Scene selection, generation controls, source
-  reference, object transforms and selection, camera, grid, and transform mode
-  are saved with the workflow. Reference images are persisted on the ComfyUI
-  host rather than temporary browser file URLs.
+  reference, object transforms and selection, current and saved cameras, grid,
+  and transform mode are saved with the workflow. Reference images are
+  persisted on the ComfyUI host rather than temporary browser file URLs.
 
 👉 **[Setup and workflow guide](docs/VNCCS_3D_FACTORY.md)**
 

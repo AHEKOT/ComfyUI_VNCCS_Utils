@@ -300,6 +300,8 @@ def _build_package(
                 snapshot = json.loads(json.dumps(scene))
                 snapshot["objects"] = stored_objects
                 snapshot.pop("preview", None)
+                snapshot.pop("capture_set", None)
+                snapshot.pop("preview_sync", None)
                 snapshot["exports"] = {}
                 if isinstance(snapshot.get("skydome"), dict):
                     snapshot["skydome"] = _skydome_payload(
@@ -796,6 +798,17 @@ def load_asset(
                             scene["layers"].append(copied)
                 scene["render"] = factory._normalize_render_settings(stored_scene.get("render"))
                 scene["camera"] = factory._normalize_camera(stored_scene.get("camera"))
+                scene["cameras"] = factory._normalize_scene_cameras(
+                    [
+                        {
+                            **stored_camera,
+                            "camera_id": factory._new_id(),
+                        }
+                        for stored_camera in stored_scene.get("cameras", [])
+                        if isinstance(stored_camera, dict)
+                    ],
+                    strict=True,
+                )
                 scene["lighting"] = factory._normalize_lighting(stored_scene.get("lighting"))
                 stored_skydome = stored_scene.get("skydome")
                 if isinstance(stored_skydome, dict):

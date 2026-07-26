@@ -16,9 +16,9 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageOps
 
 from .gaussian_scene import (
     export_gaussian_scene,
@@ -32,12 +32,14 @@ from .gaussian_scene import (
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 6
-EXPORT_FORMAT_VERSION = 7
+SCHEMA_VERSION = 7
+EXPORT_FORMAT_VERSION = 8
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+MAX_PLY_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_PREVIEW_BYTES = 64 * 1024 * 1024
+MAX_SCENE_CAMERAS = 32
 MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_SKYDOME_BYTES = 64 * 1024 * 1024
 MAX_SKYDOME_PIXELS = 8192 * 4096
@@ -66,6 +68,7 @@ _DEFAULT_RENDER_SETTINGS = {
 _DEFAULT_CAMERA = {
     "position": [2.8, 2.1, 4.2],
     "target": [0.0, 0.0, 0.0],
+    "up": [0.0, 1.0, 0.0],
     "fov": 42.0,
 }
 _LIGHTING_PRESETS = {"off", "day", "night", "dawn", "sunset", "custom"}
@@ -234,11 +237,83 @@ def _normalize_camera(value: Any) -> dict[str, Any]:
         fov = _DEFAULT_CAMERA["fov"]
     if not math.isfinite(fov):
         fov = _DEFAULT_CAMERA["fov"]
+    position = vector("position")
+    target = vector("target")
+    up = vector("up")
+    forward = [target[index] - position[index] for index in range(3)]
+    forward_length = math.sqrt(sum(component * component for component in forward))
+    if forward_length < 1e-7:
+        target = [position[0], position[1], position[2] - 1.0]
+        forward = [0.0, 0.0, -1.0]
+        forward_length = 1.0
+    forward = [component / forward_length for component in forward]
+    up_length = math.sqrt(sum(component * component for component in up))
+    if up_length < 1e-7:
+        up = list(_DEFAULT_CAMERA["up"])
+        up_length = 1.0
+    up = [component / up_length for component in up]
+    alignment = abs(sum(forward[index] * up[index] for index in range(3)))
+    if alignment > 0.999:
+        up = [0.0, 1.0, 0.0]
+        if abs(sum(forward[index] * up[index] for index in range(3))) > 0.999:
+            up = [0.0, 0.0, 1.0]
     return {
-        "position": vector("position"),
-        "target": vector("target"),
+        "position": position,
+        "target": target,
+        "up": up,
         "fov": max(5.0, min(120.0, fov)),
     }
+
+
+def _normalize_scene_cameras(
+    value: Any,
+    *,
+    strict: bool = False,
+) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        if strict:
+            raise ValueError("scene cameras must be a list")
+        return []
+    if len(value) > MAX_SCENE_CAMERAS:
+        if strict:
+            raise ValueError(f"a scene can contain at most {MAX_SCENE_CAMERAS} cameras")
+        value = value[:MAX_SCENE_CAMERAS]
+    output: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(value):
+        if not isinstance(raw, dict):
+            if strict:
+                raise ValueError("scene camera entries must be objects")
+            continue
+        try:
+            camera_id = _validate_id(raw.get("camera_id"), "camera id")
+        except ValueError:
+            if strict:
+                raise
+            camera_id = _new_id()
+        if camera_id in seen:
+            if strict:
+                raise ValueError("scene camera ids must be unique")
+            camera_id = _new_id()
+        seen.add(camera_id)
+        camera = _normalize_camera(raw)
+        try:
+            created_at = float(raw.get("created_at", 0.0))
+        except (TypeError, ValueError):
+            created_at = 0.0
+        if not math.isfinite(created_at) or created_at < 0:
+            created_at = 0.0
+        output.append(
+            {
+                "camera_id": camera_id,
+                "name": _clean_name(raw.get("name"), f"Camera {index + 1}", 80),
+                "created_at": created_at,
+                **camera,
+            }
+        )
+    return output
 
 
 def _normalize_lighting(value: Any) -> dict[str, Any]:
@@ -615,6 +690,7 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     value["layers"] = _normalize_scene_layers(value)
     value["render"] = _normalize_render_settings(value.get("render"))
     value["camera"] = _normalize_camera(value.get("camera"))
+    value["cameras"] = _normalize_scene_cameras(value.get("cameras"))
     value["lighting"] = _normalize_lighting(value.get("lighting"))
     skydome = _normalize_scene_skydome(value.get("skydome"))
     if skydome is None:
@@ -659,8 +735,10 @@ def create_scene(name: Any = "") -> dict[str, Any]:
         "camera": {
             "position": list(_DEFAULT_CAMERA["position"]),
             "target": list(_DEFAULT_CAMERA["target"]),
+            "up": list(_DEFAULT_CAMERA["up"]),
             "fov": _DEFAULT_CAMERA["fov"],
         },
+        "cameras": [],
         "lighting": dict(_DEFAULT_LIGHTING),
         "exports": {},
     }
@@ -688,6 +766,7 @@ def list_scenes(limit: int = 100) -> list[dict[str, Any]]:
                     "created_at": float(scene.get("created_at", 0)),
                     "revision": int(scene.get("revision", 0)),
                     "object_count": len(scene.get("objects", [])),
+                    "camera_count": len(scene.get("cameras", [])),
                 }
             )
         except (OSError, ValueError, json.JSONDecodeError):
@@ -794,6 +873,130 @@ def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
             shutil.rmtree(duplicate_root)
         except OSError:
             pass
+        raise
+
+
+def _write_imported_object_thumbnail(target: Path) -> None:
+    """Create a stable card thumbnail for an object without a source image."""
+    size = OBJECT_THUMBNAIL_SIZE
+    image = Image.new("RGB", size, "#12101a")
+    draw = ImageDraw.Draw(image)
+    draw.rounded_rectangle(
+        (18, 18, size[0] - 18, size[1] - 18),
+        radius=28,
+        fill="#1d1929",
+        outline="#5b486a",
+        width=3,
+    )
+    colors = ("#ff8fa3", "#b8a9e8", "#ffc1cf")
+    points = (
+        (74, 82, 12),
+        (111, 62, 9),
+        (148, 86, 13),
+        (177, 118, 8),
+        (145, 143, 11),
+        (101, 137, 9),
+        (72, 117, 7),
+    )
+    for index, (x, y, radius) in enumerate(points):
+        color = colors[index % len(colors)]
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+    draw.text((105, 177), "PLY", fill="#e9e8f1")
+    image.save(target, format="PNG", optimize=True)
+
+
+def import_ply_object(
+    scene_id: str,
+    source: BinaryIO,
+    file_name: Any = "model.ply",
+    object_name: Any = "",
+) -> dict[str, Any]:
+    """Validate and commit an uploaded Gaussian PLY as a scene object."""
+    safe_scene_id = _validate_id(scene_id, "scene id")
+    raw_file_name = str(file_name or "model.ply").replace("\\", "/")
+    safe_file_name = _clean_name(Path(raw_file_name).name, "model.ply", 160)
+    fallback_name = Path(safe_file_name).stem or "Imported PLY"
+    name = _clean_name(object_name, fallback_name, 80)
+    object_id = _new_id()
+    scene_root = resolve_scene_dir(safe_scene_id)
+    object_root = scene_root / "objects" / object_id
+    temporary = object_root / f".model.{secrets.token_hex(6)}.tmp"
+    target = object_root / "model.ply"
+    try:
+        with _STATE_LOCK:
+            load_scene(safe_scene_id)
+            object_root.mkdir(parents=True, exist_ok=False)
+        total = 0
+        with temporary.open("wb") as output:
+            while True:
+                block = source.read(4 * 1024 * 1024)
+                if not block:
+                    break
+                total += len(block)
+                if total > MAX_PLY_UPLOAD_BYTES:
+                    raise ValueError("PLY upload is too large")
+                output.write(block)
+            output.flush()
+            os.fsync(output.fileno())
+        if total <= 0:
+            raise ValueError("PLY upload is empty")
+
+        inspect_ply(temporary)
+        validate_ply_payload(temporary)
+        # Uploaded PLY coordinates describe the appearance the user expects
+        # to see. Factory's internal source convention is pre-canonical
+        # TripoSplat space, so normalize the upload once here; the viewport
+        # canonical matrix and a later object export then restore its original
+        # world orientation instead of rotating it unexpectedly.
+        normalized = export_gaussian_scene(
+            [(temporary, normalize_transform({}))],
+            target,
+        )
+        temporary.unlink(missing_ok=True)
+        validation = normalized["ply"]["validation"]
+        ply_hash = _sha256_file(target)
+        _remember_ply_sha256(target, ply_hash)
+        _write_imported_object_thumbnail(object_root / "thumbnail.png")
+
+        relative_root = Path("objects") / object_id
+        item = {
+            "object_id": object_id,
+            "name": name,
+            "created_at": _now(),
+            "visible": True,
+            "transform": normalize_transform({}),
+            "gaussians": int(normalized["ply"]["gaussians"]),
+            "source": {
+                "type": "ply_import",
+                "filename": safe_file_name,
+                "size": total,
+            },
+            "checksums": {
+                "ply_sha256": ply_hash,
+            },
+            "validation": {
+                "ply": {
+                    "invalid_values": validation["invalid_values"],
+                    "invalid_scales": validation["invalid_scales"],
+                    "invalid_quaternions": validation["invalid_quaternions"],
+                },
+            },
+            "settings": {
+                "source": "ply_import",
+            },
+            "files": {
+                "ply": str(relative_root / "model.ply"),
+            },
+        }
+        with _STATE_LOCK:
+            scene = load_scene(safe_scene_id)
+            scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
+            scene["exports"] = {}
+            _save_scene(scene)
+        return {"scene": scene, "object_id": object_id}
+    except Exception:
+        shutil.rmtree(object_root, ignore_errors=True)
         raise
 
 
@@ -924,9 +1127,18 @@ def _ensure_scene_skydome_viewport(scene: dict[str, Any]) -> Path:
 
 
 def _ensure_object_thumbnail(scene_id: str, item: dict[str, Any]) -> Path:
-    source = _object_file(scene_id, item, "prepared")
-    for target in sorted(source.parent.glob("thumbnail.*")):
+    ply = _object_file(scene_id, item, "ply")
+    for target in sorted(ply.parent.glob("thumbnail.*")):
         if target.is_file():
+            return target
+    try:
+        source = _object_file(scene_id, item, "prepared")
+    except FileNotFoundError:
+        try:
+            source = _object_file(scene_id, item, "reference")
+        except FileNotFoundError:
+            target = ply.parent / "thumbnail.png"
+            _write_imported_object_thumbnail(target)
             return target
     with Image.open(source) as image:
         image.load()
@@ -967,6 +1179,60 @@ def _scene_preview_file(
     if root not in target.parents or not target.is_file():
         raise FileNotFoundError("scene 3D preview is missing")
     return target
+
+
+def _scene_capture_files(
+    scene: dict[str, Any],
+    expected_capture_token: str = "",
+) -> list[Path]:
+    capture_set = scene.get("capture_set")
+    if not isinstance(capture_set, dict):
+        raise FileNotFoundError("scene has no saved camera capture set")
+    if (
+        expected_capture_token
+        and capture_set.get("capture_token") != expected_capture_token
+    ):
+        raise FileNotFoundError("scene camera captures have not completed this execution")
+    if int(capture_set.get("revision", -1)) != int(scene.get("revision", 0)):
+        raise FileNotFoundError("scene camera captures are stale")
+    if int(capture_set.get("render_revision", -1)) != int(
+        scene.get("render_revision", scene.get("revision", 0))
+    ):
+        raise FileNotFoundError("scene camera captures use stale render settings")
+    render = _normalize_render_settings(scene.get("render"))
+    if (
+        int(capture_set.get("width", 0)) != render["width"]
+        or int(capture_set.get("height", 0)) != render["height"]
+    ):
+        raise FileNotFoundError("scene camera capture dimensions do not match Scene Export")
+    camera_entries = capture_set.get("cameras")
+    if not isinstance(camera_entries, list):
+        raise FileNotFoundError("scene camera capture manifest is invalid")
+    expected_ids = [
+        camera["camera_id"] for camera in _normalize_scene_cameras(scene.get("cameras"))
+    ]
+    captured_ids = [
+        str(entry.get("camera_id", ""))
+        for entry in camera_entries
+        if isinstance(entry, dict)
+    ]
+    if captured_ids != expected_ids or len(camera_entries) != len(expected_ids):
+        raise FileNotFoundError("scene camera capture set does not match the saved cameras")
+
+    root = resolve_scene_dir(scene["scene_id"])
+
+    def capture_path(entry: Any) -> Path:
+        relative = entry.get("file") if isinstance(entry, dict) else None
+        if not isinstance(relative, str) or not relative:
+            raise FileNotFoundError("scene camera capture path is missing")
+        target = (root / relative).resolve()
+        if root not in target.parents or not target.is_file():
+            raise FileNotFoundError("scene camera capture file is missing")
+        return target
+
+    paths = [capture_path(capture_set.get("current"))]
+    paths.extend(capture_path(entry) for entry in camera_entries)
+    return paths
 
 
 def store_scene_reference(
@@ -1209,6 +1475,163 @@ def store_scene_preview(
         return scene
 
 
+def store_scene_capture_set(
+    scene_id: str,
+    current_image_bytes: Any,
+    camera_images: dict[str, Any],
+    camera_ids: Any,
+    expected_revision: Any,
+    expected_render_revision: Any,
+    capture_token: Any,
+) -> dict[str, Any]:
+    """Atomically persist the execution frame followed by every saved camera."""
+    normalized_capture_token = str(capture_token or "")
+    if not _ID_RE.fullmatch(normalized_capture_token):
+        raise ValueError("scene camera capture token is invalid")
+    if not isinstance(camera_ids, list) or len(camera_ids) > MAX_SCENE_CAMERAS:
+        raise ValueError("scene camera capture ids are invalid")
+    normalized_ids = [
+        _validate_id(camera_id, "camera id") for camera_id in camera_ids
+    ]
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise ValueError("scene camera capture ids must be unique")
+    if set(camera_images) != set(normalized_ids):
+        raise ValueError("scene camera capture images do not match their ids")
+    try:
+        revision = int(expected_revision)
+        render_revision = int(expected_render_revision)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("scene camera capture revision is invalid") from exc
+
+    with _STATE_LOCK:
+        initial_scene = load_scene(scene_id)
+        initial_ids = [
+            camera["camera_id"]
+            for camera in _normalize_scene_cameras(initial_scene.get("cameras"))
+        ]
+        if revision != int(initial_scene.get("revision", 0)):
+            raise ValueError("scene changed while its cameras were being rendered")
+        if render_revision != int(
+            initial_scene.get("render_revision", initial_scene.get("revision", 0))
+        ):
+            raise ValueError(
+                "scene camera or export frame changed while cameras were being rendered"
+            )
+        if normalized_ids != initial_ids:
+            raise ValueError("saved cameras changed while they were being rendered")
+        render = _normalize_render_settings(initial_scene.get("render"))
+
+    root = resolve_scene_dir(scene_id)
+    captures_root = root / "preview" / "captures"
+    captures_root.mkdir(parents=True, exist_ok=True)
+    temporary_root = captures_root / (
+        f".{normalized_capture_token}.{secrets.token_hex(6)}.tmp"
+    )
+    final_root = captures_root / normalized_capture_token
+    temporary_root.mkdir(parents=False, exist_ok=False)
+
+    def save_capture(source: Any, target: Path) -> None:
+        if hasattr(source, "read"):
+            try:
+                source.seek(0)
+            except (OSError, AttributeError):
+                pass
+            image_bytes = source.read(MAX_PREVIEW_BYTES + 1)
+        else:
+            image_bytes = bytes(source or b"")
+        image = _decode_image(image_bytes, max_bytes=MAX_PREVIEW_BYTES).convert("RGB")
+        if (image.width, image.height) != (render["width"], render["height"]):
+            raise ValueError(
+                f"scene camera capture is {image.width}x{image.height}; "
+                f"Scene Export is {render['width']}x{render['height']}"
+            )
+        image.save(target, format="PNG")
+
+    try:
+        save_capture(current_image_bytes, temporary_root / "current.png")
+        for camera_id in normalized_ids:
+            save_capture(camera_images[camera_id], temporary_root / f"{camera_id}.png")
+
+        with _STATE_LOCK:
+            scene = load_scene(scene_id)
+            current_ids = [
+                camera["camera_id"]
+                for camera in _normalize_scene_cameras(scene.get("cameras"))
+            ]
+            if revision != int(scene.get("revision", 0)):
+                raise ValueError("scene changed while its cameras were being rendered")
+            if render_revision != int(
+                scene.get("render_revision", scene.get("revision", 0))
+            ):
+                raise ValueError(
+                    "scene camera or export frame changed while cameras were being rendered"
+                )
+            if normalized_ids != current_ids:
+                raise ValueError("saved cameras changed while they were being rendered")
+
+            if final_root.is_dir():
+                shutil.rmtree(final_root)
+            os.replace(temporary_root, final_root)
+            canonical_target = root / "preview" / "scene.png"
+            canonical_temporary = root / "preview" / (
+                f".scene.{secrets.token_hex(6)}.tmp"
+            )
+            try:
+                shutil.copyfile(final_root / "current.png", canonical_temporary)
+                os.replace(canonical_temporary, canonical_target)
+            finally:
+                canonical_temporary.unlink(missing_ok=True)
+
+            current_relative = str((final_root / "current.png").relative_to(root))
+            camera_entries = [
+                {
+                    "camera_id": camera_id,
+                    "file": str((final_root / f"{camera_id}.png").relative_to(root)),
+                }
+                for camera_id in normalized_ids
+            ]
+            timestamp = _now()
+            scene["capture_set"] = {
+                "capture_token": normalized_capture_token,
+                "revision": revision,
+                "render_revision": render_revision,
+                "width": render["width"],
+                "height": render["height"],
+                "current": {"file": current_relative},
+                "cameras": camera_entries,
+                "updated_at": timestamp,
+            }
+            scene["preview"] = {
+                "file": str(canonical_target.relative_to(root)),
+                "mime": "image/png",
+                "width": render["width"],
+                "height": render["height"],
+                "size": canonical_target.stat().st_size,
+                "revision": revision,
+                "render_revision": render_revision,
+                "capture_token": normalized_capture_token,
+                "updated_at": timestamp,
+            }
+            scene["preview_sync"] = {
+                "capture_token": normalized_capture_token,
+                "status": "completed",
+                "error": "",
+                "camera_count": len(normalized_ids),
+                "updated_at": timestamp,
+            }
+            _save_scene(scene, bump_revision=False)
+
+        for candidate in captures_root.iterdir():
+            if candidate == final_root or candidate.name.startswith("."):
+                continue
+            if candidate.is_dir():
+                shutil.rmtree(candidate, ignore_errors=True)
+        return scene
+    except Exception:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+        raise
+
+
 def store_scene_preview_error(
     scene_id: str,
     capture_token: Any,
@@ -1329,6 +1752,7 @@ def capabilities() -> dict[str, Any]:
         "scene_render": {
             "min_side": 64,
             "max_side": 4096,
+            "max_cameras": MAX_SCENE_CAMERAS,
             "aspect_presets": sorted(_ASPECT_PRESETS),
             "defaults": dict(_DEFAULT_RENDER_SETTINGS),
         },
@@ -2219,6 +2643,7 @@ def _generate_object(
 
 def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
     value = json.loads(json.dumps(scene))
+    value.pop("capture_set", None)
     scene_id = value["scene_id"]
     reference = value.get("reference")
     if isinstance(reference, dict):
@@ -2336,6 +2761,12 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                 scene["camera"] = camera
                 changed = True
                 preview_changed = True
+        if "cameras" in payload:
+            cameras = _normalize_scene_cameras(payload["cameras"], strict=True)
+            if cameras != _normalize_scene_cameras(scene.get("cameras")):
+                scene["cameras"] = cameras
+                changed = True
+                preview_changed = True
         if "lighting" in payload:
             lighting = _normalize_lighting(payload["lighting"])
             if lighting != _normalize_lighting(scene.get("lighting")):
@@ -2395,21 +2826,34 @@ def _scene_camera_metadata(
     render_revision: int,
 ) -> dict[str, Any]:
     camera = _normalize_camera(scene.get("camera"))
+    saved_cameras = _normalize_scene_cameras(scene.get("cameras"))
     render = _normalize_render_settings(scene.get("render"))
+
+    def camera_entry(value: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "projection": "perspective",
+            "position": value["position"],
+            "target": value["target"],
+            "up": value["up"],
+            "fov": value["fov"],
+            "fov_axis": "vertical-degrees",
+        }
+
     return {
-        "schema": "vnccs-3d-factory-gaussian-scene/v1",
+        "schema": "vnccs-3d-factory-gaussian-scene/v2",
         "scene_id": scene["scene_id"],
         "scene_revision": revision,
         "render_revision": render_revision,
         "coordinate_system": "right-handed-y-up",
-        "camera": {
-            "projection": "perspective",
-            "position": camera["position"],
-            "target": camera["target"],
-            "up": [0.0, 1.0, 0.0],
-            "fov": camera["fov"],
-            "fov_axis": "vertical-degrees",
-        },
+        "camera": camera_entry(camera),
+        "cameras": [
+            {
+                "camera_id": saved["camera_id"],
+                "name": saved["name"],
+                **camera_entry(saved),
+            }
+            for saved in saved_cameras
+        ],
         "render": {
             "width": render["width"],
             "height": render["height"],
@@ -2785,6 +3229,60 @@ def register_routes(routes: Any) -> None:
         except Exception as exc:
             return _json_error(web, exc)
 
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/capture-set")
+    async def factory_scene_capture_set_upload(request: Any) -> Any:
+        try:
+            maximum = (MAX_SCENE_CAMERAS + 1) * MAX_PREVIEW_BYTES + 2 * 1024 * 1024
+            if not _content_length_ok(request, maximum):
+                return web.json_response(
+                    {"error": "camera capture set upload is too large"},
+                    status=413,
+                )
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            load_scene(scene_id)
+            post = await request.post()
+            current_field = post.get("current")
+            if current_field is None or not hasattr(current_field, "file"):
+                raise ValueError("missing current viewport capture")
+            try:
+                camera_ids = json.loads(str(post.get("camera_ids", "[]")))
+            except json.JSONDecodeError as exc:
+                raise ValueError("scene camera capture ids are invalid") from exc
+            if not isinstance(camera_ids, list):
+                raise ValueError("scene camera capture ids are invalid")
+            normalized_ids = [
+                _validate_id(camera_id, "camera id") for camera_id in camera_ids
+            ]
+            camera_images: dict[str, Any] = {}
+            for camera_id in normalized_ids:
+                image_field = post.get(f"camera_{camera_id}")
+                if image_field is None or not hasattr(image_field, "file"):
+                    raise ValueError(f"missing capture for camera {camera_id}")
+                camera_images[camera_id] = image_field.file
+            scene = await asyncio.to_thread(
+                store_scene_capture_set,
+                scene_id,
+                current_field.file,
+                camera_images,
+                normalized_ids,
+                post.get("revision"),
+                post.get("render_revision"),
+                post.get("capture_token"),
+            )
+            public_scene = _public_scene(scene)
+            return web.json_response(
+                {
+                    "preview": public_scene.get("preview"),
+                    "camera_count": len(normalized_ids),
+                    "capture_token": scene["preview_sync"]["capture_token"],
+                },
+                status=201,
+            )
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
     @routes.get(f"{API_BASE}/scenes/{{scene_id}}/preview")
     async def factory_scene_preview_get(request: Any) -> Any:
         try:
@@ -2930,6 +3428,36 @@ def register_routes(routes: Any) -> None:
             return web.FileResponse(
                 path,
                 headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/objects/import")
+    async def factory_object_import(request: Any) -> Any:
+        try:
+            if not _content_length_ok(request, MAX_PLY_UPLOAD_BYTES + 1024 * 1024):
+                return web.json_response({"error": "PLY upload is too large"}, status=413)
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            load_scene(scene_id)
+            post = await request.post()
+            ply_field = post.get("ply")
+            if ply_field is None or not hasattr(ply_field, "file"):
+                raise ValueError("missing PLY file")
+            result = await asyncio.to_thread(
+                import_ply_object,
+                scene_id,
+                ply_field.file,
+                getattr(ply_field, "filename", "model.ply"),
+                post.get("name"),
+            )
+            return web.json_response(
+                {
+                    "scene": _public_scene(result["scene"]),
+                    "object_id": result["object_id"],
+                },
+                status=201,
             )
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
