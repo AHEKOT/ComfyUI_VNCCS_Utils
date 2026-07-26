@@ -32,10 +32,11 @@ class FactoryNodeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_node_module()
 
-    def test_node_contract_exposes_only_the_scene_render(self):
+    def test_node_contract_exposes_current_and_saved_camera_renders_as_a_list(self):
         node = self.module.VNCCS_3DFactory
         self.assertEqual(node.RETURN_TYPES, ("IMAGE",))
         self.assertEqual(node.RETURN_NAMES, ("preview",))
+        self.assertEqual(node.OUTPUT_IS_LIST, (True,))
         self.assertIn("factory_data", node.INPUT_TYPES()["required"])
         self.assertEqual(node.CATEGORY, "VNCCS/3D")
 
@@ -59,8 +60,17 @@ class FactoryNodeTests(unittest.TestCase):
                     "camera": {
                         "position": [2.0, 3.0, 4.0],
                         "target": [0.0, 0.0, 0.0],
+                        "up": [0.0, 1.0, 0.0],
                         "fov": 42.0,
                     },
+                    "cameras": [{
+                        "camera_id": "e" * 32,
+                        "name": "Camera 1",
+                        "position": [1.0, 2.0, 3.0],
+                        "target": [0.0, 0.0, 0.0],
+                        "up": [0.0, 1.0, 0.0],
+                        "fov": 48.0,
+                    }],
                     "objects": [
                         {"object_id": "b" * 32, "transform": {}, "visible": True},
                         {"object_id": "c" * 32, "transform": {}, "visible": False},
@@ -181,6 +191,7 @@ class FactoryNodeTests(unittest.TestCase):
                 }],
             },
             _scene_preview_file=lambda _scene: preview_path,
+            _scene_capture_files=mock.Mock(side_effect=FileNotFoundError("no set")),
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         state = json.dumps({"schema_version": 2, "scene_id": scene_id})
@@ -190,7 +201,7 @@ class FactoryNodeTests(unittest.TestCase):
         ):
             result = self.module.VNCCS_3DFactory().load_scene(state)
         render.assert_called_once_with(preview_path)
-        self.assertEqual(result[0], "3d-scene-render")
+        self.assertEqual(result[0], ["3d-scene-render"])
 
     def test_nonempty_scene_without_current_preview_fails_instead_of_returning_black_square(self):
         scene_id = "a" * 32
@@ -202,6 +213,7 @@ class FactoryNodeTests(unittest.TestCase):
             load_scene=lambda _scene_id: scene,
             update_scene=lambda _scene_id, _snapshot: scene,
             _scene_preview_file=mock.Mock(side_effect=FileNotFoundError("stale")),
+            _scene_capture_files=mock.Mock(side_effect=FileNotFoundError("stale")),
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         state = json.dumps({"schema_version": 2, "scene_id": scene_id})
@@ -221,30 +233,40 @@ class FactoryNodeTests(unittest.TestCase):
         scene_id = "a" * 32
         capture_token = "c" * 32
         preview_path = ROOT / "preview" / "scene.png"
+        camera_path = ROOT / "preview" / "camera.png"
+        camera_id = "d" * 32
         scene = {
             "scene_id": scene_id,
             "revision": 4,
             "render_revision": 7,
             "objects": [{"object_id": "b" * 32}],
-            "preview": {},
+            "cameras": [{
+                "camera_id": camera_id,
+                "name": "Camera 1",
+                "position": [1, 2, 3],
+                "target": [0, 0, 0],
+                "up": [0, 1, 0],
+                "fov": 42,
+            }],
+            "capture_set": {},
         }
         events = []
 
         def send_sync(name, payload):
             events.append((name, payload))
-            scene["preview"]["capture_token"] = payload["capture_token"]
+            scene["capture_set"]["capture_token"] = payload["capture_token"]
 
-        def preview_file(value, expected_capture_token=""):
+        def capture_files(value, expected_capture_token=""):
             if (
                 expected_capture_token
-                and value["preview"].get("capture_token") != expected_capture_token
+                and value["capture_set"].get("capture_token") != expected_capture_token
             ):
                 raise FileNotFoundError("capture pending")
-            return preview_path
+            return [preview_path, camera_path]
 
         backend = types.SimpleNamespace(
             load_scene=lambda _scene_id: scene,
-            _scene_preview_file=preview_file,
+            _scene_capture_files=capture_files,
             resolve_scene_dir=lambda _scene_id: ROOT,
         )
         server = types.ModuleType("server")
@@ -257,11 +279,17 @@ class FactoryNodeTests(unittest.TestCase):
             mock.patch.dict(sys.modules, {"server": server}),
             mock.patch.object(self.module.uuid, "uuid4", return_value=token_value),
             mock.patch.object(self.module, "_backend", return_value=backend),
-            mock.patch.object(self.module, "_preview_tensor", return_value="fresh-preview"),
+            mock.patch.object(
+                self.module,
+                "_preview_tensor",
+                side_effect=lambda path: (
+                    "fresh-current" if path == preview_path else "fresh-camera"
+                ),
+            ),
         ):
             result = self.module.VNCCS_3DFactory().load_scene(state, unique_id="17")
 
-        self.assertEqual(result[0], "fresh-preview")
+        self.assertEqual(result[0], ["fresh-current", "fresh-camera"])
         self.assertEqual(events[0][0], "vnccs_req_3d_factory_preview")
         self.assertEqual(events[0][1]["node_id"], "17")
         self.assertEqual(events[0][1]["capture_token"], capture_token)

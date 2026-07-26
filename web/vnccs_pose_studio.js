@@ -3987,7 +3987,15 @@ class PoseStudioWidget {
         this.canvas = null;
         this.viewer = null;
 
-        this.poses = [{}];  // Array of pose data
+        this.poses = [{
+            cameraParams: {
+                offset_x: 0,
+                offset_y: 0,
+                zoom: 1,
+                yaw_deg: 0,
+                pitch_deg: 0,
+            },
+        }];  // Array of pose data
         this.posePrompts = [""]; // User prompt per pose tab
         this.activeTab = 0;
         this.poseCaptures = []; // Cache for captured images
@@ -5109,6 +5117,7 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             } else {
+                this.restoreActivePoseCameraParams({ updateViewer: false });
                 this._applyingAnimationPose = true;
                 this.viewer.setPose(this.poses[this.activeTab] || {}, true);
                 this._applyingAnimationPose = false;
@@ -5563,6 +5572,7 @@ class PoseStudioWidget {
             this.syncToNode(false, { skipCapture: true });
             return;
         }
+        pose.cameraParams = this.currentCameraParams();
         this.poses[this.activeTab] = pose;
         this.syncToNode(fullCapture, syncOptions);
     }
@@ -5892,6 +5902,7 @@ class PoseStudioWidget {
                 if (!this._applyingAnimationPose) this.captureAnimationEdits();
             } else {
                 const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+                pose.cameraParams = this.currentCameraParams();
                 pose.prompt = this.getPosePrompt(this.activeTab);
                 this.poses[this.activeTab] = pose;
             }
@@ -5972,10 +5983,19 @@ class PoseStudioWidget {
         return character.poses[poseIndex] || character.poses[0] || {};
     }
 
-    characterTransformForScene(character, { frame = null } = {}) {
+    characterTransformForScene(character, { frame = null, poseIndex = this.activeTab } = {}) {
         if (!character?.animationState) this.ensureCharacterRuntime(character);
         if (!this.isAnimationMode()) {
-            return { ...character.transform };
+            const cameraParams = this.cameraParamsForPose(
+                character.poses[poseIndex] || character.poses[0] || {},
+                character,
+            );
+            return normalizeCharacterTransform({
+                ...character.transform,
+                x: cameraParams.offset_x,
+                y: cameraParams.offset_y,
+                zoom: cameraParams.zoom,
+            });
         }
         const targetFrame = frame ?? this.sharedTimeline.currentFrame;
         return evaluateCharacterTransform(
@@ -5994,7 +6014,7 @@ class PoseStudioWidget {
                 this.viewer.removePassiveCharacter?.(id);
             }
         }
-        const activeTransform = this.characterTransformForScene(active, { frame });
+        const activeTransform = this.characterTransformForScene(active, { frame, poseIndex });
         this.viewer.setActiveCharacterAppearance({
             color: active.color,
             transform: activeTransform,
@@ -6003,7 +6023,7 @@ class PoseStudioWidget {
         for (const character of this.characters) {
             if (character.id === active.id) continue;
             const pose = this.characterPoseForScene(character, { frame, poseIndex });
-            const transform = this.characterTransformForScene(character, { frame });
+            const transform = this.characterTransformForScene(character, { frame, poseIndex });
             if (!this.viewer.passiveCharacters?.has?.(character.id) && rebuildMissing) {
                 this.viewer.upsertPassiveCharacterFromActive(character.id, {
                     pose,
@@ -6042,8 +6062,19 @@ class PoseStudioWidget {
         if (slot < 0) return false;
         const id = nextCharacterId(this.characters);
         const spread = [0, 3, -3, 6][slot] ?? slot * 3;
-        const poses = Array.from({ length: Math.max(1, this.poses.length) }, () => ({}));
         const initialTransform = { x: spread, y: 0, z: 0, zoom: 1 };
+        const poses = Array.from({ length: Math.max(1, this.poses.length) }, (_, index) => {
+            const sceneCamera = this.cameraParamsForPose(this.poses[index]);
+            return {
+                cameraParams: {
+                    offset_x: initialTransform.x,
+                    offset_y: initialTransform.y,
+                    zoom: initialTransform.zoom,
+                    yaw_deg: sceneCamera.yaw_deg,
+                    pitch_deg: sceneCamera.pitch_deg,
+                },
+            };
+        });
         const animationState = createDefaultAnimationState(
             poses[this.activeTab] || poses[0],
             { baseTransform: initialTransform },
@@ -6184,10 +6215,19 @@ class PoseStudioWidget {
             target.animationState = this.animationState;
             target.transform = this.characterTransformForScene(target, {
                 frame: this.sharedTimeline.currentFrame,
+                poseIndex: this.activeTab,
             });
             this.exportParams.cam_offset_x = target.transform.x;
             this.exportParams.cam_offset_y = target.transform.y;
             this.exportParams.cam_zoom = target.transform.zoom;
+            if (!this.isAnimationMode()) {
+                const targetCamera = this.cameraParamsForPose(
+                    target.poses[this.activeTab],
+                    target,
+                );
+                this.exportParams.cam_yaw_deg = targetCamera.yaw_deg;
+                this.exportParams.cam_pitch_deg = targetCamera.pitch_deg;
+            }
             this.viewer?.removePassiveCharacter?.(target.id);
 
             const meshChanged = JSON.stringify(previous.mesh || {}) !== JSON.stringify(target.mesh || {});
@@ -6480,15 +6520,40 @@ class PoseStudioWidget {
     persistActivePoseCameraParams() {
         const character = this.getActiveCharacter();
         if (!character) return;
+        const cameraParams = this.currentCameraParams();
         const previousTransform = { ...character.transform };
         const nextTransform = normalizeCharacterTransform({
             ...character.transform,
-            x: this.exportParams.cam_offset_x,
-            y: this.exportParams.cam_offset_y,
-            zoom: this.exportParams.cam_zoom,
+            x: cameraParams.offset_x,
+            y: cameraParams.offset_y,
+            zoom: cameraParams.zoom,
         });
         character.transform = nextTransform;
         this.captureAnimationTransformEdits(previousTransform, nextTransform);
+
+        if (!this.isAnimationMode()) {
+            const pose = this.poses?.[this.activeTab] || {};
+            pose.cameraParams = { ...cameraParams };
+            this.poses[this.activeTab] = pose;
+            character.poses = this.poses;
+
+            // Camera angles describe the shared scene view. Keep them identical
+            // for every character on this pose tab while leaving each
+            // character's own position and zoom untouched.
+            for (const sceneCharacter of this.characters || []) {
+                if (sceneCharacter.id === character.id) continue;
+                this.ensureCharacterRuntime(sceneCharacter);
+                const scenePose = sceneCharacter.poses[this.activeTab] || {};
+                const existing = this.cameraParamsForPose(scenePose, sceneCharacter);
+                scenePose.cameraParams = {
+                    ...existing,
+                    yaw_deg: cameraParams.yaw_deg,
+                    pitch_deg: cameraParams.pitch_deg,
+                };
+                sceneCharacter.poses[this.activeTab] = scenePose;
+            }
+        }
+
         this.viewer?.setActiveCharacterAppearance?.({
             color: character.color,
             transform: nextTransform,
@@ -6503,6 +6568,78 @@ class PoseStudioWidget {
             yaw_deg: this.exportParams.cam_yaw_deg || 0,
             pitch_deg: this.exportParams.cam_pitch_deg || 0
         };
+    }
+
+    cameraParamsForPose(
+        pose = this.poses?.[this.activeTab],
+        character = this.getActiveCharacter(),
+    ) {
+        const transform = normalizeCharacterTransform(character?.transform || {});
+        return resolveCaptureCameraParams(pose?.cameraParams, {
+            offset_x: transform.x,
+            offset_y: transform.y,
+            zoom: transform.zoom,
+            yaw_deg: this.exportParams.cam_yaw_deg || 0,
+            pitch_deg: this.exportParams.cam_pitch_deg || 0,
+        });
+    }
+
+    ensurePoseCameraParams() {
+        const active = this.getActiveCharacter();
+        const orderedCharacters = [
+            ...(active ? [active] : []),
+            ...(this.characters || []).filter(character => character !== active),
+        ];
+        for (const character of orderedCharacters) {
+            this.ensureCharacterRuntime(character);
+            for (let index = 0; index < character.poses.length; index += 1) {
+                const pose = character.poses[index] || {};
+                if (!pose.cameraParams || typeof pose.cameraParams !== "object") {
+                    const params = this.cameraParamsForPose(pose, character);
+                    if (active && character !== active) {
+                        const activeCamera = this.cameraParamsForPose(
+                            active.poses[index] || active.poses[0] || {},
+                            active,
+                        );
+                        params.yaw_deg = activeCamera.yaw_deg;
+                        params.pitch_deg = activeCamera.pitch_deg;
+                    }
+                    pose.cameraParams = params;
+                    character.poses[index] = pose;
+                }
+            }
+        }
+    }
+
+    restoreActivePoseCameraParams({ updateViewer = true } = {}) {
+        if (this.isAnimationMode()) return this.currentCameraParams();
+        const character = this.getActiveCharacter();
+        if (!character) return this.currentCameraParams();
+        const params = this.cameraParamsForPose(
+            this.poses?.[this.activeTab],
+            character,
+        );
+        this.exportParams.cam_offset_x = params.offset_x;
+        this.exportParams.cam_offset_y = params.offset_y;
+        this.exportParams.cam_zoom = params.zoom;
+        this.exportParams.cam_yaw_deg = params.yaw_deg;
+        this.exportParams.cam_pitch_deg = params.pitch_deg;
+        character.transform = normalizeCharacterTransform({
+            ...character.transform,
+            x: params.offset_x,
+            y: params.offset_y,
+            zoom: params.zoom,
+        });
+        this.syncCameraWidgets();
+        if (updateViewer) {
+            this.viewer?.setActiveCharacterAppearance?.({
+                color: character.color,
+                transform: character.transform,
+            });
+            this.applyCameraToViewer(true);
+            this.viewer?.setCameraParams?.(params);
+        }
+        return params;
     }
 
     setSkydomeFromCameraPrompt(cameraPrompt, { force = false } = {}) {
@@ -6944,8 +7081,10 @@ class PoseStudioWidget {
         const h = this.exportParams.view_height || 1024;
         const bg = this.exportParams.bg_color || [40, 40, 40];
         const isOriginalLighting = this.exportParams.keepOriginalLighting;
-        const yaw = this.exportParams.cam_yaw_deg || 0;
-        const pitch = this.exportParams.cam_pitch_deg || 0;
+        const activeCamera = this.cameraParamsForPose(
+            this.poses[this.activeTab],
+            this.getActiveCharacter(),
+        );
 
         if (!this.poseCaptures) this.poseCaptures = [];
         if (!this.lightingPrompts) this.lightingPrompts = [];
@@ -6958,6 +7097,10 @@ class PoseStudioWidget {
             const endIndex = Math.min(this.poses.length, startIndex + capturesPerFrame);
             for (let i = startIndex; i < endIndex; i++) {
                 const pose = this.poses[i] || {};
+                const poseCamera = this.cameraParamsForPose(
+                    pose,
+                    this.getActiveCharacter(),
+                );
                 this.viewer.setPose(pose, true);
                 this.updateCharacterScene({ poseIndex: i });
 
@@ -6970,8 +7113,8 @@ class PoseStudioWidget {
                 const framing = this.viewer.computeModelFitFraming?.(
                     w,
                     h,
-                    yaw,
-                    pitch,
+                    poseCamera.yaw_deg,
+                    poseCamera.pitch_deg,
                     0.08,
                 );
                 const nextCapture = this.viewer.capture(
@@ -6981,8 +7124,8 @@ class PoseStudioWidget {
                     bg,
                     framing?.offsetX ?? 0,
                     framing?.offsetY ?? 0,
-                    yaw,
-                    pitch,
+                    poseCamera.yaw_deg,
+                    poseCamera.pitch_deg,
                 );
                 this.setPoseCapture(i, nextCapture);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
@@ -6999,7 +7142,15 @@ class PoseStudioWidget {
             // Per-card fitting temporarily moves the shared capture camera.
             // Restore its neutral scene framing so opening Studio or applying a
             // library pose cannot inherit the final manager card's offsets.
-            this.viewer.updateCaptureCamera?.(w, h, 1, 0, 0, yaw, pitch);
+            this.viewer.updateCaptureCamera?.(
+                w,
+                h,
+                1,
+                0,
+                0,
+                activeCamera.yaw_deg,
+                activeCamera.pitch_deg,
+            );
             if (captureBatchStarted) this.viewer.endCaptureBatch?.();
         }
 
@@ -7255,6 +7406,7 @@ class PoseStudioWidget {
             });
             this.captureAnimationTransformEdits(previousTransform, activeCharacter.transform);
             this.exportParams.cam_zoom = activeCharacter.transform.zoom;
+            this.persistActivePoseCameraParams();
             this.viewer.setActiveCharacterAppearance({
                 color: activeCharacter.color,
                 transform: activeCharacter.transform,
@@ -8521,6 +8673,7 @@ class PoseStudioWidget {
         // Save current pose & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.stripSceneCameraFromPose(this.viewer.getPose());
+            savedPose.cameraParams = this.currentCameraParams();
             savedPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
@@ -8533,6 +8686,7 @@ class PoseStudioWidget {
 
         // Load new pose
         const newPose = this.poses[this.activeTab] || {};
+        this.restoreActivePoseCameraParams({ updateViewer: false });
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.setPose(newPose, true);
             this.updateCharacterScene({ poseIndex: this.activeTab });
@@ -8551,6 +8705,7 @@ class PoseStudioWidget {
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.stripSceneCameraFromPose(this.viewer.getPose());
+            savedPose.cameraParams = this.currentCameraParams();
             savedPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = savedPose;
             this.syncToNode(false);
@@ -8560,13 +8715,23 @@ class PoseStudioWidget {
         for (const character of this.characters) {
             if (!Array.isArray(character.poses)) character.poses = [];
             while (character.poses.length < previousPoseCount) character.poses.push({});
-            character.poses.push({});
+            const transform = normalizeCharacterTransform(character.transform || {});
+            character.poses.push({
+                cameraParams: {
+                    offset_x: transform.x,
+                    offset_y: transform.y,
+                    zoom: transform.zoom,
+                    yaw_deg: 0,
+                    pitch_deg: 0,
+                },
+            });
         }
         this.poses = this.getActiveCharacter().poses;
         this.posePrompts.push("");
         this.activeTab = this.poses.length - 1;
         this.updateTabs();
         this.clearSAMCameraMode();
+        this.resetCameraParams();
         this.syncPromptFieldToActiveTab();
 
         if (this.viewer && this.viewer.isInitialized()) {
@@ -8608,12 +8773,14 @@ class PoseStudioWidget {
             if (this.activeTab >= this.poses.length) {
                 this.activeTab = this.poses.length - 1;
             }
-            // Load new pose since active was deleted
-            if (this.viewer && this.viewer.isInitialized()) {
-                this.viewer.setPose(this.poses[this.activeTab] || {}, true);
-                this.updateCharacterScene({ poseIndex: this.activeTab });
-                this.updateRotationSliders();
-            }
+        }
+
+        this.restoreActivePoseCameraParams({ updateViewer: false });
+        if (this.viewer && this.viewer.isInitialized()) {
+            this.viewer.setPose(this.poses[this.activeTab] || {}, true);
+            this.updateCharacterScene({ poseIndex: this.activeTab });
+            this.updateRotationSliders();
+            this.applyCameraToViewer(true);
         }
 
         this.updateTabs();
@@ -8758,6 +8925,7 @@ class PoseStudioWidget {
                 this._clipboard = JSON.parse(JSON.stringify(pose));
                 return;
             }
+            pose.cameraParams = this.currentCameraParams();
             this.poses[this.activeTab] = pose;
         }
         this._clipboard = JSON.parse(JSON.stringify(this.poses[this.activeTab]));
@@ -8782,9 +8950,12 @@ class PoseStudioWidget {
         }
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(this._clipboard));
         this.setPosePrompt(this.activeTab, this.poses[this.activeTab].prompt || "");
+        this.restoreActivePoseCameraParams({ updateViewer: false });
+        this.persistActivePoseCameraParams();
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.setPose(this.poses[this.activeTab], true);
             this.updateCharacterScene({ poseIndex: this.activeTab });
+            this.applyCameraToViewer(true);
         }
         this.syncToNode();
     }
@@ -8876,7 +9047,12 @@ class PoseStudioWidget {
             filename = `pose_animation_${name}.json`;
         } else if (type === 'set') {
             // Ensure current active pose is saved to array
-            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+            if (this.viewer) {
+                const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+                pose.cameraParams = this.currentCameraParams();
+                pose.prompt = this.getPosePrompt(this.activeTab);
+                this.poses[this.activeTab] = pose;
+            }
 
             data = {
                 type: "pose_set",
@@ -8886,13 +9062,19 @@ class PoseStudioWidget {
             filename = `pose_set_${name}.json`;
         } else {
             // Single pose
-            if (this.viewer) this.poses[this.activeTab] = this.viewer.getPose();
+            if (this.viewer) {
+                const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+                pose.cameraParams = this.currentCameraParams();
+                pose.prompt = this.getPosePrompt(this.activeTab);
+                this.poses[this.activeTab] = pose;
+            }
 
             data = {
                 type: "single_pose",
                 version: "1.0",
                 bones: this.poses[this.activeTab].bones,
-                modelRotation: this.poses[this.activeTab].modelRotation
+                modelRotation: this.poses[this.activeTab].modelRotation,
+                cameraParams: this.poses[this.activeTab].cameraParams,
             };
             filename = `pose_${name}.json`;
         }
@@ -10071,7 +10253,16 @@ class PoseStudioWidget {
                         this.setEditorMode("image", { sync: false });
                         this.clearSAMCameraMode();
                         const activeCharacter = this.getActiveCharacter();
-                        this.poses = newPoses.map(pose => this.stripSceneCameraFromPose(pose));
+                        this.poses = newPoses.map(sourcePose => {
+                            const pose = JSON.parse(JSON.stringify(sourcePose || {}));
+                            const savedCamera = pose.cameraParams;
+                            this.stripSceneCameraFromPose(pose);
+                            pose.cameraParams = resolveCaptureCameraParams(
+                                savedCamera,
+                                this.currentCameraParams(),
+                            );
+                            return pose;
+                        });
                         if (activeCharacter) activeCharacter.poses = this.poses;
                         for (const character of this.characters) {
                             if (character === activeCharacter) continue;
@@ -10080,6 +10271,8 @@ class PoseStudioWidget {
                             while (character.poses.length > this.poses.length) character.poses.pop();
                         }
                         this.activeTab = 0;
+                        this.ensurePoseCameraParams();
+                        this.restoreActivePoseCameraParams({ updateViewer: false });
                         this.updateTabs();
                         // Load first pose
                         if (this.viewer && this.viewer.isInitialized()) {
@@ -10093,10 +10286,21 @@ class PoseStudioWidget {
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
                     this.clearSAMCameraMode();
-                    const poseData = data.bones ? data : data;
+                    const poseData = JSON.parse(JSON.stringify(data));
+                    const savedCamera = poseData.cameraParams;
+                    this.stripSceneCameraFromPose(poseData);
+                    if (savedCamera && typeof savedCamera === "object") {
+                        poseData.cameraParams = resolveCaptureCameraParams(
+                            savedCamera,
+                            this.currentCameraParams(),
+                        );
+                        this.poses[this.activeTab] = poseData;
+                        this.restoreActivePoseCameraParams({ updateViewer: false });
+                        this.persistActivePoseCameraParams();
+                    }
 
                     if (this.viewer && this.viewer.isInitialized()) {
-                        this.viewer.setPose(this.stripSceneCameraFromPose(poseData), true);
+                        this.viewer.setPose(poseData, true);
                         this.updateRotationSliders();
                     }
                     this.updateCaptureCameraPreview();
@@ -11412,7 +11616,6 @@ class PoseStudioWidget {
                     animationSnapshot.basePose.prompt = savePrompt;
                 }
                 const serialized = serializePoseStudioCharacter(character, animationSnapshot);
-                serialized.poses = serialized.poses.map(pose => this.stripSceneCameraFromPose(pose));
                 if (character.id === this.activeCharacterId) {
                     serialized.poses[this.activeTab] = serialized.poses[this.activeTab] || {};
                     serialized.poses[this.activeTab].prompt = savePrompt;
@@ -11450,6 +11653,7 @@ class PoseStudioWidget {
                 }
             } else {
                 const pose = this.stripSceneCameraFromPose(this.viewer.getPose());
+                pose.cameraParams = this.currentCameraParams();
                 pose.prompt = savePrompt;
                 assetData = { ...pose, ...sceneBase, prompt: pose.prompt };
             }
@@ -11536,6 +11740,7 @@ class PoseStudioWidget {
         this.exportParams.cam_zoom = transform.zoom;
         this.exportParams.cam_yaw_deg = yaw;
         this.exportParams.cam_pitch_deg = pitch;
+        if (!this.isAnimationMode()) this.persistActivePoseCameraParams();
 
         this.viewer.setActiveCharacterAppearance({
             color: character.color,
@@ -11612,6 +11817,8 @@ class PoseStudioWidget {
             this.exportParams.cam_yaw_deg = Number(asset.camera.yaw_deg) || 0;
             this.exportParams.cam_pitch_deg = Number(asset.camera.pitch_deg) || 0;
         }
+        this.ensurePoseCameraParams();
+        this.restoreActivePoseCameraParams({ updateViewer: false });
 
         await this.hydrateCharacterSceneModels({ showOverlay: true, recenterViewport: false });
         this.animationTimeline?.setState(this.animationState);
@@ -13549,6 +13756,7 @@ class PoseStudioWidget {
         // Save current pose before syncing (only if we are NOT in a sub-sync loop)
         if (!animationMode && !fullCapture && this.viewer && this.viewer.isInitialized()) {
             const syncPose = this.stripSceneCameraFromPose(this.viewer.getPose());
+            syncPose.cameraParams = this.currentCameraParams();
             syncPose.prompt = this.getPosePrompt(this.activeTab);
             this.poses[this.activeTab] = syncPose;
         }
@@ -13636,6 +13844,11 @@ class PoseStudioWidget {
                         this.updateCharacterScene(animationMode
                             ? { frame: i }
                             : { poseIndex: i });
+                        const poseCamera = resolveCaptureCameraParams(
+                            capturePoses[i]?.cameraParams,
+                            currentCaptureCamera,
+                            animationMode,
+                        );
 
                         // Lighting Toggle
                         if (isOriginalLighting) {
@@ -13651,8 +13864,8 @@ class PoseStudioWidget {
                             bg,
                             currentCaptureCamera.offset_x,
                             currentCaptureCamera.offset_y,
-                            currentCaptureCamera.yaw_deg,
-                            currentCaptureCamera.pitch_deg,
+                            poseCamera.yaw_deg,
+                            poseCamera.pitch_deg,
                         ));
                         const framePrompt = animationMode
                             ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
@@ -13672,6 +13885,7 @@ class PoseStudioWidget {
                     this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
                 } else {
                     this.viewer.setPose(this.poses[this.activeTab], true);
+                    this.restoreActivePoseCameraParams({ updateViewer: false });
                     this.updateCharacterScene({ poseIndex: this.activeTab });
                     this.refreshTabActiveState({ scroll: false });
                     this.updateRotationSliders();
@@ -13687,8 +13901,11 @@ class PoseStudioWidget {
 
             } else {
                 // Capture only ACTIVE
-                const yaw = this.exportParams.cam_yaw_deg || 0;
-                const pitch = this.exportParams.cam_pitch_deg || 0;
+                const activeCamera = resolveCaptureCameraParams(
+                    this.poses[this.activeTab]?.cameraParams,
+                    currentCaptureCamera,
+                    animationMode,
+                );
                 this.updateCharacterScene(animationMode
                     ? { frame: this.animationState.currentFrame }
                     : { poseIndex: this.activeTab });
@@ -13699,7 +13916,16 @@ class PoseStudioWidget {
                     this.viewer.updateLights(this.lightParams);
                 }
 
-                this.setPoseCapture(this.activeTab, this.viewer.capture(w, h, 1, bg, 0, 0, yaw, pitch));
+                this.setPoseCapture(this.activeTab, this.viewer.capture(
+                    w,
+                    h,
+                    1,
+                    bg,
+                    0,
+                    0,
+                    activeCamera.yaw_deg,
+                    activeCamera.pitch_deg,
+                ));
                 this.lightingPrompts[this.activeTab] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(this.activeTab),
@@ -13755,7 +13981,6 @@ class PoseStudioWidget {
                 : null;
             if (animationSnapshot?.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
             const serialized = serializePoseStudioCharacter(character, animationSnapshot);
-            serialized.poses = serialized.poses.map(pose => this.stripSceneCameraFromPose(pose));
             if (animationToSave) {
                 serialized.animation = {
                     ...createAnimationCacheReference(character.animationState, {
@@ -13979,6 +14204,7 @@ class PoseStudioWidget {
             const savedImagePoses = Array.isArray(data.image_poses) ? data.image_poses : data.poses;
             if (!Array.isArray(data.characters) && Array.isArray(savedImagePoses) && savedImagePoses.length) {
                 this.poses = savedImagePoses;
+                if (restoredActiveCharacter) restoredActiveCharacter.poses = this.poses;
                 this.posePrompts = []; // rebuild from pose.prompt on next ensurePosePrompts() call
             }
             if (Array.isArray(data.pose_prompts)) {
@@ -14066,6 +14292,8 @@ class PoseStudioWidget {
             if (typeof data.activeTab === 'number') {
                 this.activeTab = Math.max(0, Math.min(data.activeTab, this.poses.length - 1));
             }
+            this.ensurePoseCameraParams();
+            this.restoreActivePoseCameraParams({ updateViewer: false });
 
             // captured_images are no longer persisted in widget (stored in server-side LRU cache).
             // poseCaptures will be regenerated on the next syncToNode(true) call.

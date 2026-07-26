@@ -15,7 +15,7 @@ const SPLAT_BOUND_SAMPLES = 4_096;
 const INTERACTIVE_FRAME_MS = 1000 / 30;
 const LIGHTING_UPDATE_MS = 1000 / 15;
 const LIGHTING_BASE_RESPONSE = 0.65;
-export const FACTORY_VIEWER_BUILD = "20260725.15";
+export const FACTORY_VIEWER_BUILD = "20260726.17";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -1863,29 +1863,75 @@ export class Factory3DViewer {
             selected_group_id: this.selectedGroupId,
             mode: this.mode,
             grid: this.gridVisible,
-            camera: {
-                position: this.camera.position.toArray(),
-                target: this.controls.target.toArray(),
-                fov: this.captureFov,
-            },
+            camera: this.getCameraState(),
         };
     }
 
-    setState(value = {}) {
-        if (value.mode) this.setMode(value.mode);
-        if ("grid" in value) this.setGrid(value.grid);
-        const position = finiteVector(value.camera?.position, this.camera.position.toArray());
-        const target = finiteVector(value.camera?.target, this.controls.target.toArray());
-        const fov = Number(value.camera?.fov);
+    getCameraState() {
+        return {
+            position: this.camera.position.toArray(),
+            target: this.controls.target.toArray(),
+            up: this.camera.up.toArray(),
+            fov: this.captureFov,
+        };
+    }
+
+    setCameraState(value = {}, { emit = false } = {}) {
+        const position = finiteVector(value.position, this.camera.position.toArray());
+        const target = finiteVector(value.target, this.controls.target.toArray());
+        const up = finiteVector(value.up, this.camera.up.toArray());
+        const fov = Number(value.fov);
         if (Number.isFinite(fov)) this.captureFov = Math.max(5, Math.min(120, fov));
         this.camera.position.fromArray(position);
+        this.camera.up.fromArray(up);
+        if (this.camera.up.lengthSq() < 1e-12) this.camera.up.set(0, 1, 0);
+        this.camera.up.normalize();
         this.controls.target.fromArray(target);
+        if (this.camera.position.distanceToSquared(this.controls.target) < 1e-12) {
+            this.controls.target.set(position[0], position[1], position[2] - 1);
+        }
+        this.camera.lookAt(this.controls.target);
         this.controls.update();
         this._updateCameraProjection();
         this._updateCameraFrame();
         this._updateClipPlanes();
         this._cameraStateDirty = false;
         this.invalidate();
+        if (emit) this._emitState();
+    }
+
+    rotateCameraFPV({ yaw = 0, pitch = 0, roll = 0 } = {}, { emit = true } = {}) {
+        const yawRadians = THREE.MathUtils.degToRad(Number(yaw) || 0);
+        const pitchRadians = THREE.MathUtils.degToRad(Number(pitch) || 0);
+        const rollRadians = THREE.MathUtils.degToRad(Number(roll) || 0);
+        if (!yawRadians && !pitchRadians && !rollRadians) return;
+        const distance = Math.max(
+            this.camera.position.distanceTo(this.controls.target),
+            0.001,
+        );
+        const delta = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(pitchRadians, yawRadians, rollRadians, "YXZ"),
+        );
+        this.camera.quaternion.multiply(delta).normalize();
+        const forward = new THREE.Vector3(0, 0, -1)
+            .applyQuaternion(this.camera.quaternion)
+            .normalize();
+        const up = new THREE.Vector3(0, 1, 0)
+            .applyQuaternion(this.camera.quaternion)
+            .normalize();
+        this.controls.target.copy(this.camera.position).addScaledVector(forward, distance);
+        this.camera.up.copy(up);
+        this.controls.update();
+        this._updateClipPlanes();
+        this._cameraStateDirty = false;
+        this.invalidate();
+        if (emit) this._emitState();
+    }
+
+    setState(value = {}) {
+        if (value.mode) this.setMode(value.mode);
+        if ("grid" in value) this.setGrid(value.grid);
+        this.setCameraState(value.camera || {}, { emit: false });
     }
 
     _emitState() {
@@ -1913,9 +1959,9 @@ export class Factory3DViewer {
     async capturePreview({
         width = this.captureWidth,
         height = this.captureHeight,
+        cameraState = null,
     } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
-        if (!this.objects.size && !this.hasVisibleSkydome()) return null;
         const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 1024)));
         const targetHeight = Math.max(64, Math.min(4096, Math.round(Number(height) || 1024)));
         let captureSkydomeTexture = null;
@@ -1967,13 +2013,45 @@ export class Factory3DViewer {
         }
 
         try {
-            this.captureCamera.position.copy(this.camera.position);
-            this.captureCamera.quaternion.copy(this.camera.quaternion);
-            this.captureCamera.up.copy(this.camera.up);
+            if (cameraState) {
+                const position = finiteVector(
+                    cameraState.position,
+                    this.camera.position.toArray(),
+                );
+                const targetState = finiteVector(
+                    cameraState.target,
+                    this.controls.target.toArray(),
+                );
+                const up = finiteVector(cameraState.up, this.camera.up.toArray());
+                this.captureCamera.position.fromArray(position);
+                this.captureCamera.up.fromArray(up);
+                if (this.captureCamera.up.lengthSq() < 1e-12) {
+                    this.captureCamera.up.set(0, 1, 0);
+                }
+                this.captureCamera.up.normalize();
+                const targetVector = new THREE.Vector3().fromArray(targetState);
+                if (this.captureCamera.position.distanceToSquared(targetVector) < 1e-12) {
+                    targetVector.set(position[0], position[1], position[2] - 1);
+                }
+                this.captureCamera.lookAt(targetVector);
+                const distance = Math.max(
+                    this.captureCamera.position.distanceTo(targetVector),
+                    0.001,
+                );
+                this.captureCamera.near = Math.max(0.000001, distance / 100000);
+                this.captureCamera.far = Math.max(1000, distance * 100000);
+            } else {
+                this.captureCamera.position.copy(this.camera.position);
+                this.captureCamera.quaternion.copy(this.camera.quaternion);
+                this.captureCamera.up.copy(this.camera.up);
+                this.captureCamera.near = this.camera.near;
+                this.captureCamera.far = this.camera.far;
+            }
             this.captureCamera.aspect = targetWidth / targetHeight;
-            this.captureCamera.fov = this.captureFov;
-            this.captureCamera.near = this.camera.near;
-            this.captureCamera.far = this.camera.far;
+            const requestedFov = Number(cameraState?.fov);
+            this.captureCamera.fov = Number.isFinite(requestedFov)
+                ? Math.max(5, Math.min(120, requestedFov))
+                : this.captureFov;
             this.captureCamera.updateProjectionMatrix();
             this.captureCamera.updateMatrixWorld(true);
 
@@ -1982,6 +2060,7 @@ export class Factory3DViewer {
             this.renderer.setPixelRatio(1);
             this.renderer.setSize(targetWidth, targetHeight, false);
             this.spark.setDirty?.();
+            await this.spark.update({ scene: this.scene, camera: this.captureCamera });
             this.renderer.render(this.scene, this.captureCamera);
             target = document.createElement("canvas");
             target.width = targetWidth;
@@ -2018,6 +2097,82 @@ export class Factory3DViewer {
                 "image/png",
             );
         });
+    }
+
+    async captureSkydomePreview({
+        width = 640,
+        height = 640,
+    } = {}) {
+        if (!this.skydomeTexture || !this.skydome) return null;
+        const skydome = this.skydome;
+        const objectState = new Map();
+        for (const [id, value] of this.objects) {
+            const parent = value.mesh.parent;
+            objectState.set(id, {
+                parent,
+                parentIndex: parent ? parent.children.indexOf(value.mesh) : -1,
+                rootVisible: value.mesh.visible,
+                splatVisible: value.splat.visible,
+            });
+        }
+        const previousSkydomeVisible = skydome.visible;
+        const previousSuppressState = this._suppressStateEvents;
+        const previousCaptureState = this._capturing;
+        this._suppressStateEvents = true;
+        this._capturing = true;
+        try {
+            // Spark retains its own generated mapping, so remove every
+            // Gaussian root as well as hiding it. This guarantees that a
+            // library preview for a skydome contains only the environment.
+            for (const value of this.objects.values()) {
+                value.mesh.visible = false;
+                value.splat.visible = false;
+                value.mesh.parent?.remove(value.mesh);
+            }
+            skydome.visible = true;
+            this._applySkydomeSettings();
+            this.spark.setDirty?.();
+            await this.spark.update({ scene: this.scene, camera: this.camera });
+            return await this.capturePreview({ width, height });
+        } finally {
+            try {
+                if (this.skydome === skydome) {
+                    skydome.visible = previousSkydomeVisible;
+                    this._applySkydomeSettings();
+                }
+                for (const [id, state] of objectState) {
+                    const value = this.objects.get(id);
+                    if (!value) continue;
+                    if (state.parent && value.mesh.parent !== state.parent) {
+                        state.parent.add(value.mesh);
+                        const currentIndex = state.parent.children.indexOf(value.mesh);
+                        if (
+                            state.parentIndex >= 0
+                            && currentIndex >= 0
+                            && currentIndex !== state.parentIndex
+                        ) {
+                            state.parent.children.splice(currentIndex, 1);
+                            state.parent.children.splice(state.parentIndex, 0, value.mesh);
+                        }
+                    }
+                    value.mesh.visible = state.rootVisible;
+                    value.splat.visible = state.splatVisible;
+                    value.mesh.updateMatrixWorld(true);
+                }
+                this._refreshSelectionBounds();
+                this.spark.setDirty?.();
+                try {
+                    await this.spark.update({ scene: this.scene, camera: this.camera });
+                } catch (error) {
+                    this.options.onError(error);
+                }
+                this.renderer.render(this.scene, this.camera);
+                this.invalidate();
+            } finally {
+                this._capturing = previousCaptureState;
+                this._suppressStateEvents = previousSuppressState;
+            }
+        }
     }
 
     async captureObjectPreview(objectId, {

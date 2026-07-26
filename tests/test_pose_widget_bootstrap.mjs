@@ -288,4 +288,56 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     assert.equal(poseWidget.hidden, true);
     assert.equal(poseWidget.computeSize()[0], 0);
     assert.equal(poseWidget.computeSize()[1], -4);
+
+    const studio = node.studioWidget;
+    studio.exportParams.editor_mode = "image";
+    studio.poses = [
+        {
+            cameraParams: {
+                offset_x: -2,
+                offset_y: 1,
+                zoom: 1.25,
+                yaw_deg: -20,
+                pitch_deg: 5,
+            },
+        },
+        {
+            cameraParams: {
+                offset_x: 4,
+                offset_y: -3,
+                zoom: 2.5,
+                yaw_deg: 35,
+                pitch_deg: -10,
+            },
+        },
+    ];
+    studio.characters[0].poses = studio.poses;
+
+    studio.activeTab = 0;
+    studio.restoreActivePoseCameraParams({ updateViewer: false });
+    assert.deepEqual(
+        [
+            studio.exportParams.cam_offset_x,
+            studio.exportParams.cam_offset_y,
+            studio.exportParams.cam_zoom,
+            studio.exportParams.cam_yaw_deg,
+            studio.exportParams.cam_pitch_deg,
+        ],
+        [-2, 1, 1.25, -20, 5],
+    );
+
+    studio.activeTab = 1;
+    studio.restoreActivePoseCameraParams({ updateViewer: false });
+    studio.exportParams.cam_zoom = 3;
+    studio.persistActivePoseCameraParams();
+    assert.equal(studio.poses[0].cameraParams.zoom, 1.25);
+    assert.equal(studio.poses[1].cameraParams.zoom, 3);
+
+    studio.syncToNode(false, {
+        skipCapture: true,
+        skipCaptureUpload: true,
+    });
+    const savedState = JSON.parse(poseWidget.value);
+    assert.equal(savedState.characters[0].poses[0].cameraParams.zoom, 1.25);
+    assert.equal(savedState.characters[0].poses[1].cameraParams.zoom, 3);
 });

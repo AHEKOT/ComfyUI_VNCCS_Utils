@@ -11,12 +11,16 @@
 
 *   **Persistent 3D scenes and object editing**: Added host-backed scene management and multi-object composition.
     *   Scenes can be created, reopened, renamed, and deleted; their references, objects, generation settings, transforms, visibility, camera, render settings, lighting, skydome, and exports are retained.
+    *   Existing Gaussian PLY files can be imported from the Factory UI, validated and normalized into persistent scene objects, then selected and framed in the live viewport.
     *   The layer list supports drag-and-drop ordering, visibility, inline rename, duplication, deletion, grouping, ungrouping, and group transforms.
     *   Viewport selection and gizmos provide object and group translation, rotation, and uniform scaling.
+    *   A new left-panel Camera block provides graphical first-person yaw/pitch and roll controls, plus one Cameras group for up to 32 saved scene viewpoints.
+    *   Selecting a saved camera switches the viewport to its view; clearing that selection restores the previous editor camera.
 
 *   **Native Gaussian viewport and scene output**: Added a bundled SparkJS/Three.js viewport that renders multiple Gaussian objects together.
     *   Supports orbit, pan, detailed zoom, adaptive clipping, selection bounds, an optional grid, and quality LOD.
-    *   The node returns a clean `preview` image of the complete scene without editor overlays.
+    *   The node returns `preview` as an ordered `IMAGE` LIST: current viewport first, then every saved scene camera, all without editor overlays and at the shared Scene Export dimensions.
+    *   Execution captures are committed atomically so current and saved-camera images cannot be mixed across scene revisions.
     *   Canonical PLY assets are converted lazily into a shared, bounded, content-addressed SPLAT cache for viewport rendering.
 
 *   **3D Factory lighting and environments**: Added persistent realtime lighting presets and custom scene lighting.
@@ -25,9 +29,10 @@
 
 *   **Gaussian PLY export and model library**: Added reusable object and scene assets.
     *   Object and combined-scene PLY exports bake position, rotation, and uniform scale into Gaussian centers and covariance while preserving opacity, color, and available spherical-harmonic data.
-    *   Scene export includes persistent dimensions, aspect presets, FOV, camera metadata, and an optional camera-frame overlay.
+    *   Scene export includes persistent dimensions, aspect presets, FOV, current and saved-camera metadata, and an optional camera-frame overlay.
     *   The local and Hugging Face-backed library stores objects, complete `.vnccs3d` scenes, and skydomes with generated previews.
-    *   Scene packages preserve layer order, groups, visibility, transforms, camera, render settings, lighting, and environment data; remote entries load as independent scene copies.
+    *   Skydome library previews temporarily remove every Gaussian object from the Spark scene, render only the environment, and restore the complete viewport state afterward.
+    *   Scene packages preserve layer order, groups, visibility, transforms, current and saved cameras, render settings, lighting, and environment data; remote entries load as independent scene copies.
 
 *   **Pose Studio Animation mode**: Added a complete keyframe editor alongside the existing Image mode.
     *   Provides a dope-sheet timeline with FPS and duration controls, playback, looping, playhead scrubbing, Auto-Key, snapping, per-bone tracks, model-rotation tracks, and anatomical track groups.

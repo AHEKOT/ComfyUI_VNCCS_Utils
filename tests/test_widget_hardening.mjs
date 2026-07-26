@@ -148,7 +148,7 @@ test("Pose Manager independently fits and centers every deformed pose preview", 
     );
     assert.match(
         refreshMethod,
-        /finally \{[\s\S]*viewer\.updateCaptureCamera\?\.\(w, h, 1, 0, 0, yaw, pitch\);/,
+        /finally \{[\s\S]*viewer\.updateCaptureCamera\?\.\([\s\S]*activeCamera\.yaw_deg,[\s\S]*activeCamera\.pitch_deg/,
         "manager preview fitting must not leak its temporary camera into Studio or library poses",
     );
 
@@ -245,9 +245,10 @@ test("the original camera positioning widget controls the selected character", (
     const persistStart = characterEnd;
     const persistEnd = poseStudioSource.indexOf("\n    currentCameraParams()", persistStart);
     const persistMethod = poseStudioSource.slice(persistStart, persistEnd);
-    assert.match(persistMethod, /x:\s*this\.exportParams\.cam_offset_x/);
-    assert.match(persistMethod, /y:\s*this\.exportParams\.cam_offset_y/);
-    assert.match(persistMethod, /zoom:\s*this\.exportParams\.cam_zoom/);
+    assert.match(persistMethod, /const cameraParams = this\.currentCameraParams\(\)/);
+    assert.match(persistMethod, /x:\s*cameraParams\.offset_x/);
+    assert.match(persistMethod, /y:\s*cameraParams\.offset_y/);
+    assert.match(persistMethod, /zoom:\s*cameraParams\.zoom/);
 
     const radarStart = poseStudioSource.indexOf("createCameraRadar(section)");
     const radarEnd = poseStudioSource.indexOf("\n    createLightRadar", radarStart);
