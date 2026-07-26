@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260726.17";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260726.18";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -40,7 +40,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = 10;
-const FRONTEND_BUILD = "20260726.3";
+const FRONTEND_BUILD = "20260726.4";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
@@ -167,8 +167,6 @@ const ICONS = Object.freeze({
     dice: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" class="fill"/><circle cx="15.5" cy="8.5" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="8.5" cy="15.5" r="1.4" class="fill"/><circle cx="15.5" cy="15.5" r="1.4" class="fill"/></svg>`,
     camera: `<svg viewBox="0 0 24 24"><path d="M4 7.5h3l1.4-2h7.2l1.4 2h3v11H4v-11Z"/><circle cx="12" cy="13" r="3.5"/></svg>`,
     cameraAdd: `<svg viewBox="0 0 24 24"><path d="M3 8h3l1.5-2h7L16 8h2v4"/><path d="M12 19H3V8m16 7v6m-3-3h6"/><circle cx="10" cy="13" r="3"/></svg>`,
-    rollLeft: `<svg viewBox="0 0 24 24"><path d="M5 8v5h5"/><path d="M6 13a7 7 0 1 0 2-7"/></svg>`,
-    rollRight: `<svg viewBox="0 0 24 24"><path d="M19 8v5h-5"/><path d="M18 13a7 7 0 1 1-2-7"/></svg>`,
 });
 
 
@@ -526,14 +524,7 @@ class Factory3DWidget {
                             <span class="vnccs-i3s__camera-look-arrow vnccs-i3s__camera-look-arrow--left">‹</span>
                             <span class="vnccs-i3s__camera-look-reticle" aria-hidden="true"></span>
                         </div>
-                        <div class="vnccs-i3s__camera-roll" title="Camera roll">
-                            <span class="vnccs-i3s__camera-roll-icon">${ICONS.rollLeft}</span>
-                            <input class="vnccs-i3s__range vnccs-i3s__camera-roll-range"
-                                type="range" min="-30" max="30" step=".25" value="0"
-                                aria-label="Roll camera" />
-                            <span class="vnccs-i3s__camera-roll-icon">${ICONS.rollRight}</span>
-                        </div>
-                        <div class="vnccs-i3s__camera-help">Drag to look · slider to roll</div>
+                        <div class="vnccs-i3s__camera-help">Drag to look</div>
                         <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__camera-add" type="button">
                             ${ICONS.cameraAdd}<span>Add camera</span>
                         </button>
@@ -785,7 +776,6 @@ class Factory3DWidget {
             generate: $(".vnccs-i3s__generate"),
             cameraLook: $(".vnccs-i3s__camera-look"),
             cameraReticle: $(".vnccs-i3s__camera-look-reticle"),
-            cameraRoll: $(".vnccs-i3s__camera-roll-range"),
             cameraAdd: $(".vnccs-i3s__camera-add"),
             cameraCount: $(".vnccs-i3s__camera-count"),
             cameraGroupCount: $(".vnccs-i3s__camera-group-count"),
@@ -1238,24 +1228,6 @@ class Factory3DWidget {
             event.preventDefault();
             rotate(delta);
         });
-
-        let previousRoll = 0;
-        const startRoll = () => {
-            previousRoll = Number(this.els.cameraRoll.value) || 0;
-        };
-        this._listen(this.els.cameraRoll, "pointerdown", startRoll);
-        this._listen(this.els.cameraRoll, "focus", startRoll);
-        this._listen(this.els.cameraRoll, "input", () => {
-            const value = Number(this.els.cameraRoll.value) || 0;
-            rotate({ roll: value - previousRoll });
-            previousRoll = value;
-        });
-        const resetRoll = () => {
-            previousRoll = 0;
-            this.els.cameraRoll.value = "0";
-        };
-        this._listen(this.els.cameraRoll, "change", resetRoll);
-        this._listen(this.els.cameraRoll, "pointerup", resetRoll);
     }
 
     async addCamera() {

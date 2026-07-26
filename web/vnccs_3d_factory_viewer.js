@@ -15,7 +15,7 @@ const SPLAT_BOUND_SAMPLES = 4_096;
 const INTERACTIVE_FRAME_MS = 1000 / 30;
 const LIGHTING_UPDATE_MS = 1000 / 15;
 const LIGHTING_BASE_RESPONSE = 0.65;
-export const FACTORY_VIEWER_BUILD = "20260726.17";
+export const FACTORY_VIEWER_BUILD = "20260726.18";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -1900,27 +1900,42 @@ export class Factory3DViewer {
         if (emit) this._emitState();
     }
 
-    rotateCameraFPV({ yaw = 0, pitch = 0, roll = 0 } = {}, { emit = true } = {}) {
+    rotateCameraFPV({ yaw = 0, pitch = 0 } = {}, { emit = true } = {}) {
         const yawRadians = THREE.MathUtils.degToRad(Number(yaw) || 0);
         const pitchRadians = THREE.MathUtils.degToRad(Number(pitch) || 0);
-        const rollRadians = THREE.MathUtils.degToRad(Number(roll) || 0);
-        if (!yawRadians && !pitchRadians && !rollRadians) return;
+        if (!yawRadians && !pitchRadians) return;
         const distance = Math.max(
             this.camera.position.distanceTo(this.controls.target),
             0.001,
         );
-        const delta = new THREE.Quaternion().setFromEuler(
-            new THREE.Euler(pitchRadians, yawRadians, rollRadians, "YXZ"),
-        );
-        this.camera.quaternion.multiply(delta).normalize();
-        const forward = new THREE.Vector3(0, 0, -1)
-            .applyQuaternion(this.camera.quaternion)
+        const worldUp = new THREE.Vector3(0, 1, 0);
+        const forward = this.controls.target.clone()
+            .sub(this.camera.position)
             .normalize();
-        const up = new THREE.Vector3(0, 1, 0)
-            .applyQuaternion(this.camera.quaternion)
-            .normalize();
+        if (yawRadians) forward.applyAxisAngle(worldUp, yawRadians).normalize();
+        if (pitchRadians) {
+            const currentPitch = Math.asin(THREE.MathUtils.clamp(
+                forward.dot(worldUp),
+                -1,
+                1,
+            ));
+            const maximumPitch = THREE.MathUtils.degToRad(89);
+            const targetPitch = THREE.MathUtils.clamp(
+                currentPitch + pitchRadians,
+                -maximumPitch,
+                maximumPitch,
+            );
+            const appliedPitch = targetPitch - currentPitch;
+            const right = new THREE.Vector3().crossVectors(forward, worldUp);
+            if (right.lengthSq() > 1e-12 && Math.abs(appliedPitch) > 1e-12) {
+                forward.applyAxisAngle(right.normalize(), appliedPitch).normalize();
+            }
+        }
         this.controls.target.copy(this.camera.position).addScaledVector(forward, distance);
-        this.camera.up.copy(up);
+        // The look pad owns yaw/pitch only. Rebuilding from world-up prevents
+        // local quaternion composition from accumulating an unintended roll.
+        this.camera.up.copy(worldUp);
+        this.camera.lookAt(this.controls.target);
         this.controls.update();
         this._updateClipPlanes();
         this._cameraStateDirty = false;

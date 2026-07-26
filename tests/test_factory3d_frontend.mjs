@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260726\.3"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260726\.4"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -415,18 +415,26 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     )?.[0] || "";
     assert.match(cameraBlock, />Camera</);
     assert.match(cameraBlock, /vnccs-i3s__camera-look/);
-    assert.match(cameraBlock, /type="range"[\s\S]*?aria-label="Roll camera"/);
+    assert.doesNotMatch(cameraBlock, /camera-roll|Roll camera|slider to roll/);
     assert.match(cameraBlock, />Add camera</);
     assert.match(cameraBlock, /<strong>Cameras<\/strong>/);
     assert.doesNotMatch(cameraBlock, /type="text"/);
     assert.doesNotMatch(cameraBlock, /type="number"/);
+    const cameraControls = studio.match(
+        /_bindCameraControls\(\) \{[\s\S]*?\n    \}\n\n    async addCamera/,
+    )?.[0] || "";
+    assert.match(cameraControls, /setPointerCapture\?\.\(event\.pointerId\)/);
+    assert.match(cameraControls, /rotate\(\{ yaw: -deltaX \* 0\.18, pitch: -deltaY \* 0\.18 \}\)/);
+    assert.doesNotMatch(cameraControls, /cameraRoll|roll\s*:/);
     assert.match(studio, /async addCamera\(\)/);
     assert.match(studio, /_selectCamera\(cameraId\)/);
     assert.match(studio, /_exitCameraView\(\{ restore = true \}/);
     assert.match(studio, /this\._cameraReturnState = this\._normalizeCameraState/);
     assert.match(studio, /cameras: this\._normalizeSceneCameras/);
     assert.match(viewer, /rotateCameraFPV/);
-    assert.match(viewer, /this\.camera\.quaternion\.multiply\(delta\)/);
+    assert.match(viewer, /this\.camera\.up\.copy\(worldUp\)/);
+    assert.match(viewer, /this\.camera\.lookAt\(this\.controls\.target\)/);
+    assert.doesNotMatch(viewer, /new THREE\.Euler\(pitchRadians, yawRadians, rollRadians/);
     assert.match(viewer, /cameraState = null/);
     assert.match(studio, /captureSet: sceneId =>/);
     assert.match(studio, /form\.append\("current", current, "current\.png"\)/);
@@ -601,7 +609,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260726.17");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260726.18");
     const fpvViewer = Object.create(module.Factory3DViewer.prototype);
     fpvViewer.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
     fpvViewer.camera.position.set(1, 2, 3);
@@ -615,15 +623,32 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     fpvViewer.invalidate = () => {};
     fpvViewer.options = { onStateChange() {} };
     const fpvPosition = fpvViewer.camera.position.clone();
-    fpvViewer.rotateCameraFPV(
-        { yaw: 18, pitch: -7, roll: 11 },
-        { emit: false },
-    );
+    for (const delta of [
+        { yaw: 18, pitch: -7 },
+        { yaw: -9, pitch: 4 },
+        { yaw: 13, pitch: -3 },
+        { yaw: -5, pitch: 6 },
+    ]) {
+        fpvViewer.rotateCameraFPV(delta, { emit: false });
+    }
     assert.deepEqual(fpvViewer.camera.position.toArray(), fpvPosition.toArray());
     assert.ok(
         Math.abs(fpvViewer.camera.position.distanceTo(fpvViewer.controls.target) - 1) < 1e-9,
     );
-    assert.notDeepEqual(fpvViewer.camera.up.toArray(), [0, 1, 0]);
+    assert.deepEqual(fpvViewer.camera.up.toArray(), [0, 1, 0]);
+    const fpvForward = fpvViewer.controls.target.clone()
+        .sub(fpvViewer.camera.position)
+        .normalize();
+    const expectedScreenUp = new THREE.Vector3(0, 1, 0)
+        .addScaledVector(fpvForward, -fpvForward.y)
+        .normalize();
+    const actualScreenUp = new THREE.Vector3(0, 1, 0)
+        .applyQuaternion(fpvViewer.camera.quaternion)
+        .normalize();
+    assert.ok(
+        actualScreenUp.distanceTo(expectedScreenUp) < 1e-9,
+        "yaw/pitch look input must not accumulate camera roll",
+    );
     assert.deepEqual(fpvViewer.getCameraState().position, [1, 2, 3]);
     const modifierState = module.createDirectionalLightingModifier();
     assert.equal(typeof modifierState.modifier.apply, "function");

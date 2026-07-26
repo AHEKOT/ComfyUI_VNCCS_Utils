@@ -251,19 +251,6 @@
 }
 .vnccs-i3s__camera-look-reticle::before { width: 24px; height: 1px; }
 .vnccs-i3s__camera-look-reticle::after { width: 1px; height: 24px; }
-.vnccs-i3s__camera-roll {
-    display: grid;
-    grid-template-columns: 22px minmax(0,1fr) 22px;
-    align-items: center;
-    gap: 5px;
-}
-.vnccs-i3s__camera-roll-icon {
-    display: grid;
-    place-items: center;
-    color: var(--i3-muted);
-}
-.vnccs-i3s__camera-roll-icon svg { width: 16px; height: 16px; }
-.vnccs-i3s__camera-roll-range { margin: 0; cursor: ew-resize; }
 .vnccs-i3s__camera-help {
     margin-top: -5px;
     color: var(--i3-dim);
