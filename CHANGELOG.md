@@ -1,3 +1,55 @@
+# Version 0.6.1
+## 3D Factory Cameras, Gaussian PLY Import, and Per-Pose Framing
+
+### New Features
+
+*   **Gaussian PLY import for 3D Factory**: Existing Gaussian models can now be added directly to the active scene from the Factory UI.
+    *   Binary little-endian Gaussian PLY files up to 2 GiB are streamed to temporary storage, fully inspected, and validated before the scene is changed; invalid, oversized, empty, and polygon-mesh payloads are rejected without leaving partial objects behind.
+    *   Imported coordinates are normalized into Factory's canonical source convention so the live SPLAT viewport and later object export preserve the model's expected world orientation.
+    *   Each import becomes a persistent visible layer with source metadata, checksums, validation statistics, a generated card thumbnail, and the same transform, duplication, library, cache, and PLY export support as generated objects.
+    *   A successful import immediately loads, selects, and frames the new object in the live viewport.
+
+*   **Saved scene cameras in 3D Factory**: Added a dedicated Camera block and one persistent Cameras group for up to 32 viewpoints.
+    *   The graphical look pad and keyboard arrows rotate yaw and pitch in place while preserving camera position, target distance, vertical FOV, and a normalized up vector.
+    *   Cameras can be added from the current view, selected for exact viewport inspection, adjusted with the look pad, and deleted.
+    *   Leaving a saved-camera view by selecting it again, clicking empty viewport space, or selecting a scene object, group, or skydome restores the previous editor camera.
+    *   Current and saved cameras persist in scene manifests and workflow snapshots; scene-list summaries now expose the saved-camera count.
+
+*   **Multi-camera 3D Factory output**: Changed `preview` to an ordered ComfyUI `IMAGE` LIST.
+    *   Item 0 is the current viewport, followed by every saved camera in Cameras-group order.
+    *   Every frame is a clean PNG at the shared Scene Export dimensions, without the editor grid, selection bounds, or transform gizmos, while retaining its camera's own position, orientation, up vector, and FOV.
+    *   Scenes containing only an environment or saved cameras can participate in the same capture path; scenes with no renderable content still return one empty image.
+
+### Improvements
+
+*   **Atomic execution capture sets**: Current-view and saved-camera renders are now uploaded and committed as one token-, scene-revision-, render-revision-, dimension-, and camera-order-bound set.
+    *   The backend validates every frame before publishing any of them and rejects captures if the scene, export frame, or camera list changed during rendering.
+    *   Node execution waits for the complete requested set, reports viewport failures explicitly, and can reuse only a complete saved set that still matches the current scene revision.
+    *   Old capture directories are pruned after a successful atomic replacement, while internal capture manifests are omitted from public scene payloads and library packages.
+
+*   **Camera-aware PLY export and scene packages**: Updated Gaussian scene metadata to `vnccs-3d-factory-gaussian-scene/v2`.
+    *   Scene PLY headers now include the current camera plus every saved camera's stable ID, name, position, target, normalized up vector, and vertical FOV, alongside shared render dimensions and aspect metadata.
+    *   `.vnccs3d` scene packages preserve current and saved cameras; loaded copies receive fresh camera IDs so they remain independent of the source scene.
+
+*   **Pose Studio per-pose framing**: Image-mode pose tabs now retain independent camera framing.
+    *   Each character stores its own X/Y position and zoom for every pose, while yaw and pitch remain shared across all characters on that pose tab.
+    *   Switching, adding, deleting, resetting, copying, pasting, importing, exporting, saving to the library, loading a scene, and reopening a workflow now preserve the appropriate pose camera values.
+    *   Full-scene and active-pose captures apply the correct framing for each pose and restore the active tab's camera afterward; Animation mode continues to use animated character transforms and its shared capture camera.
+    *   Legacy poses without camera data are migrated from their character transform and existing camera settings.
+
+*   **Skydome library previews**: Skydome capture now temporarily removes every Gaussian root from the Spark scene, renders the environment alone, and restores object parents, order, visibility, selection, camera, and viewport state afterward.
+
+### Fixes
+
+*   **3D Factory FPV camera stability**: Reworked look-pad rotation around world-up yaw and a clamped local pitch axis so repeated adjustments cannot accumulate unintended roll or flip at the poles.
+*   **Pose Studio preview camera restoration**: Temporary Pose Manager fitting and batch captures now restore the active pose's camera instead of leaking preview framing into Studio or saved library poses.
+
+### Packaging and Documentation
+
+*   Bumped the package version to `0.6.1` and advanced the 3D Factory scene, export, workflow-state, frontend, and viewer schema/build revisions.
+*   Updated the README and 3D Factory guide for PLY import, saved cameras, camera-aware PLY/library persistence, and ordered multi-camera node output.
+*   Expanded backend, node, frontend, library, Pose Studio bootstrap, character-scene, and widget-hardening regression coverage for the new workflows.
+
 # Version 0.6.0
 ## VNCCS 3D Factory, Pose Studio Animation, and Multi-Character Scenes
 
@@ -11,16 +63,12 @@
 
 *   **Persistent 3D scenes and object editing**: Added host-backed scene management and multi-object composition.
     *   Scenes can be created, reopened, renamed, and deleted; their references, objects, generation settings, transforms, visibility, camera, render settings, lighting, skydome, and exports are retained.
-    *   Existing Gaussian PLY files can be imported from the Factory UI, validated and normalized into persistent scene objects, then selected and framed in the live viewport.
     *   The layer list supports drag-and-drop ordering, visibility, inline rename, duplication, deletion, grouping, ungrouping, and group transforms.
     *   Viewport selection and gizmos provide object and group translation, rotation, and uniform scaling.
-    *   A new left-panel Camera block provides graphical first-person yaw/pitch and roll controls, plus one Cameras group for up to 32 saved scene viewpoints.
-    *   Selecting a saved camera switches the viewport to its view; clearing that selection restores the previous editor camera.
 
 *   **Native Gaussian viewport and scene output**: Added a bundled SparkJS/Three.js viewport that renders multiple Gaussian objects together.
     *   Supports orbit, pan, detailed zoom, adaptive clipping, selection bounds, an optional grid, and quality LOD.
-    *   The node returns `preview` as an ordered `IMAGE` LIST: current viewport first, then every saved scene camera, all without editor overlays and at the shared Scene Export dimensions.
-    *   Execution captures are committed atomically so current and saved-camera images cannot be mixed across scene revisions.
+    *   The node returns a clean `preview` image of the complete scene without editor overlays.
     *   Canonical PLY assets are converted lazily into a shared, bounded, content-addressed SPLAT cache for viewport rendering.
 
 *   **3D Factory lighting and environments**: Added persistent realtime lighting presets and custom scene lighting.
@@ -29,10 +77,9 @@
 
 *   **Gaussian PLY export and model library**: Added reusable object and scene assets.
     *   Object and combined-scene PLY exports bake position, rotation, and uniform scale into Gaussian centers and covariance while preserving opacity, color, and available spherical-harmonic data.
-    *   Scene export includes persistent dimensions, aspect presets, FOV, current and saved-camera metadata, and an optional camera-frame overlay.
+    *   Scene export includes persistent dimensions, aspect presets, FOV, camera metadata, and an optional camera-frame overlay.
     *   The local and Hugging Face-backed library stores objects, complete `.vnccs3d` scenes, and skydomes with generated previews.
-    *   Skydome library previews temporarily remove every Gaussian object from the Spark scene, render only the environment, and restore the complete viewport state afterward.
-    *   Scene packages preserve layer order, groups, visibility, transforms, current and saved cameras, render settings, lighting, and environment data; remote entries load as independent scene copies.
+    *   Scene packages preserve layer order, groups, visibility, transforms, camera, render settings, lighting, and environment data; remote entries load as independent scene copies.
 
 *   **Pose Studio Animation mode**: Added a complete keyframe editor alongside the existing Image mode.
     *   Provides a dope-sheet timeline with FPS and duration controls, playback, looping, playhead scrubbing, Auto-Key, snapping, per-bone tracks, model-rotation tracks, and anatomical track groups.
