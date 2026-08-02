@@ -6,13 +6,75 @@ import {
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
     createPoseStudioCharacter,
+    extractActiveCharacterTransformFromSceneAsset,
+    extractActivePoseFromSceneAsset,
     nextCharacterColor,
     nextCharacterSlot,
     normalizeCharacterColor,
     normalizeCharacterTransform,
     normalizePoseStudioCharacters,
+    normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
 } from "../web/vnccs_pose_characters.mjs";
+
+
+test("one-character one-pose scene wrappers remain individual library poses", () => {
+    const wrapped = {
+        schema_version: 3,
+        prompt: "top-level prompt",
+        cameraParams: { offset_x: 2, offset_y: -1, zoom: 1.4, yaw_deg: 10, pitch_deg: 0 },
+        characters: [{
+            id: "character-1",
+            poses: [{ bones: { head: [5, 10, 15] } }],
+        }],
+    };
+
+    const pose = extractActivePoseFromSceneAsset(wrapped);
+
+    assert.deepEqual(pose, {
+        bones: { head: [5, 10, 15] },
+        cameraParams: wrapped.cameraParams,
+        prompt: "top-level prompt",
+    });
+    assert.notEqual(pose, wrapped.characters[0].poses[0]);
+    assert.notEqual(pose.bones, wrapped.characters[0].poses[0].bones);
+    pose.bones.head[0] = 99;
+    assert.equal(wrapped.characters[0].poses[0].bones.head[0], 5);
+});
+
+
+test("character and pose axes do not implicitly classify a library pose as a set", () => {
+    const wrapped = {
+        active_character_id: "support",
+        activeTab: 1,
+        characters: [
+            {
+                id: "lead",
+                transform: { x: 1, y: 2, z: 3, zoom: 1.1 },
+                poses: [{ marker: "lead-1" }, { marker: "lead-2" }],
+            },
+            {
+                id: "support",
+                transform: { x: -4, y: 5, z: 6, zoom: 1.7 },
+                poses: [{ marker: "support-1" }, { marker: "support-2" }],
+            },
+        ],
+    };
+    const pose = extractActivePoseFromSceneAsset(wrapped);
+    assert.deepEqual(pose, { marker: "support-2" });
+    assert.deepEqual(
+        extractActiveCharacterTransformFromSceneAsset(wrapped),
+        { x: -4, y: 5, z: 6, zoom: 1.7 },
+    );
+
+    const poseSet = {
+        type: "pose_set",
+        characters: [{ poses: [{ marker: 1 }] }],
+        poses: [{ marker: 1 }],
+    };
+    assert.equal(extractActivePoseFromSceneAsset(poseSet), null);
+    assert.equal(extractActiveCharacterTransformFromSceneAsset(poseSet), null);
+});
 
 
 test("legacy singleton state migrates to one main character", () => {
@@ -135,6 +197,27 @@ test("character colors and transforms are normalized and bounded", () => {
     assert.equal(second.slot, 1);
     assert.equal(second.color, DEFAULT_CHARACTER_COLORS[1]);
     assert.deepEqual(second.transform, { x: 1, y: 2, z: 3, zoom: 4 });
+});
+
+
+test("SAM projection cameras survive JSON serialization with finite values only", () => {
+    const source = {
+        fov: 37.5,
+        cameraPosition: { x: -1.25, y: 12.5, z: 42 },
+        ignored: "runtime-only",
+    };
+    assert.deepEqual(normalizeSAMProjectionFrame(source), {
+        fov: 37.5,
+        cameraPosition: { x: -1.25, y: 12.5, z: 42 },
+    });
+    assert.equal(normalizeSAMProjectionFrame({
+        fov: 0,
+        cameraPosition: { x: 0, y: 0, z: 0 },
+    }), null);
+    assert.equal(normalizeSAMProjectionFrame({
+        fov: 30,
+        cameraPosition: { x: 0, y: Number.NaN, z: 0 },
+    }), null);
 });
 
 test("saved camera framing converts zoom around the model camera target", () => {

@@ -177,7 +177,7 @@ test("image pose tabs keep independent camera framing", () => {
 test("library poses key their saved crop and zoom before editor commit", () => {
     const framingMethod = methodSource(
         poseStudioSource,
-        "applyLibraryPoseFraming(cameraParams)",
+        "applyLibraryPoseTransform(transformSource, cameraParams = {})",
         "\n    async loadCharacterSceneLibraryAsset(",
     );
     assert.match(
@@ -199,24 +199,59 @@ test("library poses key their saved crop and zoom before editor commit", () => {
         "\n    showSettingsModal()",
     );
     const snapshotCamera = loadMethod.indexOf("const savedFraming = (");
+    const snapshotTransform = loadMethod.indexOf("const activeSceneTransform = activeScenePose");
     const stripCamera = loadMethod.indexOf(
         "const pose = this.stripSceneCameraFromPose(poseSource)",
     );
     const applyPose = loadMethod.indexOf("this.viewer.setPose(pose, true)");
-    const restoreCamera = loadMethod.indexOf(
-        "this.applyLibraryPoseFraming(savedFraming)",
+    const restoreSceneTransform = loadMethod.indexOf(
+        "this.applyLibraryPoseTransform(activeSceneTransform, savedAngles)",
         applyPose,
+    );
+    const restoreLegacyCamera = loadMethod.indexOf(
+        "this.applyLibraryPoseFraming(savedFraming)",
+        restoreSceneTransform,
     );
     const commitPose = loadMethod.indexOf(
         "this.commitViewerPoseToCurrentEditor()",
-        restoreCamera,
+        restoreLegacyCamera,
     );
 
+    assert.ok(snapshotTransform >= 0, "scene character transform must be preserved before pose cleanup");
     assert.ok(snapshotCamera >= 0, "cameraParams must be preserved before pose cleanup");
     assert.ok(stripCamera > snapshotCamera, "pose-local camera data is stripped only after it is saved");
     assert.ok(applyPose > stripCamera, "the skeletal pose is applied before restoring its framing");
-    assert.ok(restoreCamera > applyPose, "saved crop and zoom are restored after applying the pose");
-    assert.ok(commitPose > restoreCamera, "the restored framing reaches the active character transform");
+    assert.ok(restoreSceneTransform > applyPose, "v3 character transform is restored without conversion");
+    assert.ok(restoreLegacyCamera > restoreSceneTransform, "legacy flat poses keep their camera conversion fallback");
+    assert.ok(commitPose > restoreLegacyCamera, "the restored framing reaches the active character transform");
+    const snapshotProjection = loadMethod.indexOf("const savedSAMProjection = normalizeSAMProjectionFrame(");
+    const restoreProjection = loadMethod.indexOf(
+        "this.applyLibrarySAMProjection(savedSAMProjection)",
+        restoreLegacyCamera,
+    );
+    assert.ok(snapshotProjection > snapshotCamera, "SAM projection camera is preserved before pose cleanup");
+    assert.ok(restoreProjection > restoreLegacyCamera, "SAM projection camera is restored after character placement");
+});
+
+
+test("library saving persists the active SAM projection camera in both pose representations", () => {
+    const saveMethod = methodSource(
+        poseStudioSource,
+        "async saveToLibrary(name, includePreview = true, metadata = {})",
+        "\n    applyLibraryPoseFraming(cameraParams)",
+    );
+    assert.match(
+        saveMethod,
+        /normalizeSAMProjectionFrame\(this\._samCamStoredProjectionFrame\)/,
+    );
+    assert.match(
+        saveMethod,
+        /selectedPose\.sam_projection = JSON\.parse\(JSON\.stringify\(savedSAMProjection\)\)/,
+    );
+    assert.match(
+        saveMethod,
+        /pose\.sam_projection = JSON\.parse\(JSON\.stringify\(savedSAMProjection\)\)/,
+    );
 });
 
 

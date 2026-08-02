@@ -67,6 +67,106 @@ test("Pose Studio library launcher uses the concise product name", () => {
 });
 
 
+test("Pose Library create-new publishing cannot retain or silently reuse the old target", () => {
+    const modalStart = poseStudioSource.indexOf("showPublishLocalRepositoryModal(forceConfigure = false)");
+    const modalEnd = poseStudioSource.indexOf("\n    async runLocalPoseRepositoryPublish", modalStart);
+    const modalMethod = poseStudioSource.slice(modalStart, modalEnd);
+    assert.match(modalMethod, /let existingRepoDraft = current\.publish_repo_id \|\| "";/);
+    assert.match(modalMethod, /let newRepoDraft = "";/);
+    assert.match(
+        modalMethod,
+        /repoEl\.value = modeEl\.value === "create" \? newRepoDraft : existingRepoDraft;/,
+    );
+
+    const publishStart = poseStudioSource.indexOf("async runLocalPoseRepositoryPublish(payload)");
+    const publishEnd = poseStudioSource.indexOf("\n    async addPoseRepository", publishStart);
+    const publishMethod = poseStudioSource.slice(publishStart, publishEnd);
+    assert.match(publishMethod, /const repoId = String\(payload\?\.repo_id \|\| ""\)\.trim\(\);/);
+    assert.match(publishMethod, /this\.setRepositoryProgressState\(progressKey, \{ repoId \}\);/);
+    assert.match(publishMethod, /JSON\.stringify\(\{ \.\.\.payload, repo_id: repoId, task_id: taskId \}\)/);
+    assert.match(publishMethod, /this\._localPoseRepositoryPublishActive/);
+});
+
+
+test("adding a Pose Library repository downloads it and refreshes the library in one action", () => {
+    const normalizeStart = poseStudioSource.indexOf("normalizePoseRepositoryInput(value)");
+    const addStart = poseStudioSource.indexOf("async addPoseRepository()", normalizeStart);
+    const addEnd = poseStudioSource.indexOf("\n    createRepositoryTaskId", addStart);
+    const normalizeMethod = poseStudioSource.slice(normalizeStart, addStart);
+    const addMethod = poseStudioSource.slice(addStart, addEnd);
+    assert.match(normalizeMethod, /\['huggingface\.co', 'www\.huggingface\.co'\]/);
+    assert.match(normalizeMethod, /return `\$\{parts\[0\]\}\/\$\{parts\[1\]\}`;/);
+    assert.match(addMethod, /this\.normalizePoseRepositoryInput\(input\?\.value\)/);
+    assert.match(addMethod, /const taskId = this\.createRepositoryTaskId\("repo-add"\);/);
+    assert.match(addMethod, /JSON\.stringify\(\{ repo_id: repoId, task_id: taskId \}\)/);
+    assert.match(addMethod, /setInterval\(\(\) => this\.pollRepositoryProgress\(taskId, progress\), 350\)/);
+    assert.match(addMethod, /const refreshed = data\.refreshed \|\| \{\};/);
+    assert.match(addMethod, /await this\.refreshLibrary\(true\);/);
+    assert.match(addMethod, /refreshed\.status !== "error"[\s\S]*await this\.toggleLibrarySettings\(false\);/);
+});
+
+
+test("loading a scene-format pose preserves Pose Manager while animations open Studio", () => {
+    const loadStart = poseStudioSource.indexOf("async loadCharacterSceneLibraryAsset(asset, { animation = false } = {})");
+    const loadEnd = poseStudioSource.indexOf("\n    loadAnimationLibraryAsset", loadStart);
+    const loadMethod = poseStudioSource.slice(loadStart, loadEnd);
+    assert.match(
+        loadMethod,
+        /if \(animation\) this\.setInterfaceMode\("studio", \{ sync: false \}\);/,
+    );
+    assert.doesNotMatch(
+        loadMethod,
+        /\n\s*this\.setInterfaceMode\("studio", \{ sync: false \}\);/,
+    );
+
+    const dispatchStart = poseStudioSource.indexOf("async loadFromLibrary(poseOrName)");
+    const dispatchEnd = poseStudioSource.indexOf("\n    showSettingsModal()", dispatchStart);
+    const dispatchMethod = poseStudioSource.slice(dispatchStart, dispatchEnd);
+    assert.match(
+        dispatchMethod,
+        /const activeScenePose = assetType === "pose"[\s\S]*extractActivePoseFromSceneAsset\(data\.pose\)/,
+    );
+    assert.match(
+        dispatchMethod,
+        /assetType === "animation"[\s\S]*data\.pose\.characters\.length/,
+    );
+    assert.match(
+        dispatchMethod,
+        /JSON\.stringify\(activeScenePose \|\| data\.pose\)/,
+    );
+    assert.match(
+        dispatchMethod,
+        /data\.pose\?\.type === "pose_set"[\s\S]*this\.loadPoseSetAsset\(data\.pose\)/,
+    );
+});
+
+
+test("only explicit pose-set assets replace the Pose Manager pose list", () => {
+    const setStart = poseStudioSource.indexOf("loadPoseSetAsset(asset)");
+    const setEnd = poseStudioSource.indexOf("\n    loadAnimationLibraryAsset", setStart);
+    const setMethod = poseStudioSource.slice(setStart, setEnd);
+    assert.match(setMethod, /this\.poses = sourcePoses\.map/);
+    assert.match(setMethod, /this\.activeTab = 0;/);
+
+    const dispatchStart = poseStudioSource.indexOf("async loadFromLibrary(poseOrName)");
+    const dispatchEnd = poseStudioSource.indexOf("\n    showSettingsModal()", dispatchStart);
+    const dispatchMethod = poseStudioSource.slice(dispatchStart, dispatchEnd);
+    assert.match(dispatchMethod, /const isPoseSet = data\.pose\?\.type === "pose_set"/);
+    assert.doesNotMatch(dispatchMethod, /const isPoseSet = [^;]*characters/);
+});
+
+
+test("saving a current library pose does not serialize the whole Pose Manager set", () => {
+    const saveStart = poseStudioSource.indexOf("async saveToLibrary(name, includePreview = true, metadata = {})");
+    const saveEnd = poseStudioSource.indexOf("\n    applyLibraryPoseFraming", saveStart);
+    const saveMethod = poseStudioSource.slice(saveStart, saveEnd);
+    assert.match(saveMethod, /type: animationMode \? "pose_animation" : "scene_pose"/);
+    assert.match(saveMethod, /const selectedPose = serialized\.poses\[this\.activeTab\]/);
+    assert.match(saveMethod, /serialized\.poses = \[selectedPose\];/);
+    assert.match(saveMethod, /activeTab: animationMode \? this\.activeTab : 0/);
+});
+
+
 test("Pose Manager regenerates missing previews after worker model load and mode entry", () => {
     const modeStart = poseStudioSource.indexOf("setInterfaceMode(mode, { sync = true } = {})");
     const modeEnd = poseStudioSource.indexOf("\n    applyInterfaceMode()", modeStart);
@@ -141,10 +241,10 @@ test("Pose Manager independently fits and centers every deformed pose preview", 
     const refreshStart = poseStudioSource.indexOf("refreshAllManagerPreviews(generation");
     const refreshEnd = poseStudioSource.indexOf("\n    updateExistingPoseManagerDetailCards", refreshStart);
     const refreshMethod = poseStudioSource.slice(refreshStart, refreshEnd);
-    assert.match(refreshMethod, /viewer\.setPose\(pose, true\);[\s\S]*computeModelFitFraming\?\.\(/);
+    assert.match(refreshMethod, /viewer\.setPose\(pose, true\);[\s\S]*computePoseManagerCaptureFraming\(w, h, poseCamera\)/);
     assert.match(
         refreshMethod,
-        /viewer\.capture\([\s\S]*framing\?\.zoom \?\? 1,[\s\S]*framing\?\.offsetX \?\? 0,[\s\S]*framing\?\.offsetY \?\? 0/,
+        /if \(!framing\) continue;[\s\S]*viewer\.capture\([\s\S]*framing\.zoom,[\s\S]*framing\.offsetX,[\s\S]*framing\.offsetY/,
     );
     assert.match(
         refreshMethod,
@@ -154,6 +254,25 @@ test("Pose Manager independently fits and centers every deformed pose preview", 
 
     assert.match(poseStudioCoreSource, /computeModelFitFraming\(/);
     assert.match(poseStudioCoreSource, /const determinant = j00 \* j11 - j01 \* j10;/);
+});
+
+test("Pose Manager RUN uploads the visible cards without rendering again", () => {
+    const syncStart = poseStudioSource.indexOf("syncToNode(fullCapture = false, options = {})");
+    const syncEnd = poseStudioSource.indexOf("\n    loadFromNode()", syncStart);
+    const syncMethod = poseStudioSource.slice(syncStart, syncEnd);
+    assert.match(syncMethod, /const reusePoseManagerCaptures = \(/);
+    assert.match(syncMethod, /options\.executionCapture === true[\s\S]*&& poseManagerInterface/);
+    assert.match(syncMethod, /\|\| reusePoseManagerCaptures/);
+    assert.match(syncMethod, /this\._executionCaptureSnapshot = this\.poseCaptures\.slice\(\)/);
+    assert.match(syncMethod, /Pose Manager previews are not ready/);
+    assert.doesNotMatch(syncMethod, /computePoseManagerCaptureFraming/);
+
+    const uploadStart = poseStudioSource.indexOf("const uploadPoseStudioSync = async");
+    const uploadEnd = poseStudioSource.indexOf("\n        const reportPoseStudioSyncFailure", uploadStart);
+    const uploadMethod = poseStudioSource.slice(uploadStart, uploadEnd);
+    assert.match(uploadMethod, /const capturedImages = node\.studioWidget\._executionCaptureSnapshot/);
+    assert.match(uploadMethod, /captured_images: capturedImages/);
+    assert.match(uploadMethod, /lighting_prompts: capturedLightingPrompts/);
 });
 
 test("Reset clears library framing together with the pose", () => {
@@ -171,6 +290,25 @@ test("Reset clears library framing together with the pose", () => {
         /syncToNode\(false, \{ skipCapture: true, skipCaptureUpload: true \}\);/,
     );
     assert.match(resetMethod, /this\.poseCaptures\[this\.activeTab\] = null;/);
+    assert.match(resetMethod, /this\.resetMeshProportions\(\);/);
+
+    const proportionsStart = poseStudioSource.indexOf("\n    resetMeshProportions() {");
+    const proportionsEnd = poseStudioSource.indexOf("\n    resetCurrentAnimation()", proportionsStart);
+    const proportionsMethod = poseStudioSource.slice(proportionsStart, proportionsEnd);
+    assert.match(
+        proportionsMethod,
+        /Object\.assign\(this\.meshParams, DEFAULT_POSE_STUDIO_MESH_PROPORTIONS\);/,
+    );
+    assert.match(
+        proportionsMethod,
+        /LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS[\s\S]*delete this\.meshParams\[key\]/,
+    );
+    assert.match(proportionsMethod, /viewer\.updateHeadScale\?\./);
+    assert.match(proportionsMethod, /viewer\.updateArmScale\?\./);
+    assert.match(proportionsMethod, /viewer\.updateHandScale\?\./);
+    assert.match(proportionsMethod, /viewer\.updateFootScale\?\./);
+    assert.match(proportionsMethod, /viewer\.updateBoneLengthScale\?\./);
+    assert.doesNotMatch(proportionsMethod, /\b(age|gender|weight|muscle|height|breast_size|penis_len)\b/);
 
     const clearStart = poseAnimationSource.indexOf("export function createClearedAnimationState");
     const clearEnd = poseAnimationSource.indexOf("\nexport function serializeAnimationStateSnapshot", clearStart);
@@ -395,4 +533,26 @@ test("full capture updates every character for the current frame or pose before 
         sceneUpdate >= 0 && compositeCapture > sceneUpdate,
         "the complete character scene must be updated before its composite capture",
     );
+});
+
+
+test("repository Git fallback keeps clone diagnostics visible", () => {
+    const renderStart = poseStudioSource.indexOf("renderPoseRepositorySettings() {");
+    const renderEnd = poseStudioSource.indexOf("\n    renderLocalPoseRepositorySettings()", renderStart);
+    const renderMethod = poseStudioSource.slice(renderStart, renderEnd);
+    assert.match(renderMethod, /repo\.git_error/);
+    assert.match(renderMethod, /Git clone failed — HTTP fallback was used/);
+    assert.match(renderMethod, /vnccs-ps-library-repo-diagnostic/);
+
+    const progressStart = poseStudioSource.indexOf("createInlineRepositoryProgress(key");
+    const progressEnd = poseStudioSource.indexOf("\n    async pollRepositoryProgress", progressStart);
+    const progressMethod = poseStudioSource.slice(progressStart, progressEnd);
+    assert.match(progressMethod, /hasOwnProperty\.call\(status, "git_error"\)/);
+    assert.match(progressMethod, /patch\.git_error = status\.git_error/);
+
+    const addStart = poseStudioSource.indexOf("async addPoseRepository() {");
+    const addEnd = poseStudioSource.indexOf("\n    createRepositoryTaskId", addStart);
+    const addMethod = poseStudioSource.slice(addStart, addEnd);
+    assert.match(addMethod, /!refreshed\.git_error/);
+    assert.match(addMethod, /Open Git diagnostics below/);
 });
