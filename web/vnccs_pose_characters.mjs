@@ -49,6 +49,22 @@ export function normalizeCharacterTransform(source = {}) {
     };
 }
 
+export function normalizeSAMProjectionFrame(source) {
+    if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+    const fov = Number(source.fov);
+    const cameraPosition = source.cameraPosition;
+    const x = Number(cameraPosition?.x);
+    const y = Number(cameraPosition?.y);
+    const z = Number(cameraPosition?.z);
+    if (
+        !Number.isFinite(fov)
+        || fov <= 0
+        || fov >= 179
+        || ![x, y, z].every(Number.isFinite)
+    ) return null;
+    return { fov, cameraPosition: { x, y, z } };
+}
+
 export function cameraFramingToCharacterTransform(cameraParams, pivot) {
     const values = [
         cameraParams?.zoom,
@@ -143,6 +159,61 @@ export function createPoseStudioCharacter({
         poses: sourcePoses,
         animation: cloneJSON(animation, null),
     };
+}
+
+/**
+ * Newer Pose Studio versions wrap saved poses in the v3 character-scene
+ * schema. `characters[]` and each character's runtime `poses[]` do not make the
+ * library item a pose set; only the explicit `type: "pose_set"` format does.
+ * Resolve the pose selected when the item was saved without mutating the
+ * cached library response.
+ */
+function activeCharacterFromSceneAsset(data = {}) {
+    if (!data || typeof data !== "object" || !Array.isArray(data.characters)) return null;
+    if (data.type === "pose_set" || !data.characters.length) return null;
+    const requestedCharacterId = String(data.active_character_id || data.activeCharacterId || "");
+    return data.characters.find(character => (
+        String(character?.id || "") === requestedCharacterId
+    )) || data.characters[0];
+}
+
+export function extractActiveCharacterTransformFromSceneAsset(data = {}) {
+    const sourceCharacter = activeCharacterFromSceneAsset(data);
+    if (
+        !sourceCharacter?.transform
+        || typeof sourceCharacter.transform !== "object"
+        || Array.isArray(sourceCharacter.transform)
+    ) return null;
+    return normalizeCharacterTransform(sourceCharacter.transform);
+}
+
+export function extractActivePoseFromSceneAsset(data = {}) {
+    const sourceCharacter = activeCharacterFromSceneAsset(data);
+    if (!sourceCharacter) return null;
+    const sourcePoses = sourceCharacter?.poses;
+    if (!Array.isArray(sourcePoses) || !sourcePoses.length) return null;
+    const requestedPoseIndex = Math.max(0, Math.floor(finite(data.activeTab, 0)));
+    const sourcePose = sourcePoses[requestedPoseIndex] || sourcePoses[0];
+    if (!sourcePose || typeof sourcePose !== "object" || Array.isArray(sourcePose)) return null;
+
+    const pose = cloneJSON(sourcePose, null);
+    if (!pose) return null;
+    // Early v3 exports also mirrored the active pose at the top level. Keep
+    // those values as compatibility fallbacks for partially wrapped assets.
+    for (const key of [
+        "bones",
+        "hipBonePosition",
+        "ikEffectorPositions",
+        "poleTargetPositions",
+        "modelRotation",
+        "cameraParams",
+        "prompt",
+    ]) {
+        if (pose[key] === undefined && data[key] !== undefined) {
+            pose[key] = cloneJSON(data[key], data[key]);
+        }
+    }
+    return pose;
 }
 
 /**

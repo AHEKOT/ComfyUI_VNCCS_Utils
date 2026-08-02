@@ -1,3 +1,68 @@
+# Version 0.6.2
+## Pose Library Repository Sync, Publishing, and Pose Manager Reliability
+
+### New Features
+
+*   **Fast external Pose Library synchronization**: Public Hugging Face pose repositories now use a one-shot shallow Git clone instead of downloading every changed file through a separate HTTP request.
+    *   The complete repository is transferred with `git clone --depth 1 --single-branch --no-tags`, providing a substantial speedup for libraries containing hundreds or thousands of small pose and preview files.
+    *   The clone exists only in the operating system's temporary directory on the machine running ComfyUI. It is used as the import source and removed immediately after synchronization, without creating a nested Git checkout in `custom_nodes`, PoseLibrary, or `ComfyUI/user`.
+    *   Manifest paths, file boundaries, declared SHA-256 hashes, size limits, symbolic links, and Git LFS/Xet pointers are validated before files are imported into PoseLibrary.
+    *   Private repositories and unsupported Git/LFS transfers continue through the authenticated bounded HTTP path.
+
+*   **Automatic repository installation**: Adding a Pose Library repository is now a complete single action.
+    *   Both `owner/repository` identifiers and Hugging Face repository URLs are accepted.
+    *   Clicking Add registers the repository, immediately downloads its manifest, poses, animations, and previews, refreshes the library, and makes the new assets available without another user action.
+    *   Inline progress reports the current transfer, file count, imported, unchanged, and removed totals.
+
+*   **Second default Pose Library repository**: Added [`Totemistyk/General_Poses_PoseStudio`](https://huggingface.co/Totemistyk/General_Poses_PoseStudio) as the enabled second built-in repository after `MIUProject/VNCCS_PoseLibrary_Main`.
+    *   Existing installations receive it automatically after updating and restarting the node.
+    *   Its project title is fixed as **General Poses PoseStudio**, independently of generic legacy titles stored in a remote manifest.
+
+### Improvements
+
+*   **Repository diagnostics and recovery**: Git failures no longer disappear when the HTTP fallback begins.
+    *   The Git exit code and relevant stderr lines are retained in repository state, written to the ComfyUI log, and displayed in an expandable diagnostics block in Library settings.
+    *   Settings remain open after a fallback so the error can be inspected instead of being overwritten by per-file download progress.
+    *   Successfully cloned repositories are imported directly from their temporary checkout; the Windows directory-promotion step that could fail with `WinError 5` has been removed.
+
+*   **Reliable local-library publishing**: Publishing now binds every operation to the repository selected in the current dialog.
+    *   Switching between Create New and Use Existing keeps separate input drafts and cannot silently retain the previous target.
+    *   Create New requires and creates exactly the requested repository, while malformed requests can no longer fall back to the previously saved repository.
+    *   The active target is shown throughout upload, concurrent publish attempts are blocked, and the saved repository link changes only after the requested publish succeeds.
+
+*   **Explicit pose versus pose-set semantics**: Multi-character scene data and Pose Manager pose sets now use separate axes and separate loading paths.
+    *   A scene containing `characters[]` remains one library pose even when a character contains runtime `poses[]`; only an asset explicitly marked `type: "pose_set"` replaces the complete Pose Manager list.
+    *   Loading a single library pose updates the selected pose without deleting the other Pose Manager entries or switching the interface to Studio.
+    *   Loading an animation remains the only library operation that automatically switches to Studio and its animation timeline.
+    *   Saving Current Pose stores only the selected pose for every scene character; All Poses (Set) remains the explicit path for exporting the complete set.
+
+*   **Pose Manager preview and execution consistency**: Shape changes now produce one authoritative set of visible pose images.
+    *   Age, head size, and other supported mesh changes restart preview generation from the first card after the updated model is ready.
+    *   Every deformed pose is fitted and centered independently, and captures wait for the real skin texture before replacing a card.
+    *   RUN in Pose Manager uploads an immutable snapshot of the images already displayed in the cards. It performs no second camera fit or render reinterpretation that could change their scale or position.
+    *   Execution fails explicitly if a required Pose Manager card is incomplete instead of substituting a differently framed image.
+
+*   **Library camera and scene preservation**: Static library poses retain the framing that was visible when they were saved.
+    *   Scene-format poses restore the active character's exact saved transform rather than applying the legacy camera-pivot conversion a second time.
+    *   SAM projection FOV and camera position are normalized, serialized, published, downloaded, and restored alongside ordinary pose camera data.
+    *   Legacy flat poses continue to use the compatible camera-framing conversion path.
+
+### Fixes
+
+*   **Repository identity**: Fixed different third-party repositories inheriting the same generic `VNCCS Pose Library` title.
+*   **Stale publication target**: Fixed publish progress initially displaying the old repository and fixed Create New uploads that could create an empty repository while sending files to the previous target.
+*   **Repository installation timing**: Fixed newly added repositories remaining empty until a later enable, refresh, or restart action.
+*   **Pose Manager mode stability**: Fixed loading a static multi-character pose switching the UI back to standard Pose Studio.
+*   **Pose Manager set replacement**: Fixed a single scene pose being mistaken for a pose set and replacing the complete current pose list.
+*   **Pose Manager RUN framing**: Fixed execution recapturing correctly fitted cards with neutral or stale camera values, causing poses to become tiny, oversized, cropped, or displaced.
+*   **Saved pose framing**: Fixed library poses losing SAM projection zoom and camera position between save, publication, download, and reload.
+*   **Reset scope**: Reset now restores all head, limb, hand, foot, shoulder, hip, and spine mesh-proportion controls while leaving gender, age, weight, muscle, height, and other character attributes unchanged.
+
+### Packaging and Documentation
+
+*   Bumped the package version to `0.6.2`.
+*   Expanded Pose Library backend, publication, Git transport, character-schema, camera-framing, Pose Manager, and widget-hardening regression coverage.
+
 # Version 0.6.1
 ## 3D Factory Cameras, Gaussian PLY Import, and Per-Pose Framing
 

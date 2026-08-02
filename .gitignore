@@ -210,3 +210,6 @@ __marimo__/
 # img2threejs Studio runtime data (fallback paths outside ComfyUI)
 /output/vnccs_img2threejs/
 /models/LLM/img2threejs/
+
+# Runtime shallow clones used to accelerate external Pose Library sync.
+/PoseLibrary/.repository_git_cache/
