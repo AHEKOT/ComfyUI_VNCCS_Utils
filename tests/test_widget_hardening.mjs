@@ -66,6 +66,16 @@ test("Pose Studio library launcher uses the concise product name", () => {
     assert.doesNotMatch(poseStudioSource, /Pose Library Gallery/);
 });
 
+test("Pose Studio exposes male genitals only through an opt-in checkbox", () => {
+    assert.match(poseStudioSource, /show_genitals: false/);
+    assert.match(poseStudioSource, /genitalsLabel\.innerText = "Show Genitals"/);
+    assert.match(poseStudioSource, /this\.genderFields\.show_genitals = \{ field: genitalsField, gender: "male" \}/);
+    assert.match(
+        poseStudioSource,
+        /this\.meshParams\.show_genitals = genitalsCheckbox\.checked;\s*this\.onMeshParamsChanged\("show_genitals"\)/,
+    );
+});
+
 
 test("Pose Library create-new publishing cannot retain or silently reuse the old target", () => {
     const modalStart = poseStudioSource.indexOf("showPublishLocalRepositoryModal(forceConfigure = false)");

@@ -1,3 +1,22 @@
+# Version 0.6.4
+## PoseStudio Male Anatomy Visibility Control
+
+### New Features
+
+*   **Opt-in genital visibility for male characters**: Added a **Show Genitals** checkbox to PoseStudio's **Gender Settings** section.
+    *   The control is available when **Male** is selected and is unchecked by default.
+    *   The setting is stored independently for each character and preserved in PoseStudio scene and workflow data.
+
+### Improvements
+
+*   **Safer default character display**: Male genital geometry is now excluded from the rendered model unless **Show Genitals** is explicitly enabled.
+*   **Backward-compatible workflow loading**: Existing workflows and library scenes that do not contain the new `show_genitals` setting open with genital visibility disabled.
+*   **Immediate topology updates**: Enabling or disabling the option updates the live character mesh without requiring PoseStudio or the node to be reloaded.
+
+### Validation
+
+*   Added regression coverage for the default hidden state, explicit male opt-in, female exclusion, and the PoseStudio checkbox integration.
+
 # Version 0.6.3
 ## PoseStudio SAM 3D Body Retargeting and Video Stability
 

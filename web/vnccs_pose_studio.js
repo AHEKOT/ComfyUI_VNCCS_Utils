@@ -413,6 +413,23 @@ const STYLES = `
     align-items: center;
 }
 
+.vnccs-ps-checkbox-field {
+    flex-direction: row;
+    align-items: center;
+    gap: 7px;
+    min-height: 20px;
+}
+
+.vnccs-ps-checkbox-field input[type="checkbox"] {
+    margin: 0;
+    accent-color: var(--ps-accent);
+    cursor: pointer;
+}
+
+.vnccs-ps-checkbox-field .vnccs-ps-label {
+    cursor: pointer;
+}
+
 /* Slider */
 .vnccs-ps-slider-wrap {
     display: flex;
@@ -4093,6 +4110,7 @@ class PoseStudioWidget {
             // Female-specific
             breast_size: 0.5, firmness: 0.5,
             // Male-specific
+            show_genitals: false,
             penis_len: 0.5, penis_circ: 0.5, penis_test: 0.5,
             // Visual modifiers (client-side bone scaling)
             ...DEFAULT_POSE_STUDIO_MESH_PROPORTIONS,
@@ -4726,6 +4744,23 @@ class PoseStudioWidget {
             { key: "penis_circ", label: "Girth", min: 0, max: 1, step: 0.01, def: 0.5 },
             { key: "penis_test", label: "Testicles", min: 0, max: 1, step: 0.01, def: 0.5 }
         ];
+
+        const genitalsField = document.createElement("label");
+        genitalsField.className = "vnccs-ps-field vnccs-ps-checkbox-field";
+        const genitalsCheckbox = document.createElement("input");
+        genitalsCheckbox.type = "checkbox";
+        genitalsCheckbox.checked = this.meshParams.show_genitals === true;
+        const genitalsLabel = document.createElement("span");
+        genitalsLabel.className = "vnccs-ps-label";
+        genitalsLabel.innerText = "Show Genitals";
+        genitalsCheckbox.addEventListener("change", () => {
+            this.meshParams.show_genitals = genitalsCheckbox.checked;
+            this.onMeshParamsChanged("show_genitals");
+        });
+        genitalsField.append(genitalsCheckbox, genitalsLabel);
+        genderSection.content.appendChild(genitalsField);
+        this.genitalsCheckbox = genitalsCheckbox;
+        this.genderFields.show_genitals = { field: genitalsField, gender: "male" };
 
         for (const s of maleSliders) {
             const field = this.createSliderField(s.label, s.key, s.min, s.max, s.step, s.def, this.meshParams);
@@ -13147,7 +13182,7 @@ class PoseStudioWidget {
         return [
             "age", "gender", "weight", "muscle", "height",
             "breast_size", "firmness",
-            "penis_len", "penis_circ", "penis_test",
+            "show_genitals", "penis_len", "penis_circ", "penis_test",
         ].includes(key);
     }
 
@@ -13567,6 +13602,10 @@ class PoseStudioWidget {
     updateGenderVisibility() {
         if (!this.genderFields) return;
         const isFemale = this.meshParams.gender < 0.5;
+
+        if (this.genitalsCheckbox) {
+            this.genitalsCheckbox.checked = this.meshParams.show_genitals === true;
+        }
 
         for (const [key, info] of Object.entries(this.genderFields)) {
             if (info.gender === "female") {
