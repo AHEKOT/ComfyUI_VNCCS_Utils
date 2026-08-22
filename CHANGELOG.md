@@ -1,3 +1,28 @@
+# Version 0.6.3
+## PoseStudio SAM 3D Body Retargeting and Video Stability
+
+### Improvements
+
+*   **Stable SAM video proportions**: Video analysis now estimates body proportions across the sequence, selects robust median measurements, and retargets every frame onto one fixed MakeHuman rig.
+    *   Hip placement, limb lengths, and character proportions no longer pulse between independently fitted frames.
+    *   The final pass preserves SAM's dense joint rotations instead of replacing head and foot orientation with ambiguous image-space landmark alignment.
+*   **SAM mocap-compatible frame recovery**: An isolated frame without a valid body detection now holds the previous valid pose instead of aborting the complete video import.
+*   **Complete pose persistence**: PoseStudio now stores and restores the bone-local translations produced by SAM retargeting, including pelvis and upper-leg placement, across pose commits, tab changes, scene serialization, and playback.
+
+### Fixes
+
+*   **Missing feet during video playback**: Fixed pose-derived foot bone scale accumulating across frames and eventually collapsing the rendered feet.
+*   **Rear-view head flips**: Fixed dense SAM head rotations being overwritten by eye-midpoint alignment, which could turn the head backward and rotate it by 180 degrees when the subject faced away from the camera.
+*   **Standing leg alignment**: Fixed saved and reapplied SAM poses losing translated hip-root positions, which caused the legs to drift apart or no longer match the analyzed image.
+*   **Video pose jitter**: Fixed each frame changing the shared character rig before playback, a major source of visible jumping even when the underlying SAM detections were consistent.
+*   **Morph compatibility**: Body-shape edits now invalidate stale SAM bone translations before the character is rebuilt, preventing imported offsets from leaking into a newly proportioned mesh.
+
+### Validation
+
+*   Added regression coverage for translated-bone serialization, fixed-rig video retargeting, missing-frame fallback, foot-scale stability, and rear-view head orientation.
+*   Validated the standalone analysis and playback path with the repository's image samples and all 73 frames of its test video using the ComfyUI environment, without launching the ComfyUI server.
+*   The SAM 3D Body model and its inference results are unchanged; these fixes are limited to PoseStudio's pose application, persistence, and video playback behavior.
+
 # Version 0.6.2
 ## Pose Library Repository Sync, Publishing, and Pose Manager Reliability
 
