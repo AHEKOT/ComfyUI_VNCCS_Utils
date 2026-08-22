@@ -521,6 +521,76 @@ test("SAM import fits body proportions before building IK targets", () => {
     assert.ok(calls.indexOf("build-targets") < calls.indexOf("world-import"));
 });
 
+test("repeated SAM video imports reset pose-derived foot scale", () => {
+    const footLeft = new THREE.Bone();
+    const footRight = new THREE.Bone();
+    footLeft.name = "foot_l";
+    footRight.name = "foot_r";
+    footLeft.scale.setScalar(0.01);
+    footRight.scale.setScalar(0.02);
+
+    const viewer = Object.create(PoseViewerCore.prototype);
+    viewer.THREE = THREE;
+    viewer.bones = { foot_l: footLeft, foot_r: footRight };
+    viewer.boneList = [footLeft, footRight];
+    viewer.footScale = 1.25;
+    viewer.initialBoneStates = {
+        foot_l: { position: footLeft.position.clone() },
+        foot_r: { position: footRight.position.clone() },
+    };
+    viewer.skinnedMesh = {
+        rotation: { set() {} },
+        updateMatrixWorld() {},
+    };
+    viewer.skeleton = { update() {} };
+    viewer.recordState = () => {};
+    viewer.autoFitSAM3DBoneLengths = () => {};
+    viewer._buildSAM3DImportTargets = () => ({ worldKps: { pelvis: {} } });
+    viewer._applySAM3DRotationImport = () => false;
+    const startingScales = [];
+    viewer.applyWorldKeypointImport = () => {
+        startingScales.push([footLeft.scale.x, footRight.scale.x]);
+        footLeft.scale.multiplyScalar(0.5);
+        footRight.scale.multiplyScalar(0.5);
+        return true;
+    };
+
+    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
+    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
+    assert.deepEqual(startingScales, [[1.25, 1.25], [1.25, 1.25]]);
+});
+
+test("dense SAM rotations are not overwritten by rear-view head and foot point fitting", () => {
+    const viewer = Object.create(PoseViewerCore.prototype);
+    viewer.THREE = THREE;
+    viewer.bones = {};
+    viewer.boneList = [];
+    viewer.initialBoneStates = {};
+    viewer.skinnedMesh = { rotation: { set() {} }, updateMatrixWorld() {} };
+    viewer.skeleton = { update() {} };
+    viewer.recordState = () => {};
+    viewer.autoFitSAM3DBoneLengths = () => {};
+    viewer._buildSAM3DImportTargets = () => ({ worldKps: { pelvis: {} } });
+    viewer._applySAM3DRotationImport = () => true;
+    let importOptions = null;
+    viewer.applyWorldKeypointImport = (_worldKps, options) => {
+        importOptions = options;
+        return true;
+    };
+
+    assert.equal(viewer.applySAM3DImport({}, 0, { recordState: false }), true);
+    assert.equal(importOptions.alignHead, false, "MHR head rotation must remain authoritative");
+    assert.equal(importOptions.alignFeet, true, "image import keeps exact foot surface fitting by default");
+
+    assert.equal(viewer.applySAM3DImport({}, 0, {
+        recordState: false,
+        alignHead: false,
+        alignFeet: false,
+    }), true);
+    assert.equal(importOptions.alignHead, false);
+    assert.equal(importOptions.alignFeet, false, "stable video pass must preserve foot geometry and SAM rotation");
+});
+
 test("SAM projection matches mannequin head and feet to the source height", () => {
     const modelBounds = {
         width: 0.72,

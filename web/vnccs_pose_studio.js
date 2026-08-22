@@ -44,6 +44,7 @@ import {
     isLikelyVideoFile,
     reduceVideoPoseKeyframes,
     seekVideo,
+    stableVideoBoneLengthParams,
     stabilizeVideoPoseSequence,
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
@@ -9551,12 +9552,16 @@ class PoseStudioWidget {
         if (!plan || plan.duration <= 0 || !plan.times?.length) throw new Error("Select a non-empty video segment.");
 
         const originalPose = this.viewer.getPose();
+        const originalBoneLengthParams = { ...(this.viewer.boneLengthParams || {}) };
         const originalCameraParams = this.currentCameraParams();
         const prompt = this.getPosePrompt(this.activeTab);
         const captureCanvas = document.createElement("canvas");
         const poses = [];
+        const poseSamples = [];
+        const boneLengthSamples = [];
         let lastPoseData = null;
         let lastMeshData = null;
+        let reusedPoseCount = 0;
         const fixedStep = Math.max(1, Math.floor(Number(keyframeStep) || 2));
         // Adaptive reduction needs the dense source motion to decide which
         // joints/frames are redundant. Fixed-step mode can skip parsing every
@@ -9587,26 +9592,48 @@ class PoseStudioWidget {
                     progress: ((index + 0.15) / captureSchedule.sampleCount) * 95,
                     phase: "pose",
                 });
-                const poseData = await this.requestSAM3DPoseForImage(frameBlob, {
-                    taskId,
-                    signal,
-                    fileName: `video_frame_${String(sourceFrame).padStart(5, "0")}.jpg`,
-                });
-                const fitData = await this.prepareSAM3DRenderFit(poseData, {
-                    signal,
-                    reportError: false,
-                });
+                let poseData;
+                let reusedPreviousPose = false;
+                try {
+                    poseData = await this.requestSAM3DPoseForImage(frameBlob, {
+                        taskId,
+                        signal,
+                        fileName: `video_frame_${String(sourceFrame).padStart(5, "0")}.jpg`,
+                    });
+                } catch (error) {
+                    if (error?.name === "AbortError" || !lastPoseData) throw error;
+                    // Match the SAM mocap exporter contract: an isolated missed
+                    // detection holds the previous valid pose instead of
+                    // aborting the complete clip.
+                    console.warn(`[VNCCS] Reusing previous SAM pose for video frame ${sourceFrame}:`, error);
+                    poseData = lastPoseData;
+                    reusedPreviousPose = true;
+                    reusedPoseCount += 1;
+                    onProgress?.({
+                        index,
+                        count: captureSchedule.sampleCount,
+                        time,
+                        progress: ((index + 0.5) / captureSchedule.sampleCount) * 95,
+                        phase: "reuse",
+                    });
+                }
+                const fitData = reusedPreviousPose
+                    ? { poseData, meshData: lastMeshData }
+                    : await this.prepareSAM3DRenderFit(poseData, {
+                        signal,
+                        reportError: false,
+                    });
                 const poseForImport = fitData?.poseData || poseData;
                 const applied = this.viewer.applySAM3DImport(
                     poseForImport,
-                    this._shoulderYOffset || 0
+                    this._shoulderYOffset || 0,
+                    { recordState: false },
                 );
                 if (!applied) throw new Error(`Failed to apply captured pose at ${this.formatVideoTime(time)}.`);
                 if (fitData?.meshData) this.applySAM3DMeshOverlayFit(fitData.meshData, poseForImport);
 
-                const capturedPose = this.stripSceneCameraFromPose(this.viewer.getPose());
-                capturedPose.prompt = prompt;
-                poses.push(capturedPose);
+                poseSamples.push(poseForImport);
+                boneLengthSamples.push({ ...(this.viewer.boneLengthParams || {}) });
                 lastPoseData = poseForImport;
                 lastMeshData = fitData?.meshData || null;
                 onProgress?.({
@@ -9625,7 +9652,56 @@ class PoseStudioWidget {
                 ));
             }
 
-            if (poses.length < 2) throw new Error("Video capture produced fewer than two pose frames.");
+            if (poseSamples.length < 2) throw new Error("Video capture produced fewer than two pose frames.");
+            const stableBoneLengths = stableVideoBoneLengthParams(
+                boneLengthSamples,
+                originalBoneLengthParams,
+            );
+            for (const [group, value] of Object.entries(stableBoneLengths)) {
+                this.viewer.updateBoneLengthScale?.(group, value);
+            }
+
+            // Re-solve every sample on one fixed rig. The first pass above
+            // estimates robust body proportions; rotations captured while the
+            // skeleton changes per frame are intentionally discarded.
+            for (let index = 0; index < poseSamples.length; index++) {
+                if (signal?.aborted) throw new DOMException("Video import cancelled.", "AbortError");
+                const applied = this.viewer.applySAM3DImport(
+                    poseSamples[index],
+                    this._shoulderYOffset || 0,
+                    {
+                        fitBoneLengths: false,
+                        placeHipRoots: false,
+                        alignHead: false,
+                        alignFeet: false,
+                        recordState: false,
+                    },
+                );
+                if (!applied) {
+                    throw new Error(`Failed to reapply captured pose ${index + 1} on the stable video rig.`);
+                }
+                const capturedPose = this.stripSceneCameraFromPose(this.viewer.getPose());
+                capturedPose.prompt = prompt;
+                poses.push(capturedPose);
+                onProgress?.({
+                    index: index + 1,
+                    count: poseSamples.length,
+                    time: captureSchedule.times[index],
+                    progress: 95 + ((index + 1) / poseSamples.length) * 2,
+                    phase: "retarget",
+                });
+                if (index % 8 === 7) {
+                    await new Promise(resolve => (
+                        typeof requestAnimationFrame === "function"
+                            ? requestAnimationFrame(() => resolve())
+                            : setTimeout(resolve, 0)
+                    ));
+                }
+            }
+            if (lastMeshData && lastPoseData) {
+                this.viewer.setSAMMeshOverlayData?.(lastMeshData, lastPoseData);
+                this.viewer.setSAMMeshOverlayVisible?.(!!this.exportParams.debugShowSAMMeshOverlay);
+            }
             onProgress?.({
                 index: poses.length,
                 count: poses.length,
@@ -9668,9 +9744,13 @@ class PoseStudioWidget {
                 ),
                 keyedTrackCount: Object.keys(this.animationState.tracks || {}).length,
                 omittedTrackCount: reduction?.omittedTrackCount || 0,
+                reusedPoseCount,
             };
         } catch (error) {
             if (this.container?.isConnected && this.viewer?.isInitialized?.()) {
+                for (const [group, value] of Object.entries(originalBoneLengthParams)) {
+                    this.viewer.updateBoneLengthScale?.(group, value);
+                }
                 this.viewer.setPose?.(originalPose);
                 this.applyCameraToViewer(true);
                 this.viewer.setCameraParams?.(originalCameraParams);
@@ -13011,9 +13091,13 @@ class PoseStudioWidget {
                     for (let i = 0; i < this.poses.length; i++) {
                         if (this.poses[i]) {
                             delete this.poses[i].hipBonePosition;
+                            delete this.poses[i].bonePositions;
                             delete this.poses[i].ikEffectorPositions;
                             delete this.poses[i].poleTargetPositions;
                         }
+                    }
+                    if (this.animationState?.basePose) {
+                        delete this.animationState.basePose.bonePositions;
                     }
                 }
 

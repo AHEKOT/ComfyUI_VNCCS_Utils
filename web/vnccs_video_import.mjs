@@ -30,6 +30,38 @@ function finiteNumber(value, fallback = 0) {
     return Number.isFinite(number) ? number : fallback;
 }
 
+/**
+ * A video describes one performer, not a new body shape on every frame.
+ * Use a per-parameter median so pose-dependent joint-regressor noise and an
+ * occasional bad frame cannot make the character's proportions pulse.
+ */
+export function stableVideoBoneLengthParams(samples = [], fallback = {}) {
+    const validSamples = Array.isArray(samples) ? samples.filter(Boolean) : [];
+    const names = new Set(Object.keys(fallback || {}));
+    for (const sample of validSamples) {
+        for (const name of Object.keys(sample || {})) names.add(name);
+    }
+
+    const stable = {};
+    for (const name of names) {
+        const values = validSamples
+            .map(sample => Number(sample?.[name]))
+            .filter(Number.isFinite)
+            .sort((a, b) => a - b);
+        if (!values.length) {
+            const fallbackValue = Number(fallback?.[name]);
+            if (Number.isFinite(fallbackValue)) stable[name] = Math.max(0, Math.min(1, fallbackValue));
+            continue;
+        }
+        const middle = Math.floor(values.length / 2);
+        const value = values.length % 2
+            ? values[middle]
+            : (values[middle - 1] + values[middle]) * 0.5;
+        stable[name] = Math.max(0, Math.min(1, value));
+    }
+    return stable;
+}
+
 export function isLikelyVideoFile(file) {
     if (!file) return false;
     if (String(file.type || "").toLowerCase().startsWith("video/")) return true;

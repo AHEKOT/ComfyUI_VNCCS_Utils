@@ -202,6 +202,7 @@ export function extractActivePoseFromSceneAsset(data = {}) {
     // those values as compatibility fallbacks for partially wrapped assets.
     for (const key of [
         "bones",
+        "bonePositions",
         "hipBonePosition",
         "ikEffectorPositions",
         "poleTargetPositions",
