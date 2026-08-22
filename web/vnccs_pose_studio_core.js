@@ -3611,6 +3611,7 @@ export class PoseViewerCore {
 
     getPose() {
         const bones = {};
+        const bonePositions = {};
         for (const b of this.boneList) {
             const rot = b.rotation;
             if (Math.abs(rot.x) > 1e-4 || Math.abs(rot.y) > 1e-4 || Math.abs(rot.z) > 1e-4) {
@@ -3619,6 +3620,12 @@ export class PoseViewerCore {
                     rot.y * 180 / Math.PI,
                     rot.z * 180 / Math.PI
                 ];
+            }
+            const shapedRest = this.shapedBoneRestPositions?.[b.name];
+            const initialRest = this.initialBoneStates?.[b.name]?.position;
+            const restPosition = shapedRest || initialRest;
+            if (restPosition && b.position.distanceToSquared(restPosition) > 1e-10) {
+                bonePositions[b.name] = [b.position.x, b.position.y, b.position.z];
             }
         }
 
@@ -3654,6 +3661,9 @@ export class PoseViewerCore {
 
         return {
             bones,
+            // SAM IK may translate joint roots (notably the two hip sockets).
+            // These local offsets are pose data and must survive editor commit.
+            bonePositions,
             modelRotation: [this.modelRotation.x, this.modelRotation.y, this.modelRotation.z],
             camera: {
                 posX: this.camera.position.x,
@@ -3714,6 +3724,7 @@ export class PoseViewerCore {
         if (!pose) return;
 
         const bones = pose.bones || {};
+        const bonePositions = pose.bonePositions || {};
         const modelRot = pose.modelRotation || [0, 0, 0];
         const ikPositions = pose.ikEffectorPositions || {};
 
@@ -3736,6 +3747,15 @@ export class PoseViewerCore {
                     rot[2] * Math.PI / 180
                 );
             }
+        }
+
+        // Restore pose translations after resetting to the shaped skeleton.
+        // A body-shape edit removes this field before pose reapplication.
+        for (const [bName, position] of Object.entries(bonePositions)) {
+            const bone = this.bones[bName];
+            if (!bone || !Array.isArray(position) || position.length < 3) continue;
+            const values = position.slice(0, 3).map(Number);
+            if (values.every(Number.isFinite)) bone.position.set(values[0], values[1], values[2]);
         }
 
         // Apply model rotation
@@ -4413,6 +4433,12 @@ export class PoseViewerCore {
                 (Number(rotation[1]) || 0) * Math.PI / 180,
                 (Number(rotation[2]) || 0) * Math.PI / 180,
             );
+        }
+        for (const [name, position] of Object.entries(pose?.bonePositions || {})) {
+            const bone = entry.bones[name];
+            if (!bone || !Array.isArray(position) || position.length < 3) continue;
+            const values = position.slice(0, 3).map(Number);
+            if (values.every(Number.isFinite)) bone.position.set(values[0], values[1], values[2]);
         }
         for (const [chainKey, position] of Object.entries(pose?.hipBonePosition || {})) {
             const definition = IK_CHAINS[chainKey];
@@ -5671,7 +5697,9 @@ export class PoseViewerCore {
             this._drawHMR2Figure(worldKps);
         }
         this._applyImportPelvisAndTorso(worldKps, options.shoulderYOffset || 0);
-        this._placeSAM3DHipRoots(importTargets.worldKps || worldKps);
+        if (options.placeHipRoots !== false) {
+            this._placeSAM3DHipRoots(importTargets.worldKps || worldKps);
+        }
         this._applySAM3DTargetIK(importTargets, {
             includeSpine: options.includeSpine !== false,
             normalizeLimbs: options.normalizeLimbs !== false,
@@ -8093,10 +8121,10 @@ export class PoseViewerCore {
         }
     }
 
-    applySAM3DImport(data, shoulderYOffset = 0) {
+    applySAM3DImport(data, shoulderYOffset = 0, options = {}) {
         if (!this.THREE || !this.bones || !this.skinnedMesh) return false;
 
-        this.recordState();
+        if (options.recordState !== false) this.recordState();
         this._sam3dImportedFootLocalRotations = null;
         this.modelRotation = { x: 0, y: 0, z: 0 };
         if (this.skinnedMesh) {
@@ -8110,13 +8138,29 @@ export class PoseViewerCore {
                 bone.position.copy(this.initialBoneStates[bone.name].position);
             }
         }
+        // Foot surface fitting changes foot bone scale. It is derived from one
+        // pose and must never be multiplied into the next video sample.
+        const configuredFootScale = Number(this.footScale);
+        const baseFootScale = Number.isFinite(configuredFootScale) && configuredFootScale > 0
+            ? configuredFootScale
+            : 1.0;
+        for (const footName of ['foot_l', 'foot_r']) {
+            this.bones?.[footName]?.scale?.set?.(baseFootScale, baseFootScale, baseFootScale);
+        }
         this.skinnedMesh.updateMatrixWorld(true);
         if (this.skeleton) this.skeleton.update();
 
         // Match the mannequin's limb proportions to the fitted SAM skeleton
         // before building IK targets. Position/scale differences should be
         // handled by body proportions and camera framing, not knee flexion.
-        this.autoFitSAM3DBoneLengths(data);
+        if (options.fitBoneLengths !== false) {
+            this.autoFitSAM3DBoneLengths(data);
+        } else {
+            // Video frames share one character rig. Reapply the already chosen
+            // proportions after the pose reset instead of deriving a new body
+            // shape from every independently analysed frame.
+            this.applyBoneLengthScales();
+        }
 
         const importTargets = this._buildSAM3DImportTargets(data);
         const worldKps = importTargets?.worldKps;
@@ -8141,6 +8185,12 @@ export class PoseViewerCore {
                 normalizeLimbs: true,
                 normalizeArms: true,
                 normalizeLegs: true,
+                placeHipRoots: options.placeHipRoots !== false,
+                // Dense MHR rotations already carry the head orientation. The
+                // eye midpoint is not a compatible head-pivot target and can
+                // tip/flip the MakeHuman head on rear views.
+                alignHead: options.alignHead ?? !usedRotationImport,
+                alignFeet: options.alignFeet !== false,
                 footLocalRotations: this._sam3dImportedFootLocalRotations,
             });
         }

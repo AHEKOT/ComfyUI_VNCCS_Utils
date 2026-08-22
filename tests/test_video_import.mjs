@@ -12,6 +12,7 @@ import {
     fitVideoTimelineSelection,
     isLikelyVideoFile,
     reduceVideoPoseKeyframes,
+    stableVideoBoneLengthParams,
     stabilizeVideoPoseSequence,
     videoKeyedFrameIndices,
     zoomVideoTimelineViewport,
@@ -151,6 +152,22 @@ test("fixed video key intervals skip pose parsing but preserve the full timeline
     assert.equal(state.fps, 12);
     assert.deepEqual(state.tracks.wrist_l.keys.map(key => key.frame), capture.frameIndices);
     assert.ok(quaternionDistanceDegrees(evaluateAnimationFrame(state, 23).bones.wrist_l, [0, 23, 0]) < 1e-6);
+});
+
+test("video body proportions use a robust median instead of the last frame", () => {
+    const stable = stableVideoBoneLengthParams([
+        { hip_l: 0.51, thigh_l: 0.48 },
+        { hip_l: 0.95, thigh_l: 0.50 },
+        { hip_l: 0.52, thigh_l: 0.49 },
+    ], { hip_l: 0.5, thigh_l: 0.5, shin_l: 0.47 });
+    assert.deepEqual(stable, { hip_l: 0.52, thigh_l: 0.49, shin_l: 0.47 });
+});
+
+test("video body proportion median averages even samples and clamps slider values", () => {
+    assert.deepEqual(stableVideoBoneLengthParams([
+        { hip_l: -2 },
+        { hip_l: 4 },
+    ]), { hip_l: 1 });
 });
 
 test("quaternion stabilization suppresses an isolated wrist jump", () => {

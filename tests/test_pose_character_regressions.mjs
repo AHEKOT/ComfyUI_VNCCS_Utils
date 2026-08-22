@@ -310,6 +310,40 @@ test("setPose restores shaped bone positions before applying rotations", () => {
     assert.match(resetBlock, /else if \(initialRest\) b\.position\.copy\(initialRest\)/);
 });
 
+test("pose serialization preserves SAM joint-root translations across commit", () => {
+    const getPoseMethod = methodSource(
+        poseStudioCoreSource,
+        "getPose()",
+        "\n    recordState()",
+    );
+    assert.match(getPoseMethod, /const bonePositions = \{\}/);
+    assert.match(getPoseMethod, /b\.position\.distanceToSquared\(restPosition\)/);
+    assert.match(getPoseMethod, /bonePositions\[b\.name\] = \[b\.position\.x, b\.position\.y, b\.position\.z\]/);
+
+    const setPoseMethod = methodSource(
+        poseStudioCoreSource,
+        "setPose(pose, preserveCamera = false)",
+        "\n    resetPose()",
+    );
+    assert.match(setPoseMethod, /const bonePositions = pose\.bonePositions \|\| \{\}/);
+    assert.match(setPoseMethod, /for \(const \[bName, position\] of Object\.entries\(bonePositions\)\)/);
+    assert.match(setPoseMethod, /bone\.position\.set\(values\[0\], values\[1\], values\[2\]\)/);
+});
+
+test("video SAM import re-solves rotations on one median-proportion rig", () => {
+    const importMethod = methodSource(
+        poseStudioSource,
+        "async importVideoPoseSegment(video, plan, {",
+        "\n    async showVideoImportModal(",
+    );
+    assert.match(importMethod, /stableVideoBoneLengthParams\(/);
+    assert.match(importMethod, /boneLengthSamples\.push/);
+    assert.match(importMethod, /fitBoneLengths: false,[\s\S]*placeHipRoots: false,[\s\S]*alignHead: false,[\s\S]*alignFeet: false,[\s\S]*recordState: false/);
+    assert.match(importMethod, /rotations captured while the[\s\S]*skeleton changes per frame are intentionally discarded/);
+    assert.match(importMethod, /Reusing previous SAM pose for video frame/);
+    assert.match(importMethod, /reusedPoseCount/);
+});
+
 
 test("live body morph recalculates skin bind data in neutral character space", () => {
     const morphMethod = methodSource(
