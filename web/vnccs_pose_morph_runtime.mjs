@@ -259,7 +259,7 @@ function solveLandmarks(data, vertices) {
 }
 
 export function modelUsesGenitals(params = {}) {
-    return Number(params.gender ?? 0.5) >= 0.99;
+    return params.show_genitals === true && Number(params.gender ?? 0.5) >= 0.99;
 }
 
 export function buildModelIndices(data, includeGenitals) {

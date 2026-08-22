@@ -8,6 +8,7 @@ import { gunzipSync } from "node:zlib";
 import {
     buildModelIndices,
     calculateMorphFactors,
+    modelUsesGenitals,
     parseMorphPack,
     solveMorph,
 } from "../web/vnccs_pose_morph_runtime.mjs";
@@ -109,4 +110,11 @@ test("gender topology and precomputed skin weights are valid", () => {
         }
         assert.ok(Math.abs(total - 1) < 1e-5, `skin weights are not normalized at vertex ${vertex}`);
     }
+});
+
+test("male genitals are hidden unless explicitly enabled", () => {
+    assert.equal(modelUsesGenitals({ gender: 1 }), false);
+    assert.equal(modelUsesGenitals({ gender: 1, show_genitals: false }), false);
+    assert.equal(modelUsesGenitals({ gender: 1, show_genitals: true }), true);
+    assert.equal(modelUsesGenitals({ gender: 0, show_genitals: true }), false);
 });
