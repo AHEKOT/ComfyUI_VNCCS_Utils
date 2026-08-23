@@ -2147,6 +2147,26 @@ const STYLES = `
     flex-shrink: 0;
 }
 
+.vnccs-ps-manager-auto-analysis {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--ps-text-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+}
+
+.vnccs-ps-manager-auto-analysis input {
+    margin: 0;
+    accent-color: var(--ps-accent);
+    cursor: pointer;
+}
+
 .vnccs-ps-manager-body {
     flex: 1;
     min-height: 0;
@@ -4132,13 +4152,14 @@ class PoseStudioWidget {
             debugKeepLighting: false, // Use manual lighting in debug mode
             debugShowSAMHelper: false, // Show imported SAM skeleton overlay in the viewer
             debugShowSAMMeshOverlay: false, // Show postprocessed SAM render mesh overlay
-            samApplyCamera: true, // SAM imports use the detector camera for exact image-space alignment
+            samApplyCamera: false, // Opt in: pose analysis must not replace the user's camera automatically
             keepOriginalLighting: false, // Override to clean white lighting, no prompts
             user_prompt: "",
             prompt_template: "Draw character from image2\n<lighting>\n<user_prompt>",
             skin_type: "naked", // naked | naked_marks | dummy_white
             background_url: null,
             interface_mode: "studio",
+            manager_auto_analyze_proportions: true,
             editor_mode: "image",
             hand_controls_v2: true,
             directional_skydome_enabled: false,
@@ -4316,6 +4337,21 @@ class PoseStudioWidget {
         const actions = document.createElement("div");
         actions.className = "vnccs-ps-manager-actions";
 
+        const autoAnalyzeLabel = document.createElement("label");
+        autoAnalyzeLabel.className = "vnccs-ps-manager-auto-analysis";
+        autoAnalyzeLabel.title = "Analyze the connected pose image and apply only its body proportions to every managed pose.";
+        const autoAnalyzeCheckbox = document.createElement("input");
+        autoAnalyzeCheckbox.type = "checkbox";
+        autoAnalyzeCheckbox.checked = this.exportParams.manager_auto_analyze_proportions !== false;
+        autoAnalyzeCheckbox.addEventListener("change", () => {
+            this.exportParams.manager_auto_analyze_proportions = autoAnalyzeCheckbox.checked;
+            this.syncToNode(false, { skipCapture: true });
+        });
+        const autoAnalyzeText = document.createElement("span");
+        autoAnalyzeText.textContent = "Auto-analyze proportions";
+        autoAnalyzeLabel.append(autoAnalyzeCheckbox, autoAnalyzeText);
+        this.managerAutoAnalyzeCheckbox = autoAnalyzeCheckbox;
+
         const addBtn = document.createElement("button");
         addBtn.className = "vnccs-ps-btn primary";
         addBtn.type = "button";
@@ -4325,7 +4361,7 @@ class PoseStudioWidget {
             this.setInterfaceMode("manager");
         });
 
-        actions.appendChild(addBtn);
+        actions.append(autoAnalyzeLabel, addBtn);
         header.appendChild(title);
         header.appendChild(actions);
 
@@ -4600,6 +4636,9 @@ class PoseStudioWidget {
     }
 
     refreshPoseManagerControls() {
+        if (this.managerAutoAnalyzeCheckbox) {
+            this.managerAutoAnalyzeCheckbox.checked = this.exportParams.manager_auto_analyze_proportions !== false;
+        }
         if (this.managerGenderBtns) {
             const isFemale = this.meshParams.gender < 0.5;
             this.managerGenderBtns.male.classList.toggle("active", !isFemale);
@@ -6792,7 +6831,7 @@ class PoseStudioWidget {
         }
         this.interfaceMode = normalized;
         this.exportParams.interface_mode = normalized === "studio" ? "studio" : "manager";
-        this.node?._vnccsSetPoseImageInputDisabled?.(normalized !== "studio");
+        this.node?._vnccsEnsurePoseImageInput?.();
         this.applyInterfaceMode();
         if (normalized === "manager") {
             this.refreshPoseManagerControls();
@@ -7117,9 +7156,9 @@ class PoseStudioWidget {
     }
 
     scheduleAllManagerPreviewRefresh() {
-        if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return;
-        if (!this.viewer?.isInitialized?.()) return;
-        if (!this.poses?.length) return;
+        if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return 0;
+        if (!this.viewer?.isInitialized?.()) return 0;
+        if (!this.poses?.length) return 0;
         this._managerPreviewRefreshGeneration = (this._managerPreviewRefreshGeneration || 0) + 1;
         // A new model/camera generation invalidates every previously rendered
         // card. Resuming in the middle mixes old and new AGE/head-size results.
@@ -7133,6 +7172,19 @@ class PoseStudioWidget {
             this._managerPreviewRefreshFrame = null;
             this.refreshAllManagerPreviews(generation);
         });
+        return generation;
+    }
+
+    async awaitManagerPreviewRefresh(generation, timeoutMs = 120000) {
+        if (!generation) return false;
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if ((this._managerPreviewRefreshCompletedGeneration || 0) >= generation) {
+                return true;
+            }
+            await new Promise(resolve => setTimeout(resolve, 16));
+        }
+        throw new Error("Pose Manager previews are still refreshing.");
     }
 
     computePoseManagerCaptureFraming(width, height, poseCamera) {
@@ -7253,6 +7305,7 @@ class PoseStudioWidget {
             });
         } else {
             this._managerPreviewRefreshNextIndex = 0;
+            this._managerPreviewRefreshCompletedGeneration = generation;
         }
     }
 
@@ -9441,6 +9494,63 @@ class PoseStudioWidget {
         }
     }
 
+    async applySAM3DProportionsToPoseManager(poseData) {
+        if (!this.viewer?.isInitialized?.()) {
+            throw new Error("Pose viewer is not ready.");
+        }
+        if (this.exportParams.manager_auto_analyze_proportions === false) {
+            return false;
+        }
+
+        const fitData = await this.prepareSAM3DRenderFit(poseData);
+        const poseForAnalysis = fitData?.poseData || poseData;
+        const originalPose = this.viewer.getPose();
+        const restoredPose = JSON.parse(JSON.stringify(originalPose || {}));
+
+        // Measure against the neutral rig so an existing bent or translated
+        // manager pose cannot bias the detected body proportions.
+        this.viewer.setPose({}, true);
+        try {
+            const proportions = this.viewer.analyzeSAM3DBodyProportions?.(poseForAnalysis);
+            if (!proportions) {
+                throw new Error("Failed to analyze SAM 3D Body proportions.");
+            }
+            this.syncMeshProportionSlidersFromViewer();
+
+            // Body-shape edits invalidate saved absolute IK/root positions. Keep
+            // every managed pose's rotations while allowing the new rig lengths
+            // to take effect consistently across all cards.
+            for (const pose of this.poses || []) {
+                if (!pose) continue;
+                delete pose.hipBonePosition;
+                delete pose.bonePositions;
+                delete pose.ikEffectorPositions;
+                delete pose.poleTargetPositions;
+            }
+            for (const key of [
+                "hipBonePosition",
+                "bonePositions",
+                "ikEffectorPositions",
+                "poleTargetPositions",
+            ]) {
+                delete restoredPose[key];
+            }
+        } finally {
+            this.viewer.setPose(restoredPose, true);
+        }
+
+        this.viewer.applyBoneLengthScales?.();
+        this.updateCharacterScene({ poseIndex: this.activeTab });
+        this.refreshPoseManagerControls();
+
+        // Reuse the same normalization path as an age change, then regenerate
+        // every manager card only after the proportions and framing are final.
+        this.applyAgeCameraFit();
+        const generation = this.scheduleAllManagerPreviewRefresh();
+        await this.awaitManagerPreviewRefresh(generation);
+        return true;
+    }
+
     applySAM3DMeshOverlayFit(meshData, poseData) {
         if (!meshData || !this.viewer?.setSAMMeshOverlayData) return false;
         const ok = this.viewer.setSAMMeshOverlayData(meshData, poseData);
@@ -9461,6 +9571,19 @@ class PoseStudioWidget {
         if (!frameParams) {
             this.viewer?.setSAMProjectionCameraFrame?.(null);
             this._samCameraModeActive = false;
+            return false;
+        }
+        // Pose extraction and camera matching are separate operations. Keep the
+        // current user camera unless SAM camera application was explicitly enabled.
+        if (!this.exportParams.samApplyCamera) {
+            this.viewer?.setSAMProjectionCameraFrame?.(null);
+            this._samCameraModeActive = false;
+            this._samCamBannerVisible = false;
+            this._samCamDisplayActive = true;
+            this._samCamPreParams = null;
+            this._samCamStoredParams = null;
+            this._samCamStoredProjectionFrame = null;
+            this._updateSAMCameraBanner();
             return false;
         }
         // A pose pinned to SAM world joints only remains point-for-point aligned in the
@@ -9503,7 +9626,6 @@ class PoseStudioWidget {
             };
         }
 
-        this.exportParams.samApplyCamera = true;
         this.exportParams.cam_zoom = 1;
         this.exportParams.cam_offset_x = 0;
         this.exportParams.cam_offset_y = 0;
@@ -12628,6 +12750,9 @@ class PoseStudioWidget {
         samCamCheckbox.checked = !!this.exportParams.samApplyCamera;
         samCamCheckbox.onchange = () => {
             this.exportParams.samApplyCamera = samCamCheckbox.checked;
+            if (!samCamCheckbox.checked && this._samCamBannerVisible && this._samCamDisplayActive) {
+                this._toggleSAMCameraDisplay();
+            }
             this._updateSAMCameraBanner();
             this.syncToNode(false);
         };
@@ -15018,6 +15143,7 @@ app.registerExtension({
             const nodeId = event.detail.node_id;
             const poseData = event.detail.pose_data;
             const cameraPrompt = String(event.detail.camera_prompt ?? "");
+            const applyMode = String(event.detail.apply_mode ?? "pose");
             const syncToken = String(event.detail.sync_token ?? "");
             const node = app.graph.getNodeById(nodeId);
             if (!node?.studioWidget || !poseData) return;
@@ -15026,6 +15152,18 @@ app.registerExtension({
                 const widget = node.studioWidget;
                 if (!widget.viewer || !widget.viewer.isInitialized()) {
                     await widget.loadModel();
+                }
+
+                if (applyMode === "manager_proportions") {
+                    await widget.applySAM3DProportionsToPoseManager(poseData);
+                    widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
+                    widget.syncToNode(true, {
+                        cameraPrompt,
+                        executionCapture: true,
+                    });
+                    const response = await uploadPoseStudioSync(node, nodeId, syncToken);
+                    await requirePoseStudioSyncResponse(response);
+                    return;
                 }
 
                 const fitData = await widget.prepareSAM3DRenderFit(poseData);
@@ -15061,6 +15199,9 @@ app.registerExtension({
                 });
                 await uploadPoseStudioSync(node, nodeId, syncToken);
             } catch (e) {
+                if (applyMode === "manager_proportions") {
+                    await reportPoseStudioSyncFailure(nodeId, syncToken, e);
+                }
                 console.error("[VNCCS] SAM3D pose_image apply error:", e);
             }
         });
@@ -15115,27 +15256,13 @@ app.registerExtension({
             app.graph?.setDirtyCanvas?.(true, true);
         };
 
-        const setPoseImageInputDisabled = (node, disabled) => {
+        const ensurePoseImageInput = (node) => {
             if (!node) return;
             const inputIndex = node.inputs?.findIndex(input => input?.name === "pose_image") ?? -1;
-            if (disabled) {
-                if (inputIndex >= 0) {
-                    if (node.graph) {
-                        if (typeof node.disconnectInput === "function") node.disconnectInput(inputIndex);
-                        if (typeof node.removeInput === "function") node.removeInput(inputIndex);
-                        else node.inputs.splice(inputIndex, 1);
-                    } else {
-                        node.inputs.splice(inputIndex, 1);
-                    }
-                }
-                node._vnccsPoseImageInputDisabled = true;
-                return;
-            }
-
             if (inputIndex < 0 && typeof node.addInput === "function") {
                 node.addInput("pose_image", "IMAGE");
             }
-            node._vnccsPoseImageInputDisabled = false;
+            node.setDirtyCanvas?.(true, true);
         };
 
         const setCameraPromptInputDisabled = (node, disabled) => {
@@ -15217,8 +15344,9 @@ app.registerExtension({
             // Create widget
             this._vnccsSetAnimationOutputMode = (animation) => setAnimationOutputMode(this, animation);
             this.studioWidget = new PoseStudioWidget(this);
-            this._vnccsSetPoseImageInputDisabled = (disabled) => setPoseImageInputDisabled(this, disabled);
+            this._vnccsEnsurePoseImageInput = () => ensurePoseImageInput(this);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);
+            this._vnccsEnsurePoseImageInput();
             this.studioWidget.applyDirectionalSkydomeSetting();
 
             const studioDOMWidget = this.addDOMWidget("pose_studio_ui", "ui", this.studioWidget.container, {
@@ -15240,7 +15368,7 @@ app.registerExtension({
             // Load model after initialization
             this._vnccsPoseInitTimer = setTimeout(() => {
                 this.studioWidget.loadFromNode();
-                this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
+                this._vnccsEnsurePoseImageInput?.();
                 window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this.studioWidget.loadModel().then(() => {
                     if (this.studioWidget.viewer) {
@@ -15278,7 +15406,7 @@ app.registerExtension({
                 this._vnccsPoseConfigureTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
                     this.studioWidget.loadFromNode();
-                    this._vnccsSetPoseImageInputDisabled?.(this.studioWidget.exportParams.interface_mode === "manager");
+                    this._vnccsEnsurePoseImageInput?.();
                     window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                     this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only

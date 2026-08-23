@@ -5768,6 +5768,23 @@ export class PoseViewerCore {
         return true;
     }
 
+    analyzeSAM3DBodyProportions(data) {
+        if (!data || !this.bones || !this.skinnedMesh) return null;
+
+        this.autoFitSAM3DBoneLengths(data);
+        const worldKps = this._buildSAM3DImportTargets(data)?.worldKps;
+        if (worldKps) {
+            // Match the same converged root and limb measurements used by the
+            // ordinary SAM import without applying any detected rotations or IK.
+            for (let pass = 0; pass < 6; pass++) {
+                this.fitSAM3DJointRootLengthsToWorldKps(worldKps);
+                this.fitSAM3DLimbLengthsToWorldKps(worldKps);
+            }
+        }
+
+        return { ...(this.boneLengthParams || {}) };
+    }
+
     fitSAM3DJointRootLengthsToWorldKps(worldKps) {
         if (!worldKps || !this.bones || !this.skinnedMesh) return null;
         this.skinnedMesh.updateMatrixWorld(true);

@@ -196,6 +196,59 @@ test("Pose Manager regenerates missing previews after worker model load and mode
 });
 
 
+test("Pose Manager keeps the pose image input and gates automatic proportion analysis", () => {
+    assert.match(poseStudioSource, /manager_auto_analyze_proportions: true/);
+    assert.match(poseStudioSource, /autoAnalyzeText\.textContent = "Auto-analyze proportions"/);
+    assert.match(
+        poseStudioSource,
+        /manager_auto_analyze_proportions = autoAnalyzeCheckbox\.checked;[\s\S]*syncToNode\(false, \{ skipCapture: true \}\)/,
+    );
+
+    const modeStart = poseStudioSource.indexOf("setInterfaceMode(mode, { sync = true } = {})");
+    const modeEnd = poseStudioSource.indexOf("\n    applyInterfaceMode()", modeStart);
+    const modeMethod = poseStudioSource.slice(modeStart, modeEnd);
+    assert.match(modeMethod, /_vnccsEnsurePoseImageInput/);
+    assert.doesNotMatch(modeMethod, /SetPoseImageInputDisabled/);
+    const ensureStart = poseStudioSource.indexOf("const ensurePoseImageInput = (node) =>");
+    const ensureEnd = poseStudioSource.indexOf("\n\n        const setCameraPromptInputDisabled", ensureStart);
+    const ensureMethod = poseStudioSource.slice(ensureStart, ensureEnd);
+    assert.match(ensureMethod, /addInput\("pose_image", "IMAGE"\)/);
+    assert.doesNotMatch(ensureMethod, /removeInput|disconnectInput/);
+});
+
+
+test("Pose Manager SAM input applies proportions without replacing managed poses", () => {
+    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(poseData)");
+    const managerEnd = poseStudioSource.indexOf("\n    applySAM3DMeshOverlayFit", managerStart);
+    const managerMethod = poseStudioSource.slice(managerStart, managerEnd);
+    assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
+    assert.match(managerMethod, /viewer\.setPose\(\{\}, true\)/);
+    assert.match(managerMethod, /analyzeSAM3DBodyProportions/);
+    assert.doesNotMatch(managerMethod, /applySAM3DImport/);
+    assert.doesNotMatch(managerMethod, /commitViewerPoseToCurrentEditor/);
+    assert.match(managerMethod, /for \(const pose of this\.poses \|\| \[\]\)/);
+    assert.match(managerMethod, /delete pose\.bonePositions/);
+    assert.match(managerMethod, /this\.applyAgeCameraFit\(\);[\s\S]*scheduleAllManagerPreviewRefresh\(\)/);
+    assert.match(managerMethod, /await this\.awaitManagerPreviewRefresh\(generation\)/);
+
+    const coreStart = poseStudioCoreSource.indexOf("analyzeSAM3DBodyProportions(data)");
+    const coreEnd = poseStudioCoreSource.indexOf("\n    fitSAM3DJointRootLengthsToWorldKps", coreStart);
+    const coreMethod = poseStudioCoreSource.slice(coreStart, coreEnd);
+    assert.match(coreMethod, /autoFitSAM3DBoneLengths\(data\)/);
+    assert.match(coreMethod, /fitSAM3DJointRootLengthsToWorldKps\(worldKps\)/);
+    assert.match(coreMethod, /fitSAM3DLimbLengthsToWorldKps\(worldKps\)/);
+    assert.doesNotMatch(coreMethod, /applyWorldKeypointImport|applySAM3DImport/);
+
+    const eventStart = poseStudioSource.indexOf('api.addEventListener("vnccs_apply_sam3d_pose"');
+    const eventEnd = poseStudioSource.indexOf("\n    },\n\n    async beforeRegisterNodeDef", eventStart);
+    const eventMethod = poseStudioSource.slice(eventStart, eventEnd);
+    assert.match(eventMethod, /applyMode === "manager_proportions"/);
+    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
+    assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
+    assert.match(eventMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
+});
+
+
 test("Pose Manager waits for the real skin texture before capture", () => {
     const refreshStart = poseStudioSource.indexOf("refreshAllManagerPreviews(generation");
     const refreshEnd = poseStudioSource.indexOf("\n    updateExistingPoseManagerDetailCards", refreshStart);

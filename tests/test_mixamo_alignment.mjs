@@ -455,6 +455,29 @@ test("SAM automatic arm morph keeps the full source segment lengths without shor
     assert.ok(Math.abs(applied.forearm_r - 0.875) < 1e-8);
 });
 
+test("SAM proportion analysis converges body lengths without applying a pose", () => {
+    const calls = [];
+    const viewer = Object.create(PoseViewerCore.prototype);
+    viewer.bones = {};
+    viewer.skinnedMesh = {};
+    viewer.boneLengthParams = { upper_arm_l: 0.7 };
+    viewer.autoFitSAM3DBoneLengths = () => calls.push("auto-fit");
+    viewer._buildSAM3DImportTargets = () => ({ worldKps: { pelvis: {} } });
+    viewer.fitSAM3DJointRootLengthsToWorldKps = () => calls.push("roots");
+    viewer.fitSAM3DLimbLengthsToWorldKps = () => calls.push("limbs");
+    viewer.applySAM3DImport = () => calls.push("pose-import");
+    viewer.applyWorldKeypointImport = () => calls.push("world-import");
+
+    const proportions = viewer.analyzeSAM3DBodyProportions({ joint_coords: [] });
+
+    assert.deepEqual(proportions, { upper_arm_l: 0.7 });
+    assert.equal(calls[0], "auto-fit");
+    assert.equal(calls.filter(call => call === "roots").length, 6);
+    assert.equal(calls.filter(call => call === "limbs").length, 6);
+    assert.equal(calls.includes("pose-import"), false);
+    assert.equal(calls.includes("world-import"), false);
+});
+
 test("two-bone IK allows exact full extension without forced elbow bend", () => {
     assert.equal(clampTwoBoneReachDistance(1, 1), 1);
     assert.equal(clampTwoBoneReachDistance(1.2, 1), 1);
