@@ -6,7 +6,11 @@
 
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PoseViewerCore } from "./vnccs_pose_studio_core.js";
+import {
+    POSE_STUDIO_CAPTURE_FOV,
+    PoseViewerCore,
+    buildEquivalentPerspectiveProjectionFrame,
+} from "./vnccs_pose_studio_core.js?v=20260824.9";
 import {
     cameraPromptToSkydomeRotation,
 } from "./vnccs_camera_control_utils.mjs";
@@ -18,6 +22,7 @@ import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
+    composeCameraFramingWithCharacterTransform,
     createPoseStudioCharacter,
     extractActiveCharacterTransformFromSceneAsset,
     extractActivePoseFromSceneAsset,
@@ -29,7 +34,7 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./vnccs_pose_characters.mjs?v=20260802.3";
+} from "./vnccs_pose_characters.mjs?v=20260824.5";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -9599,6 +9604,86 @@ class PoseStudioWidget {
         return ok;
     }
 
+    applySAM3DStandardCameraFit(poseData, meshData = null, standardTargetFrame = null) {
+        const character = this.getActiveCharacter();
+        const pivot = this.viewer?.sceneCameraTarget;
+        if (!character || !pivot) return false;
+
+        // The standard-camera solver returns framing for the mesh transform it
+        // measures. Always measure a neutral character and convert that result
+        // once to the character-space transform used by Pose Studio. Measuring
+        // the previous crop and then multiplying it back in made every import
+        // state-dependent and could shrink compact seated poses repeatedly.
+        const previousTransform = normalizeCharacterTransform(character.transform);
+        const previousAngles = {
+            yaw_deg: Number(this.exportParams.cam_yaw_deg) || 0,
+            pitch_deg: Number(this.exportParams.cam_pitch_deg) || 0,
+        };
+        const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
+        this.viewer.setActiveCharacterAppearance({
+            color: character.color,
+            transform: neutralTransform,
+        });
+        this.exportParams.cam_yaw_deg = 0;
+        this.exportParams.cam_pitch_deg = 0;
+        this.applyCameraToViewer(true);
+
+        const framing = this.viewer?.fitSAM3DToStandardCamera?.(
+            poseData,
+            this.exportParams.view_width || 1024,
+            this.exportParams.view_height || 1024,
+            meshData,
+            standardTargetFrame,
+        );
+        if (!framing) {
+            this.exportParams.cam_yaw_deg = previousAngles.yaw_deg;
+            this.exportParams.cam_pitch_deg = previousAngles.pitch_deg;
+            this.viewer.setActiveCharacterAppearance({
+                color: character.color,
+                transform: previousTransform,
+            });
+            this.applyCameraToViewer(true);
+            return false;
+        }
+
+        let transform = cameraFramingToCharacterTransform(framing, pivot);
+        // PerspectiveCamera.zoom and scaling a posed mesh are not exactly
+        // equivalent when the body spans a large depth range. Apply the first
+        // estimate, measure the visible viewport crop, and converge on the
+        // fixed SAM target without changing FOV or revealing off-frame limbs.
+        for (let iteration = 0; iteration < 4; iteration += 1) {
+            this.viewer.setActiveCharacterAppearance({
+                color: character.color,
+                transform,
+            });
+            const correction = this.viewer?.computeSAM3DFrameCameraParams?.(
+                poseData,
+                this.exportParams.view_width || 1024,
+                this.exportParams.view_height || 1024,
+                meshData,
+                true,
+                standardTargetFrame,
+            );
+            if (!correction) break;
+            if (
+                Math.abs(Number(correction.zoom) - 1) < 1e-3
+                && Math.abs(Number(correction.offset_x)) < 1e-3
+                && Math.abs(Number(correction.offset_y)) < 1e-3
+            ) break;
+            transform = composeCameraFramingWithCharacterTransform(
+                transform,
+                correction,
+                pivot,
+            );
+        }
+        this.applyLibraryPoseTransform(transform, {
+            yaw_deg: 0,
+            pitch_deg: 0,
+        });
+        this.updateRotationSliders();
+        return true;
+    }
+
     applySAM3DFrameCameraParams(poseData, meshData = null) {
         const frameParams = this.viewer?.computeSAM3DFrameCameraParams?.(
             poseData,
@@ -9611,18 +9696,49 @@ class PoseStudioWidget {
             this._samCameraModeActive = false;
             return false;
         }
-        // Pose extraction and camera matching are separate operations. Keep the
-        // current user camera unless SAM camera application was explicitly enabled.
+        // Ordinary mode uses the exact recovered SAM view and keeps Pose
+        // Studio's fixed FOV. PerspectiveCamera.zoom compensates the FOV
+        // difference exactly, so there is no bbox fitting or seated-pose
+        // approximation in this path.
         if (!this.exportParams.samApplyCamera) {
-            this.viewer?.setSAMProjectionCameraFrame?.(null);
-            this._samCameraModeActive = false;
             this._samCamBannerVisible = false;
             this._samCamDisplayActive = true;
             this._samCamPreParams = null;
+            this._updateSAMCameraBanner();
+            if (frameParams.sam_projection) {
+                const equivalentProjection = buildEquivalentPerspectiveProjectionFrame(
+                    frameParams.sam_projection,
+                    POSE_STUDIO_CAPTURE_FOV,
+                );
+                if (equivalentProjection) {
+                    this.viewer?.setSAMProjectionCameraFrame?.(equivalentProjection);
+                    this._samCameraModeActive = true;
+                    this._samCamStoredProjectionFrame = equivalentProjection;
+                    this.exportParams.cam_yaw_deg = 0;
+                    this.exportParams.cam_pitch_deg = 0;
+                    this.persistActivePoseCameraParams();
+                    this._samCamStoredParams = {
+                        cam_zoom: this.exportParams.cam_zoom,
+                        cam_offset_x: this.exportParams.cam_offset_x,
+                        cam_offset_y: this.exportParams.cam_offset_y,
+                        cam_yaw_deg: 0,
+                        cam_pitch_deg: 0,
+                    };
+                    this.syncCameraWidgets();
+                    this.applyCameraToViewer(true);
+                    this.viewer.setCameraParams(this.currentCameraParams());
+                    return true;
+                }
+            }
+            this.viewer?.setSAMProjectionCameraFrame?.(null);
+            this._samCameraModeActive = false;
             this._samCamStoredParams = null;
             this._samCamStoredProjectionFrame = null;
-            this._updateSAMCameraBanner();
-            return false;
+            return this.applySAM3DStandardCameraFit(
+                poseData,
+                meshData,
+                frameParams.sam_standard_target || null,
+            );
         }
         // A pose pinned to SAM world joints only remains point-for-point aligned in the
         // source image when it is rendered by the same projection.  Do not add a second
@@ -9664,9 +9780,9 @@ class PoseStudioWidget {
             };
         }
 
-        this.exportParams.cam_zoom = 1;
-        this.exportParams.cam_offset_x = 0;
-        this.exportParams.cam_offset_y = 0;
+        // The projection frame was reconstructed from the character's current
+        // world transform. Keep that transform; only remove the ordinary orbit
+        // angles because the recovered projection already contains the view.
         this.exportParams.cam_yaw_deg = 0;
         this.exportParams.cam_pitch_deg = 0;
         this.persistActivePoseCameraParams();
@@ -14424,7 +14540,6 @@ class PoseStudioWidget {
             const debugLights = isDebugExecution && debugLightingMode === "random"
                 ? this.generateRandomDebugLights()
                 : null;
-
             if (fullCapture) {
                 const originalTab = this.activeTab;
                 const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
@@ -14528,7 +14643,6 @@ class PoseStudioWidget {
                 this.updateCharacterScene(animationMode
                     ? { frame: this.animationState.currentFrame }
                     : { poseIndex: this.activeTab });
-
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                 } else {

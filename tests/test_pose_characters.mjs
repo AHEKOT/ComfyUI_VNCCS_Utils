@@ -5,6 +5,7 @@ import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
     cameraFramingToCharacterTransform,
+    composeCameraFramingWithCharacterTransform,
     createPoseStudioCharacter,
     extractActiveCharacterTransformFromSceneAsset,
     extractActivePoseFromSceneAsset,
@@ -204,11 +205,13 @@ test("SAM projection cameras survive JSON serialization with finite values only"
     const source = {
         fov: 37.5,
         cameraPosition: { x: -1.25, y: 12.5, z: 42 },
+        projection_zoom: 0.75,
         ignored: "runtime-only",
     };
     assert.deepEqual(normalizeSAMProjectionFrame(source), {
         fov: 37.5,
         cameraPosition: { x: -1.25, y: 12.5, z: 42 },
+        projection_zoom: 0.75,
     });
     assert.equal(normalizeSAMProjectionFrame({
         fov: 0,
@@ -243,6 +246,15 @@ test("saved camera framing converts zoom around the model camera target", () => 
         y: pivot.y + 2 * -2,
         z: pivot.z,
     });
+});
+
+test("a measured viewport correction composes with the current character crop", () => {
+    const corrected = composeCameraFramingWithCharacterTransform(
+        { x: 0, y: 0, z: 0, zoom: 5.55 },
+        { zoom: 0.625, offset_x: 0, offset_y: 0 },
+        { x: 0, y: 10, z: 0 },
+    );
+    assert.ok(Math.abs(corrected.zoom - 3.46875) < 1e-8);
 });
 
 test("saved camera framing rejects incomplete data instead of inventing defaults", () => {

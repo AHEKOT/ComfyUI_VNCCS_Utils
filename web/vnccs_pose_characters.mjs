@@ -56,13 +56,22 @@ export function normalizeSAMProjectionFrame(source) {
     const x = Number(cameraPosition?.x);
     const y = Number(cameraPosition?.y);
     const z = Number(cameraPosition?.z);
+    const hasProjectionZoom = source.projection_zoom !== undefined
+        && source.projection_zoom !== null;
+    const projectionZoom = Number(source.projection_zoom ?? 1);
     if (
         !Number.isFinite(fov)
         || fov <= 0
         || fov >= 179
         || ![x, y, z].every(Number.isFinite)
+        || !Number.isFinite(projectionZoom)
+        || projectionZoom <= 0
     ) return null;
-    return { fov, cameraPosition: { x, y, z } };
+    return {
+        fov,
+        cameraPosition: { x, y, z },
+        ...(hasProjectionZoom ? { projection_zoom: projectionZoom } : {}),
+    };
 }
 
 export function cameraFramingToCharacterTransform(cameraParams, pivot) {
@@ -93,6 +102,34 @@ export function cameraFramingToCharacterTransform(cameraParams, pivot) {
         throw new RangeError("Pose framing is outside the supported character transform range.");
     }
     return transform;
+}
+
+export function composeCameraFramingWithCharacterTransform(
+    currentTransformSource,
+    cameraParams,
+    pivot,
+) {
+    const current = normalizeCharacterTransform(currentTransformSource);
+    const values = [
+        cameraParams?.zoom,
+        cameraParams?.offset_x,
+        cameraParams?.offset_y,
+        pivot?.x,
+        pivot?.y,
+        pivot?.z,
+    ].map(Number);
+    if (values.some(value => !Number.isFinite(value))) {
+        throw new TypeError("Pose framing requires finite zoom, offsets, and model pivot.");
+    }
+    const [zoom, offsetX, offsetY, pivotX, pivotY, pivotZ] = values;
+    if (zoom <= 0) throw new RangeError("Pose framing zoom must be positive.");
+
+    return normalizeCharacterTransform({
+        x: zoom * current.x + (1 - zoom) * pivotX + zoom * offsetX,
+        y: zoom * current.y + (1 - zoom) * pivotY + zoom * offsetY,
+        z: zoom * current.z + (1 - zoom) * pivotZ,
+        zoom: zoom * current.zoom,
+    });
 }
 
 export function nextCharacterId(characters = []) {

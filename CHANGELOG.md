@@ -22,11 +22,16 @@
 *   **SAM camera setting is now respected**: Fixed SAM imports re-enabling detector-camera matching and replacing the user's framing even when **SAM Import: Apply Camera Angle** was disabled.
     *   Camera matching is now disabled by default and remains available as an explicit option.
     *   Turning the option off while a SAM camera view is active restores the user-controlled camera.
+*   **Identical SAM and standard-mode framing**: Fixed the analyzed character rendering at a different scale when **SAM Import: Apply Camera Angle** was disabled.
+    *   Standard mode now reuses the recovered SAM camera position with PoseStudio's fixed 30-degree FOV and an exactly equivalent perspective zoom.
+    *   Compact and seated poses retain the same scale and position in both modes, including images where the visible body extends beyond the frame; PoseStudio no longer attempts to reveal or fit off-frame anatomy.
 
 ### Packaging and Validation
 
 *   Bumped the package version to `0.6.5`.
 *   Added regression coverage for Pose Manager analysis control, pose preservation, proportion application across the manager set, preview normalization, and standard-mode isolation.
+*   Added a browser-free end-to-end SAM camera regression using the ComfyUI Python environment, the production SAM 3D Body bridge, PoseStudio's MakeHuman rig and retargeting path, and a headless Node renderer.
+    *   All six repository image examples produce identical SAM-camera and fixed-FOV standard-mode mannequin projections, with zero projected-vertex error and zero differing output pixels.
 
 # Version 0.6.4
 ## PoseStudio Male Anatomy Visibility Control
