@@ -40,6 +40,40 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_pose_image_analysis_mode_isolated_to_pose_manager(self):
+        self.assertEqual(POSE_STUDIO._pose_image_analysis_mode({}), "pose")
+        self.assertEqual(
+            POSE_STUDIO._pose_image_analysis_mode({"export": {"interface_mode": "studio"}}),
+            "pose",
+        )
+        self.assertEqual(
+            POSE_STUDIO._pose_image_analysis_mode({"export": {"interface_mode": "manager"}}),
+            "manager_proportions",
+        )
+        self.assertIsNone(
+            POSE_STUDIO._pose_image_analysis_mode({
+                "export": {
+                    "interface_mode": "manager",
+                    "manager_auto_analyze_proportions": False,
+                },
+            }),
+        )
+
+    def test_disabled_manager_analysis_never_calls_sam_frontend_path(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        calls = []
+        node._apply_pose_image_via_frontend = lambda *_args, **_kwargs: calls.append(True)
+        state = {
+            "export": {
+                "interface_mode": "manager",
+                "manager_auto_analyze_proportions": False,
+            },
+        }
+
+        with self.assertRaisesRegex(RuntimeError, "did not receive images"):
+            node.generate(json.dumps(state), pose_image=object())
+        self.assertEqual(calls, [])
+
     def test_generate_rejects_oversized_view_before_rendering(self):
         state = {
             "export": {"view_width": POSE_STUDIO._POSE_OUTPUT_MAX_PIXELS + 1, "view_height": 1},

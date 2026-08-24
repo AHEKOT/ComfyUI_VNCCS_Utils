@@ -1,3 +1,38 @@
+# Version 0.6.5
+## Pose Manager Reference Proportions and SAM Camera Reliability
+
+### New Features
+
+*   **Reference-image proportions in Pose Manager**: The PoseStudio `pose_image` input is now available in Pose Manager.
+    *   When the node runs, SAM 3D Body analyzes the connected image and transfers its body proportions to the character used by every pose in the current manager set.
+    *   The reference pose is not applied and does not replace any pose in the manager set.
+    *   After the proportions are updated, every pose is normalized with the same full-frame fitting used after an age change and its preview is regenerated before output.
+
+*   **Automatic analysis toggle**: Added an **Auto-analyze proportions** checkbox to the Pose Manager header.
+    *   The option is enabled by default and saved with the workflow.
+    *   When disabled, `pose_image` remains visible and connected, but the image is not sent to SAM for analysis.
+
+### Improvements
+
+*   **Matching proportion results across PoseStudio modes**: Pose Manager uses the same body-proportion fitting as the standard PoseStudio image analysis, providing consistent limb and torso proportions while preserving all managed poses.
+*   **Unchanged standard PoseStudio workflow**: Outside Pose Manager, `pose_image` continues to apply the analyzed pose and body proportions as before.
+
+### Fixes
+
+*   **SAM camera setting is now respected**: Fixed SAM imports re-enabling detector-camera matching and replacing the user's framing even when **SAM Import: Apply Camera Angle** was disabled.
+    *   Camera matching is now disabled by default and remains available as an explicit option.
+    *   Turning the option off while a SAM camera view is active restores the user-controlled camera.
+*   **Identical SAM and standard-mode framing**: Fixed the analyzed character rendering at a different scale when **SAM Import: Apply Camera Angle** was disabled.
+    *   Standard mode now reuses the recovered SAM camera position with PoseStudio's fixed 30-degree FOV and an exactly equivalent perspective zoom.
+    *   Compact and seated poses retain the same scale and position in both modes, including images where the visible body extends beyond the frame; PoseStudio no longer attempts to reveal or fit off-frame anatomy.
+
+### Packaging and Validation
+
+*   Bumped the package version to `0.6.5`.
+*   Added regression coverage for Pose Manager analysis control, pose preservation, proportion application across the manager set, preview normalization, and standard-mode isolation.
+*   Added a browser-free end-to-end SAM camera regression using the ComfyUI Python environment, the production SAM 3D Body bridge, PoseStudio's MakeHuman rig and retargeting path, and a headless Node renderer.
+    *   All six repository image examples produce identical SAM-camera and fixed-FOV standard-mode mannequin projections, with zero projected-vertex error and zero differing output pixels.
+
 # Version 0.6.4
 ## PoseStudio Male Anatomy Visibility Control
 

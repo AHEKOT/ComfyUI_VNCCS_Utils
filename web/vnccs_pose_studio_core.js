@@ -6,6 +6,36 @@
 
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
+export const POSE_STUDIO_CAPTURE_FOV = 30;
+
+export function computeEquivalentPerspectiveZoom(sourceFov, targetFov = POSE_STUDIO_CAPTURE_FOV) {
+    const source = Number(sourceFov);
+    const target = Number(targetFov);
+    if (
+        !Number.isFinite(source)
+        || !Number.isFinite(target)
+        || source <= 0
+        || source >= 179
+        || target <= 0
+        || target >= 179
+    ) return null;
+    return Math.tan((target * Math.PI / 180) * 0.5)
+        / Math.tan((source * Math.PI / 180) * 0.5);
+}
+
+export function buildEquivalentPerspectiveProjectionFrame(
+    sourceFrame,
+    targetFov = POSE_STUDIO_CAPTURE_FOV,
+) {
+    if (!sourceFrame?.cameraPosition) return null;
+    const projectionZoom = computeEquivalentPerspectiveZoom(sourceFrame.fov, targetFov);
+    if (!projectionZoom) return null;
+    return {
+        fov: Number(targetFov),
+        cameraPosition: { ...sourceFrame.cameraPosition },
+        projection_zoom: projectionZoom,
+    };
+}
 
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
@@ -120,6 +150,42 @@ export function computeSAMProjectionFrameFit({
         zoom,
         offset_x: -(scaledCenterX - desiredCenterX) * visibleWidth * 0.5,
         offset_y: -(scaledAnchorY - targetAnchorY) * visibleHeight * 0.5,
+    };
+}
+
+export function clipSAMProjectionFrameToViewport(modelBounds, shoulderY = null) {
+    const width = Number(modelBounds?.width);
+    const height = Number(modelBounds?.height);
+    const centerX = Number(modelBounds?.centerX);
+    const centerY = Number(modelBounds?.centerY);
+    const depth = Number(modelBounds?.depth);
+    if (![width, height, centerX, centerY].every(Number.isFinite) || width <= 0 || height <= 0) {
+        return null;
+    }
+    const rawMinX = centerX - width * 0.5;
+    const rawMaxX = centerX + width * 0.5;
+    const rawMinY = centerY - height * 0.5;
+    const rawMaxY = centerY + height * 0.5;
+    const minX = Math.max(-1, rawMinX);
+    const maxX = Math.min(1, rawMaxX);
+    const minY = Math.max(-1, rawMinY);
+    const maxY = Math.min(1, rawMaxY);
+    if (maxX - minX <= 1e-5 || maxY - minY <= 1e-5) return null;
+
+    const shoulder = Number(shoulderY);
+    return {
+        bounds: {
+            width: maxX - minX,
+            height: maxY - minY,
+            centerX: (minX + maxX) * 0.5,
+            centerY: (minY + maxY) * 0.5,
+            depth: Number.isFinite(depth) ? depth : 1,
+        },
+        shoulder_y: Number.isFinite(shoulder) && shoulder >= -1 && shoulder <= 1
+            ? shoulder
+            : null,
+        bottom_y: minY,
+        clipped: rawMinX < -1 || rawMaxX > 1 || rawMinY < -1 || rawMaxY > 1,
     };
 }
 
@@ -1498,7 +1564,12 @@ export class PoseViewerCore {
         this.lights = [defaultLight];
 
         // Capture Camera (Independent of Orbit camera)
-        this.captureCamera = new THREE.PerspectiveCamera(30, this.width / this.height, 0.1, 500);
+        this.captureCamera = new THREE.PerspectiveCamera(
+            POSE_STUDIO_CAPTURE_FOV,
+            this.width / this.height,
+            0.1,
+            500,
+        );
         this.scene.add(this.captureCamera);
         // The common scene camera must not jump when a differently shaped
         // active character replaces the editor rig.
@@ -4554,7 +4625,7 @@ export class PoseViewerCore {
         const cameraOffset = new this.THREE.Vector3(0, 0, dist);
         cameraOffset.applyEuler(new this.THREE.Euler(pitchRad, yawRad, 0, 'YXZ'));
         this.captureCamera.aspect = width / height;
-        this.captureCamera.fov = 30;
+        this.captureCamera.fov = POSE_STUDIO_CAPTURE_FOV;
         this.captureCamera.zoom = zoom;
         this.captureCamera.updateProjectionMatrix();
         this.captureCamera.position.copy(target).add(cameraOffset);
@@ -4771,7 +4842,14 @@ export class PoseViewerCore {
         };
     }
 
-    computeSAM3DFrameCameraParams(data, width = 1024, height = 1024, meshData = null, forceFallback = false) {
+    computeSAM3DFrameCameraParams(
+        data,
+        width = 1024,
+        height = 1024,
+        meshData = null,
+        forceFallback = false,
+        standardTargetFrame = null,
+    ) {
         if (!this.THREE || !this.skinnedMesh || !this.captureCamera) return null;
 
         const frame = meshData?.render_frame || null;
@@ -5113,6 +5191,23 @@ export class PoseViewerCore {
                 projectionCamera,
                 ['upperarm_l', 'upperarm_r'],
             );
+            const visibleModelFrame = clipSAMProjectionFrameToViewport(
+                modelBounds,
+                modelShoulderY,
+            );
+            // Keep the source crop in diagnostics, but match the ordinary
+            // camera to the visible SAM-rendered mannequin. The recovered SAM
+            // camera follows the character world transform, so this projected
+            // frame is stable across saved zoom/pan values. Using the source
+            // body bounds here made the ordinary mannequin visibly smaller
+            // whenever its head/limb extents differed from the SAM body mesh.
+            const visibleSourceFrame = clipSAMProjectionFrameToViewport({
+                width: desiredW * 2,
+                height: desiredH * 2,
+                centerX: desiredCenterX,
+                centerY: desiredCenterY,
+                depth: 1,
+            }, sourceShoulderFrame?.ndcY) || visibleModelFrame;
             const fit = computeSAMProjectionFrameFit({
                 modelBounds,
                 desiredBounds: {
@@ -5134,6 +5229,37 @@ export class PoseViewerCore {
                 yaw_deg: 0,
                 pitch_deg: 0,
                 sam_projection: samProjectionFrame,
+                // Standard-camera matching must reproduce the crop visible in
+                // the source viewport. Geometry outside the image is not a
+                // reason to zoom out and reveal the complete body.
+                sam_standard_target: visibleModelFrame,
+                sam_fit_debug: {
+                    mode: 'sam_projection',
+                    image_size: { width: imageW, height: imageH },
+                    camera: {
+                        fov: projectionCamera.fov,
+                        position: {
+                            x: projectionCamera.position.x,
+                            y: projectionCamera.position.y,
+                            z: projectionCamera.position.z,
+                        },
+                    },
+                    source_frame_pixels: { x1, y1, x2, y2 },
+                    visible_source_frame: visibleSourceFrame,
+                    projected_model_bounds: modelBounds ? {
+                        min_x: modelBounds.min.x,
+                        min_y: modelBounds.min.y,
+                        max_x: modelBounds.max.x,
+                        max_y: modelBounds.max.y,
+                        width: modelBounds.width,
+                        height: modelBounds.height,
+                        center_x: modelBounds.centerX,
+                        center_y: modelBounds.centerY,
+                    } : null,
+                    visible_model_frame: visibleModelFrame,
+                    shoulder_y: Number.isFinite(modelShoulderY) ? modelShoulderY : null,
+                    discarded_projection_fit: fit,
+                },
             };
         }
 
@@ -5152,23 +5278,83 @@ export class PoseViewerCore {
                     this.captureCamera,
                     ['upperarm_l', 'upperarm_r'],
                 );
+                const visibleBaseFrame = clipSAMProjectionFrameToViewport(
+                    baseBounds,
+                    modelShoulderY,
+                );
+                const targetBounds = standardTargetFrame?.bounds;
+                const targetValues = [
+                    targetBounds?.width,
+                    targetBounds?.height,
+                    targetBounds?.centerX,
+                    targetBounds?.centerY,
+                ].map(Number);
+                const hasProjectionTarget = targetValues.every(Number.isFinite)
+                    && targetValues[0] > 1e-5
+                    && targetValues[1] > 1e-5;
+                const desiredBounds = hasProjectionTarget ? {
+                    width: targetValues[0],
+                    height: targetValues[1],
+                    centerX: targetValues[2],
+                    centerY: targetValues[3],
+                } : {
+                    width: desiredW * 2,
+                    height: desiredH * 2,
+                    centerX: desiredCenterX,
+                    centerY: desiredCenterY,
+                };
                 const fit = computeSAMProjectionFrameFit({
-                    modelBounds: baseBounds,
-                    desiredBounds: {
-                        width: desiredW * 2,
-                        height: desiredH * 2,
-                        centerX: desiredCenterX,
-                        centerY: desiredCenterY,
-                    },
+                    modelBounds: visibleBaseFrame?.bounds || baseBounds,
+                    desiredBounds,
                     fov: this.captureCamera.fov,
                     aspect: this.captureCamera.aspect,
-                    modelShoulderY,
-                    desiredShoulderY: sourceShoulderFrame?.ndcY,
-                    desiredBottomY: desiredCenterY - desiredH,
+                    // When matching the same mannequin between SAM and the
+                    // ordinary camera, its complete visible bbox is the scale
+                    // contract. Shoulder anchoring intentionally ignores the
+                    // head/top extent and was the remaining under-zoom cause.
+                    modelShoulderY: hasProjectionTarget
+                        ? null
+                        : visibleBaseFrame?.shoulder_y ?? modelShoulderY,
+                    desiredShoulderY: hasProjectionTarget
+                        ? null
+                        : sourceShoulderFrame?.ndcY,
+                    desiredBottomY: hasProjectionTarget
+                        ? null
+                        : desiredCenterY - desiredH,
                 });
                 if (fit) {
                     this.updateCaptureCamera(width, height, fit.zoom, fit.offset_x, fit.offset_y);
-                    return { ...fit, ...samCameraAngles };
+                    return {
+                        ...fit,
+                        ...samCameraAngles,
+                        sam_fit_debug: {
+                            mode: 'standard_camera',
+                            image_size: { width: imageW, height: imageH },
+                            camera: {
+                                fov: this.captureCamera.fov,
+                                aspect: this.captureCamera.aspect,
+                            },
+                            used_projection_target: hasProjectionTarget,
+                            alignment_mode: hasProjectionTarget
+                                ? 'visible_model_bounds'
+                                : 'source_shoulder_to_bottom',
+                            requested_target_frame: standardTargetFrame,
+                            desired_bounds: desiredBounds,
+                            raw_model_bounds: {
+                                min_x: baseBounds.min.x,
+                                min_y: baseBounds.min.y,
+                                max_x: baseBounds.max.x,
+                                max_y: baseBounds.max.y,
+                                width: baseBounds.width,
+                                height: baseBounds.height,
+                                center_x: baseBounds.centerX,
+                                center_y: baseBounds.centerY,
+                            },
+                            visible_model_frame: visibleBaseFrame,
+                            model_shoulder_y: Number.isFinite(modelShoulderY) ? modelShoulderY : null,
+                            result: { ...fit },
+                        },
+                    };
                 }
             }
 
@@ -5223,8 +5409,21 @@ export class PoseViewerCore {
         };
     }
 
-    fitSAM3DToStandardCamera(data, width = 1024, height = 1024, meshData = null) {
-        const angleParams = this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
+    fitSAM3DToStandardCamera(
+        data,
+        width = 1024,
+        height = 1024,
+        meshData = null,
+        standardTargetFrame = null,
+    ) {
+        const angleParams = this.computeSAM3DFrameCameraParams(
+            data,
+            width,
+            height,
+            meshData,
+            true,
+            standardTargetFrame,
+        );
         if (!angleParams) return null;
 
         const yaw = Number(angleParams.yaw_deg) || 0;
@@ -5240,7 +5439,14 @@ export class PoseViewerCore {
 
         // Rotation changes the projected head/sole positions, especially for
         // high- and low-angle images. Measure again only after it is applied.
-        return this.computeSAM3DFrameCameraParams(data, width, height, meshData, true);
+        return this.computeSAM3DFrameCameraParams(
+            data,
+            width,
+            height,
+            meshData,
+            true,
+            standardTargetFrame,
+        );
     }
 
     beginCaptureBatch(width, height) {
@@ -5443,11 +5649,18 @@ export class PoseViewerCore {
         if (!frame || !this.THREE || !this.captureCamera) return false;
         const cameraPosition = frame.cameraPosition;
         const fov = Number(frame.fov);
-        if (!cameraPosition || !Number.isFinite(fov) || fov <= 0) return false;
+        const projectionZoom = Number(frame.projection_zoom ?? 1);
+        if (
+            !cameraPosition
+            || !Number.isFinite(fov)
+            || fov <= 0
+            || !Number.isFinite(projectionZoom)
+            || projectionZoom <= 0
+        ) return false;
 
         this.captureCamera.aspect = (Number(width) || 1024) / Math.max(1, Number(height) || 1024);
         this.captureCamera.fov = fov;
-        this.captureCamera.zoom = Number(zoom) || 1.0;
+        this.captureCamera.zoom = (Number(zoom) || 1.0) * projectionZoom;
         this.captureCamera.up.set(0, 1, 0);
         this.captureCamera.position.set(
             Number(cameraPosition.x) || 0,

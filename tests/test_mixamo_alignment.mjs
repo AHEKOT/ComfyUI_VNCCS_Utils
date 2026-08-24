@@ -5,10 +5,22 @@ import * as THREE from "../web/three.module.js";
 import { buildMixamoWorldKeypoints } from "../web/vnccs_mixamo_import.js";
 import {
     AnalyticIKSolver,
+    clipSAMProjectionFrameToViewport,
     clampTwoBoneReachDistance,
+    computeEquivalentPerspectiveZoom,
     computeSAMProjectionFrameFit,
     PoseViewerCore,
 } from "../web/vnccs_pose_studio_core.js";
+
+test("fixed Pose Studio FOV exactly compensates SAM FOV through camera zoom", () => {
+    const samFov = 38.942441885311695;
+    const poseStudioFov = 30;
+    const zoom = computeEquivalentPerspectiveZoom(samFov, poseStudioFov);
+    assert.ok(Number.isFinite(zoom));
+    const samProjectionScale = 1 / Math.tan((samFov * Math.PI / 180) * 0.5);
+    const ordinaryProjectionScale = zoom / Math.tan((poseStudioFov * Math.PI / 180) * 0.5);
+    assert.ok(Math.abs(samProjectionScale - ordinaryProjectionScale) < 1e-12);
+});
 
 const pointBone = (position) => ({
     position: new THREE.Vector3(...position),
@@ -686,25 +698,60 @@ test("SAM projection aligns shoulder-to-sole height instead of head height", () 
 
 test("SAM standard-camera fit measures again after applying camera rotation", () => {
     const calls = [];
+    const standardTargetFrame = {
+        bounds: { width: 1.4, height: 1.7, centerX: 0.1, centerY: -0.05 },
+        shoulder_y: 0.45,
+        bottom_y: -0.9,
+    };
     const viewer = Object.create(PoseViewerCore.prototype);
     viewer.getPose = () => ({ modelRotation: [1, 2, 3] });
     viewer.setModelRotation = (x, y, z) => calls.push(["rotate", x, y, z]);
-    viewer.computeSAM3DFrameCameraParams = (_data, _width, _height, _meshData, forceFallback) => {
-        calls.push(["measure", forceFallback]);
+    viewer.computeSAM3DFrameCameraParams = (
+        _data,
+        _width,
+        _height,
+        _meshData,
+        forceFallback,
+        targetFrame,
+    ) => {
+        calls.push(["measure", forceFallback, targetFrame]);
         return calls.filter(call => call[0] === "measure").length === 1
             ? { zoom: 0.8, offset_x: 0, offset_y: 0, yaw_deg: 20, pitch_deg: -10 }
             : { zoom: 1.2, offset_x: 2, offset_y: 3, yaw_deg: 20, pitch_deg: -10 };
     };
 
-    const result = viewer.fitSAM3DToStandardCamera({}, 1024, 1024, {});
+    const result = viewer.fitSAM3DToStandardCamera({}, 1024, 1024, {}, standardTargetFrame);
 
     assert.deepEqual(calls, [
-        ["measure", true],
+        ["measure", true, standardTargetFrame],
         ["rotate", 11, -18, 3],
-        ["measure", true],
+        ["measure", true, standardTargetFrame],
     ]);
     assert.equal(result.zoom, 1.2);
     assert.equal(result.offset_y, 3);
+});
+
+test("SAM standard target keeps only the body crop visible inside the viewport", () => {
+    const visible = clipSAMProjectionFrameToViewport({
+        width: 2.4,
+        height: 2.8,
+        centerX: -0.2,
+        centerY: 0.1,
+        depth: 8,
+    }, 0.45);
+
+    assert.deepEqual(visible, {
+        bounds: {
+            width: 2,
+            height: 2,
+            centerX: 0,
+            centerY: 0,
+            depth: 8,
+        },
+        shoulder_y: 0.45,
+        bottom_y: -1,
+        clipped: true,
+    });
 });
 
 test("SAM gaze targets move with the mannequin head without changing direction", () => {

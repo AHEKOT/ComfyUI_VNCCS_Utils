@@ -206,6 +206,16 @@ def _hydrate_cached_pose_animation(data):
     return data
 
 
+def _pose_image_analysis_mode(data):
+    """Resolve how the optional pose image should affect the browser editor."""
+    export = data.get("export", {}) if isinstance(data, dict) else {}
+    if not isinstance(export, dict) or export.get("interface_mode") != "manager":
+        return "pose"
+    if export.get("manager_auto_analyze_proportions", True) is False:
+        return None
+    return "manager_proportions"
+
+
 class VNCCS_PoseStudio:
     """Pose Studio with mesh editing and multiple pose generation."""
     
@@ -295,7 +305,13 @@ class VNCCS_PoseStudio:
             time.sleep(0.1)
         return None
 
-    def _apply_pose_image_via_frontend(self, pose_image, unique_id, camera_prompt=""):
+    def _apply_pose_image_via_frontend(
+        self,
+        pose_image,
+        unique_id,
+        camera_prompt="",
+        apply_mode="pose",
+    ):
         if pose_image is None or not unique_id:
             return None
 
@@ -323,6 +339,7 @@ class VNCCS_PoseStudio:
                 "node_id": unique_id,
                 "pose_data": pose_payload,
                 "camera_prompt": camera_prompt or "",
+                "apply_mode": apply_mode,
                 "sync_token": sync_token,
             })
             synced = self._wait_for_frontend_sync(
@@ -332,7 +349,10 @@ class VNCCS_PoseStudio:
                 sync_token=sync_token,
             )
             if synced:
-                print("[VNCCS Pose Studio] Applied pose_image SAM pose through frontend sync.")
+                if apply_mode == "manager_proportions":
+                    print("[VNCCS Pose Studio] Applied pose_image body proportions to Pose Manager.")
+                else:
+                    print("[VNCCS Pose Studio] Applied pose_image SAM pose through frontend sync.")
                 return synced
             print("[VNCCS Pose Studio] pose_image was analyzed, but frontend sync timed out. Using existing pose_data.")
         except Exception as e:
@@ -359,7 +379,8 @@ class VNCCS_PoseStudio:
                 and export_settings.get("directional_skydome_enabled", False) is not True
             ):
                 camera_prompt = ""
-            if isinstance(export_settings, dict) and export_settings.get("interface_mode") == "manager":
+            pose_image_analysis_mode = _pose_image_analysis_mode(data)
+            if pose_image_analysis_mode is None:
                 pose_image = None
 
             if pose_image is not None:
@@ -367,6 +388,7 @@ class VNCCS_PoseStudio:
                     pose_image,
                     unique_id,
                     camera_prompt,
+                    pose_image_analysis_mode,
                 )
                 if isinstance(synced, dict):
                     data = _hydrate_cached_pose_animation(synced)

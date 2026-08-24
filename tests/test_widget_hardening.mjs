@@ -50,6 +50,47 @@ test("Pose Studio upload rejects HTTP sync failures", () => {
     assert.match(normalSyncPath, /await reportPoseStudioSyncFailure\(nodeId, syncToken, e\)/);
 });
 
+test("SAM projection does not apply a second scale over the recovered camera", () => {
+    const start = poseStudioSource.indexOf("applySAM3DFrameCameraParams(poseData, meshData = null)");
+    const end = poseStudioSource.indexOf("\n    formatVideoTime(", start);
+    const method = poseStudioSource.slice(start, end);
+    const projectionStart = method.indexOf("setSAMProjectionCameraFrame?.(frameParams.sam_projection)");
+    const projectionBranch = method.slice(projectionStart);
+    assert.match(method, /setSAMProjectionCameraFrame\?\.\(frameParams\.sam_projection\)/);
+    assert.doesNotMatch(projectionBranch, /projectionFit|this\.exportParams\.cam_zoom\s*=\s*frameParams\.zoom/);
+    assert.doesNotMatch(projectionBranch, /this\.exportParams\.cam_zoom\s*=\s*1/);
+    assert.doesNotMatch(projectionBranch, /this\.exportParams\.cam_offset_[xy]\s*=\s*0/);
+});
+
+test("ordinary SAM framing reuses the exact projection with fixed Pose Studio FOV", () => {
+    const helperStart = poseStudioSource.indexOf("applySAM3DStandardCameraFit(poseData, meshData = null, standardTargetFrame = null)");
+    const methodStart = poseStudioSource.indexOf("applySAM3DFrameCameraParams(poseData, meshData = null)");
+    const methodEnd = poseStudioSource.indexOf("\n    formatVideoTime(", methodStart);
+    const helper = poseStudioSource.slice(helperStart, methodStart);
+    const method = poseStudioSource.slice(methodStart, methodEnd);
+
+    assert.match(helper, /neutralTransform = \{ x: 0, y: 0, z: 0, zoom: 1 \}/);
+    assert.match(helper, /fitSAM3DToStandardCamera/);
+    assert.match(helper, /meshData,[\s\S]*standardTargetFrame/);
+    assert.match(helper, /cameraFramingToCharacterTransform\(framing, pivot\)/);
+    assert.match(helper, /for \(let iteration = 0; iteration < 4; iteration \+= 1\)/);
+    assert.match(helper, /composeCameraFramingWithCharacterTransform/);
+    assert.match(helper, /true,[\s\S]*standardTargetFrame/);
+    assert.doesNotMatch(helper, /currentZoom/);
+    assert.match(method, /if \(!this\.exportParams\.samApplyCamera\)/);
+    assert.match(method, /buildEquivalentPerspectiveProjectionFrame/);
+    assert.match(method, /frameParams\.sam_projection,[\s\S]*POSE_STUDIO_CAPTURE_FOV/);
+    assert.match(poseStudioCoreSource, /projection_zoom: projectionZoom/);
+    const directStart = method.indexOf("if (frameParams.sam_projection)");
+    const directEnd = method.indexOf("this.viewer?.setSAMProjectionCameraFrame?.(null)", directStart);
+    const directBranch = method.slice(directStart, directEnd);
+    assert.doesNotMatch(directBranch, /applySAM3DStandardCameraFit|sam_standard_target/);
+});
+
+test("SAM camera fitting does not emit runtime diagnostics", () => {
+    assert.doesNotMatch(poseStudioSource, /SAMCameraFit|_logSAMCameraFit|_samCameraFitTraceSeq/);
+});
+
 
 test("Pose Library image previews preserve their aspect ratio without cropping", () => {
     const rule = poseStudioSource.match(/\.vnccs-ps-library-item-preview img\s*\{([^}]*)\}/)?.[1] || "";
@@ -193,6 +234,63 @@ test("Pose Manager regenerates missing previews after worker model load and mode
         loadMethod,
         /viewer\.isInitialized\(\)[\s\S]*syncToNode\(true\);[\s\S]*scheduleAllManagerPreviewRefresh\(\);/,
     );
+});
+
+
+test("Pose Manager keeps the pose image input and gates automatic proportion analysis", () => {
+    assert.match(poseStudioSource, /manager_auto_analyze_proportions: true/);
+    assert.match(poseStudioSource, /autoAnalyzeText\.textContent = "Auto-analyze proportions"/);
+    assert.match(
+        poseStudioSource,
+        /manager_auto_analyze_proportions = autoAnalyzeCheckbox\.checked;[\s\S]*syncToNode\(false, \{ skipCapture: true \}\)/,
+    );
+
+    const modeStart = poseStudioSource.indexOf("setInterfaceMode(mode, { sync = true } = {})");
+    const modeEnd = poseStudioSource.indexOf("\n    applyInterfaceMode()", modeStart);
+    const modeMethod = poseStudioSource.slice(modeStart, modeEnd);
+    assert.match(modeMethod, /_vnccsEnsurePoseImageInput/);
+    assert.doesNotMatch(modeMethod, /SetPoseImageInputDisabled/);
+    const ensureStart = poseStudioSource.indexOf("const ensurePoseImageInput = (node) =>");
+    const ensureEnd = poseStudioSource.indexOf("const setCameraPromptInputDisabled", ensureStart);
+    const ensureMethod = poseStudioSource.slice(ensureStart, ensureEnd);
+    assert.match(ensureMethod, /addInput\("pose_image", "IMAGE"\)/);
+    assert.doesNotMatch(ensureMethod, /removeInput|disconnectInput/);
+});
+
+
+test("Pose Manager SAM input applies proportions without replacing managed poses", () => {
+    const managerStart = poseStudioSource.indexOf("async applySAM3DProportionsToPoseManager(poseData)");
+    const managerEnd = poseStudioSource.indexOf("\n    applySAM3DMeshOverlayFit", managerStart);
+    const managerMethod = poseStudioSource.slice(managerStart, managerEnd);
+    assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
+    assert.match(
+        managerMethod,
+        /viewer\.applySAM3DImport\([\s\S]*poseForAnalysis,[\s\S]*\{ recordState: false \}/,
+    );
+    assert.match(managerMethod, /applySAM3DMeshOverlayFit\(fitData\.meshData, poseForAnalysis\)/);
+    assert.doesNotMatch(managerMethod, /commitViewerPoseToCurrentEditor/);
+    assert.doesNotMatch(managerMethod, /this\.poses\[this\.activeTab\]\s*=\s*poseForAnalysis/);
+    assert.match(managerMethod, /for \(const pose of this\.poses \|\| \[\]\)/);
+    assert.match(managerMethod, /delete pose\.bonePositions/);
+    assert.match(managerMethod, /finally \{[\s\S]*viewer\.setPose\(restoredPose, true\)/);
+    assert.match(managerMethod, /viewer\.applyBoneLengthScales\?\.\(\)/);
+    assert.match(managerMethod, /previousSAMVisualState[\s\S]*setSAMProjectionCameraFrame/);
+    assert.match(managerMethod, /this\.applyAgeCameraFit\(\);[\s\S]*scheduleAllManagerPreviewRefresh\(\)/);
+    assert.match(managerMethod, /await this\.awaitManagerPreviewRefresh\(generation\)/);
+
+    const importIndex = managerMethod.indexOf("this.viewer.applySAM3DImport(");
+    const overlayIndex = managerMethod.indexOf("this.applySAM3DMeshOverlayFit(", importIndex);
+    const syncIndex = managerMethod.indexOf("this.syncMeshProportionSlidersFromViewer()", overlayIndex);
+    const restoreIndex = managerMethod.indexOf("this.viewer.setPose(restoredPose, true)", syncIndex);
+    assert.ok(importIndex >= 0 && overlayIndex > importIndex && syncIndex > overlayIndex && restoreIndex > syncIndex);
+
+    const eventStart = poseStudioSource.indexOf('api.addEventListener("vnccs_apply_sam3d_pose"');
+    const eventEnd = poseStudioSource.indexOf("\n    },\n\n    async beforeRegisterNodeDef", eventStart);
+    const eventMethod = poseStudioSource.slice(eventStart, eventEnd);
+    assert.match(eventMethod, /applyMode === "manager_proportions"/);
+    assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
+    assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
+    assert.match(eventMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
 });
 
 
