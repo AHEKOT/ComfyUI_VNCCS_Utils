@@ -1,3 +1,33 @@
+# Version 0.6.5
+## Pose Manager Reference Proportions and SAM Camera Reliability
+
+### New Features
+
+*   **Reference-image proportions in Pose Manager**: The PoseStudio `pose_image` input is now available in Pose Manager.
+    *   When the node runs, SAM 3D Body analyzes the connected image and transfers its body proportions to the character used by every pose in the current manager set.
+    *   The reference pose is not applied and does not replace any pose in the manager set.
+    *   After the proportions are updated, every pose is normalized with the same full-frame fitting used after an age change and its preview is regenerated before output.
+
+*   **Automatic analysis toggle**: Added an **Auto-analyze proportions** checkbox to the Pose Manager header.
+    *   The option is enabled by default and saved with the workflow.
+    *   When disabled, `pose_image` remains visible and connected, but the image is not sent to SAM for analysis.
+
+### Improvements
+
+*   **Matching proportion results across PoseStudio modes**: Pose Manager uses the same body-proportion fitting as the standard PoseStudio image analysis, providing consistent limb and torso proportions while preserving all managed poses.
+*   **Unchanged standard PoseStudio workflow**: Outside Pose Manager, `pose_image` continues to apply the analyzed pose and body proportions as before.
+
+### Fixes
+
+*   **SAM camera setting is now respected**: Fixed SAM imports re-enabling detector-camera matching and replacing the user's framing even when **SAM Import: Apply Camera Angle** was disabled.
+    *   Camera matching is now disabled by default and remains available as an explicit option.
+    *   Turning the option off while a SAM camera view is active restores the user-controlled camera.
+
+### Packaging and Validation
+
+*   Bumped the package version to `0.6.5`.
+*   Added regression coverage for Pose Manager analysis control, pose preservation, proportion application across the manager set, preview normalization, and standard-mode isolation.
+
 # Version 0.6.4
 ## PoseStudio Male Anatomy Visibility Control
 
