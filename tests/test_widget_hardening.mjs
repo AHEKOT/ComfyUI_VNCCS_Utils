@@ -222,22 +222,26 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     const managerEnd = poseStudioSource.indexOf("\n    applySAM3DMeshOverlayFit", managerStart);
     const managerMethod = poseStudioSource.slice(managerStart, managerEnd);
     assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
-    assert.match(managerMethod, /viewer\.setPose\(\{\}, true\)/);
-    assert.match(managerMethod, /analyzeSAM3DBodyProportions/);
-    assert.doesNotMatch(managerMethod, /applySAM3DImport/);
+    assert.match(
+        managerMethod,
+        /viewer\.applySAM3DImport\([\s\S]*poseForAnalysis,[\s\S]*\{ recordState: false \}/,
+    );
+    assert.match(managerMethod, /applySAM3DMeshOverlayFit\(fitData\.meshData, poseForAnalysis\)/);
     assert.doesNotMatch(managerMethod, /commitViewerPoseToCurrentEditor/);
+    assert.doesNotMatch(managerMethod, /this\.poses\[this\.activeTab\]\s*=\s*poseForAnalysis/);
     assert.match(managerMethod, /for \(const pose of this\.poses \|\| \[\]\)/);
     assert.match(managerMethod, /delete pose\.bonePositions/);
+    assert.match(managerMethod, /finally \{[\s\S]*viewer\.setPose\(restoredPose, true\)/);
+    assert.match(managerMethod, /viewer\.applyBoneLengthScales\?\.\(\)/);
+    assert.match(managerMethod, /previousSAMVisualState[\s\S]*setSAMProjectionCameraFrame/);
     assert.match(managerMethod, /this\.applyAgeCameraFit\(\);[\s\S]*scheduleAllManagerPreviewRefresh\(\)/);
     assert.match(managerMethod, /await this\.awaitManagerPreviewRefresh\(generation\)/);
 
-    const coreStart = poseStudioCoreSource.indexOf("analyzeSAM3DBodyProportions(data)");
-    const coreEnd = poseStudioCoreSource.indexOf("\n    fitSAM3DJointRootLengthsToWorldKps", coreStart);
-    const coreMethod = poseStudioCoreSource.slice(coreStart, coreEnd);
-    assert.match(coreMethod, /autoFitSAM3DBoneLengths\(data\)/);
-    assert.match(coreMethod, /fitSAM3DJointRootLengthsToWorldKps\(worldKps\)/);
-    assert.match(coreMethod, /fitSAM3DLimbLengthsToWorldKps\(worldKps\)/);
-    assert.doesNotMatch(coreMethod, /applyWorldKeypointImport|applySAM3DImport/);
+    const importIndex = managerMethod.indexOf("this.viewer.applySAM3DImport(");
+    const overlayIndex = managerMethod.indexOf("this.applySAM3DMeshOverlayFit(", importIndex);
+    const syncIndex = managerMethod.indexOf("this.syncMeshProportionSlidersFromViewer()", overlayIndex);
+    const restoreIndex = managerMethod.indexOf("this.viewer.setPose(restoredPose, true)", syncIndex);
+    assert.ok(importIndex >= 0 && overlayIndex > importIndex && syncIndex > overlayIndex && restoreIndex > syncIndex);
 
     const eventStart = poseStudioSource.indexOf('api.addEventListener("vnccs_apply_sam3d_pose"');
     const eventEnd = poseStudioSource.indexOf("\n    },\n\n    async beforeRegisterNodeDef", eventStart);

@@ -9506,14 +9506,30 @@ class PoseStudioWidget {
         const poseForAnalysis = fitData?.poseData || poseData;
         const originalPose = this.viewer.getPose();
         const restoredPose = JSON.parse(JSON.stringify(originalPose || {}));
+        const previousSAMVisualState = {
+            poseData: this._lastSAM3DPoseData || null,
+            meshData: this._lastSAM3DMeshData || null,
+            meshVisible: !!this.viewer.samMeshOverlayVisible,
+            worldKps: this.viewer._hmr2WorldKps || null,
+            figureVisible: this.viewer._hmr2FigureGroup?.visible !== false,
+            projectionFrame: this.viewer._samProjectionCameraFrame || null,
+            importedFootRotations: this.viewer._sam3dImportedFootLocalRotations || null,
+        };
 
-        // Measure against the neutral rig so an existing bent or translated
-        // manager pose cannot bias the detected body proportions.
-        this.viewer.setPose({}, true);
         try {
-            const proportions = this.viewer.analyzeSAM3DBodyProportions?.(poseForAnalysis);
-            if (!proportions) {
-                throw new Error("Failed to analyze SAM 3D Body proportions.");
+            // Run the exact same fitting sequence as an ordinary Pose Studio
+            // import. The detected pose is temporary; only the fitted body
+            // proportions are copied into manager state below.
+            const applied = this.viewer.applySAM3DImport(
+                poseForAnalysis,
+                this._shoulderYOffset || 0,
+                { recordState: false },
+            );
+            if (!applied) {
+                throw new Error("Failed to fit SAM 3D Body proportions.");
+            }
+            if (fitData?.meshData) {
+                this.applySAM3DMeshOverlayFit(fitData.meshData, poseForAnalysis);
             }
             this.syncMeshProportionSlidersFromViewer();
 
@@ -9537,9 +9553,31 @@ class PoseStudioWidget {
             }
         } finally {
             this.viewer.setPose(restoredPose, true);
+            this.viewer.applyBoneLengthScales?.();
+            this.viewer.updateFootScale?.(Number(this.meshParams.foot_size) || 1);
+            this.viewer._sam3dImportedFootLocalRotations = previousSAMVisualState.importedFootRotations;
+
+            if (previousSAMVisualState.meshData && previousSAMVisualState.poseData) {
+                this.viewer.setSAMMeshOverlayData?.(
+                    previousSAMVisualState.meshData,
+                    previousSAMVisualState.poseData,
+                );
+                this.viewer.setSAMMeshOverlayVisible?.(previousSAMVisualState.meshVisible);
+            } else {
+                this.viewer.clearSAMMeshOverlay?.();
+                this.viewer._clearImportedFigureGroup?.("_hmr2FigureGroup");
+                this.viewer._hmr2WorldKps = null;
+            }
+            if (previousSAMVisualState.worldKps) {
+                this.viewer._hmr2WorldKps = previousSAMVisualState.worldKps;
+                this.viewer._drawHMR2Figure?.(previousSAMVisualState.worldKps);
+                if (this.viewer._hmr2FigureGroup) {
+                    this.viewer._hmr2FigureGroup.visible = previousSAMVisualState.figureVisible;
+                }
+            }
+            this.viewer.setSAMProjectionCameraFrame?.(previousSAMVisualState.projectionFrame);
         }
 
-        this.viewer.applyBoneLengthScales?.();
         this.updateCharacterScene({ poseIndex: this.activeTab });
         this.refreshPoseManagerControls();
 
