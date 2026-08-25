@@ -16,8 +16,8 @@ import torch
 from PIL import Image
 
 
-_EMPTY_STATE = '{"schema_version":10,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
-_MAX_STATE_CHARS = 2 * 1024 * 1024
+_EMPTY_STATE = '{"schema_version":17,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
+_MAX_STATE_CHARS = 16 * 1024 * 1024
 _MAX_PREVIEW_PIXELS = 4096 * 4096
 _MAX_SCENE_CAMERAS = 32
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
@@ -81,6 +81,37 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 raise ValueError("3D Factory scene snapshot contains duplicate objects")
             if "visible" in item and not isinstance(item["visible"], bool):
                 raise ValueError("3D Factory scene snapshot contains invalid object visibility")
+            collision = item.get("collision_proxy", {})
+            if not isinstance(collision, dict) or collision.get("mode", "auto_box") not in {
+                "auto_box", "box", "off",
+            }:
+                raise ValueError("3D Factory scene snapshot contains an invalid collision proxy")
+            for key in ("center", "size"):
+                vector = collision.get(key, [0, 0, 0] if key == "center" else [1, 1, 1])
+                if (
+                    not isinstance(vector, list)
+                    or len(vector) != 3
+                    or any(
+                        not isinstance(component, (int, float))
+                        or isinstance(component, bool)
+                        or not math.isfinite(float(component))
+                        for component in vector
+                    )
+                    or (key == "size" and any(float(component) <= 0 for component in vector))
+                ):
+                    raise ValueError("3D Factory scene snapshot contains invalid collision geometry")
+            if item.get("light_transport", "opaque") not in {"opaque", "cutout", "transmissive"}:
+                raise ValueError("3D Factory scene snapshot contains invalid light transport")
+            transmission = item.get("transmission", 0)
+            if (
+                not isinstance(transmission, (int, float))
+                or isinstance(transmission, bool)
+                or not math.isfinite(float(transmission))
+                or not 0 <= float(transmission) <= 1
+            ):
+                raise ValueError("3D Factory scene snapshot contains invalid light transmission")
+            if "locked" in item and not isinstance(item["locked"], bool):
+                raise ValueError("3D Factory scene snapshot contains invalid object lock state")
             object_ids.add(object_id)
         layers = snapshot.get("layers", [])
         if not isinstance(layers, list) or len(layers) > len(objects) + 1024:
@@ -187,6 +218,258 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 )
             validate_camera(saved_camera, "saved camera")
             camera_ids.add(camera_id)
+        levels = snapshot.get("levels", [])
+        if "levels" in snapshot and (not isinstance(levels, list) or not 1 <= len(levels) <= 64):
+            raise ValueError("3D Factory scene snapshot has invalid floor levels")
+        level_ids: set[str] = set()
+        for level in levels:
+            level_id = level.get("level_id") if isinstance(level, dict) else None
+            if not isinstance(level_id, str) or not _ID_RE.fullmatch(level_id) or level_id in level_ids:
+                raise ValueError("3D Factory scene snapshot contains an invalid floor level")
+            for key in ("elevation", "height", "slab_thickness"):
+                number = level.get(key)
+                if not isinstance(number, (int, float)) or isinstance(number, bool) or not math.isfinite(float(number)):
+                    raise ValueError("3D Factory scene snapshot contains invalid floor geometry")
+            level_ids.add(level_id)
+        if level_ids:
+            for item in objects:
+                if item.get("level_id") is not None and item.get("level_id") not in level_ids:
+                    raise ValueError("3D Factory object references an unknown floor level")
+            for saved_camera in cameras:
+                if saved_camera.get("level_id") is not None and saved_camera.get("level_id") not in level_ids:
+                    raise ValueError("3D Factory saved camera references an unknown floor level")
+        architecture = snapshot.get("architecture", {})
+        if not isinstance(architecture, dict):
+            raise ValueError("3D Factory scene snapshot has invalid architecture")
+        architecture_limits = {
+            "materials": 512,
+            "buildings": 64,
+            "walls": 4096,
+            "rooms": 1024,
+            "openings": 4096,
+        }
+        for key, limit in architecture_limits.items():
+            entries = architecture.get(key, [])
+            if not isinstance(entries, list) or len(entries) > limit or any(not isinstance(item, dict) for item in entries):
+                raise ValueError(f"3D Factory scene snapshot has invalid architecture {key}")
+        def finite_number(value: Any) -> bool:
+            return (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(float(value))
+            )
+
+        def finite_vector(value: Any, length: int) -> bool:
+            return (
+                isinstance(value, list)
+                and len(value) == length
+                and all(finite_number(item) for item in value)
+            )
+
+        material_ids: set[str] = set()
+        for material in architecture.get("materials", []):
+            material_id = material.get("material_id")
+            if (
+                not isinstance(material_id, str)
+                or not _ID_RE.fullmatch(material_id)
+                or material_id in material_ids
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid material")
+            material_ids.add(material_id)
+        building_ids: set[str] = set()
+        raw_buildings = architecture.get("buildings", [])
+        has_building_schema = "buildings" in architecture
+        requires_content_building_refs = int(value.get("schema_version", 0) or 0) >= 16
+        for building in raw_buildings:
+            building_id = building.get("building_id")
+            if (
+                not isinstance(building_id, str)
+                or not _ID_RE.fullmatch(building_id)
+                or building_id in building_ids
+                or not finite_vector(building.get("position"), 3)
+                or not finite_number(building.get("rotation_y"))
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid building")
+            building_ids.add(building_id)
+        if has_building_schema and requires_content_building_refs:
+            for item in objects:
+                if item.get("building_id") and item.get("building_id") not in building_ids:
+                    raise ValueError("3D Factory object references an unknown building")
+            for saved_camera in cameras:
+                if (
+                    saved_camera.get("building_id")
+                    and saved_camera.get("building_id") not in building_ids
+                ):
+                    raise ValueError("3D Factory saved camera references an unknown building")
+        wall_ids: set[str] = set()
+        for wall in architecture.get("walls", []):
+            wall_id = wall.get("wall_id")
+            if not isinstance(wall_id, str) or not _ID_RE.fullmatch(wall_id) or wall_id in wall_ids:
+                raise ValueError("3D Factory scene snapshot contains an invalid wall")
+            if (
+                wall.get("level_id") not in level_ids
+                or (has_building_schema and wall.get("building_id") not in building_ids)
+            ):
+                raise ValueError("3D Factory wall references an unknown floor level")
+            if (
+                not finite_vector(wall.get("start"), 2)
+                or not finite_vector(wall.get("end"), 2)
+                or any(
+                    not finite_number(wall.get(key))
+                    for key in ("thickness", "height", "elevation_offset")
+                )
+            ):
+                raise ValueError("3D Factory scene snapshot contains invalid wall geometry")
+            wall_ids.add(wall_id)
+        room_ids: set[str] = set()
+        walls_by_id = {
+            wall["wall_id"]: wall
+            for wall in architecture.get("walls", [])
+        }
+        for room in architecture.get("rooms", []):
+            room_id = room.get("room_id")
+            polygon = room.get("polygon")
+            if (
+                not isinstance(room_id, str)
+                or not _ID_RE.fullmatch(room_id)
+                or room_id in room_ids
+                or room.get("level_id") not in level_ids
+                or (has_building_schema and room.get("building_id") not in building_ids)
+                or not isinstance(polygon, list)
+                or not 3 <= len(polygon) <= 512
+                or any(not finite_vector(point, 2) for point in polygon)
+                or not isinstance(room.get("wall_ids", []), list)
+                or any(wall_id not in wall_ids for wall_id in room.get("wall_ids", []))
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid room")
+            linked_ids = room.get("wall_ids", [])
+            if linked_ids:
+                if len(linked_ids) != len(polygon) or len(set(linked_ids)) != len(linked_ids):
+                    raise ValueError("3D Factory room perimeter does not match its polygon")
+                for index, wall_id in enumerate(linked_ids):
+                    wall = walls_by_id[wall_id]
+                    if (
+                        wall.get("level_id") != room.get("level_id")
+                        or wall.get("building_id") != room.get("building_id")
+                        or math.dist(wall["start"], polygon[index]) > 1e-4
+                        or math.dist(wall["end"], polygon[(index + 1) % len(polygon)]) > 1e-4
+                    ):
+                        raise ValueError("3D Factory room perimeter walls are inconsistent")
+            room_ids.add(room_id)
+        opening_ids: set[str] = set()
+        occupied_by_wall: dict[str, list[tuple[float, float]]] = {}
+        for opening in architecture.get("openings", []):
+            opening_id = opening.get("opening_id")
+            if (
+                not isinstance(opening_id, str)
+                or not _ID_RE.fullmatch(opening_id)
+                or opening_id in opening_ids
+                or opening.get("wall_id") not in wall_ids
+                or any(
+                    not finite_number(opening.get(key))
+                    for key in ("offset", "width", "height", "sill_height")
+                )
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid opening")
+            wall = walls_by_id[opening["wall_id"]]
+            wall_length = math.dist(wall["start"], wall["end"])
+            center = float(opening["offset"]) * wall_length
+            half = float(opening["width"]) / 2.0
+            interval = (center - half, center + half)
+            if (
+                interval[0] < -1e-9
+                or interval[1] > wall_length + 1e-9
+                or float(opening["sill_height"]) + float(opening["height"]) > float(wall["height"]) + 1e-9
+                or any(interval[0] < end - 1e-9 and interval[1] > start + 1e-9 for start, end in occupied_by_wall.setdefault(opening["wall_id"], []))
+            ):
+                raise ValueError("3D Factory opening is outside its wall or overlaps another opening")
+            occupied_by_wall[opening["wall_id"]].append(interval)
+            opening_ids.add(opening_id)
+        tracks = snapshot.get("camera_tracks", [])
+        if not isinstance(tracks, list) or len(tracks) > 16:
+            raise ValueError("3D Factory scene snapshot has invalid camera paths")
+        total_keyframes = 0
+        track_ids: set[str] = set()
+        all_keyframe_ids: set[str] = set()
+        for track in tracks:
+            track_id = track.get("track_id") if isinstance(track, dict) else None
+            keyframes = track.get("keyframes", []) if isinstance(track, dict) else None
+            if (
+                not isinstance(track_id, str)
+                or not _ID_RE.fullmatch(track_id)
+                or track_id in track_ids
+                or not isinstance(keyframes, list)
+                or not finite_number(track.get("duration"))
+                or not finite_number(track.get("fps"))
+                or (
+                    has_building_schema
+                    and requires_content_building_refs
+                    and track.get("building_id")
+                    and track.get("building_id") not in building_ids
+                )
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid camera path")
+            total_keyframes += len(keyframes)
+            if total_keyframes > 1000:
+                raise ValueError("3D Factory camera path point limit was exceeded")
+            keyframe_ids: set[str] = set()
+            for frame in keyframes:
+                quaternion = frame.get("quaternion") if isinstance(frame, dict) else None
+                if (
+                    not isinstance(frame, dict)
+                    or not isinstance(frame.get("keyframe_id"), str)
+                    or not _ID_RE.fullmatch(frame["keyframe_id"])
+                    or frame["keyframe_id"] in keyframe_ids
+                    or frame["keyframe_id"] in all_keyframe_ids
+                    or not isinstance(quaternion, list)
+                    or len(quaternion) != 4
+                    or any(not isinstance(item, (int, float)) or not math.isfinite(float(item)) for item in quaternion)
+                    or not finite_vector(frame.get("position"), 3)
+                    or not finite_number(frame.get("time"))
+                    or not finite_number(frame.get("fov"))
+                    or not finite_number(frame.get("focus_distance"))
+                ):
+                    raise ValueError("3D Factory scene snapshot contains an invalid camera path point")
+                keyframe_ids.add(frame["keyframe_id"])
+                all_keyframe_ids.add(frame["keyframe_id"])
+            if keyframes and max(float(frame["time"]) for frame in keyframes) > float(track["duration"]):
+                raise ValueError("3D Factory camera path duration ends before its last point")
+            track_ids.add(track_id)
+        lighting = snapshot.get("lighting", {})
+        if not isinstance(lighting, dict):
+            raise ValueError("3D Factory scene snapshot has invalid lighting")
+        shadows = lighting.get("shadows", {})
+        if not isinstance(shadows, dict) or shadows.get("quality", "medium") not in {
+            "off", "low", "medium", "high", "ultra",
+        }:
+            raise ValueError("3D Factory scene snapshot has invalid shadow settings")
+        lights = lighting.get("lights", [])
+        if not isinstance(lights, list) or len(lights) > 32:
+            raise ValueError("3D Factory scene snapshot has invalid local lights")
+        light_ids: set[str] = set()
+        for light in lights:
+            light_id = light.get("light_id") if isinstance(light, dict) else None
+            if (
+                not isinstance(light_id, str)
+                or not _ID_RE.fullmatch(light_id)
+                or light_id in light_ids
+                or light.get("kind") not in {"point", "spot", "directional"}
+                or (light.get("level_id") is not None and light.get("level_id") not in level_ids)
+                or (
+                    has_building_schema
+                    and requires_content_building_refs
+                    and light.get("building_id")
+                    and light.get("building_id") not in building_ids
+                )
+                or not finite_vector(light.get("position"), 3)
+                or not finite_vector(light.get("target"), 3)
+                or any(
+                    not finite_number(light.get(key))
+                    for key in ("intensity", "distance", "angle", "penumbra")
+                )
+            ):
+                raise ValueError("3D Factory scene snapshot contains an invalid local light")
+            light_ids.add(light_id)
     return value
 
 

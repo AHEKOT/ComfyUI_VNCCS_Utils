@@ -95,6 +95,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(scene["camera"]["fov"], 42.0)
         self.assertEqual(scene["camera"]["up"], [0.0, 1.0, 0.0])
         self.assertEqual(scene["cameras"], [])
+        self.assertEqual(scene["architecture"]["buildings"], [])
         self.assertEqual(scene["lighting"]["preset"], "day")
         self.assertEqual(scene["lighting"]["color"], "#fff1d6")
         self.assertEqual(self.factory.list_scenes()[0]["name"], "First scene")

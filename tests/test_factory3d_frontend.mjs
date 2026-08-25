@@ -17,7 +17,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260726\.4"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260825\.26"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -70,6 +70,28 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
     assert.doesNotMatch(studio, /window\.(?:alert|confirm|prompt)/);
 });
 
+test("Factory exposes complete on-screen viewport camera navigation", () => {
+    assert.match(studio, /class="vnccs-i3s__viewport-camera" open/);
+    assert.match(studio, /data-camera-action="home"/);
+    assert.match(studio, /data-camera-action="scene"/);
+    assert.match(studio, /data-camera-action="selection"/);
+    assert.match(studio, /data-camera-preset="perspective"/);
+    assert.match(studio, /data-camera-preset="top"/);
+    assert.match(studio, /data-camera-pan="forward"/);
+    assert.match(studio, /vnccs-i3s__camera-distance-range/);
+    assert.match(studio, /vnccs-i3s__camera-height-range/);
+    assert.match(studio, /data-camera-vector="position"/);
+    assert.match(studio, /data-camera-vector="target"/);
+    assert.match(viewer, /resetView\(\{ emit = true \} = \{\}\)/);
+    assert.match(viewer, /frameScene\(\{ emit = true \} = \{\}\)/);
+    assert.match(viewer, /frameSelection\(\{ emit = true \} = \{\}\)/);
+    assert.match(viewer, /setCameraDistance\(value/);
+    assert.match(viewer, /panCamera\(\{ right = 0, forward = 0 \}/);
+    assert.match(viewer, /setCameraHeight\(value/);
+    assert.match(viewer, /this\._expandVisibleObjectBounds\(box, this\.architecture\?\.root\)/);
+    assert.match(styles, /\.vnccs-i3s__viewport-camera/);
+});
+
 test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /Scene manager/);
     assert.match(studio, /confirmDeleteScene\(scene\)/);
@@ -81,7 +103,7 @@ test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /Generate object/);
     assert.match(viewer, /TransformControls/);
     assert.match(studio, /duplicateObject/);
-    assert.match(studio, /Scene PLY/);
+    assert.match(studio, /Gaussian PLY/);
     assert.match(studio, /item\?\.urls\?\.export_ply/);
     assert.match(studio, /exportScene\(\)/);
     assert.match(studio, /download\(scene\.exports\.urls\.ply\)/);
@@ -445,6 +467,32 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
 });
 
+test("Exact saved-camera XYZ rotation round-trips through one quaternion order", async () => {
+    const helpers = studio.match(
+        /(function quaternionFromEulerDegrees[\s\S]*?function eulerDegreesFromQuaternion[\s\S]*?\n\})\n\n\nclass Factory3DWidget/,
+    );
+    assert.ok(helpers, "camera rotation helpers not found");
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const normalizePose = value => {
+        const quaternion = new THREE.Quaternion().fromArray(value.quaternion || [0, 0, 0, 1]);
+        if (quaternion.lengthSq() < 1e-12) quaternion.identity();
+        quaternion.normalize();
+        return { quaternion: quaternion.toArray() };
+    };
+    const rotationHelpers = Function(
+        "normalizedCameraPose",
+        `${helpers[1]}; return { quaternionFromEulerDegrees, eulerDegreesFromQuaternion };`,
+    )(normalizePose);
+    for (const rotation of [[17, -23, 41], [-32, 18, -11], [6.25, 54.5, 72.75]]) {
+        const restored = rotationHelpers.eulerDegreesFromQuaternion(
+            rotationHelpers.quaternionFromEulerDegrees(rotation),
+        );
+        for (let axis = 0; axis < 3; axis += 1) {
+            assert.ok(Math.abs(restored[axis] - rotation[axis]) < 1e-9);
+        }
+    }
+});
+
 test("Scene export exposes persistent dimensions, aspect presets, and an exact camera frame", () => {
     assert.match(studio, /Aspect ratio/);
     assert.match(studio, /16:9 · Widescreen/);
@@ -465,10 +513,14 @@ test("Scene export exposes persistent dimensions, aspect presets, and an exact c
     assert.match(styles, /\.vnccs-i3s__scene-render-settings/);
 });
 
-test("Canvas transforms are the only transform UI and object actions live on cards", () => {
+test("Canvas gizmos and the Inspector provide coarse and precise transforms", () => {
     assert.doesNotMatch(studio, /vnccs-i3s__transform-panel/);
-    assert.doesNotMatch(studio, /Precise values/);
     assert.doesNotMatch(studio, /vnccs-i3s__selected-name/);
+    assert.match(studio, /data-editor-path=/);
+    assert.match(studio, /exact value/);
+    assert.match(studio, /type="range" aria-label=/);
+    assert.match(studio, /Rotation · degrees/);
+    assert.match(studio, /step: 0\.01/);
     assert.match(studio, /Duplicate object/);
     assert.match(studio, /confirmDeleteObject\(item\.object_id\)/);
     assert.match(studio, /actions\.append\(visibility, exportObject, duplicate, remove\)/);
@@ -476,15 +528,149 @@ test("Canvas transforms are the only transform UI and object actions live on car
     assert.match(studio, /W\/E\/R: move\/rotate\/scale/);
 });
 
-test("Factory preserves the accepted Sakura three-column Studio interface", () => {
+test("Factory keeps a responsive Sakura workspace with isolated side-panel tabs", () => {
     assert.match(styles, /--i3-pink: #ff8fa3/);
     assert.match(styles, /--i3-lavender: #b8a9e8/);
-    assert.match(styles, /grid-template-columns: 300px minmax\(330px, 1fr\) 412\.5px/);
+    assert.match(styles, /grid-template-columns: 280px minmax\(420px, 1fr\) 360px/);
     assert.match(styles, /grid-template-columns: 200px minmax\(290px, 1fr\) 220px/);
+    assert.match(studio, /data-workspace-tab="generate"/);
+    assert.match(studio, /data-workspace-tab="cameras"/);
+    assert.match(studio, /data-workspace-tab="objects"/);
+    assert.match(studio, /data-workspace-tab="inspector"/);
+    assert.match(studio, /data-workspace-tab="export"/);
+    assert.match(styles, /\.vnccs-i3s__workspace-panel/);
     assert.doesNotMatch(styles, /minmax\(205px, 23fr\)/);
     assert.match(studio, /vnccs-i3s__side--left/);
     assert.match(studio, /vnccs-i3s__center/);
     assert.match(studio, /vnccs-i3s__side--right/);
+});
+
+test("Plan mode exposes distinct, previewed building workflows and explicit snap controls", () => {
+    assert.match(studio, /data-plan-tool="wall"/);
+    assert.match(studio, /Draw connected wall segments/);
+    assert.match(studio, /data-plan-tool="room"/);
+    assert.match(studio, /Create a rectangular room from two corners/);
+    assert.match(studio, /data-plan-tool="opening"/);
+    assert.match(studio, /data-plan-tool="camera"/);
+    assert.match(studio, /Opening type/);
+    assert.match(studio, /Grid step · m/);
+    assert.match(studio, /Major line every/);
+    assert.match(studio, /Hold Alt to bypass snap/);
+    assert.match(studio, /Hold Shift to force an orthogonal segment/);
+    assert.match(studio, /_queuePlanHover/);
+    assert.match(studio, /Opening preview/);
+    assert.match(studio, /Camera position set · move to aim/);
+    assert.match(studio, /_fitOpeningOnWall/);
+    assert.match(viewer, /snapPlanPoint: options\.snapPlanPoint/);
+    assert.match(viewer, /setPlanDraft\(draft\)/);
+    assert.match(viewer, /setPlanGrid\(value = \{\}\)/);
+    assert.match(viewer, /setCameraMarkers\(cameras = \[\]\)/);
+});
+
+test("Editor workflows keep selection, whole-building transforms, floor drop, and camera exits explicit", () => {
+    assert.match(studio, /\+ Building/);
+    assert.match(studio, /Move building/);
+    assert.match(studio, /Delete building/);
+    assert.match(studio, /No replacement Building will be created/);
+    assert.match(studio, /No buildings/);
+    assert.match(studio, /_applyBuildingTransform/);
+    assert.match(studio, /Assign camera to building/);
+    assert.match(studio, /data-object-property="building_id"/);
+    assert.match(studio, /data-camera-property="building_id"/);
+    assert.match(studio, /data-light-path="building_id"/);
+    assert.match(studio, /vnccs-i3s__camera-track-building/);
+    assert.match(studio, /track\.building_id !== building\.building_id/);
+    assert.match(studio, /vnccs-i3s__building-select/);
+    assert.match(studio, /active_building_id/);
+    assert.match(viewer, /selectedBuildingIds/);
+    assert.match(viewer, /this\.controls\.enableRotate = false/);
+    assert.match(viewer, /dollyCamera\(/);
+    assert.match(viewer, /rotateCameraFPV/);
+    assert.match(studio, /Drop selection to the nearest surface \(End\)/);
+    assert.match(studio, /this\._dropSelectionToSurface\(event\.shiftKey\)/);
+    assert.match(viewer, /dropSelectionToSurface\(\{ individual = false \} = \{\}\)/);
+    assert.match(studio, /Enter camera view/);
+    assert.match(studio, /Exit camera view/);
+    assert.match(studio, /Update from current view/);
+    assert.match(studio, /Add camera as path point/);
+    assert.match(studio, /Delete active camera path/);
+    assert.match(studio, /Precise edits in 3D enter the saved camera non-destructively/);
+    assert.match(studio, /selected_architecture: this\.selectedArchitecture/);
+    assert.match(studio, /selected_camera_keyframe_id: this\.selectedCameraKeyframeId/);
+});
+
+test("Editor schema normalizes grid aliases, room perimeters, buildings, and non-overlapping openings", async () => {
+    const schema = await import(
+        `${pathToFileURL(path.join(root, "web", "factory3d", "editor_schema.mjs")).href}?test=${Date.now()}`
+    );
+    const view = schema.normalizedEditorView({
+        plan_grid: { visible: false, step: 0.25, major_every: 8 },
+        snap: { enabled: false, grid: 3, endpoints: false },
+    }, "level-a");
+    assert.deepEqual(view.plan_grid, { visible: false, step: 0.25, major_every: 8 });
+    assert.equal(view.snap.enabled, false);
+    assert.equal(view.snap.grid, 0.25);
+    assert.equal(view.snap.endpoints, false);
+    assert.equal(view.active_level_id, "level-a");
+    assert.equal(schema.normalizedEditorView({ active_building_id: "building-a" }).active_building_id, "building-a");
+    assert.equal(schema.normalizedObjectEditorProperties({
+        building_id: "building-a",
+        light_transport: "transmissive",
+        transmission: 0.42,
+    }).building_id, "building-a");
+    assert.equal(schema.normalizedObjectEditorProperties({
+        building_id: "building-a",
+        light_transport: "transmissive",
+        transmission: 0.42,
+    }).transmission, 0.42);
+
+    const level = { level_id: "level-a" };
+    const building = { building_id: "building-a", name: "House" };
+    const walls = [
+        { wall_id: "w1", building_id: "building-a", level_id: "level-a", start: [0, 0], end: [4, 0] },
+        { wall_id: "w2", building_id: "building-a", level_id: "level-a", start: [4, 0], end: [4, 3] },
+        { wall_id: "w3", building_id: "building-a", level_id: "level-a", start: [4, 3], end: [0, 3] },
+        { wall_id: "w4", building_id: "building-a", level_id: "level-a", start: [0, 3], end: [0, 0] },
+    ];
+    const normalized = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [{
+            room_id: "room-a",
+            building_id: "building-a",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w2", "w3", "w4"],
+        }],
+        openings: [
+            { opening_id: "o1", wall_id: "w1", offset: 0.5, width: 2 },
+            { opening_id: "o2", wall_id: "w1", offset: 0.5, width: 2 },
+        ],
+    }, [level]);
+    assert.equal(normalized.buildings[0].building_id, "building-a");
+    assert.deepEqual(normalized.rooms[0].wall_ids, ["w1", "w2", "w3", "w4"]);
+    assert.equal(normalized.openings.length, 2);
+    const intervals = normalized.openings
+        .map(opening => [opening.offset * 4 - opening.width / 2, opening.offset * 4 + opening.width / 2])
+        .sort((left, right) => left[0] - right[0]);
+    assert.ok(intervals[0][1] <= intervals[1][0] + 1e-9);
+
+    const invalid = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [{
+            room_id: "room-b",
+            building_id: "building-a",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w1", "w3", "w4"],
+        }],
+    }, [level]);
+    assert.deepEqual(invalid.rooms[0].wall_ids, []);
+    const emptyArchitecture = schema.normalizedArchitecture({
+        buildings: [], walls: [], rooms: [], openings: [], materials: [],
+    }, [level]);
+    assert.deepEqual(emptyArchitecture.buildings, []);
 });
 
 test("Factory DOM widget follows node resize like Pose Studio", () => {
@@ -596,6 +782,9 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     );
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const SPARK = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "spark.module.js")).href);
+    const support = await import(
+        `${pathToFileURL(path.join(root, "web", "factory3d", "support_solver.mjs")).href}?test=${Date.now()}`
+    );
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
@@ -609,7 +798,25 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260726.18");
+    assert.equal(typeof support.solveDropToSurface, "function");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260825.16");
+    const basementMesh = new THREE.Object3D();
+    basementMesh.position.set(0, -2, 0);
+    basementMesh.updateMatrixWorld(true);
+    const basementDrop = support.solveDropToSurface({
+        entries: new Map([["basement-object", {
+            mesh: basementMesh,
+            data: { collision_proxy: { mode: "auto_box" } },
+            localBounds: new THREE.Box3(
+                new THREE.Vector3(-0.5, -0.5, -0.5),
+                new THREE.Vector3(0.5, 0.5, 0.5),
+            ),
+        }]]),
+        selectedIds: ["basement-object"],
+        floorElevations: [-3],
+    });
+    assert.ok(Math.abs(basementDrop.supportY + 3) < 1e-9);
+    assert.ok(basementDrop.deltaY < 0);
     const fpvViewer = Object.create(module.Factory3DViewer.prototype);
     fpvViewer.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
     fpvViewer.camera.position.set(1, 2, 3);
@@ -1043,7 +1250,11 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             { object_id: "object-a", visible: true },
             { object_id: "object-b", visible: true },
             { object_id: "object-c", visible: false },
+            { object_id: "object-d", visible: true, building_id: "building-hidden" },
         ],
+        architecture: {
+            buildings: [{ building_id: "building-hidden", visible: false }],
+        },
         layers: [
             {
                 type: "group",
@@ -1053,6 +1264,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             },
             { type: "object", object_id: "object-b" },
             { type: "object", object_id: "object-c" },
+            { type: "object", object_id: "object-d" },
         ],
     });
     assert.deepEqual(Array.from(visibility), ["object-b"]);

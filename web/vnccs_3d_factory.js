@@ -1,7 +1,29 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260726.18";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260825.16";
+import {
+    FACTORY_EDITOR_SCHEMA_VERSION,
+    DEFAULT_BUILDING,
+    DEFAULT_LEVEL,
+    DEFAULT_ROOM,
+    DEFAULT_WALL,
+    factoryId,
+    normalizedArchitecture,
+    normalizedEditorView,
+    normalizedLevels,
+    normalizedObjectEditorProperties,
+} from "./factory3d/editor_schema.mjs?v=20260825.9";
+import {
+    FactoryCommandHistory,
+    preserveScrollState,
+} from "./factory3d/editor_commands.mjs?v=20260824.4";
+import {
+    FactoryCameraPath,
+    cameraPoseFromLegacy,
+    legacyCameraFromPose,
+    normalizedCameraPose,
+} from "./factory3d/camera_path.mjs?v=20260824.4";
 
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
@@ -18,6 +40,8 @@ const ENDPOINTS = Object.freeze({
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
     skydome: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/skydome`,
+    textures: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/textures`,
+    texture: (sceneId, textureId) => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/textures/${encodeURIComponent(textureId)}`,
     preview: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview`,
     captureSet: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/capture-set`,
     previewError: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview/error`,
@@ -39,11 +63,12 @@ const ENDPOINTS = Object.freeze({
     libraryRepositoryProgress: taskId => `${LIBRARY_BASE}/repositories/progress/${encodeURIComponent(taskId)}`,
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
-const STATE_VERSION = 10;
-const FRONTEND_BUILD = "20260726.4";
+const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
+const FRONTEND_BUILD = "20260825.26";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
+const MAX_TEXTURE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
     name: "",
@@ -71,6 +96,13 @@ const DEFAULT_LIGHTING = Object.freeze({
     elevation: 42,
     ambient: 0.5,
     background: "#171b25",
+    shadows: Object.freeze({
+        enabled: true,
+        quality: "medium",
+        bias: -0.0004,
+        normal_bias: 0.015,
+    }),
+    lights: Object.freeze([]),
 });
 const DEFAULT_SKYDOME = Object.freeze({
     visible: true,
@@ -171,11 +203,16 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    if (document.getElementById("vnccs-3d-factory-styles")) return;
+    const href = new URL("./vnccs_3d_factory.css?v=20260825.9", import.meta.url).href;
+    const existing = document.getElementById("vnccs-3d-factory-styles");
+    if (existing) {
+        if (existing.href !== href) existing.href = href;
+        return;
+    }
     const link = document.createElement("link");
     link.id = "vnccs-3d-factory-styles";
     link.rel = "stylesheet";
-    link.href = new URL("./vnccs_3d_factory.css?v=20260726.2", import.meta.url).href;
+    link.href = href;
     document.head.appendChild(link);
 }
 
@@ -214,6 +251,21 @@ function apiUrl(path) {
 function clamp(value, minimum, maximum) {
     const number = Number(value);
     return Math.min(maximum, Math.max(minimum, Number.isFinite(number) ? number : minimum));
+}
+
+function reconcileIdentifiedObjects(currentValue, normalizedValue, idKey) {
+    const current = Array.isArray(currentValue) ? currentValue : [];
+    const normalized = Array.isArray(normalizedValue) ? normalizedValue : [];
+    const byId = new Map(current.map(item => [String(item?.[idKey] || ""), item]));
+    return normalized.map(next => {
+        const existing = byId.get(String(next?.[idKey] || ""));
+        if (!existing || typeof existing !== "object") return next;
+        for (const key of Object.keys(existing)) {
+            if (!(key in next)) delete existing[key];
+        }
+        Object.assign(existing, next);
+        return existing;
+    });
 }
 
 function formatBytes(value) {
@@ -314,6 +366,44 @@ function blobToDataURL(blob) {
     });
 }
 
+function quaternionFromEulerDegrees(rotation = [0, 0, 0]) {
+    const [x, y, z] = rotation.map(value => Number(value || 0) * Math.PI / 180 / 2);
+    const [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
+    const [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)];
+    return normalizedCameraPose({
+        quaternion: [
+            sx * cy * cz + cx * sy * sz,
+            cx * sy * cz - sx * cy * sz,
+            cx * cy * sz + sx * sy * cz,
+            cx * cy * cz - sx * sy * sz,
+        ],
+    }).quaternion;
+}
+
+function multiplyQuaternions(left = [0, 0, 0, 1], right = [0, 0, 0, 1]) {
+    const [ax, ay, az, aw] = left.map(Number);
+    const [bx, by, bz, bw] = right.map(Number);
+    return normalizedCameraPose({
+        quaternion: [
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+            aw * bw - ax * bx - ay * by - az * bz,
+        ],
+    }).quaternion;
+}
+
+function eulerDegreesFromQuaternion(quaternion = [0, 0, 0, 1]) {
+    const [x, y, z, w] = normalizedCameraPose({ quaternion }).quaternion;
+    // Inverse of quaternionFromEulerDegrees' intrinsic XYZ order. Mixing this
+    // with the common ZYX yaw/pitch/roll equations makes exact camera fields
+    // drift as soon as more than one axis is rotated.
+    const rotationX = Math.atan2(2 * (w * x - y * z), 1 - 2 * (x * x + y * y));
+    const rotationY = Math.asin(Math.max(-1, Math.min(1, 2 * (x * z + w * y))));
+    const rotationZ = Math.atan2(2 * (w * z - x * y), 1 - 2 * (y * y + z * z));
+    return [rotationX, rotationY, rotationZ].map(value => value * 180 / Math.PI);
+}
+
 
 class Factory3DWidget {
     constructor(node) {
@@ -323,6 +413,7 @@ class Factory3DWidget {
             console.info(`[VNCCS 3D Factory] Frontend build ${FRONTEND_BUILD}`);
         }
         this.node = node;
+        this._workspaceId = `vnccs-factory-${randomLayerId()}`;
         this.destroyed = false;
         this.sceneId = "";
         this.scene = null;
@@ -334,6 +425,16 @@ class Factory3DWidget {
         this.selectedGroupId = "";
         this.selectedSkydome = false;
         this.selectedCameraId = "";
+        this.previewCameraId = "";
+        this.selectedArchitecture = null;
+        this.editorView = normalizedEditorView();
+        this.planDraft = null;
+        this.planHover = null;
+        this._planHoverFrame = 0;
+        this._pendingPlanHover = null;
+        this.activeCameraTrackId = "";
+        this.selectedCameraKeyframeId = "";
+        this.cameraPlayback = null;
         this._cameraReturnState = null;
         this._cameraSelectionTransition = false;
         this._cameraPadPointer = null;
@@ -355,10 +456,16 @@ class Factory3DWidget {
         this._previewSaveTimer = 0;
         this._previewIdleHandle = 0;
         this._lightingApplyTimer = 0;
+        this._lightingHistoryBefore = null;
+        this._expandedLightId = "";
         this._searchRenderFrame = 0;
         this._sceneSaveSerial = Promise.resolve();
+        this._architectureCommitSerial = Promise.resolve();
+        this._architecturePreviewTimer = 0;
+        this._architectureGeometryFrame = 0;
         this._previewSaveSerial = Promise.resolve();
         this._restoreSerial = Promise.resolve();
+        this._historyRestoreSerial = Promise.resolve();
         this._resizeFrame = 0;
         this._uiScaleValue = "";
         this._modalCleanup = null;
@@ -378,18 +485,38 @@ class Factory3DWidget {
         this.libraryResizeObserver = null;
         this._libraryAutoRefreshStarted = false;
         this._suppressViewerStatePersistence = false;
+        this.history = new FactoryCommandHistory({
+            limit: 100,
+            onRestore: snapshot => {
+                const operation = this._historyRestoreSerial.then(
+                    () => this._restoreEditorSnapshot(snapshot),
+                );
+                this._historyRestoreSerial = operation.catch(() => null);
+                return operation;
+            },
+        });
         // Keep callbacks read-only until the serialized ComfyUI widget state has
         // been applied. Viewer setup emits state changes during construction.
         this._isRestoring = true;
         this._createLayout();
         this._cache();
         this._bind();
+        this._syncWorkspace();
         this.viewer = new Factory3DViewer(this.els.viewerHost, {
             onSelectionChange: (id, options) => this._selectObject(id, {
                 fromViewer: true,
                 additive: Boolean(options?.additive),
             }),
             onTransformChange: (id, transform, options) => this._onViewerTransform(id, transform, options),
+            onArchitectureSelection: selection => this._selectArchitecture(selection),
+            onArchitectureEdit: change => this._onArchitectureEdit(change),
+            snapPlanPoint: (point, event, context) => this._snapPlanPoint(
+                point,
+                event,
+                context?.origin || null,
+            ),
+            onPlanGesture: gesture => this._onPlanGesture(gesture),
+            onPlanHover: (tool, point, event) => this._queuePlanHover(tool, point, event),
             onStateChange: state => {
                 const previousState = this.viewerState;
                 const cameraChanged = !cameraStatesEqual(
@@ -397,15 +524,37 @@ class Factory3DWidget {
                     state.camera || {},
                 );
                 const toolbarChanged = previousState.mode !== state.mode
-                    || previousState.grid !== state.grid;
+                    || previousState.grid !== state.grid
+                    || previousState.view_mode !== state.view_mode
+                    || previousState.plan_tool !== state.plan_tool
+                    || previousState.active_level_id !== state.active_level_id;
                 this.viewerState = { ...this.viewerState, ...state };
                 if (toolbarChanged) this._syncToolbar();
+                if (cameraChanged) this._syncViewportCameraHUD(state.camera);
                 this._scheduleStateSave();
                 if (
                     cameraChanged
                     && !this._isRestoring
                     && !this._suppressViewerStatePersistence
-                    && !this.selectedCameraId
+                    && !this._cameraSelectionTransition
+                    && this.previewCameraId
+                    && this.scene
+                ) {
+                    const savedCamera = this.scene.cameras?.find(
+                        camera => camera.camera_id === this.previewCameraId,
+                    );
+                    if (savedCamera) {
+                        Object.assign(savedCamera, this._normalizeCameraState(state.camera));
+                        this.viewer.setCameraMarkers(this.scene.cameras);
+                        this._renderInspector();
+                        this._scheduleSceneSave(180);
+                    }
+                }
+                if (
+                    cameraChanged
+                    && !this._isRestoring
+                    && !this._suppressViewerStatePersistence
+                    && !this.previewCameraId
                     && this.scene
                 ) {
                     this.scene.camera = { ...state.camera };
@@ -423,6 +572,8 @@ class Factory3DWidget {
         this._navigationCleanup = enableCanvasNavigationForwarding(this.container);
         this._renderObjects();
         this._renderCameras();
+        this._renderInspector();
+        this._renderCameraTracks();
         this._syncSettings();
         this._syncExportSettings();
         this._syncLighting();
@@ -435,7 +586,29 @@ class Factory3DWidget {
         root.style.containerType = "inline-size";
         root.setAttribute("aria-label", "VNCCS 3D Factory");
         root.innerHTML = `
-            <aside class="vnccs-i3s__side vnccs-i3s__side--left" aria-label="Reference and generation settings">
+            <aside class="vnccs-i3s__side vnccs-i3s__side--left" aria-label="Creation and camera tools">
+                <div class="vnccs-i3s__workspace-tabs" role="tablist" aria-label="Creation workspace">
+                    <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
+                        data-workspace-side="left" data-workspace-tab="generate"
+                        id="${this._workspaceId}-left-generate-tab"
+                        title="Generation tools"
+                        aria-controls="${this._workspaceId}-left-generate" aria-selected="true">
+                        <span aria-hidden="true">${ICONS.upload}</span><span>Generate</span>
+                    </button>
+                    <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
+                        data-workspace-side="left" data-workspace-tab="cameras"
+                        id="${this._workspaceId}-left-cameras-tab"
+                        title="Camera tools"
+                        aria-controls="${this._workspaceId}-left-cameras" aria-selected="false" tabindex="-1">
+                        <span aria-hidden="true">${ICONS.camera}</span><span>Cameras</span>
+                    </button>
+                </div>
+                <div class="vnccs-i3s__workspace-panels">
+                    <div class="vnccs-i3s__workspace-panel vnccs-i3s__workspace-panel--left"
+                        id="${this._workspaceId}-left-generate" role="tabpanel"
+                        aria-labelledby="${this._workspaceId}-left-generate-tab"
+                        data-workspace-side="left" data-workspace-panel="generate"
+                        data-preserve-scroll="workspace-left-generate">
                 <section class="vnccs-i3s__section">
                     <div class="vnccs-i3s__section-head"><span>Reference</span></div>
                     <div class="vnccs-i3s__section-body">
@@ -507,6 +680,12 @@ class Factory3DWidget {
                         <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__generate" type="button">${ICONS.play}<span>Generate object</span></button>
                     </div>
                 </section>
+                    </div>
+                    <div class="vnccs-i3s__workspace-panel vnccs-i3s__workspace-panel--left"
+                        id="${this._workspaceId}-left-cameras" role="tabpanel"
+                        aria-labelledby="${this._workspaceId}-left-cameras-tab"
+                        data-workspace-side="left" data-workspace-panel="cameras"
+                        data-preserve-scroll="workspace-left-cameras" hidden>
                 <section class="vnccs-i3s__section vnccs-i3s__camera-section">
                     <div class="vnccs-i3s__section-head">
                         <span>Camera</span>
@@ -536,8 +715,30 @@ class Factory3DWidget {
                             </div>
                             <div class="vnccs-i3s__camera-list"></div>
                         </div>
+                        <div class="vnccs-i3s__camera-track-editor">
+                            <div class="vnccs-i3s__camera-group-head">
+                                <span>${ICONS.play}</span>
+                                <strong>Camera path</strong>
+                            </div>
+                            <div class="vnccs-i3s__camera-track-row">
+                                <select class="vnccs-i3s__select vnccs-i3s__camera-track-select" aria-label="Camera path"></select>
+                                <button class="vnccs-i3s__button vnccs-i3s__camera-track-add" type="button" title="Add camera path">+</button>
+                                <button class="vnccs-i3s__button vnccs-i3s__camera-track-delete" type="button" title="Delete active camera path" aria-label="Delete active camera path">${ICONS.trash}</button>
+                            </div>
+                            <input class="vnccs-i3s__input vnccs-i3s__camera-track-name" maxlength="80" placeholder="Camera path name" aria-label="Camera path name" />
+                            <select class="vnccs-i3s__select vnccs-i3s__camera-track-building" aria-label="Camera path building"></select>
+                            <div class="vnccs-i3s__camera-track-actions">
+                                <button class="vnccs-i3s__button vnccs-i3s__camera-keyframe-add" type="button">Add point</button>
+                                <button class="vnccs-i3s__button vnccs-i3s__camera-track-play" type="button">Play</button>
+                            </div>
+                            <input class="vnccs-i3s__range vnccs-i3s__camera-track-time" type="range" min="0" max="5" step="0.001" value="0" aria-label="Camera path time" />
+                            <div class="vnccs-i3s__camera-track-meta">No camera path</div>
+                            <div class="vnccs-i3s__camera-keyframes" data-preserve-scroll="camera-keyframes"></div>
+                        </div>
                     </div>
                 </section>
+                    </div>
+                </div>
                 <a class="vnccs-i3s__donate-link" href="https://www.buymeacoffee.com/MIUProject" target="_blank" rel="noopener noreferrer" title="Support MIUProject">
                     <img src="${VNCCS_DONATE_BANNER_URL}" alt="Support MIUProject" width="1859" height="525" decoding="async" />
                 </a>
@@ -556,22 +757,125 @@ class Factory3DWidget {
                 </header>
                 <div class="vnccs-i3s__viewport">
                     <div class="vnccs-i3s__viewer-host" aria-label="Gaussian scene viewport"></div>
-                    <div class="vnccs-i3s__empty-view">
-                        <div class="vnccs-i3s__empty-view-icon">${ICONS.cube}</div>
-                        <div class="vnccs-i3s__empty-view-title">Your scene will appear here</div>
-                        <div>Load a reference and generate the first Gaussian object.</div>
-                    </div>
                     <div class="vnccs-i3s__toolbar" role="toolbar">
-                        <button class="vnccs-i3s__tool vnccs-i3s__fit" type="button" title="Fit scene">${ICONS.fit}</button>
+                        <div class="vnccs-i3s__view-switch" role="group" aria-label="Viewport mode">
+                            <button class="vnccs-i3s__tool-label vnccs-i3s__view-3d" type="button" aria-pressed="true">3D</button>
+                            <button class="vnccs-i3s__tool-label vnccs-i3s__view-plan" type="button" aria-pressed="false">Plan</button>
+                        </div>
+                        <select class="vnccs-i3s__context-select vnccs-i3s__building-select" aria-label="Active building" title="New walls, rooms, models, cameras, camera paths, and lights are assigned to this building"></select>
+                        <select class="vnccs-i3s__context-select vnccs-i3s__level-select" aria-label="Active floor level"></select>
+                        <button class="vnccs-i3s__tool-label vnccs-i3s__level-add" type="button" title="Add floor level">+ Floor</button>
+                        <button class="vnccs-i3s__tool-label vnccs-i3s__building-add" type="button" title="Add a movable building container">+ Building</button>
+                        <button class="vnccs-i3s__tool-label vnccs-i3s__undo" type="button" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
+                        <button class="vnccs-i3s__tool-label vnccs-i3s__redo" type="button" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
                         <span class="vnccs-i3s__tool-separator"></span>
-                        <button class="vnccs-i3s__tool vnccs-i3s__mode-move" type="button" title="Move" aria-pressed="true">${ICONS.move}</button>
-                        <button class="vnccs-i3s__tool vnccs-i3s__mode-rotate" type="button" title="Rotate" aria-pressed="false">${ICONS.rotate}</button>
-                        <button class="vnccs-i3s__tool vnccs-i3s__mode-scale" type="button" title="Scale uniformly" aria-pressed="false">${ICONS.scale}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__fit" type="button" title="Fit scene" aria-label="Fit scene">${ICONS.fit}</button>
                         <span class="vnccs-i3s__tool-separator"></span>
-                        <button class="vnccs-i3s__tool vnccs-i3s__skydome-open" type="button" title="Skydome" aria-pressed="false">${ICONS.image}</button>
-                        <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting" aria-pressed="false">${ICONS.sun}</button>
-                        <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-pressed="false">${ICONS.grid}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__mode-move" type="button" title="Move" aria-label="Move selected objects" aria-pressed="true">${ICONS.move}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__mode-rotate" type="button" title="Rotate" aria-label="Rotate selected objects" aria-pressed="false">${ICONS.rotate}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__mode-scale" type="button" title="Scale uniformly" aria-label="Scale selected objects uniformly" aria-pressed="false">${ICONS.scale}</button>
+                        <button class="vnccs-i3s__tool-label vnccs-i3s__drop-surface" type="button" title="Drop selection to the nearest surface (End)">Drop</button>
+                        <span class="vnccs-i3s__tool-separator"></span>
+                        <button class="vnccs-i3s__tool vnccs-i3s__skydome-open" type="button" title="Skydome" aria-label="Open skydome controls" aria-pressed="false">${ICONS.image}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting" aria-label="Open scene lighting controls" aria-pressed="false">${ICONS.sun}</button>
+                        <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-label="Toggle 3D grid" aria-pressed="false">${ICONS.grid}</button>
                     </div>
+                    <div class="vnccs-i3s__plan-tools" role="toolbar" aria-label="Floor plan tools" hidden>
+                        <button type="button" data-plan-tool="select" aria-pressed="true" title="Select and edit architecture"><span>Select</span></button>
+                        <button type="button" data-plan-tool="wall" aria-pressed="false" title="Press and drag to draw a wall"><span>Wall</span></button>
+                        <button type="button" data-plan-tool="room" aria-pressed="false" title="Press and drag diagonally to draw a rectangular room"><span>Room</span></button>
+                        <button type="button" data-plan-tool="opening" aria-pressed="false" title="Press on a wall and drag to set the opening width"><span>Opening</span></button>
+                        <label class="vnccs-i3s__opening-kind-shortcut" hidden>
+                            <span>Place</span>
+                            <select class="vnccs-i3s__select" data-plan-setting="opening_kind" aria-label="Opening type">
+                                <option value="window">Window</option><option value="door">Door</option><option value="empty">Empty</option>
+                            </select>
+                        </label>
+                        <button type="button" data-plan-tool="camera" aria-pressed="false" title="Press and drag to place and aim a saved camera"><span>Camera</span></button>
+                        <button class="vnccs-i3s__plan-grid-toggle" type="button" aria-pressed="true" title="Show plan grid">Grid</button>
+                        <button class="vnccs-i3s__snap-toggle" type="button" aria-pressed="true" title="Snap drawing and edits to the plan grid">Snap</button>
+                        <label class="vnccs-i3s__snap-grid">Step <input type="number" min="0.001" max="1000" step="0.01" value="0.1" inputmode="decimal" aria-label="Plan grid step in meters" /><span>m</span></label>
+                        <details class="vnccs-i3s__plan-settings">
+                            <summary>Options</summary>
+                            <div class="vnccs-i3s__plan-settings-popover">
+                                <label><span>Grid step · m</span><input class="vnccs-i3s__input" data-plan-setting="grid_step" type="number" min="0.001" max="1000" step="0.01" /></label>
+                                <label><span>Major line every</span><input class="vnccs-i3s__input" data-plan-setting="major_every" type="number" min="2" max="100" step="1" /></label>
+                                <label><span>Angle step</span><input class="vnccs-i3s__input" data-plan-setting="angle" type="number" min="0" max="180" step="1" /></label>
+                                <label><span>Opening type</span><select class="vnccs-i3s__select" data-plan-setting="opening_kind"><option value="window">Window</option><option value="door">Door</option><option value="empty">Empty</option></select></label>
+                                <label><input data-plan-setting="endpoints" type="checkbox" /> Snap to endpoints</label>
+                                <label><input data-plan-setting="midpoints" type="checkbox" /> Snap to midpoints</label>
+                                <label><input data-plan-setting="orthogonal" type="checkbox" /> Automatic orthogonal snap</label>
+                            </div>
+                        </details>
+                        <span class="vnccs-i3s__plan-hint">Choose a tool, then press and drag in the plan.</span>
+                    </div>
+                    <details class="vnccs-i3s__viewport-camera" open>
+                        <summary>
+                            <span>${ICONS.camera}<b>View camera</b></span>
+                            <output class="vnccs-i3s__viewport-camera-summary">Perspective</output>
+                        </summary>
+                        <div class="vnccs-i3s__viewport-camera-body">
+                            <div class="vnccs-i3s__viewport-camera-actions">
+                                <button type="button" data-camera-action="home" title="Restore a stable perspective and frame the complete scene">Reset view</button>
+                                <button type="button" data-camera-action="scene" title="Center and frame the complete scene">Frame scene</button>
+                                <button type="button" data-camera-action="selection" title="Center and frame the current selection">Selection</button>
+                            </div>
+                            <div class="vnccs-i3s__viewport-camera-presets" role="group" aria-label="Camera view presets">
+                                <button type="button" data-camera-preset="perspective">Perspective</button>
+                                <button type="button" data-camera-preset="front">Front</button>
+                                <button type="button" data-camera-preset="right">Right</button>
+                                <button type="button" data-camera-preset="top">Top</button>
+                            </div>
+                            <div class="vnccs-i3s__viewport-camera-navigation">
+                                <div>
+                                    <span class="vnccs-i3s__viewport-camera-label">Look</span>
+                                    <div class="vnccs-i3s__camera-orbit-pad" role="group" aria-label="Turn view camera in place">
+                                        <button type="button" data-camera-orbit="up" aria-label="Look upward" title="Look upward">↑</button>
+                                        <button type="button" data-camera-orbit="left" aria-label="Look left" title="Look left">←</button>
+                                        <span aria-hidden="true">●</span>
+                                        <button type="button" data-camera-orbit="right" aria-label="Look right" title="Look right">→</button>
+                                        <button type="button" data-camera-orbit="down" aria-label="Look downward" title="Look downward">↓</button>
+                                    </div>
+                                </div>
+                                <div>
+                                    <span class="vnccs-i3s__viewport-camera-label">Move</span>
+                                    <div class="vnccs-i3s__camera-pan-pad" role="group" aria-label="Move view camera and target">
+                                        <button type="button" data-camera-pan="forward" aria-label="Move forward" title="Move forward">↑</button>
+                                        <button type="button" data-camera-pan="left" aria-label="Move left" title="Move left">←</button>
+                                        <span aria-hidden="true">●</span>
+                                        <button type="button" data-camera-pan="right" aria-label="Move right" title="Move right">→</button>
+                                        <button type="button" data-camera-pan="back" aria-label="Move backward" title="Move backward">↓</button>
+                                    </div>
+                                </div>
+                                <div class="vnccs-i3s__viewport-camera-sliders">
+                                    <label>
+                                        <span>Distance</span>
+                                        <div><input class="vnccs-i3s__camera-distance-range" type="range" min="-4" max="6" step="0.002" aria-label="Camera distance" /><input class="vnccs-i3s__camera-distance-input" type="number" min="0.0001" max="1000000" step="0.01" inputmode="decimal" aria-label="Camera distance in meters" /><small>m</small></div>
+                                    </label>
+                                    <label>
+                                        <span>Height</span>
+                                        <div><input class="vnccs-i3s__camera-height-range" type="range" min="-50" max="100" step="0.01" aria-label="Camera height" /><input class="vnccs-i3s__camera-height-input" type="number" min="-1000000" max="1000000" step="0.01" inputmode="decimal" aria-label="Camera height in meters" /><small>m</small></div>
+                                    </label>
+                                </div>
+                            </div>
+                            <details class="vnccs-i3s__viewport-camera-exact">
+                                <summary>Exact coordinates</summary>
+                                <div class="vnccs-i3s__viewport-camera-vector">
+                                    <span>Position</span>
+                                    <label>X<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="0" /></label>
+                                    <label>Y<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="1" /></label>
+                                    <label>Z<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="2" /></label>
+                                </div>
+                                <div class="vnccs-i3s__viewport-camera-vector">
+                                    <span>Target</span>
+                                    <label>X<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="0" /></label>
+                                    <label>Y<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="1" /></label>
+                                    <label>Z<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="2" /></label>
+                                </div>
+                                <label class="vnccs-i3s__viewport-camera-fov"><span>View angle</span><input type="number" min="5" max="120" step="0.1" data-camera-fov /><small>°</small></label>
+                            </details>
+                        </div>
+                    </details>
                     <section class="vnccs-i3s__skydome-panel" aria-label="Skydome controls" hidden>
                         <div class="vnccs-i3s__lighting-head">
                             <div>
@@ -667,8 +971,22 @@ class Factory3DWidget {
                                 </label>
                             </div>
                         </div>
+                        <div class="vnccs-i3s__lighting-advanced">
+                            <div class="vnccs-i3s__switch-row">
+                                <div><div class="vnccs-i3s__scene-frame-title">Occlusion shadows</div><div class="vnccs-i3s__scene-frame-copy">Walls and opaque objects block direct light.</div></div>
+                                <button class="vnccs-i3s__switch vnccs-i3s__shadow-enabled" type="button" role="switch" aria-checked="true" aria-label="Enable shadows"></button>
+                            </div>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Shadow quality</span>
+                                <select class="vnccs-i3s__select vnccs-i3s__shadow-quality">
+                                    <option value="low">Low · 512</option><option value="medium">Medium · 1024</option><option value="high">High · 2048</option><option value="ultra">Ultra · 4096</option>
+                                </select>
+                            </label>
+                            <div class="vnccs-i3s__hint">Local shadow-map budget: Low 2 · Medium 4 · High 6 · Ultra 8. Additional lights still illuminate without a shadow map.</div>
+                            <div class="vnccs-i3s__lighting-local-head"><b>Local lights</b><button class="vnccs-i3s__button vnccs-i3s__local-light-add" type="button">Add light</button></div>
+                            <div class="vnccs-i3s__local-lights"></div>
+                        </div>
                     </section>
-                    <div class="vnccs-i3s__viewport-help">Click: select · Shift-click: multi-select · Drag gizmo: transform · Drag empty space: orbit · W/E/R: move/rotate/scale · F: frame</div>
+                    <div class="vnccs-i3s__viewport-help">Click: select · Shift-click: multi-select · Drag gizmo: transform · W/E/R: move/rotate/scale · End: drop · F: frame</div>
                     <div class="vnccs-i3s__progress">
                         <div class="vnccs-i3s__progress-copy">
                             <div class="vnccs-i3s__progress-head">
@@ -682,29 +1000,73 @@ class Factory3DWidget {
                     </div>
                 </div>
             </main>
-            <aside class="vnccs-i3s__side vnccs-i3s__side--right" aria-label="Scene objects and export">
+            <aside class="vnccs-i3s__side vnccs-i3s__side--right" aria-label="Scene tools">
                 <div class="vnccs-i3s__library-launcher-wrap">
                     <button class="vnccs-ps-btn primary vnccs-i3s__library-open" type="button">
-                        <span class="vnccs-ps-btn-icon">📚</span> Model Library
+                        <span class="vnccs-ps-btn-icon" aria-hidden="true">${ICONS.library}</span> Model Library
                     </button>
                     <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import a Gaussian PLY into the active scene">
                         ${ICONS.upload}<span>Import PLY</span>
                     </button>
                     <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" accept=".ply,application/octet-stream" tabindex="-1" />
                 </div>
-                <section class="vnccs-i3s__section vnccs-i3s__object-section">
-                    <div class="vnccs-i3s__section-head"><span>Scene objects</span><span class="vnccs-i3s__object-count">0</span></div>
+                <div class="vnccs-i3s__workspace-tabs vnccs-i3s__workspace-tabs--three" role="tablist" aria-label="Scene workspace">
+                    <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
+                        data-workspace-side="right" data-workspace-tab="objects"
+                        id="${this._workspaceId}-right-objects-tab"
+                        title="Scene objects"
+                        aria-controls="${this._workspaceId}-right-objects" aria-selected="true">
+                        <span aria-hidden="true">${ICONS.folder}</span><span>Objects</span>
+                        <span class="vnccs-i3s__workspace-tab-count vnccs-i3s__object-count">0</span>
+                    </button>
+                    <button class="vnccs-i3s__workspace-tab vnccs-i3s__workspace-tab--inspector" type="button" role="tab"
+                        data-workspace-side="right" data-workspace-tab="inspector"
+                        id="${this._workspaceId}-right-inspector-tab"
+                        title="Selection inspector"
+                        aria-controls="${this._workspaceId}-right-inspector" aria-selected="false" tabindex="-1">
+                        <span aria-hidden="true">${ICONS.settings}</span><span>Inspector</span>
+                        <span class="vnccs-i3s__workspace-tab-dot" aria-hidden="true"></span>
+                    </button>
+                    <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
+                        data-workspace-side="right" data-workspace-tab="export"
+                        id="${this._workspaceId}-right-export-tab"
+                        title="Export settings"
+                        aria-controls="${this._workspaceId}-right-export" aria-selected="false" tabindex="-1">
+                        <span aria-hidden="true">${ICONS.download}</span><span>Export</span>
+                    </button>
+                </div>
+                <div class="vnccs-i3s__workspace-panels">
+                <section class="vnccs-i3s__section vnccs-i3s__workspace-panel vnccs-i3s__object-section"
+                    id="${this._workspaceId}-right-objects" role="tabpanel"
+                    aria-labelledby="${this._workspaceId}-right-objects-tab"
+                    data-workspace-side="right" data-workspace-panel="objects">
+                    <div class="vnccs-i3s__section-head"><span>Scene hierarchy</span></div>
                     <div class="vnccs-i3s__section-body">
                         <label class="vnccs-i3s__search">${ICONS.search}<input class="vnccs-i3s__input vnccs-i3s__object-search" type="search" placeholder="Filter objects" /></label>
                         <div class="vnccs-i3s__layer-tools">
                             <button class="vnccs-i3s__button vnccs-i3s__group-selected" type="button" disabled>${ICONS.folder}<span>Group</span></button>
                             <span class="vnccs-i3s__selection-count">Shift-click to select multiple</span>
                         </div>
-                        <div class="vnccs-i3s__object-list"></div>
+                        <div class="vnccs-i3s__object-list" data-preserve-scroll="scene-objects"></div>
                     </div>
                 </section>
-                <section class="vnccs-i3s__section">
-                    <div class="vnccs-i3s__section-head"><span>Scene export</span></div>
+                <section class="vnccs-i3s__section vnccs-i3s__workspace-panel vnccs-i3s__inspector-section"
+                    id="${this._workspaceId}-right-inspector" role="tabpanel"
+                    aria-labelledby="${this._workspaceId}-right-inspector-tab"
+                    data-workspace-side="right" data-workspace-panel="inspector" hidden>
+                    <div class="vnccs-i3s__section-head">
+                        <span>Selection</span>
+                        <span class="vnccs-i3s__inspector-kind">Nothing selected</span>
+                    </div>
+                    <div class="vnccs-i3s__section-body vnccs-i3s__inspector" data-preserve-scroll="inspector">
+                        <div class="vnccs-i3s__inspector-empty">Select an object, wall, room, opening, or camera.</div>
+                    </div>
+                </section>
+                <section class="vnccs-i3s__section vnccs-i3s__workspace-panel vnccs-i3s__export-section"
+                    id="${this._workspaceId}-right-export" role="tabpanel"
+                    aria-labelledby="${this._workspaceId}-right-export-tab"
+                    data-workspace-side="right" data-workspace-panel="export" hidden>
+                    <div class="vnccs-i3s__section-head"><span>Output settings</span></div>
                     <div class="vnccs-i3s__section-body">
                         <div class="vnccs-i3s__hint vnccs-i3s__scene-summary">No objects in this scene.</div>
                         <div class="vnccs-i3s__scene-render-settings">
@@ -742,10 +1104,11 @@ class Factory3DWidget {
                             <div class="vnccs-i3s__scene-render-summary">1024 × 1024 px · Camera follows the current 3D view</div>
                         </div>
                         <div class="vnccs-i3s__export-grid">
-                            <button class="vnccs-i3s__button vnccs-i3s__scene-export" type="button">${ICONS.download}<span>Scene PLY</span></button>
+                            <button class="vnccs-i3s__button vnccs-i3s__scene-export" type="button">${ICONS.download}<span>Gaussian PLY</span></button>
                         </div>
                     </div>
                 </section>
+                </div>
             </aside>
             <div class="vnccs-i3s__toasts" aria-live="polite"></div>
             <div class="vnccs-i3s__modal-layer"></div>
@@ -756,6 +1119,8 @@ class Factory3DWidget {
     _cache() {
         const $ = selector => this.container.querySelector(selector);
         this.els = {
+            workspaceTabs: Array.from(this.container.querySelectorAll("[data-workspace-tab]")),
+            workspacePanels: Array.from(this.container.querySelectorAll("[data-workspace-panel]")),
             sourceDrop: $(".vnccs-i3s__dropzone"),
             sourceInput: $(".vnccs-i3s__source-input"),
             sourcePreview: $(".vnccs-i3s__source-preview"),
@@ -780,6 +1145,16 @@ class Factory3DWidget {
             cameraCount: $(".vnccs-i3s__camera-count"),
             cameraGroupCount: $(".vnccs-i3s__camera-group-count"),
             cameraList: $(".vnccs-i3s__camera-list"),
+            cameraTrackSelect: $(".vnccs-i3s__camera-track-select"),
+            cameraTrackAdd: $(".vnccs-i3s__camera-track-add"),
+            cameraTrackDelete: $(".vnccs-i3s__camera-track-delete"),
+            cameraTrackName: $(".vnccs-i3s__camera-track-name"),
+            cameraTrackBuilding: $(".vnccs-i3s__camera-track-building"),
+            cameraKeyframeAdd: $(".vnccs-i3s__camera-keyframe-add"),
+            cameraTrackPlay: $(".vnccs-i3s__camera-track-play"),
+            cameraTrackTime: $(".vnccs-i3s__camera-track-time"),
+            cameraTrackMeta: $(".vnccs-i3s__camera-track-meta"),
+            cameraKeyframes: $(".vnccs-i3s__camera-keyframes"),
             donateLink: $(".vnccs-i3s__donate-link"),
             sceneName: $(".vnccs-i3s__scene-name-input"),
             sceneId: $(".vnccs-i3s__project-id"),
@@ -789,10 +1164,40 @@ class Factory3DWidget {
             plyInput: $(".vnccs-i3s__ply-input"),
             status: $(".vnccs-i3s__status-pill"),
             viewerHost: $(".vnccs-i3s__viewer-host"),
+            view3d: $(".vnccs-i3s__view-3d"),
+            viewPlan: $(".vnccs-i3s__view-plan"),
+            levelSelect: $(".vnccs-i3s__level-select"),
+            buildingSelect: $(".vnccs-i3s__building-select"),
+            levelAdd: $(".vnccs-i3s__level-add"),
+            buildingAdd: $(".vnccs-i3s__building-add"),
+            undo: $(".vnccs-i3s__undo"),
+            redo: $(".vnccs-i3s__redo"),
+            planTools: $(".vnccs-i3s__plan-tools"),
+            planToolButtons: Array.from(this.container.querySelectorAll("[data-plan-tool]")),
+            openingKindShortcut: $(".vnccs-i3s__opening-kind-shortcut"),
+            planGridToggle: $(".vnccs-i3s__plan-grid-toggle"),
+            snapToggle: $(".vnccs-i3s__snap-toggle"),
+            snapGrid: $(".vnccs-i3s__snap-grid input"),
+            planSettings: Array.from(this.container.querySelectorAll("[data-plan-setting]")),
+            planSettingsPanel: $(".vnccs-i3s__plan-settings"),
+            planHint: $(".vnccs-i3s__plan-hint"),
+            viewportCamera: $(".vnccs-i3s__viewport-camera"),
+            viewportCameraSummary: $(".vnccs-i3s__viewport-camera-summary"),
+            cameraActions: Array.from(this.container.querySelectorAll("[data-camera-action]")),
+            cameraPresets: Array.from(this.container.querySelectorAll("[data-camera-preset]")),
+            cameraOrbit: Array.from(this.container.querySelectorAll("[data-camera-orbit]")),
+            cameraPan: Array.from(this.container.querySelectorAll("[data-camera-pan]")),
+            cameraDistanceRange: $(".vnccs-i3s__camera-distance-range"),
+            cameraDistanceInput: $(".vnccs-i3s__camera-distance-input"),
+            cameraHeightRange: $(".vnccs-i3s__camera-height-range"),
+            cameraHeightInput: $(".vnccs-i3s__camera-height-input"),
+            cameraVectors: Array.from(this.container.querySelectorAll("[data-camera-vector]")),
+            cameraFov: $("[data-camera-fov]"),
             fit: $(".vnccs-i3s__fit"),
             modeMove: $(".vnccs-i3s__mode-move"),
             modeRotate: $(".vnccs-i3s__mode-rotate"),
             modeScale: $(".vnccs-i3s__mode-scale"),
+            dropSurface: $(".vnccs-i3s__drop-surface"),
             skydomeOpen: $(".vnccs-i3s__skydome-open"),
             skydomePanel: $(".vnccs-i3s__skydome-panel"),
             skydomeClose: $(".vnccs-i3s__skydome-close"),
@@ -826,6 +1231,10 @@ class Factory3DWidget {
             lightColorValue: $(".vnccs-i3s__light-color-value"),
             lightRadar: $(".vnccs-i3s__lighting-radar"),
             lightElevation: $(".vnccs-i3s__light-elevation"),
+            shadowEnabled: $(".vnccs-i3s__shadow-enabled"),
+            shadowQuality: $(".vnccs-i3s__shadow-quality"),
+            localLightAdd: $(".vnccs-i3s__local-light-add"),
+            localLights: $(".vnccs-i3s__local-lights"),
             lightAzimuthValue: $(".vnccs-i3s__light-azimuth-value"),
             lightElevationValue: $(".vnccs-i3s__light-elevation-value"),
             grid: $(".vnccs-i3s__grid"),
@@ -840,6 +1249,8 @@ class Factory3DWidget {
             selectionCount: $(".vnccs-i3s__selection-count"),
             objectList: $(".vnccs-i3s__object-list"),
             objectCount: $(".vnccs-i3s__object-count"),
+            inspector: $(".vnccs-i3s__inspector"),
+            inspectorKind: $(".vnccs-i3s__inspector-kind"),
             sceneSummary: $(".vnccs-i3s__scene-summary"),
             sceneAspect: $(".vnccs-i3s__scene-aspect"),
             sceneWidth: $(".vnccs-i3s__scene-width"),
@@ -857,7 +1268,66 @@ class Factory3DWidget {
         this._listeners.push(() => target?.removeEventListener(type, handler, options));
     }
 
+    _setWorkspaceTab(side, tab, { save = true, focus = false } = {}) {
+        const allowed = side === "left"
+            ? new Set(["generate", "cameras"])
+            : new Set(["objects", "inspector", "export"]);
+        if (!allowed.has(tab)) return;
+        this.editorView.workspace = {
+            left: this.editorView.workspace?.left || "generate",
+            right: this.editorView.workspace?.right || "objects",
+            [side]: tab,
+        };
+        let activeButton = null;
+        for (const button of this.els.workspaceTabs) {
+            if (button.dataset.workspaceSide !== side) continue;
+            const active = button.dataset.workspaceTab === tab;
+            button.setAttribute("aria-selected", String(active));
+            button.tabIndex = active ? 0 : -1;
+            if (active) activeButton = button;
+        }
+        for (const panel of this.els.workspacePanels) {
+            if (panel.dataset.workspaceSide !== side) continue;
+            panel.hidden = panel.dataset.workspacePanel !== tab;
+        }
+        this._customSelects?.refresh?.();
+        if (focus) activeButton?.focus({ preventScroll: true });
+        if (save) this._scheduleStateSave(0);
+    }
+
+    _syncWorkspace() {
+        this._setWorkspaceTab("left", this.editorView.workspace?.left || "generate", { save: false });
+        this._setWorkspaceTab("right", this.editorView.workspace?.right || "objects", { save: false });
+    }
+
+    _bindWorkspaceTabs() {
+        for (const button of this.els.workspaceTabs) {
+            this._listen(button, "click", () => {
+                this._setWorkspaceTab(button.dataset.workspaceSide, button.dataset.workspaceTab);
+            });
+            this._listen(button, "keydown", event => {
+                if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                const tabs = this.els.workspaceTabs.filter(
+                    item => item.dataset.workspaceSide === button.dataset.workspaceSide,
+                );
+                const current = Math.max(0, tabs.indexOf(button));
+                const next = event.key === "Home"
+                    ? 0
+                    : event.key === "End"
+                        ? tabs.length - 1
+                        : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+                event.preventDefault();
+                this._setWorkspaceTab(
+                    button.dataset.workspaceSide,
+                    tabs[next].dataset.workspaceTab,
+                    { focus: true },
+                );
+            });
+        }
+    }
+
     _bind() {
+        this._bindWorkspaceTabs();
         this._listen(api, "vnccs_req_3d_factory_preview", event => {
             const detail = safeObject(event?.detail);
             if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
@@ -929,6 +1399,50 @@ class Factory3DWidget {
         this._listen(this.els.generate, "click", () => void this.generate());
         this._bindCameraControls();
         this._listen(this.els.cameraAdd, "click", () => void this.addCamera());
+        this._listen(this.els.cameraTrackAdd, "click", () => this._addCameraTrack());
+        this._listen(this.els.cameraTrackDelete, "click", () => this._deleteCameraTrack());
+        this._listen(this.els.cameraKeyframeAdd, "click", () => this._addCameraKeyframe());
+        this._listen(this.els.cameraTrackPlay, "click", () => this._toggleCameraPlayback());
+        this._listen(this.els.cameraTrackSelect, "change", () => {
+            if (this.cameraPlayback) this._toggleCameraPlayback();
+            this.activeCameraTrackId = this.els.cameraTrackSelect.value;
+            const track = this._activeCameraTrack();
+            if (track) this.editorView.active_building_id = this._validBuildingId(track.building_id);
+            this.selectedCameraKeyframeId = "";
+            this._renderCameraTracks();
+            this._renderInspector();
+            this._syncToolbar();
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.cameraTrackName, "change", () => {
+            const track = this._activeCameraTrack();
+            if (!track) return;
+            const before = this._captureEditorSnapshot();
+            track.name = String(this.els.cameraTrackName.value || "Camera path").trim().slice(0, 80) || "Camera path";
+            this.history.push("Rename camera path", before, this._captureEditorSnapshot());
+            this._renderCameraTracks();
+            this._scheduleSceneSave(0);
+            this._syncToolbar();
+        });
+        this._listen(this.els.cameraTrackBuilding, "change", () => {
+            const track = this._activeCameraTrack();
+            if (!track) return;
+            const before = this._captureEditorSnapshot();
+            track.building_id = this._validBuildingId(this.els.cameraTrackBuilding.value);
+            if (track.building_id) this.editorView.active_building_id = track.building_id;
+            this.history.push("Assign camera path to building", before, this._captureEditorSnapshot());
+            this._renderCameraTracks();
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+            this._syncToolbar();
+        });
+        this._listen(this.els.cameraTrackTime, "input", () => {
+            this._setCameraTrackTime(Number(this.els.cameraTrackTime.value));
+        });
+        this._listen(this.els.cameraTrackTime, "pointerdown", () => {
+            if (this.cameraPlayback) this._toggleCameraPlayback();
+        });
         this._listen(this.els.libraryOpen, "click", () => void this.openLibrary());
         this._listen(this.els.plyImport, "click", () => {
             if (this.currentJobId || this.importingPly) {
@@ -949,10 +1463,177 @@ class Factory3DWidget {
             this._scheduleStateSave(0);
             void this._saveSceneNow();
         });
-        this._listen(this.els.fit, "click", () => this.viewer.fit());
+        this._listen(this.els.fit, "click", () => this.viewer.frameScene());
+        this._listen(this.els.viewportCamera, "pointerdown", event => event.stopPropagation());
+        this._listen(this.els.viewportCamera, "click", event => event.stopPropagation());
+        // LiteGraph and ComfyUI listen to both Pointer Events and legacy mouse
+        // events. Blocking only pointerdown/click lets the rest of a range
+        // drag escape to the graph, which can clear selection or end the drag.
+        for (const eventName of [
+            "pointerdown",
+            "pointermove",
+            "pointerup",
+            "pointercancel",
+            "mousedown",
+            "mousemove",
+            "mouseup",
+            "click",
+            "dblclick",
+        ]) {
+            this._listen(this.els.inspector, eventName, event => event.stopPropagation());
+        }
+        // Exact-value typing belongs to the Inspector and must not trigger
+        // ComfyUI graph shortcuts while an input is focused.
+        this._listen(this.els.inspector, "keydown", event => event.stopPropagation());
+        this._listen(this.els.inspector, "keyup", event => event.stopPropagation());
+        this._listen(this.els.inspector, "wheel", event => event.stopPropagation(), { passive: true });
+        for (const control of this.els.cameraActions) {
+            this._listen(control, "click", () => {
+                if (this.cameraPlayback) return;
+                const action = control.dataset.cameraAction;
+                if (action === "home") this.viewer.resetView();
+                else if (action === "selection") this.viewer.frameSelection();
+                else this.viewer.frameScene();
+            });
+        }
+        for (const control of this.els.cameraPresets) {
+            this._listen(control, "click", () => {
+                if (!this.cameraPlayback) this.viewer.setViewPreset(control.dataset.cameraPreset);
+            });
+        }
+        const orbitSteps = {
+            up: { pitch: 7.5 },
+            down: { pitch: -7.5 },
+            left: { yaw: 7.5 },
+            right: { yaw: -7.5 },
+        };
+        for (const control of this.els.cameraOrbit) {
+            this._listen(control, "click", () => {
+                if (!this.cameraPlayback) this.viewer.rotateCameraFPV(orbitSteps[control.dataset.cameraOrbit]);
+            });
+        }
+        const panSteps = {
+            forward: { forward: 1 },
+            back: { forward: -1 },
+            left: { right: -1 },
+            right: { right: 1 },
+        };
+        for (const control of this.els.cameraPan) {
+            this._listen(control, "click", () => {
+                if (!this.cameraPlayback) this.viewer.panCamera(panSteps[control.dataset.cameraPan]);
+            });
+        }
+        this._listen(this.els.cameraDistanceRange, "input", () => {
+            if (!this.cameraPlayback) this.viewer.setCameraDistance(10 ** Number(this.els.cameraDistanceRange.value));
+        });
+        this._listen(this.els.cameraDistanceInput, "input", () => {
+            if (!this.cameraPlayback && Number.isFinite(this.els.cameraDistanceInput.valueAsNumber)) {
+                this.viewer.setCameraDistance(this.els.cameraDistanceInput.valueAsNumber);
+            }
+        });
+        this._listen(this.els.cameraHeightRange, "input", () => {
+            if (!this.cameraPlayback) this.viewer.setCameraHeight(this.els.cameraHeightRange.value);
+        });
+        this._listen(this.els.cameraHeightInput, "input", () => {
+            if (!this.cameraPlayback && Number.isFinite(this.els.cameraHeightInput.valueAsNumber)) {
+                this.viewer.setCameraHeight(this.els.cameraHeightInput.valueAsNumber);
+            }
+        });
+        for (const control of this.els.cameraVectors) {
+            this._listen(control, "input", () => this._applyViewportCameraExact());
+        }
+        this._listen(this.els.cameraFov, "input", () => this._applyViewportCameraExact());
+        this._listen(this.els.view3d, "click", () => this._setViewMode("3d"));
+        this._listen(this.els.viewPlan, "click", () => this._setViewMode("plan"));
+        this._listen(this.els.levelSelect, "change", () => {
+            this.editorView.active_level_id = this.els.levelSelect.value;
+            this.viewer.setActiveLevel(this.editorView.active_level_id);
+            this._selectArchitecture({ type: "level", id: this.editorView.active_level_id });
+            this._syncToolbar();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.buildingSelect, "change", () => {
+            this.editorView.active_building_id = this._validBuildingId(this.els.buildingSelect.value);
+            this._selectArchitecture({ type: "building", id: this.editorView.active_building_id });
+            this._syncToolbar();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.levelAdd, "click", () => {
+            if (!this.scene) return;
+            if (this.scene.levels.length >= 64) {
+                this.toast("A scene can contain up to 64 floor levels.", "error");
+                return;
+            }
+            this._recordEditorCommand("Add floor level", () => {
+                const highest = normalizedLevels(this.scene.levels).at(-1);
+                const level = {
+                    ...DEFAULT_LEVEL,
+                    level_id: factoryId(),
+                    name: `Level ${this.scene.levels.length + 1}`,
+                    elevation: Number(highest.elevation) + Number(highest.height),
+                };
+                this.scene.levels.push(level);
+                this.editorView.active_level_id = level.level_id;
+                this.selectedArchitecture = { type: "level", id: level.level_id };
+                void this._commitArchitecture();
+                this.viewer.setActiveLevel(level.level_id);
+                this._syncToolbar();
+            });
+        });
+        this._listen(this.els.buildingAdd, "click", () => this._addBuilding());
+        this._listen(this.els.undo, "click", () => {
+            this.history.undo();
+            this._syncToolbar();
+        });
+        this._listen(this.els.redo, "click", () => {
+            this.history.redo();
+            this._syncToolbar();
+        });
+        for (const control of this.els.planToolButtons) {
+            this._listen(control, "click", () => this._setPlanTool(control.dataset.planTool));
+        }
+        this._listen(this.els.planGridToggle, "click", () => {
+            this.editorView.plan_grid.visible = !this.editorView.plan_grid.visible;
+            this._syncToolbar();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.snapToggle, "click", () => {
+            this.editorView.snap.enabled = !this.editorView.snap.enabled;
+            this._syncToolbar();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.snapGrid, "change", () => {
+            const step = clamp(this.els.snapGrid.value, 0.001, 1000);
+            this.editorView.plan_grid.step = step;
+            // Preserve the legacy serialized alias for older frontends.
+            this.editorView.snap.grid = step;
+            this._syncToolbar();
+            this._scheduleStateSave(0);
+        });
+        for (const control of this.els.planSettings) {
+            this._listen(control, "change", () => {
+                const key = control.dataset.planSetting;
+                if (key === "opening_kind") {
+                    this.editorView.opening_kind = control.value;
+                } else if (key === "grid_step") {
+                    const step = clamp(control.value, 0.001, 1000);
+                    this.editorView.plan_grid.step = step;
+                    this.editorView.snap.grid = step;
+                } else if (key === "major_every") {
+                    this.editorView.plan_grid.major_every = Math.round(clamp(control.value, 2, 100));
+                } else if (control.type === "checkbox") {
+                    this.editorView.snap[key] = control.checked;
+                } else {
+                    this.editorView.snap[key] = clamp(control.value, 0, 180);
+                }
+                this._syncToolbar();
+                this._scheduleStateSave(0);
+            });
+        }
         this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
         this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
         this._listen(this.els.modeScale, "click", () => this.viewer.setMode("scale"));
+        this._listen(this.els.dropSurface, "click", event => this._dropSelectionToSurface(event.shiftKey));
         this._listen(this.els.skydomeOpen, "click", event => {
             event.stopPropagation();
             this._setSkydomePanelOpen(this.els.skydomePanel.hidden);
@@ -966,11 +1647,14 @@ class Factory3DWidget {
         });
         this._listen(this.els.skydomeVisible, "click", () => {
             if (!this.scene?.skydome) return;
+            const before = this._captureEditorSnapshot();
             this.scene.skydome.visible = this.scene.skydome.visible === false;
             this._syncSkydome();
             this._commitSkydome({ final: true });
             this._updateSceneSummary();
             this._renderObjects();
+            this.history.push("Toggle skydome visibility", before, this._captureEditorSnapshot());
+            this._syncToolbar();
         });
         for (const [control, key] of [
             [this.els.skydomeYaw, "yaw"],
@@ -979,26 +1663,39 @@ class Factory3DWidget {
             [this.els.skydomeExposure, "exposure"],
             [this.els.skydomeBlur, "blur"],
         ]) {
+            let before = null;
             this._listen(control, "input", () => {
                 if (!this.scene?.skydome) return;
+                before ||= this._captureEditorSnapshot();
                 this.scene.skydome[key] = Number(control.value);
                 this._syncSkydome();
                 this._commitSkydome();
             });
-            this._listen(control, "change", () => this._commitSkydome({ final: true }));
+            this._listen(control, "change", () => {
+                this._commitSkydome({ final: true });
+                if (before) this.history.push("Edit skydome", before, this._captureEditorSnapshot());
+                before = null;
+                this._syncToolbar();
+            });
         }
         this._listen(this.els.skydomeLevel, "click", () => {
             if (!this.scene?.skydome) return;
+            const before = this._captureEditorSnapshot();
             this.scene.skydome.pitch = 0;
             this.scene.skydome.roll = 0;
             this._syncSkydome();
             this._commitSkydome({ final: true });
+            this.history.push("Level skydome horizon", before, this._captureEditorSnapshot());
+            this._syncToolbar();
         });
         this._listen(this.els.skydomeReset, "click", () => {
             if (!this.scene?.skydome) return;
+            const before = this._captureEditorSnapshot();
             Object.assign(this.scene.skydome, { yaw: 0, pitch: 0, roll: 0 });
             this._syncSkydome();
             this._commitSkydome({ final: true });
+            this.history.push("Reset skydome orientation", before, this._captureEditorSnapshot());
+            this._syncToolbar();
         });
         this._listen(this.els.skydomeRemove, "click", () => void this.removeSkydome());
         this._listen(this.els.lightingOpen, "click", event => {
@@ -1017,27 +1714,101 @@ class Factory3DWidget {
                 && !this.els.skydomePanel.contains(event.target)
                 && !this.els.skydomeOpen.contains(event.target)
             ) this._setSkydomePanelOpen(false);
+            if (this.els.planSettingsPanel.open && !this.els.planSettingsPanel.contains(event.target)) {
+                this.els.planSettingsPanel.open = false;
+            }
         });
         this._listen(document, "keydown", event => {
+            const activeWithin = this.container.contains(event.target)
+                || this.container.contains(document.activeElement);
+            const editing = event.target instanceof HTMLInputElement
+                || event.target instanceof HTMLTextAreaElement
+                || event.target instanceof HTMLSelectElement
+                || event.target?.isContentEditable;
+            const modifier = event.ctrlKey || event.metaKey;
+            if (activeWithin && !editing && modifier && event.key.toLowerCase() === "z") {
+                event.preventDefault();
+                if (event.shiftKey) this.history.redo();
+                else this.history.undo();
+                this._syncToolbar();
+                return;
+            }
+            if (activeWithin && !editing && modifier && event.key.toLowerCase() === "y") {
+                event.preventDefault();
+                this.history.redo();
+                this._syncToolbar();
+                return;
+            }
+            if (activeWithin && !editing && event.key === "Escape" && this.cameraPlayback) {
+                event.preventDefault();
+                this._toggleCameraPlayback();
+                return;
+            }
+            if (activeWithin && !editing && event.key === "Escape" && this.previewCameraId) {
+                event.preventDefault();
+                this._exitCameraView({ restore: true });
+                return;
+            }
+            if (
+                activeWithin
+                && !editing
+                && event.key === "Escape"
+                && this.editorView.view_mode === "plan"
+                && this.editorView.plan_tool !== "select"
+            ) {
+                event.preventDefault();
+                this._setPlanTool("select");
+                return;
+            }
+            if (activeWithin && !editing && event.key.toLowerCase() === "v") {
+                event.preventDefault();
+                if (this.editorView.view_mode === "plan") this._setPlanTool("select");
+                else this.viewer.setMode("translate");
+                return;
+            }
+            if (activeWithin && !editing && event.key === "End") {
+                event.preventDefault();
+                this._dropSelectionToSurface(event.shiftKey);
+                return;
+            }
             if (event.key === "Escape" && !this.els.lightingPanel.hidden) {
                 this._setLightingPanelOpen(false);
+                return;
             }
             if (event.key === "Escape" && !this.els.skydomePanel.hidden) {
                 this._setSkydomePanelOpen(false);
+                return;
+            }
+            if (event.key === "Escape" && this.els.planSettingsPanel.open) {
+                this.els.planSettingsPanel.open = false;
+                return;
+            }
+            if (activeWithin && !editing && event.key === "Escape") {
+                event.preventDefault();
+                this._clearSelection();
             }
         });
         for (const presetButton of this.els.lightingPresets) {
             this._listen(presetButton, "click", () => {
+                const before = this._captureEditorSnapshot();
                 const key = presetButton.dataset.preset;
                 const preset = LIGHTING_PRESETS[key];
                 if (!preset) return;
-                this.lighting = { preset: key, ...preset };
+                this.lighting = {
+                    ...this.lighting,
+                    preset: key,
+                    ...preset,
+                    shadows: { ...this.lighting.shadows },
+                    lights: [...(this.lighting.lights || [])],
+                };
                 delete this.lighting.label;
                 this._syncLighting();
                 this._commitLighting({ final: true });
+                this.history.push("Change lighting preset", before, this._captureEditorSnapshot());
             });
         }
         this._listen(this.els.lightIntensity, "input", () => {
+            this._beginLightingHistory();
             this.lighting.intensity = Number(this.els.lightIntensity.value);
             this.lighting.preset = "custom";
             this._syncLighting();
@@ -1045,8 +1816,10 @@ class Factory3DWidget {
         });
         this._listen(this.els.lightIntensity, "change", () => {
             this._commitLighting({ final: true });
+            this._finishLightingHistory("Edit light strength");
         });
         this._listen(this.els.lightColor, "input", () => {
+            this._beginLightingHistory();
             this.lighting.color = this.els.lightColor.value;
             this.lighting.preset = "custom";
             this._syncLighting();
@@ -1054,8 +1827,10 @@ class Factory3DWidget {
         });
         this._listen(this.els.lightColor, "change", () => {
             this._commitLighting({ final: true });
+            this._finishLightingHistory("Edit light color");
         });
         this._listen(this.els.lightElevation, "input", () => {
+            this._beginLightingHistory();
             this.lighting.elevation = Number(this.els.lightElevation.value);
             this.lighting.preset = "custom";
             this._syncLighting();
@@ -1063,6 +1838,59 @@ class Factory3DWidget {
         });
         this._listen(this.els.lightElevation, "change", () => {
             this._commitLighting({ final: true });
+            this._finishLightingHistory("Edit light direction");
+        });
+        this._listen(this.els.shadowEnabled, "click", () => {
+            const before = this._captureEditorSnapshot();
+            this.lighting.shadows.enabled = !this.lighting.shadows.enabled;
+            this._syncLighting();
+            this._commitLighting({ final: true });
+            this.history.push("Toggle shadows", before, this._captureEditorSnapshot());
+        });
+        this._listen(this.els.shadowQuality, "change", () => {
+            const before = this._captureEditorSnapshot();
+            this.lighting.shadows.quality = this.els.shadowQuality.value;
+            this.lighting.shadows.enabled = true;
+            this._syncLighting();
+            this._commitLighting({ final: true });
+            this.history.push("Change shadow quality", before, this._captureEditorSnapshot());
+        });
+        this._listen(this.els.localLightAdd, "click", () => {
+            if (this.lighting.lights.length >= 32) {
+                this.toast("A scene can contain up to 32 local lights.", "error");
+                return;
+            }
+            const before = this._captureEditorSnapshot();
+            const level = this.scene?.levels?.find(value => value.level_id === this.editorView.active_level_id);
+            const building = this._activeBuilding();
+            const buildingElevation = Number(building?.position?.[1]) || 0;
+            const planTarget = this.viewer?.getState?.().plan_camera?.target || [0, 0];
+            const cameraTarget = this.viewer?.getCameraState?.().target || [0, 0, 0];
+            const center = this.editorView.view_mode === "plan"
+                ? [Number(planTarget[0]) || 0, Number(planTarget[1]) || 0]
+                : [Number(cameraTarget[0]) || 0, Number(cameraTarget[2]) || 0];
+            const lightId = factoryId();
+            this.lighting.lights.push({
+                light_id: lightId,
+                name: `Light ${this.lighting.lights.length + 1}`,
+                level_id: this.editorView.active_level_id,
+                building_id: building?.building_id || "",
+                kind: "point",
+                position: [center[0], (Number(level?.elevation) || 0) + buildingElevation + 2.4, center[1]],
+                target: [center[0], (Number(level?.elevation) || 0) + buildingElevation, center[1]],
+                color: "#ffffff",
+                intensity: 10,
+                distance: 8,
+                angle: 45,
+                penumbra: 0.2,
+                cast_shadow: true,
+                visible: true,
+            });
+            this._expandedLightId = lightId;
+            if (before) this.history.push("Add light", before, this._captureEditorSnapshot());
+            this._syncLighting();
+            this._commitLighting({ final: true });
+            this._syncToolbar();
         });
         this._bindLightingRadar();
         this._listen(this.els.grid, "click", () => this.viewer.setGrid(!this.viewerState.grid));
@@ -1130,6 +1958,2842 @@ class Factory3DWidget {
         this._listen(this.els.sceneExport, "click", () => void this.exportScene());
     }
 
+    _captureEditorSnapshot() {
+        if (!this.scene) return null;
+        return JSON.parse(JSON.stringify({
+            levels: this.scene.levels || [],
+            architecture: this.scene.architecture || {},
+            objects: (this.scene.objects || []).map(item => ({
+                object_id: item.object_id,
+                name: item.name,
+                level_id: item.level_id,
+                building_id: item.building_id,
+                transform: item.transform,
+                visible: item.visible !== false,
+                ...normalizedObjectEditorProperties(item),
+            })),
+            layers: this.scene.layers || [],
+            cameras: this.scene.cameras || [],
+            camera_tracks: this.scene.camera_tracks || [],
+            lighting: this.lighting,
+            skydome: this.scene.skydome || null,
+            render: this.exportSettings,
+        }));
+    }
+
+    _dropSelectionToSurface(individual = false) {
+        if (!this.scene || !this.viewer) return;
+        const before = this._captureEditorSnapshot();
+        let results = null;
+        this._suppressViewerTransformHistory = true;
+        try { results = this.viewer.dropSelectionToSurface({ individual }); }
+        finally {
+            this._suppressViewerTransformHistory = false;
+            this._viewerTransformHistoryBefore = null;
+        }
+        if (!results?.length) {
+            this.toast("Select an unlocked object to drop.", "info");
+            return;
+        }
+        this.history.push("Drop to surface", before, this._captureEditorSnapshot());
+        const support = Math.max(...results.map(result => Number(result.supportY) || 0));
+        this.toast(`Placed on the nearest support at ${support.toFixed(2)} m.`, "success");
+        this._renderInspector();
+        this._scheduleSceneSave(0);
+        this._scheduleStateSave(0);
+        this._scheduleScenePreview(120);
+    }
+
+    _placeNewObjectOnActiveFloor(objectId) {
+        const item = this.scene?.objects?.find(value => value.object_id === objectId);
+        const targetLevel = this.scene?.levels?.find(
+            value => value.level_id === this.editorView.active_level_id,
+        );
+        if (!item || !targetLevel) return false;
+        const previousLevel = this.scene.levels.find(value => value.level_id === item.level_id);
+        const before = this._captureEditorSnapshot();
+        item.transform ||= { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+        item.transform.position = Array.isArray(item.transform.position)
+            ? [...item.transform.position]
+            : [0, 0, 0];
+        const targetBuilding = this._activeBuilding()
+            || this.scene.architecture?.buildings?.[0]
+            || null;
+        item.transform.position[0] += Number(targetBuilding?.position?.[0]) || 0;
+        item.transform.position[1] += (Number(targetLevel.elevation) || 0)
+            - (Number(previousLevel?.elevation) || 0)
+            + (Number(targetBuilding?.position?.[1]) || 0);
+        item.transform.position[2] += Number(targetBuilding?.position?.[2]) || 0;
+        item.level_id = targetLevel.level_id;
+        item.building_id = targetBuilding?.building_id
+            || "";
+        this.viewer.updateObject(item.object_id, item);
+        this._selectObject(item.object_id);
+        this.history.push("Place new object on active floor", before, this._captureEditorSnapshot());
+        this._dropSelectionToSurface(false);
+        this._renderObjects();
+        this._scheduleSceneSave(0);
+        return true;
+    }
+
+    _recordEditorCommand(label, operation) {
+        if (!this.scene) return operation?.();
+        const before = this._captureEditorSnapshot();
+        const result = operation?.();
+        const finish = () => {
+            const after = this._captureEditorSnapshot();
+            this.history.push(label, before, after);
+            this._scheduleStateSave(0);
+            this._syncToolbar();
+        };
+        if (result?.then) return result.finally(finish);
+        finish();
+        return result;
+    }
+
+    async _restoreEditorSnapshot(snapshot) {
+        if (!this.scene || !snapshot) return;
+        this.scene.levels = normalizedLevels(snapshot.levels);
+        this.scene.architecture = normalizedArchitecture(snapshot.architecture, this.scene.levels);
+        const byId = new Map((snapshot.objects || []).map(item => [item.object_id, item]));
+        for (const item of this.scene.objects || []) {
+            const restored = byId.get(item.object_id);
+            if (restored) Object.assign(item, restored);
+        }
+        this.scene.cameras = this._normalizeSceneCameras(snapshot.cameras);
+        this.scene.camera_tracks = Array.isArray(snapshot.camera_tracks)
+            ? JSON.parse(JSON.stringify(snapshot.camera_tracks)).map(track => ({
+                ...track,
+                building_id: this._validBuildingId(track.building_id),
+            }))
+            : [];
+        this.scene.layers = Array.isArray(snapshot.layers)
+            ? JSON.parse(JSON.stringify(snapshot.layers))
+            : this.scene.layers;
+        this.scene.lighting = this._normalizeLighting(snapshot.lighting);
+        this.lighting = { ...this.scene.lighting };
+        this.scene.skydome = snapshot.skydome
+            ? JSON.parse(JSON.stringify(snapshot.skydome))
+            : null;
+        this.exportSettings = { ...this.exportSettings, ...safeObject(snapshot.render) };
+        await this.viewer.setScene(this.scene, { incremental: true });
+        this.viewer.setViewMode(this.editorView.view_mode);
+        this.viewer.setPlanTool(this.editorView.plan_tool);
+        this.viewer.setActiveLevel(this.editorView.active_level_id);
+        this.viewer.setArchitectureSelection(this.selectedArchitecture);
+        this.viewer.applySceneVisibility(this.scene);
+        this.viewer.setCameraMarkers(this.scene.cameras || []);
+        this.viewer.setLighting(this.lighting);
+        this._renderObjects();
+        this._renderCameras();
+        this._renderCameraTracks();
+        this._renderInspector();
+        this._syncLighting();
+        this._syncSkydome();
+        this._syncExportSettings();
+        this._syncToolbar();
+        this._scheduleSceneSave(0);
+        this._scheduleScenePreview(120);
+        this._scheduleStateSave(0);
+    }
+
+    _setViewMode(mode) {
+        this.editorView.view_mode = mode === "plan" ? "plan" : "3d";
+        if (this.editorView.view_mode !== "plan") this._cancelPlanDraft();
+        this.viewer.setViewMode(this.editorView.view_mode);
+        this._syncToolbar();
+        this._scheduleStateSave(0);
+    }
+
+    _syncViewportCameraHUD(camera = this.viewerState.camera || {}) {
+        if (!this.els?.viewportCamera) return;
+        const position = Array.isArray(camera.position) ? camera.position : [2.8, 2.1, 4.2];
+        const target = Array.isArray(camera.target) ? camera.target : [0, 0, 0];
+        const distance = Math.max(
+            Math.hypot(
+                (Number(position[0]) || 0) - (Number(target[0]) || 0),
+                (Number(position[1]) || 0) - (Number(target[1]) || 0),
+                (Number(position[2]) || 0) - (Number(target[2]) || 0),
+            ),
+            0.0001,
+        );
+        const height = Number(position[1]) || 0;
+        const write = (control, value) => {
+            if (control && document.activeElement !== control) control.value = String(value);
+        };
+        write(this.els.cameraDistanceRange, Math.log10(distance));
+        write(this.els.cameraDistanceInput, Number(distance.toPrecision(7)));
+        write(this.els.cameraHeightRange, clamp(height, -50, 100));
+        write(this.els.cameraHeightInput, Number(height.toFixed(6)));
+        for (const control of this.els.cameraVectors) {
+            const vector = control.dataset.cameraVector === "target" ? target : position;
+            const axis = Number(control.dataset.cameraAxis) || 0;
+            write(control, Number((Number(vector[axis]) || 0).toFixed(6)));
+        }
+        write(this.els.cameraFov, Number((Number(camera.fov) || 42).toFixed(3)));
+        this.els.viewportCameraSummary.textContent = `${distance.toFixed(distance < 10 ? 2 : 1)} m · Y ${height.toFixed(2)}`;
+        const selectionAction = this.els.cameraActions.find(
+            control => control.dataset.cameraAction === "selection",
+        );
+        if (selectionAction) {
+            selectionAction.disabled = !(
+                this.selectedObjectId
+                || this.selectedGroupId
+                || this.selectedArchitecture?.id
+            );
+        }
+        const disabled = Boolean(this.cameraPlayback);
+        for (const control of [
+            ...this.els.cameraActions,
+            ...this.els.cameraPresets,
+            ...this.els.cameraOrbit,
+            ...this.els.cameraPan,
+            this.els.cameraDistanceRange,
+            this.els.cameraDistanceInput,
+            this.els.cameraHeightRange,
+            this.els.cameraHeightInput,
+            ...this.els.cameraVectors,
+            this.els.cameraFov,
+        ]) {
+            if (!control) continue;
+            if (control === selectionAction && !disabled) continue;
+            control.disabled = disabled;
+        }
+        this.els.viewportCamera.classList.toggle("is-playback", disabled);
+    }
+
+    _applyViewportCameraExact() {
+        if (this.cameraPlayback) return;
+        const current = this.viewer.getCameraState();
+        const next = {
+            ...current,
+            position: [...current.position],
+            target: [...current.target],
+            fov: Number.isFinite(this.els.cameraFov.valueAsNumber)
+                ? clamp(this.els.cameraFov.valueAsNumber, 5, 120)
+                : current.fov,
+        };
+        for (const control of this.els.cameraVectors) {
+            const key = control.dataset.cameraVector === "target" ? "target" : "position";
+            const axis = Number(control.dataset.cameraAxis) || 0;
+            const value = control.valueAsNumber;
+            if (Number.isFinite(value)) next[key][axis] = value;
+        }
+        this.viewer.setCameraState(next, { emit: true });
+    }
+
+    _setPlanTool(tool) {
+        if (!["select", "wall", "room", "opening", "camera"].includes(tool)) return;
+        if (this.planDraft && this.planDraft.tool !== tool) this._cancelPlanDraft();
+        this._clearPlanHover();
+        this.editorView.plan_tool = tool;
+        this.viewer.setPlanTool(tool);
+        this._renderPlanPreview();
+        this._syncToolbar();
+        this._scheduleStateSave(0);
+    }
+
+    _addBuilding() {
+        if (!this.scene) return;
+        if ((this.scene.architecture?.buildings?.length || 0) >= 64) {
+            this.toast("A scene can contain up to 64 buildings.", "error");
+            return;
+        }
+        this._recordEditorCommand("Add building", () => {
+            const architecture = this.scene.architecture ||= normalizedArchitecture({}, this.scene.levels);
+            const building = {
+                ...DEFAULT_BUILDING,
+                building_id: factoryId(),
+                name: `Building ${(architecture.buildings?.length || 0) + 1}`,
+                position: [0, 0, 0],
+            };
+            architecture.buildings.push(building);
+            this.editorView.active_building_id = building.building_id;
+            this.selectedArchitecture = { type: "building", id: building.building_id };
+            void this._commitArchitecture();
+        });
+    }
+
+    _clearPlanHover() {
+        if (this._planHoverFrame) cancelAnimationFrame(this._planHoverFrame);
+        this._planHoverFrame = 0;
+        this._pendingPlanHover = null;
+        this.planHover = null;
+    }
+
+    _queuePlanHover(tool, rawPoint, event = {}) {
+        this._pendingPlanHover = {
+            tool,
+            point: Array.isArray(rawPoint) ? [...rawPoint] : null,
+            event: {
+                altKey: Boolean(event.altKey),
+                shiftKey: Boolean(event.shiftKey),
+            },
+        };
+        if (this._planHoverFrame) return;
+        this._planHoverFrame = requestAnimationFrame(() => {
+            this._planHoverFrame = 0;
+            const pending = this._pendingPlanHover;
+            this._pendingPlanHover = null;
+            if (!pending || this.editorView.view_mode !== "plan" || pending.tool !== this.editorView.plan_tool) {
+                return;
+            }
+            if (!pending.point) {
+                this.planHover = null;
+                this._renderPlanPreview();
+                return;
+            }
+            // Opening owns a stronger wall-projection snap. Rounding the
+            // cursor to the global grid first can move it away from a thin
+            // wall at high zoom and make an otherwise valid click look inert.
+            const point = pending.tool === "opening"
+                ? [...pending.point]
+                : this._snapPlanPoint(pending.point, pending.event);
+            if (pending.tool === "opening") this.planSnapHint = "Wall projection";
+            const nearest = pending.tool === "opening"
+                ? this._nearestWallProjection(point)
+                : null;
+            const openingKind = this.editorView.opening_kind || "window";
+            const openingPlacement = nearest
+                ? this._openingPlacement(nearest, openingKind === "door" ? 0.9 : 1.2)
+                : null;
+            if (openingPlacement) openingPlacement.kind = openingKind;
+            this.planHover = {
+                tool: pending.tool,
+                point,
+                opening: openingPlacement,
+            };
+            const previous = this.planDraft?.points?.at(-1);
+            const measurement = previous
+                ? ` · ${Math.hypot(point[0] - previous[0], point[1] - previous[1]).toFixed(2)} m · ${((Math.atan2(point[1] - previous[1], point[0] - previous[0]) * 180 / Math.PI + 360) % 360).toFixed(1)}°`
+                : "";
+            if (pending.tool === "opening") {
+                this.els.planHint.textContent = openingPlacement
+                    ? `Press and drag on the wall to set width · ${nearest.length.toFixed(2)} m wall`
+                    : nearest
+                        ? "This wall has no free span for another opening."
+                        : "Move over an editable wall, then press and drag.";
+            } else if (pending.tool === "camera" && previous) {
+                this.els.planHint.textContent = `Aim camera${measurement}`;
+            } else {
+                this.els.planHint.textContent = `${this.planSnapHint || "Free"}${measurement}`;
+            }
+            this._renderPlanPreview();
+        });
+    }
+
+    _roomRectangle(start, end) {
+        if (!Array.isArray(start) || !Array.isArray(end)) return null;
+        if (Math.abs(end[0] - start[0]) < 0.001 || Math.abs(end[1] - start[1]) < 0.001) return null;
+        return [
+            [start[0], start[1]],
+            [end[0], start[1]],
+            [end[0], end[1]],
+            [start[0], end[1]],
+        ];
+    }
+
+    _activeBuilding() {
+        const buildings = this.scene?.architecture?.buildings || [];
+        if (this.selectedArchitecture?.type === "building") {
+            const selected = buildings.find(item => item.building_id === this.selectedArchitecture.id);
+            if (selected) return selected;
+        }
+        const selectedItem = this._selectedArchitectureValue();
+        if (selectedItem?.building_id) {
+            const owner = buildings.find(item => item.building_id === selectedItem.building_id);
+            if (owner) return owner;
+        }
+        const selectedObject = this.scene?.objects?.find(item => item.object_id === this.selectedObjectId);
+        if (selectedObject?.building_id) {
+            const owner = buildings.find(item => item.building_id === selectedObject.building_id);
+            if (owner) return owner;
+        }
+        const selectedCamera = this.scene?.cameras?.find(item => item.camera_id === this.selectedCameraId);
+        if (selectedCamera?.building_id) {
+            const owner = buildings.find(item => item.building_id === selectedCamera.building_id);
+            if (owner) return owner;
+        }
+        const selectedGroup = this._groupById(this.selectedGroupId);
+        const groupedObject = selectedGroup?.children?.length
+            ? this.scene?.objects?.find(item => item.object_id === selectedGroup.children[0])
+            : null;
+        if (groupedObject?.building_id) {
+            const owner = buildings.find(item => item.building_id === groupedObject.building_id);
+            if (owner) return owner;
+        }
+        if (this.selectedCameraKeyframeId) {
+            const track = this._activeCameraTrack();
+            const owner = buildings.find(item => item.building_id === track?.building_id);
+            if (owner) return owner;
+        }
+        const active = buildings.find(item => item.building_id === this.editorView.active_building_id);
+        if (active) return active;
+        return buildings[0] || null;
+    }
+
+    _buildingForItem(item) {
+        const buildingId = String(item?.building_id || "");
+        if (!buildingId) return null;
+        return this.scene?.architecture?.buildings?.find(
+            building => building.building_id === buildingId,
+        ) || null;
+    }
+
+    _validBuildingId(value) {
+        const buildings = this.scene?.architecture?.buildings || [];
+        const requested = String(value || "");
+        return buildings.some(building => building.building_id === requested)
+            ? requested
+            : "";
+    }
+
+    _buildingOptions(selectedId = "") {
+        const valid = this._validBuildingId(selectedId);
+        return `<option value=""${valid ? "" : " selected"}>No building</option>`
+            + (this.scene?.architecture?.buildings || []).map(building => (
+            `<option value="${building.building_id}"${building.building_id === valid ? " selected" : ""}>${escapeHTML(building.name || "Building")}</option>`
+        )).join("");
+    }
+
+    _transformPointWithBuilding(point, previousPosition, nextPosition, deltaRotationDegrees) {
+        const source = Array.isArray(point) ? point : [0, 0, 0];
+        const angle = Number(deltaRotationDegrees || 0) * Math.PI / 180;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const x = (Number(source[0]) || 0) - previousPosition[0];
+        const z = (Number(source[2]) || 0) - previousPosition[2];
+        return [
+            x * cosine + z * sine + nextPosition[0],
+            (Number(source[1]) || 0) + nextPosition[1] - previousPosition[1],
+            -x * sine + z * cosine + nextPosition[2],
+        ];
+    }
+
+    _applyBuildingTransform(building, nextPosition, nextRotationY) {
+        if (!building) return;
+        const previousPosition = [0, 1, 2].map(index => Number(building.position?.[index]) || 0);
+        const position = [0, 1, 2].map(index => Number(nextPosition?.[index]) || 0);
+        const previousRotation = Number(building.rotation_y) || 0;
+        const rotation = Number(nextRotationY) || 0;
+        const deltaRotation = rotation - previousRotation;
+        const hasPositionDelta = position.some((value, index) => Math.abs(value - previousPosition[index]) > 1e-12);
+        if (!hasPositionDelta && Math.abs(deltaRotation) <= 1e-12) return;
+        const transformPoint = point => this._transformPointWithBuilding(
+            point,
+            previousPosition,
+            position,
+            deltaRotation,
+        );
+        for (const object of this.scene?.objects || []) {
+            if (object.building_id !== building.building_id) continue;
+            object.transform ||= { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+            object.transform.position = transformPoint(object.transform.position);
+            object.transform.rotation = Array.isArray(object.transform.rotation)
+                ? [...object.transform.rotation]
+                : [0, 0, 0];
+            object.transform.rotation[1] = (Number(object.transform.rotation[1]) || 0) + deltaRotation;
+            this.viewer?.updateObject(object.object_id, { transform: object.transform });
+        }
+        for (const camera of this.scene?.cameras || []) {
+            if (camera.building_id !== building.building_id) continue;
+            camera.position = transformPoint(camera.position);
+            camera.target = transformPoint(camera.target);
+            if (Array.isArray(camera.up) && Math.abs(deltaRotation) > 1e-12) {
+                const angle = deltaRotation * Math.PI / 180;
+                const cosine = Math.cos(angle);
+                const sine = Math.sin(angle);
+                const x = Number(camera.up[0]) || 0;
+                const z = Number(camera.up[2]) || 0;
+                camera.up = [x * cosine + z * sine, Number(camera.up[1]) || 0, -x * sine + z * cosine];
+            }
+        }
+        if (Math.abs(deltaRotation) > 1e-12 || hasPositionDelta) {
+            const halfYaw = deltaRotation * Math.PI / 360;
+            const yaw = [0, Math.sin(halfYaw), 0, Math.cos(halfYaw)];
+            for (const track of this.scene?.camera_tracks || []) {
+                if (track.building_id !== building.building_id) continue;
+                for (const frame of track.keyframes || []) {
+                    frame.position = transformPoint(frame.position);
+                    if (Math.abs(deltaRotation) > 1e-12) {
+                        frame.quaternion = multiplyQuaternions(yaw, frame.quaternion);
+                    }
+                }
+            }
+        }
+        for (const light of this.lighting?.lights || []) {
+            if (light.building_id !== building.building_id) continue;
+            light.position = transformPoint(light.position);
+            light.target = transformPoint(light.target);
+        }
+        building.position = position;
+        building.rotation_y = rotation;
+        if (this.previewCameraId) {
+            const preview = this.scene?.cameras?.find(camera => camera.camera_id === this.previewCameraId);
+            if (preview?.building_id === building.building_id) {
+                this.viewer?.setCameraState(preview, { emit: false });
+            }
+        }
+        this.viewer?.setCameraMarkers(this.scene?.cameras || []);
+        if (this.lighting) {
+            this.scene.lighting = { ...this.lighting };
+            this.viewer?.setLighting(this.lighting);
+        }
+    }
+
+    _localToWorldPlan(point, building) {
+        const angle = Number(building?.rotation_y || 0) * Math.PI / 180;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const x = Number(point?.[0]) || 0;
+        const z = Number(point?.[1]) || 0;
+        return [
+            x * cosine + z * sine + (Number(building?.position?.[0]) || 0),
+            -x * sine + z * cosine + (Number(building?.position?.[2]) || 0),
+        ];
+    }
+
+    _worldToLocalPlan(point, building) {
+        const angle = -Number(building?.rotation_y || 0) * Math.PI / 180;
+        const cosine = Math.cos(angle);
+        const sine = Math.sin(angle);
+        const x = (Number(point?.[0]) || 0) - (Number(building?.position?.[0]) || 0);
+        const z = (Number(point?.[1]) || 0) - (Number(building?.position?.[2]) || 0);
+        return [
+            Number((x * cosine + z * sine).toFixed(6)),
+            Number((-x * sine + z * cosine).toFixed(6)),
+        ];
+    }
+
+    _renderPlanPreview() {
+        if (!this.viewer) return;
+        const hover = this.planHover?.tool === this.editorView.plan_tool
+            ? this.planHover
+            : null;
+        if (this.planDraft?.tool === "wall") {
+            this.viewer.setPlanDraft({
+                ...this.planDraft,
+                cursor: hover?.point || null,
+                thickness: DEFAULT_WALL.thickness,
+            });
+            return;
+        }
+        if (this.planDraft?.tool === "room") {
+            const start = this.planDraft.points?.[0];
+            this.viewer.setPlanDraft({
+                ...this.planDraft,
+                cursor: hover?.point || null,
+                rectangle: this._roomRectangle(start, hover?.point),
+                thickness: DEFAULT_WALL.thickness,
+            });
+            return;
+        }
+        if (hover?.tool === "opening") {
+            this.viewer.setPlanDraft({
+                tool: "opening",
+                cursor: hover.point,
+                opening: hover.opening,
+            });
+            return;
+        }
+        if (this.planDraft?.tool === "camera") {
+            this.viewer.setPlanDraft({
+                ...this.planDraft,
+                cursor: hover?.point || null,
+                fov: 42,
+            });
+            return;
+        }
+        if (hover && ["camera"].includes(hover.tool)) {
+            this.viewer.setPlanDraft({ tool: hover.tool, cursor: hover.point, fov: 42 });
+            return;
+        }
+        this.viewer.setPlanDraft(null);
+    }
+
+    _snapPlanPoint(point, event = {}, snapOrigin = null) {
+        const pointerPoint = [...point];
+        const result = [...point];
+        if (event.altKey || this.editorView.snap?.enabled === false) {
+            this.planSnapHint = event.altKey ? "Snap temporarily bypassed" : "Snap off";
+            return result;
+        }
+        const grid = Math.max(
+            0.001,
+            Number(this.editorView.plan_grid?.step ?? this.editorView.snap?.grid) || 0.1,
+        );
+        result[0] = Math.round(result[0] / grid) * grid;
+        result[1] = Math.round(result[1] / grid) * grid;
+        this.planSnapHint = `Grid ${grid.toLocaleString()} m`;
+        const previous = Array.isArray(snapOrigin)
+            ? snapOrigin
+            : ["wall", "camera"].includes(this.planDraft?.tool)
+                ? this.planDraft.points?.at(-1)
+                : null;
+        if (previous && (event.shiftKey || this.editorView.snap?.orthogonal)) {
+            const dx = Math.abs(result[0] - previous[0]);
+            const dz = Math.abs(result[1] - previous[1]);
+            if (event.shiftKey || Math.min(dx, dz) <= grid * 0.35) {
+                if (dx >= dz) result[1] = previous[1];
+                else result[0] = previous[0];
+                this.planSnapHint = "Orthogonal";
+            }
+        }
+        if (previous && !event.shiftKey && Number(this.editorView.snap?.angle) > 0) {
+            const dx = result[0] - previous[0];
+            const dz = result[1] - previous[1];
+            const radius = Math.hypot(dx, dz);
+            const increment = Number(this.editorView.snap.angle) * Math.PI / 180;
+            const angle = Math.atan2(dz, dx);
+            const snappedAngle = Math.round(angle / increment) * increment;
+            const delta = Math.abs(Math.atan2(Math.sin(angle - snappedAngle), Math.cos(angle - snappedAngle)));
+            if (radius > 0.001 && delta <= Math.min(increment * 0.3, 3 * Math.PI / 180)) {
+                result[0] = previous[0] + Math.cos(snappedAngle) * radius;
+                result[1] = previous[1] + Math.sin(snappedAngle) * radius;
+                this.planSnapHint = `Angle ${this.editorView.snap.angle}°`;
+            }
+        }
+        const threshold = 10 / Math.max(0.01, Number(this.viewerState.plan_camera?.zoom) || 24);
+        let nearest = null;
+        for (const wall of this.scene?.architecture?.walls || []) {
+            if (wall.level_id !== this.editorView.active_level_id) continue;
+            const building = this._buildingForItem(wall);
+            if (wall.visible === false || building?.visible === false) continue;
+            const wallStart = this._localToWorldPlan(wall.start, building);
+            const wallEnd = this._localToWorldPlan(wall.end, building);
+            const candidates = [];
+            if (this.editorView.snap?.endpoints !== false) {
+                candidates.push({ point: wallStart, kind: "Endpoint" }, { point: wallEnd, kind: "Endpoint" });
+            }
+            if (this.editorView.snap?.midpoints !== false) {
+                candidates.push({
+                    point: [
+                        (wallStart[0] + wallEnd[0]) * 0.5,
+                        (wallStart[1] + wallEnd[1]) * 0.5,
+                    ],
+                    kind: "Midpoint",
+                });
+            }
+            for (const candidate of candidates) {
+                const distance = Math.hypot(
+                    pointerPoint[0] - candidate.point[0],
+                    pointerPoint[1] - candidate.point[1],
+                );
+                if (distance <= threshold && (!nearest || distance < nearest.distance)) {
+                    nearest = { point: candidate.point, distance, kind: candidate.kind };
+                }
+            }
+        }
+        if (nearest) this.planSnapHint = nearest.kind;
+        return nearest ? [...nearest.point] : result.map(value => Number(value.toFixed(6)));
+    }
+
+    _wallProjection(point, wall) {
+        if (!Array.isArray(point) || !wall) return null;
+        const building = this._buildingForItem(wall);
+        const wallStart = this._localToWorldPlan(wall.start, building);
+        const wallEnd = this._localToWorldPlan(wall.end, building);
+        const dx = wallEnd[0] - wallStart[0];
+        const dz = wallEnd[1] - wallStart[1];
+        const lengthSquared = dx * dx + dz * dz;
+        if (lengthSquared < 1e-9) return null;
+        const offset = clamp(
+            ((point[0] - wallStart[0]) * dx + (point[1] - wallStart[1]) * dz) / lengthSquared,
+            0,
+            1,
+        );
+        const projected = [wallStart[0] + dx * offset, wallStart[1] + dz * offset];
+        return {
+            wall,
+            offset,
+            distance: Math.hypot(point[0] - projected[0], point[1] - projected[1]),
+            point: projected,
+            length: Math.sqrt(lengthSquared),
+        };
+    }
+
+    _openingDragPlacement(startProjection, point, kind) {
+        const endProjection = this._wallProjection(point, startProjection?.wall);
+        if (!startProjection || !endProjection) return null;
+        const width = Math.abs(endProjection.offset - startProjection.offset) * endProjection.length;
+        const centerOffset = (startProjection.offset + endProjection.offset) * 0.5;
+        const placement = this._openingPlacement({
+            ...endProjection,
+            offset: centerOffset,
+        }, width);
+        if (placement) placement.kind = kind;
+        return placement;
+    }
+
+    _createOpeningFromPlacement(placement, kind) {
+        if (!placement) return false;
+        if (this.scene.architecture.openings.length >= 4096) {
+            this.toast("The scene opening limit has been reached.", "error");
+            return false;
+        }
+        const openingId = factoryId();
+        this._recordEditorCommand("Create opening", () => {
+            this.scene.architecture.openings.push({
+                opening_id: openingId,
+                wall_id: placement.wall.wall_id,
+                name: kind === "door" ? "Door" : kind === "empty" ? "Opening" : "Window",
+                kind,
+                offset: placement.offset,
+                width: placement.width,
+                height: kind === "door" ? 2 : 1.2,
+                sill_height: kind === "door" ? 0 : 0.9,
+                material_id: "",
+                visible: true,
+                locked: false,
+            });
+            this.selectedArchitecture = { type: "opening", id: openingId };
+            this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            void this._commitArchitecture();
+        });
+        return true;
+    }
+
+    _onPlanGesture(gesture = {}) {
+        const phase = String(gesture.phase || "");
+        const tool = String(gesture.tool || "");
+        const event = gesture.event || {};
+        const rawPoint = Array.isArray(gesture.point) ? gesture.point : null;
+        if (!this.scene || !["wall", "room", "opening", "camera"].includes(tool)) return;
+
+        if (phase === "cancel") {
+            this._cancelPlanDraft();
+            this._syncToolbar();
+            return;
+        }
+        if (!rawPoint) return;
+
+        if (phase === "start") {
+            if (this._planHoverFrame) cancelAnimationFrame(this._planHoverFrame);
+            this._planHoverFrame = 0;
+            this._pendingPlanHover = null;
+            if (["wall", "room"].includes(tool) && this._activeBuilding()?.locked) {
+                this.toast("Unlock the active building before editing its plan.", "info");
+                this.planDraft = null;
+                return;
+            }
+            if (tool === "opening") {
+                const projection = this._nearestWallProjection(rawPoint);
+                this.planDraft = {
+                    tool,
+                    points: projection ? [projection.point] : [],
+                    openingStart: projection,
+                };
+                this.planHover = { tool, point: [...rawPoint], opening: null };
+                this.els.planHint.textContent = projection
+                    ? "Drag along the wall to set the opening width"
+                    : "Start the drag on an editable wall";
+            } else {
+                const point = this._snapPlanPoint(rawPoint, event);
+                this.planDraft = { tool, points: [point] };
+                this.planHover = { tool, point };
+                this.els.planHint.textContent = tool === "wall"
+                    ? "Drag to set wall length"
+                    : tool === "room"
+                        ? "Drag diagonally to size the room"
+                        : "Drag to aim the camera";
+            }
+            this._renderPlanPreview();
+            return;
+        }
+
+        const draft = this.planDraft;
+        if (!draft || draft.tool !== tool) return;
+        let point = rawPoint;
+        let placement = null;
+        if (tool === "opening") {
+            const kind = this.editorView.opening_kind || "window";
+            placement = this._openingDragPlacement(draft.openingStart, rawPoint, kind);
+            const projected = this._wallProjection(rawPoint, draft.openingStart?.wall);
+            point = projected?.point || rawPoint;
+            this.planHover = { tool, point, opening: placement };
+        } else {
+            const origin = ["wall", "camera"].includes(tool) ? draft.points[0] : null;
+            point = this._snapPlanPoint(rawPoint, event, origin);
+            this.planHover = { tool, point, opening: null };
+        }
+
+        const start = draft.points?.[0];
+        const length = start ? Math.hypot(point[0] - start[0], point[1] - start[1]) : 0;
+        if (phase === "move") {
+            if (tool === "opening") {
+                this.els.planHint.textContent = placement
+                    ? `Opening width ${placement.width.toFixed(2)} m`
+                    : "Drag along a free span of the wall";
+            } else if (tool === "room") {
+                this.els.planHint.textContent = `${Math.abs(point[0] - start[0]).toFixed(2)} × ${Math.abs(point[1] - start[1]).toFixed(2)} m`;
+            } else {
+                this.els.planHint.textContent = `${length.toFixed(2)} m`;
+            }
+            this._renderPlanPreview();
+            return;
+        }
+
+        if (phase !== "end") return;
+        if (!gesture.moved) {
+            this._cancelPlanDraft();
+            this._syncToolbar();
+            return;
+        }
+
+        if (tool === "wall" && length >= 0.001) {
+            this._createWallFromDrag(start, point);
+        } else if (tool === "room" && this._roomRectangle(start, point)) {
+            this._createRectangularRoom(start, point);
+        } else if (tool === "opening" && placement) {
+            this._createOpeningFromPlacement(placement, this.editorView.opening_kind || "window");
+        } else if (tool === "camera" && length >= 0.001) {
+            this._createCameraFromDrag(start, point);
+        }
+        this._cancelPlanDraft();
+        this._syncToolbar();
+    }
+
+    _createWallFromDrag(start, end) {
+        if (!this.scene || !Array.isArray(start) || !Array.isArray(end)) return false;
+        if (this.scene.architecture.walls.length >= 4096) {
+            this.toast("The scene wall limit has been reached.", "error");
+            return false;
+        }
+        this._recordEditorCommand("Create wall", () => {
+            const building = this._activeBuilding();
+            const level = this.scene.levels.find(value => value.level_id === this.editorView.active_level_id);
+            this.scene.architecture.walls.push({
+                ...DEFAULT_WALL,
+                wall_id: factoryId(),
+                level_id: this.editorView.active_level_id,
+                building_id: building?.building_id || "",
+                start: this._worldToLocalPlan(start, building),
+                end: this._worldToLocalPlan(end, building),
+                height: Number(level?.height) || DEFAULT_WALL.height,
+            });
+            void this._commitArchitecture();
+        });
+        return true;
+    }
+
+    _createCameraFromDrag(position, target) {
+        if (!this.scene || !Array.isArray(position) || !Array.isArray(target)) return false;
+        if ((this.scene.cameras?.length || 0) >= 32) {
+            this.toast("A scene can contain up to 32 cameras.", "error");
+            return false;
+        }
+        const cameraId = factoryId();
+        this._recordEditorCommand("Place camera", () => {
+            const level = this.scene.levels.find(value => value.level_id === this.editorView.active_level_id);
+            const building = this._activeBuilding();
+            const eyeHeight = (Number(level?.elevation) || 0)
+                + (Number(building?.position?.[1]) || 0)
+                + 1.6;
+            const camera = {
+                camera_id: cameraId,
+                name: `Camera ${(this.scene.cameras?.length || 0) + 1}`,
+                created_at: Date.now() / 1000,
+                level_id: this.editorView.active_level_id,
+                building_id: building?.building_id || "",
+                position: [position[0], eyeHeight, position[1]],
+                target: [target[0], eyeHeight, target[1]],
+                up: [0, 1, 0],
+                fov: 42,
+            };
+            this.scene.cameras = [...(this.scene.cameras || []), camera];
+            this._selectCamera(camera.camera_id);
+            this._scheduleSceneSave(0);
+        });
+        return true;
+    }
+
+    _nearestWallProjection(point) {
+        let nearest = null;
+        for (const wall of this.scene?.architecture?.walls || []) {
+            if (wall.level_id !== this.editorView.active_level_id) continue;
+            const building = this._buildingForItem(wall);
+            if (wall.visible === false || wall.locked || building?.visible === false || building?.locked) continue;
+            const wallStart = this._localToWorldPlan(wall.start, building);
+            const wallEnd = this._localToWorldPlan(wall.end, building);
+            const dx = wallEnd[0] - wallStart[0];
+            const dz = wallEnd[1] - wallStart[1];
+            const lengthSquared = dx * dx + dz * dz;
+            if (lengthSquared < 1e-9) continue;
+            const offset = clamp(
+                ((point[0] - wallStart[0]) * dx + (point[1] - wallStart[1]) * dz)
+                    / lengthSquared,
+                0,
+                1,
+            );
+            const projected = [wallStart[0] + dx * offset, wallStart[1] + dz * offset];
+            const distance = Math.hypot(point[0] - projected[0], point[1] - projected[1]);
+            if (!nearest || distance < nearest.distance) {
+                nearest = {
+                    wall,
+                    offset,
+                    distance,
+                    point: projected,
+                    length: Math.sqrt(lengthSquared),
+                };
+            }
+        }
+        const tolerance = 20 / Math.max(0.01, Number(this.viewerState.plan_camera?.zoom) || 24);
+        return nearest?.distance <= tolerance ? nearest : null;
+    }
+
+    _openingPlacement(nearest, requestedWidth = 1.2) {
+        const wall = nearest?.wall;
+        const length = Number(nearest?.length) || 0;
+        if (!wall || length < 0.05) return null;
+        const fitted = this._fitOpeningOnWall(wall, nearest.offset, requestedWidth);
+        if (!fitted) return null;
+        const { width, offset } = fitted;
+        const building = this._buildingForItem(wall);
+        const wallStart = this._localToWorldPlan(wall.start, building);
+        const wallEnd = this._localToWorldPlan(wall.end, building);
+        const dx = (wallEnd[0] - wallStart[0]) / length;
+        const dz = (wallEnd[1] - wallStart[1]) / length;
+        const center = [
+            wallStart[0] + (wallEnd[0] - wallStart[0]) * offset,
+            wallStart[1] + (wallEnd[1] - wallStart[1]) * offset,
+        ];
+        return {
+            wall,
+            offset,
+            width,
+            thickness: Number(wall.thickness) || DEFAULT_WALL.thickness,
+            center,
+            start: [center[0] - dx * width / 2, center[1] - dz * width / 2],
+            end: [center[0] + dx * width / 2, center[1] + dz * width / 2],
+        };
+    }
+
+    _fitOpeningOnWall(wall, requestedOffset, requestedWidth, ignoreOpeningId = "") {
+        const length = Math.hypot(
+            Number(wall?.end?.[0]) - Number(wall?.start?.[0]),
+            Number(wall?.end?.[1]) - Number(wall?.start?.[1]),
+        );
+        if (!(length >= 0.05)) return null;
+        const numericWidth = Number(requestedWidth);
+        const width = Math.min(
+            Math.max(0.05, Number.isFinite(numericWidth) ? numericWidth : 1.2),
+            length,
+        );
+        const half = width / 2;
+        const occupied = (this.scene?.architecture?.openings || [])
+            .filter(opening => opening.wall_id === wall.wall_id && opening.opening_id !== ignoreOpeningId)
+            .map(opening => {
+                const otherHalf = Math.min(length, Math.max(0.05, Number(opening.width) || 0.05)) / 2;
+                const center = clamp(Number(opening.offset) || 0, 0, 1) * length;
+                return [Math.max(0, center - otherHalf), Math.min(length, center + otherHalf)];
+            })
+            .sort((left, right) => left[0] - right[0]);
+        const free = [];
+        let cursor = 0;
+        for (const interval of occupied) {
+            if (interval[0] > cursor) free.push([cursor, interval[0]]);
+            cursor = Math.max(cursor, interval[1]);
+        }
+        if (cursor < length) free.push([cursor, length]);
+        const requestedCenter = clamp(Number(requestedOffset) || 0, 0, 1) * length;
+        let best = null;
+        for (const interval of free) {
+            const minimum = interval[0] + half;
+            const maximum = interval[1] - half;
+            if (minimum > maximum + 1e-6) continue;
+            const center = clamp(requestedCenter, minimum, maximum);
+            const distance = Math.abs(center - requestedCenter);
+            if (!best || distance < best.distance) best = { center, distance };
+        }
+        return best ? { offset: best.center / length, width } : null;
+    }
+
+    _openingControlLimits(opening, wall) {
+        const wallLength = Math.max(0.05, Math.hypot(
+            Number(wall?.end?.[0]) - Number(wall?.start?.[0]),
+            Number(wall?.end?.[1]) - Number(wall?.start?.[1]),
+        ) || 0.05);
+        const wallHeight = Math.max(0.05, Number(wall?.height) || DEFAULT_WALL.height);
+        const center = clamp(Number(opening?.offset) || 0, 0, 1) * wallLength;
+        const occupied = (this.scene?.architecture?.openings || [])
+            .filter(item => item.wall_id === wall?.wall_id && item.opening_id !== opening?.opening_id)
+            .map(item => {
+                const half = Math.min(wallLength, Math.max(0.05, Number(item.width) || 0.05)) / 2;
+                const otherCenter = clamp(Number(item.offset) || 0, 0, 1) * wallLength;
+                return [Math.max(0, otherCenter - half), Math.min(wallLength, otherCenter + half)];
+            })
+            .sort((left, right) => left[0] - right[0]);
+        const free = [];
+        let cursor = 0;
+        for (const interval of occupied) {
+            if (interval[0] > cursor) free.push([cursor, interval[0]]);
+            cursor = Math.max(cursor, interval[1]);
+        }
+        if (cursor < wallLength) free.push([cursor, wallLength]);
+        const span = free.find(interval => center >= interval[0] - 1e-6 && center <= interval[1] + 1e-6)
+            || free.reduce((nearest, interval) => {
+                const distance = center < interval[0]
+                    ? interval[0] - center
+                    : center > interval[1]
+                        ? center - interval[1]
+                        : 0;
+                return !nearest || distance < nearest.distance ? { interval, distance } : nearest;
+            }, null)?.interval
+            || [0, wallLength];
+        const currentWidth = Math.min(wallLength, Math.max(0.05, Number(opening?.width) || 0.05));
+        const symmetricWidth = Math.max(0.05, 2 * Math.min(
+            Math.max(0, center - span[0]),
+            Math.max(0, span[1] - center),
+        ));
+        const widthMaximum = Math.min(
+            span[1] - span[0],
+            Math.max(currentWidth, symmetricWidth),
+        );
+        const halfWidth = currentWidth / 2;
+        const centerMinimum = span[0] + halfWidth;
+        const centerMaximum = span[1] - halfWidth;
+        return {
+            wallLength,
+            wallHeight,
+            widthMaximum: Math.max(0.05, widthMaximum),
+            centerMinimum: centerMinimum <= centerMaximum ? centerMinimum : center,
+            centerMaximum: centerMinimum <= centerMaximum ? centerMaximum : center,
+            sillMaximum: Math.max(0, wallHeight - Math.max(0.05, Number(opening?.height) || 0.05)),
+        };
+    }
+
+    _createRectangularRoom(start, end) {
+        const rectangle = this._roomRectangle(start, end);
+        if (!rectangle) {
+            this.toast("Choose an opposite corner with both width and depth.", "error");
+            return false;
+        }
+        if (this.scene.architecture.rooms.length >= 1024) {
+            this.toast("The scene room limit has been reached.", "error");
+            return false;
+        }
+        if (this.scene.architecture.walls.length > 4092) {
+            this.toast("Four free wall slots are required to create a room.", "error");
+            return false;
+        }
+        const roomId = factoryId();
+        this.planDraft = null;
+        this.planHover = { tool: "room", point: [...end] };
+        this._renderPlanPreview();
+        this._recordEditorCommand("Create room", () => {
+            const building = this._activeBuilding();
+            const level = this.scene.levels.find(value => value.level_id === this.editorView.active_level_id);
+            const localRectangle = rectangle.map(point => this._worldToLocalPlan(point, building));
+            const wallIds = [];
+            for (let index = 0; index < rectangle.length; index += 1) {
+                const wallId = factoryId();
+                wallIds.push(wallId);
+                this.scene.architecture.walls.push({
+                    ...DEFAULT_WALL,
+                    wall_id: wallId,
+                    level_id: this.editorView.active_level_id,
+                    building_id: building?.building_id || "",
+                    start: [...localRectangle[index]],
+                    end: [...localRectangle[(index + 1) % localRectangle.length]],
+                    height: Number(level?.height) || DEFAULT_WALL.height,
+                });
+            }
+            this.scene.architecture.rooms.push({
+                ...DEFAULT_ROOM,
+                floor: {
+                    ...DEFAULT_ROOM.floor,
+                    thickness: Math.max(0, Number(level?.slab_thickness) || DEFAULT_ROOM.floor.thickness),
+                },
+                ceiling: {
+                    ...DEFAULT_ROOM.ceiling,
+                    height: Number(level?.height) || DEFAULT_ROOM.ceiling.height,
+                },
+                room_id: roomId,
+                level_id: this.editorView.active_level_id,
+                building_id: building?.building_id || "",
+                polygon: localRectangle.map(point => [...point]),
+                wall_ids: wallIds,
+            });
+            this.selectedArchitecture = { type: "room", id: roomId };
+            this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            void this._commitArchitecture();
+        });
+        return true;
+    }
+
+    _cancelPlanDraft() {
+        this._clearPlanHover();
+        this.planDraft = null;
+        this.viewer?.setPlanDraft(null);
+    }
+
+    _commitArchitecture({ save = true, targeted = false } = {}) {
+        const sceneId = this.sceneId;
+        const operation = this._architectureCommitSerial.then(
+            () => this._commitArchitectureNow(sceneId, { save, targeted }),
+        );
+        this._architectureCommitSerial = operation.catch(() => null);
+        return operation;
+    }
+
+    async _commitArchitectureNow(sceneId, { save = true, targeted = false } = {}) {
+        if (!this.scene || !sceneId || this.sceneId !== sceneId) return;
+        this.scene.levels = reconcileIdentifiedObjects(
+            this.scene.levels,
+            normalizedLevels(this.scene.levels),
+            "level_id",
+        );
+        const currentArchitecture = this.scene.architecture || {};
+        const nextArchitecture = normalizedArchitecture(currentArchitecture, this.scene.levels);
+        this.scene.architecture = {
+            ...nextArchitecture,
+            materials: reconcileIdentifiedObjects(
+                currentArchitecture.materials,
+                nextArchitecture.materials,
+                "material_id",
+            ),
+            buildings: reconcileIdentifiedObjects(
+                currentArchitecture.buildings,
+                nextArchitecture.buildings,
+                "building_id",
+            ),
+            walls: reconcileIdentifiedObjects(
+                currentArchitecture.walls,
+                nextArchitecture.walls,
+                "wall_id",
+            ),
+            rooms: reconcileIdentifiedObjects(
+                currentArchitecture.rooms,
+                nextArchitecture.rooms,
+                "room_id",
+            ),
+            openings: reconcileIdentifiedObjects(
+                currentArchitecture.openings,
+                nextArchitecture.openings,
+                "opening_id",
+            ),
+        };
+        if (!this.scene.levels.some(level => level.level_id === this.editorView.active_level_id)) {
+            this.editorView.active_level_id = this.scene.levels[0]?.level_id || "";
+        }
+        const selectedType = ["floor", "ceiling"].includes(this.selectedArchitecture?.type)
+            ? "room"
+            : this.selectedArchitecture?.type;
+        const updated = targeted && this.selectedArchitecture?.id
+            ? this.viewer.updateArchitectureItem(
+                selectedType,
+                this.selectedArchitecture.id,
+                this.scene,
+            )
+            : false;
+        if (!updated) await this.viewer.refreshArchitecture(this.scene);
+        if (!this.scene || this.sceneId !== sceneId) return;
+        // Rebuilding procedural geometry must not replay a stale editor camera.
+        // The viewer already owns the live camera; only architecture-specific
+        // mode and floor state need to be reaffirmed after a refresh.
+        this.viewer.setViewMode(this.editorView.view_mode);
+        this.viewer.setPlanTool(this.editorView.plan_tool);
+        this.viewer.setActiveLevel(this.editorView.active_level_id);
+        this.viewer.setArchitectureSelection(this.selectedArchitecture);
+        if (!targeted) this._renderInspector();
+        if (this.selectedArchitecture) this._setWorkspaceTab("right", "inspector");
+        this._updateSceneSummary();
+        this._syncToolbar();
+        if (save) {
+            this._scheduleSceneSave(80);
+            this._scheduleScenePreview(240);
+            this._scheduleStateSave(0);
+        }
+    }
+
+    _previewSelectedArchitecture() {
+        if (!this.selectedArchitecture?.id || !this.scene) return;
+        const type = ["floor", "ceiling"].includes(this.selectedArchitecture.type)
+            ? "room"
+            : this.selectedArchitecture.type;
+        if (type === "level") {
+            this._previewArchitectureMaterials();
+            this.viewer.setActiveLevel(this.editorView.active_level_id);
+            this.viewer.setCameraMarkers(this.scene.cameras || []);
+            return;
+        }
+        this.viewer.updateArchitectureItem(type, this.selectedArchitecture.id, this.scene);
+        if (type === "wall") {
+            for (const room of this.scene.architecture.rooms || []) {
+                if (room.wall_ids?.includes(this.selectedArchitecture.id)) {
+                    this.viewer.updateArchitectureItem("room", room.room_id, this.scene);
+                }
+            }
+        } else if (type === "room") {
+            const room = this.scene.architecture.rooms?.find(value => value.room_id === this.selectedArchitecture.id);
+            const linked = new Set(room?.wall_ids || []);
+            for (const wall of this.scene.architecture.walls || []) {
+                if (linked.has(wall.wall_id)) this.viewer.updateArchitectureItem("wall", wall.wall_id, this.scene);
+            }
+        }
+        this.viewer.setCameraMarkers(this.scene.cameras || []);
+        this._scheduleSceneSave(220);
+        this._scheduleStateSave(220);
+    }
+
+    _queueSelectedArchitecturePreview({ flush = false } = {}) {
+        if (flush && this._architectureGeometryFrame) {
+            cancelAnimationFrame(this._architectureGeometryFrame);
+            this._architectureGeometryFrame = 0;
+        }
+        if (flush) {
+            this._previewSelectedArchitecture();
+            return;
+        }
+        if (this._architectureGeometryFrame) return;
+        this._architectureGeometryFrame = requestAnimationFrame(() => {
+            this._architectureGeometryFrame = 0;
+            this._previewSelectedArchitecture();
+        });
+    }
+
+    _syncRoomsForWall(wall) {
+        if (!wall) return;
+        for (const room of this.scene?.architecture?.rooms || []) {
+            if (!Array.isArray(room.wall_ids) || room.wall_ids.length !== room.polygon?.length) continue;
+            const index = room.wall_ids.indexOf(wall.wall_id);
+            if (index < 0) continue;
+            room.polygon[index] = [...wall.start];
+            room.polygon[(index + 1) % room.polygon.length] = [...wall.end];
+        }
+    }
+
+    _previewArchitectureMaterials() {
+        clearTimeout(this._architecturePreviewTimer);
+        this._architecturePreviewTimer = setTimeout(() => {
+            this._architecturePreviewTimer = 0;
+            void this.viewer.refreshArchitecture(this.scene);
+        }, 50);
+        this._scheduleSceneSave(220);
+        this._scheduleStateSave(220);
+    }
+
+    _selectArchitecture(selection) {
+        if (selection?.type === "camera") {
+            this._selectCamera(selection.id);
+            return;
+        }
+        this.selectedArchitecture = this._normalizeArchitectureSelection(selection);
+        const selected = this._selectedArchitectureValue();
+        const owner = this.selectedArchitecture?.type === "building"
+            ? this.scene?.architecture?.buildings?.find(
+                item => item.building_id === this.selectedArchitecture.id,
+            )
+            : this._buildingForItem(selected);
+        if (owner) this.editorView.active_building_id = owner.building_id;
+        this.selectedCameraId = "";
+        this.selectedCameraKeyframeId = "";
+        this.selectedObjectId = "";
+        this.selectedObjectIds.clear();
+        this.selectedGroupId = "";
+        this.selectedSkydome = false;
+        this.viewer.setArchitectureSelection(this.selectedArchitecture);
+        this._renderObjects();
+        this._renderInspector();
+        this._syncToolbar();
+        if (this.selectedArchitecture) this._setWorkspaceTab("right", "inspector");
+    }
+
+    _onArchitectureEdit(change) {
+        if (!change?.type || !change.id) return;
+        if (change.type === "building") {
+            const building = this.scene?.architecture?.buildings?.find(item => item.building_id === change.id);
+            if (!building || building.locked) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            const point = this._snapPlanPoint(change.point, change.event || {});
+            const before = this._captureEditorSnapshot();
+            this._applyBuildingTransform(
+                building,
+                [point[0], Number(building.position?.[1]) || 0, point[1]],
+                building.rotation_y,
+            );
+            this.history.push("Move building", before, this._captureEditorSnapshot());
+            void this._commitArchitecture({ targeted: true });
+            return;
+        }
+        if (change.type === "room") {
+            const room = this.scene?.architecture?.rooms?.find(item => item.room_id === change.id);
+            const linkedWalls = new Set(room?.wall_ids || []);
+            if (
+                !room?.polygon?.length
+                || room.locked
+                || this.scene.architecture.walls?.some(wall => linkedWalls.has(wall.wall_id) && wall.locked)
+            ) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            const building = this._buildingForItem(room);
+            if (building?.locked) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            const localPoint = this._worldToLocalPlan(
+                this._snapPlanPoint(change.point, change.event || {}),
+                building,
+            );
+            const center = room.polygon.reduce(
+                (sum, point) => [sum[0] + point[0], sum[1] + point[1]],
+                [0, 0],
+            ).map(value => value / room.polygon.length);
+            const delta = [localPoint[0] - center[0], localPoint[1] - center[1]];
+            const before = this._captureEditorSnapshot();
+            room.polygon = room.polygon.map(point => [point[0] + delta[0], point[1] + delta[1]]);
+            const linked = new Set(room.wall_ids || []);
+            for (const wall of this.scene.architecture.walls || []) {
+                if (!linked.has(wall.wall_id)) continue;
+                wall.start = [wall.start[0] + delta[0], wall.start[1] + delta[1]];
+                wall.end = [wall.end[0] + delta[0], wall.end[1] + delta[1]];
+            }
+            this.history.push("Move room", before, this._captureEditorSnapshot());
+            void this._commitArchitecture();
+            return;
+        }
+        if (change.type === "opening") {
+            const opening = this.scene?.architecture?.openings?.find(item => item.opening_id === change.id);
+            const wall = this.scene?.architecture?.walls?.find(item => item.wall_id === opening?.wall_id);
+            const building = this._buildingForItem(wall);
+            if (!opening || !wall || opening.locked || wall.locked || building?.locked) {
+                return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            }
+            const point = this._worldToLocalPlan(
+                this._snapPlanPoint(change.point, change.event || {}),
+                building,
+            );
+            const dx = wall.end[0] - wall.start[0];
+            const dz = wall.end[1] - wall.start[1];
+            const lengthSquared = dx * dx + dz * dz;
+            if (lengthSquared < 1e-9) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            const requestedOffset = ((point[0] - wall.start[0]) * dx + (point[1] - wall.start[1]) * dz) / lengthSquared;
+            const fitted = this._fitOpeningOnWall(wall, requestedOffset, opening.width, opening.opening_id);
+            if (!fitted) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            const before = this._captureEditorSnapshot();
+            opening.offset = fitted.offset;
+            opening.width = fitted.width;
+            this.history.push("Move opening", before, this._captureEditorSnapshot());
+            void this._commitArchitecture({ targeted: true });
+            return;
+        }
+        if (change.type !== "wall" || !["start", "end"].includes(change.endpoint)) return;
+        const linkedRoom = this._roomForWallId(change.id);
+        if (linkedRoom) {
+            this._selectArchitecture({ type: "room", id: linkedRoom.room_id });
+            return;
+        }
+        const wall = this.scene?.architecture?.walls?.find(item => item.wall_id === change.id);
+        if (!wall || wall.locked || this._buildingForItem(wall)?.locked) {
+            this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            return;
+        }
+        const worldPoint = this._snapPlanPoint(change.point, change.event || {});
+        const building = this._buildingForItem(wall);
+        const point = this._worldToLocalPlan(worldPoint, building);
+        if (Math.hypot(
+            point[0] - wall[change.endpoint === "start" ? "end" : "start"][0],
+            point[1] - wall[change.endpoint === "start" ? "end" : "start"][1],
+        ) < 0.001) {
+            this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            return;
+        }
+        const before = this._captureEditorSnapshot();
+        wall[change.endpoint] = point;
+        for (const room of this.scene.architecture.rooms || []) {
+            const index = room.wall_ids?.indexOf(wall.wall_id) ?? -1;
+            if (index < 0 || room.wall_ids.length !== room.polygon.length) continue;
+            const endpointIndex = change.endpoint === "start"
+                ? index
+                : (index + 1) % room.polygon.length;
+            room.polygon[endpointIndex] = [...point];
+        }
+        this.history.push("Move wall endpoint", before, this._captureEditorSnapshot());
+        void this._commitArchitecture();
+        this._syncToolbar();
+    }
+
+    _selectedArchitectureValue() {
+        if (!this.selectedArchitecture || !this.scene?.architecture) return null;
+        const { type, id } = this.selectedArchitecture;
+        if (type === "building") return this.scene.architecture.buildings?.find(item => item.building_id === id);
+        if (type === "level") return this.scene.levels.find(item => item.level_id === id);
+        if (type === "wall") return this.scene.architecture.walls.find(item => item.wall_id === id);
+        if (type === "room" || type === "floor" || type === "ceiling") {
+            return this.scene.architecture.rooms.find(item => item.room_id === id);
+        }
+        if (type === "opening") return this.scene.architecture.openings.find(item => item.opening_id === id);
+        return null;
+    }
+
+    _roomForWallId(wallId) {
+        return this.scene?.architecture?.rooms?.find(
+            room => room.wall_ids?.includes(wallId),
+        ) || null;
+    }
+
+    _normalizeArchitectureSelection(selection) {
+        if (!selection?.id) return null;
+        if (["room", "floor", "ceiling"].includes(selection.type)) {
+            return { type: "room", id: selection.id };
+        }
+        if (selection.type === "wall") {
+            const room = this._roomForWallId(selection.id);
+            if (room) return { type: "room", id: room.room_id };
+        }
+        return { type: selection.type, id: selection.id };
+    }
+
+    _roomBounds(room) {
+        const polygon = Array.isArray(room?.polygon) ? room.polygon : [];
+        if (!polygon.length) return { center: [0, 0], size: [0, 0] };
+        const xs = polygon.map(point => Number(point?.[0]) || 0);
+        const zs = polygon.map(point => Number(point?.[1]) || 0);
+        const minimum = [Math.min(...xs), Math.min(...zs)];
+        const maximum = [Math.max(...xs), Math.max(...zs)];
+        return {
+            center: [(minimum[0] + maximum[0]) / 2, (minimum[1] + maximum[1]) / 2],
+            size: [maximum[0] - minimum[0], maximum[1] - minimum[1]],
+        };
+    }
+
+    _syncRoomPerimeter(room) {
+        if (!room?.polygon?.length || room.wall_ids?.length !== room.polygon.length) return;
+        const wallsById = new Map(
+            (this.scene?.architecture?.walls || []).map(wall => [wall.wall_id, wall]),
+        );
+        room.wall_ids.forEach((wallId, index) => {
+            const wall = wallsById.get(wallId);
+            if (!wall) return;
+            wall.start = [...room.polygon[index]];
+            wall.end = [...room.polygon[(index + 1) % room.polygon.length]];
+            wall.level_id = room.level_id;
+            wall.building_id = room.building_id;
+            wall.height = Math.max(0.05, Number(room.ceiling?.height) || wall.height || 2.8);
+            wall.visible = room.visible !== false;
+            wall.locked = room.locked === true;
+        });
+    }
+
+    _formatControlNumber(value, step = 0.01) {
+        const numericValue = Number(value);
+        if (!Number.isFinite(numericValue)) return "0";
+        const numericStep = Math.abs(Number(step));
+        if (!Number.isFinite(numericStep) || numericStep <= 0) {
+            return String(Number(numericValue.toFixed(6)));
+        }
+        const stepText = numericStep.toString().toLowerCase();
+        const exponent = stepText.includes("e-") ? Number(stepText.split("e-")[1]) : 0;
+        const decimals = exponent || (stepText.split(".")[1]?.length || 0);
+        return String(Number(numericValue.toFixed(Math.min(8, decimals))));
+    }
+
+    _numericControl(label, path, value, {
+        minimum,
+        maximum,
+        step,
+        range = true,
+        sliderMinimum,
+        sliderMaximum,
+        disabled = false,
+    } = {}) {
+        const numericValue = Number(value);
+        const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
+        const disabledAttribute = disabled ? " disabled" : "";
+        let rangeMinimum = Number.isFinite(sliderMinimum) ? sliderMinimum : minimum;
+        let rangeMaximum = Number.isFinite(sliderMaximum) ? sliderMaximum : maximum;
+        if (range && Number.isFinite(minimum) && Number.isFinite(maximum)) {
+            const span = maximum - minimum;
+            if (!Number.isFinite(sliderMinimum) && !Number.isFinite(sliderMaximum) && span > 720) {
+                const windowSize = path.includes("rotation")
+                    ? 45
+                    : path.includes("focus")
+                        ? Math.max(1, Math.abs(safeValue))
+                        : path.includes("scale")
+                            ? Math.max(1, Math.abs(safeValue) * 2)
+                            : 5;
+                rangeMinimum = Math.max(minimum, safeValue - windowSize);
+                rangeMaximum = Math.min(maximum, safeValue + windowSize);
+            }
+        }
+        rangeMinimum = Math.min(rangeMinimum, safeValue);
+        rangeMaximum = Math.max(rangeMaximum, safeValue);
+        const controlValue = this._formatControlNumber(safeValue, step);
+        const controlMinimum = this._formatControlNumber(minimum, step);
+        const controlMaximum = this._formatControlNumber(maximum, step);
+        const rangeMinimumValue = this._formatControlNumber(rangeMinimum, step);
+        const rangeMaximumValue = this._formatControlNumber(rangeMaximum, step);
+        return `
+            <div class="vnccs-i3s__precision-row">
+                <span>${escapeHTML(label)}</span>
+                ${range ? `<input type="range" aria-label="${escapeHTML(label)} slider" data-editor-path="${path}" min="${rangeMinimumValue}" max="${rangeMaximumValue}" step="${step}" value="${controlValue}"${disabledAttribute} />` : ""}
+                <input class="vnccs-i3s__input" aria-label="${escapeHTML(label)} exact value" type="number" data-editor-path="${path}" min="${controlMinimum}" max="${controlMaximum}" step="${step}" value="${controlValue}"${disabledAttribute} />
+            </div>`;
+    }
+
+    _renderInspector() {
+        if (!this.els?.inspector) return;
+        preserveScrollState(this.container, () => {
+            const item = this.scene?.objects?.find(value => value.object_id === this.selectedObjectId);
+            const architecture = this._selectedArchitectureValue();
+            const camera = this.scene?.cameras?.find(value => value.camera_id === this.selectedCameraId);
+            const group = this._groupById(this.selectedGroupId);
+            const track = this._activeCameraTrack();
+            const keyframe = track?.keyframes?.find(value => value.keyframe_id === this.selectedCameraKeyframeId);
+            const hasSelection = Boolean(item || architecture || camera || keyframe || group);
+            this.container.classList.toggle("has-inspector-selection", hasSelection);
+            const inspectorTab = this.els.workspaceTabs.find(
+                button => button.dataset.workspaceSide === "right"
+                    && button.dataset.workspaceTab === "inspector",
+            );
+            inspectorTab?.setAttribute(
+                "aria-label",
+                hasSelection ? "Inspector, selection available" : "Inspector",
+            );
+            if (!item && !architecture && !camera && !keyframe && !group) {
+                this.els.inspectorKind.textContent = "Nothing selected";
+                this.els.inspector.innerHTML = '<div class="vnccs-i3s__inspector-empty">Select an object, wall, room, opening, or camera.</div>';
+                return;
+            }
+            if (item) this._renderObjectInspector(item);
+            else if (group) this._renderGroupInspector(group);
+            else if (camera) this._renderCameraInspector(camera);
+            else if (keyframe) this._renderKeyframeInspector(track, keyframe);
+            else this._renderArchitectureInspector(architecture);
+        });
+    }
+
+    _renderGroupInspector(group) {
+        const center = this.viewer?.getGroupPivotPosition?.() || [0, 0, 0];
+        this.els.inspectorKind.textContent = "Object group";
+        this.els.inspector.innerHTML = `
+            <div class="vnccs-i3s__inspector-title">${escapeHTML(group.name || "Group")}</div>
+            <div class="vnccs-i3s__hint">Position is absolute. Rotation and scale are applied as a precise delta around the group center.</div>
+            <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `group.position.${index}`, center[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Rotation delta · degrees</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `group.rotation.${index}`, 0, { minimum: -360, maximum: 360, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Scale factor</b>
+                ${this._numericControl("Scale", "group.scale", 1, { minimum: 0.001, maximum: 100, step: 0.001 })}
+            </div>
+            <div class="vnccs-i3s__inspector-actions"><button class="vnccs-i3s__button vnccs-i3s__button--primary" type="button" data-group-apply>Apply to ${group.children.length} objects</button></div>`;
+        const staged = { position: [...center], rotation: [0, 0, 0], scale: 1 };
+        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("input", () => {
+                const [, key, rawIndex] = control.dataset.editorPath.split(".");
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                if (rawIndex !== undefined) staged[key][Number(rawIndex)] = value;
+                else staged[key] = value;
+                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
+                    if (peer !== control) peer.value = String(value);
+                }
+            });
+        }
+        this.els.inspector.querySelector("[data-group-apply]")?.addEventListener("click", () => {
+            this._recordEditorCommand("Transform group", () => {
+                this._suppressViewerTransformHistory = true;
+                try { this.viewer.applyGroupDelta(staged); }
+                finally {
+                    this._suppressViewerTransformHistory = false;
+                    this._viewerTransformHistoryBefore = null;
+                }
+                this._renderInspector();
+                this._scheduleSceneSave(0);
+            });
+        });
+    }
+
+    _renderCameraInspector(camera) {
+        const pose = cameraPoseFromLegacy(camera);
+        const rotation = eulerDegreesFromQuaternion(pose.quaternion);
+        this.els.inspectorKind.textContent = "Saved camera";
+        this.els.inspector.innerHTML = `
+            <div class="vnccs-i3s__inspector-title">${escapeHTML(camera.name || "Camera")}</div>
+            <div class="vnccs-i3s__hint">${this.previewCameraId === camera.camera_id
+                ? "Camera View is live: exact fields update the viewport immediately."
+                : "Exact fields update the saved Plan marker. Enter Camera View to preview rotation and lens."}</div>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-camera-property="name" value="${escapeHTML(camera.name || "Camera")}" maxlength="80" /></label>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-camera-property="level_id">
+                ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${camera.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
+            </select></label>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-camera-property="building_id">
+                ${this._buildingOptions(camera.building_id)}
+            </select></label>
+            <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Lens</b>
+                ${this._numericControl("FOV", "camera.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
+                ${this._numericControl("Focus distance", "camera.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 100000, step: 0.001 })}
+            </div>
+            <div class="vnccs-i3s__inspector-actions">
+                <button class="vnccs-i3s__button" type="button" data-inspector-action="preview-camera">${this.previewCameraId === camera.camera_id ? "Exit camera view" : "Enter camera view"}</button>
+                <button class="vnccs-i3s__button" type="button" data-inspector-action="update-camera">Update from current view</button>
+                <button class="vnccs-i3s__button" type="button" data-inspector-action="keyframe">Add camera as path point</button>
+            </div>`;
+        let before = null;
+        const edited = {
+            position: [...pose.position],
+            rotation: [...rotation],
+            fov: pose.fov,
+            focus_distance: pose.focus_distance,
+        };
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const apply = () => {
+            const legacy = legacyCameraFromPose({
+                position: edited.position,
+                quaternion: quaternionFromEulerDegrees(edited.rotation),
+                fov: edited.fov,
+                focus_distance: edited.focus_distance,
+            });
+            Object.assign(camera, legacy);
+            // Precise edits in 3D enter the saved camera non-destructively so
+            // every slider and exact value has an immediate viewport result.
+            // Plan mode keeps showing the saved marker and its FOV wedge.
+            if (this.editorView.view_mode === "3d" && this.previewCameraId !== camera.camera_id) {
+                if (!this.previewCameraId) {
+                    this._cameraReturnState = this._normalizeCameraState(
+                        this.viewer.getCameraState(),
+                        this.scene?.camera,
+                    );
+                }
+                this.previewCameraId = camera.camera_id;
+                if (this.scene.levels?.some(level => level.level_id === camera.level_id)) {
+                    this.editorView.active_level_id = camera.level_id;
+                    this.viewer.setActiveLevel(camera.level_id);
+                }
+                this._renderCameras();
+                const previewAction = this.els.inspector.querySelector(
+                    '[data-inspector-action="preview-camera"]',
+                );
+                if (previewAction) previewAction.textContent = "Exit camera view";
+                const hint = this.els.inspector.querySelector(".vnccs-i3s__hint");
+                if (hint) {
+                    hint.textContent = "Camera View is live: exact fields update the viewport immediately.";
+                }
+            }
+            if (this.previewCameraId === camera.camera_id) {
+                this.viewer.setCameraState(camera, { emit: false });
+            }
+            this.viewer.setCameraMarkers(this.scene.cameras);
+            this._scheduleSceneSave(180);
+            this._scheduleStateSave(180);
+        };
+        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            control.addEventListener("input", () => {
+                const [, key, rawIndex] = control.dataset.editorPath.split(".");
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                if (rawIndex !== undefined) edited[key][Number(rawIndex)] = value;
+                else edited[key] = value;
+                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
+                    if (peer !== control) peer.value = String(value);
+                }
+                apply();
+            });
+            control.addEventListener("change", () => {
+                if (before) this.history.push("Edit camera", before, this._captureEditorSnapshot());
+                before = null;
+                this._syncToolbar();
+                this._scheduleSceneSave(0);
+            });
+        }
+        this.els.inspector.querySelector('[data-camera-property="name"]')?.addEventListener("change", event => {
+            const original = this._captureEditorSnapshot();
+            camera.name = String(event.currentTarget.value || "Camera").trim().slice(0, 80) || "Camera";
+            this.history.push("Rename camera", original, this._captureEditorSnapshot());
+            this._renderCameras();
+            this._renderInspector();
+            this._scheduleSceneSave(0);
+        });
+        this.els.inspector.querySelector('[data-camera-property="level_id"]')?.addEventListener("change", event => {
+            const original = this._captureEditorSnapshot();
+            const previousLevel = this.scene.levels.find(level => level.level_id === camera.level_id);
+            const nextLevel = this.scene.levels.find(level => level.level_id === event.currentTarget.value);
+            const elevationDelta = (Number(nextLevel?.elevation) || 0)
+                - (Number(previousLevel?.elevation) || 0);
+            camera.position[1] += elevationDelta;
+            camera.target[1] += elevationDelta;
+            camera.level_id = event.currentTarget.value;
+            if (this.previewCameraId === camera.camera_id) {
+                this.editorView.active_level_id = camera.level_id;
+                this.viewer.setActiveLevel(camera.level_id);
+                this.viewer.setCameraState(camera, { emit: false });
+                this._syncToolbar();
+            }
+            this.history.push("Move camera to floor", original, this._captureEditorSnapshot());
+            this.viewer.setCameraMarkers(this.scene.cameras);
+            this._renderCameras();
+            this._scheduleSceneSave(0);
+        });
+        this.els.inspector.querySelector('[data-camera-property="building_id"]')?.addEventListener("change", event => {
+            const original = this._captureEditorSnapshot();
+            camera.building_id = this._validBuildingId(event.currentTarget.value);
+            if (camera.building_id) this.editorView.active_building_id = camera.building_id;
+            this.history.push("Assign camera to building", original, this._captureEditorSnapshot());
+            this.viewer.setCameraMarkers(this.scene.cameras);
+            this._renderCameras();
+            this._syncToolbar();
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+        });
+        this.els.inspector.querySelector('[data-inspector-action="preview-camera"]')?.addEventListener("click", () => {
+            if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
+            else this._enterCameraView(camera.camera_id);
+        });
+        this.els.inspector.querySelector('[data-inspector-action="update-camera"]')?.addEventListener("click", () => {
+            const original = this._captureEditorSnapshot();
+            Object.assign(camera, this._normalizeCameraState(this.viewer.getCameraState()));
+            this.history.push("Update camera from view", original, this._captureEditorSnapshot());
+            this.viewer.setCameraMarkers(this.scene.cameras);
+            this._renderInspector();
+            this._renderCameras();
+            this._scheduleSceneSave(0);
+            this._syncToolbar();
+        });
+        this.els.inspector.querySelector('[data-inspector-action="keyframe"]')?.addEventListener("click", () => {
+            this._addCameraKeyframe(camera);
+        });
+    }
+
+    _renderKeyframeInspector(track, frame) {
+        const pose = normalizedCameraPose(frame);
+        const rotation = eulerDegreesFromQuaternion(pose.quaternion);
+        this.els.inspectorKind.textContent = "Camera path point";
+        this.els.inspector.innerHTML = `
+            <div class="vnccs-i3s__inspector-title">${escapeHTML(track.name || "Camera path")}</div>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-track-property="building_id">${this._buildingOptions(track.building_id)}</select></label>
+            <div class="vnccs-i3s__inspector-group"><b>Timeline</b>
+                ${this._numericControl("Time", "keyframe.time", frame.time, { minimum: 0, maximum: track.duration, step: 0.001 })}
+                ${this._numericControl("Duration", "track.duration", track.duration, { minimum: 0.1, maximum: 86400, step: 0.01 })}
+                ${this._numericControl("FPS", "track.fps", track.fps, { minimum: 1, maximum: 120, step: 1 })}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Lens</b>
+                ${this._numericControl("FOV", "keyframe.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
+                ${this._numericControl("Focus", "keyframe.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 1000000, step: 0.001 })}
+            </div>
+            <div class="vnccs-i3s__inspector-grid">
+                <label><span>Interpolation</span><select class="vnccs-i3s__select" data-track-property="interpolation"><option value="linear"${track.interpolation === "linear" ? " selected" : ""}>Linear</option><option value="catmullrom"${track.interpolation === "catmullrom" ? " selected" : ""}>Smooth path</option></select></label>
+                <label><span>Easing</span><select class="vnccs-i3s__select" data-keyframe-property="easing"><option value="linear"${frame.easing === "linear" ? " selected" : ""}>Linear</option><option value="smooth"${frame.easing === "smooth" ? " selected" : ""}>Smooth</option><option value="ease_in"${frame.easing === "ease_in" ? " selected" : ""}>Ease in</option><option value="ease_out"${frame.easing === "ease_out" ? " selected" : ""}>Ease out</option><option value="ease_in_out"${frame.easing === "ease_in_out" ? " selected" : ""}>Ease in/out</option></select></label>
+            </div>
+            <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-track-property="constant_speed"${track.constant_speed ? " checked" : ""} /> Constant position speed</label>
+            <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-track-property="loop"${track.loop ? " checked" : ""} /> Loop playback</label>
+            <div class="vnccs-i3s__inspector-actions"><button class="vnccs-i3s__button" type="button" data-keyframe-action="update">Update from view</button><button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-keyframe-action="delete">Delete point</button></div>`;
+        const edited = {
+            position: [...pose.position],
+            rotation: [...rotation],
+            fov: pose.fov,
+            focus_distance: pose.focus_distance,
+        };
+        let before = null;
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const applyPose = () => {
+            Object.assign(frame, normalizedCameraPose({
+                position: edited.position,
+                quaternion: quaternionFromEulerDegrees(edited.rotation),
+                fov: edited.fov,
+                focus_distance: edited.focus_distance,
+            }));
+            this.viewer.setCameraState(legacyCameraFromPose(frame), { emit: false });
+            this._scheduleSceneSave(180);
+        };
+        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            control.addEventListener("input", () => {
+                const [scope, key, rawIndex] = control.dataset.editorPath.split(".");
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                if (scope === "track") {
+                    if (key === "fps") track[key] = Math.round(value);
+                    else if (key === "duration") {
+                        const lastTime = Math.max(0, ...track.keyframes.map(item => Number(item.time) || 0));
+                        track.duration = Math.max(value, lastTime, 0.1);
+                    } else track[key] = value;
+                }
+                else if (key === "time") frame.time = Math.max(0, Math.min(track.duration, value));
+                else {
+                    if (rawIndex !== undefined) edited[key][Number(rawIndex)] = value;
+                    else edited[key] = value;
+                    applyPose();
+                }
+                const appliedValue = scope === "track"
+                    ? track[key]
+                    : key === "time"
+                        ? frame.time
+                        : rawIndex !== undefined
+                            ? edited[key][Number(rawIndex)]
+                            : edited[key];
+                control.value = String(appliedValue);
+                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
+                    if (peer !== control) peer.value = String(appliedValue);
+                }
+            });
+            control.addEventListener("change", () => {
+                track.keyframes.sort((left, right) => left.time - right.time);
+                if (before) this.history.push("Edit camera point", before, this._captureEditorSnapshot());
+                before = null;
+                this._renderCameraTracks();
+                this._scheduleSceneSave(0);
+                this._syncToolbar();
+            });
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-track-property],[data-keyframe-property]")) {
+            control.addEventListener("change", () => {
+                const original = this._captureEditorSnapshot();
+                const target = control.dataset.trackProperty ? track : frame;
+                const key = control.dataset.trackProperty || control.dataset.keyframeProperty;
+                target[key] = control.type === "checkbox" ? control.checked : control.value;
+                if (control.dataset.trackProperty === "building_id") {
+                    track.building_id = this._validBuildingId(control.value);
+                    this.editorView.active_building_id = track.building_id;
+                }
+                this.history.push("Edit camera path", original, this._captureEditorSnapshot());
+                this._renderCameraTracks();
+                this._scheduleSceneSave(0);
+                this._syncToolbar();
+            });
+        }
+        this.els.inspector.querySelector('[data-keyframe-action="update"]')?.addEventListener("click", () => {
+            const original = this._captureEditorSnapshot();
+            Object.assign(frame, cameraPoseFromLegacy(this.viewer.getCameraState()));
+            this.history.push("Update camera point", original, this._captureEditorSnapshot());
+            this._renderCameraTracks();
+            this._renderInspector();
+            this._scheduleSceneSave(0);
+        });
+        this.els.inspector.querySelector('[data-keyframe-action="delete"]')?.addEventListener("click", () => {
+            const original = this._captureEditorSnapshot();
+            track.keyframes = track.keyframes.filter(value => value.keyframe_id !== frame.keyframe_id);
+            this.selectedCameraKeyframeId = "";
+            this.history.push("Delete camera point", original, this._captureEditorSnapshot());
+            this._renderCameraTracks();
+            this._renderInspector();
+            this._scheduleSceneSave(0);
+        });
+    }
+
+    _renderObjectInspector(item) {
+        const transform = item.transform || { position: [0, 0, 0], rotation: [0, 0, 0], scale: 1 };
+        item.transform = {
+            position: Array.isArray(transform.position) ? [...transform.position] : [0, 0, 0],
+            rotation: Array.isArray(transform.rotation) ? [...transform.rotation] : [0, 0, 0],
+            scale: Math.max(0.001, Number(transform.scale) || 1),
+        };
+        const editor = normalizedObjectEditorProperties(item);
+        this.els.inspectorKind.textContent = "Gaussian object";
+        this.els.inspector.innerHTML = `
+            <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Object")}</div>
+            <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `position.${index}`, transform.position?.[index], { minimum: -1000, maximum: 1000, step: 0.01, disabled: editor.locked })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
+                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `rotation.${index}`, transform.rotation?.[index], { minimum: -180, maximum: 180, step: 0.01, disabled: editor.locked })).join("")}
+            </div>
+            <div class="vnccs-i3s__inspector-group"><b>Uniform scale</b>
+                ${this._numericControl("Scale", "scale", transform.scale, { minimum: 0.001, maximum: 1000, step: 0.001, disabled: editor.locked })}
+            </div>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-object-property="level_id"${editor.locked ? " disabled" : ""}>
+                ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
+            </select></label>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-object-property="building_id"${editor.locked ? " disabled" : ""}>
+                ${this._buildingOptions(item.building_id)}
+            </select></label>
+            <div class="vnccs-i3s__inspector-grid">
+                <label><span>Collision</span><select class="vnccs-i3s__select" data-object-property="collision_proxy.mode">
+                    <option value="auto_box"${editor.collision_proxy.mode === "auto_box" ? " selected" : ""}>Automatic box</option>
+                    <option value="box"${editor.collision_proxy.mode === "box" ? " selected" : ""}>Custom box</option>
+                    <option value="off"${editor.collision_proxy.mode === "off" ? " selected" : ""}>Disabled</option>
+                </select></label>
+                <label><span>Light behavior</span><select class="vnccs-i3s__select" data-object-property="light_transport">
+                    <option value="opaque"${editor.light_transport === "opaque" ? " selected" : ""}>Opaque</option>
+                    <option value="cutout"${editor.light_transport === "cutout" ? " selected" : ""}>Cutout</option>
+                    <option value="transmissive"${editor.light_transport === "transmissive" ? " selected" : ""}>Glass / transmissive</option>
+                </select></label>
+            </div>
+            ${editor.collision_proxy.mode === "box" ? `
+                <div class="vnccs-i3s__inspector-group"><b>Custom collision box · local m</b>
+                    ${["X", "Y", "Z"].map((axis, index) => `<label class="vnccs-i3s__precision-row"><span>C${axis}</span><input class="vnccs-i3s__input" type="number" step="0.01" data-proxy-path="center.${index}" value="${editor.collision_proxy.center[index]}" /></label>`).join("")}
+                    ${["X", "Y", "Z"].map((axis, index) => `<label class="vnccs-i3s__precision-row"><span>S${axis}</span><input class="vnccs-i3s__input" type="number" min="0.001" step="0.01" data-proxy-path="size.${index}" value="${editor.collision_proxy.size[index]}" /></label>`).join("")}
+                </div>` : ""}
+            ${editor.light_transport === "transmissive" ? this._numericControl("Transmission", "object.transmission", editor.transmission, { minimum: 0, maximum: 1, step: 0.01 }) : ""}
+            <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-object-property="collision_proxy.supports_objects"${editor.collision_proxy.supports_objects ? " checked" : ""} /> Can support other objects</label>
+            <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-object-property="locked"${editor.locked ? " checked" : ""} /> Lock transform</label>
+            <div class="vnccs-i3s__inspector-actions">
+                <button class="vnccs-i3s__button" type="button" data-inspector-action="drop"${editor.locked ? " disabled" : ""}>Drop to surface</button>
+                <button class="vnccs-i3s__button" type="button" data-inspector-action="reset"${editor.locked ? " disabled" : ""}>Reset transform</button>
+            </div>`;
+        this._bindObjectInspector(item);
+    }
+
+    _bindObjectInspector(item) {
+        let before = null;
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const finish = label => {
+            if (!before) return;
+            this.history.push(label, before, this._captureEditorSnapshot());
+            before = null;
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+            this._scheduleScenePreview(160);
+        };
+        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            control.addEventListener("input", () => {
+                const [key, rawIndex] = control.dataset.editorPath.split(".");
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                if (key === "object" && rawIndex === "transmission") item.transmission = clamp(value, 0, 1);
+                else if (key === "scale") item.transform.scale = clamp(value, 0.001, 1000);
+                else item.transform[key][Number(rawIndex)] = value;
+                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
+                    if (peer !== control) peer.value = String(value);
+                }
+                this.viewer.updateObject(item.object_id, key === "object"
+                    ? { transmission: item.transmission }
+                    : { transform: item.transform });
+                this._scheduleSceneSave(180);
+                this._scheduleStateSave(180);
+            });
+            control.addEventListener("change", () => finish("Edit transform"));
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-proxy-path]")) {
+            control.addEventListener("focus", begin);
+            control.addEventListener("input", () => {
+                const [key, rawIndex] = control.dataset.proxyPath.split(".");
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                item.collision_proxy = normalizedObjectEditorProperties(item).collision_proxy;
+                item.collision_proxy[key][Number(rawIndex)] = key === "size"
+                    ? Math.max(0.001, value)
+                    : value;
+                this.viewer.updateObject(item.object_id, { collision_proxy: item.collision_proxy });
+                this._scheduleSceneSave(180);
+            });
+            control.addEventListener("change", () => finish("Edit collision box"));
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-object-property]")) {
+            control.addEventListener("change", () => {
+                const original = this._captureEditorSnapshot();
+                const key = control.dataset.objectProperty;
+                if (key === "collision_proxy.mode") {
+                    item.collision_proxy = normalizedObjectEditorProperties(item).collision_proxy;
+                    item.collision_proxy.mode = control.value;
+                } else if (key === "collision_proxy.supports_objects") {
+                    item.collision_proxy = normalizedObjectEditorProperties(item).collision_proxy;
+                    item.collision_proxy.supports_objects = control.checked;
+                } else if (key === "locked") item.locked = control.checked;
+                else if (key === "level_id") {
+                    const previousLevel = this.scene.levels.find(level => level.level_id === item.level_id);
+                    const nextLevel = this.scene.levels.find(level => level.level_id === control.value);
+                    item.transform.position[1] += (Number(nextLevel?.elevation) || 0)
+                        - (Number(previousLevel?.elevation) || 0);
+                    item.level_id = control.value;
+                }
+                else if (key === "building_id") {
+                    item.building_id = this._validBuildingId(control.value);
+                    if (item.building_id) this.editorView.active_building_id = item.building_id;
+                }
+                else {
+                    item[key] = control.value;
+                    if (key === "light_transport" && control.value === "transmissive" && !item.transmission) {
+                        item.transmission = 1;
+                    }
+                }
+                this.viewer.updateObject(item.object_id, item);
+                this.history.push("Edit object properties", original, this._captureEditorSnapshot());
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                if (key === "building_id") this._syncToolbar();
+                if (["collision_proxy.mode", "light_transport", "locked"].includes(key)) this._renderInspector();
+            });
+        }
+        this.els.inspector.querySelector('[data-inspector-action="drop"]')?.addEventListener("click", () => {
+            this._dropSelectionToSurface(false);
+        });
+        this.els.inspector.querySelector('[data-inspector-action="reset"]')?.addEventListener("click", () => {
+            this._recordEditorCommand("Reset transform", () => {
+                const level = this.scene.levels.find(value => value.level_id === item.level_id);
+                const building = this.scene.architecture?.buildings?.find(
+                    value => value.building_id === item.building_id,
+                );
+                item.transform = {
+                    position: [
+                        Number(building?.position?.[0]) || 0,
+                        (Number(level?.elevation) || 0) + (Number(building?.position?.[1]) || 0),
+                        Number(building?.position?.[2]) || 0,
+                    ],
+                    rotation: [0, 0, 0],
+                    scale: 1,
+                };
+                this.viewer.updateObject(item.object_id, { transform: item.transform });
+                this._renderInspector();
+                this._scheduleSceneSave(0);
+            });
+        });
+    }
+
+    _materialOptions(selectedId = "") {
+        const materials = this.scene?.architecture?.materials || [];
+        return [
+            `<option value=""${selectedId ? "" : " selected"}>Default material</option>`,
+            ...materials.map(material => (
+                `<option value="${material.material_id}"${material.material_id === selectedId ? " selected" : ""}>${escapeHTML(material.name || "Material")}</option>`
+            )),
+        ].join("");
+    }
+
+    _materialControls(targetPath, selectedId = "", label = "Material") {
+        const material = this.scene?.architecture?.materials?.find(value => value.material_id === selectedId);
+        return `
+            <div class="vnccs-i3s__material-control">
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">${escapeHTML(label)}</span>
+                    <select class="vnccs-i3s__select" data-architecture-property="${targetPath}">${this._materialOptions(selectedId)}</select>
+                </label>
+                ${material ? `
+                    <details class="vnccs-i3s__material-details"><summary>Edit ${escapeHTML(material.name || "material")}</summary>
+                    <div class="vnccs-i3s__material-inline" data-material-id="${material.material_id}">
+                        <input type="color" data-material-property="color" value="${material.color || "#d7d2ca"}" aria-label="Material color" />
+                        <input class="vnccs-i3s__input" type="text" data-material-property="name" value="${escapeHTML(material.name || "Material")}" maxlength="80" aria-label="Material name" />
+                        <select class="vnccs-i3s__select" data-material-property="kind" aria-label="Material type"><option value="standard"${material.kind !== "glass" ? " selected" : ""}>Standard</option><option value="glass"${material.kind === "glass" ? " selected" : ""}>Glass</option></select>
+                        <label>Rough<input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-property="roughness" value="${material.roughness ?? 0.78}" /></label>
+                        <label>Metal<input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-property="metalness" value="${material.metalness ?? 0}" /></label>
+                        <label>Opacity<input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-property="opacity" value="${material.opacity ?? 1}" /></label>
+                        <label>UV X<input class="vnccs-i3s__input" type="number" min="0.001" max="1000" step="0.01" data-material-property="uv_scale.0" value="${material.uv_scale?.[0] ?? 1}" /></label>
+                        <label>UV Y<input class="vnccs-i3s__input" type="number" min="0.001" max="1000" step="0.01" data-material-property="uv_scale.1" value="${material.uv_scale?.[1] ?? 1}" /></label>
+                        <label>UV °<input class="vnccs-i3s__input" type="number" step="0.01" data-material-property="uv_rotation" value="${material.uv_rotation ?? 0}" /></label>
+                        ${material.kind === "glass" ? `<label>Transmit<input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-property="transmission" value="${material.transmission ?? 1}" /></label><label>IOR<input class="vnccs-i3s__input" type="number" min="1" max="2.5" step="0.01" data-material-property="ior" value="${material.ior ?? 1.5}" /></label>` : ""}
+                    </div></details>` : ""}
+            </div>`;
+    }
+
+    _materialActions(defaultTarget) {
+        return `
+            <input data-material-upload-input type="file" accept="image/jpeg,image/png,image/webp" hidden />
+            <div class="vnccs-i3s__inspector-actions">
+                <button class="vnccs-i3s__button" type="button" data-material-action="solid" data-material-target="${defaultTarget}">New solid material</button>
+                <button class="vnccs-i3s__button" type="button" data-material-action="upload" data-material-target="${defaultTarget}">Upload texture</button>
+            </div>`;
+    }
+
+    async _uploadTextureMaterial(file) {
+        if (!this.sceneId || !file) return null;
+        const sceneId = this.sceneId;
+        if ((this.scene?.architecture?.materials?.length || 0) >= 512) {
+            throw new Error("The scene material limit has been reached.");
+        }
+        if (
+            !["image/jpeg", "image/png", "image/webp"].includes(file.type)
+            || file.size > MAX_TEXTURE_BYTES
+        ) {
+            throw new Error("Texture must be a JPEG, PNG, or WebP image up to 32 MB.");
+        }
+        // Resolve any queued metadata edit first so the texture mutation and
+        // its following material PATCH share a current optimistic revision.
+        await this._saveSceneNow({ showError: false });
+        if (!this.scene || this.sceneId !== sceneId) {
+            throw new Error("The active scene changed before the texture upload started.");
+        }
+        const form = new FormData();
+        form.append("image", file, file.name);
+        const result = await this._fetchJSON(ENDPOINTS.textures(sceneId), {
+            method: "POST",
+            body: form,
+        });
+        if (!this.scene || this.sceneId !== sceneId) {
+            throw new Error("The active scene changed while the texture was uploading.");
+        }
+        this.scene.textures = result.scene?.textures || this.scene.textures || [];
+        this.scene.edit_revision = result.scene?.edit_revision ?? this.scene.edit_revision;
+        const material = {
+            material_id: factoryId(),
+            name: String(file.name || "Texture").replace(/\.[^.]+$/, "").slice(0, 80),
+            kind: "standard",
+            color: "#ffffff",
+            roughness: 0.78,
+            metalness: 0,
+            opacity: 1,
+            transmission: 0,
+            ior: 1.5,
+            uv_scale: [1, 1],
+            uv_rotation: 0,
+            texture_id: result.texture.texture_id,
+        };
+        this.scene.architecture.materials.push(material);
+        return material;
+    }
+
+    _renderArchitectureInspector(item) {
+        const type = this.selectedArchitecture?.type || "architecture";
+        const linkedRoom = type === "wall"
+            ? this.scene.architecture.rooms.find(room => room.wall_ids?.includes(item.wall_id))
+            : null;
+        this.els.inspectorKind.textContent = type[0].toUpperCase() + type.slice(1);
+        if (type === "building") {
+            const onlyBuilding = this.scene.architecture.buildings.length <= 1;
+            this.els.inspector.innerHTML = `
+                <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Building")}</div>
+                <div class="vnccs-i3s__hint">Moves and rotates the structure together with every assigned Gaussian object, saved camera, and local light.</div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Building")}" maxlength="80" /></label>
+                <div class="vnccs-i3s__inspector-group"><b>Building transform</b>
+                    ${this._numericControl("X", "position.0", item.position?.[0], { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Y", "position.1", item.position?.[1], { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Z", "position.2", item.position?.[2], { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Rotation Y", "rotation_y", item.rotation_y, { minimum: -36000, maximum: 36000, step: 0.01 })}
+                </div>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Building visible</label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="locked"${item.locked ? " checked" : ""} /> Lock building transform</label>
+                <div class="vnccs-i3s__hint">${onlyBuilding
+                    ? "Delete this Building and its architecture. Assigned models, cameras, paths, and lights will remain in the scene without a Building assignment."
+                    : "Delete this Building and its architecture. Assigned models, cameras, paths, and lights will move to another Building."}</div>
+                <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete">Delete building</button>`;
+        } else if (type === "level") {
+            this.els.inspector.innerHTML = `
+                <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Floor level")}</div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Floor level")}" maxlength="80" /></label>
+                <div class="vnccs-i3s__inspector-group"><b>Level geometry · m</b>
+                    ${this._numericControl("Elevation", "elevation", item.elevation, { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Height", "height", item.height, { minimum: 0.1, maximum: 1000, step: 0.01 })}
+                    ${this._numericControl("Slab", "slab_thickness", item.slab_thickness, { minimum: 0, maximum: 100, step: 0.01 })}
+                </div>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Level visible</label>
+                <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete"${this.scene.levels.length <= 1 ? " disabled" : ""}>Delete level and its contents</button>`;
+        } else if (type === "wall") {
+            this.els.inspector.innerHTML = `
+                <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Wall")}</div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Wall")}" maxlength="80" /></label>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level${linkedRoom ? " · inherited from room" : ""}</span><select class="vnccs-i3s__select" data-architecture-property="level_id"${linkedRoom ? " disabled" : ""}>
+                    ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
+                </select></label>
+                <div class="vnccs-i3s__inspector-group"><b>Geometry · building-local m</b>
+                    ${this._numericControl("Start X", "start.0", item.start[0], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
+                    ${this._numericControl("Start Z", "start.1", item.start[1], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
+                    ${this._numericControl("End X", "end.0", item.end[0], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
+                    ${this._numericControl("End Z", "end.1", item.end[1], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
+                    ${this._numericControl("Height", "height", item.height, {
+                        minimum: 0.05,
+                        maximum: 1000,
+                        sliderMinimum: 0.05,
+                        sliderMaximum: 10,
+                        step: 0.01,
+                    })}
+                    ${this._numericControl("Thickness", "thickness", item.thickness, {
+                        minimum: 0.01,
+                        maximum: 10,
+                        sliderMinimum: 0.01,
+                        sliderMaximum: 1,
+                        step: 0.01,
+                    })}
+                    ${this._numericControl("Base offset", "elevation_offset", item.elevation_offset, {
+                        minimum: -1000,
+                        maximum: 1000,
+                        sliderMinimum: -5,
+                        sliderMaximum: 5,
+                        step: 0.01,
+                    })}
+                </div>
+                <div class="vnccs-i3s__inspector-group"><b>Surfaces</b>
+                    ${this._materialControls("material_left", item.material_left, "Left side")}
+                    ${this._materialControls("material_right", item.material_right, "Right side")}
+                    ${this._materialControls("material_caps", item.material_caps, "Edges")}
+                    ${this._materialActions("material_left")}
+                </div>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Wall visible</label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="locked"${item.locked ? " checked" : ""} /> Lock wall</label>
+                <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete">Delete wall</button>`;
+        } else if (type === "opening") {
+            const hostWall = this.scene.architecture.walls.find(wall => wall.wall_id === item.wall_id);
+            const limits = this._openingControlLimits(item, hostWall);
+            const hostLength = limits.wallLength;
+            this.els.inspector.innerHTML = `
+                <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Opening")}</div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Opening")}" maxlength="80" /></label>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Type</span><select class="vnccs-i3s__select" data-architecture-property="kind">
+                    <option value="empty"${item.kind === "empty" ? " selected" : ""}>Empty opening</option>
+                    <option value="door"${item.kind === "door" ? " selected" : ""}>Door</option>
+                    <option value="window"${item.kind === "window" ? " selected" : ""}>Window / glass</option>
+                </select></label>
+                <div class="vnccs-i3s__hint">Host wall · ${this._formatControlNumber(limits.wallLength, 0.01)} m long · ${this._formatControlNumber(limits.wallHeight, 0.01)} m high</div>
+                ${this._numericControl("Center from wall start · m", "opening_offset_m", Number(item.offset) * hostLength, {
+                    minimum: limits.centerMinimum,
+                    maximum: limits.centerMaximum,
+                    step: 0.01,
+                    disabled: Math.abs(limits.centerMaximum - limits.centerMinimum) < 0.01,
+                })}
+                ${this._numericControl("Width", "width", item.width, { minimum: 0.05, maximum: limits.widthMaximum, step: 0.01 })}
+                ${this._numericControl("Height", "height", item.height, { minimum: 0.05, maximum: limits.wallHeight, step: 0.01 })}
+                ${item.kind === "door"
+                    ? this._numericControl("Sill", "sill_height", 0, { minimum: 0, maximum: 0, step: 0.01, range: false, disabled: true })
+                    : this._numericControl("Sill", "sill_height", item.sill_height, { minimum: 0, maximum: limits.sillMaximum, step: 0.01 })}
+                ${this._materialControls("material_id", item.material_id, "Glass / frame")}
+                ${this._materialActions("material_id")}
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Opening visible</label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="locked"${item.locked ? " checked" : ""} /> Lock opening</label>
+                <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete">Delete opening</button>`;
+        } else {
+            const roomBounds = this._roomBounds(item);
+            const linkedRoomWalls = (this.scene.architecture.walls || []).filter(
+                wall => item.wall_ids?.includes(wall.wall_id),
+            );
+            const wallThickness = linkedRoomWalls.length
+                ? linkedRoomWalls.reduce(
+                    (total, wall) => total + (Number(wall.thickness) || 0.12),
+                    0,
+                ) / linkedRoomWalls.length
+                : 0.12;
+            const wallMaterial = linkedRoomWalls[0]?.material_left || "";
+            this.els.inspector.innerHTML = `
+                <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Room")}</div>
+                <div class="vnccs-i3s__hint">The room is one object. Walls, floor, and ceiling move and resize together.</div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Room")}" maxlength="80" /></label>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-architecture-property="level_id">
+                    ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
+                </select></label>
+                <div class="vnccs-i3s__inspector-group"><b>Room envelope · building-local m</b>
+                    ${this._numericControl("Position X", "room_origin.0", roomBounds.center[0], { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Position Z", "room_origin.1", roomBounds.center[1], { minimum: -10000, maximum: 10000, step: 0.01 })}
+                    ${this._numericControl("Width", "room_size.0", roomBounds.size[0], { minimum: 0.05, maximum: 10000, sliderMinimum: 0.05, sliderMaximum: Math.max(20, roomBounds.size[0]), step: 0.01 })}
+                    ${this._numericControl("Depth", "room_size.1", roomBounds.size[1], { minimum: 0.05, maximum: 10000, sliderMinimum: 0.05, sliderMaximum: Math.max(20, roomBounds.size[1]), step: 0.01 })}
+                    ${this._numericControl("Height", "ceiling.height", item.ceiling?.height, { minimum: 0.05, maximum: 1000, sliderMinimum: 0.05, sliderMaximum: 10, step: 0.01 })}
+                    ${this._numericControl("Wall thickness", "room_wall_thickness", wallThickness, { minimum: 0.01, maximum: 10, sliderMinimum: 0.01, sliderMaximum: 1, step: 0.01 })}
+                    ${this._numericControl("Floor slab", "floor.thickness", item.floor?.thickness, { minimum: 0, maximum: 10, sliderMinimum: 0, sliderMaximum: 1, step: 0.01 })}
+                    ${this._numericControl("Ceiling slab", "ceiling.thickness", item.ceiling?.thickness, { minimum: 0, maximum: 10, sliderMinimum: 0, sliderMaximum: 1, step: 0.01 })}
+                </div>
+                ${this._materialControls("room_wall_material", wallMaterial, "Wall material")}
+                ${this._materialActions("room_wall_material")}
+                ${this._materialControls("floor.material_id", item.floor?.material_id, "Floor material")}
+                ${this._materialControls("ceiling.material_id", item.ceiling?.material_id, "Ceiling material")}
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Room visible</label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="locked"${item.locked ? " checked" : ""} /> Lock room</label>
+                <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete">Delete room and perimeter walls</button>`;
+        }
+        const ownerBuilding = type === "opening"
+            ? this._buildingForItem(this.scene.architecture.walls.find(wall => wall.wall_id === item.wall_id))
+            : this._buildingForItem(item);
+        const linkedWallLocked = type === "room" && this.scene.architecture.walls.some(
+            wall => item.wall_ids?.includes(wall.wall_id) && wall.locked,
+        );
+        if ((item.locked || ownerBuilding?.locked || linkedWallLocked) && type !== "level") {
+            for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+                control.disabled = true;
+            }
+            for (const control of this.els.inspector.querySelectorAll("[data-architecture-property]")) {
+                if (!["locked", "visible", "name"].includes(control.dataset.architectureProperty)) {
+                    control.disabled = true;
+                }
+            }
+        }
+        this._bindArchitectureInspector(item, type);
+    }
+
+    _bindArchitectureInspector(item, type) {
+        let before = null;
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const applyPath = (path, value) => {
+            if (type === "room" && path === "room_wall_material") {
+                const linked = new Set(item.wall_ids || []);
+                for (const wall of this.scene.architecture.walls || []) {
+                    if (!linked.has(wall.wall_id)) continue;
+                    wall.material_left = value;
+                    wall.material_right = value;
+                    wall.material_caps = value;
+                }
+                return;
+            }
+            const parts = path.split(".");
+            let target = item;
+            while (parts.length > 1) target = target[parts.shift()];
+            target[parts[0]] = value;
+        };
+        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            control.addEventListener("input", () => {
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                const path = control.dataset.editorPath;
+                if (type === "building" && (path.startsWith("position.") || path === "rotation_y")) {
+                    const nextPosition = [...item.position];
+                    if (path.startsWith("position.")) nextPosition[Number(path.split(".")[1])] = value;
+                    this._applyBuildingTransform(
+                        item,
+                        nextPosition,
+                        path === "rotation_y" ? value : item.rotation_y,
+                    );
+                } else if (type === "opening" && path === "opening_offset_m") {
+                    const wall = this.scene.architecture.walls.find(value => value.wall_id === item.wall_id);
+                    const length = Math.hypot(
+                        Number(wall?.end?.[0]) - Number(wall?.start?.[0]),
+                        Number(wall?.end?.[1]) - Number(wall?.start?.[1]),
+                    );
+                    if (length > 1e-9) item.offset = clamp(value / length, 0, 1);
+                } else if (type === "level" && path === "elevation") {
+                    const delta = value - (Number(item.elevation) || 0);
+                    item.elevation = value;
+                    if (Math.abs(delta) > 1e-12) {
+                        for (const object of this.scene.objects || []) {
+                            if (object.level_id !== item.level_id) continue;
+                            object.transform.position[1] += delta;
+                            this.viewer.updateObject(object.object_id, { transform: object.transform });
+                        }
+                        for (const camera of this.scene.cameras || []) {
+                            if (camera.level_id !== item.level_id) continue;
+                            camera.position[1] += delta;
+                            camera.target[1] += delta;
+                        }
+                        for (const light of this.lighting.lights || []) {
+                            if (light.level_id !== item.level_id) continue;
+                            light.position[1] += delta;
+                            light.target[1] += delta;
+                        }
+                        this.viewer.setCameraMarkers(this.scene.cameras || []);
+                        this._commitLighting();
+                    }
+                } else if (type === "room" && path.startsWith("room_origin.")) {
+                    const axis = Number(path.split(".")[1]);
+                    const center = this._roomBounds(item).center;
+                    const delta = [0, 0];
+                    delta[axis] = value - center[axis];
+                    item.polygon = item.polygon.map(point => [point[0] + delta[0], point[1] + delta[1]]);
+                    this._syncRoomPerimeter(item);
+                } else if (type === "room" && path.startsWith("room_size.")) {
+                    const axis = Number(path.split(".")[1]);
+                    const bounds = this._roomBounds(item);
+                    const currentSize = Math.max(0.001, bounds.size[axis]);
+                    const targetSize = Math.max(0.05, value);
+                    const scale = targetSize / currentSize;
+                    item.polygon = item.polygon.map(point => {
+                        const next = [...point];
+                        next[axis] = bounds.center[axis] + (next[axis] - bounds.center[axis]) * scale;
+                        return next;
+                    });
+                    this._syncRoomPerimeter(item);
+                } else if (type === "room" && path === "room_wall_thickness") {
+                    const thickness = clamp(value, 0.01, 10);
+                    const linked = new Set(item.wall_ids || []);
+                    for (const wall of this.scene.architecture.walls || []) {
+                        if (linked.has(wall.wall_id)) wall.thickness = thickness;
+                    }
+                } else {
+                    applyPath(path, value);
+                }
+                if (type === "room") this._syncRoomPerimeter(item);
+                if (type === "wall" && /^(start|end)\./.test(control.dataset.editorPath)) {
+                    this._syncRoomsForWall(item);
+                }
+                if (type === "opening") {
+                    const wall = this.scene.architecture.walls.find(value => value.wall_id === item.wall_id);
+                    if (wall) {
+                        item.height = clamp(Number(item.height) || 0.05, 0.05, wall.height);
+                        item.sill_height = clamp(Number(item.sill_height) || 0, 0, Math.max(0, wall.height - item.height));
+                    }
+                    const fitted = wall && this._fitOpeningOnWall(wall, item.offset, item.width, item.opening_id);
+                    const fallback = fitted || (wall && this._fitOpeningOnWall(wall, item.offset, 0.05, item.opening_id));
+                    if (fallback) {
+                        item.offset = fallback.offset;
+                        item.width = fallback.width;
+                    }
+                }
+                const appliedValue = type === "room" && path.startsWith("room_origin.")
+                    ? this._roomBounds(item).center[Number(path.split(".")[1])]
+                    : type === "room" && path.startsWith("room_size.")
+                        ? this._roomBounds(item).size[Number(path.split(".")[1])]
+                        : type === "room" && path === "room_wall_thickness"
+                            ? this.scene.architecture.walls.find(
+                                wall => item.wall_ids?.includes(wall.wall_id),
+                            )?.thickness
+                            : type === "opening" && path === "opening_offset_m"
+                    ? (() => {
+                        const wall = this.scene.architecture.walls.find(value => value.wall_id === item.wall_id);
+                        const length = Math.hypot(
+                            Number(wall?.end?.[0]) - Number(wall?.start?.[0]),
+                            Number(wall?.end?.[1]) - Number(wall?.start?.[1]),
+                        );
+                        return item.offset * length;
+                    })()
+                                : control.dataset.editorPath.split(".").reduce(
+                                    (target, key) => target?.[key],
+                                    item,
+                                );
+                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
+                    const peerValue = Number.isFinite(Number(appliedValue)) ? appliedValue : value;
+                    peer.value = this._formatControlNumber(peerValue, peer.step);
+                }
+                this._queueSelectedArchitecturePreview();
+            });
+            control.addEventListener("change", () => {
+                this._queueSelectedArchitecturePreview({ flush: true });
+                if (before) this.history.push("Edit architecture", before, this._captureEditorSnapshot());
+                before = null;
+                void this._commitArchitecture({ targeted: type !== "room" });
+                if (type === "opening") this._renderInspector();
+            });
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-architecture-property]")) {
+            control.addEventListener("change", () => {
+                const original = this._captureEditorSnapshot();
+                const property = control.dataset.architectureProperty;
+                const propertyValue = control.type === "checkbox" ? control.checked : control.value;
+                const previousValue = property.split(".").reduce(
+                    (target, key) => target?.[key],
+                    item,
+                );
+                applyPath(property, propertyValue);
+                if (property === "kind" && type === "opening" && previousValue !== propertyValue) {
+                    const wall = this.scene.architecture.walls.find(value => value.wall_id === item.wall_id);
+                    if (propertyValue === "door") {
+                        item.sill_height = 0;
+                        item.height = Math.min(2, Number(wall?.height) || 2);
+                    } else if (propertyValue === "window" && previousValue === "door") {
+                        item.height = Math.min(1.2, Number(wall?.height) || 1.2);
+                        item.sill_height = Math.min(0.9, Math.max(0, (Number(wall?.height) || 2.8) - item.height));
+                    }
+                }
+                if (property === "level_id" && type === "room") {
+                    this._syncRoomPerimeter(item);
+                }
+                if (type === "room" && property === "visible") {
+                    item.floor = { ...(item.floor || {}), enabled: propertyValue };
+                    item.ceiling = { ...(item.ceiling || {}), enabled: propertyValue };
+                }
+                if (type === "room" && ["visible", "locked"].includes(property)) {
+                    this._syncRoomPerimeter(item);
+                }
+                this.history.push("Edit architecture", original, this._captureEditorSnapshot());
+                void this._commitArchitecture({ targeted: type !== "room" });
+                if (property === "level_id") {
+                    this.editorView.active_level_id = propertyValue;
+                    this.viewer.setActiveLevel(propertyValue);
+                    this._syncToolbar();
+                }
+                if (["locked", "kind"].includes(property)) this._renderInspector();
+            });
+        }
+        let materialBefore = null;
+        for (const control of this.els.inspector.querySelectorAll("[data-material-property]")) {
+            const materialId = control.closest("[data-material-id]")?.dataset.materialId;
+            const material = this.scene.architecture.materials.find(value => value.material_id === materialId);
+            if (!material) continue;
+            const beginMaterial = () => { materialBefore ||= this._captureEditorSnapshot(); };
+            control.addEventListener("pointerdown", beginMaterial);
+            control.addEventListener("focus", beginMaterial);
+            control.addEventListener("input", () => {
+                const parts = control.dataset.materialProperty.split(".");
+                let target = material;
+                while (parts.length > 1) target = target[parts.shift()];
+                target[parts[0]] = control.type === "number" ? Number(control.value) : control.value;
+                if (
+                    control.dataset.materialProperty === "kind"
+                    && control.value === "glass"
+                    && !(Number(material.transmission) > 0)
+                ) material.transmission = 1;
+                this._previewArchitectureMaterials();
+            });
+            control.addEventListener("change", () => {
+                if (materialBefore) {
+                    this.history.push("Edit material", materialBefore, this._captureEditorSnapshot());
+                    materialBefore = null;
+                }
+                void this._commitArchitecture();
+                if (control.dataset.materialProperty === "kind") this._renderInspector();
+            });
+        }
+        const uploadInput = this.els.inspector.querySelector("[data-material-upload-input]");
+        let uploadTarget = "";
+        for (const control of this.els.inspector.querySelectorAll("[data-material-action]")) {
+            control.addEventListener("click", () => {
+                const target = control.dataset.materialTarget;
+                if (control.dataset.materialAction === "upload") {
+                    uploadTarget = target;
+                    uploadInput?.click();
+                    return;
+                }
+                this._recordEditorCommand("Add material", () => {
+                    if (this.scene.architecture.materials.length >= 512) {
+                        this.toast("The scene material limit has been reached.", "error");
+                        return;
+                    }
+                    const material = {
+                        material_id: factoryId(),
+                        name: `Material ${this.scene.architecture.materials.length + 1}`,
+                        kind: "standard",
+                        color: "#d7d2ca",
+                        roughness: 0.78,
+                        metalness: 0,
+                        opacity: 1,
+                        transmission: 0,
+                        ior: 1.5,
+                        uv_scale: [1, 1],
+                        uv_rotation: 0,
+                    };
+                    this.scene.architecture.materials.push(material);
+                    applyPath(target, material.material_id);
+                    void this._commitArchitecture();
+                    this._renderInspector();
+                });
+            });
+        }
+        uploadInput?.addEventListener("change", async () => {
+            const file = uploadInput.files?.[0];
+            uploadInput.value = "";
+            if (!file || !uploadTarget) return;
+            const beforeUpload = this._captureEditorSnapshot();
+            try {
+                const material = await this._uploadTextureMaterial(file);
+                if (!material) return;
+                applyPath(uploadTarget, material.material_id);
+                this.history.push("Add textured material", beforeUpload, this._captureEditorSnapshot());
+                await this._commitArchitecture();
+                this._renderInspector();
+                this.toast("Texture material added.", "success");
+            } catch (error) {
+                this._showError("Texture upload failed", error);
+            }
+        });
+        this.els.inspector.querySelector('[data-inspector-action="delete"]')?.addEventListener("click", () => {
+            const performDeletion = () => this._recordEditorCommand("Delete architecture", () => {
+                const architecture = this.scene.architecture;
+                if (type === "level") {
+                    if (this.scene.levels.length <= 1) return;
+                    const removedElevation = Number(item.elevation) || 0;
+                    const wallIds = new Set(architecture.walls.filter(value => value.level_id === item.level_id).map(value => value.wall_id));
+                    architecture.walls = architecture.walls.filter(value => value.level_id !== item.level_id);
+                    architecture.rooms = architecture.rooms.filter(value => value.level_id !== item.level_id);
+                    architecture.openings = architecture.openings.filter(value => !wallIds.has(value.wall_id));
+                    this.scene.levels = this.scene.levels.filter(value => value.level_id !== item.level_id);
+                    this.editorView.active_level_id = this.scene.levels[0].level_id;
+                    const fallbackElevation = Number(this.scene.levels[0].elevation) || 0;
+                    const elevationDelta = fallbackElevation - removedElevation;
+                    for (const object of this.scene.objects || []) {
+                        if (object.level_id !== item.level_id) continue;
+                        object.level_id = this.editorView.active_level_id;
+                        object.transform.position[1] += elevationDelta;
+                    }
+                    for (const camera of this.scene.cameras || []) {
+                        if (camera.level_id !== item.level_id) continue;
+                        camera.level_id = this.editorView.active_level_id;
+                        camera.position[1] += elevationDelta;
+                        camera.target[1] += elevationDelta;
+                    }
+                    for (const light of this.lighting.lights || []) {
+                        if (light.level_id !== item.level_id) continue;
+                        light.level_id = this.editorView.active_level_id;
+                        light.position[1] += elevationDelta;
+                        light.target[1] += elevationDelta;
+                    }
+                } else if (type === "building") {
+                    const wallIds = new Set(architecture.walls
+                        .filter(value => value.building_id === item.building_id)
+                        .map(value => value.wall_id));
+                    architecture.walls = architecture.walls.filter(value => value.building_id !== item.building_id);
+                    architecture.rooms = architecture.rooms.filter(value => value.building_id !== item.building_id);
+                    architecture.openings = architecture.openings.filter(value => !wallIds.has(value.wall_id));
+                    architecture.buildings = architecture.buildings.filter(value => value.building_id !== item.building_id);
+                    const fallbackBuildingId = architecture.buildings[0]?.building_id || "";
+                    this.editorView.active_building_id = fallbackBuildingId;
+                    for (const object of this.scene.objects || []) {
+                        if (object.building_id === item.building_id) object.building_id = fallbackBuildingId;
+                    }
+                    for (const camera of this.scene.cameras || []) {
+                        if (camera.building_id === item.building_id) camera.building_id = fallbackBuildingId;
+                    }
+                    for (const light of this.lighting.lights || []) {
+                        if (light.building_id === item.building_id) light.building_id = fallbackBuildingId;
+                    }
+                    for (const track of this.scene.camera_tracks || []) {
+                        if (track.building_id === item.building_id) track.building_id = fallbackBuildingId;
+                    }
+                } else if (type === "wall") {
+                    architecture.walls = architecture.walls.filter(value => value.wall_id !== item.wall_id);
+                    architecture.openings = architecture.openings.filter(value => value.wall_id !== item.wall_id);
+                    architecture.rooms = architecture.rooms.filter(
+                        room => !room.wall_ids?.includes(item.wall_id),
+                    );
+                } else if (type === "opening") {
+                    architecture.openings = architecture.openings.filter(value => value.opening_id !== item.opening_id);
+                } else {
+                    const perimeter = new Set(item.wall_ids || []);
+                    architecture.walls = architecture.walls.filter(value => !perimeter.has(value.wall_id));
+                    architecture.openings = architecture.openings.filter(value => !perimeter.has(value.wall_id));
+                    architecture.rooms = architecture.rooms.filter(value => value.room_id !== item.room_id);
+                }
+                this.selectedArchitecture = null;
+                void this._commitArchitecture();
+            });
+            if (type === "building") {
+                this._confirmBuildingDeletion(item, performDeletion);
+            } else {
+                performDeletion();
+            }
+        });
+    }
+
+    _confirmBuildingDeletion(building, onConfirm) {
+        if (!building?.building_id || typeof onConfirm !== "function") return;
+        const architecture = this.scene?.architecture;
+        if (!architecture) return;
+        const onlyBuilding = architecture.buildings.length <= 1;
+        const wallIds = new Set(architecture.walls
+            .filter(value => value.building_id === building.building_id)
+            .map(value => value.wall_id));
+        const wallCount = wallIds.size;
+        const roomCount = architecture.rooms.filter(
+            value => value.building_id === building.building_id,
+        ).length;
+        const openingCount = architecture.openings.filter(
+            value => wallIds.has(value.wall_id),
+        ).length;
+        const fallback = !onlyBuilding
+            ? architecture.buildings.find(value => value.building_id !== building.building_id)
+            : null;
+        const body = element("div");
+        body.append(
+            element(
+                "div",
+                "vnccs-i3s__failure-summary",
+                `Delete “${building.name || "Building"}”?`,
+            ),
+            element(
+                "div",
+                "vnccs-i3s__hint",
+                `${wallCount} wall${wallCount === 1 ? "" : "s"}, ${roomCount} room${roomCount === 1 ? "" : "s"}, and ${openingCount} opening${openingCount === 1 ? "" : "s"} will be removed.`,
+            ),
+            element(
+                "div",
+                "vnccs-i3s__hint",
+                onlyBuilding
+                    ? "Assigned models, cameras, paths, and lights will remain in the scene without a Building assignment. No replacement Building will be created. You can undo this action."
+                    : `Assigned models, cameras, paths, and lights will move to “${fallback?.name || "another Building"}”. You can undo this action.`,
+            ),
+        );
+        const cancel = button("vnccs-i3s__button", "Cancel");
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--danger",
+            "Delete building",
+            "trash",
+        );
+        cancel.addEventListener("click", () => this.closeModal());
+        remove.addEventListener("click", () => {
+            this.closeModal();
+            onConfirm();
+            this.toast("Building deleted.", "success");
+        });
+        this.openModal({
+            title: "Delete building",
+            body,
+            actions: [cancel, remove],
+            initialFocus: cancel,
+        });
+    }
+
+    _activeCameraTrack() {
+        return (this.scene?.camera_tracks || []).find(track => track.track_id === this.activeCameraTrackId)
+            || this.scene?.camera_tracks?.[0]
+            || null;
+    }
+
+    _addCameraTrack() {
+        if (!this.scene) return;
+        if ((this.scene.camera_tracks?.length || 0) >= 16) {
+            this.toast("A scene can contain up to 16 camera paths.", "error");
+            return;
+        }
+        this._recordEditorCommand("Add camera path", () => {
+            const track = {
+                track_id: factoryId(),
+                name: `Path ${(this.scene.camera_tracks?.length || 0) + 1}`,
+                building_id: this._activeBuilding()?.building_id || "",
+                duration: 5,
+                fps: 30,
+                interpolation: "catmullrom",
+                constant_speed: true,
+                loop: false,
+                keyframes: [],
+            };
+            this.scene.camera_tracks = [...(this.scene.camera_tracks || []), track];
+            this.activeCameraTrackId = track.track_id;
+            this._renderCameraTracks();
+            this._scheduleSceneSave(0);
+        });
+    }
+
+    _deleteCameraTrack() {
+        const track = this._activeCameraTrack();
+        if (!track) return;
+        const before = this._captureEditorSnapshot();
+        if (this.cameraPlayback) this._toggleCameraPlayback();
+        this.scene.camera_tracks = (this.scene.camera_tracks || []).filter(
+            value => value.track_id !== track.track_id,
+        );
+        this.activeCameraTrackId = this.scene.camera_tracks[0]?.track_id || "";
+        this.selectedCameraKeyframeId = "";
+        this.history.push("Delete camera path", before, this._captureEditorSnapshot());
+        this._renderCameraTracks();
+        this._renderInspector();
+        this._scheduleSceneSave(0);
+        this._syncToolbar();
+    }
+
+    _addCameraKeyframe(cameraState = null) {
+        const track = this._activeCameraTrack();
+        if (!track || !this.viewer) return;
+        const total = (this.scene?.camera_tracks || []).reduce(
+            (count, value) => count + (value.keyframes?.length || 0),
+            0,
+        );
+        if (total >= 1000) {
+            this.toast("The scene camera-point limit has been reached.", "error");
+            return;
+        }
+        this._recordEditorCommand("Add camera point", () => {
+            let time = track.keyframes.length
+                ? Number(track.keyframes.at(-1).time) + 1
+                : 0;
+            if (time > track.duration && time <= 86400) track.duration = time;
+            time = Math.min(track.duration, time);
+            track.keyframes.push({
+                keyframe_id: factoryId(),
+                time,
+                ...cameraPoseFromLegacy(cameraState || this.viewer.getCameraState()),
+                easing: "smooth",
+            });
+            track.keyframes.sort((left, right) => left.time - right.time);
+            this._renderCameraTracks();
+            this._scheduleSceneSave(0);
+        });
+    }
+
+    _renderCameraTracks() {
+        if (!this.els?.cameraTrackSelect) return;
+        const tracks = Array.isArray(this.scene?.camera_tracks) ? this.scene.camera_tracks : [];
+        if (!tracks.some(track => track.track_id === this.activeCameraTrackId)) {
+            this.activeCameraTrackId = tracks[0]?.track_id || "";
+        }
+        this.els.cameraTrackSelect.replaceChildren();
+        if (!tracks.length) {
+            const option = element("option", "", "No paths");
+            option.value = "";
+            this.els.cameraTrackSelect.appendChild(option);
+        } else {
+            for (const track of tracks) {
+                const option = element("option", "", track.name || "Camera path");
+                option.value = track.track_id;
+                option.selected = track.track_id === this.activeCameraTrackId;
+                this.els.cameraTrackSelect.appendChild(option);
+            }
+        }
+        const active = this._activeCameraTrack();
+        this.els.cameraTrackDelete.disabled = !active;
+        this.els.cameraTrackName.disabled = !active;
+        this.els.cameraTrackName.value = active?.name || "";
+        this.els.cameraTrackBuilding.disabled = !active;
+        const unassignedBuilding = element("option", "", "No building");
+        unassignedBuilding.value = "";
+        unassignedBuilding.selected = !this._validBuildingId(active?.building_id);
+        this.els.cameraTrackBuilding.replaceChildren(unassignedBuilding, ...(this.scene?.architecture?.buildings || []).map(building => {
+            const option = element("option", "", building.name || "Building");
+            option.value = building.building_id;
+            option.selected = building.building_id === this._validBuildingId(active?.building_id);
+            return option;
+        }));
+        this.els.cameraKeyframeAdd.disabled = !active;
+        this.els.cameraTrackPlay.disabled = !active || active.keyframes.length < 2;
+        this.els.cameraTrackTime.max = String(active?.duration || 5);
+        this.els.cameraTrackMeta.textContent = active
+            ? `${active.keyframes.length} points · ${active.duration}s · ${active.fps} fps`
+            : "No camera path";
+        this.els.cameraKeyframes.replaceChildren();
+        if (!active?.keyframes?.length) {
+            this.els.cameraKeyframes.appendChild(element("div", "vnccs-i3s__camera-keyframe-empty", "Add at least two points."));
+            return;
+        }
+        if (!active.keyframes.some(frame => frame.keyframe_id === this.selectedCameraKeyframeId)) {
+            this.selectedCameraKeyframeId = "";
+        }
+        for (const [index, frame] of active.keyframes.entries()) {
+            const row = element(
+                "button",
+                `vnccs-i3s__camera-keyframe${frame.keyframe_id === this.selectedCameraKeyframeId ? " is-selected" : ""}`,
+            );
+            row.type = "button";
+            row.innerHTML = `<span>${index + 1}</span><b>Point ${index + 1}</b><time>${Number(frame.time).toFixed(2)}s</time>`;
+            row.addEventListener("click", () => {
+                this.editorView.active_building_id = this._validBuildingId(active.building_id);
+                this.selectedCameraKeyframeId = frame.keyframe_id;
+                this.selectedCameraId = "";
+                this.selectedArchitecture = null;
+                this.viewer.setArchitectureSelection(null);
+                this.selectedObjectId = "";
+                this.selectedObjectIds.clear();
+                this.viewer.select("");
+                this.viewer.setCameraState(legacyCameraFromPose(frame), { emit: false });
+                this.els.cameraTrackTime.value = String(frame.time);
+                this._renderCameraTracks();
+                this._renderInspector();
+                this._setWorkspaceTab("right", "inspector");
+                this._syncToolbar();
+                this._scheduleStateSave(0);
+            });
+            this.els.cameraKeyframes.appendChild(row);
+        }
+    }
+
+    _setCameraTrackTime(time, evaluator = null) {
+        const track = this._activeCameraTrack();
+        if (!track || track.keyframes.length < 1) return;
+        const pose = (evaluator || new FactoryCameraPath(track)).evaluate(time);
+        this.viewer.setCameraState(legacyCameraFromPose(pose), { emit: false });
+        this._syncViewportCameraHUD(this.viewer.getCameraState());
+        this.els.cameraTrackTime.value = String(time);
+        this.els.cameraTrackMeta.textContent = `${Number(time).toFixed(2)}s · ${track.keyframes.length} points`;
+    }
+
+    _toggleCameraPlayback() {
+        if (this.cameraPlayback) {
+            cancelAnimationFrame(this.cameraPlayback.frame);
+            this.cameraPlayback = null;
+            this.viewer.setCameraPlayback(false);
+            this.els.cameraTrackPlay.textContent = "Play";
+            this._syncViewportCameraHUD(this.viewer.getCameraState());
+            return;
+        }
+        const track = this._activeCameraTrack();
+        if (!track || track.keyframes.length < 2) return;
+        if (this.editorView.view_mode !== "3d") this._setViewMode("3d");
+        let startTime = Math.max(0, Number(this.els.cameraTrackTime.value) || 0);
+        if (!track.loop && startTime >= track.duration) startTime = 0;
+        const started = performance.now() - startTime * 1000;
+        const path = new FactoryCameraPath(track);
+        this.els.cameraTrackPlay.textContent = "Pause";
+        this.viewer.setCameraPlayback(true);
+        this.cameraPlayback = { frame: 0, started };
+        this._syncViewportCameraHUD(this.viewer.getCameraState());
+        const step = now => {
+            if (!this.cameraPlayback) return;
+            let time = (now - started) / 1000;
+            if (time > track.duration) {
+                if (track.loop) time %= track.duration;
+                else {
+                    this._setCameraTrackTime(track.duration);
+                    this._toggleCameraPlayback();
+                    return;
+                }
+            }
+            this._setCameraTrackTime(time, path);
+            this.cameraPlayback.frame = requestAnimationFrame(step);
+        };
+        this.cameraPlayback.frame = requestAnimationFrame(step);
+    }
+
     _normalizeCameraState(value = {}, fallback = {}) {
         const source = safeObject(value);
         const previous = safeObject(fallback);
@@ -1161,6 +4825,8 @@ class Factory3DWidget {
                 created_at: Number.isFinite(Number(camera.created_at))
                     ? Number(camera.created_at)
                     : 0,
+                level_id: String(camera.level_id || ""),
+                building_id: this._validBuildingId(camera.building_id),
                 ...this._normalizeCameraState(camera),
             });
         }
@@ -1170,12 +4836,13 @@ class Factory3DWidget {
     _bindCameraControls() {
         const rotate = delta => {
             this.viewer?.rotateCameraFPV?.(delta);
-            if (this.selectedCameraId && this.scene) {
+            if (this.previewCameraId && this.scene) {
                 const camera = this.scene.cameras?.find(
-                    item => item.camera_id === this.selectedCameraId,
+                    item => item.camera_id === this.previewCameraId,
                 );
                 if (camera) {
                     Object.assign(camera, this.viewer.getCameraState());
+                    this.viewer.setCameraMarkers(this.scene.cameras);
                     this._scheduleSceneSave(140);
                     this._scheduleStateSave(140);
                 }
@@ -1238,13 +4905,18 @@ class Factory3DWidget {
             this.toast("A scene can contain up to 32 cameras.", "error");
             return;
         }
+        const before = this._captureEditorSnapshot();
         const camera = {
             camera_id: randomLayerId(),
             name: `Camera ${this.scene.cameras.length + 1}`,
             created_at: Date.now() / 1000,
+            level_id: this.editorView.active_level_id || this.scene.levels?.[0]?.level_id || "",
+            building_id: this._activeBuilding()?.building_id || "",
             ...this._normalizeCameraState(this.viewer.getCameraState()),
         };
         this.scene.cameras.push(camera);
+        this.history.push("Add camera", before, this._captureEditorSnapshot());
+        this._selectCamera(camera.camera_id);
         this._renderCameras();
         this._updateSceneSummary();
         await this._saveSceneNow();
@@ -1254,39 +4926,62 @@ class Factory3DWidget {
     _selectCamera(cameraId) {
         const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
         if (!camera) return;
-        if (this.selectedCameraId === cameraId) {
-            this._exitCameraView({ restore: true });
-            return;
-        }
-        if (!this.selectedCameraId) {
-            this._cameraReturnState = this._normalizeCameraState(
-                this.viewer.getCameraState(),
-                this.scene?.camera,
-            );
-        }
+        const selectedBuildingId = this._validBuildingId(camera.building_id);
+        if (selectedBuildingId) this.editorView.active_building_id = selectedBuildingId;
+        if (this.cameraPlayback) this._toggleCameraPlayback();
+        this.selectedCameraKeyframeId = "";
         this._cameraSelectionTransition = true;
         try {
             this.selectedObjectId = "";
             this.selectedObjectIds.clear();
             this.selectedGroupId = "";
             this.selectedSkydome = false;
+            this.selectedArchitecture = null;
+            this.viewer.setArchitectureSelection(null);
             this.viewer.select("");
             this.selectedCameraId = cameraId;
-            this.viewer.setCameraState(camera, { emit: false });
         } finally {
             this._cameraSelectionTransition = false;
         }
         this._syncSelectionPresentation();
         this._renderCameras();
+        this._renderInspector();
+        this._syncToolbar();
+        this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave();
     }
 
+    _enterCameraView(cameraId = this.selectedCameraId) {
+        const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
+        if (!camera) return;
+        if (!this.previewCameraId) {
+            this._cameraReturnState = this._normalizeCameraState(
+                this.viewer.getCameraState(),
+                this.scene?.camera,
+            );
+        }
+        this.previewCameraId = cameraId;
+        if (this.scene.levels?.some(level => level.level_id === camera.level_id)) {
+            this.editorView.active_level_id = camera.level_id;
+            this.viewer.setActiveLevel(camera.level_id);
+        }
+        if (this.editorView.view_mode !== "3d") {
+            this.editorView.view_mode = "3d";
+            this.viewer.setViewMode("3d");
+        }
+        this.viewer.setCameraState(camera, { emit: false });
+        this._syncToolbar();
+        this._renderCameras();
+        this._renderInspector();
+        this._scheduleStateSave(0);
+    }
+
     _exitCameraView({ restore = true } = {}) {
-        if (!this.selectedCameraId && !this._cameraReturnState) return;
+        if (!this.previewCameraId && !this._cameraReturnState) return;
         const returnState = this._cameraReturnState;
         this._cameraSelectionTransition = true;
         try {
-            this.selectedCameraId = "";
+            this.previewCameraId = "";
             this._cameraReturnState = null;
             if (restore && returnState) {
                 this.viewer.setCameraState(returnState, { emit: false });
@@ -1299,6 +4994,7 @@ class Factory3DWidget {
             this._cameraSelectionTransition = false;
         }
         this._renderCameras();
+        this._renderInspector();
         this._scheduleStateSave();
     }
 
@@ -1306,12 +5002,19 @@ class Factory3DWidget {
         if (!this.scene) return;
         const camera = this.scene.cameras?.find(item => item.camera_id === cameraId);
         if (!camera) return;
-        if (this.selectedCameraId === cameraId) this._exitCameraView({ restore: true });
+        const before = this._captureEditorSnapshot();
+        if (this.previewCameraId === cameraId) this._exitCameraView({ restore: true });
+        if (this.selectedCameraId === cameraId) this.selectedCameraId = "";
         this.scene.cameras = this.scene.cameras.filter(
             item => item.camera_id !== cameraId,
         );
+        this.history.push("Delete camera", before, this._captureEditorSnapshot());
         this._renderCameras();
+        this._renderInspector();
+        this._syncSelectionPresentation();
+        this._syncToolbar();
         this._updateSceneSummary();
+        this._scheduleStateSave(0);
         await this._saveSceneNow();
         this.toast(`${camera.name} removed.`, "success");
     }
@@ -1319,6 +5022,7 @@ class Factory3DWidget {
     _renderCameras() {
         const cameras = this._normalizeSceneCameras(this.scene?.cameras);
         if (this.scene) this.scene.cameras = cameras;
+        this.viewer?.setCameraMarkers?.(cameras);
         this.els.cameraCount.textContent = String(cameras.length);
         this.els.cameraGroupCount.textContent = String(cameras.length);
         this.els.cameraAdd.disabled = !this.scene || cameras.length >= 32;
@@ -1335,9 +5039,10 @@ class Factory3DWidget {
                 "div",
                 `vnccs-i3s__camera-item${
                     camera.camera_id === this.selectedCameraId ? " is-selected" : ""
-                }`,
+                }${camera.camera_id === this.previewCameraId ? " is-previewing" : ""}`,
             );
             card.dataset.cameraId = camera.camera_id;
+            card.title = `${camera.name} · ${this.scene?.levels?.find(level => level.level_id === camera.level_id)?.name || "Unassigned floor"}`;
             card.tabIndex = 0;
             card.setAttribute("role", "button");
             card.setAttribute("aria-pressed", String(camera.camera_id === this.selectedCameraId));
@@ -1345,6 +5050,9 @@ class Factory3DWidget {
                 <span class="vnccs-i3s__camera-index">${index + 1}</span>
                 <span class="vnccs-i3s__camera-item-icon">${ICONS.camera}</span>
                 <span class="vnccs-i3s__camera-item-name"></span>
+                <button class="vnccs-i3s__camera-preview" type="button"
+                    title="${camera.camera_id === this.previewCameraId ? "Exit camera view" : "Enter camera view"}"
+                    aria-label="${camera.camera_id === this.previewCameraId ? "Exit camera view" : "Enter camera view"}">${ICONS.eye}</button>
                 <button class="vnccs-i3s__camera-delete" type="button"
                     title="Delete camera" aria-label="Delete camera">${ICONS.trash}</button>
             `;
@@ -1354,7 +5062,7 @@ class Factory3DWidget {
                 `Delete ${camera.name}`,
             );
             this._listen(card, "click", event => {
-                if (event.target.closest(".vnccs-i3s__camera-delete")) return;
+                if (event.target.closest(".vnccs-i3s__camera-delete, .vnccs-i3s__camera-preview")) return;
                 this._selectCamera(camera.camera_id);
             });
             this._listen(card, "keydown", event => {
@@ -1366,6 +5074,12 @@ class Factory3DWidget {
                 event.stopPropagation();
                 void this._deleteCamera(camera.camera_id);
             });
+            this._listen(card.querySelector(".vnccs-i3s__camera-preview"), "click", event => {
+                event.stopPropagation();
+                this._selectCamera(camera.camera_id);
+                if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
+                else this._enterCameraView(camera.camera_id);
+            });
             fragment.appendChild(card);
         }
         this.els.cameraList.appendChild(fragment);
@@ -1373,7 +5087,35 @@ class Factory3DWidget {
 
     _normalizeLighting(value = {}) {
         const data = { ...DEFAULT_LIGHTING, ...safeObject(value) };
+        const shadowSource = { ...DEFAULT_LIGHTING.shadows, ...safeObject(data.shadows) };
         const validColor = color => /^#[0-9a-f]{6}$/i.test(String(color || ""));
+        const lights = (Array.isArray(data.lights) ? data.lights : []).slice(0, 32).map((raw, index) => {
+            const light = safeObject(raw);
+            const vector = (key, fallback) => Array.isArray(light[key]) && light[key].length === 3
+                ? light[key].map((component, axis) => {
+                    const number = Number(component);
+                    return Number.isFinite(number) ? clamp(number, -10000, 10000) : fallback[axis];
+                })
+                : [...fallback];
+            return {
+                light_id: /^[a-f0-9]{32}$/.test(String(light.light_id || ""))
+                    ? String(light.light_id)
+                    : factoryId(),
+                name: String(light.name || `Light ${index + 1}`).slice(0, 80),
+                level_id: String(light.level_id || this.editorView.active_level_id || ""),
+                building_id: this._validBuildingId(light.building_id),
+                kind: ["point", "spot", "directional"].includes(light.kind) ? light.kind : "point",
+                color: validColor(light.color) ? String(light.color).toLowerCase() : "#ffffff",
+                intensity: clamp(light.intensity, 0, 100000),
+                position: vector("position", [0, 2.4, 0]),
+                target: vector("target", [0, 0, 0]),
+                distance: clamp(light.distance, 0, 1000000),
+                angle: clamp(light.angle, 1, 179),
+                penumbra: clamp(light.penumbra, 0, 1),
+                cast_shadow: light.cast_shadow !== false,
+                visible: light.visible !== false,
+            };
+        });
         return {
             preset: Object.hasOwn(LIGHTING_PRESETS, data.preset) || data.preset === "custom"
                 ? data.preset
@@ -1386,6 +5128,15 @@ class Factory3DWidget {
             background: validColor(data.background)
                 ? String(data.background).toLowerCase()
                 : DEFAULT_LIGHTING.background,
+            shadows: {
+                enabled: shadowSource.enabled !== false,
+                quality: ["off", "low", "medium", "high", "ultra"].includes(shadowSource.quality)
+                    ? shadowSource.quality
+                    : "medium",
+                bias: clamp(shadowSource.bias, -0.05, 0.05),
+                normal_bias: clamp(shadowSource.normal_bias, 0, 1),
+            },
+            lights,
         };
     }
 
@@ -1501,6 +5252,9 @@ class Factory3DWidget {
                 method: "POST",
                 body,
             });
+            // Asset replacement is a persistence boundary: older snapshots
+            // can reference a background file that no longer exists.
+            this.history.clear();
             this.selectedSkydome = true;
             await this._applyScene(scene, { preserveSource: true });
             this._selectSkydome();
@@ -1553,6 +5307,7 @@ class Factory3DWidget {
             const scene = await this._fetchJSON(ENDPOINTS.skydome(this.sceneId), {
                 method: "DELETE",
             });
+            this.history.clear();
             this.closeModal();
             this.selectedSkydome = false;
             await this._applyScene(scene, { preserveSource: true });
@@ -1598,7 +5353,125 @@ class Factory3DWidget {
                 String(presetButton.dataset.preset === this.lighting.preset),
             );
         }
+        this.els.shadowEnabled.setAttribute(
+            "aria-checked",
+            String(this.lighting.shadows.enabled),
+        );
+        this.els.shadowQuality.value = this.lighting.shadows.quality === "off"
+            ? "medium"
+            : this.lighting.shadows.quality;
+        this._renderLocalLights();
         this._drawLightingRadar();
+    }
+
+    _renderLocalLights() {
+        if (!this.els?.localLights) return;
+        this.els.localLights.replaceChildren();
+        if (!this.lighting.lights.length) {
+            this.els.localLights.appendChild(element("div", "vnccs-i3s__local-light-empty", "No local lights."));
+            return;
+        }
+        for (const light of this.lighting.lights) {
+            const card = element("details", "vnccs-i3s__local-light");
+            card.open = light.light_id === this._expandedLightId;
+            card.innerHTML = `
+                <summary><span>${escapeHTML(light.name)}</span><small>${escapeHTML(light.kind)} · ${Number(light.intensity).toFixed(2)}</small></summary>
+                <div class="vnccs-i3s__local-light-body">
+                <div class="vnccs-i3s__local-light-title">
+                    <input class="vnccs-i3s__input" data-light-path="name" value="${escapeHTML(light.name)}" maxlength="80" aria-label="Light name" />
+                    <button type="button" data-light-delete title="Delete light">${ICONS.trash}</button>
+                </div>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-light-path="level_id">
+                    ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${light.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
+                </select></label>
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-light-path="building_id">
+                    ${this._buildingOptions(light.building_id)}
+                </select></label>
+                <div class="vnccs-i3s__local-light-grid">
+                    <select class="vnccs-i3s__select" data-light-path="kind"><option value="point"${light.kind === "point" ? " selected" : ""}>Point</option><option value="spot"${light.kind === "spot" ? " selected" : ""}>Spot</option><option value="directional"${light.kind === "directional" ? " selected" : ""}>Directional</option></select>
+                    <input type="color" data-light-path="color" value="${light.color}" aria-label="Light color" />
+                    <input class="vnccs-i3s__input" type="number" min="0" max="100000" step="0.01" data-light-path="intensity" value="${light.intensity}" aria-label="Light intensity" />
+                    <input class="vnccs-i3s__input" type="number" min="0" max="1000000" step="0.01" data-light-path="distance" value="${light.distance}" aria-label="Light range" />
+                </div>
+                <div class="vnccs-i3s__local-light-position">
+                    ${["X", "Y", "Z"].map((axis, index) => `<label>${axis}<input class="vnccs-i3s__input" type="number" step="0.01" data-light-path="position.${index}" value="${light.position[index]}" /></label>`).join("")}
+                </div>
+                ${light.kind !== "point" ? `
+                    <div class="vnccs-i3s__local-light-position">
+                        ${["TX", "TY", "TZ"].map((axis, index) => `<label>${axis}<input class="vnccs-i3s__input" type="number" step="0.01" data-light-path="target.${index}" value="${light.target[index]}" /></label>`).join("")}
+                    </div>` : ""}
+                ${light.kind === "spot" ? `
+                    <div class="vnccs-i3s__local-light-grid">
+                        <label><span>Angle</span><input class="vnccs-i3s__input" type="number" min="1" max="179" step="0.01" data-light-path="angle" value="${light.angle}" /></label>
+                        <label><span>Penumbra</span><input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-light-path="penumbra" value="${light.penumbra}" /></label>
+                    </div>` : ""}
+                <div class="vnccs-i3s__local-light-flags">
+                    <label><input type="checkbox" data-light-path="visible"${light.visible !== false ? " checked" : ""} /> Visible</label>
+                    <label><input type="checkbox" data-light-path="cast_shadow"${light.cast_shadow !== false ? " checked" : ""} /> Cast shadow</label>
+                </div></div>`;
+            card.addEventListener("toggle", () => {
+                if (card.open) this._expandedLightId = light.light_id;
+                else if (this._expandedLightId === light.light_id) this._expandedLightId = "";
+            });
+            let before = null;
+            const begin = () => { before ||= this._captureEditorSnapshot(); };
+            for (const control of card.querySelectorAll("[data-light-path]")) {
+                control.addEventListener("pointerdown", begin);
+                control.addEventListener("focus", begin);
+                const apply = () => {
+                    const targetLight = this.lighting.lights.find(
+                        value => value.light_id === light.light_id,
+                    );
+                    if (!targetLight) return;
+                    const [key, rawIndex] = control.dataset.lightPath.split(".");
+                    const value = control.type === "checkbox"
+                        ? control.checked
+                        : control.type === "number"
+                            ? Number(control.value)
+                            : control.value;
+                    if (rawIndex !== undefined) targetLight[key][Number(rawIndex)] = value;
+                    else if (key === "level_id") {
+                        const previousLevel = this.scene?.levels?.find(
+                            level => level.level_id === targetLight.level_id,
+                        );
+                        const nextLevel = this.scene?.levels?.find(
+                            level => level.level_id === value,
+                        );
+                        const delta = (Number(nextLevel?.elevation) || 0)
+                            - (Number(previousLevel?.elevation) || 0);
+                        targetLight.position[1] += delta;
+                        targetLight.target[1] += delta;
+                        targetLight.level_id = value;
+                    } else if (key === "building_id") {
+                        targetLight.building_id = this._validBuildingId(value);
+                        this.editorView.active_building_id = targetLight.building_id;
+                    } else targetLight[key] = value;
+                    if (["name", "kind", "intensity"].includes(key)) {
+                        card.querySelector("summary span").textContent = targetLight.name;
+                        card.querySelector("summary small").textContent = `${targetLight.kind} · ${Number(targetLight.intensity).toFixed(2)}`;
+                    }
+                    this._commitLighting();
+                };
+                control.addEventListener("input", apply);
+                control.addEventListener("change", () => {
+                    apply();
+                    if (before) this.history.push("Edit light", before, this._captureEditorSnapshot());
+                    before = null;
+                    this._commitLighting({ final: true });
+                    this._syncToolbar();
+                    if (["kind", "level_id", "building_id"].includes(control.dataset.lightPath)) this._renderLocalLights();
+                });
+            }
+            card.querySelector("[data-light-delete]").addEventListener("click", () => {
+                const original = this._captureEditorSnapshot();
+                this.lighting.lights = this.lighting.lights.filter(value => value.light_id !== light.light_id);
+                if (original) this.history.push("Delete light", original, this._captureEditorSnapshot());
+                this._syncLighting();
+                this._commitLighting({ final: true });
+                this._syncToolbar();
+            });
+            this.els.localLights.appendChild(card);
+        }
     }
 
     _commitLighting({ final = false } = {}) {
@@ -1625,6 +5498,17 @@ class Factory3DWidget {
         }
     }
 
+    _beginLightingHistory() {
+        this._lightingHistoryBefore ||= this._captureEditorSnapshot();
+    }
+
+    _finishLightingHistory(label) {
+        if (!this._lightingHistoryBefore) return;
+        this.history.push(label, this._lightingHistoryBefore, this._captureEditorSnapshot());
+        this._lightingHistoryBefore = null;
+        this._syncToolbar();
+    }
+
     _bindLightingRadar() {
         const canvas = this.els.lightRadar;
         if (!canvas) return;
@@ -1648,6 +5532,7 @@ class Factory3DWidget {
             if (event.button !== 0) return;
             event.preventDefault();
             event.stopPropagation();
+            this._beginLightingHistory();
             dragging = true;
             canvas.setPointerCapture?.(event.pointerId);
             update(event);
@@ -1662,6 +5547,7 @@ class Factory3DWidget {
                 canvas.releasePointerCapture(event.pointerId);
             }
             this._commitLighting({ final: true });
+            this._finishLightingHistory("Edit light direction");
         };
         this._listen(canvas, "pointerup", finish);
         this._listen(canvas, "pointercancel", finish);
@@ -1815,7 +5701,10 @@ class Factory3DWidget {
             });
             if (this.sourceFile === file) {
                 this.sourceAsset = { ...asset, scene_id: this.sceneId };
-                if (this.scene) this.scene.reference = { ...asset };
+                if (this.scene) {
+                    this.scene.reference = { ...asset };
+                    this.scene.edit_revision = asset.edit_revision ?? this.scene.edit_revision;
+                }
                 this._showSource({
                     url: apiUrl(asset.preview_url || asset.url),
                     name: asset.name || file.name,
@@ -1918,21 +5807,62 @@ class Factory3DWidget {
     }
 
     async _applyScene(scene, { preserveSource = false } = {}) {
+        const reopeningCurrentScene = Boolean(
+            this.sceneId && this.sceneId === scene?.scene_id,
+        );
         const incremental = Boolean(
             this.scene
             && this.sceneId
             && this.sceneId === scene?.scene_id,
         );
+        if (!incremental) this.history.clear();
         const desiredGroupId = this.selectedGroupId;
         const desiredObjectIds = new Set(this.selectedObjectIds);
-        const desiredSkydome = incremental && this.selectedSkydome;
-        const desiredCameraId = incremental ? this.selectedCameraId : "";
+        const desiredSkydome = reopeningCurrentScene && this.selectedSkydome;
+        const desiredCameraId = this.selectedCameraId;
+        const desiredArchitecture = this.selectedArchitecture?.id
+            ? { ...this.selectedArchitecture }
+            : null;
+        const desiredKeyframeId = this.selectedCameraKeyframeId;
+        this.selectedGroupId = "";
         this.selectedCameraId = "";
+        this.selectedCameraKeyframeId = "";
+        this.previewCameraId = "";
         this._cameraReturnState = null;
         if (this.selectedObjectId) desiredObjectIds.add(this.selectedObjectId);
         this.scene = scene;
         this.sceneId = scene.scene_id;
+        this.scene.edit_revision = Math.max(0, Number(scene.edit_revision) || 0);
+        this.scene.levels = normalizedLevels(scene.levels);
+        this.scene.architecture = normalizedArchitecture(scene.architecture, this.scene.levels);
+        this.scene.objects = (Array.isArray(scene.objects) ? scene.objects : []).map(item => ({
+            ...item,
+            level_id: this.scene.levels.some(level => level.level_id === item.level_id)
+                ? item.level_id
+                : this.scene.levels[0]?.level_id || "",
+            ...normalizedObjectEditorProperties(item),
+            building_id: this._validBuildingId(item.building_id),
+        }));
+        this.scene.camera_tracks = Array.isArray(scene.camera_tracks)
+            ? JSON.parse(JSON.stringify(scene.camera_tracks)).map(track => ({
+                ...track,
+                building_id: this._validBuildingId(track.building_id),
+            }))
+            : [];
+        this.editorView = normalizedEditorView(
+            this.editorView,
+            this.scene.levels[0]?.level_id,
+        );
+        if (!this.scene.levels.some(level => level.level_id === this.editorView.active_level_id)) {
+            this.editorView.active_level_id = this.scene.levels[0]?.level_id || "";
+        }
+        this.selectedArchitecture = null;
         this.scene.cameras = this._normalizeSceneCameras(scene.cameras);
+        for (const camera of this.scene.cameras) {
+            if (!this.scene.levels.some(level => level.level_id === camera.level_id)) {
+                camera.level_id = this.scene.levels[0]?.level_id || "";
+            }
+        }
         if (this.scene.skydome) {
             this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
         }
@@ -1979,6 +5909,9 @@ class Factory3DWidget {
                 || { loaded: 0, failures: [] };
             this.viewerState = desiredViewerState;
             this.viewer.setState(desiredViewerState);
+            this.viewer.setViewMode(this.editorView.view_mode);
+            this.viewer.setPlanTool(this.editorView.plan_tool);
+            this.viewer.setActiveLevel(this.editorView.active_level_id);
             this.viewerState = { ...this.viewerState, ...this.viewer.getState() };
         } finally {
             this._suppressViewerStatePersistence = false;
@@ -1990,6 +5923,20 @@ class Factory3DWidget {
             viewportFailures.map(item => [item.objectId, errorText(item.error)]),
         );
         const desiredGroup = this._groupById(desiredGroupId);
+        const normalizedDesiredArchitecture = this._normalizeArchitectureSelection(desiredArchitecture);
+        const desiredArchitectureValid = Boolean(normalizedDesiredArchitecture && (
+            (normalizedDesiredArchitecture.type === "building" && this.scene.architecture.buildings.some(item => item.building_id === normalizedDesiredArchitecture.id))
+            || (normalizedDesiredArchitecture.type === "level" && this.scene.levels.some(item => item.level_id === normalizedDesiredArchitecture.id))
+            || (normalizedDesiredArchitecture.type === "wall" && this.scene.architecture.walls.some(item => item.wall_id === normalizedDesiredArchitecture.id))
+            || (normalizedDesiredArchitecture.type === "room" && this.scene.architecture.rooms.some(item => item.room_id === normalizedDesiredArchitecture.id))
+            || (normalizedDesiredArchitecture.type === "opening" && this.scene.architecture.openings.some(item => item.opening_id === normalizedDesiredArchitecture.id))
+        ));
+        const desiredCameraValid = this.scene.cameras.some(
+            camera => camera.camera_id === desiredCameraId,
+        );
+        const desiredKeyframeTrack = this.scene.camera_tracks.find(
+            track => track.keyframes?.some(frame => frame.keyframe_id === desiredKeyframeId),
+        );
         if (desiredSkydome && scene.skydome) {
             this._selectSkydome();
         } else if (desiredGroup) {
@@ -1998,6 +5945,24 @@ class Factory3DWidget {
             this.selectedObjectIds.clear();
             this.selectedObjectId = "";
             this.viewer.selectGroup(desiredGroup.group_id, desiredGroup.children);
+        } else if (desiredArchitectureValid) {
+            this.selectedSkydome = false;
+            this.selectedGroupId = "";
+            this.selectedObjectIds.clear();
+            this.selectedObjectId = "";
+            this.selectedArchitecture = normalizedDesiredArchitecture;
+            this.viewer.select("");
+            this.viewer.setArchitectureSelection(normalizedDesiredArchitecture);
+        } else if (desiredCameraValid) {
+            this._selectCamera(desiredCameraId);
+        } else if (desiredKeyframeTrack) {
+            this.selectedSkydome = false;
+            this.selectedGroupId = "";
+            this.selectedObjectIds.clear();
+            this.selectedObjectId = "";
+            this.activeCameraTrackId = desiredKeyframeTrack.track_id;
+            this.selectedCameraKeyframeId = desiredKeyframeId;
+            this.viewer.select("");
         } else {
             this.selectedSkydome = false;
             this.selectedGroupId = "";
@@ -2019,11 +5984,13 @@ class Factory3DWidget {
                 additive: this.selectedObjectIds.size > 1,
             });
         }
-        if (this.scene.cameras.some(camera => camera.camera_id === desiredCameraId)) {
-            this._selectCamera(desiredCameraId);
-        }
+        const selectionBuilding = this._activeBuilding();
+        if (selectionBuilding) this.editorView.active_building_id = selectionBuilding.building_id;
         this._renderObjects();
         this._renderCameras();
+        this._renderCameraTracks();
+        this._renderInspector();
+        this._syncToolbar();
         this._scheduleStateSave();
         this.syncToNode();
         const loaded = Number(viewportResult.loaded) || 0;
@@ -2213,11 +6180,16 @@ class Factory3DWidget {
 
     _updateSceneSummary() {
         const objects = this.scene?.objects || [];
+        const rooms = this.scene?.architecture?.rooms || [];
+        const roomWallIds = new Set(rooms.flatMap(room => room.wall_ids || []));
+        const wallCount = (this.scene?.architecture?.walls || []).filter(
+            wall => !roomWallIds.has(wall.wall_id),
+        ).length;
+        const roomCount = rooms.length;
         const skydome = this.scene?.skydome || null;
         const cameraCount = this.scene?.cameras?.length || 0;
         const visibleIds = this._effectiveVisibleObjectIds();
-        this.container.classList.toggle("has-scene", Boolean(objects.length || skydome));
-        this.els.objectCount.textContent = String(objects.length + (skydome ? 1 : 0));
+        this.els.objectCount.textContent = String(objects.length + (skydome ? 1 : 0) + wallCount + roomCount);
         const gaussianSummary = objects.length
             ? `${visibleIds.size}/${objects.length} models visible · ${objects.reduce(
                 (sum, item) => sum + (visibleIds.has(item.object_id) ? Number(item.gaussians) || 0 : 0),
@@ -2229,22 +6201,24 @@ class Factory3DWidget {
             : objects.length
                 ? gaussianSummary
                 : "No objects in this scene.";
-        this.els.sceneSummary.textContent = cameraCount
-            ? `${contentSummary} · ${cameraCount} camera${cameraCount === 1 ? "" : "s"}`
+        const architectureSummary = wallCount || roomCount
+            ? `${contentSummary} · ${wallCount} standalone walls · ${roomCount} rooms`
             : contentSummary;
+        this.els.sceneSummary.textContent = cameraCount
+            ? `${architectureSummary} · ${cameraCount} camera${cameraCount === 1 ? "" : "s"}`
+            : architectureSummary;
     }
 
     _hasRenderableScene() {
         return Boolean(
             this.scene?.objects?.length
+            || this.scene?.architecture?.walls?.length
+            || this.scene?.architecture?.rooms?.length
             || (this.scene?.skydome && this.scene.skydome.visible !== false),
         );
     }
 
     _selectSkydome() {
-        if (this.selectedCameraId && !this._cameraSelectionTransition) {
-            this._exitCameraView({ restore: true });
-        }
         if (!this.scene?.skydome) {
             this.selectedSkydome = false;
             return;
@@ -2252,21 +6226,50 @@ class Factory3DWidget {
         this.selectedGroupId = "";
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
+        this.selectedArchitecture = null;
+        this.selectedCameraKeyframeId = "";
+        this.selectedCameraId = "";
+        this.viewer.setArchitectureSelection(null);
         this.viewer.select("");
         this.selectedSkydome = true;
         this._syncSelectionPresentation();
+        this._renderInspector();
+        this._syncToolbar();
         this._scheduleStateSave();
     }
 
+    _clearSelection() {
+        this.selectedObjectId = "";
+        this.selectedObjectIds.clear();
+        this.selectedGroupId = "";
+        this.selectedSkydome = false;
+        this.selectedArchitecture = null;
+        this.selectedCameraId = "";
+        this.selectedCameraKeyframeId = "";
+        this.viewer.setArchitectureSelection(null);
+        this.viewer.select("");
+        this._syncSelectionPresentation();
+        this._renderCameras();
+        this._renderCameraTracks();
+        this._renderInspector();
+        this._syncToolbar();
+        this._scheduleStateSave(0);
+    }
+
     _selectObject(objectId, { fromViewer = false, additive = false } = {}) {
-        if (this.selectedCameraId && !this._cameraSelectionTransition) {
-            this._exitCameraView({ restore: true });
-        }
         const valid = this.scene?.objects?.some(item => item.object_id === objectId)
             ? objectId
             : "";
+        if (fromViewer && !valid && !additive) return;
         this.selectedSkydome = false;
+        const selectedItem = this.scene?.objects?.find(item => item.object_id === valid);
+        const selectedBuildingId = this._validBuildingId(selectedItem?.building_id);
+        if (selectedBuildingId) this.editorView.active_building_id = selectedBuildingId;
         this.selectedGroupId = "";
+        this.selectedArchitecture = null;
+        this.selectedCameraKeyframeId = "";
+        this.selectedCameraId = "";
+        this.viewer.setArchitectureSelection(null);
         if (!additive) {
             this.selectedObjectIds = new Set(valid ? [valid] : []);
         } else if (valid) {
@@ -2278,21 +6281,32 @@ class Factory3DWidget {
             : Array.from(this.selectedObjectIds).at(-1) || "";
         if (!fromViewer) this.viewer.select(this.selectedObjectId, { additive });
         this._syncSelectionPresentation();
+        this._renderInspector();
+        this._syncToolbar();
+        if (valid && fromViewer && !additive) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave();
     }
 
     _selectGroup(groupId) {
-        if (this.selectedCameraId && !this._cameraSelectionTransition) {
-            this._exitCameraView({ restore: true });
-        }
         const group = this._groupById(groupId);
         this.selectedSkydome = false;
+        this.selectedArchitecture = null;
+        this.selectedCameraKeyframeId = "";
+        this.selectedCameraId = "";
+        this.viewer.setArchitectureSelection(null);
         this.selectedGroupId = group?.group_id || "";
+        const firstObject = group?.children?.length
+            ? this.scene?.objects?.find(item => item.object_id === group.children[0])
+            : null;
+        const selectedBuildingId = this._validBuildingId(firstObject?.building_id);
+        if (selectedBuildingId) this.editorView.active_building_id = selectedBuildingId;
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
         if (group) this.viewer.selectGroup(group.group_id, group.children);
         else this.viewer.select("");
         this._syncSelectionPresentation();
+        this._renderInspector();
+        this._syncToolbar();
         this._scheduleStateSave();
     }
 
@@ -2333,6 +6347,8 @@ class Factory3DWidget {
     }
 
     _renderObjects() {
+        const previousScrollTop = this.els.objectList.scrollTop;
+        const previousScrollLeft = this.els.objectList.scrollLeft;
         const query = this.els.objectSearch.value.trim().toLowerCase();
         const objects = new Map((this.scene?.objects || []).map(item => [item.object_id, item]));
         const skydome = this.scene?.skydome || null;
@@ -2341,11 +6357,28 @@ class Factory3DWidget {
         const fragment = document.createDocumentFragment();
         this._syncSelectionControls();
         let rendered = 0;
+        if (this.scene && !this.scene.architecture?.buildings?.length && !query) {
+            const emptyArchitecture = element("section", "vnccs-i3s__architecture-empty");
+            const copy = element("div", "vnccs-i3s__architecture-empty-copy");
+            copy.append(
+                element("b", "", "No buildings"),
+                element("small", "", "Create one only when you need walls, rooms, or openings."),
+            );
+            const create = button("vnccs-i3s__button vnccs-i3s__button--quiet", "Create building", "plus");
+            create.addEventListener("click", () => this._addBuilding());
+            emptyArchitecture.append(copy, create);
+            fragment.appendChild(emptyArchitecture);
+            rendered += 1;
+        }
+        for (const entry of this._createArchitectureTree(query)) {
+            fragment.appendChild(entry);
+            rendered += 1;
+        }
         if (skydome && (!query || skydome.name.toLowerCase().includes(query) || "skydome background environment".includes(query))) {
             fragment.appendChild(this._createSkydomeCard(skydome));
             rendered += 1;
         }
-        if (!objects.size && !skydome) {
+        if (!objects.size && !skydome && !rendered) {
             fragment.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
             this.els.objectList.appendChild(fragment);
             return;
@@ -2387,6 +6420,85 @@ class Factory3DWidget {
             fragment.appendChild(element("div", "vnccs-i3s__tree-empty", "No matching objects."));
         }
         this.els.objectList.appendChild(fragment);
+        this.els.objectList.scrollTop = previousScrollTop;
+        this.els.objectList.scrollLeft = previousScrollLeft;
+    }
+
+    _createArchitectureTree(query = "") {
+        const architecture = this.scene?.architecture;
+        if (!architecture) return [];
+        const output = [];
+        const activeLevelId = this.editorView.active_level_id;
+        const openingsByWall = new Map();
+        for (const opening of architecture.openings || []) {
+            if (!openingsByWall.has(opening.wall_id)) openingsByWall.set(opening.wall_id, []);
+            openingsByWall.get(opening.wall_id).push(opening);
+        }
+        const createRow = (type, id, name, meta) => {
+            const row = element(
+                "button",
+                `vnccs-i3s__architecture-row${
+                    this.selectedArchitecture?.type === type && this.selectedArchitecture?.id === id
+                        ? " is-selected"
+                        : ""
+                }`,
+            );
+            row.type = "button";
+            row.dataset.architectureType = type;
+            row.dataset.architectureId = id;
+            row.innerHTML = `<span class="vnccs-i3s__architecture-kind">${escapeHTML(type.slice(0, 1).toUpperCase())}</span><span class="vnccs-i3s__architecture-copy"><b></b><small></small></span>`;
+            row.querySelector("b").textContent = name;
+            row.querySelector("small").textContent = meta;
+            row.addEventListener("click", () => this._selectArchitecture({ type, id }));
+            return row;
+        };
+        for (const building of architecture.buildings || []) {
+            const walls = (architecture.walls || []).filter(
+                item => item.building_id === building.building_id && item.level_id === activeLevelId,
+            );
+            const rooms = (architecture.rooms || []).filter(
+                item => item.building_id === building.building_id && item.level_id === activeLevelId,
+            );
+            const roomWallIds = new Set(rooms.flatMap(room => room.wall_ids || []));
+            const standaloneWalls = walls.filter(wall => !roomWallIds.has(wall.wall_id));
+            const openings = walls.flatMap(wall => openingsByWall.get(wall.wall_id) || []);
+            const assignedObjects = (this.scene?.objects || []).filter(
+                item => item.building_id === building.building_id,
+            ).length;
+            const assignedCameras = (this.scene?.cameras || []).filter(
+                item => item.building_id === building.building_id,
+            ).length;
+            const assignedLights = (this.lighting?.lights || []).filter(
+                item => item.building_id === building.building_id,
+            ).length;
+            const assignedPaths = (this.scene?.camera_tracks || []).filter(
+                item => item.building_id === building.building_id,
+            ).length;
+            const entries = [
+                ...rooms.map(item => ({ type: "room", id: item.room_id, name: item.name || "Room", meta: `Complete room · walls, floor and ceiling${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}` })),
+                ...standaloneWalls.map(item => ({ type: "wall", id: item.wall_id, name: item.name || "Wall", meta: `${Math.hypot(item.end[0] - item.start[0], item.end[1] - item.start[1]).toFixed(2)} m${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}` })),
+                ...openings.map(item => ({ type: "opening", id: item.opening_id, name: item.name || "Opening", meta: `${item.kind} · ${Number(item.width).toFixed(2)} m${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}` })),
+            ].filter(item => !query || `${item.name} ${item.type} ${item.meta}`.toLowerCase().includes(query));
+            if (query && !building.name.toLowerCase().includes(query) && !entries.length) continue;
+            const wrapper = element("section", "vnccs-i3s__architecture-group");
+            const heading = createRow(
+                "building",
+                building.building_id,
+                building.name || "Building",
+                `${standaloneWalls.length} standalone walls · ${rooms.length} rooms · ${assignedObjects} objects · ${assignedCameras} cameras · ${assignedPaths} paths · ${assignedLights} lights${building.locked ? " · Locked" : ""}${building.visible === false ? " · Hidden" : ""}`,
+            );
+            heading.classList.add("is-building");
+            const children = element("div", "vnccs-i3s__architecture-children");
+            for (const entry of entries) {
+                children.appendChild(createRow(entry.type, entry.id, entry.name, entry.meta));
+            }
+            if (!entries.length && !query) {
+                children.appendChild(element("div", "vnccs-i3s__group-empty", "Draw walls or a room in Plan view"));
+            }
+            wrapper.append(heading, children);
+            output.push(wrapper);
+        }
+        return output;
     }
 
     _createSkydomeCard(skydome) {
@@ -2413,10 +6525,13 @@ class Factory3DWidget {
         const beginRename = event => {
             event.stopPropagation();
             this._beginInlineRename(name, skydome.name || "Skydome", next => {
+                const before = this._captureEditorSnapshot();
                 skydome.name = next;
                 this._syncSkydome();
                 this._renderObjects();
                 this._commitSkydome({ final: true });
+                this.history.push("Rename skydome", before, this._captureEditorSnapshot());
+                this._syncToolbar();
             });
         };
         name.addEventListener("dblclick", beginRename);
@@ -2443,11 +6558,14 @@ class Factory3DWidget {
         visibility.title = skydome.visible === false ? "Show skydome" : "Hide skydome";
         visibility.addEventListener("click", event => {
             event.stopPropagation();
+            const before = this._captureEditorSnapshot();
             skydome.visible = skydome.visible === false;
             this._syncSkydome();
             this._commitSkydome({ final: true });
             this._updateSceneSummary();
             this._renderObjects();
+            this.history.push("Toggle skydome visibility", before, this._captureEditorSnapshot());
+            this._syncToolbar();
         });
         const save = button(
             "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
@@ -2522,8 +6640,10 @@ class Factory3DWidget {
         const beginRename = event => {
             event.stopPropagation();
             this._beginInlineRename(name, item.name, next => {
+                const before = this._captureEditorSnapshot();
                 item.name = next;
                 this.viewer.updateObject(item.object_id, { name: next });
+                this.history.push("Rename object", before, this._captureEditorSnapshot());
                 this._renderObjects();
                 this._scheduleSceneSave(0);
                 this._scheduleStateSave(0);
@@ -2542,6 +6662,10 @@ class Factory3DWidget {
         );
         const importedPly = item.source?.type === "ply_import"
             || item.settings?.source === "ply_import";
+        const levelName = this.scene?.levels?.find(level => level.level_id === item.level_id)?.name || "";
+        const buildingName = this.scene?.architecture?.buildings?.find(
+            building => building.building_id === item.building_id,
+        )?.name || "";
         copy.append(
             name,
             element(
@@ -2551,6 +6675,9 @@ class Factory3DWidget {
                     viewportFailure ? "Viewport failed" : "",
                     `${Number(item.gaussians || 0).toLocaleString()} splats`,
                     importedPly ? "Imported PLY" : "",
+                    buildingName,
+                    levelName,
+                    item.locked ? "Locked" : "",
                     conditioning ? `${conditioning}² input` : "",
                     !importedPly && item.seed !== undefined ? `seed ${item.seed}` : "",
                 ].filter(Boolean).join(" · "),
@@ -2565,8 +6692,10 @@ class Factory3DWidget {
         visibility.title = item.visible === false ? "Show object" : "Hide object";
         visibility.addEventListener("click", event => {
             event.stopPropagation();
+            const before = this._captureEditorSnapshot();
             item.visible = item.visible === false;
             this.viewer.applySceneVisibility(this.scene);
+            this.history.push("Toggle object visibility", before, this._captureEditorSnapshot());
             this._updateSceneSummary();
             this._renderObjects();
             this._scheduleSceneSave(0);
@@ -2653,7 +6782,9 @@ class Factory3DWidget {
         const beginRename = event => {
             event.stopPropagation();
             this._beginInlineRename(name, group.name, next => {
+                const before = this._captureEditorSnapshot();
                 group.name = next;
+                this.history.push("Rename group", before, this._captureEditorSnapshot());
                 this._renderObjects();
                 this._scheduleSceneSave(0);
                 this._scheduleStateSave(0);
@@ -2683,6 +6814,7 @@ class Factory3DWidget {
         visibility.title = group.visible === false ? "Show group" : "Hide group";
         visibility.addEventListener("click", event => {
             event.stopPropagation();
+            const before = this._captureEditorSnapshot();
             const nextVisible = group.visible === false;
             group.visible = nextVisible;
             this.viewer.setGroupVisibility(
@@ -2691,6 +6823,7 @@ class Factory3DWidget {
                 nextVisible,
                 this.scene,
             );
+            this.history.push("Toggle group visibility", before, this._captureEditorSnapshot());
             this._updateSceneSummary();
             this._renderObjects();
             this._scheduleSceneSave(0);
@@ -2859,6 +6992,7 @@ class Factory3DWidget {
 
     _moveLayer(source, target, placement) {
         if (!source || (target && source.type === target.type && source.id === target.id)) return;
+        const before = this._captureEditorSnapshot();
         const visibleBefore = this._effectiveVisibleObjectIds();
         const layers = this._normalizeSceneLayers();
         const node = this._removeLayerSource(source, layers);
@@ -2905,6 +7039,7 @@ class Factory3DWidget {
         }
         this.dragLayer = null;
         this._normalizeSceneLayers();
+        this.history.push("Reorder scene hierarchy", before, this._captureEditorSnapshot());
         const visibleAfter = this._effectiveVisibleObjectIds();
         const visibilityChanged = (
             visibleBefore.size !== visibleAfter.size
@@ -2922,6 +7057,16 @@ class Factory3DWidget {
 
     async groupSelectedObjects() {
         if (this.selectedObjectIds.size < 2 || !this.scene) return;
+        const selectedBuildings = new Set(
+            this.scene.objects
+                .filter(item => this.selectedObjectIds.has(item.object_id))
+                .map(item => this._validBuildingId(item.building_id)),
+        );
+        if (selectedBuildings.size > 1) {
+            this.toast("Assign selected objects to one building before grouping them.", "info");
+            return;
+        }
+        const before = this._captureEditorSnapshot();
         const visibleBefore = this._effectiveVisibleObjectIds();
         const selected = new Set(this.selectedObjectIds);
         const ordered = [];
@@ -2953,6 +7098,8 @@ class Factory3DWidget {
         this.selectedObjectId = "";
         this.selectedSkydome = false;
         this.selectedGroupId = group.group_id;
+        this.editorView.active_building_id = selectedBuildings.values().next().value
+            || this.editorView.active_building_id;
         this.collapsedGroupIds.delete(group.group_id);
         const visibleAfter = this._effectiveVisibleObjectIds();
         const visibilityChanged = (
@@ -2964,13 +7111,17 @@ class Factory3DWidget {
             this._scheduleScenePreview(120);
         }
         this.viewer.selectGroup(group.group_id, group.children);
+        this.history.push("Group objects", before, this._captureEditorSnapshot());
         this._updateSceneSummary();
         this._renderObjects();
+        this._renderInspector();
+        this._syncToolbar();
         this._scheduleSceneSave(0);
         this._scheduleStateSave(0);
     }
 
     ungroupObjects(groupId) {
+        const before = this._captureEditorSnapshot();
         const layers = this._normalizeSceneLayers();
         const index = layers.findIndex(
             layer => layer.type === "group" && layer.group_id === groupId,
@@ -2998,8 +7149,12 @@ class Factory3DWidget {
             this._scheduleScenePreview(120);
         }
         this.viewer.select(this.selectedObjectId, { additive: true });
+        this.history.push("Ungroup objects", before, this._captureEditorSnapshot());
         this._updateSceneSummary();
         this._renderObjects();
+        this._syncSelectionPresentation();
+        this._renderInspector();
+        this._syncToolbar();
         this._scheduleSceneSave(0);
         this._scheduleStateSave(0);
     }
@@ -3007,7 +7162,23 @@ class Factory3DWidget {
     _onViewerTransform(objectId, transform, options = {}) {
         const item = this.scene?.objects?.find(value => value.object_id === objectId);
         if (!item) return;
+        if (!this._suppressViewerTransformHistory && !this._viewerTransformHistoryBefore) {
+            this._viewerTransformHistoryBefore = this._captureEditorSnapshot();
+            for (const [previousId, previousTransform] of Object.entries(options.previous_transforms || {})) {
+                const previousItem = this._viewerTransformHistoryBefore?.objects?.find(value => value.object_id === previousId);
+                if (previousItem && previousTransform) previousItem.transform = previousTransform;
+            }
+        }
         item.transform = transform;
+        if (!this._suppressViewerTransformHistory && options.final && options.command_last !== false) {
+            this.history.push(
+                "Transform object",
+                this._viewerTransformHistoryBefore,
+                this._captureEditorSnapshot(),
+            );
+            this._viewerTransformHistoryBefore = null;
+            this._renderInspector();
+        }
         this._scheduleSceneSave(options.final ? 0 : 160);
         this._scheduleStateSave(options.final ? 0 : 160);
         this._scheduleScenePreview(options.final ? 120 : 420);
@@ -3018,6 +7189,7 @@ class Factory3DWidget {
             ? this.scene?.camera
             : this.viewer?.getCameraState?.() || this.viewerState.camera;
         return {
+            base_edit_revision: Math.max(0, Number(this.scene?.edit_revision) || 0),
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
             lighting: { ...this.lighting },
@@ -3039,11 +7211,19 @@ class Factory3DWidget {
                 target: [...saved.target],
                 up: [...saved.up],
             })),
+            camera_tracks: JSON.parse(JSON.stringify(this.scene?.camera_tracks || [])),
+            levels: normalizedLevels(this.scene?.levels).map(level => ({ ...level })),
+            architecture: JSON.parse(JSON.stringify(normalizedArchitecture(
+                this.scene?.architecture,
+                normalizedLevels(this.scene?.levels),
+            ))),
             objects: (this.scene?.objects || []).map(item => ({
                 object_id: item.object_id,
                 name: item.name,
+                level_id: item.level_id,
                 transform: item.transform,
                 visible: item.visible !== false,
+                ...normalizedObjectEditorProperties(item),
             })),
             layers: this._normalizeSceneLayers().map(layer => ({
                 ...layer,
@@ -3066,8 +7246,8 @@ class Factory3DWidget {
         if (!this.sceneId || !this.scene) return;
         this.scene.name = this.els.sceneName.value.trim() || this.scene.name || "Untitled scene";
         const sceneId = this.sceneId;
-        const payload = this._scenePayload();
         const operation = this._sceneSaveSerial.then(async () => {
+            const payload = this._scenePayload();
             const updated = await this._fetchJSON(ENDPOINTS.scene(sceneId), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
@@ -3076,15 +7256,15 @@ class Factory3DWidget {
             if (this.sceneId === sceneId && this.scene) {
                 this.scene.revision = updated.revision;
                 this.scene.render_revision = updated.render_revision;
+                this.scene.edit_revision = updated.edit_revision;
                 this.scene.updated_at = updated.updated_at;
                 this.scene.exports = updated.exports;
-                this.scene.render = updated.render || this.scene.render;
-                this.scene.camera = updated.camera || this.scene.camera;
-                this.scene.cameras = this._normalizeSceneCameras(
-                    updated.cameras || this.scene.cameras,
-                );
-                this.scene.lighting = updated.lighting || this.scene.lighting;
-                this.scene.skydome = updated.skydome || this.scene.skydome;
+                // The PATCH payload was captured before awaiting the server.
+                // Replacing live editor collections here invalidates every
+                // Inspector closure and can also overwrite input made while
+                // the request was in flight. The client already normalizes
+                // these values when building the payload; only server-owned
+                // revision/export metadata is merged into the live scene.
             }
             this._scheduleStateSave(0);
             return updated;
@@ -3095,7 +7275,16 @@ class Factory3DWidget {
         try {
             return await operation;
         } catch (error) {
-            if (showError) this._showError("Scene save failed", error);
+            if (showError) {
+                if (error.status === 409) {
+                    this._showError(
+                        "Scene changed elsewhere",
+                        new Error("Reload the scene before saving to avoid overwriting newer edits."),
+                    );
+                } else {
+                    this._showError("Scene save failed", error);
+                }
+            }
             throw error;
         }
     }
@@ -3428,6 +7617,7 @@ class Factory3DWidget {
                                 ? generatedScene
                                 : await this._fetchJSON(ENDPOINTS.scene(generatedSceneId));
                             await this._applyScene(scene, { preserveSource: true });
+                            this._placeNewObjectOnActiveFloor(generatedObjectId);
                             this._scheduleStateSave(0);
                             this.toast("Object added to the scene.", "success");
                         } else if (job.kind === "weights") {
@@ -3541,7 +7731,7 @@ class Factory3DWidget {
                 { method: "POST" },
             );
             await this._applyScene(result.scene, { preserveSource: true });
-            this._selectObject(result.object_id);
+            this._placeNewObjectOnActiveFloor(result.object_id);
             this._setStatus("Object duplicated", "success");
             this.toast("Object duplicated.", "success");
         } catch (error) {
@@ -4339,7 +8529,8 @@ class Factory3DWidget {
                 this._selectSkydome();
                 this._setSkydomePanelOpen(true);
             } else if (result.object_id) {
-                this._selectObject(result.object_id);
+                if (result.created_scene) this._selectObject(result.object_id);
+                else this._placeNewObjectOnActiveFloor(result.object_id);
             }
             this.toast(
                 result.created_scene
@@ -5216,9 +9407,9 @@ class Factory3DWidget {
         this._syncSeedMode();
         this._syncDensityMode();
         const exportLabel = this.els.sceneExport?.querySelector("span:last-child");
-        if (exportLabel) exportLabel.textContent = "Scene PLY";
+        if (exportLabel) exportLabel.textContent = "Gaussian PLY";
         if (this.els.sceneExport) {
-            this.els.sceneExport.title = "Export visible scene as PLY";
+            this.els.sceneExport.title = "Export visible Gaussian models as PLY; architecture is stored in the scene";
         }
         this._customSelects?.refresh?.();
     }
@@ -5250,11 +9441,112 @@ class Factory3DWidget {
     }
 
     _syncToolbar() {
+        this._syncWorkspace();
         const mode = this.viewerState.mode || "translate";
         this.els.modeMove.setAttribute("aria-pressed", String(mode === "translate"));
         this.els.modeRotate.setAttribute("aria-pressed", String(mode === "rotate"));
         this.els.modeScale.setAttribute("aria-pressed", String(mode === "scale"));
         this.els.grid.setAttribute("aria-pressed", String(Boolean(this.viewerState.grid)));
+        const plan = this.editorView.view_mode === "plan";
+        this.els.viewportCamera.hidden = plan;
+        this.els.fit.disabled = plan;
+        this.els.fit.title = plan ? "Available in 3D view" : "Frame complete 3D scene";
+        this._syncViewportCameraHUD();
+        this.els.view3d.setAttribute("aria-pressed", String(!plan));
+        this.els.viewPlan.setAttribute("aria-pressed", String(plan));
+        this.els.planTools.hidden = !plan;
+        this.els.openingKindShortcut.hidden = !plan || this.editorView.plan_tool !== "opening";
+        this.els.modeMove.disabled = plan && this.editorView.plan_tool !== "select";
+        this.els.modeRotate.disabled = plan;
+        this.els.modeScale.disabled = plan;
+        const planToolTitles = {
+            select: "Select and edit architecture",
+            wall: "Press and drag to draw a wall",
+            room: "Press and drag diagonally to draw a rectangular room",
+            opening: "Press on a wall and drag to set the opening width",
+            camera: "Press and drag to place and aim a saved camera",
+        };
+        for (const control of this.els.planToolButtons) {
+            control.disabled = false;
+            control.title = planToolTitles[control.dataset.planTool] || "";
+            control.setAttribute(
+                "aria-pressed",
+                String(control.dataset.planTool === this.editorView.plan_tool),
+            );
+        }
+        const planHints = {
+            select: "Click to select · Drag wall points",
+            wall: "Press and drag to draw a wall",
+            room: "Press and drag diagonally to draw a room",
+            opening: "Press on a wall and drag to set width",
+            camera: "Press and drag to place and aim",
+        };
+        this.els.planHint.textContent = planHints[this.editorView.plan_tool] || planHints.select;
+        this.els.planGridToggle.setAttribute(
+            "aria-pressed",
+            String(this.editorView.plan_grid.visible),
+        );
+        this.els.snapToggle.setAttribute("aria-pressed", String(this.editorView.snap.enabled));
+        this.els.snapGrid.value = String(this.editorView.plan_grid.step);
+        for (const control of this.els.planSettings) {
+            const key = control.dataset.planSetting;
+            const value = key === "major_every"
+                ? this.editorView.plan_grid.major_every
+                : key === "grid_step"
+                    ? this.editorView.plan_grid.step
+                    : key === "opening_kind"
+                        ? this.editorView.opening_kind
+                        : this.editorView.snap[key];
+            if (control.type === "checkbox") control.checked = value !== false;
+            else control.value = String(value ?? 0);
+        }
+        this.viewer?.setPlanGrid?.({
+            visible: this.editorView.plan_grid.visible,
+            step: this.editorView.plan_grid.step,
+            majorEvery: this.editorView.plan_grid.major_every,
+        });
+        const levels = this.scene ? normalizedLevels(this.scene.levels) : [];
+        const selectedLevelId = levels.some(level => level.level_id === this.editorView.active_level_id)
+            ? this.editorView.active_level_id
+            : levels[0]?.level_id || "";
+        if (this.els.levelSelect.dataset.signature !== levels.map(level => `${level.level_id}:${level.name}`).join("|")) {
+            this.els.levelSelect.replaceChildren(...levels.map(level => {
+                const option = element("option", "", `${level.name} · ${Number(level.elevation).toFixed(2)} m`);
+                option.value = level.level_id;
+                return option;
+            }));
+            this.els.levelSelect.dataset.signature = levels.map(level => `${level.level_id}:${level.name}`).join("|");
+        }
+        this.editorView.active_level_id = selectedLevelId;
+        this.els.levelSelect.value = selectedLevelId;
+        this.els.levelSelect.hidden = !this.scene;
+        const buildings = this.scene?.architecture?.buildings || [];
+        const selectedBuildingId = buildings.some(
+            building => building.building_id === this.editorView.active_building_id,
+        ) ? this.editorView.active_building_id : buildings[0]?.building_id || "";
+        const buildingSignature = buildings.map(
+            building => `${building.building_id}:${building.name}`,
+        ).join("|");
+        if (this.els.buildingSelect.dataset.signature !== buildingSignature) {
+            const noBuildings = element("option", "", "No buildings");
+            noBuildings.value = "";
+            noBuildings.disabled = true;
+            noBuildings.selected = !buildings.length;
+            this.els.buildingSelect.replaceChildren(...(buildings.length ? buildings.map(building => {
+                const option = element("option", "", building.name || "Building");
+                option.value = building.building_id;
+                return option;
+            }) : [noBuildings]));
+            this.els.buildingSelect.dataset.signature = buildingSignature;
+        }
+        this.editorView.active_building_id = selectedBuildingId;
+        this.els.buildingSelect.value = selectedBuildingId;
+        this.els.buildingSelect.hidden = !this.scene;
+        this.els.buildingSelect.disabled = !buildings.length;
+        this.els.levelAdd.disabled = !this.scene;
+        this.els.buildingAdd.disabled = !this.scene || (this.scene.architecture?.buildings?.length || 0) >= 64;
+        if (this.els.undo) this.els.undo.disabled = !this.history.canUndo;
+        if (this.els.redo) this.els.redo.disabled = !this.history.canRedo;
     }
 
     serializeState() {
@@ -5265,11 +9557,19 @@ class Factory3DWidget {
             selected_object_ids: Array.from(this.selectedObjectIds),
             selected_group_id: this.selectedGroupId,
             selected_skydome: this.selectedSkydome,
+            selected_architecture: this.selectedArchitecture,
+            selected_camera_id: this.selectedCameraId,
             collapsed_group_ids: Array.from(this.collapsedGroupIds),
             settings: { ...this.settings },
             render_settings: { ...this.exportSettings },
             lighting_settings: { ...this.lighting },
             viewer_state: this.viewer?.getState?.() || this.viewerState,
+            editor_view: {
+                ...this.editorView,
+                plan_camera: this.viewer?.getState?.().plan_camera || this.editorView.plan_camera,
+            },
+            active_camera_track_id: this.activeCameraTrackId,
+            selected_camera_keyframe_id: this.selectedCameraKeyframeId,
             scene_snapshot: this.scene ? this._scenePayload() : null,
             source: this.sourceAsset
                 ? { ...this.sourceAsset, scene_id: this.sceneId }
@@ -5315,6 +9615,11 @@ class Factory3DWidget {
             if (this.selectedObjectId) this.selectedObjectIds.add(this.selectedObjectId);
             this.selectedGroupId = String(state.selected_group_id || "");
             this.selectedSkydome = state.selected_skydome === true;
+            this.selectedArchitecture = safeObject(state.selected_architecture);
+            if (!this.selectedArchitecture.type || !this.selectedArchitecture.id) {
+                this.selectedArchitecture = null;
+            }
+            this.selectedCameraId = String(state.selected_camera_id || "");
             this.collapsedGroupIds = new Set(
                 Array.isArray(state.collapsed_group_ids)
                     ? state.collapsed_group_ids.map(String)
@@ -5352,11 +9657,20 @@ class Factory3DWidget {
                 state.lighting_settings || safeObject(state.scene_snapshot).lighting,
             );
             this.viewerState = { ...this.viewerState, ...safeObject(state.viewer_state) };
+            this.editorView = normalizedEditorView(
+                state.editor_view || state.viewer_state,
+                safeObject(state.scene_snapshot).levels?.[0]?.level_id,
+            );
+            this.activeCameraTrackId = String(state.active_camera_track_id || "");
+            this.selectedCameraKeyframeId = String(state.selected_camera_keyframe_id || "");
             this._syncSettings();
             this._syncExportSettings();
             this._syncLighting();
             this.viewer.setLighting(this.lighting);
             this.viewer.setState(this.viewerState);
+            this.viewer.setViewMode(this.editorView.view_mode);
+            this.viewer.setPlanTool(this.editorView.plan_tool);
+            this.viewer.setActiveLevel(this.editorView.active_level_id);
             await Promise.all([
                 this.loadCapabilities(),
                 this.ensureScene(safeObject(state.scene_snapshot)),
@@ -5384,6 +9698,8 @@ class Factory3DWidget {
     resize() {
         const width = this.container.clientWidth || DEFAULT_NODE_SIZE[0];
         const height = this.container.clientHeight || DEFAULT_NODE_SIZE[1];
+        this.container.classList.toggle("is-compact", width < 980);
+        this.container.classList.toggle("is-narrow", width < 760);
         const scale = clamp(Math.min(width / 1100, height / 720), 0.72, 1.08);
         const scaleValue = scale.toFixed(3);
         if (scaleValue !== this._uiScaleValue) {
@@ -5407,6 +9723,14 @@ class Factory3DWidget {
         clearTimeout(this._sceneSaveTimer);
         clearTimeout(this._previewSaveTimer);
         clearTimeout(this._lightingApplyTimer);
+        clearTimeout(this._architecturePreviewTimer);
+        if (this._architectureGeometryFrame) cancelAnimationFrame(this._architectureGeometryFrame);
+        this._architectureGeometryFrame = 0;
+        if (this.cameraPlayback?.frame) cancelAnimationFrame(this.cameraPlayback.frame);
+        this.cameraPlayback = null;
+        if (this._planHoverFrame) cancelAnimationFrame(this._planHoverFrame);
+        this._planHoverFrame = 0;
+        this._pendingPlanHover = null;
         if (this._previewIdleHandle && typeof cancelIdleCallback === "function") {
             cancelIdleCallback(this._previewIdleHandle);
         }

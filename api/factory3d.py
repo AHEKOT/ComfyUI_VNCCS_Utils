@@ -28,11 +28,18 @@ from .gaussian_scene import (
     validate_ply_payload,
     validate_splat_payload,
 )
+from .factory3d_schema import (
+    normalize_architecture,
+    normalize_camera_tracks,
+    normalize_levels,
+    normalize_lighting_extensions,
+    normalize_object_editor_properties,
+)
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 10
 EXPORT_FORMAT_VERSION = 8
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
@@ -42,11 +49,12 @@ MAX_PREVIEW_BYTES = 64 * 1024 * 1024
 MAX_SCENE_CAMERAS = 32
 MAX_IMAGE_PIXELS = 4096 * 4096
 MAX_SKYDOME_BYTES = 64 * 1024 * 1024
+MAX_TEXTURE_BYTES = 32 * 1024 * 1024
 MAX_SKYDOME_PIXELS = 8192 * 4096
 REFERENCE_PREVIEW_SIZE = (640, 640)
 SKYDOME_VIEWPORT_SIZE = (2048, 1024)
 OBJECT_THUMBNAIL_SIZE = (256, 256)
-MAX_SCENE_JSON_BYTES = 2 * 1024 * 1024
+MAX_SCENE_JSON_BYTES = 16 * 1024 * 1024
 MAX_JOB_LOG_LINES = 800
 MAX_ACTIVE_JOBS = 2
 DEFAULT_SPLAT_CACHE_LIMIT_GB = 32
@@ -310,6 +318,12 @@ def _normalize_scene_cameras(
                 "camera_id": camera_id,
                 "name": _clean_name(raw.get("name"), f"Camera {index + 1}", 80),
                 "created_at": created_at,
+                "level_id": str(raw.get("level_id") or "")
+                if _ID_RE.fullmatch(str(raw.get("level_id") or ""))
+                else "",
+                "building_id": str(raw.get("building_id") or "")
+                if _ID_RE.fullmatch(str(raw.get("building_id") or ""))
+                else "",
                 **camera,
             }
         )
@@ -352,6 +366,7 @@ def _normalize_lighting(value: Any) -> dict[str, Any]:
         "elevation": number("elevation", -10.0, 90.0),
         "ambient": number("ambient", 0.0, 1.5),
         "background": color("background"),
+        **normalize_lighting_extensions(data),
     }
 
 
@@ -521,17 +536,29 @@ def _visible_object_ids(scene: dict[str, Any]) -> set[str]:
         for item in scene.get("objects", [])
         if isinstance(item, dict) and isinstance(item.get("object_id"), str)
     }
+    hidden_building_ids = {
+        building.get("building_id")
+        for building in scene.get("architecture", {}).get("buildings", [])
+        if isinstance(building, dict) and building.get("visible") is False
+    }
+
+    def object_is_visible(item: dict[str, Any]) -> bool:
+        return (
+            item.get("visible") is not False
+            and item.get("building_id") not in hidden_building_ids
+        )
+
     visible: set[str] = set()
     for layer in _normalize_scene_layers(scene):
         if layer["type"] == "object":
             object_id = layer["object_id"]
-            if objects[object_id].get("visible") is not False:
+            if object_is_visible(objects[object_id]):
                 visible.add(object_id)
             continue
         if layer.get("visible") is False:
             continue
         for object_id in layer["children"]:
-            if objects[object_id].get("visible") is not False:
+            if object_is_visible(objects[object_id]):
                 visible.add(object_id)
     return visible
 
@@ -567,7 +594,8 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
     """Keep PLY as the only permanent source and public export asset."""
-    if int(scene.get("schema_version", 0) or 0) >= SCHEMA_VERSION:
+    previous_schema_version = int(scene.get("schema_version", 0) or 0)
+    if previous_schema_version >= SCHEMA_VERSION:
         return
     scene_root = path.parent.resolve()
     changed = True
@@ -669,6 +697,49 @@ def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
                     files.pop(key, None)
                     changed = True
 
+    # Schema 9 temporarily created one mandatory empty Building for every
+    # scene. Remove only that recognizable synthetic container. Any structure
+    # with architecture or a user transform remains untouched.
+    architecture = scene.get("architecture")
+    legacy_buildings = architecture.get("buildings") if isinstance(architecture, dict) else None
+    if previous_schema_version <= 9 and isinstance(legacy_buildings, list) and len(legacy_buildings) == 1:
+        legacy = legacy_buildings[0] if isinstance(legacy_buildings[0], dict) else {}
+        position = legacy.get("position")
+        empty_architecture = not any(
+            architecture.get(key) for key in ("walls", "rooms", "openings")
+        )
+        try:
+            synthetic_transform = (
+                isinstance(position, list)
+                and len(position) == 3
+                and all(abs(float(value or 0)) <= 1e-12 for value in position)
+                and abs(float(legacy.get("rotation_y") or 0)) <= 1e-12
+            )
+        except (TypeError, ValueError):
+            synthetic_transform = False
+        if (
+            empty_architecture
+            and synthetic_transform
+            and str(legacy.get("name") or "Building 1") == "Building 1"
+            and legacy.get("locked") is not True
+        ):
+            removed_building_id = str(legacy.get("building_id") or "")
+            architecture["buildings"] = []
+            for item in scene.get("objects", []):
+                if isinstance(item, dict) and item.get("building_id") == removed_building_id:
+                    item["building_id"] = ""
+            for camera in scene.get("cameras", []):
+                if isinstance(camera, dict) and camera.get("building_id") == removed_building_id:
+                    camera["building_id"] = ""
+            for track in scene.get("camera_tracks", []):
+                if isinstance(track, dict) and track.get("building_id") == removed_building_id:
+                    track["building_id"] = ""
+            lighting = scene.get("lighting")
+            for light in lighting.get("lights", []) if isinstance(lighting, dict) else []:
+                if isinstance(light, dict) and light.get("building_id") == removed_building_id:
+                    light["building_id"] = ""
+            changed = True
+
     scene["schema_version"] = SCHEMA_VERSION
     if changed:
         _atomic_json(path, scene)
@@ -687,11 +758,64 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     _migrate_scene_to_ply_only(path, value)
     if not isinstance(value.get("objects"), list):
         value["objects"] = []
+    for item in value["objects"]:
+        if not isinstance(item, dict):
+            continue
+        item.update(normalize_object_editor_properties(item))
     value["layers"] = _normalize_scene_layers(value)
+    value["levels"] = normalize_levels(scene_id, value.get("levels"))
+    valid_level_ids = {level["level_id"] for level in value["levels"]}
+    default_level_id = value["levels"][0]["level_id"]
+    for item in value["objects"]:
+        if isinstance(item, dict) and item.get("level_id") not in valid_level_ids:
+            item["level_id"] = default_level_id
+    textures = []
+    texture_ids: set[str] = set()
+    for item in (
+        value.get("textures") if isinstance(value.get("textures"), list) else []
+    ):
+        texture_id = str(item.get("texture_id") or "") if isinstance(item, dict) else ""
+        if not _ID_RE.fullmatch(texture_id) or texture_id in texture_ids:
+            continue
+        textures.append(item)
+        texture_ids.add(texture_id)
+        if len(textures) >= 512:
+            break
+    value["textures"] = textures
+    value["architecture"] = normalize_architecture(
+        scene_id,
+        value["levels"],
+        value.get("architecture"),
+    )
+    valid_building_ids = {
+        building["building_id"] for building in value["architecture"]["buildings"]
+    }
+    default_building_id = value["architecture"]["buildings"][0]["building_id"] \
+        if value["architecture"]["buildings"] else ""
+    for item in value["objects"]:
+        if isinstance(item, dict) and item.get("building_id") not in valid_building_ids:
+            item["building_id"] = default_building_id
+    for material in value["architecture"].get("materials", []):
+        if material.get("texture_id") not in texture_ids:
+            material.pop("texture_id", None)
     value["render"] = _normalize_render_settings(value.get("render"))
     value["camera"] = _normalize_camera(value.get("camera"))
     value["cameras"] = _normalize_scene_cameras(value.get("cameras"))
+    for camera in value["cameras"]:
+        if camera.get("level_id") not in valid_level_ids:
+            camera["level_id"] = default_level_id
+        if camera.get("building_id") not in valid_building_ids:
+            camera["building_id"] = default_building_id
+    value["camera_tracks"] = normalize_camera_tracks(value.get("camera_tracks"))
+    for track in value["camera_tracks"]:
+        if track.get("building_id") not in valid_building_ids:
+            track["building_id"] = default_building_id
     value["lighting"] = _normalize_lighting(value.get("lighting"))
+    for light in value["lighting"].get("lights", []):
+        if light.get("level_id") not in valid_level_ids:
+            light["level_id"] = default_level_id
+        if light.get("building_id") not in valid_building_ids:
+            light["building_id"] = default_building_id
     skydome = _normalize_scene_skydome(value.get("skydome"))
     if skydome is None:
         value.pop("skydome", None)
@@ -701,12 +825,25 @@ def load_scene(scene_id: str) -> dict[str, Any]:
         0,
         int(value.get("render_revision", value.get("revision", 0))),
     )
+    value["edit_revision"] = max(
+        0,
+        int(value.get("edit_revision", value.get("revision", 0))),
+    )
     value["schema_version"] = SCHEMA_VERSION
     return value
 
 
-def _save_scene(scene: dict[str, Any], *, bump_revision: bool = True) -> dict[str, Any]:
+def _save_scene(
+    scene: dict[str, Any],
+    *,
+    bump_revision: bool = True,
+    bump_edit_revision: bool | None = None,
+) -> dict[str, Any]:
     scene_id = _validate_id(scene.get("scene_id"), "scene id")
+    if bump_edit_revision is None:
+        bump_edit_revision = bump_revision
+    if bump_edit_revision:
+        scene["edit_revision"] = max(0, int(scene.get("edit_revision", 0))) + 1
     if bump_revision:
         scene["revision"] = max(0, int(scene.get("revision", 0))) + 1
         scene["render_revision"] = max(
@@ -727,10 +864,17 @@ def create_scene(name: Any = "") -> dict[str, Any]:
         "name": _clean_name(name, "Untitled scene"),
         "revision": 0,
         "render_revision": 0,
+        "edit_revision": 0,
         "created_at": timestamp,
         "updated_at": timestamp,
         "objects": [],
         "layers": [],
+        "levels": normalize_levels(scene_id, None),
+        "architecture": normalize_architecture(
+            scene_id,
+            normalize_levels(scene_id, None),
+            {"buildings": [], "walls": [], "rooms": [], "openings": [], "materials": []},
+        ),
         "render": dict(_DEFAULT_RENDER_SETTINGS),
         "camera": {
             "position": list(_DEFAULT_CAMERA["position"]),
@@ -739,12 +883,14 @@ def create_scene(name: Any = "") -> dict[str, Any]:
             "fov": _DEFAULT_CAMERA["fov"],
         },
         "cameras": [],
+        "camera_tracks": [],
+        "textures": [],
         "lighting": dict(_DEFAULT_LIGHTING),
         "exports": {},
     }
     with _STATE_LOCK:
         resolve_scene_dir(scene_id).mkdir(parents=True, exist_ok=False)
-        _save_scene(scene, bump_revision=False)
+        _save_scene(scene, bump_revision=False, bump_edit_revision=False)
     return scene
 
 
@@ -965,6 +1111,7 @@ def import_ply_object(
             "created_at": _now(),
             "visible": True,
             "transform": normalize_transform({}),
+            **normalize_object_editor_properties({}),
             "gaussians": int(normalized["ply"]["gaussians"]),
             "source": {
                 "type": "ply_import",
@@ -990,6 +1137,11 @@ def import_ply_object(
         }
         with _STATE_LOCK:
             scene = load_scene(safe_scene_id)
+            item["level_id"] = scene["levels"][0]["level_id"]
+            item["building_id"] = (
+                scene["architecture"]["buildings"][0]["building_id"]
+                if scene["architecture"]["buildings"] else ""
+            )
             scene["objects"].append(item)
             scene["layers"].append({"type": "object", "object_id": object_id})
             scene["exports"] = {}
@@ -1278,7 +1430,7 @@ def store_scene_reference(
             "preview_size": preview_target.stat().st_size,
             "updated_at": _now(),
         }
-        _save_scene(scene, bump_revision=False)
+        _save_scene(scene, bump_revision=False, bump_edit_revision=True)
         return scene
 
 
@@ -1377,7 +1529,7 @@ def store_scene_skydome(
             0,
             int(scene.get("render_revision", scene.get("revision", 0))),
         ) + 1
-        return _save_scene(scene, bump_revision=False)
+        return _save_scene(scene, bump_revision=False, bump_edit_revision=True)
 
 
 def remove_scene_skydome(scene_id: str) -> dict[str, Any]:
@@ -1393,7 +1545,94 @@ def remove_scene_skydome(scene_id: str) -> dict[str, Any]:
             0,
             int(scene.get("render_revision", scene.get("revision", 0))),
         ) + 1
-        return _save_scene(scene, bump_revision=False)
+        return _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+
+
+def _scene_texture_file(scene: dict[str, Any], texture_id: Any) -> Path:
+    normalized_id = _validate_id(texture_id, "texture id")
+    entry = next(
+        (
+            item for item in scene.get("textures", [])
+            if isinstance(item, dict) and item.get("texture_id") == normalized_id
+        ),
+        None,
+    )
+    if entry is None:
+        raise FileNotFoundError("scene texture was not found")
+    relative = entry.get("file")
+    root = resolve_scene_dir(scene["scene_id"])
+    target = (root / str(relative or "")).resolve()
+    if root not in target.parents or not target.is_file():
+        raise FileNotFoundError("scene texture file is missing")
+    return target
+
+
+def store_scene_texture(
+    scene_id: str,
+    image_bytes: bytes,
+    file_name: Any = "texture.png",
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    image = _decode_image(image_bytes, max_bytes=MAX_TEXTURE_BYTES).convert("RGBA")
+    if image.width > 8192 or image.height > 8192 or image.width * image.height > 67_108_864:
+        raise ValueError("texture dimensions are too large")
+    texture_id = _new_id()
+    root = resolve_scene_dir(scene_id)
+    texture_root = root / "textures"
+    texture_root.mkdir(parents=True, exist_ok=True)
+    target = texture_root / f"{texture_id}.png"
+    temporary = texture_root / f".{texture_id}.{secrets.token_hex(6)}.tmp"
+    try:
+        image.save(temporary, format="PNG", optimize=True)
+        os.replace(temporary, target)
+        with _STATE_LOCK:
+            scene = load_scene(scene_id)
+            if len(scene.get("textures", [])) >= 512:
+                raise ValueError("scene texture limit was exceeded")
+            entry = {
+                "texture_id": texture_id,
+                "name": _clean_name(Path(str(file_name or "")).stem, "Texture", 80),
+                "file": str(target.relative_to(root)),
+                "mime": "image/png",
+                "width": image.width,
+                "height": image.height,
+                "size": target.stat().st_size,
+                "updated_at": _now(),
+            }
+            scene.setdefault("textures", []).append(entry)
+            saved = _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+            return saved, entry
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def remove_scene_texture(scene_id: str, texture_id: Any) -> dict[str, Any]:
+    normalized_id = _validate_id(texture_id, "texture id")
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        target = _scene_texture_file(scene, normalized_id)
+        before = len(scene.get("textures", []))
+        scene["textures"] = [
+            item for item in scene.get("textures", [])
+            if item.get("texture_id") != normalized_id
+        ]
+        if len(scene["textures"]) == before:
+            raise FileNotFoundError("scene texture was not found")
+        for material in scene.get("architecture", {}).get("materials", []):
+            if material.get("texture_id") == normalized_id:
+                material.pop("texture_id", None)
+        scene["render_revision"] = max(
+            0,
+            int(scene.get("render_revision", scene.get("revision", 0))),
+        ) + 1
+        saved = _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            LOGGER.warning("Could not remove retired scene texture %s", target, exc_info=True)
+        return saved
 
 
 def store_scene_preview(
@@ -2589,6 +2828,7 @@ def _generate_object(
             "name": object_name,
             "created_at": _now(),
             "transform": normalize_transform({}),
+            **normalize_object_editor_properties({}),
             "gaussians": gaussian_count,
             "seed": seed,
             "checksums": {
@@ -2620,6 +2860,11 @@ def _generate_object(
         _emit(job, "scene", 98, "Adding object to scene", detail=object_name)
         with _STATE_LOCK:
             scene = load_scene(scene_id)
+            item["level_id"] = scene["levels"][0]["level_id"]
+            item["building_id"] = (
+                scene["architecture"]["buildings"][0]["building_id"]
+                if scene["architecture"]["buildings"] else ""
+            )
             scene["objects"].append(item)
             scene["layers"].append({"type": "object", "object_id": object_id})
             scene["exports"] = {}
@@ -2666,6 +2911,15 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
         )
         skydome.pop("file", None)
         skydome.pop("viewport_file", None)
+    for texture in value.get("textures", []):
+        if not isinstance(texture, dict):
+            continue
+        texture_id = texture.get("texture_id")
+        texture["url"] = (
+            f"{API_BASE}/scenes/{scene_id}/textures/{texture_id}"
+            f"?v={int(float(texture.get('updated_at', 0) or 0) * 1000)}"
+        )
+        texture.pop("file", None)
     preview = value.get("preview")
     if isinstance(preview, dict):
         render = _normalize_render_settings(value.get("render"))
@@ -2702,10 +2956,31 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
         raise ValueError("scene update must be an object")
     with _STATE_LOCK:
         scene = load_scene(scene_id)
+        if "base_edit_revision" in payload:
+            try:
+                base_edit_revision = int(payload["base_edit_revision"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("base edit revision is invalid") from exc
+            if base_edit_revision != int(scene.get("edit_revision", 0)):
+                raise RuntimeError(
+                    "scene was changed by another editor; reload it before saving"
+                )
         visible_before = _visible_object_ids(scene)
         changed = False
         render_changed = False
         preview_changed = False
+        reference_levels = normalize_levels(scene_id, payload["levels"], strict=True) \
+            if "levels" in payload else scene.get("levels", [])
+        reference_architecture = normalize_architecture(
+            scene_id,
+            reference_levels,
+            payload["architecture"],
+            strict=True,
+        ) if "architecture" in payload else scene.get("architecture", {})
+        valid_building_ids = {
+            building["building_id"]
+            for building in reference_architecture.get("buildings", [])
+        }
         if "name" in payload:
             name = _clean_name(payload["name"], scene["name"])
             if name != scene["name"]:
@@ -2740,11 +3015,114 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                     if visible != (item.get("visible") is not False):
                         item["visible"] = visible
                         changed = True
+                if "level_id" in incoming:
+                    level_id = str(incoming.get("level_id") or "")
+                    level_source = normalize_levels(scene_id, payload["levels"], strict=True) \
+                        if "levels" in payload else scene.get("levels", [])
+                    valid_level_ids = {level["level_id"] for level in level_source}
+                    if level_id not in valid_level_ids:
+                        raise ValueError("scene object references an unknown floor level")
+                    if level_id != item.get("level_id"):
+                        item["level_id"] = level_id
+                        changed = True
+                if "building_id" in incoming:
+                    building_id = str(incoming.get("building_id") or "")
+                    if building_id and building_id not in valid_building_ids:
+                        raise ValueError("scene object references an unknown building")
+                    if building_id != item.get("building_id"):
+                        item["building_id"] = building_id
+                        changed = True
+                if any(
+                    key in incoming
+                    for key in ("collision_proxy", "light_transport", "transmission", "locked")
+                ):
+                    editor_properties = normalize_object_editor_properties({
+                        **item,
+                        **incoming,
+                    })
+                    previous_editor_properties = normalize_object_editor_properties(item)
+                    if editor_properties != previous_editor_properties:
+                        item.update(editor_properties)
+                        changed = True
+                        if (
+                            editor_properties["light_transport"]
+                            != previous_editor_properties["light_transport"]
+                            or editor_properties["transmission"]
+                            != previous_editor_properties["transmission"]
+                            or editor_properties["collision_proxy"]
+                            != previous_editor_properties["collision_proxy"]
+                        ):
+                            preview_changed = True
         if "layers" in payload:
             layers = _normalize_scene_layers(scene, payload["layers"], strict=True)
             if layers != scene.get("layers"):
                 scene["layers"] = layers
                 changed = True
+        if "levels" in payload:
+            levels = normalize_levels(scene_id, payload["levels"], strict=True)
+            if levels != scene.get("levels"):
+                scene["levels"] = levels
+                scene["architecture"] = normalize_architecture(
+                    scene_id,
+                    levels,
+                    scene.get("architecture"),
+                )
+                valid_level_ids = {level["level_id"] for level in levels}
+                fallback_level_id = levels[0]["level_id"]
+                for item in scene.get("objects", []):
+                    if item.get("level_id") not in valid_level_ids:
+                        item["level_id"] = fallback_level_id
+                for camera in scene.get("cameras", []):
+                    if camera.get("level_id") not in valid_level_ids:
+                        camera["level_id"] = fallback_level_id
+                for light in scene.get("lighting", {}).get("lights", []):
+                    if light.get("level_id") not in valid_level_ids:
+                        light["level_id"] = fallback_level_id
+                changed = True
+                preview_changed = True
+        if "architecture" in payload:
+            architecture = reference_architecture
+            texture_ids = {
+                item.get("texture_id")
+                for item in scene.get("textures", [])
+                if isinstance(item, dict)
+            }
+            if any(
+                material.get("texture_id")
+                and material.get("texture_id") not in texture_ids
+                for material in architecture.get("materials", [])
+            ):
+                raise ValueError("architecture references an unknown scene texture")
+            referenced_building_ids = {
+                item.get("building_id") for item in scene.get("objects", [])
+            } | {
+                camera.get("building_id")
+                for camera in (
+                    _normalize_scene_cameras(payload["cameras"], strict=True)
+                    if "cameras" in payload else scene.get("cameras", [])
+                )
+            } | {
+                light.get("building_id")
+                for light in (
+                    _normalize_lighting(payload["lighting"])
+                    if "lighting" in payload else scene.get("lighting", {})
+                ).get("lights", [])
+            } | {
+                track.get("building_id")
+                for track in (
+                    normalize_camera_tracks(payload["camera_tracks"], strict=True)
+                    if "camera_tracks" in payload else scene.get("camera_tracks", [])
+                )
+            }
+            if any(
+                building_id and building_id not in valid_building_ids
+                for building_id in referenced_building_ids
+            ):
+                raise ValueError("scene content references a removed building")
+            if architecture != scene.get("architecture"):
+                scene["architecture"] = architecture
+                changed = True
+                preview_changed = True
         if "render" in payload:
             render = _normalize_render_settings(payload["render"])
             previous_render = _normalize_render_settings(scene.get("render"))
@@ -2763,12 +3141,45 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                 preview_changed = True
         if "cameras" in payload:
             cameras = _normalize_scene_cameras(payload["cameras"], strict=True)
+            valid_level_ids = {level["level_id"] for level in scene.get("levels", [])}
+            fallback_level_id = scene.get("levels", [{}])[0].get("level_id", "")
+            for camera in cameras:
+                if not camera.get("level_id") and fallback_level_id:
+                    camera["level_id"] = fallback_level_id
+            if any(camera.get("level_id") not in valid_level_ids for camera in cameras):
+                raise ValueError("saved camera references an unknown floor level")
+            if any(
+                camera.get("building_id")
+                and camera.get("building_id") not in valid_building_ids
+                for camera in cameras
+            ):
+                raise ValueError("saved camera references an unknown building")
             if cameras != _normalize_scene_cameras(scene.get("cameras")):
                 scene["cameras"] = cameras
                 changed = True
                 preview_changed = True
+        if "camera_tracks" in payload:
+            camera_tracks = normalize_camera_tracks(payload["camera_tracks"], strict=True)
+            if any(
+                track.get("building_id")
+                and track.get("building_id") not in valid_building_ids
+                for track in camera_tracks
+            ):
+                raise ValueError("camera path references an unknown building")
+            if camera_tracks != scene.get("camera_tracks"):
+                scene["camera_tracks"] = camera_tracks
+                changed = True
         if "lighting" in payload:
             lighting = _normalize_lighting(payload["lighting"])
+            valid_level_ids = {level["level_id"] for level in scene.get("levels", [])}
+            if any(light.get("level_id") not in valid_level_ids for light in lighting.get("lights", [])):
+                raise ValueError("scene light references an unknown floor level")
+            if any(
+                light.get("building_id")
+                and light.get("building_id") not in valid_building_ids
+                for light in lighting.get("lights", [])
+            ):
+                raise ValueError("scene light references an unknown building")
             if lighting != _normalize_lighting(scene.get("lighting")):
                 scene["lighting"] = lighting
                 changed = True
@@ -2802,7 +3213,11 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                 0,
                 int(scene.get("render_revision", scene.get("revision", 0))),
             ) + 1
-        return _save_scene(scene, bump_revision=render_changed)
+        return _save_scene(
+            scene,
+            bump_revision=render_changed,
+            bump_edit_revision=True,
+        )
 
 
 def _scene_sources(scene: dict[str, Any], only_object_id: str = "") -> list[tuple[Path, Any]]:
@@ -3076,6 +3491,8 @@ def register_routes(routes: Any) -> None:
             return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
+        except RuntimeError as exc:
+            return _json_error(web, exc, 409)
         except Exception as exc:
             return _json_error(web, exc)
 
@@ -3115,7 +3532,9 @@ def register_routes(routes: Any) -> None:
                 image_bytes,
                 getattr(image_field, "filename", "reference.png"),
             )
-            return web.json_response(_public_scene(scene)["reference"], status=201)
+            reference = _public_scene(scene)["reference"]
+            reference["edit_revision"] = scene.get("edit_revision", 0)
+            return web.json_response(reference, status=201)
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:
@@ -3198,6 +3617,65 @@ def register_routes(routes: Any) -> None:
     async def factory_scene_skydome_delete(request: Any) -> Any:
         try:
             scene = remove_scene_skydome(request.match_info["scene_id"])
+            return web.json_response(_public_scene(scene))
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/textures")
+    async def factory_scene_texture_upload(request: Any) -> Any:
+        try:
+            if not _content_length_ok(request, MAX_TEXTURE_BYTES + 1024 * 1024):
+                return web.json_response({"error": "texture upload is too large"}, status=413)
+            scene_id = _validate_id(request.match_info["scene_id"], "scene id")
+            load_scene(scene_id)
+            post = await request.post()
+            image_field = post.get("image")
+            if image_field is None or not hasattr(image_field, "file"):
+                raise ValueError("missing texture image")
+            image_bytes = await asyncio.to_thread(
+                image_field.file.read,
+                MAX_TEXTURE_BYTES + 1,
+            )
+            scene, entry = await asyncio.to_thread(
+                store_scene_texture,
+                scene_id,
+                image_bytes,
+                getattr(image_field, "filename", "texture.png"),
+            )
+            public_scene = _public_scene(scene)
+            public_entry = next(
+                item for item in public_scene.get("textures", [])
+                if item.get("texture_id") == entry["texture_id"]
+            )
+            return web.json_response({"texture": public_entry, "scene": public_scene}, status=201)
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.get(f"{API_BASE}/scenes/{{scene_id}}/textures/{{texture_id}}")
+    async def factory_scene_texture_get(request: Any) -> Any:
+        try:
+            scene = load_scene(request.match_info["scene_id"])
+            return web.FileResponse(
+                _scene_texture_file(scene, request.match_info["texture_id"]),
+                headers={"Cache-Control": "private, max-age=31536000, immutable"},
+            )
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.delete(f"{API_BASE}/scenes/{{scene_id}}/textures/{{texture_id}}")
+    async def factory_scene_texture_delete(request: Any) -> Any:
+        try:
+            scene = await asyncio.to_thread(
+                remove_scene_texture,
+                request.match_info["scene_id"],
+                request.match_info["texture_id"],
+            )
             return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
