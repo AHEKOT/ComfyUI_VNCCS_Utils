@@ -205,7 +205,9 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                 }
                 if (specifier === "./vnccs_pose_studio_core.js") {
                     class FakePoseViewerCore {
-                        constructor() {
+                        constructor(_canvas, options = {}) {
+                            this.options = options;
+                            this.selectedBone = null;
                             return new Proxy(this, {
                                 get(target, property) {
                                     if (property in target) return target[property];
@@ -290,6 +292,36 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     assert.equal(poseWidget.computeSize()[1], -4);
 
     const studio = node.studioWidget;
+    assert.ok(studio.selectedJointSection, "Selected Joint section must be mounted");
+    assert.equal(studio.selectedJointSection.hidden, true);
+
+    studio.viewer.selectedBone = {
+        name: "upper_arm.L",
+        rotation: { x: 0.25, y: -0.5, z: 1.25 },
+    };
+    studio.viewer.options.onBoneSelectionChange({
+        boneName: "upper_arm.L",
+        previousBoneName: null,
+        source: "viewer",
+    });
+    assert.equal(studio.selectedJointSection.hidden, false);
+    assert.equal(studio.selectedJointName.textContent, "upper_arm.L");
+    assert.equal(studio.selectedJointSliders.x.value.textContent, "0.250 rad");
+    assert.equal(studio.selectedJointSliders.y.value.textContent, "-0.500 rad");
+    assert.equal(studio.selectedJointSliders.z.value.textContent, "1.250 rad");
+
+    studio.viewer.selectedBone.rotation.x = -0.75;
+    studio.viewer.options.onSelectedBoneRotationChange();
+    assert.equal(studio.selectedJointSliders.x.value.textContent, "-0.750 rad");
+
+    studio.viewer.selectedBone = null;
+    studio.viewer.options.onBoneSelectionChange({
+        boneName: null,
+        previousBoneName: "upper_arm.L",
+        source: "viewer",
+    });
+    assert.equal(studio.selectedJointSection.hidden, true);
+
     studio.exportParams.editor_mode = "image";
     studio.poses = [
         {

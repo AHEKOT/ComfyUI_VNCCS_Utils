@@ -5875,6 +5875,81 @@ class PoseStudioWidget {
         rightSidebar.appendChild(charactersSection.el);
         this.renderCharactersUI();
 
+        const selectedJointSection = this.createSection("Selected Joint", true);
+        this.selectedJointSection = selectedJointSection.el;
+        this.selectedJointSliders = {};
+
+        this.selectedJointName = document.createElement("div");
+        this.selectedJointName.className = "vnccs-ps-label";
+        this.selectedJointName.style.marginBottom = "8px";
+        selectedJointSection.content.appendChild(this.selectedJointName);
+
+        ['x', 'y', 'z'].forEach(axis => {
+            const field = document.createElement("div");
+            field.className = "vnccs-ps-field";
+
+            const labelRow = document.createElement("div");
+            labelRow.className = "vnccs-ps-label-row";
+
+            const label = document.createElement("span");
+            label.className = "vnccs-ps-label";
+            label.textContent = axis.toUpperCase();
+
+            const valueRow = document.createElement("div");
+            valueRow.style.display = "flex";
+            valueRow.style.alignItems = "center";
+            valueRow.style.gap = "6px";
+
+            const value = document.createElement("span");
+            value.className = "vnccs-ps-value";
+            value.textContent = "0.000 rad";
+
+            const resetBtn = document.createElement("button");
+            resetBtn.className = "vnccs-ps-reset-btn";
+            resetBtn.innerHTML = "↺";
+            resetBtn.title = "Reset to 0 rad";
+
+            const wrap = document.createElement("div");
+            wrap.className = "vnccs-ps-slider-wrap";
+
+            const slider = document.createElement("input");
+            slider.type = "range";
+            slider.className = "vnccs-ps-slider";
+            slider.min = String(-Math.PI);
+            slider.max = String(Math.PI);
+            slider.step = "0.001";
+            slider.value = "0";
+
+            slider.addEventListener("focus", () => {
+                this.viewer?.recordState();
+            });
+            slider.addEventListener("input", () => {
+                const radians = Number(slider.value);
+                value.textContent = `${radians.toFixed(3)} rad`;
+                this.viewer?.setSelectedBoneRotation(axis, radians, {
+                    recordState: false,
+                    dispatchPoseChange: false,
+                });
+            });
+            slider.addEventListener("change", () => {
+                this.viewer?.dispatchPoseChange();
+            });
+            resetBtn.addEventListener("click", event => {
+                event.stopPropagation();
+                this.viewer?.setSelectedBoneRotation(axis, 0);
+            });
+
+            valueRow.append(value, resetBtn);
+            labelRow.append(label, valueRow);
+            wrap.appendChild(slider);
+            field.append(labelRow, wrap);
+            selectedJointSection.content.appendChild(field);
+            this.selectedJointSliders[axis] = { slider, value };
+        });
+
+        this.selectedJointSection.hidden = true;
+        rightSidebar.appendChild(this.selectedJointSection);
+
     }
 
     _setupFinalUI() {
@@ -5909,13 +5984,18 @@ class PoseStudioWidget {
                 this.showHandControlPopover(side);
             },
             onBoneSelectionChange: ({ boneName, source }) => {
+                this.refreshSelectedJointControls();
                 if (source === "external" || !this.isAnimationMode()) return;
                 this.animationTimeline?.notifyActiveTrack?.(
                     boneName || MODEL_ROTATION_TRACK,
                     { reveal: true },
                 );
             },
+            onSelectedBoneRotationChange: () => {
+                this.refreshSelectedJointControls();
+            },
             onPoseChange: (pose) => {
+                this.refreshSelectedJointControls();
                 // Return params request logic mapped into direct assignment beforehand 
                 this.viewer.setCameraParams({
                     ...this.currentCameraParams()
@@ -13876,6 +13956,27 @@ class PoseStudioWidget {
                 info.label.innerText = `${r[axis]}°`;
             }
         });
+        this.refreshSelectedJointControls();
+    }
+
+    refreshSelectedJointControls() {
+        if (!this.selectedJointSection) return;
+
+        const bone = this.viewer?.selectedBone || null;
+        this.selectedJointSection.hidden = !bone;
+        if (!bone) return;
+
+        this.selectedJointName.textContent = bone.name;
+        for (const axis of ['x', 'y', 'z']) {
+            const controls = this.selectedJointSliders?.[axis];
+            if (!controls) continue;
+            const radians = Math.atan2(
+                Math.sin(bone.rotation[axis]),
+                Math.cos(bone.rotation[axis]),
+            );
+            controls.slider.value = String(radians);
+            controls.value.textContent = `${radians.toFixed(3)} rad`;
+        }
     }
 
     updateGenderVisibility() {
