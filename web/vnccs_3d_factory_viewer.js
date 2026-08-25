@@ -947,8 +947,21 @@ export class Factory3DViewer {
                         fixedPoint,
                         thickness: Number(wall?.thickness) || 0.12,
                         handle,
+                        pointerId: event.pointerId,
+                        originX: event.clientX,
+                        originY: event.clientY,
+                        moved: false,
                     };
                     this.canvas.setPointerCapture?.(event.pointerId);
+                    if (this._architectureDrag.type === "room") {
+                        this.canvas.style.cursor = "grabbing";
+                        this.options.onArchitectureEdit({
+                            phase: "start",
+                            type: "room",
+                            id: this._architectureDrag.id,
+                            event,
+                        });
+                    }
                     event.preventDefault();
                     return;
                 }
@@ -1002,6 +1015,11 @@ export class Factory3DViewer {
                 }
             }
             if (this._architectureDrag) {
+                const distance = Math.hypot(
+                    event.clientX - this._architectureDrag.originX,
+                    event.clientY - this._architectureDrag.originY,
+                );
+                if (distance > 3) this._architectureDrag.moved = true;
                 const point = this.options.snapPlanPoint(
                     this.screenToPlan(event),
                     event,
@@ -1022,6 +1040,15 @@ export class Factory3DViewer {
                         thickness: this._architectureDrag.thickness,
                     });
                 }
+                if (this._architectureDrag.type === "room" && this._architectureDrag.moved) {
+                    this.options.onArchitectureEdit({
+                        phase: "move",
+                        type: "room",
+                        id: this._architectureDrag.id,
+                        point,
+                        event,
+                    });
+                }
                 this.invalidate();
                 event.preventDefault();
                 return;
@@ -1033,7 +1060,7 @@ export class Factory3DViewer {
             const zoom = Math.max(0.01, this.planCameraState.zoom);
             this.planCameraState.target = [
                 this._planPan.target[0] - (event.clientX - this._planPan.x) / zoom,
-                this._planPan.target[1] + (event.clientY - this._planPan.y) / zoom,
+                this._planPan.target[1] - (event.clientY - this._planPan.y) / zoom,
             ];
             this._syncPlanCamera();
             this.invalidate();
@@ -1090,7 +1117,18 @@ export class Factory3DViewer {
                 this._architectureDrag = null;
                 this.setPlanDraft(null);
                 this.canvas.releasePointerCapture?.(event.pointerId);
+                if (drag.type === "room") this.canvas.style.cursor = "default";
+                if (drag.type === "room" && !drag.moved) {
+                    this.options.onArchitectureEdit({
+                        phase: "cancel",
+                        type: drag.type,
+                        id: drag.id,
+                        event,
+                    });
+                    return;
+                }
                 this.options.onArchitectureEdit({
+                    phase: "end",
                     type: drag.type,
                     id: drag.id,
                     endpoint: drag.endpoint,
@@ -1131,6 +1169,23 @@ export class Factory3DViewer {
                     distance: 0,
                 });
             }
+            if (
+                this._architectureDrag
+                && (event.pointerId === undefined || this._architectureDrag.pointerId === event.pointerId)
+            ) {
+                const drag = this._architectureDrag;
+                this._architectureDrag = null;
+                this.setPlanDraft(null);
+                if (drag.type === "room") this.canvas.style.cursor = "default";
+                if (drag.type === "room") {
+                    this.options.onArchitectureEdit({
+                        phase: "cancel",
+                        type: drag.type,
+                        id: drag.id,
+                        event,
+                    });
+                }
+            }
             if (!this._lookDrag || (event.pointerId !== undefined && this._lookDrag.pointerId !== event.pointerId)) return;
             this._lookDrag = null;
             this._pointerDown = null;
@@ -1147,18 +1202,25 @@ export class Factory3DViewer {
             }
             if (this.viewMode !== "plan") return;
             const before = this.screenToPlan(event);
+            const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+                ? 16
+                : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+                    ? Math.max(1, this.host.clientHeight)
+                    : 1;
+            const wheelDelta = Math.max(-240, Math.min(240, event.deltaY * deltaScale));
             this.planCameraState.zoom = Math.max(
                 0.01,
-                Math.min(100000, this.planCameraState.zoom * Math.exp(-event.deltaY * 0.001)),
+                Math.min(100000, this.planCameraState.zoom * Math.exp(-wheelDelta * 0.002)),
             );
-            this._syncPlanCamera();
+            this._updatePlanProjection();
             const after = this.screenToPlan(event);
             this.planCameraState.target[0] += before[0] - after[0];
             this.planCameraState.target[1] += before[1] - after[1];
             this._syncPlanCamera();
-            this.resize();
             this._emitState();
+            this.invalidate();
             event.preventDefault();
+            event.stopImmediatePropagation();
         }, { capture: true, passive: false });
         this.canvas.addEventListener("keydown", event => {
             const mode = { w: "translate", e: "rotate", r: "scale" }[event.key.toLowerCase()];

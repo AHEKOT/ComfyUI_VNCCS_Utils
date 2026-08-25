@@ -3069,7 +3069,7 @@ class Factory3DWidget {
         }
     }
 
-    _previewSelectedArchitecture() {
+    _previewSelectedArchitecture({ persist = true } = {}) {
         if (!this.selectedArchitecture?.id || !this.scene) return;
         const type = ["floor", "ceiling"].includes(this.selectedArchitecture.type)
             ? "room"
@@ -3095,23 +3095,25 @@ class Factory3DWidget {
             }
         }
         this.viewer.setCameraMarkers(this.scene.cameras || []);
-        this._scheduleSceneSave(220);
-        this._scheduleStateSave(220);
+        if (persist) {
+            this._scheduleSceneSave(220);
+            this._scheduleStateSave(220);
+        }
     }
 
-    _queueSelectedArchitecturePreview({ flush = false } = {}) {
+    _queueSelectedArchitecturePreview({ flush = false, persist = true } = {}) {
         if (flush && this._architectureGeometryFrame) {
             cancelAnimationFrame(this._architectureGeometryFrame);
             this._architectureGeometryFrame = 0;
         }
         if (flush) {
-            this._previewSelectedArchitecture();
+            this._previewSelectedArchitecture({ persist });
             return;
         }
         if (this._architectureGeometryFrame) return;
         this._architectureGeometryFrame = requestAnimationFrame(() => {
             this._architectureGeometryFrame = 0;
-            this._previewSelectedArchitecture();
+            this._previewSelectedArchitecture({ persist });
         });
     }
 
@@ -3181,6 +3183,26 @@ class Factory3DWidget {
         if (change.type === "room") {
             const room = this.scene?.architecture?.rooms?.find(item => item.room_id === change.id);
             const linkedWalls = new Set(room?.wall_ids || []);
+            const phase = ["start", "move", "end", "cancel"].includes(change.phase)
+                ? change.phase
+                : "end";
+            const activeDrag = this._roomPlanDrag?.id === change.id
+                ? this._roomPlanDrag
+                : null;
+            if (phase === "cancel") {
+                if (room && activeDrag) {
+                    room.polygon = activeDrag.polygon.map(point => [...point]);
+                    for (const original of activeDrag.walls) {
+                        const wall = this.scene.architecture.walls?.find(item => item.wall_id === original.wall_id);
+                        if (!wall) continue;
+                        wall.start = [...original.start];
+                        wall.end = [...original.end];
+                    }
+                    this._roomPlanDrag = null;
+                    this._queueSelectedArchitecturePreview({ flush: true, persist: false });
+                }
+                return;
+            }
             if (
                 !room?.polygon?.length
                 || room.locked
@@ -3188,6 +3210,26 @@ class Factory3DWidget {
             ) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
             const building = this._buildingForItem(room);
             if (building?.locked) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
+            if (phase === "start") {
+                if (this._architectureGeometryFrame) {
+                    cancelAnimationFrame(this._architectureGeometryFrame);
+                    this._architectureGeometryFrame = 0;
+                }
+                this._roomPlanDrag = {
+                    id: room.room_id,
+                    before: this._captureEditorSnapshot(),
+                    polygon: room.polygon.map(point => [...point]),
+                    walls: (this.scene.architecture.walls || [])
+                        .filter(wall => linkedWalls.has(wall.wall_id))
+                        .map(wall => ({
+                            wall_id: wall.wall_id,
+                            start: [...wall.start],
+                            end: [...wall.end],
+                        })),
+                };
+                return;
+            }
+            if (!Array.isArray(change.point)) return;
             const localPoint = this._worldToLocalPlan(
                 this._snapPlanPoint(change.point, change.event || {}),
                 building,
@@ -3197,7 +3239,7 @@ class Factory3DWidget {
                 [0, 0],
             ).map(value => value / room.polygon.length);
             const delta = [localPoint[0] - center[0], localPoint[1] - center[1]];
-            const before = this._captureEditorSnapshot();
+            const before = activeDrag?.before || this._captureEditorSnapshot();
             room.polygon = room.polygon.map(point => [point[0] + delta[0], point[1] + delta[1]]);
             const linked = new Set(room.wall_ids || []);
             for (const wall of this.scene.architecture.walls || []) {
@@ -3205,6 +3247,12 @@ class Factory3DWidget {
                 wall.start = [wall.start[0] + delta[0], wall.start[1] + delta[1]];
                 wall.end = [wall.end[0] + delta[0], wall.end[1] + delta[1]];
             }
+            if (phase === "move") {
+                this._queueSelectedArchitecturePreview({ persist: false });
+                return;
+            }
+            this._roomPlanDrag = null;
+            this._queueSelectedArchitecturePreview({ flush: true, persist: false });
             this.history.push("Move room", before, this._captureEditorSnapshot());
             void this._commitArchitecture();
             return;
