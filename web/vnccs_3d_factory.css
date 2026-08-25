@@ -920,6 +920,20 @@
 .vnccs-i3s__scene-frame-title { color: var(--i3-text); font-size: .82em; font-weight: 700; }
 .vnccs-i3s__scene-frame-copy { margin-top: 2px; color: var(--i3-dim); font-size: .68em; line-height: 1.35; }
 .vnccs-i3s__scene-render-summary { color: var(--i3-dim); font: .66em/1.4 var(--i3-mono); }
+.vnccs-i3s__level-panel { display: flex; flex-direction: column; gap: 6px; padding: 7px; border: 1px solid rgba(184,169,232,.2); border-radius: 9px; background: linear-gradient(145deg, rgba(184,169,232,.06), rgba(255,143,163,.025)); }
+.vnccs-i3s__level-panel[hidden] { display: none; }
+.vnccs-i3s__level-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.vnccs-i3s__level-panel-head > div { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.vnccs-i3s__level-panel-head strong { color: var(--i3-text); font-size: .78em; }
+.vnccs-i3s__level-panel-head small { color: var(--i3-dim); font-size: .66em; }
+.vnccs-i3s__level-panel-head .vnccs-i3s__level-add { min-height: 27px; padding: 4px 8px; color: var(--i3-pink-hi); }
+.vnccs-i3s__level-list { max-height: 210px; overflow: auto; display: flex; flex-direction: column; gap: 4px; overscroll-behavior: contain; }
+.vnccs-i3s__level-card { width: 100%; min-height: 42px; display: flex; align-items: center; padding: 6px 8px; border: 1px solid var(--i3-line); border-radius: 7px; background: rgba(255,255,255,.018); color: var(--i3-muted); text-align: left; cursor: pointer; }
+.vnccs-i3s__level-card:hover { border-color: var(--i3-line-strong); background: var(--i3-hover); color: var(--i3-text); }
+.vnccs-i3s__level-card.is-active { border-color: rgba(184,169,232,.4); background: rgba(184,169,232,.12); color: #f0ebff; box-shadow: inset 3px 0 var(--i3-lavender); }
+.vnccs-i3s__level-card-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.vnccs-i3s__level-card-copy b { overflow: hidden; color: inherit; font-size: .76em; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-i3s__level-card-copy small { color: var(--i3-dim); font: .64em var(--i3-mono); }
 .vnccs-i3s__layer-tools { display: flex; align-items: center; gap: 7px; min-height: 29px; }
 .vnccs-i3s__layer-tools .vnccs-i3s__group-selected { min-height: 27px; padding: 4px 8px; }
 .vnccs-i3s__selection-count { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--i3-dim); font-size: .72em; }
@@ -1000,6 +1014,8 @@
 .vnccs-i3s__architecture-row:hover { border-color: var(--i3-line-strong); background: var(--i3-hover); }
 .vnccs-i3s__architecture-row.is-selected { border-color: var(--i3-pink-line); background: var(--i3-pink-soft); box-shadow: inset 3px 0 var(--i3-pink); }
 .vnccs-i3s__architecture-row.is-building { background: rgba(184,169,232,.06); }
+.vnccs-i3s__architecture-row.is-root { cursor: default; }
+.vnccs-i3s__architecture-row.is-root:hover { border-color: transparent; background: rgba(184,169,232,.06); }
 .vnccs-i3s__architecture-kind { width: 23px; height: 23px; display: grid; place-items: center; border-radius: 6px; background: rgba(184,169,232,.11); color: var(--i3-lavender); font: 700 .68em var(--i3-mono); }
 .vnccs-i3s__architecture-copy { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .vnccs-i3s__architecture-copy b, .vnccs-i3s__architecture-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

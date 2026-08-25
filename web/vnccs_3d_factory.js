@@ -4,7 +4,6 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260825.16";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
-    DEFAULT_BUILDING,
     DEFAULT_LEVEL,
     DEFAULT_ROOM,
     DEFAULT_WALL,
@@ -762,10 +761,6 @@ class Factory3DWidget {
                             <button class="vnccs-i3s__tool-label vnccs-i3s__view-3d" type="button" aria-pressed="true">3D</button>
                             <button class="vnccs-i3s__tool-label vnccs-i3s__view-plan" type="button" aria-pressed="false">Plan</button>
                         </div>
-                        <select class="vnccs-i3s__context-select vnccs-i3s__building-select" aria-label="Active building" title="New walls, rooms, models, cameras, camera paths, and lights are assigned to this building"></select>
-                        <select class="vnccs-i3s__context-select vnccs-i3s__level-select" aria-label="Active floor level"></select>
-                        <button class="vnccs-i3s__tool-label vnccs-i3s__level-add" type="button" title="Add floor level">+ Floor</button>
-                        <button class="vnccs-i3s__tool-label vnccs-i3s__building-add" type="button" title="Add a movable building container">+ Building</button>
                         <button class="vnccs-i3s__tool-label vnccs-i3s__undo" type="button" title="Undo (Ctrl/Cmd+Z)" disabled>Undo</button>
                         <button class="vnccs-i3s__tool-label vnccs-i3s__redo" type="button" title="Redo (Ctrl/Cmd+Shift+Z)" disabled>Redo</button>
                         <span class="vnccs-i3s__tool-separator"></span>
@@ -1042,6 +1037,13 @@ class Factory3DWidget {
                     data-workspace-side="right" data-workspace-panel="objects">
                     <div class="vnccs-i3s__section-head"><span>Scene hierarchy</span></div>
                     <div class="vnccs-i3s__section-body">
+                        <section class="vnccs-i3s__level-panel" aria-label="Floor levels" hidden>
+                            <div class="vnccs-i3s__level-panel-head">
+                                <div><strong>Levels</strong><small>Active drawing plane</small></div>
+                                <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__level-add" type="button">Add level</button>
+                            </div>
+                            <div class="vnccs-i3s__level-list" role="listbox" aria-label="Floor levels"></div>
+                        </section>
                         <label class="vnccs-i3s__search">${ICONS.search}<input class="vnccs-i3s__input vnccs-i3s__object-search" type="search" placeholder="Filter objects" /></label>
                         <div class="vnccs-i3s__layer-tools">
                             <button class="vnccs-i3s__button vnccs-i3s__group-selected" type="button" disabled>${ICONS.folder}<span>Group</span></button>
@@ -1166,10 +1168,9 @@ class Factory3DWidget {
             viewerHost: $(".vnccs-i3s__viewer-host"),
             view3d: $(".vnccs-i3s__view-3d"),
             viewPlan: $(".vnccs-i3s__view-plan"),
-            levelSelect: $(".vnccs-i3s__level-select"),
-            buildingSelect: $(".vnccs-i3s__building-select"),
+            levelPanel: $(".vnccs-i3s__level-panel"),
+            levelList: $(".vnccs-i3s__level-list"),
             levelAdd: $(".vnccs-i3s__level-add"),
-            buildingAdd: $(".vnccs-i3s__building-add"),
             undo: $(".vnccs-i3s__undo"),
             redo: $(".vnccs-i3s__redo"),
             planTools: $(".vnccs-i3s__plan-tools"),
@@ -1545,19 +1546,6 @@ class Factory3DWidget {
         this._listen(this.els.cameraFov, "input", () => this._applyViewportCameraExact());
         this._listen(this.els.view3d, "click", () => this._setViewMode("3d"));
         this._listen(this.els.viewPlan, "click", () => this._setViewMode("plan"));
-        this._listen(this.els.levelSelect, "change", () => {
-            this.editorView.active_level_id = this.els.levelSelect.value;
-            this.viewer.setActiveLevel(this.editorView.active_level_id);
-            this._selectArchitecture({ type: "level", id: this.editorView.active_level_id });
-            this._syncToolbar();
-            this._scheduleStateSave(0);
-        });
-        this._listen(this.els.buildingSelect, "change", () => {
-            this.editorView.active_building_id = this._validBuildingId(this.els.buildingSelect.value);
-            this._selectArchitecture({ type: "building", id: this.editorView.active_building_id });
-            this._syncToolbar();
-            this._scheduleStateSave(0);
-        });
         this._listen(this.els.levelAdd, "click", () => {
             if (!this.scene) return;
             if (this.scene.levels.length >= 64) {
@@ -1574,13 +1562,11 @@ class Factory3DWidget {
                 };
                 this.scene.levels.push(level);
                 this.editorView.active_level_id = level.level_id;
-                this.selectedArchitecture = { type: "level", id: level.level_id };
                 void this._commitArchitecture();
                 this.viewer.setActiveLevel(level.level_id);
                 this._syncToolbar();
             });
         });
-        this._listen(this.els.buildingAdd, "click", () => this._addBuilding());
         this._listen(this.els.undo, "click", () => {
             this.history.undo();
             this._syncToolbar();
@@ -2193,27 +2179,6 @@ class Factory3DWidget {
         this._scheduleStateSave(0);
     }
 
-    _addBuilding() {
-        if (!this.scene) return;
-        if ((this.scene.architecture?.buildings?.length || 0) >= 64) {
-            this.toast("A scene can contain up to 64 buildings.", "error");
-            return;
-        }
-        this._recordEditorCommand("Add building", () => {
-            const architecture = this.scene.architecture ||= normalizedArchitecture({}, this.scene.levels);
-            const building = {
-                ...DEFAULT_BUILDING,
-                building_id: factoryId(),
-                name: `Building ${(architecture.buildings?.length || 0) + 1}`,
-                position: [0, 0, 0],
-            };
-            architecture.buildings.push(building);
-            this.editorView.active_building_id = building.building_id;
-            this.selectedArchitecture = { type: "building", id: building.building_id };
-            void this._commitArchitecture();
-        });
-    }
-
     _clearPlanHover() {
         if (this._planHoverFrame) cancelAnimationFrame(this._planHoverFrame);
         this._planHoverFrame = 0;
@@ -2327,9 +2292,7 @@ class Factory3DWidget {
             const owner = buildings.find(item => item.building_id === track?.building_id);
             if (owner) return owner;
         }
-        const active = buildings.find(item => item.building_id === this.editorView.active_building_id);
-        if (active) return active;
-        return buildings[0] || null;
+        return null;
     }
 
     _buildingForItem(item) {
@@ -6357,19 +6320,6 @@ class Factory3DWidget {
         const fragment = document.createDocumentFragment();
         this._syncSelectionControls();
         let rendered = 0;
-        if (this.scene && !this.scene.architecture?.buildings?.length && !query) {
-            const emptyArchitecture = element("section", "vnccs-i3s__architecture-empty");
-            const copy = element("div", "vnccs-i3s__architecture-empty-copy");
-            copy.append(
-                element("b", "", "No buildings"),
-                element("small", "", "Create one only when you need walls, rooms, or openings."),
-            );
-            const create = button("vnccs-i3s__button vnccs-i3s__button--quiet", "Create building", "plus");
-            create.addEventListener("click", () => this._addBuilding());
-            emptyArchitecture.append(copy, create);
-            fragment.appendChild(emptyArchitecture);
-            rendered += 1;
-        }
         for (const entry of this._createArchitectureTree(query)) {
             fragment.appendChild(entry);
             rendered += 1;
@@ -6452,6 +6402,47 @@ class Factory3DWidget {
             row.addEventListener("click", () => this._selectArchitecture({ type, id }));
             return row;
         };
+        const rootWalls = (architecture.walls || []).filter(
+            item => !item.building_id && item.level_id === activeLevelId,
+        );
+        const rootRooms = (architecture.rooms || []).filter(
+            item => !item.building_id && item.level_id === activeLevelId,
+        );
+        const rootRoomWallIds = new Set(rootRooms.flatMap(room => room.wall_ids || []));
+        const rootStandaloneWalls = rootWalls.filter(wall => !rootRoomWallIds.has(wall.wall_id));
+        const rootEntries = [
+            ...rootRooms.map(item => ({
+                type: "room",
+                id: item.room_id,
+                name: item.name || "Room",
+                meta: `Complete room · walls, floor and ceiling${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}`,
+            })),
+            ...rootStandaloneWalls.map(item => ({
+                type: "wall",
+                id: item.wall_id,
+                name: item.name || "Wall",
+                meta: `${Math.hypot(item.end[0] - item.start[0], item.end[1] - item.start[1]).toFixed(2)} m${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}`,
+            })),
+            ...rootWalls.flatMap(wall => openingsByWall.get(wall.wall_id) || []).map(item => ({
+                type: "opening",
+                id: item.opening_id,
+                name: item.name || "Opening",
+                meta: `${item.kind} · ${Number(item.width).toFixed(2)} m${item.locked ? " · Locked" : ""}${item.visible === false ? " · Hidden" : ""}`,
+            })),
+        ].filter(item => !query || `${item.name} ${item.type} ${item.meta}`.toLowerCase().includes(query));
+        if (rootEntries.length) {
+            const wrapper = element("section", "vnccs-i3s__architecture-group");
+            const heading = element("div", "vnccs-i3s__architecture-row is-building is-root");
+            heading.innerHTML = `<span class="vnccs-i3s__architecture-kind">A</span><span class="vnccs-i3s__architecture-copy"><b></b><small></small></span>`;
+            heading.querySelector("b").textContent = "Architecture";
+            heading.querySelector("small").textContent = `${rootRooms.length} rooms · ${rootStandaloneWalls.length} standalone walls`;
+            const children = element("div", "vnccs-i3s__architecture-children");
+            for (const entry of rootEntries) {
+                children.appendChild(createRow(entry.type, entry.id, entry.name, entry.meta));
+            }
+            wrapper.append(heading, children);
+            output.push(wrapper);
+        }
         for (const building of architecture.buildings || []) {
             const walls = (architecture.walls || []).filter(
                 item => item.building_id === building.building_id && item.level_id === activeLevelId,
@@ -9509,42 +9500,56 @@ class Factory3DWidget {
         const selectedLevelId = levels.some(level => level.level_id === this.editorView.active_level_id)
             ? this.editorView.active_level_id
             : levels[0]?.level_id || "";
-        if (this.els.levelSelect.dataset.signature !== levels.map(level => `${level.level_id}:${level.name}`).join("|")) {
-            this.els.levelSelect.replaceChildren(...levels.map(level => {
-                const option = element("option", "", `${level.name} · ${Number(level.elevation).toFixed(2)} m`);
-                option.value = level.level_id;
-                return option;
-            }));
-            this.els.levelSelect.dataset.signature = levels.map(level => `${level.level_id}:${level.name}`).join("|");
-        }
         this.editorView.active_level_id = selectedLevelId;
-        this.els.levelSelect.value = selectedLevelId;
-        this.els.levelSelect.hidden = !this.scene;
-        const buildings = this.scene?.architecture?.buildings || [];
-        const selectedBuildingId = buildings.some(
-            building => building.building_id === this.editorView.active_building_id,
-        ) ? this.editorView.active_building_id : buildings[0]?.building_id || "";
-        const buildingSignature = buildings.map(
-            building => `${building.building_id}:${building.name}`,
+        const activeLevel = levels.find(level => level.level_id === selectedLevelId);
+        const architectureToolActive = plan
+            && ["wall", "room", "opening"].includes(this.editorView.plan_tool);
+        this.els.levelPanel.hidden = !architectureToolActive;
+        this.els.levelPanel.setAttribute(
+            "aria-label",
+            activeLevel
+                ? `Floor levels, ${activeLevel.name} active`
+                : "Floor levels",
+        );
+        const levelSignature = levels.map(
+            level => `${level.level_id}:${level.name}:${level.elevation}:${level.height}:${level.visible}`,
         ).join("|");
-        if (this.els.buildingSelect.dataset.signature !== buildingSignature) {
-            const noBuildings = element("option", "", "No buildings");
-            noBuildings.value = "";
-            noBuildings.disabled = true;
-            noBuildings.selected = !buildings.length;
-            this.els.buildingSelect.replaceChildren(...(buildings.length ? buildings.map(building => {
-                const option = element("option", "", building.name || "Building");
-                option.value = building.building_id;
-                return option;
-            }) : [noBuildings]));
-            this.els.buildingSelect.dataset.signature = buildingSignature;
+        if (this.els.levelList.dataset.signature !== levelSignature) {
+            this.els.levelList.replaceChildren(...levels.map(level => {
+                const control = button(
+                    "vnccs-i3s__level-card",
+                    "",
+                );
+                control.type = "button";
+                control.dataset.levelId = level.level_id;
+                control.setAttribute("role", "option");
+                const copy = element("span", "vnccs-i3s__level-card-copy");
+                copy.append(
+                    element("b", "", level.name || "Level"),
+                    element(
+                        "small",
+                        "",
+                        `${Number(level.elevation).toFixed(2)} m · height ${Number(level.height).toFixed(2)} m`,
+                    ),
+                );
+                control.appendChild(copy);
+                control.addEventListener("click", () => {
+                    this.editorView.active_level_id = level.level_id;
+                    this.viewer.setActiveLevel(level.level_id);
+                    this._renderObjects();
+                    this._syncToolbar();
+                    this._scheduleStateSave(0);
+                });
+                return control;
+            }));
+            this.els.levelList.dataset.signature = levelSignature;
         }
-        this.editorView.active_building_id = selectedBuildingId;
-        this.els.buildingSelect.value = selectedBuildingId;
-        this.els.buildingSelect.hidden = !this.scene;
-        this.els.buildingSelect.disabled = !buildings.length;
-        this.els.levelAdd.disabled = !this.scene;
-        this.els.buildingAdd.disabled = !this.scene || (this.scene.architecture?.buildings?.length || 0) >= 64;
+        for (const control of this.els.levelList.querySelectorAll("[data-level-id]")) {
+            const selected = control.dataset.levelId === selectedLevelId;
+            control.classList.toggle("is-active", selected);
+            control.setAttribute("aria-selected", String(selected));
+        }
+        this.els.levelAdd.disabled = !this.scene || levels.length >= 64;
         if (this.els.undo) this.els.undo.disabled = !this.history.canUndo;
         if (this.els.redo) this.els.redo.disabled = !this.history.canRedo;
     }
