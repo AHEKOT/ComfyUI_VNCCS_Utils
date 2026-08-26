@@ -296,7 +296,9 @@ test("Selection no longer rebuilds layer cards before a double-click can rename 
 
 test("Scene updates reuse loaded splats and group transforms fan out to every object", () => {
     assert.match(studio, /this\.viewer\.setScene\(scene, \{ incremental \}\)/);
-    assert.match(viewer, /async setScene\(sceneData, \{ incremental = false \} = \{\}\)/);
+    assert.match(viewer, /setScene\(sceneData, options = \{\}\)/);
+    assert.match(viewer, /async _setSceneNow\(sceneData, \{ incremental = false \} = \{\}\)/);
+    assert.match(viewer, /this\._sceneSetSerial = operation\.catch\(\(\) => null\)/);
     assert.match(viewer, /if \(!incremental\) \{/);
     assert.match(viewer, /existing\?\.assetPath === assetPath/);
     assert.match(viewer, /this\.objects\.delete\(objectId\)/);
@@ -585,16 +587,16 @@ test("Factory keeps a responsive Sakura workspace with isolated side-panel tabs"
 
 test("Plan mode exposes distinct, previewed building workflows and explicit snap controls", () => {
     assert.match(studio, /data-plan-tool="wall"/);
-    assert.match(studio, /Draw connected wall segments/);
+    assert.match(studio, /Press and drag to draw a wall/);
     assert.match(studio, /data-plan-tool="room"/);
-    assert.match(studio, /Create a rectangular room from two corners/);
+    assert.match(studio, /Press and drag diagonally to draw a rectangular room/);
     assert.match(studio, /data-plan-tool="opening"/);
     assert.match(studio, /data-plan-tool="camera"/);
     assert.match(studio, /Opening type/);
     assert.match(studio, /Grid step · m/);
     assert.match(studio, /Major line every/);
-    assert.match(studio, /Hold Alt to bypass snap/);
-    assert.match(studio, /Hold Shift to force an orthogonal segment/);
+    assert.match(studio, /event\.altKey \|\| this\.editorView\.snap\?\.enabled === false/);
+    assert.match(studio, /event\.shiftKey \|\| this\.editorView\.snap\?\.orthogonal/);
     assert.match(studio, /Press and drag to draw a wall/);
     assert.match(studio, /Press and drag diagonally to draw a rectangular room/);
     assert.match(studio, /Press on a wall and drag to set the opening width/);
@@ -603,13 +605,13 @@ test("Plan mode exposes distinct, previewed building workflows and explicit snap
     assert.match(studio, /phase === "move"/);
     assert.match(studio, /phase !== "end"/);
     assert.match(studio, /if \(!gesture\.moved\)/);
-    assert.match(studio, /Opening preview/);
-    assert.match(studio, /Camera position set · move to aim/);
+    assert.match(studio, /this\.planHover = \{ tool, point, opening: placement \}/);
+    assert.match(studio, /Drag to aim the camera/);
     assert.match(studio, /_fitOpeningOnWall/);
     assert.match(viewer, /snapPlanPoint: options\.snapPlanPoint/);
     assert.match(viewer, /setPlanDraft\(draft\)/);
     assert.match(viewer, /setPlanGrid\(value = \{\}\)/);
-    assert.match(viewer, /setCameraMarkers\(cameras = \[\]\)/);
+    assert.match(viewer, /setCameraMarkers\(cameras = \[\], selectedIds = null\)/);
     assert.match(viewer, /onPlanGesture: options\.onPlanGesture/);
     assert.match(viewer, /phase: "start",[\s\S]*?type: "room"/);
     assert.match(viewer, /phase: "move",[\s\S]*?type: "room"/);
@@ -627,7 +629,7 @@ test("Editor workflows keep buildings optional and make levels, selection, floor
     assert.match(studio, /Assign camera to building/);
     assert.match(studio, /data-object-property="building_id"/);
     assert.match(studio, /data-camera-property="building_id"/);
-    assert.match(studio, /data-light-path="building_id"/);
+    assert.match(studio, /data-light-property="building_id"/);
     assert.match(studio, /vnccs-i3s__camera-track-building/);
     assert.match(studio, /track\.building_id !== building\.building_id/);
     assert.match(studio, /active_building_id/);
@@ -718,8 +720,8 @@ test("Editor schema normalizes grid aliases, room perimeters, buildings, and non
             wall_ids: ["w1", "w2", "w3", "w4"],
         }],
         openings: [
-            { opening_id: "o1", wall_id: "w1", offset: 0.5, width: 2 },
-            { opening_id: "o2", wall_id: "w1", offset: 0.5, width: 2 },
+            { opening_id: "o1", wall_id: "w1", offset: 0.25, width: 1 },
+            { opening_id: "o2", wall_id: "w1", offset: 0.75, width: 1 },
         ],
     }, [level]);
     assert.equal(normalized.buildings[0].building_id, "building-a");
@@ -729,6 +731,16 @@ test("Editor schema normalizes grid aliases, room perimeters, buildings, and non
         .map(opening => [opening.offset * 4 - opening.width / 2, opening.offset * 4 + opening.width / 2])
         .sort((left, right) => left[0] - right[0]);
     assert.ok(intervals[0][1] <= intervals[1][0] + 1e-9);
+    const overlapping = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [],
+        openings: [
+            { opening_id: "overlap-a", wall_id: "w1", offset: 0.5, width: 2 },
+            { opening_id: "overlap-b", wall_id: "w1", offset: 0.5, width: 2 },
+        ],
+    }, [level]);
+    assert.equal(overlapping.openings.length, 1);
 
     const invalid = schema.normalizedArchitecture({
         buildings: [building],
@@ -1492,6 +1504,10 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     const frameViewer = Object.create(module.Factory3DViewer.prototype);
     frameViewer.host = { clientWidth: 1600, clientHeight: 900 };
     frameViewer.camera = new THREE.PerspectiveCamera();
+    frameViewer.planCamera = new THREE.OrthographicCamera();
+    frameViewer.planCameraState = { target: [0, 0], zoom: 24 };
+    frameViewer.sceneData = null;
+    frameViewer._syncPlanGrid = () => {};
     frameViewer.captureWidth = 1080;
     frameViewer.captureHeight = 1920;
     frameViewer.captureFov = 42;
