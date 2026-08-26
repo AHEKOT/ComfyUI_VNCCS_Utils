@@ -885,7 +885,7 @@ def create_scene(name: Any = "") -> dict[str, Any]:
         "cameras": [],
         "camera_tracks": [],
         "textures": [],
-        "lighting": dict(_DEFAULT_LIGHTING),
+        "lighting": _normalize_lighting(None),
         "exports": {},
     }
     with _STATE_LOCK:
