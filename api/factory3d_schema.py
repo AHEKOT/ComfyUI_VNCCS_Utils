@@ -330,6 +330,24 @@ def normalize_architecture(
             return ""
         return result
 
+    def architecture_building_id(raw: dict[str, Any], label: str) -> str:
+        requested = raw.get("building_id")
+        result = _id(requested)
+        if requested not in (None, "") and not result:
+            if strict:
+                raise ValueError(f"{label} building id is invalid")
+            return ""
+        if result and result not in building_ids:
+            if strict:
+                raise ValueError(f"{label} references an unknown building")
+            return ""
+        # Missing ownership belongs to the first Building only for legacy
+        # architecture that never serialized this field. An explicit empty
+        # value is a valid scene-root room or wall, even when Buildings exist.
+        if not result and "building_id" not in raw:
+            return default_building_id
+        return result
+
     if strict and (not isinstance(raw_walls, list) or len(raw_walls) > MAX_WALLS):
         raise ValueError("scene walls are invalid")
     walls: list[dict[str, Any]] = []
@@ -349,11 +367,7 @@ def normalize_architecture(
             if strict:
                 raise ValueError("wall references an unknown level")
             level_id = default_level_id
-        building_id = _id(raw.get("building_id")) or default_building_id
-        if not building_id or building_id not in building_ids:
-            if strict:
-                raise ValueError("wall references an unknown building")
-            continue
+        building_id = architecture_building_id(raw, "wall")
         start = _point2(raw.get("start"))
         end = _point2(raw.get("end"), (1.0, 0.0))
         if math.dist(start, end) < 0.001:
@@ -399,11 +413,7 @@ def normalize_architecture(
             if strict:
                 raise ValueError("room references an unknown level")
             level_id = default_level_id
-        building_id = _id(raw.get("building_id")) or default_building_id
-        if not building_id or building_id not in building_ids:
-            if strict:
-                raise ValueError("room references an unknown building")
-            continue
+        building_id = architecture_building_id(raw, "room")
         raw_polygon = raw.get("polygon", [])
         if not isinstance(raw_polygon, list) or not 3 <= len(raw_polygon) <= 512:
             if strict:

@@ -545,6 +545,7 @@ test("Interior cutaway is viewport-only and camera exports restore complete arch
     assert.match(viewer, /setInteriorCutaway\(enabled\)/);
     assert.match(viewer, /hideCeilings: this\.interiorCutaway/);
     assert.match(viewer, /const hiddenWallId = this\._nearestCutawayWallId\(\)/);
+    assert.match(viewer, /filter\(hit => isObjectPickableInHierarchy\(hit\.object\)\)/);
     assert.match(viewer, /this\.lightHelperRoot\.visible = false/);
     assert.match(viewer, /this\.architecture\.setActiveLevel\(this\.activeLevelId, false, \{[\s\S]*?hideCeilings: false,[\s\S]*?hiddenWallId: ""/);
     assert.match(viewer, /this\._syncViewportCutaway\(true\)/);
@@ -760,6 +761,22 @@ test("Editor schema normalizes grid aliases, room perimeters, buildings, and non
     }, [level]);
     assert.deepEqual(rootArchitecture.buildings, []);
     assert.equal(rootArchitecture.walls[0].building_id, "");
+    const rootRoomArchitecture = schema.normalizedArchitecture({
+        buildings: [],
+        walls: walls.map(wall => ({ ...wall, building_id: "" })),
+        rooms: [{
+            room_id: "root-room",
+            building_id: "",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w2", "w3", "w4"],
+        }],
+        openings: [],
+        materials: [],
+    }, [level]);
+    assert.deepEqual(rootRoomArchitecture.buildings, []);
+    assert.deepEqual(rootRoomArchitecture.rooms[0].wall_ids, ["w1", "w2", "w3", "w4"]);
+    assert.equal(rootRoomArchitecture.rooms[0].building_id, "");
 });
 
 test("Factory DOM widget follows node resize like Pose Studio", () => {
@@ -928,6 +945,73 @@ test("Plan marquee converts client coordinates into the scaled viewport host", a
     });
 });
 
+test("Plan object drag moves selected Gaussian objects live while preserving height", async () => {
+    const module = await import(
+        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?object-drag=${Date.now()}`
+    );
+    const viewer = Object.create(module.Factory3DViewer.prototype);
+    const changes = [];
+    const transforms = {
+        "object-a": {
+            position: [10, 2.5, 20],
+            rotation: [0, 15, 0],
+            scale: 1,
+        },
+        "object-b": {
+            position: [14, 6, 25],
+            rotation: [0, -20, 0],
+            scale: 0.8,
+        },
+    };
+    viewer.objects = new Map(Object.keys(transforms).map(objectId => [objectId, {
+        data: { transform: transforms[objectId] },
+        mesh: { objectId },
+    }]));
+    viewer._objectPlanDrag = {
+        pointerId: 7,
+        objectIds: ["object-a", "object-b"],
+        originPoint: [1, 1],
+        anchorPosition: [10, 20],
+        previousTransforms: structuredClone(transforms),
+        currentTransforms: structuredClone(transforms),
+        originX: 100,
+        originY: 100,
+        moved: false,
+        interactive: false,
+    };
+    viewer.selectedGroupId = "";
+    viewer.screenToPlan = () => [3, 4];
+    viewer.options = {
+        snapPlanPoint: point => point,
+        onTransformChange: (objectId, transform, options) => changes.push({
+            objectId,
+            transform: structuredClone(transform),
+            options,
+        }),
+    };
+    viewer._applyTransform = (mesh, transform) => { mesh.transform = structuredClone(transform); };
+    viewer._refreshSelectionBounds = () => {};
+    viewer._refreshObjectSelectionHighlights = () => {};
+    viewer._setInteractive = () => {};
+    viewer.spark = { setDirty() {} };
+    viewer.invalidate = () => {};
+    viewer.canvas = {
+        style: {},
+        releasePointerCapture() {},
+    };
+
+    viewer._updatePlanObjectDrag({ pointerId: 7, clientX: 120, clientY: 115 });
+    assert.deepEqual(viewer.objects.get("object-a").data.transform.position, [12, 2.5, 23]);
+    assert.deepEqual(viewer.objects.get("object-b").data.transform.position, [16, 6, 28]);
+    assert.equal(changes.at(-1).options.final, false);
+
+    viewer._finishPlanObjectDrag({ pointerId: 7, clientX: 120, clientY: 115 });
+    assert.equal(viewer._objectPlanDrag, null);
+    assert.equal(changes.at(-1).options.final, true);
+    assert.equal(changes.at(-1).options.command_last, true);
+    assert.deepEqual(changes.at(-1).options.previous_transforms, transforms);
+});
+
 test("Architecture runtime casts opaque closed geometry from back faces only", async () => {
     const geometryModule = await import(
         `${pathToFileURL(path.join(root, "web", "factory3d", "plan_geometry.mjs")).href}?shadow=${Date.now()}`
@@ -978,6 +1062,8 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
+    assert.equal(typeof module.gaussianShadowProxyTransforms, "function");
+    assert.equal(typeof module.isObjectPickableInHierarchy, "function");
     assert.equal(typeof module.canonicalObjectPreviewCamera, "function");
     assert.equal(typeof module.createDirectionalLightingModifier, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
@@ -990,6 +1076,61 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
     assert.equal(module.FACTORY_VIEWER_BUILD, "20260825.16");
+    const visiblePickRoot = new THREE.Group();
+    const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    visiblePickRoot.add(visiblePickMesh);
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), true);
+    visiblePickRoot.visible = false;
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), false);
+    visiblePickRoot.visible = true;
+    visiblePickRoot.userData.factoryPointerPassthrough = true;
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), false);
+    visiblePickMesh.geometry.dispose();
+
+    const shadowSplats = [];
+    for (let index = 0; index < 96; index += 1) {
+        shadowSplats.push({
+            center: new THREE.Vector3((index % 12) / 11, Math.floor(index / 12) / 7, 0),
+            scales: new THREE.Vector3(0.02, 0.03, 0.01),
+            quaternion: new THREE.Quaternion(),
+            opacity: index === 95 ? 0 : 1,
+        });
+    }
+    const shadowTransforms = module.gaussianShadowProxyTransforms(
+        {
+            numSplats: shadowSplats.length,
+            splats: { getSplat: index => shadowSplats[index] },
+        },
+        new THREE.Box3(new THREE.Vector3(0, 0, -0.1), new THREE.Vector3(1, 1, 0.1)),
+        { maxInstances: 32 },
+    );
+    assert.equal(shadowTransforms.length, 32);
+    assert.ok(shadowTransforms.every(item => item.position.isVector3));
+    assert.ok(shadowTransforms.every(
+        item => item.scale.x > 0 && item.scale.y > 0 && item.scale.z > 0,
+    ));
+    const shadowViewer = Object.create(module.Factory3DViewer.prototype);
+    shadowViewer.lighting = { shadows: { enabled: true, quality: "medium" } };
+    const shadowRoot = new THREE.Group();
+    const shadowSplat = new THREE.Object3D();
+    shadowSplat.numSplats = shadowSplats.length;
+    shadowSplat.splats = { getSplat: index => shadowSplats[index] };
+    shadowRoot.add(shadowSplat);
+    const shadowEntry = {
+        mesh: shadowRoot,
+        splat: shadowSplat,
+        splatBounds: new THREE.Box3(
+            new THREE.Vector3(0, 0, -0.1),
+            new THREE.Vector3(1, 1, 0.1),
+        ),
+        data: { light_transport: "opaque" },
+    };
+    shadowViewer._attachShadowProxy(shadowEntry);
+    assert.equal(shadowEntry.shadowProxy.isInstancedMesh, true);
+    assert.equal(shadowEntry.shadowProxy.geometry.type, "IcosahedronGeometry");
+    assert.equal(shadowEntry.shadowProxy.castShadow, true);
+    assert.equal(shadowEntry.shadowProxy.material.colorWrite, false);
+    shadowViewer._disposeEntry(shadowEntry);
     const basementMesh = new THREE.Object3D();
     basementMesh.position.set(0, -2, 0);
     basementMesh.updateMatrixWorld(true);

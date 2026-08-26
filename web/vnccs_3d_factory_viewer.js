@@ -14,6 +14,8 @@ const EMPTY = () => {};
 const HEAVY_SCENE_GAUSSIANS = 262_145;
 const SPLAT_SCAN_CHUNK = 16_384;
 const SPLAT_BOUND_SAMPLES = 4_096;
+const SHADOW_PROXY_MAX_SPLATS = 1_536;
+const SHADOW_PROXY_CANDIDATE_MULTIPLIER = 4;
 const INTERACTIVE_FRAME_MS = 1000 / 30;
 const LIGHTING_UPDATE_MS = 1000 / 15;
 const LIGHTING_BASE_RESPONSE = 0.65;
@@ -558,6 +560,96 @@ export function computeRobustSplatBounds(mesh, options = {}) {
     }
 }
 
+/**
+ * Select a bounded, deterministic subset of visible Gaussians for a cheap
+ * shadow-only silhouette. This preserves an object's actual outline without
+ * asking the browser to render every source splat into every shadow map.
+ */
+export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
+    if (!mesh || !hasFiniteBounds(bounds)) return [];
+    const maxInstances = Math.max(
+        32,
+        Math.min(4_096, Math.floor(Number(options.maxInstances) || SHADOW_PROXY_MAX_SPLATS)),
+    );
+    const opacityThreshold = Math.max(
+        0,
+        Math.min(1, Number(options.opacityThreshold) || 0.08),
+    );
+    const splatCount = Math.max(0, Number(mesh.numSplats) || 0);
+    if (!splatCount) return [];
+
+    const candidateLimit = maxInstances * SHADOW_PROXY_CANDIDATE_MULTIPLIER;
+    const stride = Math.max(1, Math.ceil(splatCount / candidateLimit));
+    const safeBounds = bounds.clone();
+    const boundsSize = safeBounds.getSize(new THREE.Vector3());
+    const largestExtent = Math.max(boundsSize.x, boundsSize.y, boundsSize.z, 0.001);
+    safeBounds.expandByScalar(largestExtent * 0.04);
+    const maximumRadius = largestExtent * 0.16;
+    const minimumRadius = Math.max(largestExtent * 0.00035, 0.00001);
+    const candidates = [];
+
+    const collect = (index, center, scales, quaternion, opacity) => {
+        if (index % stride !== 0) return;
+        const alpha = Number(opacity);
+        if (Number.isFinite(alpha) && alpha < opacityThreshold) return;
+        const position = new THREE.Vector3(
+            Number(center?.x),
+            Number(center?.y),
+            Number(center?.z),
+        );
+        if (
+            !position.toArray().every(Number.isFinite)
+            || !safeBounds.containsPoint(position)
+        ) return;
+        const radiusFactor = 1.35 + 0.9 * Math.max(
+            0,
+            Math.min(1, Number.isFinite(alpha) ? alpha : 1),
+        );
+        const scale = new THREE.Vector3(
+            Math.max(
+                minimumRadius,
+                Math.min(maximumRadius, Math.abs(Number(scales?.x)) || minimumRadius),
+            ),
+            Math.max(
+                minimumRadius,
+                Math.min(maximumRadius, Math.abs(Number(scales?.y)) || minimumRadius),
+            ),
+            Math.max(
+                minimumRadius,
+                Math.min(maximumRadius, Math.abs(Number(scales?.z)) || minimumRadius),
+            ),
+        ).multiplyScalar(radiusFactor);
+        const rotation = new THREE.Quaternion(
+            Number(quaternion?.x) || 0,
+            Number(quaternion?.y) || 0,
+            Number(quaternion?.z) || 0,
+            Number.isFinite(Number(quaternion?.w)) ? Number(quaternion.w) : 1,
+        ).normalize();
+        candidates.push({ position, scale, quaternion: rotation });
+    };
+
+    try {
+        if (typeof mesh.splats?.getSplat === "function") {
+            for (let index = 0; index < splatCount; index += stride) {
+                const splat = mesh.splats.getSplat(index);
+                collect(index, splat.center, splat.scales, splat.quaternion, splat.opacity);
+            }
+        } else if (typeof mesh.forEachSplat === "function") {
+            mesh.forEachSplat(collect);
+        }
+    } catch (_) {
+        return [];
+    }
+    if (candidates.length <= maxInstances) return candidates;
+
+    const output = [];
+    const step = candidates.length / maxInstances;
+    for (let index = 0; index < maxInstances; index += 1) {
+        output.push(candidates[Math.min(candidates.length - 1, Math.floor((index + 0.5) * step))]);
+    }
+    return output;
+}
+
 function robustCoordinateBounds(coordinates, options = {}) {
     const trimFraction = Math.max(
         0,
@@ -606,6 +698,15 @@ export function boundedObjectHit(ray, entries) {
     return nearest;
 }
 
+export function isObjectPickableInHierarchy(object) {
+    for (let current = object; current; current = current.parent) {
+        if (current.visible === false || current.userData?.factoryPointerPassthrough === true) {
+            return false;
+        }
+    }
+    return Boolean(object);
+}
+
 export class Factory3DViewer {
     constructor(host, options = {}) {
         if (!host?.appendChild) throw new TypeError("Factory3DViewer requires a host element");
@@ -648,6 +749,8 @@ export class Factory3DViewer {
         this._planGridSignature = "";
         this._planPan = null;
         this._planMarquee = null;
+        this._objectPlanDrag = null;
+        this.planSelectedObjectIds = [];
         this._lightDrag = null;
         this.captureWidth = 1024;
         this.captureHeight = 1024;
@@ -1032,6 +1135,12 @@ export class Factory3DViewer {
                     event.preventDefault();
                     return;
                 }
+                const objectHit = this._planObjectHit(event);
+                if (objectHit?.objectId) {
+                    this._beginPlanObjectDrag(event, objectHit.objectId);
+                    event.preventDefault();
+                    return;
+                }
                 if (!this._planSelectionHit(event)) {
                     this._planMarquee = {
                         pointerId: event.pointerId,
@@ -1128,6 +1237,11 @@ export class Factory3DViewer {
                 if (helper) helper.position.fromArray(position);
                 this.options.onLightTransform(drag.lightId, position, { final: false });
                 this.invalidate();
+                event.preventDefault();
+                return;
+            }
+            if (this._objectPlanDrag?.pointerId === event.pointerId) {
+                this._updatePlanObjectDrag(event);
                 event.preventDefault();
                 return;
             }
@@ -1265,6 +1379,11 @@ export class Factory3DViewer {
                 event.preventDefault();
                 return;
             }
+            if (this._objectPlanDrag?.pointerId === event.pointerId) {
+                this._finishPlanObjectDrag(event);
+                event.preventDefault();
+                return;
+            }
             if (this._architectureDrag) {
                 const drag = this._architectureDrag;
                 this._architectureDrag = null;
@@ -1355,6 +1474,12 @@ export class Factory3DViewer {
                 if (drag.moved) {
                     this.options.onLightTransform(drag.lightId, drag.originPosition, { final: true });
                 }
+            }
+            if (
+                this._objectPlanDrag
+                && (event.pointerId === undefined || this._objectPlanDrag.pointerId === event.pointerId)
+            ) {
+                this._finishPlanObjectDrag(event, { cancelled: true });
             }
             if (!this._lookDrag || (event.pointerId !== undefined && this._lookDrag.pointerId !== event.pointerId)) return;
             this._lookDrag = null;
@@ -1512,22 +1637,33 @@ export class Factory3DViewer {
     }
 
     _attachShadowProxy(entry) {
-        if (!entry?.mesh || !entry?.localBounds || entry.localBounds.isEmpty()) return;
-        const center = entry.localBounds.getCenter(new THREE.Vector3());
-        const size = entry.localBounds.getSize(new THREE.Vector3());
-        const geometry = new THREE.BoxGeometry(
-            Math.max(0.001, size.x),
-            Math.max(0.001, size.y),
-            Math.max(0.001, size.z),
-        );
-        geometry.translate(center.x, center.y, center.z);
+        if (!entry?.mesh || !entry?.splat || !hasFiniteBounds(entry.splatBounds)) return;
+        const transforms = gaussianShadowProxyTransforms(entry.splat, entry.splatBounds);
+        if (!transforms.length) return;
+        // One low-poly ellipsoid per sampled Gaussian gives the shadow map a
+        // recognizable silhouette in one instanced draw call. A 1,536-instance
+        // cap keeps point-light cube shadows practical in large scenes.
+        const geometry = new THREE.IcosahedronGeometry(1, 0);
         const material = new THREE.MeshBasicMaterial({
             colorWrite: false,
             depthWrite: false,
             transparent: true,
             opacity: 0,
         });
-        const proxy = new THREE.Mesh(geometry, material);
+        const proxy = new THREE.InstancedMesh(geometry, material, transforms.length);
+        const matrix = new THREE.Matrix4();
+        for (let index = 0; index < transforms.length; index += 1) {
+            const transform = transforms[index];
+            matrix.compose(transform.position, transform.quaternion, transform.scale);
+            proxy.setMatrixAt(index, matrix);
+        }
+        proxy.instanceMatrix.needsUpdate = true;
+        proxy.computeBoundingBox?.();
+        proxy.computeBoundingSphere?.();
+        proxy.position.copy(entry.splat.position);
+        proxy.quaternion.copy(entry.splat.quaternion);
+        proxy.scale.copy(entry.splat.scale);
+        proxy.updateMatrix();
         proxy.name = "VNCCS Gaussian shadow proxy";
         proxy.customDepthMaterial = new THREE.MeshDepthMaterial({
             depthPacking: THREE.RGBADepthPacking,
@@ -2326,8 +2462,164 @@ export class Factory3DViewer {
         const architectureHit = [
             ...this.raycaster.intersectObject(this.planOverlay, true),
             ...this.raycaster.intersectObject(this.architecture.root, true),
-        ].some(hit => hit.object?.userData?.factoryId);
+        ].some(hit => (
+            isObjectPickableInHierarchy(hit.object)
+            && hit.object?.userData?.factoryId
+        ));
         return architectureHit || Boolean(boundedObjectHit(this.raycaster.ray, this.objects));
+    }
+
+    _planObjectHit(event) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.pointer.set(
+            ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+            -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+        );
+        this.raycaster.setFromCamera(this.pointer, this.planCamera);
+        return boundedObjectHit(this.raycaster.ray, this.objects);
+    }
+
+    _beginPlanObjectDrag(event, objectId) {
+        const hitEntry = this.objects.get(objectId);
+        if (!hitEntry) return false;
+
+        const belongsToSelectedGroup = this.selectedGroupId
+            && this.selectedGroupObjectIds.includes(objectId);
+        const belongsToSelection = this.planSelectedObjectIds.includes(objectId);
+        if (!belongsToSelectedGroup && !belongsToSelection) {
+            this.select(objectId, { additive: Boolean(event.shiftKey) });
+        }
+
+        // Clicking a locked object must still select it, but cannot start a
+        // move that silently drags another member of the current selection.
+        if (hitEntry.data?.locked === true) {
+            this._pointerDown = null;
+            return false;
+        }
+
+        const candidates = belongsToSelectedGroup
+            ? this.selectedGroupObjectIds
+            : this.planSelectedObjectIds.includes(objectId)
+                ? this.planSelectedObjectIds
+                : [objectId];
+        const objectIds = Array.from(new Set(candidates)).filter(id => {
+            const entry = this.objects.get(id);
+            return entry?.mesh?.visible !== false && entry?.data?.locked !== true;
+        });
+        if (!objectIds.length) {
+            this._pointerDown = null;
+            return false;
+        }
+
+        const previousTransforms = {};
+        for (const id of objectIds) {
+            const entry = this.objects.get(id);
+            previousTransforms[id] = this._meshTransform(entry.mesh);
+        }
+        const anchorTransform = previousTransforms[objectId] || previousTransforms[objectIds[0]];
+        this._objectPlanDrag = {
+            pointerId: event.pointerId,
+            objectIds,
+            originPoint: this.screenToPlan(event),
+            anchorPosition: [anchorTransform.position[0], anchorTransform.position[2]],
+            previousTransforms,
+            currentTransforms: { ...previousTransforms },
+            originX: event.clientX,
+            originY: event.clientY,
+            moved: false,
+            interactive: false,
+        };
+        this.canvas.setPointerCapture?.(event.pointerId);
+        return true;
+    }
+
+    _updatePlanObjectDrag(event) {
+        const drag = this._objectPlanDrag;
+        if (!drag || (event.pointerId !== undefined && drag.pointerId !== event.pointerId)) return false;
+        const distance = Math.hypot(
+            event.clientX - drag.originX,
+            event.clientY - drag.originY,
+        );
+        if (!drag.moved && distance <= 3) return false;
+        if (!drag.moved) {
+            drag.moved = true;
+            drag.interactive = true;
+            this._setInteractive("plan-object", true);
+            this.canvas.style.cursor = "grabbing";
+        }
+
+        const pointer = this.screenToPlan(event);
+        const proposedAnchor = [
+            drag.anchorPosition[0] + pointer[0] - drag.originPoint[0],
+            drag.anchorPosition[1] + pointer[1] - drag.originPoint[1],
+        ];
+        const snappedAnchor = this.options.snapPlanPoint(proposedAnchor, event, null);
+        const deltaX = snappedAnchor[0] - drag.anchorPosition[0];
+        const deltaZ = snappedAnchor[1] - drag.anchorPosition[1];
+        drag.currentTransforms = {};
+        for (const [index, objectId] of drag.objectIds.entries()) {
+            const entry = this.objects.get(objectId);
+            const previous = drag.previousTransforms[objectId];
+            if (!entry || !previous) continue;
+            const transform = {
+                ...previous,
+                position: [
+                    previous.position[0] + deltaX,
+                    previous.position[1],
+                    previous.position[2] + deltaZ,
+                ].map(value => Number(value.toFixed(6))),
+                rotation: [...previous.rotation],
+            };
+            drag.currentTransforms[objectId] = transform;
+            entry.data.transform = transform;
+            this._applyTransform(entry.mesh, transform);
+            this.options.onTransformChange(objectId, transform, {
+                final: false,
+                group_id: this.selectedGroupId || "",
+                previous_transforms: drag.previousTransforms,
+                command_last: index === drag.objectIds.length - 1,
+            });
+        }
+        this._refreshSelectionBounds();
+        this._refreshObjectSelectionHighlights();
+        this.spark.setDirty?.();
+        this.invalidate();
+        return true;
+    }
+
+    _finishPlanObjectDrag(event, { cancelled = false } = {}) {
+        const drag = this._objectPlanDrag;
+        if (!drag || (event.pointerId !== undefined && drag.pointerId !== event.pointerId)) return false;
+        if (!cancelled) this._updatePlanObjectDrag(event);
+        this._objectPlanDrag = null;
+        this._pointerDown = null;
+        this.canvas.releasePointerCapture?.(drag.pointerId);
+        this.canvas.style.cursor = "default";
+        if (drag.interactive) this._setInteractive("plan-object", false);
+        if (!drag.moved) return true;
+
+        const transforms = cancelled ? drag.previousTransforms : drag.currentTransforms;
+        for (const [index, objectId] of drag.objectIds.entries()) {
+            const entry = this.objects.get(objectId);
+            const transform = transforms[objectId];
+            if (!entry || !transform) continue;
+            if (cancelled) {
+                entry.data.transform = transform;
+                this._applyTransform(entry.mesh, transform);
+            }
+            this.options.onTransformChange(objectId, transform, {
+                final: true,
+                cancelled,
+                group_id: this.selectedGroupId || "",
+                previous_transforms: drag.previousTransforms,
+                command_last: index === drag.objectIds.length - 1,
+            });
+        }
+        this._refreshSelectionBounds();
+        this._refreshObjectSelectionHighlights();
+        this.spark.setDirty?.();
+        this.invalidate();
+        return true;
     }
 
     _planLightHit(event) {
@@ -2447,7 +2739,9 @@ export class Factory3DViewer {
                 ? this.raycaster.intersectObject(this.lightHelperRoot, true)
                 : []),
             ...this.raycaster.intersectObject(this.architecture.root, true),
-        ].sort((left, right) => left.distance - right.distance);
+        ]
+            .filter(hit => isObjectPickableInHierarchy(hit.object))
+            .sort((left, right) => left.distance - right.distance);
         const lightHit = editorHits.find(
             hit => hit.object?.userData?.factoryType === "light" && hit.object.userData.factoryId,
         );
@@ -2682,8 +2976,11 @@ export class Factory3DViewer {
     }
 
     setObjectSelectionHighlights(objectIds = [], primaryId = this.selectedId) {
+        this.planSelectedObjectIds = Array.from(new Set(objectIds)).filter(
+            objectId => objectId && this.objects.has(objectId),
+        );
         this._clearPlanRoot(this.multiSelectionBoundsRoot);
-        const selectedIds = Array.from(new Set(objectIds)).filter(
+        const selectedIds = this.planSelectedObjectIds.filter(
             objectId => objectId && objectId !== primaryId && this.objects.has(objectId),
         );
         for (const objectId of selectedIds) {
@@ -2699,9 +2996,24 @@ export class Factory3DViewer {
             helper.material.depthWrite = false;
             helper.material.transparent = true;
             helper.material.opacity = 0.62;
+            helper.userData.factoryObjectId = objectId;
             this.multiSelectionBoundsRoot.add(helper);
         }
         this.invalidate();
+    }
+
+    _refreshObjectSelectionHighlights() {
+        for (const helper of this.multiSelectionBoundsRoot.children) {
+            const entry = this.objects.get(helper.userData?.factoryObjectId);
+            if (!entry?.mesh?.visible || !entry.localBounds || entry.localBounds.isEmpty()) {
+                helper.visible = false;
+                continue;
+            }
+            entry.mesh.updateMatrixWorld(true);
+            helper.visible = true;
+            helper.box.copy(entry.localBounds).applyMatrix4(entry.mesh.matrixWorld);
+            helper.updateMatrixWorld(true);
+        }
     }
 
     setScene(sceneData, options = {}) {

@@ -117,6 +117,55 @@ class FactoryBackendTests(unittest.TestCase):
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
 
+    def test_room_can_be_saved_without_a_building(self):
+        scene = self.factory.create_scene("Standalone room")
+        level_id = scene["levels"][0]["level_id"]
+        wall_ids = [character * 32 for character in "1234"]
+        polygon = [[0, 0], [4, 0], [4, 3], [0, 3]]
+        walls = [
+            {
+                "wall_id": wall_ids[index],
+                "name": "Wall",
+                "level_id": level_id,
+                "building_id": "",
+                "start": polygon[index],
+                "end": polygon[(index + 1) % len(polygon)],
+                "thickness": 0.12,
+                "height": 2.8,
+                "elevation_offset": 0.0,
+            }
+            for index in range(len(polygon))
+        ]
+        architecture = {
+            "materials": [],
+            "buildings": [],
+            "walls": walls,
+            "rooms": [{
+                "room_id": "5" * 32,
+                "name": "Room",
+                "level_id": level_id,
+                "building_id": "",
+                "polygon": polygon,
+                "wall_ids": wall_ids,
+            }],
+            "openings": [],
+        }
+
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {"architecture": architecture},
+        )
+        self.assertEqual(updated["architecture"]["buildings"], [])
+        self.assertEqual(
+            [wall["building_id"] for wall in updated["architecture"]["walls"]],
+            ["", "", "", ""],
+        )
+        self.assertEqual(updated["architecture"]["rooms"][0]["building_id"], "")
+        restored = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(len(restored["architecture"]["walls"]), 4)
+        self.assertEqual(len(restored["architecture"]["rooms"]), 1)
+        self.assertEqual(restored["architecture"]["buildings"], [])
+
     def test_saved_cameras_are_normalized_and_invalidate_capture_revision(self):
         scene = self.factory.create_scene("Camera scene")
         camera_id = "c" * 32

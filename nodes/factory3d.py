@@ -308,7 +308,11 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 raise ValueError("3D Factory scene snapshot contains an invalid wall")
             if (
                 wall.get("level_id") not in level_ids
-                or (has_building_schema and wall.get("building_id") not in building_ids)
+                or (
+                    has_building_schema
+                    and wall.get("building_id")
+                    and wall.get("building_id") not in building_ids
+                )
             ):
                 raise ValueError("3D Factory wall references an unknown floor level")
             if (
@@ -334,7 +338,11 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
                 or not _ID_RE.fullmatch(room_id)
                 or room_id in room_ids
                 or room.get("level_id") not in level_ids
-                or (has_building_schema and room.get("building_id") not in building_ids)
+                or (
+                    has_building_schema
+                    and room.get("building_id")
+                    and room.get("building_id") not in building_ids
+                )
                 or not isinstance(polygon, list)
                 or not 3 <= len(polygon) <= 512
                 or any(not finite_vector(point, 2) for point in polygon)

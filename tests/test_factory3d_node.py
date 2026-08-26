@@ -289,6 +289,35 @@ class FactoryNodeTests(unittest.TestCase):
             )
         )
 
+        standalone_room = json.loads(json.dumps(empty_building_scene))
+        polygon = [[0.0, 0.0], [4.0, 0.0], [4.0, 3.0], [0.0, 3.0]]
+        wall_ids = [character * 32 for character in "2345"]
+        standalone_room["scene_snapshot"]["architecture"]["walls"] = [
+            {
+                "wall_id": wall_ids[index],
+                "level_id": level_id,
+                "building_id": "",
+                "start": polygon[index],
+                "end": polygon[(index + 1) % len(polygon)],
+                "thickness": 0.12,
+                "height": 2.8,
+                "elevation_offset": 0.0,
+            }
+            for index in range(len(polygon))
+        ]
+        standalone_room["scene_snapshot"]["architecture"]["rooms"] = [{
+            "room_id": "6" * 32,
+            "level_id": level_id,
+            "building_id": "",
+            "polygon": polygon,
+            "wall_ids": wall_ids,
+        }]
+        self.assertTrue(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(
+                json.dumps(standalone_room)
+            )
+        )
+
         duplicate_light = json.loads(json.dumps(empty_building_scene))
         duplicate_light["scene_snapshot"]["lighting"]["lights"].append(point_light)
         self.assertIsInstance(

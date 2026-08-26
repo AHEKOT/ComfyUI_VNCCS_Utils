@@ -267,6 +267,14 @@ export function normalizedArchitecture(value = {}, levels = []) {
     }
     const buildingIds = new Set(buildings.map(item => item.building_id));
     const defaultBuildingId = buildings[0]?.building_id || "";
+    const architectureBuildingId = item => {
+        const sourceItem = item && typeof item === "object" ? item : {};
+        const requested = String(sourceItem.building_id || "");
+        if (buildingIds.has(requested)) return requested;
+        return Object.prototype.hasOwnProperty.call(sourceItem, "building_id")
+            ? ""
+            : defaultBuildingId;
+    };
     const walls = rawWalls.map(item => ({
         ...DEFAULT_WALL,
         ...item,
@@ -274,9 +282,7 @@ export function normalizedArchitecture(value = {}, levels = []) {
         level_id: levelIds.has(String(item?.level_id || ""))
             ? String(item.level_id)
             : defaultLevelId,
-        building_id: buildingIds.has(String(item?.building_id || ""))
-            ? String(item.building_id)
-            : defaultBuildingId,
+        building_id: architectureBuildingId(item),
         start: finitePoint2(item?.start),
         end: finitePoint2(item?.end, [1, 0]),
         thickness: finiteNumber(item?.thickness, DEFAULT_WALL.thickness, 0.01, 10),
@@ -296,9 +302,7 @@ export function normalizedArchitecture(value = {}, levels = []) {
         level_id: levelIds.has(String(item?.level_id || ""))
             ? String(item.level_id)
             : defaultLevelId,
-        building_id: buildingIds.has(String(item?.building_id || ""))
-            ? String(item.building_id)
-            : defaultBuildingId,
+        building_id: architectureBuildingId(item),
         polygon: (Array.isArray(item?.polygon) ? item.polygon : []).map(point => finitePoint2(point)),
         wall_ids: Array.isArray(item?.wall_ids)
             ? item.wall_ids.map(String).filter(wallId => wallIds.has(wallId))

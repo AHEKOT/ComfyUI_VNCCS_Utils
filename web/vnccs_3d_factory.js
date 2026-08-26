@@ -7501,6 +7501,17 @@ class Factory3DWidget {
     _onViewerTransform(objectId, transform, options = {}) {
         const item = this.scene?.objects?.find(value => value.object_id === objectId);
         if (!item) return;
+        if (options.cancelled) {
+            item.transform = transform;
+            if (options.command_last !== false) {
+                this._viewerTransformHistoryBefore = null;
+                this._renderInspector();
+            }
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+            this._scheduleScenePreview(120);
+            return;
+        }
         if (!this._suppressViewerTransformHistory && !this._viewerTransformHistoryBefore) {
             this._viewerTransformHistoryBefore = this._captureEditorSnapshot();
             for (const [previousId, previousTransform] of Object.entries(options.previous_transforms || {})) {
