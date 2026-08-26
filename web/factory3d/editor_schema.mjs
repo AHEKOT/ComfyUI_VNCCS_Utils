@@ -160,6 +160,12 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
     const workspace = source.workspace && typeof source.workspace === "object"
         ? source.workspace
         : {};
+    const cutawaySource = source.interior_cutaway && typeof source.interior_cutaway === "object"
+        ? source.interior_cutaway
+        : {};
+    const legacyCutaway = typeof source.interior_cutaway === "boolean"
+        ? source.interior_cutaway
+        : null;
     return {
         view_mode: source.view_mode === "plan" ? "plan" : "3d",
         plan_tool: ["select", "wall", "room", "opening", "camera"].includes(source.plan_tool)
@@ -177,6 +183,12 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
             right: ["objects", "inspector", "export"].includes(workspace.right)
                 ? workspace.right
                 : "objects",
+        },
+        interior_cutaway: {
+            // Plan has historically hidden ceilings. Preserve that behavior,
+            // while keeping the 3D viewport opt-in for existing workflows.
+            plan: legacyCutaway ?? (cutawaySource.plan !== false),
+            three_d: legacyCutaway ?? (cutawaySource.three_d === true),
         },
         plan_grid: {
             visible: planGrid.visible !== false,

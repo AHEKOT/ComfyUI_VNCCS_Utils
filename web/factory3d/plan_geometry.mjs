@@ -9,6 +9,12 @@ const DEFAULT_SURFACE = Object.freeze({
     kind: "standard",
 });
 
+// Shadow maps shrink and soften silhouettes by a small amount at shared
+// edges. A wall assembled from independent segments therefore needs a tiny
+// shadow-only overlap even when the visible boxes already meet exactly.
+const WALL_SHADOW_SEAL_MINIMUM = 0.006;
+const WALL_SHADOW_SEAL_MAXIMUM = 0.02;
+
 function materialFromData(value = {}, texture = null) {
     const data = { ...DEFAULT_SURFACE, ...(value || {}) };
     const shared = {
@@ -49,6 +55,12 @@ export class FactoryMaterialRegistry {
             opacity: 0.35,
             transmission: 1,
             roughness: 0.08,
+        });
+        this.shadowSeal = new THREE.MeshBasicMaterial({
+            color: 0x000000,
+            colorWrite: false,
+            depthWrite: false,
+            side: THREE.DoubleSide,
         });
         this.openingHit = new THREE.MeshBasicMaterial({
             transparent: true,
@@ -116,6 +128,7 @@ export class FactoryMaterialRegistry {
         this.defaultFloor.dispose();
         this.defaultCeiling.dispose();
         this.defaultGlass.dispose();
+        this.shadowSeal.dispose();
         this.openingHit.dispose();
     }
 }
@@ -171,7 +184,7 @@ function wallOpeningCells(length, height, openings) {
     return { cells, openings: normalized };
 }
 
-export function createWallObject(wall, level, openings, materials) {
+export function createWallObject(wall, level, openings, materials, junctions = {}) {
     const start = new THREE.Vector2().fromArray(wall.start);
     const end = new THREE.Vector2().fromArray(wall.end);
     const direction = end.clone().sub(start);
@@ -192,7 +205,19 @@ export function createWallObject(wall, level, openings, materials) {
     const rightMaterial = materials.get(wall.material_right, "wall");
     const capMaterial = materials.get(wall.material_caps, "wall");
     for (const cell of openingData.cells) {
-        const geometry = new THREE.BoxGeometry(cell.width, cell.height, thickness);
+        const minimum = -length / 2;
+        const maximum = length / 2;
+        const cellStart = cell.x - cell.width / 2;
+        const cellEnd = cell.x + cell.width / 2;
+        const startExtension = Math.abs(cellStart - minimum) < 1e-6
+            ? Math.max(0, Number(junctions?.start?.extension) || 0)
+            : 0;
+        const endExtension = Math.abs(cellEnd - maximum) < 1e-6
+            ? Math.max(0, Number(junctions?.end?.extension) || 0)
+            : 0;
+        const sealedWidth = cell.width + startExtension + endExtension;
+        const sealedX = cell.x + (endExtension - startExtension) / 2;
+        const geometry = new THREE.BoxGeometry(sealedWidth, cell.height, thickness);
         const mesh = new THREE.Mesh(geometry, [
             capMaterial,
             capMaterial,
@@ -201,11 +226,33 @@ export function createWallObject(wall, level, openings, materials) {
             rightMaterial,
             leftMaterial,
         ]);
-        mesh.position.set(cell.x, elevation + cell.y, 0);
+        mesh.position.set(sealedX, elevation + cell.y, 0);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
         mesh.userData = group.userData;
         group.add(mesh);
+
+        // Keep the visible wall dimensions exact, but dilate its shadow
+        // silhouette just enough to overlap adjacent wall cells and the room
+        // slab. This closes PCF/normal-bias leaks without changing picking,
+        // materials, exported color, or the editable architectural geometry.
+        const sealMargin = Math.min(
+            WALL_SHADOW_SEAL_MAXIMUM,
+            Math.max(WALL_SHADOW_SEAL_MINIMUM, thickness * 0.08),
+        );
+        const sealGeometry = new THREE.BoxGeometry(
+            sealedWidth + sealMargin * 2,
+            cell.height + sealMargin * 2,
+            thickness + sealMargin * 2,
+        );
+        const seal = new THREE.Mesh(sealGeometry, materials.shadowSeal);
+        seal.position.copy(mesh.position);
+        seal.castShadow = true;
+        seal.receiveShadow = false;
+        seal.userData = {
+            factoryShadowSeal: true,
+        };
+        group.add(seal);
     }
     for (const value of openingData.openings) {
         const geometry = new THREE.PlaneGeometry(value.end - value.start, value.top - value.bottom);
@@ -337,6 +384,66 @@ export function createRoomObject(room, level, materials) {
     return group;
 }
 
+function wallJunctionAssignments(sceneData = {}) {
+    const architecture = sceneData.architecture || {};
+    const levels = new Map((sceneData.levels || []).map(level => [level.level_id, level]));
+    const junctions = new Map();
+    const assignments = new Map();
+    const keyFor = (wall, point) => [
+        wall.building_id || "scene",
+        wall.level_id || "level",
+        (Number(point?.[0]) || 0).toFixed(4),
+        (Number(point?.[1]) || 0).toFixed(4),
+    ].join(":");
+    for (const wall of architecture.walls || []) {
+        const level = levels.get(wall.level_id);
+        if (!level || level.visible === false || wall.visible === false) continue;
+        const thickness = Math.max(0.01, Number(wall.thickness) || 0.12);
+        for (const endpoint of ["start", "end"]) {
+            const key = keyFor(wall, wall[endpoint]);
+            if (!junctions.has(key)) junctions.set(key, []);
+            const other = wall[endpoint === "start" ? "end" : "start"];
+            const direction = new THREE.Vector2(
+                (Number(other?.[0]) || 0) - (Number(wall[endpoint]?.[0]) || 0),
+                (Number(other?.[1]) || 0) - (Number(wall[endpoint]?.[1]) || 0),
+            );
+            if (direction.lengthSq() > 1e-12) direction.normalize();
+            junctions.get(key).push({
+                wall,
+                endpoint,
+                thickness,
+                direction,
+            });
+        }
+    }
+    for (const connected of junctions.values()) {
+        if (connected.length < 2) continue;
+        const maximumThickness = Math.max(...connected.map(item => item.thickness));
+        for (const item of connected) {
+            let extension = 0;
+            for (const other of connected) {
+                if (other === item || !item.direction.lengthSq() || !other.direction.lengthSq()) continue;
+                const angle = Math.acos(THREE.MathUtils.clamp(
+                    item.direction.dot(other.direction),
+                    -1,
+                    1,
+                ));
+                const tangent = Math.tan(angle / 2);
+                const candidate = tangent > 1e-4
+                    ? (maximumThickness * 0.5) / tangent
+                    : maximumThickness * 8;
+                extension = Math.max(extension, candidate);
+            }
+            const wallAssignment = assignments.get(item.wall.wall_id) || {};
+            wallAssignment[item.endpoint] = {
+                extension: Math.max(0.002, Math.min(maximumThickness * 8, extension)),
+            };
+            assignments.set(item.wall.wall_id, wallAssignment);
+        }
+    }
+    return assignments;
+}
+
 export class FactoryArchitectureRuntime {
     constructor(scene, { resolveTexture = () => null } = {}) {
         this.scene = scene;
@@ -377,6 +484,7 @@ export class FactoryArchitectureRuntime {
             if (!openingsByWall.has(opening.wall_id)) openingsByWall.set(opening.wall_id, []);
             openingsByWall.get(opening.wall_id).push(opening);
         }
+        const wallJunctions = wallJunctionAssignments(sceneData);
         for (const wall of architecture.walls || []) {
             const level = levels.get(wall.level_id);
             if (!level || level.visible === false || wall.visible === false) continue;
@@ -385,6 +493,7 @@ export class FactoryArchitectureRuntime {
                 level,
                 openingsByWall.get(wall.wall_id) || [],
                 this.materials,
+                wallJunctions.get(wall.wall_id),
             );
             (this.buildingRoots.get(wall.building_id) || this.root).add(object);
             this.items.set(`wall:${wall.wall_id}`, object);
@@ -398,7 +507,11 @@ export class FactoryArchitectureRuntime {
         }
     }
 
-    setActiveLevel(levelId, planMode = false) {
+    setActiveLevel(
+        levelId,
+        planMode = false,
+        { hideCeilings = planMode, hiddenWallId = "" } = {},
+    ) {
         this.activeLevelId = levelId;
         this.activePlanMode = planMode;
         for (const [key, object] of this.items) {
@@ -410,9 +523,12 @@ export class FactoryArchitectureRuntime {
             const level = this.sceneData?.levels?.find(item => item.level_id === source?.level_id);
             object.visible = source?.visible !== false
                 && level?.visible !== false
-                && (!planMode || !levelId || source?.level_id === levelId);
+                && (!planMode || !levelId || source?.level_id === levelId)
+                && !(type === "wall" && sourceId === hiddenWallId);
             object.traverse(child => {
-                if (child !== object && child.userData?.factoryType === "ceiling") child.visible = !planMode;
+                if (child !== object && child.userData?.factoryType === "ceiling") {
+                    child.visible = !hideCeilings;
+                }
                 if (child.userData?.factoryPlanOnly) child.visible = planMode;
             });
         }
@@ -455,6 +571,7 @@ export class FactoryArchitectureRuntime {
                 level,
                 (architecture.openings || []).filter(item => item.wall_id === sourceId && item.visible !== false),
                 this.materials,
+                wallJunctionAssignments(this.sceneData).get(sourceId),
             )
             : createRoomObject(source, level, this.materials);
         replacement.visible = source.visible !== false
