@@ -21,6 +21,44 @@ const methodSource = (source, signature, nextSignature) => {
     return source.slice(start, end);
 };
 
+
+test("selected bone rotation relay reports local radians", () => {
+    const relayMethod = methodSource(
+        poseStudioCoreSource,
+        "\n    _emitSelectedBoneRotationChange()",
+        "\n    setSelectedBoneRotation(",
+    );
+    assert.match(relayMethod, /const callback = this\.options\?\.onSelectedBoneRotationChange/);
+    assert.match(relayMethod, /const bone = this\.selectedBone/);
+    assert.match(relayMethod, /boneName: bone\?\.name \|\| null/);
+    assert.match(relayMethod, /x: bone\.rotation\.x/);
+    assert.match(relayMethod, /y: bone\.rotation\.y/);
+    assert.match(relayMethod, /z: bone\.rotation\.z/);
+});
+
+
+test("selected bone rotation setter applies local radians", () => {
+    const setterMethod = methodSource(
+        poseStudioCoreSource,
+        "setSelectedBoneRotation(axis, radians, {",
+        "\n    selectBone(",
+    );
+    assert.match(setterMethod, /recordState = true/);
+    assert.match(setterMethod, /dispatchPoseChange = true/);
+    assert.match(setterMethod, /\['x', 'y', 'z'\]\.includes\(axis\)/);
+    assert.match(setterMethod, /Number\.isFinite\(value\)/);
+    assert.match(setterMethod, /bone\.rotation\[axis\] = value/);
+
+    const assignment = setterMethod.indexOf("bone.rotation[axis] = value");
+    const updateEffectors = setterMethod.indexOf("this.updateIKEffectorPositions()", assignment);
+    const relay = setterMethod.indexOf("this._emitSelectedBoneRotationChange()", updateEffectors);
+    const render = setterMethod.indexOf("this.requestRender()", relay);
+    const dispatch = setterMethod.indexOf("this.dispatchPoseChange()", render);
+    assert.ok(assignment >= 0 && updateEffectors > assignment);
+    assert.ok(relay > updateEffectors && render > relay);
+    assert.ok(dispatch > render);
+});
+
 test("Pose Studio imports one strict version of its transform-track modules", () => {
     assert.match(
         poseStudioSource,

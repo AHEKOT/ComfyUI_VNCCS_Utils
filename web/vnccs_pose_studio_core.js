@@ -1063,6 +1063,7 @@ export class PoseViewerCore {
             onHandHover: null,
             onHandActivate: null,
             onBoneSelectionChange: null,
+            onSelectedBoneRotationChange: null,
 
             syncMode: 'end',
             skinMode: 'flat_color',
@@ -1551,6 +1552,7 @@ export class PoseViewerCore {
                 // FK rotation - update all effector positions to follow bones
                 this.updateIKEffectorPositions();
             }
+            this._emitSelectedBoneRotationChange();
             this.requestRender();
         });
 
@@ -2290,6 +2292,40 @@ export class PoseViewerCore {
         } finally {
             this._emittingBoneSelectionChange = false;
         }
+    }
+
+    _emitSelectedBoneRotationChange() {
+        const callback = this.options?.onSelectedBoneRotationChange;
+        if (typeof callback !== 'function') return;
+
+        const bone = this.selectedBone;
+        callback({
+            boneName: bone?.name || null,
+            rotation: bone ? {
+                x: bone.rotation.x,
+                y: bone.rotation.y,
+                z: bone.rotation.z,
+            } : null,
+        });
+    }
+
+    setSelectedBoneRotation(axis, radians, {
+        recordState = true,
+        dispatchPoseChange = true,
+    } = {}) {
+        const bone = this.selectedBone;
+        const value = Number(radians);
+        if (!bone || !['x', 'y', 'z'].includes(axis) || !Number.isFinite(value)) return false;
+
+        if (recordState) this.recordState();
+        bone.rotation[axis] = value;
+        bone.updateMatrixWorld(true);
+        this.skeleton?.update();
+        this.updateIKEffectorPositions();
+        this._emitSelectedBoneRotationChange();
+        this.requestRender();
+        if (dispatchPoseChange) this.dispatchPoseChange();
+        return true;
     }
 
     selectBone(bone, { source = 'viewer' } = {}) {
