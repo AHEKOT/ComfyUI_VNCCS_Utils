@@ -5958,7 +5958,7 @@ export class PoseViewerCore {
         return applied;
     }
 
-    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0) {
+    fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0, options = {}) {
         const worldKps = this._samMeshOverlayWorldKps;
         const passCount = 6;
         for (let pass = 0; pass < passCount; pass++) {
@@ -5974,7 +5974,7 @@ export class PoseViewerCore {
                 footLocalRotations: this._sam3dImportedFootLocalRotations || null,
                 drawFigure: finalPass,
                 updateMarkers: finalPass,
-                dispatchPoseChange: finalPass,
+                dispatchPoseChange: finalPass && options.dispatchPoseChange !== false,
             });
             if (!applied) return false;
         }
@@ -8405,6 +8405,7 @@ export class PoseViewerCore {
                 alignHead: options.alignHead ?? !usedRotationImport,
                 alignFeet: options.alignFeet !== false,
                 footLocalRotations: this._sam3dImportedFootLocalRotations,
+                dispatchPoseChange: options.dispatchPoseChange !== false,
             });
         }
 
@@ -8413,7 +8414,7 @@ export class PoseViewerCore {
             this.skinnedMesh.updateMatrixWorld(true);
             this.updateMarkers();
             this.requestRender();
-            this.dispatchPoseChange();
+            if (options.dispatchPoseChange !== false) this.dispatchPoseChange();
             return true;
         }
         return false;

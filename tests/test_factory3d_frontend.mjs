@@ -9,6 +9,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const studio = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.js"), "utf8");
 const viewer = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory_viewer.js"), "utf8");
 const styles = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.css"), "utf8");
+const planGeometry = fs.readFileSync(path.join(root, "web", "factory3d", "plan_geometry.mjs"), "utf8");
 
 test("Factory widget registers the renamed node and persists opaque state", () => {
     assert.match(studio, /VNCCS_3DFactory/);
@@ -17,7 +18,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260726\.4"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260825\.26"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -70,6 +71,29 @@ test("Factory provides a native Gaussian object and scene library with HF reposi
     assert.doesNotMatch(studio, /window\.(?:alert|confirm|prompt)/);
 });
 
+test("Factory keeps the viewport clear and exposes camera projections in the Cameras panel", () => {
+    assert.doesNotMatch(studio, /vnccs-i3s__viewport-camera/);
+    assert.doesNotMatch(styles, /vnccs-i3s__viewport-camera/);
+    assert.doesNotMatch(studio, /data-camera-action=/);
+    assert.doesNotMatch(studio, /data-camera-pan=/);
+    assert.doesNotMatch(studio, /data-camera-orbit=/);
+    assert.doesNotMatch(studio, /data-camera-vector=/);
+    assert.doesNotMatch(studio, /vnccs-i3s__camera-distance-range/);
+    assert.doesNotMatch(studio, /vnccs-i3s__camera-height-range/);
+    assert.match(studio, /Wheel zoom speed/);
+    assert.match(studio, /vnccs-i3s__camera-zoom-speed-range/);
+    assert.match(studio, /View projection/);
+    assert.match(studio, /data-camera-preset="perspective"/);
+    assert.match(studio, /data-camera-preset="front"/);
+    assert.match(studio, /data-camera-preset="right"/);
+    assert.match(studio, /data-camera-preset="top"/);
+    assert.match(studio, /_syncCameraPanelControls/);
+    assert.match(studio, /this\.editorView\.view_mode === "plan"/);
+    assert.match(viewer, /setZoomSensitivity\(value/);
+    assert.match(viewer, /this\.dollyCamera\(\(-event\.deltaY \/ 100\) \* this\.zoomSensitivity/);
+    assert.match(styles, /\.vnccs-i3s__camera-view-preset-grid/);
+});
+
 test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /Scene manager/);
     assert.match(studio, /confirmDeleteScene\(scene\)/);
@@ -81,7 +105,7 @@ test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /Generate object/);
     assert.match(viewer, /TransformControls/);
     assert.match(studio, /duplicateObject/);
-    assert.match(studio, /Scene PLY/);
+    assert.match(studio, /Gaussian PLY/);
     assert.match(studio, /item\?\.urls\?\.export_ply/);
     assert.match(studio, /exportScene\(\)/);
     assert.match(studio, /download\(scene\.exports\.urls\.ply\)/);
@@ -169,7 +193,26 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
     assert.match(viewer, /document\.visibilityState !== "hidden"/);
     assert.match(viewer, /setLighting\(value = \{\}\)/);
     assert.match(viewer, /for \(const entry of this\.objects\.values\(\)\)/);
+    assert.match(studio, /Occlusion shadows/);
+    assert.match(studio, /Active shadow-casting point lights/);
+    assert.match(studio, /vnccs-i3s__local-light-add/);
+    assert.match(studio, /this\.lighting\.lights\.push\(\{/);
+    assert.match(studio, /kind: "point"/);
+    assert.match(studio, /const lights = this\.lighting\?\.lights \|\| \[\]/);
+    assert.match(studio, /fragment\.appendChild\(this\._createLightCard\(light\)\)/);
+    assert.match(studio, /Scene object · editor sphere is excluded from camera exports/);
+    assert.match(viewer, /new THREE\.PointLight\(data\.color, data\.intensity, data\.distance\)/);
+    assert.match(viewer, /this\.lightHelperRoot/);
     assert.match(styles, /\.vnccs-i3s__lighting-panel/);
+});
+
+test("Architecture shadows use closed geometry without hidden full-wall shadow casters", () => {
+    assert.match(planGeometry, /shadowSide: data\.kind === "glass" \? THREE\.DoubleSide : THREE\.BackSide/);
+    assert.doesNotMatch(planGeometry, /shadowSeal|factoryShadowSeal|WALL_SHADOW_SEAL/);
+    assert.match(planGeometry, /mesh\.castShadow = true/);
+    assert.match(planGeometry, /mesh\.receiveShadow = true/);
+    assert.match(viewer, /Math\.max\(configuredNormalBias, DEFAULT_LIGHTING\.shadows\.normal_bias\)/);
+    assert.doesNotMatch(viewer, /Math\.max\(configuredNormalBias, 0\.006\)/);
 });
 
 test("Factory provides a persistent equirectangular skydome with professional controls", () => {
@@ -253,7 +296,9 @@ test("Selection no longer rebuilds layer cards before a double-click can rename 
 
 test("Scene updates reuse loaded splats and group transforms fan out to every object", () => {
     assert.match(studio, /this\.viewer\.setScene\(scene, \{ incremental \}\)/);
-    assert.match(viewer, /async setScene\(sceneData, \{ incremental = false \} = \{\}\)/);
+    assert.match(viewer, /setScene\(sceneData, options = \{\}\)/);
+    assert.match(viewer, /async _setSceneNow\(sceneData, \{ incremental = false \} = \{\}\)/);
+    assert.match(viewer, /this\._sceneSetSerial = operation\.catch\(\(\) => null\)/);
     assert.match(viewer, /if \(!incremental\) \{/);
     assert.match(viewer, /existing\?\.assetPath === assetPath/);
     assert.match(viewer, /this\.objects\.delete\(objectId\)/);
@@ -415,6 +460,10 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     )?.[0] || "";
     assert.match(cameraBlock, />Camera</);
     assert.match(cameraBlock, /vnccs-i3s__camera-look/);
+    assert.match(cameraBlock, /vnccs-i3s__camera-zoom-speed-range/);
+    assert.match(cameraBlock, /vnccs-i3s__camera-view-presets/);
+    assert.match(cameraBlock, /data-camera-preset="perspective"/);
+    assert.match(cameraBlock, /data-camera-preset="top"/);
     assert.doesNotMatch(cameraBlock, /camera-roll|Roll camera|slider to roll/);
     assert.match(cameraBlock, />Add camera</);
     assert.match(cameraBlock, /<strong>Cameras<\/strong>/);
@@ -445,6 +494,32 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
 });
 
+test("Exact saved-camera XYZ rotation round-trips through one quaternion order", async () => {
+    const helpers = studio.match(
+        /(function quaternionFromEulerDegrees[\s\S]*?function eulerDegreesFromQuaternion[\s\S]*?\n\})\n\n\nclass Factory3DWidget/,
+    );
+    assert.ok(helpers, "camera rotation helpers not found");
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const normalizePose = value => {
+        const quaternion = new THREE.Quaternion().fromArray(value.quaternion || [0, 0, 0, 1]);
+        if (quaternion.lengthSq() < 1e-12) quaternion.identity();
+        quaternion.normalize();
+        return { quaternion: quaternion.toArray() };
+    };
+    const rotationHelpers = Function(
+        "normalizedCameraPose",
+        `${helpers[1]}; return { quaternionFromEulerDegrees, eulerDegreesFromQuaternion };`,
+    )(normalizePose);
+    for (const rotation of [[17, -23, 41], [-32, 18, -11], [6.25, 54.5, 72.75]]) {
+        const restored = rotationHelpers.eulerDegreesFromQuaternion(
+            rotationHelpers.quaternionFromEulerDegrees(rotation),
+        );
+        for (let axis = 0; axis < 3; axis += 1) {
+            assert.ok(Math.abs(restored[axis] - rotation[axis]) < 1e-9);
+        }
+    }
+});
+
 test("Scene export exposes persistent dimensions, aspect presets, and an exact camera frame", () => {
     assert.match(studio, /Aspect ratio/);
     assert.match(studio, /16:9 · Widescreen/);
@@ -465,10 +540,27 @@ test("Scene export exposes persistent dimensions, aspect presets, and an exact c
     assert.match(styles, /\.vnccs-i3s__scene-render-settings/);
 });
 
-test("Canvas transforms are the only transform UI and object actions live on cards", () => {
+test("Interior cutaway is viewport-only and camera exports restore complete architecture", () => {
+    assert.match(studio, /Interior cutaway \(viewport only\)/);
+    assert.match(studio, /this\.editorView\.interior_cutaway\[key\]/);
+    assert.match(studio, /this\.editorView\.interior_cutaway\?\.\[cutawayKey\]/);
+    assert.match(viewer, /setInteriorCutaway\(enabled\)/);
+    assert.match(viewer, /hideCeilings: this\.interiorCutaway/);
+    assert.match(viewer, /const hiddenWallId = this\._nearestCutawayWallId\(\)/);
+    assert.match(viewer, /filter\(hit => isObjectPickableInHierarchy\(hit\.object\)\)/);
+    assert.match(viewer, /this\.lightHelperRoot\.visible = false/);
+    assert.match(viewer, /this\.architecture\.setActiveLevel\(this\.activeLevelId, false, \{[\s\S]*?hideCeilings: false,[\s\S]*?hiddenWallId: ""/);
+    assert.match(viewer, /this\._syncViewportCutaway\(true\)/);
+});
+
+test("Canvas gizmos and the Inspector provide coarse and precise transforms", () => {
     assert.doesNotMatch(studio, /vnccs-i3s__transform-panel/);
-    assert.doesNotMatch(studio, /Precise values/);
     assert.doesNotMatch(studio, /vnccs-i3s__selected-name/);
+    assert.match(studio, /data-editor-path=/);
+    assert.match(studio, /exact value/);
+    assert.match(studio, /type="range" aria-label=/);
+    assert.match(studio, /Rotation · degrees/);
+    assert.match(studio, /step: 0\.01/);
     assert.match(studio, /Duplicate object/);
     assert.match(studio, /confirmDeleteObject\(item\.object_id\)/);
     assert.match(studio, /actions\.append\(visibility, exportObject, duplicate, remove\)/);
@@ -476,15 +568,227 @@ test("Canvas transforms are the only transform UI and object actions live on car
     assert.match(studio, /W\/E\/R: move\/rotate\/scale/);
 });
 
-test("Factory preserves the accepted Sakura three-column Studio interface", () => {
+test("Factory keeps a responsive Sakura workspace with isolated side-panel tabs", () => {
     assert.match(styles, /--i3-pink: #ff8fa3/);
     assert.match(styles, /--i3-lavender: #b8a9e8/);
-    assert.match(styles, /grid-template-columns: 300px minmax\(330px, 1fr\) 412\.5px/);
+    assert.match(styles, /grid-template-columns: 280px minmax\(420px, 1fr\) 360px/);
     assert.match(styles, /grid-template-columns: 200px minmax\(290px, 1fr\) 220px/);
+    assert.match(studio, /data-workspace-tab="generate"/);
+    assert.match(studio, /data-workspace-tab="cameras"/);
+    assert.match(studio, /data-workspace-tab="objects"/);
+    assert.match(studio, /data-workspace-tab="inspector"/);
+    assert.match(studio, /data-workspace-tab="export"/);
+    assert.match(styles, /\.vnccs-i3s__workspace-panel/);
     assert.doesNotMatch(styles, /minmax\(205px, 23fr\)/);
     assert.match(studio, /vnccs-i3s__side--left/);
     assert.match(studio, /vnccs-i3s__center/);
     assert.match(studio, /vnccs-i3s__side--right/);
+});
+
+test("Plan mode exposes distinct, previewed building workflows and explicit snap controls", () => {
+    assert.match(studio, /data-plan-tool="wall"/);
+    assert.match(studio, /Press and drag to draw a wall/);
+    assert.match(studio, /data-plan-tool="room"/);
+    assert.match(studio, /Press and drag diagonally to draw a rectangular room/);
+    assert.match(studio, /data-plan-tool="opening"/);
+    assert.match(studio, /data-plan-tool="camera"/);
+    assert.match(studio, /Opening type/);
+    assert.match(studio, /Grid step · m/);
+    assert.match(studio, /Major line every/);
+    assert.match(studio, /event\.altKey \|\| this\.editorView\.snap\?\.enabled === false/);
+    assert.match(studio, /event\.shiftKey \|\| this\.editorView\.snap\?\.orthogonal/);
+    assert.match(studio, /Press and drag to draw a wall/);
+    assert.match(studio, /Press and drag diagonally to draw a rectangular room/);
+    assert.match(studio, /Press on a wall and drag to set the opening width/);
+    assert.match(studio, /_queuePlanHover/);
+    assert.match(studio, /phase === "start"/);
+    assert.match(studio, /phase === "move"/);
+    assert.match(studio, /phase !== "end"/);
+    assert.match(studio, /if \(!gesture\.moved\)/);
+    assert.match(studio, /this\.planHover = \{ tool, point, opening: placement \}/);
+    assert.match(studio, /Drag to aim the camera/);
+    assert.match(studio, /_fitOpeningOnWall/);
+    assert.match(viewer, /snapPlanPoint: options\.snapPlanPoint/);
+    assert.match(viewer, /setPlanDraft\(draft\)/);
+    assert.match(viewer, /setPlanGrid\(value = \{\}\)/);
+    assert.match(viewer, /setCameraMarkers\(cameras = \[\], selectedIds = null\)/);
+    assert.match(viewer, /onPlanGesture: options\.onPlanGesture/);
+    assert.match(viewer, /phase: "start",[\s\S]*?type: "room"/);
+    assert.match(viewer, /phase: "move",[\s\S]*?type: "room"/);
+    assert.match(studio, /if \(phase === "move"\) \{[\s\S]*?_queueSelectedArchitecturePreview\(\{ persist: false \}\)/);
+});
+
+test("Editor workflows keep buildings optional and make levels, selection, floor drop, and camera exits explicit", () => {
+    assert.doesNotMatch(studio, /\+ Building/);
+    assert.doesNotMatch(studio, /vnccs-i3s__building-select/);
+    assert.match(studio, /Move building/);
+    assert.match(studio, /Delete building/);
+    assert.match(studio, /No replacement Building will be created/);
+    assert.doesNotMatch(studio, /_ensureBuilding|_createDefaultBuilding/);
+    assert.match(studio, /_applyBuildingTransform/);
+    assert.match(studio, /Assign camera to building/);
+    assert.match(studio, /data-object-property="building_id"/);
+    assert.match(studio, /data-camera-property="building_id"/);
+    assert.match(studio, /data-light-property="building_id"/);
+    assert.match(studio, /vnccs-i3s__camera-track-building/);
+    assert.match(studio, /track\.building_id !== building\.building_id/);
+    assert.match(studio, /active_building_id/);
+    assert.match(studio, /vnccs-i3s__level-panel/);
+    assert.match(studio, /Add level/);
+    assert.match(studio, /\["wall", "room", "opening"\]\.includes\(this\.editorView\.plan_tool\)/);
+    assert.match(studio, /this\.els\.levelPanel\.hidden = !architectureToolActive/);
+    assert.match(viewer, /selectedBuildingIds/);
+    assert.match(viewer, /this\.controls\.enableRotate = false/);
+    assert.match(viewer, /dollyCamera\(/);
+    assert.match(viewer, /rotateCameraFPV/);
+    assert.match(studio, /Drop selection to the nearest surface \(End\)/);
+    assert.match(studio, /this\._dropSelectionToSurface\(event\.shiftKey\)/);
+    assert.match(viewer, /dropSelectionToSurface\(\{ individual = false \} = \{\}\)/);
+    assert.match(studio, /Enter camera view/);
+    assert.match(studio, /Exit camera view/);
+    assert.match(studio, /Update from current view/);
+    assert.match(studio, /Add camera as path point/);
+    assert.match(studio, /Delete active camera path/);
+    assert.match(studio, /Precise edits in 3D enter the saved camera non-destructively/);
+    assert.match(studio, /selected_architecture: this\.selectedArchitecture/);
+    assert.match(studio, /selected_camera_keyframe_id: this\.selectedCameraKeyframeId/);
+    assert.match(studio, /this\._listen\(window, "keydown", event =>/);
+    assert.match(studio, /event\.key === "Delete" \|\| event\.key === "Backspace"/);
+    assert.match(studio, /\[data-inspector-action="delete"\]/);
+    assert.match(studio, /if \(editing\) return/);
+    assert.match(studio, /if \(key === "c"\) this\._copySelection\(\)/);
+    assert.match(studio, /else void this\._pasteSelection\(\)/);
+    assert.match(studio, /_selectPlanItems\(items = \[\]/);
+    assert.match(viewer, /onPlanMarqueeSelection\(items/);
+    assert.match(viewer, /_planItemsInBounds\(start, end\)/);
+    assert.match(studio, /rooms: Array\.from\(rooms\.values\(\)\)/);
+    assert.match(studio, /walls: Array\.from\(walls\.values\(\)\)/);
+    assert.match(studio, /openings: Array\.from\(openings\.values\(\)\)/);
+    assert.match(studio, /cameras,/);
+    assert.match(studio, /lights,/);
+    assert.match(studio, /for \(const source of clipboard\.rooms \|\| \[\]\)/);
+    assert.match(studio, /wall_ids: \(source\.wall_ids \|\| \[\]\)\.map\(id => wallIds\.get\(id\) \|\| id\)/);
+    assert.match(studio, /for \(const source of clipboard\.lights \|\| \[\]\)/);
+});
+
+test("Editor schema normalizes grid aliases, room perimeters, buildings, and non-overlapping openings", async () => {
+    const schema = await import(
+        `${pathToFileURL(path.join(root, "web", "factory3d", "editor_schema.mjs")).href}?test=${Date.now()}`
+    );
+    const view = schema.normalizedEditorView({
+        plan_grid: { visible: false, step: 0.25, major_every: 8 },
+        snap: { enabled: false, grid: 3, endpoints: false },
+    }, "level-a");
+    assert.deepEqual(view.plan_grid, { visible: false, step: 0.25, major_every: 8 });
+    assert.equal(view.snap.enabled, false);
+    assert.equal(view.snap.grid, 0.25);
+    assert.equal(view.snap.endpoints, false);
+    assert.equal(view.active_level_id, "level-a");
+    assert.deepEqual(view.interior_cutaway, { plan: true, three_d: false });
+    assert.deepEqual(
+        schema.normalizedEditorView({ interior_cutaway: true }).interior_cutaway,
+        { plan: true, three_d: true },
+    );
+    assert.equal(schema.normalizedEditorView({ active_building_id: "building-a" }).active_building_id, "building-a");
+    assert.equal(schema.normalizedObjectEditorProperties({
+        building_id: "building-a",
+        light_transport: "transmissive",
+        transmission: 0.42,
+    }).building_id, "building-a");
+    assert.equal(schema.normalizedObjectEditorProperties({
+        building_id: "building-a",
+        light_transport: "transmissive",
+        transmission: 0.42,
+    }).transmission, 0.42);
+
+    const level = { level_id: "level-a" };
+    const building = { building_id: "building-a", name: "House" };
+    const walls = [
+        { wall_id: "w1", building_id: "building-a", level_id: "level-a", start: [0, 0], end: [4, 0] },
+        { wall_id: "w2", building_id: "building-a", level_id: "level-a", start: [4, 0], end: [4, 3] },
+        { wall_id: "w3", building_id: "building-a", level_id: "level-a", start: [4, 3], end: [0, 3] },
+        { wall_id: "w4", building_id: "building-a", level_id: "level-a", start: [0, 3], end: [0, 0] },
+    ];
+    const normalized = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [{
+            room_id: "room-a",
+            building_id: "building-a",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w2", "w3", "w4"],
+        }],
+        openings: [
+            { opening_id: "o1", wall_id: "w1", offset: 0.25, width: 1 },
+            { opening_id: "o2", wall_id: "w1", offset: 0.75, width: 1 },
+        ],
+    }, [level]);
+    assert.equal(normalized.buildings[0].building_id, "building-a");
+    assert.deepEqual(normalized.rooms[0].wall_ids, ["w1", "w2", "w3", "w4"]);
+    assert.equal(normalized.openings.length, 2);
+    const intervals = normalized.openings
+        .map(opening => [opening.offset * 4 - opening.width / 2, opening.offset * 4 + opening.width / 2])
+        .sort((left, right) => left[0] - right[0]);
+    assert.ok(intervals[0][1] <= intervals[1][0] + 1e-9);
+    const overlapping = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [],
+        openings: [
+            { opening_id: "overlap-a", wall_id: "w1", offset: 0.5, width: 2 },
+            { opening_id: "overlap-b", wall_id: "w1", offset: 0.5, width: 2 },
+        ],
+    }, [level]);
+    assert.equal(overlapping.openings.length, 1);
+
+    const invalid = schema.normalizedArchitecture({
+        buildings: [building],
+        walls,
+        rooms: [{
+            room_id: "room-b",
+            building_id: "building-a",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w1", "w3", "w4"],
+        }],
+    }, [level]);
+    assert.deepEqual(invalid.rooms[0].wall_ids, []);
+    const emptyArchitecture = schema.normalizedArchitecture({
+        buildings: [], walls: [], rooms: [], openings: [], materials: [],
+    }, [level]);
+    assert.deepEqual(emptyArchitecture.buildings, []);
+    const rootArchitecture = schema.normalizedArchitecture({
+        buildings: [],
+        walls: [{
+            wall_id: "root-wall",
+            building_id: "",
+            level_id: "level-a",
+            start: [0, 0],
+            end: [2, 0],
+        }],
+        rooms: [],
+        openings: [],
+        materials: [],
+    }, [level]);
+    assert.deepEqual(rootArchitecture.buildings, []);
+    assert.equal(rootArchitecture.walls[0].building_id, "");
+    const rootRoomArchitecture = schema.normalizedArchitecture({
+        buildings: [],
+        walls: walls.map(wall => ({ ...wall, building_id: "" })),
+        rooms: [{
+            room_id: "root-room",
+            building_id: "",
+            level_id: "level-a",
+            polygon: [[0, 0], [4, 0], [4, 3], [0, 3]],
+            wall_ids: ["w1", "w2", "w3", "w4"],
+        }],
+        openings: [],
+        materials: [],
+    }, [level]);
+    assert.deepEqual(rootRoomArchitecture.buildings, []);
+    assert.deepEqual(rootRoomArchitecture.rooms[0].wall_ids, ["w1", "w2", "w3", "w4"]);
+    assert.equal(rootRoomArchitecture.rooms[0].building_id, "");
 });
 
 test("Factory DOM widget follows node resize like Pose Studio", () => {
@@ -517,7 +821,7 @@ test("Factory cache executes after createLayout without a leaked local root vari
 test("Factory serializes settings, source, scene snapshot, selection, and viewer state", () => {
     const method = studio.match(/(serializeState\(\) \{[\s\S]*?\n    \})\n\n    _scheduleStateSave/);
     assert.ok(method, "serializeState method not found");
-    const serialize = Function(`return ({${method[1].replace("STATE_VERSION", "4")}}).serializeState;`)();
+    const serialize = Function(`return ({${method[1].replace("STATE_VERSION", "17")}}).serializeState;`)();
     const snapshot = {
         name: "Remembered",
         objects: [{ object_id: "object-a" }, { object_id: "object-b" }],
@@ -542,13 +846,39 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
             aspect: "16:9",
             show_camera_frame: true,
         },
-        viewerState: { mode: "rotate" },
-        viewer: { getState: () => ({ mode: "scale", camera: { position: [1, 2, 3] } }) },
+        selectedSkydome: false,
+        selectedArchitecture: { type: "room", id: "room-a" },
+        selectedArchitectureItems: new Map([["room:room-a", { type: "room", id: "room-a" }]]),
+        selectedCameraId: "camera-a",
+        selectedCameraIds: new Set(["camera-a"]),
+        selectedLightId: "light-a",
+        selectedCameraKeyframeId: "keyframe-a",
+        activeCameraTrackId: "track-a",
+        lighting: {
+            shadows: { enabled: true, quality: "medium" },
+            lights: [{ light_id: "light-a", kind: "point" }],
+        },
+        editorView: {
+            view_mode: "plan",
+            plan_tool: "room",
+            interior_cutaway: { plan: true, three_d: false },
+            plan_camera: { target: [0, 0], zoom: 24 },
+        },
+        viewerState: { mode: "rotate", zoom_sensitivity: 0.1 },
+        viewer: {
+            getState: () => ({
+                mode: "scale",
+                zoom_sensitivity: 0.08,
+                plan_camera: { target: [4, 5], zoom: 32 },
+                camera: { position: [1, 2, 3] },
+            }),
+        },
         scene: { objects: snapshot.objects },
         sourceAsset: { url: "/reference", name: "input.png" },
+        _selectedArchitectureRefs: () => [{ type: "room", id: "room-a" }],
         _scenePayload: () => snapshot,
     });
-    assert.equal(state.schema_version, 4);
+    assert.equal(state.schema_version, 17);
     assert.equal(state.settings.steps, 37);
     assert.equal(state.selected_object_id, "object-a");
     assert.deepEqual(state.selected_object_ids, ["object-a", "object-b"]);
@@ -557,6 +887,15 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
     assert.deepEqual(state.scene_snapshot, snapshot);
     assert.equal(state.source.url, "/reference");
     assert.equal(state.viewer_state.mode, "scale");
+    assert.equal(state.viewer_state.zoom_sensitivity, 0.08);
+    assert.deepEqual(state.selected_architectures, [{ type: "room", id: "room-a" }]);
+    assert.deepEqual(state.selected_camera_ids, ["camera-a"]);
+    assert.equal(state.selected_light_id, "light-a");
+    assert.equal(state.active_camera_track_id, "track-a");
+    assert.equal(state.selected_camera_keyframe_id, "keyframe-a");
+    assert.deepEqual(state.editor_view.interior_cutaway, { plan: true, three_d: false });
+    assert.deepEqual(state.editor_view.plan_camera, { target: [4, 5], zoom: 32 });
+    assert.equal(state.lighting_settings.lights[0].light_id, "light-a");
     assert.deepEqual(state.render_settings, {
         width: 1920,
         height: 1080,
@@ -590,15 +929,153 @@ test("Configured nodes cancel blank initialization before restoring their saved 
     assert.match(lifecycle[0], /\}, 40\)/);
 });
 
+test("Plan marquee converts client coordinates into the scaled viewport host", async () => {
+    const module = await import(
+        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?marquee=${Date.now()}`
+    );
+    const marqueeViewer = Object.create(module.Factory3DViewer.prototype);
+    marqueeViewer.host = { clientWidth: 1600, clientHeight: 900 };
+    marqueeViewer.canvas = {
+        clientWidth: 1600,
+        clientHeight: 900,
+        getBoundingClientRect: () => ({ left: 300, top: 200, width: 800, height: 450 }),
+    };
+    marqueeViewer.planMarqueeElement = { hidden: true, style: {} };
+    marqueeViewer._planMarquee = {
+        originX: 500,
+        originY: 300,
+        currentX: 700,
+        currentY: 450,
+    };
+    marqueeViewer._updatePlanMarqueeElement();
+    assert.equal(marqueeViewer.planMarqueeElement.hidden, false);
+    assert.deepEqual(marqueeViewer.planMarqueeElement.style, {
+        left: "400px",
+        top: "200px",
+        width: "400px",
+        height: "300px",
+    });
+});
+
+test("Plan object drag moves selected Gaussian objects live while preserving height", async () => {
+    const module = await import(
+        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?object-drag=${Date.now()}`
+    );
+    const viewer = Object.create(module.Factory3DViewer.prototype);
+    const changes = [];
+    const transforms = {
+        "object-a": {
+            position: [10, 2.5, 20],
+            rotation: [0, 15, 0],
+            scale: 1,
+        },
+        "object-b": {
+            position: [14, 6, 25],
+            rotation: [0, -20, 0],
+            scale: 0.8,
+        },
+    };
+    viewer.objects = new Map(Object.keys(transforms).map(objectId => [objectId, {
+        data: { transform: transforms[objectId] },
+        mesh: { objectId },
+    }]));
+    viewer._objectPlanDrag = {
+        pointerId: 7,
+        objectIds: ["object-a", "object-b"],
+        originPoint: [1, 1],
+        anchorPosition: [10, 20],
+        previousTransforms: structuredClone(transforms),
+        currentTransforms: structuredClone(transforms),
+        originX: 100,
+        originY: 100,
+        moved: false,
+        interactive: false,
+    };
+    viewer.selectedGroupId = "";
+    viewer.screenToPlan = () => [3, 4];
+    viewer.options = {
+        snapPlanPoint: point => point,
+        onTransformChange: (objectId, transform, options) => changes.push({
+            objectId,
+            transform: structuredClone(transform),
+            options,
+        }),
+    };
+    viewer._applyTransform = (mesh, transform) => { mesh.transform = structuredClone(transform); };
+    viewer._refreshSelectionBounds = () => {};
+    viewer._refreshObjectSelectionHighlights = () => {};
+    viewer._setInteractive = () => {};
+    viewer.spark = { setDirty() {} };
+    viewer.invalidate = () => {};
+    viewer.canvas = {
+        style: {},
+        releasePointerCapture() {},
+    };
+
+    viewer._updatePlanObjectDrag({ pointerId: 7, clientX: 120, clientY: 115 });
+    assert.deepEqual(viewer.objects.get("object-a").data.transform.position, [12, 2.5, 23]);
+    assert.deepEqual(viewer.objects.get("object-b").data.transform.position, [16, 6, 28]);
+    assert.equal(changes.at(-1).options.final, false);
+
+    viewer._finishPlanObjectDrag({ pointerId: 7, clientX: 120, clientY: 115 });
+    assert.equal(viewer._objectPlanDrag, null);
+    assert.equal(changes.at(-1).options.final, true);
+    assert.equal(changes.at(-1).options.command_last, true);
+    assert.deepEqual(changes.at(-1).options.previous_transforms, transforms);
+});
+
+test("Architecture runtime casts opaque closed geometry from back faces only", async () => {
+    const geometryModule = await import(
+        `${pathToFileURL(path.join(root, "web", "factory3d", "plan_geometry.mjs")).href}?shadow=${Date.now()}`
+    );
+    const THREE = await import(
+        pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href
+    );
+    const materials = new geometryModule.FactoryMaterialRegistry();
+    const wall = geometryModule.createWallObject(
+        {
+            wall_id: "wall-a",
+            name: "Wall",
+            start: [0, 0],
+            end: [4, 0],
+            thickness: 0.12,
+            height: 2.8,
+        },
+        { elevation: 0, height: 2.8 },
+        [],
+        materials,
+    );
+    const wallMeshes = wall.children.filter(
+        child => child.isMesh && child.userData?.factoryType === "wall",
+    );
+    assert.equal(wallMeshes.length, 1);
+    assert.equal(wallMeshes[0].castShadow, true);
+    assert.equal(wallMeshes[0].receiveShadow, true);
+    for (const material of wallMeshes[0].material) {
+        assert.equal(material.shadowSide, THREE.BackSide);
+    }
+    assert.equal(
+        wall.children.some(child => child.userData?.factoryShadowSeal),
+        false,
+    );
+    wall.traverse(child => child.geometry?.dispose?.());
+    materials.dispose();
+});
+
 test("Factory viewer and every vendored Three/Spark dependency can actually import", async () => {
     const module = await import(
         `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?test=${Date.now()}`
     );
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const SPARK = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "spark.module.js")).href);
+    const support = await import(
+        `${pathToFileURL(path.join(root, "web", "factory3d", "support_solver.mjs")).href}?test=${Date.now()}`
+    );
     assert.equal(typeof module.Factory3DViewer, "function");
     assert.equal(typeof module.boundedObjectHit, "function");
     assert.equal(typeof module.computeRobustSplatBounds, "function");
+    assert.equal(typeof module.gaussianShadowProxyTransforms, "function");
+    assert.equal(typeof module.isObjectPickableInHierarchy, "function");
     assert.equal(typeof module.canonicalObjectPreviewCamera, "function");
     assert.equal(typeof module.createDirectionalLightingModifier, "function");
     assert.equal(typeof module.effectiveVisibleObjectIds, "function");
@@ -609,7 +1086,80 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.validateSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260726.18");
+    assert.equal(typeof support.solveDropToSurface, "function");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260825.16");
+    const visiblePickRoot = new THREE.Group();
+    const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+    visiblePickRoot.add(visiblePickMesh);
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), true);
+    visiblePickRoot.visible = false;
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), false);
+    visiblePickRoot.visible = true;
+    visiblePickRoot.userData.factoryPointerPassthrough = true;
+    assert.equal(module.isObjectPickableInHierarchy(visiblePickMesh), false);
+    visiblePickMesh.geometry.dispose();
+
+    const shadowSplats = [];
+    for (let index = 0; index < 96; index += 1) {
+        shadowSplats.push({
+            center: new THREE.Vector3((index % 12) / 11, Math.floor(index / 12) / 7, 0),
+            scales: new THREE.Vector3(0.02, 0.03, 0.01),
+            quaternion: new THREE.Quaternion(),
+            opacity: index === 95 ? 0 : 1,
+        });
+    }
+    const shadowTransforms = module.gaussianShadowProxyTransforms(
+        {
+            numSplats: shadowSplats.length,
+            splats: { getSplat: index => shadowSplats[index] },
+        },
+        new THREE.Box3(new THREE.Vector3(0, 0, -0.1), new THREE.Vector3(1, 1, 0.1)),
+        { maxInstances: 32 },
+    );
+    assert.equal(shadowTransforms.length, 32);
+    assert.ok(shadowTransforms.every(item => item.position.isVector3));
+    assert.ok(shadowTransforms.every(
+        item => item.scale.x > 0 && item.scale.y > 0 && item.scale.z > 0,
+    ));
+    const shadowViewer = Object.create(module.Factory3DViewer.prototype);
+    shadowViewer.lighting = { shadows: { enabled: true, quality: "medium" } };
+    const shadowRoot = new THREE.Group();
+    const shadowSplat = new THREE.Object3D();
+    shadowSplat.numSplats = shadowSplats.length;
+    shadowSplat.splats = { getSplat: index => shadowSplats[index] };
+    shadowRoot.add(shadowSplat);
+    const shadowEntry = {
+        mesh: shadowRoot,
+        splat: shadowSplat,
+        splatBounds: new THREE.Box3(
+            new THREE.Vector3(0, 0, -0.1),
+            new THREE.Vector3(1, 1, 0.1),
+        ),
+        data: { light_transport: "opaque" },
+    };
+    shadowViewer._attachShadowProxy(shadowEntry);
+    assert.equal(shadowEntry.shadowProxy.isInstancedMesh, true);
+    assert.equal(shadowEntry.shadowProxy.geometry.type, "IcosahedronGeometry");
+    assert.equal(shadowEntry.shadowProxy.castShadow, true);
+    assert.equal(shadowEntry.shadowProxy.material.colorWrite, false);
+    shadowViewer._disposeEntry(shadowEntry);
+    const basementMesh = new THREE.Object3D();
+    basementMesh.position.set(0, -2, 0);
+    basementMesh.updateMatrixWorld(true);
+    const basementDrop = support.solveDropToSurface({
+        entries: new Map([["basement-object", {
+            mesh: basementMesh,
+            data: { collision_proxy: { mode: "auto_box" } },
+            localBounds: new THREE.Box3(
+                new THREE.Vector3(-0.5, -0.5, -0.5),
+                new THREE.Vector3(0.5, 0.5, 0.5),
+            ),
+        }]]),
+        selectedIds: ["basement-object"],
+        floorElevations: [-3],
+    });
+    assert.ok(Math.abs(basementDrop.supportY + 3) < 1e-9);
+    assert.ok(basementDrop.deltaY < 0);
     const fpvViewer = Object.create(module.Factory3DViewer.prototype);
     fpvViewer.camera = new THREE.PerspectiveCamera(42, 1, 0.01, 1000);
     fpvViewer.camera.position.set(1, 2, 3);
@@ -695,8 +1245,35 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             elevation: 24,
             ambient: 0.22,
             background: "#090d1a",
+            shadows: {
+                enabled: true,
+                quality: "medium",
+                bias: -0.0002,
+                normal_bias: 0.0015,
+            },
+            lights: [],
         },
     );
+    const normalizedPointLight = module.normalizedLighting({
+        shadows: { enabled: true, quality: "high", bias: -0.0002, normal_bias: 0.0015 },
+        lights: [{
+            light_id: "light-a",
+            name: "Practical",
+            kind: "point",
+            position: [1, 2.4, 3],
+            target: [1, 0, 3],
+            color: "#FF0088",
+            intensity: 10,
+            distance: 8,
+            cast_shadow: true,
+            visible: true,
+        }],
+    });
+    assert.equal(normalizedPointLight.shadows.quality, "high");
+    assert.equal(normalizedPointLight.lights.length, 1);
+    assert.equal(normalizedPointLight.lights[0].kind, "point");
+    assert.equal(normalizedPointLight.lights[0].color, "#FF0088");
+    assert.deepEqual(normalizedPointLight.lights[0].position, [1, 2.4, 3]);
     assert.deepEqual(
         module.normalizedSkydome({
             url: "/sky.jpg",
@@ -927,6 +1504,10 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     const frameViewer = Object.create(module.Factory3DViewer.prototype);
     frameViewer.host = { clientWidth: 1600, clientHeight: 900 };
     frameViewer.camera = new THREE.PerspectiveCamera();
+    frameViewer.planCamera = new THREE.OrthographicCamera();
+    frameViewer.planCameraState = { target: [0, 0], zoom: 24 };
+    frameViewer.sceneData = null;
+    frameViewer._syncPlanGrid = () => {};
     frameViewer.captureWidth = 1080;
     frameViewer.captureHeight = 1920;
     frameViewer.captureFov = 42;
@@ -1043,7 +1624,11 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             { object_id: "object-a", visible: true },
             { object_id: "object-b", visible: true },
             { object_id: "object-c", visible: false },
+            { object_id: "object-d", visible: true, building_id: "building-hidden" },
         ],
+        architecture: {
+            buildings: [{ building_id: "building-hidden", visible: false }],
+        },
         layers: [
             {
                 type: "group",
@@ -1053,6 +1638,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
             },
             { type: "object", object_id: "object-b" },
             { type: "object", object_id: "object-c" },
+            { type: "object", object_id: "object-d" },
         ],
     });
     assert.deepEqual(Array.from(visibility), ["object-b"]);

@@ -95,8 +95,19 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(scene["camera"]["fov"], 42.0)
         self.assertEqual(scene["camera"]["up"], [0.0, 1.0, 0.0])
         self.assertEqual(scene["cameras"], [])
+        self.assertEqual(scene["architecture"]["buildings"], [])
         self.assertEqual(scene["lighting"]["preset"], "day")
         self.assertEqual(scene["lighting"]["color"], "#fff1d6")
+        self.assertEqual(
+            scene["lighting"]["shadows"],
+            {
+                "enabled": True,
+                "quality": "medium",
+                "bias": -0.0005,
+                "normal_bias": 0.02,
+            },
+        )
+        self.assertEqual(scene["lighting"]["lights"], [])
         self.assertEqual(self.factory.list_scenes()[0]["name"], "First scene")
 
         updated = self.factory.update_scene(scene["scene_id"], {"name": "Renamed"})
@@ -105,6 +116,55 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_room_can_be_saved_without_a_building(self):
+        scene = self.factory.create_scene("Standalone room")
+        level_id = scene["levels"][0]["level_id"]
+        wall_ids = [character * 32 for character in "1234"]
+        polygon = [[0, 0], [4, 0], [4, 3], [0, 3]]
+        walls = [
+            {
+                "wall_id": wall_ids[index],
+                "name": "Wall",
+                "level_id": level_id,
+                "building_id": "",
+                "start": polygon[index],
+                "end": polygon[(index + 1) % len(polygon)],
+                "thickness": 0.12,
+                "height": 2.8,
+                "elevation_offset": 0.0,
+            }
+            for index in range(len(polygon))
+        ]
+        architecture = {
+            "materials": [],
+            "buildings": [],
+            "walls": walls,
+            "rooms": [{
+                "room_id": "5" * 32,
+                "name": "Room",
+                "level_id": level_id,
+                "building_id": "",
+                "polygon": polygon,
+                "wall_ids": wall_ids,
+            }],
+            "openings": [],
+        }
+
+        updated = self.factory.update_scene(
+            scene["scene_id"],
+            {"architecture": architecture},
+        )
+        self.assertEqual(updated["architecture"]["buildings"], [])
+        self.assertEqual(
+            [wall["building_id"] for wall in updated["architecture"]["walls"]],
+            ["", "", "", ""],
+        )
+        self.assertEqual(updated["architecture"]["rooms"][0]["building_id"], "")
+        restored = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(len(restored["architecture"]["walls"]), 4)
+        self.assertEqual(len(restored["architecture"]["rooms"]), 1)
+        self.assertEqual(restored["architecture"]["buildings"], [])
 
     def test_saved_cameras_are_normalized_and_invalidate_capture_revision(self):
         scene = self.factory.create_scene("Camera scene")
@@ -172,6 +232,8 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_scene_lighting_is_normalized_persisted_and_invalidates_preview_only(self):
         scene = self.factory.create_scene("Lighting")
+        level_id = scene["levels"][0]["level_id"]
+        light_id = "1" * 32
         updated = self.factory.update_scene(
             scene["scene_id"],
             {
@@ -183,6 +245,28 @@ class FactoryBackendTests(unittest.TestCase):
                     "elevation": 11,
                     "ambient": 0.28,
                     "background": "#25141B",
+                    "shadows": {
+                        "enabled": True,
+                        "quality": "high",
+                        "bias": -0.0002,
+                        "normal_bias": 0.0015,
+                    },
+                    "lights": [{
+                        "light_id": light_id,
+                        "name": "Practical",
+                        "level_id": level_id,
+                        "building_id": "",
+                        "kind": "point",
+                        "position": [1, 2.4, 3],
+                        "target": [1, 0, 3],
+                        "color": "#FF0088",
+                        "intensity": 10,
+                        "distance": 8,
+                        "angle": 45,
+                        "penumbra": 0.2,
+                        "cast_shadow": True,
+                        "visible": True,
+                    }],
                 }
             },
         )
@@ -198,6 +282,28 @@ class FactoryBackendTests(unittest.TestCase):
                 "elevation": 11.0,
                 "ambient": 0.28,
                 "background": "#25141b",
+                "shadows": {
+                    "enabled": True,
+                    "quality": "high",
+                    "bias": -0.0002,
+                    "normal_bias": 0.0015,
+                },
+                "lights": [{
+                    "light_id": light_id,
+                    "name": "Practical",
+                    "level_id": level_id,
+                    "building_id": "",
+                    "kind": "point",
+                    "position": [1.0, 2.4, 3.0],
+                    "target": [1.0, 0.0, 3.0],
+                    "color": "#ff0088",
+                    "intensity": 10.0,
+                    "distance": 8.0,
+                    "angle": 45.0,
+                    "penumbra": 0.2,
+                    "cast_shadow": True,
+                    "visible": True,
+                }],
             },
         )
         restored = self.factory.load_scene(scene["scene_id"])
@@ -218,6 +324,8 @@ class FactoryBackendTests(unittest.TestCase):
         )
         self.assertEqual(off["lighting"]["preset"], "off")
         self.assertEqual(off["lighting"]["background"], "#171b25")
+        self.assertEqual(off["lighting"]["lights"], [])
+        self.assertEqual(off["lighting"]["shadows"]["quality"], "medium")
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()

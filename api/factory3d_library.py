@@ -264,6 +264,29 @@ def _skydome_payload(
     return output
 
 
+def _texture_payloads(
+    archive: zipfile.ZipFile,
+    scene: dict[str, Any],
+) -> list[dict[str, Any]]:
+    stored_textures: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in scene.get("textures", []):
+        if not isinstance(raw, dict):
+            continue
+        texture_id = factory._validate_id(raw.get("texture_id"), "texture id")
+        if texture_id in seen:
+            raise ValueError("scene texture ids must be unique")
+        source = factory._scene_texture_file(scene, texture_id)
+        member = f"payload/textures/{texture_id}.png"
+        _zip_write_file(archive, source, member)
+        stored = json.loads(json.dumps(raw))
+        stored.pop("url", None)
+        stored["file"] = member
+        stored_textures.append(stored)
+        seen.add(texture_id)
+    return stored_textures
+
+
 def _build_package(
     scene: dict[str, Any],
     target: Path,
@@ -299,6 +322,7 @@ def _build_package(
                     gaussian_count += int(item.get("gaussians", 0) or 0)
                 snapshot = json.loads(json.dumps(scene))
                 snapshot["objects"] = stored_objects
+                snapshot["textures"] = _texture_payloads(archive, scene)
                 snapshot.pop("preview", None)
                 snapshot.pop("capture_set", None)
                 snapshot.pop("preview_sync", None)
@@ -719,6 +743,60 @@ def _install_skydome(
     return skydome_id
 
 
+def _install_textures(
+    archive: zipfile.ZipFile,
+    stored_textures: Any,
+    scene: dict[str, Any],
+) -> dict[str, str]:
+    if not isinstance(stored_textures, list):
+        return {}
+    if len(stored_textures) > 512:
+        raise ValueError("scene package contains too many textures")
+    root = factory.resolve_scene_dir(scene["scene_id"])
+    texture_root = root / "textures"
+    texture_id_map: dict[str, str] = {}
+    texture_members: set[str] = set()
+    for stored in stored_textures:
+        if not isinstance(stored, dict):
+            raise ValueError("scene package contains invalid texture metadata")
+        old_id = factory._validate_id(stored.get("texture_id"), "texture id")
+        if old_id in texture_id_map:
+            raise ValueError("scene package contains duplicate texture ids")
+        member_name = str(stored.get("file") or "")
+        if member_name in texture_members:
+            raise ValueError("scene package contains duplicate texture members")
+        member = archive.getinfo(member_name)
+        _safe_member(member)
+        if member.file_size <= 0 or member.file_size > factory.MAX_TEXTURE_BYTES:
+            raise ValueError("scene package texture is empty or too large")
+        image = factory._decode_image(
+            archive.read(member),
+            max_bytes=factory.MAX_TEXTURE_BYTES,
+        ).convert("RGBA")
+        new_id = factory._new_id()
+        texture_root.mkdir(parents=True, exist_ok=True)
+        target = texture_root / f"{new_id}.png"
+        temporary = texture_root / f".{new_id}.{secrets.token_hex(6)}.tmp"
+        try:
+            image.save(temporary, format="PNG", optimize=True)
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+        scene.setdefault("textures", []).append({
+            "texture_id": new_id,
+            "name": factory._clean_name(stored.get("name"), "Texture", 80),
+            "file": str(target.relative_to(root)),
+            "mime": "image/png",
+            "width": image.width,
+            "height": image.height,
+            "size": target.stat().st_size,
+            "updated_at": time.time(),
+        })
+        texture_id_map[old_id] = new_id
+        texture_members.add(member_name)
+    return texture_id_map
+
+
 def load_asset(
     asset_id: str,
     *,
@@ -735,9 +813,15 @@ def load_asset(
             with factory._STATE_LOCK:
                 scene = factory.load_scene(scene_id)
                 object_id = _install_object(archive, payload.get("object") or {}, scene)
-                factory._object_by_id(scene, object_id)["name"] = _name(
+                installed_object = factory._object_by_id(scene, object_id)
+                installed_object["name"] = _name(
                     record.get("name"),
                     "Gaussian object",
+                )
+                installed_object["level_id"] = scene["levels"][0]["level_id"]
+                installed_object["building_id"] = (
+                    scene["architecture"]["buildings"][0]["building_id"]
+                    if scene["architecture"]["buildings"] else ""
                 )
                 scene["exports"] = {}
                 factory._save_scene(scene)
@@ -759,7 +843,11 @@ def load_asset(
                     0,
                     int(scene.get("render_revision", scene.get("revision", 0))),
                 ) + 1
-                factory._save_scene(scene, bump_revision=False)
+                factory._save_scene(
+                    scene,
+                    bump_revision=False,
+                    bump_edit_revision=True,
+                )
             return {
                 "scene": factory._public_scene(scene),
                 "object_id": "",
@@ -776,8 +864,15 @@ def load_asset(
         try:
             with factory._STATE_LOCK:
                 scene = factory.load_scene(scene["scene_id"])
+                texture_id_map = _install_textures(
+                    archive,
+                    stored_scene.get("textures", []),
+                    scene,
+                )
                 for stored in stored_scene.get("objects", []):
-                    old_id = str(stored.get("object_id") or "")
+                    old_id = factory._validate_id(stored.get("object_id"), "object id")
+                    if old_id in id_map:
+                        raise ValueError("scene package contains duplicate object ids")
                     id_map[old_id] = _install_object(archive, stored, scene)
                 scene["layers"] = []
                 for layer in stored_scene.get("layers", []):
@@ -796,6 +891,7 @@ def load_asset(
                             copied["group_id"] = factory._new_id()
                             copied["children"] = children
                             scene["layers"].append(copied)
+                scene["layers"] = factory._normalize_scene_layers(scene)
                 scene["render"] = factory._normalize_render_settings(stored_scene.get("render"))
                 scene["camera"] = factory._normalize_camera(stored_scene.get("camera"))
                 scene["cameras"] = factory._normalize_scene_cameras(
@@ -810,6 +906,60 @@ def load_asset(
                     strict=True,
                 )
                 scene["lighting"] = factory._normalize_lighting(stored_scene.get("lighting"))
+                if "levels" in stored_scene:
+                    scene["levels"] = factory.normalize_levels(
+                        scene["scene_id"],
+                        stored_scene.get("levels"),
+                        strict=True,
+                    )
+                if "architecture" in stored_scene:
+                    stored_architecture = json.loads(json.dumps(stored_scene["architecture"]))
+                    if not isinstance(stored_architecture, dict):
+                        raise ValueError("scene package contains invalid architecture")
+                    for material in stored_architecture.get("materials", []):
+                        old_texture_id = material.get("texture_id")
+                        if old_texture_id in texture_id_map:
+                            material["texture_id"] = texture_id_map[old_texture_id]
+                        else:
+                            material.pop("texture_id", None)
+                    scene["architecture"] = factory.normalize_architecture(
+                        scene["scene_id"],
+                        scene["levels"],
+                        stored_architecture,
+                        strict=True,
+                    )
+                if "camera_tracks" in stored_scene:
+                    scene["camera_tracks"] = factory.normalize_camera_tracks(
+                        stored_scene.get("camera_tracks"),
+                        strict=True,
+                    )
+                valid_level_ids = {level["level_id"] for level in scene["levels"]}
+                default_level_id = scene["levels"][0]["level_id"]
+                valid_building_ids = {
+                    building["building_id"] for building in scene["architecture"]["buildings"]
+                }
+                default_building_id = (
+                    scene["architecture"]["buildings"][0]["building_id"]
+                    if scene["architecture"]["buildings"] else ""
+                )
+                for item in scene["objects"]:
+                    if item.get("level_id") not in valid_level_ids:
+                        item["level_id"] = default_level_id
+                    if item.get("building_id") not in valid_building_ids:
+                        item["building_id"] = default_building_id
+                for camera in scene["cameras"]:
+                    if camera.get("level_id") not in valid_level_ids:
+                        camera["level_id"] = default_level_id
+                    if camera.get("building_id") not in valid_building_ids:
+                        camera["building_id"] = default_building_id
+                for light in scene["lighting"].get("lights", []):
+                    if light.get("level_id") not in valid_level_ids:
+                        light["level_id"] = default_level_id
+                    if light.get("building_id") not in valid_building_ids:
+                        light["building_id"] = default_building_id
+                for track in scene.get("camera_tracks", []):
+                    if track.get("building_id") not in valid_building_ids:
+                        track["building_id"] = default_building_id
                 stored_skydome = stored_scene.get("skydome")
                 if isinstance(stored_skydome, dict):
                     _install_skydome(archive, stored_skydome, scene)
