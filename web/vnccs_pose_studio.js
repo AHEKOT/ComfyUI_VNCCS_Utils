@@ -9528,13 +9528,20 @@ class PoseStudioWidget {
             const applied = this.viewer.applySAM3DImport(
                 poseForAnalysis,
                 this._shoulderYOffset || 0,
-                { recordState: false },
+                {
+                    recordState: false,
+                    dispatchPoseChange: false,
+                },
             );
             if (!applied) {
                 throw new Error("Failed to fit SAM 3D Body proportions.");
             }
             if (fitData?.meshData) {
-                this.applySAM3DMeshOverlayFit(fitData.meshData, poseForAnalysis);
+                this.applySAM3DMeshOverlayFit(
+                    fitData.meshData,
+                    poseForAnalysis,
+                    { dispatchPoseChange: false },
+                );
             }
             this.syncMeshProportionSlidersFromViewer();
 
@@ -9594,12 +9601,15 @@ class PoseStudioWidget {
         return true;
     }
 
-    applySAM3DMeshOverlayFit(meshData, poseData) {
+    applySAM3DMeshOverlayFit(meshData, poseData, options = {}) {
         if (!meshData || !this.viewer?.setSAMMeshOverlayData) return false;
         const ok = this.viewer.setSAMMeshOverlayData(meshData, poseData);
         this.viewer.setSAMMeshOverlayVisible?.(!!this.exportParams.debugShowSAMMeshOverlay);
         if (ok && this.viewer.fitCurrentPoseToSAMMeshOverlay) {
-            return this.viewer.fitCurrentPoseToSAMMeshOverlay();
+            return this.viewer.fitCurrentPoseToSAMMeshOverlay(
+                0,
+                { dispatchPoseChange: options.dispatchPoseChange !== false },
+            );
         }
         return ok;
     }

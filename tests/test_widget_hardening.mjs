@@ -265,9 +265,12 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     assert.match(managerMethod, /manager_auto_analyze_proportions === false/);
     assert.match(
         managerMethod,
-        /viewer\.applySAM3DImport\([\s\S]*poseForAnalysis,[\s\S]*\{ recordState: false \}/,
+        /viewer\.applySAM3DImport\([\s\S]*poseForAnalysis,[\s\S]*recordState: false,[\s\S]*dispatchPoseChange: false/,
     );
-    assert.match(managerMethod, /applySAM3DMeshOverlayFit\(fitData\.meshData, poseForAnalysis\)/);
+    assert.match(
+        managerMethod,
+        /applySAM3DMeshOverlayFit\([\s\S]*fitData\.meshData,[\s\S]*poseForAnalysis,[\s\S]*dispatchPoseChange: false/,
+    );
     assert.doesNotMatch(managerMethod, /commitViewerPoseToCurrentEditor/);
     assert.doesNotMatch(managerMethod, /this\.poses\[this\.activeTab\]\s*=\s*poseForAnalysis/);
     assert.match(managerMethod, /for \(const pose of this\.poses \|\| \[\]\)/);
@@ -291,6 +294,38 @@ test("Pose Manager SAM input applies proportions without replacing managed poses
     assert.match(eventMethod, /applySAM3DProportionsToPoseManager\(poseData\)/);
     assert.match(eventMethod, /widget\.syncToNode\(true, \{[\s\S]*executionCapture: true/);
     assert.match(eventMethod, /viewer\.applySAM3DImport\(/, "ordinary Pose Studio import must remain intact");
+
+    const coreImportStart = poseStudioCoreSource.indexOf("applySAM3DImport(data, shoulderYOffset = 0, options = {})");
+    const coreImportEnd = poseStudioCoreSource.indexOf("\n    applyHMR2v1Import", coreImportStart);
+    const coreImportMethod = poseStudioCoreSource.slice(coreImportStart, coreImportEnd);
+    assert.match(
+        coreImportMethod,
+        /dispatchPoseChange: options\.dispatchPoseChange !== false/,
+        "world-keypoint SAM imports must honor proportion-only analysis",
+    );
+    assert.match(
+        coreImportMethod,
+        /if \(options\.dispatchPoseChange !== false\) this\.dispatchPoseChange\(\)/,
+        "rotation-only SAM imports must honor proportion-only analysis",
+    );
+
+    const overlayStart = poseStudioCoreSource.indexOf("fitCurrentPoseToSAMMeshOverlay(shoulderYOffset = 0, options = {})");
+    const overlayEnd = poseStudioCoreSource.indexOf("\n    fitSAM3DJointRootLengthsToWorldKps", overlayStart);
+    const overlayMethod = poseStudioCoreSource.slice(overlayStart, overlayEnd);
+    assert.match(
+        overlayMethod,
+        /dispatchPoseChange: finalPass && options\.dispatchPoseChange !== false/,
+        "mesh-overlay proportion fitting must not leak the detected pose either",
+    );
+
+    const overlayBridgeStart = poseStudioSource.indexOf("applySAM3DMeshOverlayFit(meshData, poseData, options = {})");
+    const overlayBridgeEnd = poseStudioSource.indexOf("\n    applySAM3DStandardCameraFit", overlayBridgeStart);
+    const overlayBridgeMethod = poseStudioSource.slice(overlayBridgeStart, overlayBridgeEnd);
+    assert.match(
+        overlayBridgeMethod,
+        /fitCurrentPoseToSAMMeshOverlay\([\s\S]*dispatchPoseChange: options\.dispatchPoseChange !== false/,
+        "the Pose Manager suppression flag must reach the overlay fitter",
+    );
 });
 
 

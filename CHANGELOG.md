@@ -1,3 +1,67 @@
+# Version 0.6.6
+## 3D Factory Interior Planning, Camera Paths, and Production Editing
+
+### New Features
+
+*   **Top-down interior Plan mode**: Added a dedicated orthographic workspace for designing interiors directly in the 3D Factory viewport.
+    *   Walls, rectangular rooms, wall openings, and saved cameras use press-drag-release creation with live geometry previews.
+    *   The configurable plan grid supports independent visibility, spacing, major-line intervals, and optional snapping to the grid, angles, wall endpoints, wall midpoints, and orthogonal directions.
+    *   Plan navigation includes corrected two-axis panning, mouse-wheel zoom, persistent framing, live room movement, shift selection, and scale-correct marquee selection inside zoomed ComfyUI nodes.
+
+*   **Persistent architectural scenes**: Added floor levels, walls, rooms, floors, ceilings, doors, windows, empty openings, materials, and complete structure transforms to saved scenes and workflow state.
+    *   A room is edited as one envelope: its perimeter walls, floor, and ceiling move, resize, change level, visibility, lock state, height, thickness, and material together.
+    *   Wall endpoints, height, thickness, elevation offset, side materials, cap materials, and attached openings remain editable after creation.
+    *   Opening controls are constrained by the host wall and prevent overlaps or geometry outside the available wall span.
+    *   Buildings are optional hierarchy containers. New blank scenes contain no synthetic `Building 1`; moving or rotating an existing building transforms its architecture, assigned Gaussian objects, cameras, paths, and lights as one unit. Deleting it removes its architecture and safely unassigns or reassigns the remaining scene objects without creating a replacement building.
+
+*   **Architectural materials and textures**: Added reusable solid, glass, and uploaded texture materials for wall sides, wall caps, floors, ceilings, and window panes.
+    *   JPEG, PNG, and WebP textures are validated, converted to scene-owned PNG assets, exposed through bounded scene routes, and support UV scale and rotation.
+
+*   **Production camera workflow**: Reworked viewport and saved-camera control for precise scene navigation and repeatable shots.
+    *   The Cameras panel now contains perspective, front, right, and top projections plus adjustable mouse-wheel zoom speed for both large scenes and close interior work.
+    *   In-place FPV look preserves camera position and world-up orientation, while framing commands establish an explicit orbit target instead of implicitly rotating around the world origin.
+    *   Saved cameras can be placed and aimed in Plan mode, entered non-destructively, updated from the current view, assigned to levels or buildings, and edited through exact position, rotation, FOV, and focus-distance fields.
+    *   Added persistent camera paths with editable points, timing, linear or centripetal Catmull-Rom interpolation, easing, optional constant-speed traversal, looping, playback, and exact per-point camera values.
+
+*   **Floor-aware object placement**: Added one-action surface dropping for individual or grouped selections.
+    *   Objects stop on the active floor or on the highest colliding object beneath them instead of passing through scene geometry.
+    *   Automatic, custom-box, and disabled collision proxies are available per object, including control over whether an object can support other objects.
+
+*   **Local point lights and occlusion shadows**: Added scene-owned spherical point lights with editable position, level, building, color, strength, range, visibility, and shadow casting.
+    *   Light helpers are selectable objects in Plan and 3D views but are excluded from current-view and saved-camera exports.
+    *   Directional and local lights now cast configurable occlusion shadows from closed architectural geometry and opaque Gaussian collision proxies, while transmissive objects and glass openings allow light through.
+    *   Low, Medium, High, and Ultra shadow presets use bounded active-light budgets and tuned bias values to control browser cost while keeping distant wall lighting stable.
+
+*   **Viewport-only interior cutaway**: Added separate Plan and 3D cutaway state that hides ceilings and the nearest horizontally blocking wall for interior editing.
+    *   Cutaway never changes scene data and is automatically disabled during camera and node-output captures, so exported views retain the complete architecture.
+
+### Workflow and UX Improvements
+
+*   **Task-oriented workspace layout**: Reorganized the editor into Generate/Cameras tabs on the left, a clear central viewport, and Objects/Inspector/Export tabs on the right, removing controls that previously competed with the viewport.
+*   **Unified scene selection**: Gaussian objects, rooms, walls, openings, buildings, saved cameras, and local lights participate in consistent selection, visibility, locking, inspection, and object-tree workflows.
+    *   Plan Select mode supports shift-additive selection and drag marquee selection across rooms, architecture, Gaussian objects, cameras, and lights.
+    *   Copy, paste, Delete/Backspace, Undo, and Redo are scoped to the active Factory editor and ignore text, numeric, select, and content-editable controls.
+    *   Copied rooms retain their perimeter walls and openings; pasted architecture, cameras, lights, and Gaussian objects receive independent IDs and a visible placement offset.
+*   **Live precision Inspector**: Transform gizmos remain available for coarse editing while paired sliders and exact numeric fields provide hundredth-step model, group, architecture, camera, and light control.
+    *   Continuous changes update the viewport during interaction, remain usable across repeated drags, and commit one bounded history operation when editing finishes.
+*   **Contextual level controls**: The level panel appears only while an architectural drawing tool is active and provides level creation, selection, elevation, height, slab thickness, visibility, and deletion without occupying the normal 3D workspace.
+
+### Fixes
+
+*   **Pose Manager proportion-only analysis**: Fixed **Auto-analyze proportions** allowing the temporary SAM-detected pose to replace the active Pose Manager card. Both the initial SAM import and the subsequent mesh-overlay fitting now suppress pose-change synchronization during proportion analysis, so only body proportions are transferred and every managed pose is preserved.
+
+### Persistence and Compatibility
+
+*   Added strict shared normalization and validation for levels, optional buildings, room perimeters, wall openings, materials, textures, object collision and light-transport properties, camera paths, local lights, and shadow settings.
+*   Added an independent edit revision so concurrent or stale editors cannot silently overwrite newer scene work, while render revisions continue to invalidate only affected captures and exports.
+*   Extended `.vnccs3d` scene packages to preserve architecture, floor levels, texture assets, camera paths, local lights, shadows, and object assignments; restored packages remap scene-owned IDs and validate every reference.
+*   Existing 3D Factory scenes remain loadable. Migration removes only the recognizable empty synthetic `Building 1` created by the temporary mandatory-building schema and preserves every user-created or transformed structure.
+
+### Packaging and Validation
+
+*   Bumped the package version to `0.6.6` and advanced the 3D Factory backend, editor-state, frontend, and viewer schemas required by the new persistent scene model.
+*   Expanded frontend, backend, node-state, library-package, camera, architecture, placement, lighting, shadow, cutaway, multi-selection, and scaled Plan-marquee regression coverage.
+
 # Version 0.6.5
 ## Pose Manager Reference Proportions and SAM Camera Reliability
 
