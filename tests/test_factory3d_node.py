@@ -43,7 +43,7 @@ class FactoryNodeTests(unittest.TestCase):
     def test_state_validation_accepts_opaque_ids_and_rejects_paths(self):
         valid = json.dumps(
             {
-                "schema_version": 4,
+                "schema_version": 17,
                 "scene_id": "a" * 32,
                 "selected_object_id": "b" * 32,
                 "selected_object_ids": ["b" * 32, "c" * 32],
@@ -51,6 +51,14 @@ class FactoryNodeTests(unittest.TestCase):
                 "collapsed_group_ids": ["d" * 32],
                 "scene_snapshot": {
                     "name": "Scene",
+                    "levels": [{
+                        "level_id": "f" * 32,
+                        "name": "Level 1",
+                        "elevation": 0.0,
+                        "height": 2.8,
+                        "slab_thickness": 0.15,
+                        "visible": True,
+                    }],
                     "render": {
                         "width": 1920,
                         "height": 1080,
@@ -70,10 +78,24 @@ class FactoryNodeTests(unittest.TestCase):
                         "target": [0.0, 0.0, 0.0],
                         "up": [0.0, 1.0, 0.0],
                         "fov": 48.0,
+                        "level_id": "f" * 32,
+                        "building_id": "",
                     }],
                     "objects": [
-                        {"object_id": "b" * 32, "transform": {}, "visible": True},
-                        {"object_id": "c" * 32, "transform": {}, "visible": False},
+                        {
+                            "object_id": "b" * 32,
+                            "transform": {},
+                            "visible": True,
+                            "level_id": "f" * 32,
+                            "building_id": "",
+                        },
+                        {
+                            "object_id": "c" * 32,
+                            "transform": {},
+                            "visible": False,
+                            "level_id": "f" * 32,
+                            "building_id": "",
+                        },
                     ],
                     "layers": [{
                         "type": "group",
@@ -82,6 +104,50 @@ class FactoryNodeTests(unittest.TestCase):
                         "visible": True,
                         "children": ["b" * 32, "c" * 32],
                     }],
+                    "architecture": {
+                        "materials": [],
+                        "buildings": [],
+                        "walls": [],
+                        "rooms": [],
+                        "openings": [],
+                    },
+                    "camera_tracks": [],
+                    "lighting": {
+                        "shadows": {
+                            "enabled": True,
+                            "quality": "medium",
+                            "bias": -0.0002,
+                            "normal_bias": 0.0015,
+                        },
+                        "lights": [{
+                            "light_id": "1" * 32,
+                            "name": "Practical",
+                            "level_id": "f" * 32,
+                            "building_id": "",
+                            "kind": "point",
+                            "position": [1.0, 2.4, 3.0],
+                            "target": [1.0, 0.0, 3.0],
+                            "color": "#ff0088",
+                            "intensity": 10.0,
+                            "distance": 8.0,
+                            "angle": 45.0,
+                            "penumbra": 0.2,
+                            "cast_shadow": True,
+                            "visible": True,
+                        }],
+                    },
+                },
+                "viewer_state": {
+                    "view_mode": "plan",
+                    "zoom_sensitivity": 0.1,
+                    "plan_camera": {"target": [0.0, 0.0], "zoom": 24.0},
+                },
+                "editor_view": {
+                    "view_mode": "plan",
+                    "plan_tool": "room",
+                    "active_level_id": "f" * 32,
+                    "active_building_id": "",
+                    "interior_cutaway": {"plan": True, "three_d": False},
                 },
                 "source": {
                     "scene_id": "a" * 32,
@@ -173,6 +239,74 @@ class FactoryNodeTests(unittest.TestCase):
         )
         self.assertIsInstance(
             self.module.VNCCS_3DFactory.VALIDATE_INPUTS(invalid_camera),
+            str,
+        )
+
+    def test_state_validation_keeps_buildings_optional_and_validates_local_light_references(self):
+        level_id = "f" * 32
+        light_id = "1" * 32
+        point_light = {
+            "light_id": light_id,
+            "name": "Practical",
+            "level_id": level_id,
+            "building_id": "",
+            "kind": "point",
+            "position": [1.0, 2.4, 3.0],
+            "target": [1.0, 0.0, 3.0],
+            "intensity": 10.0,
+            "distance": 8.0,
+            "angle": 45.0,
+            "penumbra": 0.2,
+        }
+        empty_building_scene = {
+            "schema_version": 17,
+            "scene_id": "a" * 32,
+            "scene_snapshot": {
+                "objects": [],
+                "layers": [],
+                "levels": [{
+                    "level_id": level_id,
+                    "elevation": 0.0,
+                    "height": 2.8,
+                    "slab_thickness": 0.15,
+                }],
+                "architecture": {
+                    "materials": [],
+                    "buildings": [],
+                    "walls": [],
+                    "rooms": [],
+                    "openings": [],
+                },
+                "lighting": {
+                    "shadows": {"enabled": True, "quality": "medium"},
+                    "lights": [point_light],
+                },
+            },
+        }
+        self.assertTrue(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(
+                json.dumps(empty_building_scene)
+            )
+        )
+
+        duplicate_light = json.loads(json.dumps(empty_building_scene))
+        duplicate_light["scene_snapshot"]["lighting"]["lights"].append(point_light)
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(json.dumps(duplicate_light)),
+            str,
+        )
+
+        unknown_level = json.loads(json.dumps(empty_building_scene))
+        unknown_level["scene_snapshot"]["lighting"]["lights"][0]["level_id"] = "e" * 32
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(json.dumps(unknown_level)),
+            str,
+        )
+
+        unknown_building = json.loads(json.dumps(empty_building_scene))
+        unknown_building["scene_snapshot"]["lighting"]["lights"][0]["building_id"] = "d" * 32
+        self.assertIsInstance(
+            self.module.VNCCS_3DFactory.VALIDATE_INPUTS(json.dumps(unknown_building)),
             str,
         )
 

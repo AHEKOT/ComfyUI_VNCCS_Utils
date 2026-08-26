@@ -652,6 +652,7 @@ export class Factory3DViewer {
         this.captureWidth = 1024;
         this.captureHeight = 1024;
         this.captureFov = 42;
+        this.zoomSensitivity = 0.1;
         this.cameraFrameVisible = false;
         this._capturing = false;
         this._disposed = false;
@@ -1364,7 +1365,7 @@ export class Factory3DViewer {
         this.canvas.addEventListener("lostpointercapture", cancelLook);
         this.canvas.addEventListener("wheel", event => {
             if (this.viewMode === "3d") {
-                this.dollyCamera(-event.deltaY / 100, { emit: true });
+                this.dollyCamera((-event.deltaY / 100) * this.zoomSensitivity, { emit: true });
                 event.preventDefault();
                 event.stopImmediatePropagation();
                 return;
@@ -1762,8 +1763,15 @@ export class Factory3DViewer {
             if (light.shadow) {
                 light.shadow.mapSize.set(mapSize, mapSize);
                 light.shadow.bias = this.lighting.shadows?.bias ?? DEFAULT_LIGHTING.shadows.bias;
-                light.shadow.normalBias = this.lighting.shadows?.normal_bias
+                const configuredNormalBias = this.lighting.shadows?.normal_bias
                     ?? DEFAULT_LIGHTING.shadows.normal_bias;
+                // Opaque architecture casts back faces into the shadow map,
+                // so a large receiver offset is unnecessary and would open
+                // gaps at wall/slab junctions. Retain only the small baseline
+                // offset for local lights to absorb depth quantization.
+                light.shadow.normalBias = data.kind === "directional"
+                    ? configuredNormalBias
+                    : Math.max(configuredNormalBias, DEFAULT_LIGHTING.shadows.normal_bias);
                 light.shadow.camera.near = 0.02;
                 if (data.kind === "point" || data.kind === "spot") {
                     light.shadow.camera.far = data.distance > 0
@@ -2286,14 +2294,25 @@ export class Factory3DViewer {
         const drag = this._planMarquee;
         if (!drag || !this.planMarqueeElement) return;
         const rect = this.canvas.getBoundingClientRect();
-        const left = Math.min(drag.originX, drag.currentX) - rect.left;
-        const top = Math.min(drag.originY, drag.currentY) - rect.top;
+        // LiteGraph scales the complete DOM widget while absolute children
+        // remain positioned in the host's unscaled layout coordinates.
+        // Convert client-space pointer coordinates into that local space;
+        // subtracting only rect.left/top shifts the marquee toward the
+        // top-left whenever the ComfyUI graph zoom is not 100%.
+        const scaleX = Math.max(1, this.host?.clientWidth || this.canvas.clientWidth || rect.width)
+            / Math.max(1, rect.width);
+        const scaleY = Math.max(1, this.host?.clientHeight || this.canvas.clientHeight || rect.height)
+            / Math.max(1, rect.height);
+        const originX = (drag.originX - rect.left) * scaleX;
+        const originY = (drag.originY - rect.top) * scaleY;
+        const currentX = (drag.currentX - rect.left) * scaleX;
+        const currentY = (drag.currentY - rect.top) * scaleY;
         this.planMarqueeElement.hidden = false;
         Object.assign(this.planMarqueeElement.style, {
-            left: `${left}px`,
-            top: `${top}px`,
-            width: `${Math.abs(drag.currentX - drag.originX)}px`,
-            height: `${Math.abs(drag.currentY - drag.originY)}px`,
+            left: `${Math.min(originX, currentX)}px`,
+            top: `${Math.min(originY, currentY)}px`,
+            width: `${Math.abs(currentX - originX)}px`,
+            height: `${Math.abs(currentY - originY)}px`,
         });
     }
 
@@ -4141,6 +4160,13 @@ export class Factory3DViewer {
         }
     }
 
+    setZoomSensitivity(value, { emit = true } = {}) {
+        const requested = Number(value);
+        if (!Number.isFinite(requested)) return;
+        this.zoomSensitivity = THREE.MathUtils.clamp(requested, 0.01, 2);
+        if (emit) this._emitState();
+    }
+
     setCameraHeight(value, { emit = true } = {}) {
         const height = THREE.MathUtils.clamp(Number(value) || 0, -1_000_000, 1_000_000);
         const delta = height - this.camera.position.y;
@@ -4183,6 +4209,7 @@ export class Factory3DViewer {
                 target: [...this.planCameraState.target],
                 zoom: this.planCameraState.zoom,
             },
+            zoom_sensitivity: this.zoomSensitivity,
             camera: this.getCameraState(),
         };
     }
@@ -4282,6 +4309,9 @@ export class Factory3DViewer {
                 ).slice(0, 2),
                 zoom: Math.max(0.01, Number(value.plan_camera.zoom) || 24),
             };
+        }
+        if ("zoom_sensitivity" in value) {
+            this.setZoomSensitivity(value.zoom_sensitivity, { emit: false });
         }
         if (value.active_level_id) this.setActiveLevel(value.active_level_id);
         if (value.plan_tool) this.setPlanTool(value.plan_tool);

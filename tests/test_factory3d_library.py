@@ -194,6 +194,7 @@ class FactoryLibraryTests(unittest.TestCase):
             "aspect": "16:9",
             "show_camera_frame": True,
         }
+        light_id = self.factory._new_id()
         scene["lighting"] = {
             "preset": "sunset",
             "intensity": 0.8,
@@ -202,6 +203,28 @@ class FactoryLibraryTests(unittest.TestCase):
             "elevation": 11,
             "ambient": 0.28,
             "background": "#25141b",
+            "shadows": {
+                "enabled": True,
+                "quality": "high",
+                "bias": -0.0002,
+                "normal_bias": 0.0015,
+            },
+            "lights": [{
+                "light_id": light_id,
+                "name": "Practical",
+                "level_id": scene["levels"][0]["level_id"],
+                "building_id": "",
+                "kind": "point",
+                "position": [1, 2.4, 3],
+                "target": [1, 0, 3],
+                "color": "#ff0088",
+                "intensity": 10,
+                "distance": 8,
+                "angle": 45,
+                "penumbra": 0.2,
+                "cast_shadow": True,
+                "visible": True,
+            }],
         }
         scene["layers"] = [
             {
@@ -234,6 +257,15 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertEqual(restored["cameras"][0]["position"], [3.0, 2.0, 1.0])
         self.assertEqual(restored["render"]["width"], 1600)
         self.assertEqual(restored["lighting"]["preset"], "sunset")
+        self.assertEqual(restored["lighting"]["shadows"]["quality"], "high")
+        self.assertEqual(len(restored["lighting"]["lights"]), 1)
+        self.assertEqual(restored["lighting"]["lights"][0]["light_id"], light_id)
+        self.assertEqual(restored["lighting"]["lights"][0]["name"], "Practical")
+        self.assertEqual(restored["lighting"]["lights"][0]["position"], [1.0, 2.4, 3.0])
+        self.assertEqual(
+            restored["lighting"]["lights"][0]["level_id"],
+            restored["levels"][0]["level_id"],
+        )
         self.assertEqual(restored["layers"][0]["type"], "group")
         self.assertEqual(len(restored["layers"][0]["children"]), 1)
         self.assertEqual(restored["skydome"]["type"], "skydome")

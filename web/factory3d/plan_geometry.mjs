@@ -9,12 +9,6 @@ const DEFAULT_SURFACE = Object.freeze({
     kind: "standard",
 });
 
-// Shadow maps shrink and soften silhouettes by a small amount at shared
-// edges. A wall assembled from independent segments therefore needs a tiny
-// shadow-only overlap even when the visible boxes already meet exactly.
-const WALL_SHADOW_SEAL_MINIMUM = 0.006;
-const WALL_SHADOW_SEAL_MAXIMUM = 0.02;
-
 function materialFromData(value = {}, texture = null) {
     const data = { ...DEFAULT_SURFACE, ...(value || {}) };
     const shared = {
@@ -24,6 +18,12 @@ function materialFromData(value = {}, texture = null) {
         opacity: Number(data.opacity),
         transparent: Number(data.opacity) < 1 || data.kind === "glass",
         side: THREE.DoubleSide,
+        // Architecture uses closed box/extruded geometry. Rendering it
+        // double-sided is useful while editing, but casting both sides into a
+        // shadow map makes the front and rear faces compete at shallow point-
+        // light angles. Back-face casting keeps the physical wall thickness
+        // as the occluder and avoids self-shadow blocks on the visible face.
+        shadowSide: data.kind === "glass" ? THREE.DoubleSide : THREE.BackSide,
         map: texture || null,
     };
     if (data.kind === "glass") {
@@ -55,12 +55,6 @@ export class FactoryMaterialRegistry {
             opacity: 0.35,
             transmission: 1,
             roughness: 0.08,
-        });
-        this.shadowSeal = new THREE.MeshBasicMaterial({
-            color: 0x000000,
-            colorWrite: false,
-            depthWrite: false,
-            side: THREE.DoubleSide,
         });
         this.openingHit = new THREE.MeshBasicMaterial({
             transparent: true,
@@ -128,7 +122,6 @@ export class FactoryMaterialRegistry {
         this.defaultFloor.dispose();
         this.defaultCeiling.dispose();
         this.defaultGlass.dispose();
-        this.shadowSeal.dispose();
         this.openingHit.dispose();
     }
 }
@@ -231,28 +224,6 @@ export function createWallObject(wall, level, openings, materials, junctions = {
         mesh.receiveShadow = true;
         mesh.userData = group.userData;
         group.add(mesh);
-
-        // Keep the visible wall dimensions exact, but dilate its shadow
-        // silhouette just enough to overlap adjacent wall cells and the room
-        // slab. This closes PCF/normal-bias leaks without changing picking,
-        // materials, exported color, or the editable architectural geometry.
-        const sealMargin = Math.min(
-            WALL_SHADOW_SEAL_MAXIMUM,
-            Math.max(WALL_SHADOW_SEAL_MINIMUM, thickness * 0.08),
-        );
-        const sealGeometry = new THREE.BoxGeometry(
-            sealedWidth + sealMargin * 2,
-            cell.height + sealMargin * 2,
-            thickness + sealMargin * 2,
-        );
-        const seal = new THREE.Mesh(sealGeometry, materials.shadowSeal);
-        seal.position.copy(mesh.position);
-        seal.castShadow = true;
-        seal.receiveShadow = false;
-        seal.userData = {
-            factoryShadowSeal: true,
-        };
-        group.add(seal);
     }
     for (const value of openingData.openings) {
         const geometry = new THREE.PlaneGeometry(value.end - value.start, value.top - value.bottom);

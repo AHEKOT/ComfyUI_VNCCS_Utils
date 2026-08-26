@@ -447,7 +447,7 @@ class Factory3DWidget {
         this.settings = { ...DEFAULT_SETTINGS };
         this.exportSettings = { ...DEFAULT_EXPORT_SETTINGS };
         this.lighting = { ...DEFAULT_LIGHTING };
-        this.viewerState = { mode: "translate", grid: false };
+        this.viewerState = { mode: "translate", grid: false, zoom_sensitivity: 0.1 };
         this.capabilities = null;
         this.currentJobId = "";
         this.currentJobToken = 0;
@@ -535,6 +535,8 @@ class Factory3DWidget {
                     previousState.camera || {},
                     state.camera || {},
                 );
+                const zoomSensitivityChanged = previousState.zoom_sensitivity
+                    !== state.zoom_sensitivity;
                 const toolbarChanged = previousState.mode !== state.mode
                     || previousState.grid !== state.grid
                     || previousState.view_mode !== state.view_mode
@@ -542,7 +544,7 @@ class Factory3DWidget {
                     || previousState.active_level_id !== state.active_level_id;
                 this.viewerState = { ...this.viewerState, ...state };
                 if (toolbarChanged) this._syncToolbar();
-                if (cameraChanged) this._syncViewportCameraHUD(state.camera);
+                if (zoomSensitivityChanged) this._syncCameraPanelControls();
                 this._scheduleStateSave();
                 if (
                     cameraChanged
@@ -716,6 +718,19 @@ class Factory3DWidget {
                             <span class="vnccs-i3s__camera-look-reticle" aria-hidden="true"></span>
                         </div>
                         <div class="vnccs-i3s__camera-help">Drag to look</div>
+                        <label class="vnccs-i3s__field vnccs-i3s__camera-zoom-speed">
+                            <span class="vnccs-i3s__label"><span>Wheel zoom speed</span><output class="vnccs-i3s__camera-zoom-speed-value">0.10×</output></span>
+                            <input class="vnccs-i3s__range vnccs-i3s__camera-zoom-speed-range" type="range" min="-2" max="0.30103" step="0.01" value="-1" aria-label="Mouse wheel zoom speed" aria-valuetext="0.10×" />
+                        </label>
+                        <div class="vnccs-i3s__camera-view-presets">
+                            <span class="vnccs-i3s__label">View projection</span>
+                            <div class="vnccs-i3s__camera-view-preset-grid" role="group" aria-label="Camera view projections">
+                                <button class="vnccs-i3s__button" type="button" data-camera-preset="perspective">Perspective</button>
+                                <button class="vnccs-i3s__button" type="button" data-camera-preset="front">Front</button>
+                                <button class="vnccs-i3s__button" type="button" data-camera-preset="right">Right</button>
+                                <button class="vnccs-i3s__button" type="button" data-camera-preset="top">Top</button>
+                            </div>
+                        </div>
                         <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__button--block vnccs-i3s__camera-add" type="button">
                             ${ICONS.cameraAdd}<span>Add camera</span>
                         </button>
@@ -824,73 +839,6 @@ class Factory3DWidget {
                         </details>
                         <span class="vnccs-i3s__plan-hint">Choose a tool, then press and drag in the plan.</span>
                     </div>
-                    <details class="vnccs-i3s__viewport-camera" open>
-                        <summary>
-                            <span>${ICONS.camera}<b>View camera</b></span>
-                            <output class="vnccs-i3s__viewport-camera-summary">Perspective</output>
-                        </summary>
-                        <div class="vnccs-i3s__viewport-camera-body">
-                            <div class="vnccs-i3s__viewport-camera-actions">
-                                <button type="button" data-camera-action="home" title="Restore a stable perspective and frame the complete scene">Reset view</button>
-                                <button type="button" data-camera-action="scene" title="Center and frame the complete scene">Frame scene</button>
-                                <button type="button" data-camera-action="selection" title="Center and frame the current selection">Selection</button>
-                            </div>
-                            <div class="vnccs-i3s__viewport-camera-presets" role="group" aria-label="Camera view presets">
-                                <button type="button" data-camera-preset="perspective">Perspective</button>
-                                <button type="button" data-camera-preset="front">Front</button>
-                                <button type="button" data-camera-preset="right">Right</button>
-                                <button type="button" data-camera-preset="top">Top</button>
-                            </div>
-                            <div class="vnccs-i3s__viewport-camera-navigation">
-                                <div>
-                                    <span class="vnccs-i3s__viewport-camera-label">Look</span>
-                                    <div class="vnccs-i3s__camera-orbit-pad" role="group" aria-label="Turn view camera in place">
-                                        <button type="button" data-camera-orbit="up" aria-label="Look upward" title="Look upward">↑</button>
-                                        <button type="button" data-camera-orbit="left" aria-label="Look left" title="Look left">←</button>
-                                        <span aria-hidden="true">●</span>
-                                        <button type="button" data-camera-orbit="right" aria-label="Look right" title="Look right">→</button>
-                                        <button type="button" data-camera-orbit="down" aria-label="Look downward" title="Look downward">↓</button>
-                                    </div>
-                                </div>
-                                <div>
-                                    <span class="vnccs-i3s__viewport-camera-label">Move</span>
-                                    <div class="vnccs-i3s__camera-pan-pad" role="group" aria-label="Move view camera and target">
-                                        <button type="button" data-camera-pan="forward" aria-label="Move forward" title="Move forward">↑</button>
-                                        <button type="button" data-camera-pan="left" aria-label="Move left" title="Move left">←</button>
-                                        <span aria-hidden="true">●</span>
-                                        <button type="button" data-camera-pan="right" aria-label="Move right" title="Move right">→</button>
-                                        <button type="button" data-camera-pan="back" aria-label="Move backward" title="Move backward">↓</button>
-                                    </div>
-                                </div>
-                                <div class="vnccs-i3s__viewport-camera-sliders">
-                                    <label>
-                                        <span>Distance</span>
-                                        <div><input class="vnccs-i3s__camera-distance-range" type="range" min="-4" max="6" step="0.002" aria-label="Camera distance" /><input class="vnccs-i3s__camera-distance-input" type="number" min="0.0001" max="1000000" step="0.01" inputmode="decimal" aria-label="Camera distance in meters" /><small>m</small></div>
-                                    </label>
-                                    <label>
-                                        <span>Height</span>
-                                        <div><input class="vnccs-i3s__camera-height-range" type="range" min="-50" max="100" step="0.01" aria-label="Camera height" /><input class="vnccs-i3s__camera-height-input" type="number" min="-1000000" max="1000000" step="0.01" inputmode="decimal" aria-label="Camera height in meters" /><small>m</small></div>
-                                    </label>
-                                </div>
-                            </div>
-                            <details class="vnccs-i3s__viewport-camera-exact">
-                                <summary>Exact coordinates</summary>
-                                <div class="vnccs-i3s__viewport-camera-vector">
-                                    <span>Position</span>
-                                    <label>X<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="0" /></label>
-                                    <label>Y<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="1" /></label>
-                                    <label>Z<input type="number" step="0.01" data-camera-vector="position" data-camera-axis="2" /></label>
-                                </div>
-                                <div class="vnccs-i3s__viewport-camera-vector">
-                                    <span>Target</span>
-                                    <label>X<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="0" /></label>
-                                    <label>Y<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="1" /></label>
-                                    <label>Z<input type="number" step="0.01" data-camera-vector="target" data-camera-axis="2" /></label>
-                                </div>
-                                <label class="vnccs-i3s__viewport-camera-fov"><span>View angle</span><input type="number" min="5" max="120" step="0.1" data-camera-fov /><small>°</small></label>
-                            </details>
-                        </div>
-                    </details>
                     <section class="vnccs-i3s__skydome-panel" aria-label="Skydome controls" hidden>
                         <div class="vnccs-i3s__lighting-head">
                             <div>
@@ -1207,18 +1155,9 @@ class Factory3DWidget {
             planSettings: Array.from(this.container.querySelectorAll("[data-plan-setting]")),
             planSettingsPanel: $(".vnccs-i3s__plan-settings"),
             planHint: $(".vnccs-i3s__plan-hint"),
-            viewportCamera: $(".vnccs-i3s__viewport-camera"),
-            viewportCameraSummary: $(".vnccs-i3s__viewport-camera-summary"),
-            cameraActions: Array.from(this.container.querySelectorAll("[data-camera-action]")),
             cameraPresets: Array.from(this.container.querySelectorAll("[data-camera-preset]")),
-            cameraOrbit: Array.from(this.container.querySelectorAll("[data-camera-orbit]")),
-            cameraPan: Array.from(this.container.querySelectorAll("[data-camera-pan]")),
-            cameraDistanceRange: $(".vnccs-i3s__camera-distance-range"),
-            cameraDistanceInput: $(".vnccs-i3s__camera-distance-input"),
-            cameraHeightRange: $(".vnccs-i3s__camera-height-range"),
-            cameraHeightInput: $(".vnccs-i3s__camera-height-input"),
-            cameraVectors: Array.from(this.container.querySelectorAll("[data-camera-vector]")),
-            cameraFov: $("[data-camera-fov]"),
+            cameraZoomSpeedRange: $(".vnccs-i3s__camera-zoom-speed-range"),
+            cameraZoomSpeedValue: $(".vnccs-i3s__camera-zoom-speed-value"),
             fit: $(".vnccs-i3s__fit"),
             cutaway: $(".vnccs-i3s__cutaway"),
             modeMove: $(".vnccs-i3s__mode-move"),
@@ -1490,8 +1429,6 @@ class Factory3DWidget {
             void this._saveSceneNow();
         });
         this._listen(this.els.fit, "click", () => this.viewer.frameScene());
-        this._listen(this.els.viewportCamera, "pointerdown", event => event.stopPropagation());
-        this._listen(this.els.viewportCamera, "click", event => event.stopPropagation());
         // LiteGraph and ComfyUI listen to both Pointer Events and legacy mouse
         // events. Blocking only pointerdown/click lets the rest of a range
         // drag escape to the graph, which can clear selection or end the drag.
@@ -1513,62 +1450,21 @@ class Factory3DWidget {
         this._listen(this.els.inspector, "keydown", event => event.stopPropagation());
         this._listen(this.els.inspector, "keyup", event => event.stopPropagation());
         this._listen(this.els.inspector, "wheel", event => event.stopPropagation(), { passive: true });
-        for (const control of this.els.cameraActions) {
-            this._listen(control, "click", () => {
-                if (this.cameraPlayback) return;
-                const action = control.dataset.cameraAction;
-                if (action === "home") this.viewer.resetView();
-                else if (action === "selection") this.viewer.frameSelection();
-                else this.viewer.frameScene();
-            });
-        }
         for (const control of this.els.cameraPresets) {
             this._listen(control, "click", () => {
                 if (!this.cameraPlayback) this.viewer.setViewPreset(control.dataset.cameraPreset);
             });
         }
-        const orbitSteps = {
-            up: { pitch: 7.5 },
-            down: { pitch: -7.5 },
-            left: { yaw: 7.5 },
-            right: { yaw: -7.5 },
-        };
-        for (const control of this.els.cameraOrbit) {
-            this._listen(control, "click", () => {
-                if (!this.cameraPlayback) this.viewer.rotateCameraFPV(orbitSteps[control.dataset.cameraOrbit]);
-            });
-        }
-        const panSteps = {
-            forward: { forward: 1 },
-            back: { forward: -1 },
-            left: { right: -1 },
-            right: { right: 1 },
-        };
-        for (const control of this.els.cameraPan) {
-            this._listen(control, "click", () => {
-                if (!this.cameraPlayback) this.viewer.panCamera(panSteps[control.dataset.cameraPan]);
-            });
-        }
-        this._listen(this.els.cameraDistanceRange, "input", () => {
-            if (!this.cameraPlayback) this.viewer.setCameraDistance(10 ** Number(this.els.cameraDistanceRange.value));
-        });
-        this._listen(this.els.cameraDistanceInput, "input", () => {
-            if (!this.cameraPlayback && Number.isFinite(this.els.cameraDistanceInput.valueAsNumber)) {
-                this.viewer.setCameraDistance(this.els.cameraDistanceInput.valueAsNumber);
+        this._listen(this.els.cameraZoomSpeedRange, "input", () => {
+            if (!this.cameraPlayback) {
+                this.viewer.setZoomSensitivity(10 ** this.els.cameraZoomSpeedRange.valueAsNumber);
+                this.els.cameraZoomSpeedValue.textContent = `${this.viewer.zoomSensitivity.toFixed(2)}×`;
+                this.els.cameraZoomSpeedRange.setAttribute(
+                    "aria-valuetext",
+                    `${this.viewer.zoomSensitivity.toFixed(2)}×`,
+                );
             }
         });
-        this._listen(this.els.cameraHeightRange, "input", () => {
-            if (!this.cameraPlayback) this.viewer.setCameraHeight(this.els.cameraHeightRange.value);
-        });
-        this._listen(this.els.cameraHeightInput, "input", () => {
-            if (!this.cameraPlayback && Number.isFinite(this.els.cameraHeightInput.valueAsNumber)) {
-                this.viewer.setCameraHeight(this.els.cameraHeightInput.valueAsNumber);
-            }
-        });
-        for (const control of this.els.cameraVectors) {
-            this._listen(control, "input", () => this._applyViewportCameraExact());
-        }
-        this._listen(this.els.cameraFov, "input", () => this._applyViewportCameraExact());
         this._listen(this.els.view3d, "click", () => this._setViewMode("3d"));
         this._listen(this.els.viewPlan, "click", () => this._setViewMode("plan"));
         this._listen(this.els.cutaway, "click", () => {
@@ -2184,81 +2080,18 @@ class Factory3DWidget {
         this._scheduleStateSave(0);
     }
 
-    _syncViewportCameraHUD(camera = this.viewerState.camera || {}) {
-        if (!this.els?.viewportCamera) return;
-        const position = Array.isArray(camera.position) ? camera.position : [2.8, 2.1, 4.2];
-        const target = Array.isArray(camera.target) ? camera.target : [0, 0, 0];
-        const distance = Math.max(
-            Math.hypot(
-                (Number(position[0]) || 0) - (Number(target[0]) || 0),
-                (Number(position[1]) || 0) - (Number(target[1]) || 0),
-                (Number(position[2]) || 0) - (Number(target[2]) || 0),
-            ),
-            0.0001,
-        );
-        const height = Number(position[1]) || 0;
-        const write = (control, value) => {
-            if (control && document.activeElement !== control) control.value = String(value);
-        };
-        write(this.els.cameraDistanceRange, Math.log10(distance));
-        write(this.els.cameraDistanceInput, Number(distance.toPrecision(7)));
-        write(this.els.cameraHeightRange, clamp(height, -50, 100));
-        write(this.els.cameraHeightInput, Number(height.toFixed(6)));
-        for (const control of this.els.cameraVectors) {
-            const vector = control.dataset.cameraVector === "target" ? target : position;
-            const axis = Number(control.dataset.cameraAxis) || 0;
-            write(control, Number((Number(vector[axis]) || 0).toFixed(6)));
+    _syncCameraPanelControls() {
+        if (!this.els?.cameraZoomSpeedRange) return;
+        const zoomSensitivity = clamp(Number(this.viewerState.zoom_sensitivity) || 0.1, 0.01, 2);
+        if (document.activeElement !== this.els.cameraZoomSpeedRange) {
+            this.els.cameraZoomSpeedRange.value = String(Math.log10(zoomSensitivity));
         }
-        write(this.els.cameraFov, Number((Number(camera.fov) || 42).toFixed(3)));
-        this.els.viewportCameraSummary.textContent = `${distance.toFixed(distance < 10 ? 2 : 1)} m · Y ${height.toFixed(2)}`;
-        const selectionAction = this.els.cameraActions.find(
-            control => control.dataset.cameraAction === "selection",
-        );
-        if (selectionAction) {
-            selectionAction.disabled = !(
-                this.selectedObjectId
-                || this.selectedGroupId
-                || this.selectedArchitecture?.id
-            );
-        }
-        const disabled = Boolean(this.cameraPlayback);
-        for (const control of [
-            ...this.els.cameraActions,
-            ...this.els.cameraPresets,
-            ...this.els.cameraOrbit,
-            ...this.els.cameraPan,
-            this.els.cameraDistanceRange,
-            this.els.cameraDistanceInput,
-            this.els.cameraHeightRange,
-            this.els.cameraHeightInput,
-            ...this.els.cameraVectors,
-            this.els.cameraFov,
-        ]) {
-            if (!control) continue;
-            if (control === selectionAction && !disabled) continue;
-            control.disabled = disabled;
-        }
-        this.els.viewportCamera.classList.toggle("is-playback", disabled);
-    }
-
-    _applyViewportCameraExact() {
-        if (this.cameraPlayback) return;
-        const current = this.viewer.getCameraState();
-        const next = {
-            ...current,
-            position: [...current.position],
-            target: [...current.target],
-            fov: Number.isFinite(this.els.cameraFov.valueAsNumber)
-                ? clamp(this.els.cameraFov.valueAsNumber, 5, 120)
-                : current.fov,
-        };
-        for (const control of this.els.cameraVectors) {
-            const key = control.dataset.cameraVector === "target" ? "target" : "position";
-            const axis = Number(control.dataset.cameraAxis) || 0;
-            const value = control.valueAsNumber;
-            if (Number.isFinite(value)) next[key][axis] = value;
-        }
-        this.viewer.setCameraState(next, { emit: true });
+        const label = `${zoomSensitivity.toFixed(2)}×`;
+        this.els.cameraZoomSpeedValue.textContent = label;
+        this.els.cameraZoomSpeedRange.setAttribute("aria-valuetext", label);
+        const disabled = Boolean(this.cameraPlayback) || this.editorView.view_mode === "plan";
+        this.els.cameraZoomSpeedRange.disabled = disabled;
+        for (const control of this.els.cameraPresets) control.disabled = disabled;
     }
 
     _setPlanTool(tool) {
@@ -5083,7 +4916,6 @@ class Factory3DWidget {
         if (!track || track.keyframes.length < 1) return;
         const pose = (evaluator || new FactoryCameraPath(track)).evaluate(time);
         this.viewer.setCameraState(legacyCameraFromPose(pose), { emit: false });
-        this._syncViewportCameraHUD(this.viewer.getCameraState());
         this.els.cameraTrackTime.value = String(time);
         this.els.cameraTrackMeta.textContent = `${Number(time).toFixed(2)}s · ${track.keyframes.length} points`;
     }
@@ -5094,7 +4926,7 @@ class Factory3DWidget {
             this.cameraPlayback = null;
             this.viewer.setCameraPlayback(false);
             this.els.cameraTrackPlay.textContent = "Play";
-            this._syncViewportCameraHUD(this.viewer.getCameraState());
+            this._syncCameraPanelControls();
             return;
         }
         const track = this._activeCameraTrack();
@@ -5107,7 +4939,7 @@ class Factory3DWidget {
         this.els.cameraTrackPlay.textContent = "Pause";
         this.viewer.setCameraPlayback(true);
         this.cameraPlayback = { frame: 0, started };
-        this._syncViewportCameraHUD(this.viewer.getCameraState());
+        this._syncCameraPanelControls();
         const step = now => {
             if (!this.cameraPlayback) return;
             let time = (now - started) / 1000;
@@ -10281,10 +10113,9 @@ class Factory3DWidget {
         this.els.modeScale.setAttribute("aria-pressed", String(mode === "scale"));
         this.els.grid.setAttribute("aria-pressed", String(Boolean(this.viewerState.grid)));
         const plan = this.editorView.view_mode === "plan";
-        this.els.viewportCamera.hidden = plan;
         this.els.fit.disabled = plan;
         this.els.fit.title = plan ? "Available in 3D view" : "Frame complete 3D scene";
-        this._syncViewportCameraHUD();
+        this._syncCameraPanelControls();
         this.els.view3d.setAttribute("aria-pressed", String(!plan));
         this.els.viewPlan.setAttribute("aria-pressed", String(plan));
         const cutawayKey = plan ? "plan" : "three_d";
