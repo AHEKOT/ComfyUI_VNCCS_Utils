@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260828.3";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260829.8";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
     DEFAULT_LEVEL,
@@ -64,7 +64,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260828.3";
+const FRONTEND_BUILD = "20260829.8";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -375,8 +375,8 @@ function quaternionFromEulerDegrees(rotation = [0, 0, 0]) {
         quaternion: [
             sx * cy * cz + cx * sy * sz,
             cx * sy * cz - sx * cy * sz,
-            cx * cy * sz + sx * sy * cz,
-            cx * cy * cz - sx * sy * sz,
+            cx * cy * sz - sx * sy * cz,
+            cx * cy * cz + sx * sy * sz,
         ],
     }).quaternion;
 }
@@ -396,12 +396,20 @@ function multiplyQuaternions(left = [0, 0, 0, 1], right = [0, 0, 0, 1]) {
 
 function eulerDegreesFromQuaternion(quaternion = [0, 0, 0, 1]) {
     const [x, y, z, w] = normalizedCameraPose({ quaternion }).quaternion;
-    // Inverse of quaternionFromEulerDegrees' intrinsic XYZ order. Mixing this
-    // with the common ZYX yaw/pitch/roll equations makes exact camera fields
-    // drift as soon as more than one axis is rotated.
-    const rotationX = Math.atan2(2 * (w * x - y * z), 1 - 2 * (x * x + y * y));
-    const rotationY = Math.asin(Math.max(-1, Math.min(1, 2 * (x * z + w * y))));
-    const rotationZ = Math.atan2(2 * (w * z - x * y), 1 - 2 * (y * y + z * z));
+    // Camera controls use intrinsic YXZ: pitch stays within ±90°, yaw owns the
+    // complete horizontal turn, and roll remains independent. XYZ made a
+    // level camera beyond ±90° yaw appear as X=180° / Z=180° in the inspector.
+    const matrix23 = 2 * (y * z - x * w);
+    const rotationX = Math.asin(Math.max(-1, Math.min(1, -matrix23)));
+    let rotationY;
+    let rotationZ;
+    if (Math.abs(matrix23) < 0.9999999) {
+        rotationY = Math.atan2(2 * (x * z + y * w), 1 - 2 * (x * x + y * y));
+        rotationZ = Math.atan2(2 * (x * y + z * w), 1 - 2 * (x * x + z * z));
+    } else {
+        rotationY = Math.atan2(2 * (y * w - x * z), 1 - 2 * (y * y + z * z));
+        rotationZ = 0;
+    }
     return [rotationX, rotationY, rotationZ].map(value => value * 180 / Math.PI);
 }
 
@@ -466,6 +474,7 @@ class Factory3DWidget {
         this._lightingApplyTimer = 0;
         this._lightingHistoryBefore = null;
         this._lightTransformHistoryBefore = null;
+        this._cameraTransformHistoryBefore = null;
         this._searchRenderFrame = 0;
         this._sceneSaveSerial = Promise.resolve();
         this._architectureCommitSerial = Promise.resolve();
@@ -520,6 +529,13 @@ class Factory3DWidget {
                 additive: Boolean(selection?.additive),
             }),
             onArchitectureEdit: change => this._onArchitectureEdit(change),
+            onCameraSelection: cameraId => this._selectCamera(cameraId),
+            onCameraTransform: (cameraId, transform, options) => this._onViewerCameraTransform(
+                cameraId,
+                transform,
+                options,
+            ),
+            onCameraPreviewOpen: cameraId => this._enterCameraView(cameraId),
             onLightSelection: lightId => this._selectLight(lightId),
             onLightTransform: (lightId, position, options) => this._onViewerLightTransform(
                 lightId,
@@ -2632,7 +2648,7 @@ class Factory3DWidget {
                     ? "Drag to set wall length"
                     : tool === "room"
                         ? "Drag diagonally to size the room"
-                        : "Drag to aim the camera";
+                        : "Click to place the camera, or drag to aim it";
             }
             this._renderPlanPreview();
             return;
@@ -2672,6 +2688,9 @@ class Factory3DWidget {
 
         if (phase !== "end") return;
         if (!gesture.moved) {
+            if (tool === "camera") {
+                this._createCameraFromDrag(start, this._defaultCameraPlanTarget(start));
+            }
             this._cancelPlanDraft();
             this._syncToolbar();
             return;
@@ -2688,6 +2707,23 @@ class Factory3DWidget {
         }
         this._cancelPlanDraft();
         this._syncToolbar();
+    }
+
+    _defaultCameraPlanTarget(position) {
+        const state = this._normalizeCameraState(
+            this.viewer?.getCameraState?.() || {},
+            this.scene?.camera,
+        );
+        const direction = [
+            (Number(state.target?.[0]) || 0) - (Number(state.position?.[0]) || 0),
+            (Number(state.target?.[2]) || 0) - (Number(state.position?.[2]) || 0),
+        ];
+        const length = Math.hypot(direction[0], direction[1]);
+        if (length < 0.001) return [position[0], position[1] - 1];
+        return [
+            position[0] + direction[0] / length,
+            position[1] + direction[1] / length,
+        ];
     }
 
     _createWallFromDrag(start, end) {
@@ -2739,6 +2775,7 @@ class Factory3DWidget {
             };
             this.scene.cameras = [...(this.scene.cameras || []), camera];
             this._selectCamera(camera.camera_id);
+            this._renderObjects();
             this._scheduleSceneSave(0);
         });
         return true;
@@ -3236,6 +3273,10 @@ class Factory3DWidget {
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
+        const selectedCamera = this.selectedCameraIds.size === 1
+            ? this.scene.cameras.find(camera => camera.camera_id === this.selectedCameraId)
+            : null;
+        if (selectedCamera) this.viewer?.showCameraPreview?.(selectedCamera, { force: true });
         this._scheduleStateSave(0);
     }
 
@@ -3475,16 +3516,26 @@ class Factory3DWidget {
         range = true,
         sliderMinimum,
         sliderMaximum,
+        sliderScale = "linear",
         disabled = false,
     } = {}) {
         const numericValue = Number(value);
         const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
         const disabledAttribute = disabled ? " disabled" : "";
+        const logarithmicSlider = sliderScale === "logarithmic"
+            && safeValue > 0
+            && Number(minimum) > 0
+            && Number(maximum) > 0;
         let rangeMinimum = Number.isFinite(sliderMinimum) ? sliderMinimum : minimum;
         let rangeMaximum = Number.isFinite(sliderMaximum) ? sliderMaximum : maximum;
         if (range && Number.isFinite(minimum) && Number.isFinite(maximum)) {
             const span = maximum - minimum;
-            if (!Number.isFinite(sliderMinimum) && !Number.isFinite(sliderMaximum) && span > 720) {
+            if (
+                !logarithmicSlider
+                && !Number.isFinite(sliderMinimum)
+                && !Number.isFinite(sliderMaximum)
+                && span > 720
+            ) {
                 const windowSize = path.includes("rotation")
                     ? 45
                     : path.includes("focus")
@@ -3501,14 +3552,36 @@ class Factory3DWidget {
         const controlValue = this._formatControlNumber(safeValue, step);
         const controlMinimum = this._formatControlNumber(minimum, step);
         const controlMaximum = this._formatControlNumber(maximum, step);
-        const rangeMinimumValue = this._formatControlNumber(rangeMinimum, step);
-        const rangeMaximumValue = this._formatControlNumber(rangeMaximum, step);
+        const rangeMinimumValue = logarithmicSlider
+            ? Math.log10(rangeMinimum)
+            : this._formatControlNumber(rangeMinimum, step);
+        const rangeMaximumValue = logarithmicSlider
+            ? Math.log10(rangeMaximum)
+            : this._formatControlNumber(rangeMaximum, step);
+        const rangeValue = logarithmicSlider ? Math.log10(safeValue) : controlValue;
+        const rangeStep = logarithmicSlider ? 0.001 : step;
+        const rangeScaleAttribute = logarithmicSlider ? ' data-editor-scale="log10"' : "";
         return `
             <div class="vnccs-i3s__precision-row">
                 <span>${escapeHTML(label)}</span>
-                ${range ? `<input type="range" aria-label="${escapeHTML(label)} slider" data-editor-path="${path}" min="${rangeMinimumValue}" max="${rangeMaximumValue}" step="${step}" value="${controlValue}"${disabledAttribute} />` : ""}
+                ${range ? `<input type="range" aria-label="${escapeHTML(label)} slider" data-editor-path="${path}"${rangeScaleAttribute} min="${rangeMinimumValue}" max="${rangeMaximumValue}" step="${rangeStep}" value="${rangeValue}"${disabledAttribute} />` : ""}
                 <input class="vnccs-i3s__input" aria-label="${escapeHTML(label)} exact value" type="number" data-editor-path="${path}" min="${controlMinimum}" max="${controlMaximum}" step="${step}" value="${controlValue}"${disabledAttribute} />
             </div>`;
+    }
+
+    _numericControlInputValue(control) {
+        const rawValue = Number(control?.value);
+        if (!Number.isFinite(rawValue)) return NaN;
+        return control.dataset.editorScale === "log10" ? 10 ** rawValue : rawValue;
+    }
+
+    _syncNumericControlPeers(root, path, value, source = null) {
+        for (const peer of root.querySelectorAll(`[data-editor-path="${path}"]`)) {
+            if (peer === source) continue;
+            peer.value = peer.dataset.editorScale === "log10"
+                ? String(Math.log10(Math.max(Number.MIN_VALUE, value)))
+                : this._formatControlNumber(value, peer.step);
+        }
     }
 
     _renderInspector() {
@@ -3709,8 +3782,8 @@ class Factory3DWidget {
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(camera.name || "Camera")}</div>
             <div class="vnccs-i3s__hint">${this.previewCameraId === camera.camera_id
-                ? "Camera View is live: exact fields update the viewport immediately."
-                : "Exact fields update the saved Plan marker. Enter Camera View to preview rotation and lens."}</div>
+                ? "Camera View is live: exact fields update the viewport and inset preview immediately."
+                : "Exact fields update the saved camera and inset preview immediately."}</div>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-camera-property="name" value="${escapeHTML(camera.name || "Camera")}" maxlength="80" /></label>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-camera-property="level_id">
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${camera.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
@@ -3722,11 +3795,11 @@ class Factory3DWidget {
                 ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+                ${["Pitch X", "Yaw Y", "Roll Z"].map((axis, index) => this._numericControl(axis, `camera.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, sliderMinimum: -180, sliderMaximum: 180, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Lens</b>
                 ${this._numericControl("FOV", "camera.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
-                ${this._numericControl("Focus distance", "camera.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 100000, step: 0.001 })}
+                ${this._numericControl("Focus distance", "camera.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 100000, step: 0.001, sliderScale: "logarithmic" })}
             </div>
             <div class="vnccs-i3s__inspector-actions">
                 <button class="vnccs-i3s__button" type="button" data-inspector-action="preview-camera">${this.previewCameraId === camera.camera_id ? "Exit camera view" : "Enter camera view"}</button>
@@ -3771,13 +3844,14 @@ class Factory3DWidget {
                 if (previewAction) previewAction.textContent = "Exit camera view";
                 const hint = this.els.inspector.querySelector(".vnccs-i3s__hint");
                 if (hint) {
-                    hint.textContent = "Camera View is live: exact fields update the viewport immediately.";
+                    hint.textContent = "Camera View is live: exact fields update the viewport and inset preview immediately.";
                 }
             }
             if (this.previewCameraId === camera.camera_id) {
                 this.viewer.setCameraState(camera, { emit: false });
             }
             this.viewer.setCameraMarkers(this.scene.cameras);
+            this.viewer?.showCameraPreview?.(camera, { realtime: true });
             this._scheduleSceneSave(180);
             this._scheduleStateSave(180);
         };
@@ -3786,13 +3860,16 @@ class Factory3DWidget {
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
                 const [, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
+                const value = this._numericControlInputValue(control);
                 if (!Number.isFinite(value)) return;
                 if (rawIndex !== undefined) edited[key][Number(rawIndex)] = value;
                 else edited[key] = value;
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(value);
-                }
+                this._syncNumericControlPeers(
+                    this.els.inspector,
+                    control.dataset.editorPath,
+                    value,
+                    control,
+                );
                 apply();
             });
             control.addEventListener("change", () => {
@@ -3800,6 +3877,7 @@ class Factory3DWidget {
                 before = null;
                 this._syncToolbar();
                 this._scheduleSceneSave(0);
+                this.viewer?.showCameraPreview?.(camera);
             });
         }
         this.els.inspector.querySelector('[data-camera-property="name"]')?.addEventListener("change", event => {
@@ -3807,7 +3885,9 @@ class Factory3DWidget {
             camera.name = String(event.currentTarget.value || "Camera").trim().slice(0, 80) || "Camera";
             this.history.push("Rename camera", original, this._captureEditorSnapshot());
             this._renderCameras();
+            this._renderObjects();
             this._renderInspector();
+            this.viewer?.showCameraPreview?.(camera, { refresh: false });
             this._scheduleSceneSave(0);
         });
         this.els.inspector.querySelector('[data-camera-property="level_id"]')?.addEventListener("change", event => {
@@ -3828,6 +3908,8 @@ class Factory3DWidget {
             this.history.push("Move camera to floor", original, this._captureEditorSnapshot());
             this.viewer.setCameraMarkers(this.scene.cameras);
             this._renderCameras();
+            this._renderObjects();
+            this.viewer?.showCameraPreview?.(camera);
             this._scheduleSceneSave(0);
         });
         this.els.inspector.querySelector('[data-camera-property="building_id"]')?.addEventListener("change", event => {
@@ -3837,6 +3919,8 @@ class Factory3DWidget {
             this.history.push("Assign camera to building", original, this._captureEditorSnapshot());
             this.viewer.setCameraMarkers(this.scene.cameras);
             this._renderCameras();
+            this._renderObjects();
+            this.viewer?.showCameraPreview?.(camera, { refresh: false });
             this._syncToolbar();
             this._scheduleSceneSave(0);
             this._scheduleStateSave(0);
@@ -3852,6 +3936,7 @@ class Factory3DWidget {
             this.viewer.setCameraMarkers(this.scene.cameras);
             this._renderInspector();
             this._renderCameras();
+            this.viewer?.showCameraPreview?.(camera);
             this._scheduleSceneSave(0);
             this._syncToolbar();
         });
@@ -3876,11 +3961,11 @@ class Factory3DWidget {
                 ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+                ${["Pitch X", "Yaw Y", "Roll Z"].map((axis, index) => this._numericControl(axis, `keyframe.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, sliderMinimum: -180, sliderMaximum: 180, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Lens</b>
                 ${this._numericControl("FOV", "keyframe.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
-                ${this._numericControl("Focus", "keyframe.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 1000000, step: 0.001 })}
+                ${this._numericControl("Focus", "keyframe.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 1000000, step: 0.001, sliderScale: "logarithmic" })}
             </div>
             <div class="vnccs-i3s__inspector-grid">
                 <label><span>Interpolation</span><select class="vnccs-i3s__select" data-track-property="interpolation"><option value="linear"${track.interpolation === "linear" ? " selected" : ""}>Linear</option><option value="catmullrom"${track.interpolation === "catmullrom" ? " selected" : ""}>Smooth path</option></select></label>
@@ -3912,7 +3997,7 @@ class Factory3DWidget {
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
                 const [scope, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
+                const value = this._numericControlInputValue(control);
                 if (!Number.isFinite(value)) return;
                 if (scope === "track") {
                     if (key === "fps") track[key] = Math.round(value);
@@ -3934,10 +4019,15 @@ class Factory3DWidget {
                         : rawIndex !== undefined
                             ? edited[key][Number(rawIndex)]
                             : edited[key];
-                control.value = String(appliedValue);
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(appliedValue);
-                }
+                control.value = control.dataset.editorScale === "log10"
+                    ? String(Math.log10(Math.max(Number.MIN_VALUE, appliedValue)))
+                    : this._formatControlNumber(appliedValue, control.step);
+                this._syncNumericControlPeers(
+                    this.els.inspector,
+                    control.dataset.editorPath,
+                    appliedValue,
+                    control,
+                );
             });
             control.addEventListener("change", () => {
                 track.keyframes.sort((left, right) => left.time - right.time);
@@ -5360,6 +5450,7 @@ class Factory3DWidget {
         this.history.push("Add camera", before, this._captureEditorSnapshot());
         this._selectCamera(camera.camera_id);
         this._renderCameras();
+        this._renderObjects();
         this._updateSceneSummary();
         await this._saveSceneNow();
         this.toast(`${camera.name} added.`, "success");
@@ -5395,6 +5486,7 @@ class Factory3DWidget {
         this._renderInspector();
         this._syncToolbar();
         this._syncPanoramaExportControls();
+        this.viewer?.showCameraPreview?.(camera, { force: true });
         this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave();
     }
@@ -5420,6 +5512,7 @@ class Factory3DWidget {
         this.viewer.setCameraState(camera, { emit: false });
         this._syncToolbar();
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._scheduleStateSave(0);
     }
@@ -5442,6 +5535,7 @@ class Factory3DWidget {
             this._cameraSelectionTransition = false;
         }
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._scheduleStateSave();
     }
@@ -5460,6 +5554,7 @@ class Factory3DWidget {
         );
         this.history.push("Delete camera", before, this._captureEditorSnapshot());
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._syncSelectionPresentation();
         this._syncToolbar();
@@ -5473,6 +5568,9 @@ class Factory3DWidget {
         const cameras = this._normalizeSceneCameras(this.scene?.cameras);
         if (this.scene) this.scene.cameras = cameras;
         this.viewer?.setCameraMarkers?.(cameras, this.selectedCameraIds);
+        if (!this.selectedCameraId || this.selectedCameraIds.size !== 1) {
+            this.viewer?.hideCameraPreview?.();
+        }
         this.els.cameraCount.textContent = String(cameras.length);
         this.els.cameraGroupCount.textContent = String(cameras.length);
         this.els.cameraAdd.disabled = !this.scene || cameras.length >= 32;
@@ -5869,6 +5967,47 @@ class Factory3DWidget {
         this._renderObjects();
         this._renderInspector();
         this._syncToolbar();
+    }
+
+    _onViewerCameraTransform(
+        cameraId,
+        transform,
+        { final = false, cancelled = false, operation = "position" } = {},
+    ) {
+        const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
+        if (
+            !camera
+            || !Array.isArray(transform?.position)
+            || transform.position.length !== 3
+            || !Array.isArray(transform?.target)
+            || transform.target.length !== 3
+        ) return;
+        this._cameraTransformHistoryBefore ||= this._captureEditorSnapshot();
+        camera.position = transform.position.map(value => Number(value) || 0);
+        camera.target = transform.target.map(value => Number(value) || 0);
+        if (this.previewCameraId === cameraId) {
+            this.viewer?.setCameraState?.(camera, { emit: false });
+        }
+        if (!final) {
+            this._scheduleStateSave(100);
+            return;
+        }
+        if (!cancelled && this._cameraTransformHistoryBefore) {
+            this.history.push(
+                operation === "direction" ? "Rotate camera" : "Move camera",
+                this._cameraTransformHistoryBefore,
+                this._captureEditorSnapshot(),
+            );
+            this._scheduleSceneSave(0);
+        }
+        this._cameraTransformHistoryBefore = null;
+        this.viewer?.setCameraMarkers?.(this.scene.cameras, this.selectedCameraIds);
+        this._renderCameras();
+        this._renderObjects();
+        this._renderInspector();
+        this._syncToolbar();
+        this.viewer?.showCameraPreview?.(camera);
+        this._scheduleStateSave(0);
     }
 
     _syncLighting() {
@@ -6900,6 +7039,14 @@ class Factory3DWidget {
             card.classList.toggle("is-selected", selected);
             card.classList.toggle("is-primary", selected);
         }
+        for (const card of this.els.objectList.querySelectorAll("[data-camera-object-id]")) {
+            const selected = this.selectedCameraIds.has(card.dataset.cameraObjectId);
+            card.classList.toggle("is-selected", selected);
+            card.classList.toggle("is-primary", card.dataset.cameraObjectId === this.selectedCameraId);
+        }
+        if (!this.selectedCameraId || this.selectedCameraIds.size !== 1) {
+            this.viewer?.hideCameraPreview?.();
+        }
         this._syncSelectionControls();
     }
 
@@ -6912,6 +7059,7 @@ class Factory3DWidget {
         const previousScrollLeft = this.els.objectList.scrollLeft;
         const query = this.els.objectSearch.value.trim().toLowerCase();
         const objects = new Map((this.scene?.objects || []).map(item => [item.object_id, item]));
+        const cameras = this.scene?.cameras || [];
         const lights = this.lighting?.lights || [];
         const skydome = this.scene?.skydome || null;
         const layers = this._normalizeSceneLayers();
@@ -6921,6 +7069,18 @@ class Factory3DWidget {
         let rendered = 0;
         for (const entry of this._createArchitectureTree(query)) {
             fragment.appendChild(entry);
+            rendered += 1;
+        }
+        for (const camera of cameras) {
+            const levelName = this.scene?.levels?.find(
+                level => level.level_id === camera.level_id,
+            )?.name || "Unassigned floor";
+            const buildingName = this.scene?.architecture?.buildings?.find(
+                building => building.building_id === camera.building_id,
+            )?.name || "";
+            const searchable = `${camera.name || "Camera"} saved camera ${levelName} ${buildingName}`.toLowerCase();
+            if (query && !searchable.includes(query)) continue;
+            fragment.appendChild(this._createCameraObjectCard(camera));
             rendered += 1;
         }
         for (const light of lights) {
@@ -6933,7 +7093,7 @@ class Factory3DWidget {
             fragment.appendChild(this._createSkydomeCard(skydome));
             rendered += 1;
         }
-        if (!objects.size && !lights.length && !skydome && !rendered) {
+        if (!objects.size && !cameras.length && !lights.length && !skydome && !rendered) {
             fragment.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
             this.els.objectList.appendChild(fragment);
             return;
@@ -7098,6 +7258,75 @@ class Factory3DWidget {
             output.push(wrapper);
         }
         return output;
+    }
+
+    _createCameraObjectCard(camera) {
+        const selected = this.selectedCameraIds.has(camera.camera_id);
+        const card = element(
+            "div",
+            `vnccs-i3s__object vnccs-i3s__camera-object`
+                + `${selected ? " is-selected" : ""}`
+                + `${camera.camera_id === this.selectedCameraId ? " is-primary" : ""}`,
+        );
+        card.tabIndex = 0;
+        card.dataset.cameraObjectId = camera.camera_id;
+        const thumbnail = element("span", "vnccs-i3s__object-thumb vnccs-i3s__camera-thumb");
+        thumbnail.innerHTML = ICONS.camera;
+        const levelName = this.scene?.levels?.find(
+            level => level.level_id === camera.level_id,
+        )?.name || "Unassigned floor";
+        const buildingName = this.scene?.architecture?.buildings?.find(
+            building => building.building_id === camera.building_id,
+        )?.name || "";
+        const copy = element("div", "vnccs-i3s__object-copy");
+        copy.append(
+            element("div", "vnccs-i3s__object-name", camera.name || "Camera"),
+            element(
+                "div",
+                "vnccs-i3s__object-meta",
+                `Saved camera · ${levelName}${buildingName ? ` · ${buildingName}` : ""}`,
+            ),
+        );
+        const actions = element("div", "vnccs-i3s__object-actions");
+        const preview = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            "eye",
+        );
+        preview.title = camera.camera_id === this.previewCameraId
+            ? "Exit camera view"
+            : "Enter camera view";
+        preview.setAttribute("aria-label", preview.title);
+        preview.addEventListener("click", event => {
+            event.stopPropagation();
+            this._selectCamera(camera.camera_id);
+            if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
+            else this._enterCameraView(camera.camera_id);
+        });
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__button--danger vnccs-i3s__icon-button",
+            "",
+            "trash",
+        );
+        remove.title = "Delete camera";
+        remove.setAttribute("aria-label", remove.title);
+        remove.addEventListener("click", event => {
+            event.stopPropagation();
+            void this._deleteCamera(camera.camera_id);
+        });
+        actions.append(preview, remove);
+        card.append(thumbnail, copy, actions);
+        const select = () => this._selectCamera(camera.camera_id);
+        card.addEventListener("click", event => {
+            if (!event.target.closest("button,input")) select();
+        });
+        card.addEventListener("keydown", event => {
+            if (event.target === card && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                select();
+            }
+        });
+        return card;
     }
 
     _createLightCard(light) {

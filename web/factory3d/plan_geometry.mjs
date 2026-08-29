@@ -18,11 +18,8 @@ function materialFromData(value = {}, maps = {}) {
         opacity: Number(data.opacity),
         transparent: Number(data.opacity) < 1 || data.kind === "glass",
         side: THREE.DoubleSide,
-        // Architecture uses closed box/extruded geometry. Rendering it
-        // double-sided is useful while editing, but casting both sides into a
-        // shadow map makes the front and rear faces compete at shallow point-
-        // light angles. Back-face casting keeps the physical wall thickness
-        // as the occluder and avoids self-shadow blocks on the visible face.
+        // Closed architecture casts its rear faces so the visible surface does
+        // not self-shadow along every triangle. Glass remains two-sided.
         shadowSide: data.kind === "glass" ? THREE.DoubleSide : THREE.BackSide,
         map: maps.color || null,
         normalMap: maps.normal || null,

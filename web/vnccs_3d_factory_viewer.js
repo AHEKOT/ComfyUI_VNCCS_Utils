@@ -6,7 +6,7 @@ import {
     SparkRenderer,
     SplatMesh,
 } from "./vendor/spark/spark.module.js";
-import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260828.1";
+import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260829.2";
 import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260825.3";
 import {
     disposeFactoryModel,
@@ -27,7 +27,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260828.3";
+export const FACTORY_VIEWER_BUILD = "20260829.8";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -224,6 +224,17 @@ function finiteVector(values, fallback = [0, 0, 0]) {
         const value = Number(values?.[index]);
         return Number.isFinite(value) ? value : item;
     });
+}
+
+function stableCameraClipPlanes(focusDistance = 1) {
+    const distance = Math.max(0.001, Math.abs(Number(focusDistance) || 0));
+    // Factory coordinates are metres. A micrometre-scale near plane destroys
+    // depth precision as soon as the saved focus target is close to the
+    // camera, making surfaces behind a wall win individual depth triangles.
+    return {
+        near: Math.max(0.02, Math.min(0.1, distance / 1000)),
+        far: Math.max(1000, distance * 1000),
+    };
 }
 
 function normalizedTransform(value = {}) {
@@ -724,6 +735,9 @@ export class Factory3DViewer {
             onError: options.onError || EMPTY,
             onArchitectureSelection: options.onArchitectureSelection || EMPTY,
             onArchitectureEdit: options.onArchitectureEdit || EMPTY,
+            onCameraSelection: options.onCameraSelection || EMPTY,
+            onCameraTransform: options.onCameraTransform || EMPTY,
+            onCameraPreviewOpen: options.onCameraPreviewOpen || EMPTY,
             onLightSelection: options.onLightSelection || EMPTY,
             onLightTransform: options.onLightTransform || EMPTY,
             onPlanMarqueeSelection: options.onPlanMarqueeSelection || EMPTY,
@@ -740,7 +754,9 @@ export class Factory3DViewer {
         this.architectureSelection = null;
         this.architectureSelections = [];
         this.selectedCameraMarkerIds = new Set();
+        this.selectedCameraHelperId = "";
         this.selectedLightMarkerId = "";
+        this._cameraHelperTransformStart = null;
         this._groupTransformStart = null;
         this.mode = "translate";
         this.gridVisible = false;
@@ -756,6 +772,13 @@ export class Factory3DViewer {
         this._planMarquee = null;
         this._objectPlanDrag = null;
         this.planSelectedObjectIds = [];
+        this._cameraDrag = null;
+        this._camera3dDrag = null;
+        this._cameraInsetRequest = 0;
+        this._cameraInsetSchedule = 0;
+        this._cameraInsetScheduleKind = "";
+        this._cameraInsetSerial = Promise.resolve();
+        this._cameraInsetObjectURL = "";
         this._lightDrag = null;
         this.captureWidth = 1024;
         this.captureHeight = 1024;
@@ -830,6 +853,41 @@ export class Factory3DViewer {
         this.cameraFrameLabel = document.createElement("span");
         this.cameraFrame.appendChild(this.cameraFrameLabel);
         this.host.appendChild(this.cameraFrame);
+        this.cameraInset = document.createElement("section");
+        this.cameraInset.className = "vnccs-i3s__camera-inset";
+        this.cameraInset.hidden = true;
+        this.cameraInset.setAttribute("aria-label", "Selected camera preview");
+        this.cameraInset.innerHTML = `
+            <header class="vnccs-i3s__camera-inset-head">
+                <span class="vnccs-i3s__camera-inset-title">Camera preview</span>
+                <span class="vnccs-i3s__camera-inset-actions">
+                    <button class="vnccs-i3s__camera-inset-open" type="button">Open</button>
+                    <button class="vnccs-i3s__camera-inset-refresh" type="button" aria-label="Refresh camera preview" title="Refresh camera preview">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6v5h-5M4 18v-5h5M6.1 9a7 7 0 0 1 11.5-2.2L20 9M4 15l2.4 2.2A7 7 0 0 0 17.9 15" /></svg>
+                    </button>
+                    <button class="vnccs-i3s__camera-inset-close" type="button" aria-label="Close camera preview">×</button>
+                </span>
+            </header>
+            <div class="vnccs-i3s__camera-inset-media">
+                <img alt="" decoding="async" draggable="false" />
+                <span class="vnccs-i3s__camera-inset-status" role="status">Rendering preview…</span>
+            </div>`;
+        this.cameraInsetTitle = this.cameraInset.querySelector(".vnccs-i3s__camera-inset-title");
+        this.cameraInsetImage = this.cameraInset.querySelector("img");
+        this.cameraInsetStatus = this.cameraInset.querySelector(".vnccs-i3s__camera-inset-status");
+        this.cameraInset.querySelector(".vnccs-i3s__camera-inset-open")?.addEventListener("click", () => {
+            const cameraId = this.cameraInset.dataset.cameraId || "";
+            if (cameraId) this.options.onCameraPreviewOpen(cameraId);
+        });
+        this.cameraInset.querySelector(".vnccs-i3s__camera-inset-refresh")?.addEventListener("click", () => {
+            const cameraId = this.cameraInset.dataset.cameraId || "";
+            const camera = this.sceneData?.cameras?.find(item => item.camera_id === cameraId);
+            if (camera) this.showCameraPreview(camera, { refresh: true, force: true });
+        });
+        this.cameraInset.querySelector(".vnccs-i3s__camera-inset-close")?.addEventListener("click", () => {
+            this.hideCameraPreview({ dismiss: true });
+        });
+        this.host.appendChild(this.cameraInset);
 
         this.scene = new THREE.Scene();
         this.scene.background = new THREE.Color("#171b25");
@@ -842,7 +900,9 @@ export class Factory3DViewer {
         this.scene.add(this.lightRig);
         this.lightHelperRoot = new THREE.Group();
         this.lightHelperRoot.name = "VNCCS Factory editor light helpers";
-        this.scene.add(this.lightHelperRoot);
+        this.cameraHelperRoot = new THREE.Group();
+        this.cameraHelperRoot.name = "VNCCS Factory selected camera helper";
+        this.scene.add(this.lightHelperRoot, this.cameraHelperRoot);
         this.camera = new THREE.PerspectiveCamera(42, 1, 0.0001, 100000);
         this.camera.position.set(2.8, 2.1, 4.2);
         this.planCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 10000);
@@ -983,7 +1043,10 @@ export class Factory3DViewer {
             this._setInteractive("transform", Boolean(event.value));
             if (event.value && this.selectedGroupId) this._beginGroupTransform();
             if (!event.value) {
-                if (this.selectedLightMarkerId) {
+                if (this.selectedCameraHelperId) {
+                    this._emitCameraHelperTransform(true);
+                    this._cameraHelperTransformStart = null;
+                } else if (this.selectedLightMarkerId) {
                     const helper = this.lightHelperRoot?.children?.find(
                         item => item.userData?.factoryId === this.selectedLightMarkerId,
                     );
@@ -1017,7 +1080,16 @@ export class Factory3DViewer {
             this.invalidate();
         });
         this.transform.addEventListener("mouseDown", () => {
-            if (this.selectedLightMarkerId) {
+            if (this.selectedCameraHelperId) {
+                const camera = this.sceneData?.cameras?.find(
+                    item => item.camera_id === this.selectedCameraHelperId,
+                );
+                this._cameraHelperTransformStart = camera ? {
+                    position: [...camera.position],
+                    target: [...camera.target],
+                } : null;
+                this._singleTransformStart = null;
+            } else if (this.selectedLightMarkerId) {
                 this._singleTransformStart = null;
             } else if (this.selectedGroupId) {
                 this._beginGroupTransform();
@@ -1040,6 +1112,49 @@ export class Factory3DViewer {
             try { this.canvas.focus({ preventScroll: true }); }
             catch (_) { this.canvas.focus(); }
             this._pointerDown = [event.clientX, event.clientY];
+            if (
+                this.viewMode === "3d"
+                && event.button === 0
+                && this.selectedCameraHelperId
+                && !this.transform.dragging
+                && !this.transform.axis
+            ) {
+                const cameraHelper = this._cameraHelperHit(event);
+                const camera = this.sceneData?.cameras?.find(
+                    item => item.camera_id === this.selectedCameraHelperId,
+                );
+                const helper = this.cameraHelperRoot.children.find(
+                    item => item.userData?.factoryId === this.selectedCameraHelperId,
+                );
+                if (cameraHelper && camera && helper) {
+                    const plane = new THREE.Plane().setFromNormalAndCoplanarPoint(
+                        this.activeCamera().getWorldDirection(new THREE.Vector3()),
+                        helper.position,
+                    );
+                    const originHit = this.raycaster.ray.intersectPlane(
+                        plane,
+                        new THREE.Vector3(),
+                    );
+                    if (originHit) {
+                        this._camera3dDrag = {
+                            pointerId: event.pointerId,
+                            cameraId: camera.camera_id,
+                            helper,
+                            plane,
+                            originHit,
+                            originPosition: [...camera.position],
+                            originTarget: [...camera.target],
+                            originX: event.clientX,
+                            originY: event.clientY,
+                            moved: false,
+                        };
+                        this.controls.enabled = false;
+                        this.canvas.setPointerCapture?.(event.pointerId);
+                        event.preventDefault();
+                        return;
+                    }
+                }
+            }
             if (
                 this.viewMode === "3d"
                 && (event.button === 0 || event.button === 2)
@@ -1080,6 +1195,31 @@ export class Factory3DViewer {
                 return;
             }
             if (this.viewMode === "plan" && event.button === 0 && this.planTool === "select") {
+                const cameraMarker = this._planCameraHit(event);
+                if (cameraMarker) {
+                    const cameraId = cameraMarker.userData.factoryId;
+                    const camera = this.sceneData?.cameras?.find(item => item.camera_id === cameraId);
+                    if (camera) {
+                        this.options.onCameraSelection(cameraId);
+                        const selectedMarker = this.cameraMarkerRoot.children.find(
+                            item => item.userData?.factoryId === cameraId,
+                        ) || cameraMarker.parent || cameraMarker;
+                        this._cameraDrag = {
+                            pointerId: event.pointerId,
+                            cameraId,
+                            marker: selectedMarker,
+                            originPosition: [...camera.position],
+                            originTarget: [...camera.target],
+                            originPoint: this.screenToPlan(event),
+                            moved: false,
+                            originX: event.clientX,
+                            originY: event.clientY,
+                        };
+                        this.canvas.setPointerCapture?.(event.pointerId);
+                        event.preventDefault();
+                        return;
+                    }
+                }
                 const lightMarker = this._planLightHit(event);
                 if (lightMarker) {
                     const lightId = lightMarker.userData.factoryId;
@@ -1191,6 +1331,45 @@ export class Factory3DViewer {
                 event.preventDefault();
                 return;
             }
+            if (this._camera3dDrag?.pointerId === event.pointerId) {
+                const drag = this._camera3dDrag;
+                drag.moved = drag.moved || Math.hypot(
+                    event.clientX - drag.originX,
+                    event.clientY - drag.originY,
+                ) > 3;
+                if (!drag.moved) {
+                    event.preventDefault();
+                    return;
+                }
+                const rect = this.canvas.getBoundingClientRect();
+                this.pointer.set(
+                    ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+                    -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+                );
+                this.raycaster.setFromCamera(this.pointer, this.activeCamera());
+                const hit = this.raycaster.ray.intersectPlane(drag.plane, new THREE.Vector3());
+                if (hit) {
+                    const delta = hit.sub(drag.originHit);
+                    const position = drag.originPosition.map(
+                        (value, index) => value + delta.getComponent(index),
+                    );
+                    const target = drag.originTarget.map(
+                        (value, index) => value + delta.getComponent(index),
+                    );
+                    drag.position = position;
+                    drag.target = target;
+                    drag.helper.position.fromArray(position);
+                    this.options.onCameraTransform(
+                        drag.cameraId,
+                        { position, target },
+                        { final: false, operation: "position" },
+                    );
+                    this.canvas.style.cursor = "grabbing";
+                    this.invalidate();
+                }
+                event.preventDefault();
+                return;
+            }
             const look = this._lookDrag;
             if (look && look.pointerId === event.pointerId && this.viewMode === "3d") {
                 const deltaX = event.clientX - look.x;
@@ -1241,6 +1420,43 @@ export class Factory3DViewer {
                 );
                 if (helper) helper.position.fromArray(position);
                 this.options.onLightTransform(drag.lightId, position, { final: false });
+                this.invalidate();
+                event.preventDefault();
+                return;
+            }
+            if (this._cameraDrag?.pointerId === event.pointerId) {
+                const drag = this._cameraDrag;
+                drag.moved = drag.moved || Math.hypot(
+                    event.clientX - drag.originX,
+                    event.clientY - drag.originY,
+                ) > 3;
+                if (!drag.moved) {
+                    event.preventDefault();
+                    return;
+                }
+                const pointer = this.screenToPlan(event);
+                const proposed = [
+                    drag.originPosition[0] + pointer[0] - drag.originPoint[0],
+                    drag.originPosition[2] + pointer[1] - drag.originPoint[1],
+                ];
+                const point = this.options.snapPlanPoint(proposed, event, null);
+                const deltaX = point[0] - drag.originPosition[0];
+                const deltaZ = point[1] - drag.originPosition[2];
+                const position = [point[0], drag.originPosition[1], point[1]];
+                const target = [
+                    drag.originTarget[0] + deltaX,
+                    drag.originTarget[1],
+                    drag.originTarget[2] + deltaZ,
+                ];
+                drag.marker.position.x = point[0];
+                drag.marker.position.z = point[1];
+                drag.position = position;
+                drag.target = target;
+                this.options.onCameraTransform(
+                    drag.cameraId,
+                    { position, target },
+                    { final: false, operation: "position" },
+                );
                 this.invalidate();
                 event.preventDefault();
                 return;
@@ -1335,6 +1551,28 @@ export class Factory3DViewer {
                 event.preventDefault();
                 return;
             }
+            const camera3dDrag = this._camera3dDrag?.pointerId === event.pointerId
+                ? this._camera3dDrag
+                : null;
+            if (camera3dDrag) {
+                this._camera3dDrag = null;
+                this.canvas.releasePointerCapture?.(event.pointerId);
+                this.canvas.style.cursor = "default";
+                this.controls.enabled = this.viewMode === "3d" && !this.transform.dragging;
+                if (camera3dDrag.moved) {
+                    this.options.onCameraTransform(
+                        camera3dDrag.cameraId,
+                        {
+                            position: camera3dDrag.position || camera3dDrag.originPosition,
+                            target: camera3dDrag.target || camera3dDrag.originTarget,
+                        },
+                        { final: true, operation: "position" },
+                    );
+                }
+                this._pointerDown = null;
+                event.preventDefault();
+                return;
+            }
             const look = this._lookDrag?.pointerId === event.pointerId ? this._lookDrag : null;
             if (look) {
                 this._lookDrag = null;
@@ -1378,6 +1616,24 @@ export class Factory3DViewer {
                         drag.lightId,
                         drag.position || drag.originPosition,
                         { final: true },
+                    );
+                }
+                this._pointerDown = null;
+                event.preventDefault();
+                return;
+            }
+            if (this._cameraDrag?.pointerId === event.pointerId) {
+                const drag = this._cameraDrag;
+                this._cameraDrag = null;
+                this.canvas.releasePointerCapture?.(event.pointerId);
+                if (drag.moved) {
+                    this.options.onCameraTransform(
+                        drag.cameraId,
+                        {
+                            position: drag.position || drag.originPosition,
+                            target: drag.target || drag.originTarget,
+                        },
+                        { final: true, operation: "position" },
                     );
                 }
                 this._pointerDown = null;
@@ -1478,6 +1734,37 @@ export class Factory3DViewer {
                 this._lightDrag = null;
                 if (drag.moved) {
                     this.options.onLightTransform(drag.lightId, drag.originPosition, { final: true });
+                }
+            }
+            if (
+                this._cameraDrag
+                && (event.pointerId === undefined || this._cameraDrag.pointerId === event.pointerId)
+            ) {
+                const drag = this._cameraDrag;
+                this._cameraDrag = null;
+                if (drag.moved) {
+                    this.options.onCameraTransform(
+                        drag.cameraId,
+                        { position: drag.originPosition, target: drag.originTarget },
+                        { final: true, cancelled: true, operation: "position" },
+                    );
+                }
+            }
+            if (
+                this._camera3dDrag
+                && (event.pointerId === undefined || this._camera3dDrag.pointerId === event.pointerId)
+            ) {
+                const drag = this._camera3dDrag;
+                this._camera3dDrag = null;
+                drag.helper.position.fromArray(drag.originPosition);
+                this.controls.enabled = this.viewMode === "3d" && !this.transform.dragging;
+                this.canvas.style.cursor = "default";
+                if (drag.moved) {
+                    this.options.onCameraTransform(
+                        drag.cameraId,
+                        { position: drag.originPosition, target: drag.originTarget },
+                        { final: true, cancelled: true, operation: "position" },
+                    );
                 }
             }
             if (
@@ -1630,6 +1917,110 @@ export class Factory3DViewer {
             const scale = Math.max(0.2, Math.min(1000, desiredRadius / radius));
             helper.scale.setScalar(scale);
         }
+    }
+
+    _cancelCameraInsetSchedule() {
+        if (!this._cameraInsetSchedule) return;
+        if (
+            this._cameraInsetScheduleKind === "idle"
+            && typeof cancelIdleCallback === "function"
+        ) {
+            cancelIdleCallback(this._cameraInsetSchedule);
+        } else {
+            cancelAnimationFrame(this._cameraInsetSchedule);
+        }
+        this._cameraInsetSchedule = 0;
+        this._cameraInsetScheduleKind = "";
+    }
+
+    showCameraPreview(camera, { refresh = true, force = false, realtime = false } = {}) {
+        const cameraId = String(camera?.camera_id || "");
+        if (!cameraId || this._disposed || !this.cameraInset) {
+            this.hideCameraPreview();
+            return;
+        }
+        if (!force && this.cameraInset.dataset.dismissedCameraId === cameraId) return;
+        if (force) delete this.cameraInset.dataset.dismissedCameraId;
+        const sameCamera = this.cameraInset.dataset.cameraId === cameraId;
+        this.cameraInset.dataset.cameraId = cameraId;
+        this.cameraInset.hidden = false;
+        this.cameraInsetTitle.textContent = camera.name || "Camera preview";
+        this.cameraInsetImage.alt = `${camera.name || "Camera"} preview`;
+        if (!refresh && sameCamera && this._cameraInsetObjectURL) return;
+
+        this._cancelCameraInsetSchedule();
+        const request = ++this._cameraInsetRequest;
+        if (!sameCamera) {
+            this.cameraInsetImage.removeAttribute("src");
+            if (this._cameraInsetObjectURL) URL.revokeObjectURL(this._cameraInsetObjectURL);
+            this._cameraInsetObjectURL = "";
+        }
+        this.cameraInset.classList.toggle(
+            "is-loading",
+            !realtime || !sameCamera || !this._cameraInsetObjectURL,
+        );
+        this.cameraInset.classList.remove("has-error");
+        this.cameraInsetStatus.textContent = "Rendering preview…";
+
+        const capture = () => {
+            this._cameraInsetSchedule = 0;
+            this._cameraInsetScheduleKind = "";
+            if (
+                request !== this._cameraInsetRequest
+                || this.cameraInset.hidden
+                || this._disposed
+            ) return;
+            if (this._capturing) {
+                this._cameraInsetScheduleKind = "frame";
+                this._cameraInsetSchedule = requestAnimationFrame(capture);
+                return;
+            }
+            const operation = this._cameraInsetSerial.then(async () => {
+                if (request !== this._cameraInsetRequest || this._disposed) return;
+                const blob = await this.captureCameraPreview({
+                    width: realtime ? 256 : 320,
+                    height: realtime ? 144 : 180,
+                    cameraState: camera,
+                });
+                if (request !== this._cameraInsetRequest || this._disposed) return;
+                const objectURL = URL.createObjectURL(blob);
+                if (request !== this._cameraInsetRequest || this._disposed) {
+                    URL.revokeObjectURL(objectURL);
+                    return;
+                }
+                if (this._cameraInsetObjectURL) URL.revokeObjectURL(this._cameraInsetObjectURL);
+                this._cameraInsetObjectURL = objectURL;
+                this.cameraInsetImage.src = objectURL;
+                this.cameraInset.classList.remove("is-loading", "has-error");
+                this.cameraInsetStatus.textContent = "Preview ready";
+            });
+            this._cameraInsetSerial = operation.catch(() => null);
+            operation.catch(() => {
+                if (request !== this._cameraInsetRequest || this._disposed) return;
+                this.cameraInset.classList.remove("is-loading");
+                this.cameraInset.classList.add("has-error");
+                this.cameraInsetStatus.textContent = "Preview unavailable";
+            });
+        };
+        if (realtime) {
+            this._cameraInsetScheduleKind = "frame";
+            this._cameraInsetSchedule = requestAnimationFrame(capture);
+        } else if (typeof requestIdleCallback === "function") {
+            this._cameraInsetScheduleKind = "idle";
+            this._cameraInsetSchedule = requestIdleCallback(capture, { timeout: 500 });
+        } else {
+            this._cameraInsetScheduleKind = "frame";
+            this._cameraInsetSchedule = requestAnimationFrame(capture);
+        }
+    }
+
+    hideCameraPreview({ dismiss = false } = {}) {
+        this._cancelCameraInsetSchedule();
+        this._cameraInsetRequest += 1;
+        if (dismiss && this.cameraInset?.dataset.cameraId) {
+            this.cameraInset.dataset.dismissedCameraId = this.cameraInset.dataset.cameraId;
+        }
+        if (this.cameraInset) this.cameraInset.hidden = true;
     }
 
     _attachDirectionalLighting(entry) {
@@ -2628,6 +3019,34 @@ export class Factory3DViewer {
         return true;
     }
 
+    _cameraHelperHit(event) {
+        if (!this.cameraHelperRoot?.visible) return null;
+        const rect = this.canvas.getBoundingClientRect();
+        this.pointer.set(
+            ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+            -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+        );
+        this.raycaster.setFromCamera(this.pointer, this.activeCamera());
+        return this.raycaster.intersectObject(this.cameraHelperRoot, true).find(
+            hit => hit.object?.userData?.factoryType === "camera"
+                && hit.object.userData.factoryId,
+        )?.object || null;
+    }
+
+    _planCameraHit(event) {
+        if (!this.cameraMarkerRoot?.visible) return null;
+        const rect = this.canvas.getBoundingClientRect();
+        this.pointer.set(
+            ((event.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
+            -((event.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+        );
+        this.raycaster.setFromCamera(this.pointer, this.planCamera);
+        return this.raycaster.intersectObject(this.cameraMarkerRoot, true).find(
+            hit => hit.object?.userData?.factoryType === "camera"
+                && hit.object.userData.factoryId,
+        )?.object || null;
+    }
+
     _planLightHit(event) {
         if (!this.lightMarkerRoot?.visible) return null;
         const rect = this.canvas.getBoundingClientRect();
@@ -2742,7 +3161,10 @@ export class Factory3DViewer {
         const editorHits = [
             ...this.raycaster.intersectObject(this.planOverlay, true),
             ...(this.viewMode === "3d"
-                ? this.raycaster.intersectObject(this.lightHelperRoot, true)
+                ? [
+                    ...this.raycaster.intersectObject(this.cameraHelperRoot, true),
+                    ...this.raycaster.intersectObject(this.lightHelperRoot, true),
+                ]
                 : []),
             ...this.raycaster.intersectObject(this.architecture.root, true),
         ]
@@ -2753,6 +3175,13 @@ export class Factory3DViewer {
         );
         if (lightHit) {
             this.options.onLightSelection(lightHit.object.userData.factoryId);
+            return;
+        }
+        const cameraHit = editorHits.find(
+            hit => hit.object?.userData?.factoryType === "camera" && hit.object.userData.factoryId,
+        );
+        if (cameraHit) {
+            this.options.onCameraSelection(cameraHit.object.userData.factoryId);
             return;
         }
         const architectureHit = editorHits.find(hit => hit.object?.userData?.factoryId);
@@ -2802,8 +3231,30 @@ export class Factory3DViewer {
         };
     }
 
+    _emitCameraHelperTransform(final = false) {
+        const cameraId = this.selectedCameraHelperId;
+        const helper = this.cameraHelperRoot?.children?.find(
+            item => item.userData?.factoryId === cameraId,
+        );
+        const camera = this.sceneData?.cameras?.find(item => item.camera_id === cameraId);
+        if (!helper || !camera) return;
+        const origin = this._cameraHelperTransformStart || {
+            position: [...camera.position],
+            target: [...camera.target],
+        };
+        const position = helper.position.toArray();
+        const delta = position.map((value, index) => value - origin.position[index]);
+        const target = origin.target.map((value, index) => value + delta[index]);
+        this.options.onCameraTransform(cameraId, { position, target }, { final });
+    }
+
     _onTransformObjectChange() {
         if (this._suppressTransform) return;
+        if (this.selectedCameraHelperId) {
+            this._emitCameraHelperTransform(!this.transform.dragging);
+            this.invalidate();
+            return;
+        }
         if (this.selectedLightMarkerId) {
             const helper = this.lightHelperRoot?.children?.find(
                 item => item.userData?.factoryId === this.selectedLightMarkerId,
@@ -3454,7 +3905,7 @@ export class Factory3DViewer {
 
     setMode(mode) {
         if (!["translate", "rotate", "scale"].includes(mode)) return;
-        if (this.selectedLightMarkerId && mode !== "translate") return;
+        if ((this.selectedCameraHelperId || this.selectedLightMarkerId) && mode !== "translate") return;
         this.mode = mode;
         this.transform.setMode(mode);
         this.transform.showX = true;
@@ -3572,16 +4023,22 @@ export class Factory3DViewer {
         this.transform.camera = this.activeCamera();
         const selectionEditable = this.selectedGroupId
             ? this._groupEntries().length > 0
+            : this.selectedCameraHelperId
+                ? true
             : this.selectedLightMarkerId
                 ? true
                 : Boolean(this.selectedId) && this.objects.get(this.selectedId)?.data?.locked !== true;
         this.transform.enabled = next === "3d" && selectionEditable;
         this.transformHelper.visible = next === "3d" && Boolean(
-            this.selectedId || this.selectedGroupId || this.selectedLightMarkerId,
+            this.selectedId
+            || this.selectedGroupId
+            || this.selectedCameraHelperId
+            || this.selectedLightMarkerId,
         );
         this.cameraFrame.style.display = next === "3d" && this.cameraFrameVisible ? "block" : "none";
         this.grid.visible = next === "3d" && this.gridVisible;
         this.lightHelperRoot.visible = next === "3d";
+        this.cameraHelperRoot.visible = next === "3d";
         this.architecture.setActiveLevel(this.activeLevelId, next === "plan");
         this.applySceneVisibility(this.sceneData);
         this._syncThreeLights();
@@ -4004,7 +4461,9 @@ export class Factory3DViewer {
 
     setCameraMarkers(cameras = [], selectedIds = null) {
         if (selectedIds) this.selectedCameraMarkerIds = new Set(selectedIds);
+        if (this.transform.object?.userData?.factoryType === "camera") this.transform.detach();
         this._clearPlanRoot(this.cameraMarkerRoot);
+        this._clearPlanRoot(this.cameraHelperRoot);
         const level = this.sceneData?.levels?.find(item => item.level_id === this.activeLevelId);
         const elevation = (Number(level?.elevation) || 0) + 0.045;
         const markerRadius = Math.max(0.08, 9 / Math.max(1, Number(this.planCameraState.zoom) || 24));
@@ -4065,6 +4524,49 @@ export class Factory3DViewer {
             group.add(marker, arrow, frustum);
             this.cameraMarkerRoot.add(group);
         }
+        this.selectedCameraHelperId = this.selectedCameraMarkerIds.size === 1
+            ? Array.from(this.selectedCameraMarkerIds)[0]
+            : "";
+        const selectedCamera = cameras.find(
+            camera => camera.camera_id === this.selectedCameraHelperId,
+        );
+        const selectedOwner = this.sceneData?.architecture?.buildings?.find(
+            building => building.building_id === selectedCamera?.building_id,
+        );
+        if (selectedCamera && selectedOwner?.visible !== false) {
+            if (this.mode !== "translate") this.setMode("translate");
+            const helper = new THREE.Group();
+            helper.name = `${selectedCamera.name || "Camera"} editor helper`;
+            helper.position.fromArray(selectedCamera.position || [0, 1.6, 0]);
+            helper.userData = {
+                factoryType: "camera",
+                factoryId: selectedCamera.camera_id,
+            };
+            const body = new THREE.Mesh(
+                new THREE.OctahedronGeometry(0.13, 0),
+                new THREE.MeshBasicMaterial({
+                    color: "#cfc4f7",
+                    depthTest: false,
+                    depthWrite: false,
+                    transparent: true,
+                    opacity: 0.92,
+                    wireframe: true,
+                    toneMapped: false,
+                }),
+            );
+            body.userData = helper.userData;
+            body.renderOrder = 10_019;
+            helper.add(body);
+            this.cameraHelperRoot.add(helper);
+            if (this.viewMode === "3d") {
+                this.transform.attach(helper);
+                this.transform.enabled = true;
+                this.transformHelper.visible = true;
+            }
+        } else if (!this.selectedId && !this.selectedGroupId && !this.selectedLightMarkerId) {
+            this.transformHelper.visible = false;
+        }
+        this.cameraHelperRoot.visible = this.viewMode === "3d";
         this.invalidate();
     }
 
@@ -4571,8 +5073,7 @@ export class Factory3DViewer {
 
     _updateClipPlanes(radiusHint = 0) {
         const distance = Math.max(this.camera.position.distanceTo(this.controls.target), radiusHint, 0.001);
-        const near = Math.max(0.000001, distance / 100000);
-        const far = Math.max(1000, distance * 100000);
+        const { near, far } = stableCameraClipPlanes(distance);
         const changed = (
             Math.abs(this.camera.near - near) > Math.max(1e-9, near * 1e-5)
             || Math.abs(this.camera.far - far) > Math.max(1e-3, far * 1e-5)
@@ -4735,6 +5236,7 @@ export class Factory3DViewer {
         width = this.captureWidth,
         height = this.captureHeight,
         cameraState = null,
+        waitForRenderable = true,
     } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
         const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 1024)));
@@ -4760,7 +5262,7 @@ export class Factory3DViewer {
             entry => entry.mesh?.visible !== false,
         );
         try {
-            if (hasVisibleObjects) await this._waitForRenderable();
+            if (hasVisibleObjects && waitForRenderable) await this._waitForRenderable();
         } catch (error) {
             captureSkydomeTexture?.dispose?.();
             throw error;
@@ -4777,6 +5279,7 @@ export class Factory3DViewer {
             transform: this.transformHelper.visible,
             bounds: this.selectionBounds.visible,
             multiBounds: this.multiSelectionBoundsRoot.visible,
+            cameraHelpers: this.cameraHelperRoot.visible,
             lightHelpers: this.lightHelperRoot.visible,
             plan: this.planOverlay.visible,
         };
@@ -4785,6 +5288,7 @@ export class Factory3DViewer {
         this.transformHelper.visible = false;
         this.selectionBounds.visible = false;
         this.multiSelectionBoundsRoot.visible = false;
+        this.cameraHelperRoot.visible = false;
         this.lightHelperRoot.visible = false;
         this.planOverlay.visible = false;
         this.architecture.setActiveLevel(this.activeLevelId, false, {
@@ -4823,8 +5327,9 @@ export class Factory3DViewer {
                     this.captureCamera.position.distanceTo(targetVector),
                     0.001,
                 );
-                this.captureCamera.near = Math.max(0.000001, distance / 100000);
-                this.captureCamera.far = Math.max(1000, distance * 100000);
+                const clipPlanes = stableCameraClipPlanes(distance);
+                this.captureCamera.near = clipPlanes.near;
+                this.captureCamera.far = clipPlanes.far;
             } else {
                 this.captureCamera.position.copy(this.camera.position);
                 this.captureCamera.quaternion.copy(this.camera.quaternion);
@@ -4867,6 +5372,7 @@ export class Factory3DViewer {
             this.transformHelper.visible = overlayVisibility.transform;
             this.selectionBounds.visible = overlayVisibility.bounds;
             this.multiSelectionBoundsRoot.visible = overlayVisibility.multiBounds;
+            this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
             this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
             this.planOverlay.visible = overlayVisibility.plan;
             this._capturing = previousCaptureState;
@@ -4888,6 +5394,134 @@ export class Factory3DViewer {
                 blob => blob
                     ? resolve(blob)
                     : reject(new Error("Could not encode the 3D scene preview")),
+                "image/png",
+            );
+        });
+    }
+
+    async captureCameraPreview({ width = 320, height = 180, cameraState = null } = {}) {
+        if (this._disposed) throw new Error("3D viewport has been disposed");
+        if (!cameraState) throw new Error("A saved camera is required for camera preview");
+        const targetWidth = Math.max(64, Math.min(640, Math.round(Number(width) || 320)));
+        const targetHeight = Math.max(64, Math.min(360, Math.round(Number(height) || 180)));
+        const position = finiteVector(cameraState.position, this.camera.position.toArray());
+        const targetState = finiteVector(cameraState.target, this.controls.target.toArray());
+        const up = finiteVector(cameraState.up, this.camera.up.toArray());
+        this.captureCamera.position.fromArray(position);
+        this.captureCamera.up.fromArray(up);
+        if (this.captureCamera.up.lengthSq() < 1e-12) this.captureCamera.up.set(0, 1, 0);
+        this.captureCamera.up.normalize();
+        const targetVector = new THREE.Vector3().fromArray(targetState);
+        if (this.captureCamera.position.distanceToSquared(targetVector) < 1e-12) {
+            targetVector.set(position[0], position[1], position[2] - 1);
+        }
+        this.captureCamera.lookAt(targetVector);
+        const focusDistance = Math.max(this.captureCamera.position.distanceTo(targetVector), 0.001);
+        const clipPlanes = stableCameraClipPlanes(focusDistance);
+        this.captureCamera.near = clipPlanes.near;
+        this.captureCamera.far = clipPlanes.far;
+        this.captureCamera.aspect = targetWidth / targetHeight;
+        const requestedFov = Number(cameraState.fov);
+        this.captureCamera.fov = Number.isFinite(requestedFov)
+            ? Math.max(5, Math.min(120, requestedFov))
+            : this.captureFov;
+        this.captureCamera.updateProjectionMatrix();
+        this.captureCamera.updateMatrixWorld(true);
+
+        const previousCaptureState = this._capturing;
+        const previousRenderTarget = this.renderer.getRenderTarget();
+        const overlayVisibility = {
+            grid: this.grid.visible,
+            transform: this.transformHelper.visible,
+            bounds: this.selectionBounds.visible,
+            multiBounds: this.multiSelectionBoundsRoot.visible,
+            cameraHelpers: this.cameraHelperRoot.visible,
+            lightHelpers: this.lightHelperRoot.visible,
+            plan: this.planOverlay.visible,
+        };
+        const renderTarget = new THREE.WebGLRenderTarget(targetWidth, targetHeight, {
+            format: THREE.RGBAFormat,
+            type: THREE.UnsignedByteType,
+            depthBuffer: true,
+            stencilBuffer: false,
+        });
+        renderTarget.texture.colorSpace = THREE.SRGBColorSpace;
+        const pixels = new Uint8Array(targetWidth * targetHeight * 4);
+        let target = null;
+        let architectureStateChanged = false;
+        this._cancelScheduledFrame();
+        this._capturing = true;
+        try {
+            // Spark may prepare its camera-dependent splat ordering
+            // asynchronously. Keep the visible viewport untouched while it
+            // works; only the final offscreen draw changes editor visibility.
+            await this.spark.update({ scene: this.scene, camera: this.captureCamera });
+            if (this._disposed) throw new Error("3D viewport was disposed while rendering camera preview");
+
+            this.grid.visible = false;
+            this.transformHelper.visible = false;
+            this.selectionBounds.visible = false;
+            this.multiSelectionBoundsRoot.visible = false;
+            this.cameraHelperRoot.visible = false;
+            this.lightHelperRoot.visible = false;
+            this.planOverlay.visible = false;
+            this.architecture.setActiveLevel(this.activeLevelId, false, {
+                hideCeilings: false,
+                hiddenWallId: "",
+            });
+            architectureStateChanged = true;
+
+            this.renderer.setRenderTarget(renderTarget);
+            this.renderer.clear(true, true, true);
+            this.renderer.render(this.scene, this.captureCamera);
+            this.renderer.readRenderTargetPixels(
+                renderTarget,
+                0,
+                0,
+                targetWidth,
+                targetHeight,
+                pixels,
+            );
+
+            target = document.createElement("canvas");
+            target.width = targetWidth;
+            target.height = targetHeight;
+            const context = target.getContext("2d", { alpha: false });
+            if (!context) throw new Error("Could not create the camera preview canvas");
+            const image = context.createImageData(targetWidth, targetHeight);
+            const rowSize = targetWidth * 4;
+            for (let row = 0; row < targetHeight; row += 1) {
+                const sourceOffset = (targetHeight - row - 1) * rowSize;
+                image.data.set(pixels.subarray(sourceOffset, sourceOffset + rowSize), row * rowSize);
+            }
+            context.putImageData(image, 0, 0);
+        } finally {
+            this.renderer.setRenderTarget(previousRenderTarget);
+            renderTarget.dispose();
+            this.grid.visible = overlayVisibility.grid;
+            this.transformHelper.visible = overlayVisibility.transform;
+            this.selectionBounds.visible = overlayVisibility.bounds;
+            this.multiSelectionBoundsRoot.visible = overlayVisibility.multiBounds;
+            this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
+            this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
+            this.planOverlay.visible = overlayVisibility.plan;
+            this._capturing = previousCaptureState;
+            if (architectureStateChanged) {
+                this._cutawaySignature = "";
+                if (this._capturing) {
+                    this.architecture.setActiveLevel(this.activeLevelId, this.viewMode === "plan");
+                } else {
+                    this._syncViewportCutaway(true);
+                }
+            }
+            this.spark.setDirty?.();
+            this.invalidate();
+        }
+        return await new Promise((resolve, reject) => {
+            target.toBlob(
+                blob => blob
+                    ? resolve(blob)
+                    : reject(new Error("Could not encode the camera preview")),
                 "image/png",
             );
         });
@@ -4961,6 +5595,7 @@ export class Factory3DViewer {
             transform: this.transformHelper.visible,
             bounds: this.selectionBounds.visible,
             multiBounds: this.multiSelectionBoundsRoot.visible,
+            cameraHelpers: this.cameraHelperRoot.visible,
             lightHelpers: this.lightHelperRoot.visible,
             plan: this.planOverlay.visible,
         };
@@ -4969,6 +5604,7 @@ export class Factory3DViewer {
         this.transformHelper.visible = false;
         this.selectionBounds.visible = false;
         this.multiSelectionBoundsRoot.visible = false;
+        this.cameraHelperRoot.visible = false;
         this.lightHelperRoot.visible = false;
         this.planOverlay.visible = false;
         this.architecture.setActiveLevel(this.activeLevelId, false, {
@@ -4990,8 +5626,9 @@ export class Factory3DViewer {
             const focusDistance = Math.max(position.distanceTo(targetState), 0.001);
             this.captureCamera.aspect = 1;
             this.captureCamera.fov = 90;
-            this.captureCamera.near = Math.max(0.000001, focusDistance / 100000);
-            this.captureCamera.far = Math.max(1000, focusDistance * 100000);
+            const clipPlanes = stableCameraClipPlanes(focusDistance);
+            this.captureCamera.near = clipPlanes.near;
+            this.captureCamera.far = clipPlanes.far;
             this.captureCamera.updateProjectionMatrix();
             this.renderer.setPixelRatio(1);
             this.renderer.setSize(faceSize, faceSize, false);
@@ -5034,6 +5671,7 @@ export class Factory3DViewer {
             this.transformHelper.visible = overlayVisibility.transform;
             this.selectionBounds.visible = overlayVisibility.bounds;
             this.multiSelectionBoundsRoot.visible = overlayVisibility.multiBounds;
+            this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
             this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
             this.planOverlay.visible = overlayVisibility.plan;
             this._capturing = previousCaptureState;
@@ -5352,6 +5990,10 @@ export class Factory3DViewer {
         this._qualityRestoreTimer = 0;
         this._pendingLightingEntries.clear();
         this._qualityInteractionReasons.clear();
+        this._cancelCameraInsetSchedule();
+        this._cameraInsetRequest += 1;
+        if (this._cameraInsetObjectURL) URL.revokeObjectURL(this._cameraInsetObjectURL);
+        this._cameraInsetObjectURL = "";
         this._cancelScheduledFrame();
         this._resizeObserver?.disconnect();
         this._intersectionObserver?.disconnect();
@@ -5374,7 +6016,8 @@ export class Factory3DViewer {
         this._clearPlanRoot(this.lightMarkerRoot);
         this._clearPlanRoot(this.architectureHandleRoot);
         this._clearPlanRoot(this.lightHelperRoot);
-        this.scene.remove(this.lightHelperRoot);
+        this._clearPlanRoot(this.cameraHelperRoot);
+        this.scene.remove(this.lightHelperRoot, this.cameraHelperRoot);
         this.scene.remove(this.planOverlay);
         for (const entry of this.objects.values()) this._disposeEntry(entry);
         this.objects.clear();
@@ -5391,6 +6034,7 @@ export class Factory3DViewer {
         this.renderer.dispose();
         this.planMarqueeElement?.remove();
         this.cameraFrame?.remove();
+        this.cameraInset?.remove();
         this.canvas.remove();
     }
 }

@@ -551,6 +551,95 @@
     font: .68em var(--i3-mono);
     letter-spacing: .03em;
 }
+.vnccs-i3s__camera-inset {
+    position: absolute;
+    right: 14px;
+    bottom: 14px;
+    z-index: 7;
+    width: clamp(190px, 30%, 300px);
+    max-width: calc(100% - 28px);
+    overflow: hidden;
+    border: 1px solid rgba(184,169,232,.42);
+    border-radius: 10px;
+    background: rgba(9,8,13,.96);
+    box-shadow: 0 14px 36px rgba(0,0,0,.42), 0 0 0 1px rgba(255,255,255,.04) inset;
+    color: var(--i3-text);
+}
+.vnccs-i3s__camera-inset[hidden] { display: none; }
+.vnccs-i3s__camera-inset-head {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 3px 4px 3px 10px;
+    border-bottom: 1px solid var(--i3-line);
+    background: linear-gradient(90deg, rgba(184,169,232,.11), rgba(255,255,255,.025));
+}
+.vnccs-i3s__camera-inset-title {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--i3-lavender);
+    font-size: .69em;
+    font-weight: 700;
+    letter-spacing: .04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.vnccs-i3s__camera-inset-actions { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 3px; }
+.vnccs-i3s__camera-inset-open,
+.vnccs-i3s__camera-inset-refresh,
+.vnccs-i3s__camera-inset-close {
+    min-height: 26px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--i3-dim);
+    cursor: pointer;
+    font: 600 .66em var(--i3-font);
+}
+.vnccs-i3s__camera-inset-open { padding: 0 8px; }
+.vnccs-i3s__camera-inset-refresh,
+.vnccs-i3s__camera-inset-close { width: 26px; padding: 0; font-size: .9em; }
+.vnccs-i3s__camera-inset-refresh svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.vnccs-i3s__camera-inset-open:hover,
+.vnccs-i3s__camera-inset-refresh:hover,
+.vnccs-i3s__camera-inset-close:hover { background: rgba(184,169,232,.12); color: var(--i3-text); }
+.vnccs-i3s__camera-inset-open:focus-visible,
+.vnccs-i3s__camera-inset-refresh:focus-visible,
+.vnccs-i3s__camera-inset-close:focus-visible { outline: 2px solid var(--i3-pink); outline-offset: -2px; }
+.vnccs-i3s__camera-inset-media {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: radial-gradient(circle at 50% 45%, rgba(184,169,232,.1), transparent 60%), #07060a;
+}
+.vnccs-i3s__camera-inset-media img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.vnccs-i3s__camera-inset-status {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 12px;
+    background: rgba(7,6,10,.7);
+    color: var(--i3-dim);
+    font: .68em var(--i3-mono);
+    text-align: center;
+    opacity: 0;
+    pointer-events: none;
+}
+.vnccs-i3s__camera-inset.is-loading .vnccs-i3s__camera-inset-status,
+.vnccs-i3s__camera-inset.has-error .vnccs-i3s__camera-inset-status { opacity: 1; }
+.vnccs-i3s__camera-inset.is-loading .vnccs-i3s__camera-inset-media::after {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 35%, rgba(255,255,255,.06) 48%, transparent 61%);
+    content: "";
+    animation: vnccs-i3s-camera-preview 1.2s ease-in-out infinite;
+    pointer-events: none;
+}
+@keyframes vnccs-i3s-camera-preview { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .vnccs-i3s__camera-inset.is-loading .vnccs-i3s__camera-inset-media::after { animation: none; } }
 .vnccs-i3s__viewer-host.is-loading::after {
     content: "Loading Gaussian scene…";
     position: absolute;
@@ -911,6 +1000,8 @@
 .vnccs-i3s__material-budget-note { padding: 7px 9px; border-left: 3px solid rgba(0,214,143,.5); background: rgba(0,214,143,.045); color: var(--i3-dim); font-size: .69em; line-height: 1.45; }
 .vnccs-i3s__object { display: grid; grid-template-columns: 36px minmax(0,1fr) auto; gap: 6px; align-items: center; min-height: 46px; padding: 4px 5px; border: 1px solid var(--i3-line); border-radius: 8px; background: rgba(255,255,255,.022); cursor: grab; transition: opacity .15s ease, border-color .15s ease, background .15s ease, transform .15s ease; }
 .vnccs-i3s__skydome-object { cursor: pointer; border-color: rgba(184,169,232,.22); background: linear-gradient(90deg, rgba(184,169,232,.07), rgba(255,255,255,.018)); }
+.vnccs-i3s__camera-object { cursor: pointer; border-color: rgba(184,169,232,.2); background: linear-gradient(90deg, rgba(184,169,232,.06), rgba(255,255,255,.018)); }
+.vnccs-i3s__camera-thumb { color: #cfc4f7; }
 .vnccs-i3s__light-object { cursor: pointer; border-color: rgba(255,241,214,.18); background: linear-gradient(90deg, rgba(255,241,214,.055), rgba(255,255,255,.018)); }
 .vnccs-i3s__skydome-object .vnccs-i3s__object-thumb { object-fit: cover; }
 .vnccs-i3s__object:hover { border-color: var(--i3-line-strong); background: rgba(255,255,255,.045); }
