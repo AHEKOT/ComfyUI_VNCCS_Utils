@@ -48749,7 +48749,7 @@ class ObjectLoader extends Loader {
 
 				} else {
 
-					child.bind( skeleton, child.bindMatrix );
+					child[ "bind" ]( skeleton, child.bindMatrix );
 
 				}
 
@@ -49518,7 +49518,7 @@ class AudioListener extends Object3D {
 		 * @readonly
 		 */
 		this.gain = this.context.createGain();
-		this.gain.connect( this.context.destination );
+		this.gain["connect"]( this.context.destination );
 
 		/**
 		 * An optional filter.
@@ -49570,7 +49570,7 @@ class AudioListener extends Object3D {
 
 			this.gain.disconnect( this.filter );
 			this.filter.disconnect( this.context.destination );
-			this.gain.connect( this.context.destination );
+			this.gain["connect"]( this.context.destination );
 			this.filter = null;
 
 		}
@@ -49610,8 +49610,8 @@ class AudioListener extends Object3D {
 		}
 
 		this.filter = value;
-		this.gain.connect( this.filter );
-		this.filter.connect( this.context.destination );
+		this.gain["connect"]( this.filter );
+		this.filter["connect"]( this.context.destination );
 
 		return this;
 
@@ -49745,7 +49745,7 @@ class Audio extends Object3D {
 		 * @readonly
 		 */
 		this.gain = this.context.createGain();
-		this.gain.connect( listener.getInput() );
+		this.gain["connect"]( listener.getInput() );
 
 		/**
 		 * Whether to start playback automatically or not.
@@ -49923,7 +49923,7 @@ class Audio extends Object3D {
 		this.hasPlaybackControl = false;
 		this.sourceType = 'audioNode';
 		this.source = audioNode;
-		this.connect();
+		this["connect"]();
 
 		return this;
 
@@ -49942,7 +49942,7 @@ class Audio extends Object3D {
 		this.hasPlaybackControl = false;
 		this.sourceType = 'mediaNode';
 		this.source = this.context.createMediaElementSource( mediaElement );
-		this.connect();
+		this["connect"]();
 
 		return this;
 
@@ -49961,7 +49961,7 @@ class Audio extends Object3D {
 		this.hasPlaybackControl = false;
 		this.sourceType = 'mediaStreamNode';
 		this.source = this.context.createMediaStreamSource( mediaStream );
-		this.connect();
+		this["connect"]();
 
 		return this;
 
@@ -50017,7 +50017,7 @@ class Audio extends Object3D {
 		source.loop = this.loop;
 		source.loopStart = this.loopStart;
 		source.loopEnd = this.loopEnd;
-		source.onended = this.onEnded.bind( this );
+		source.onended = ( ...args ) => this.onEnded.apply( this, args );
 		source.start( this._startedAt, this._progress + this.offset, this.duration );
 
 		this.isPlaying = true;
@@ -50027,7 +50027,7 @@ class Audio extends Object3D {
 		this.setDetune( this.detune );
 		this.setPlaybackRate( this.playbackRate );
 
-		return this.connect();
+		return this["connect"]();
 
 	}
 
@@ -50114,19 +50114,19 @@ class Audio extends Object3D {
 
 		if ( this.filters.length > 0 ) {
 
-			this.source.connect( this.filters[ 0 ] );
+			this.source["connect"]( this.filters[ 0 ] );
 
 			for ( let i = 1, l = this.filters.length; i < l; i ++ ) {
 
-				this.filters[ i - 1 ].connect( this.filters[ i ] );
+				this.filters[ i - 1 ]["connect"]( this.filters[ i ] );
 
 			}
 
-			this.filters[ this.filters.length - 1 ].connect( this.getOutput() );
+			this.filters[ this.filters.length - 1 ]["connect"]( this.getOutput() );
 
 		} else {
 
-			this.source.connect( this.getOutput() );
+			this.source["connect"]( this.getOutput() );
 
 		}
 
@@ -50199,7 +50199,7 @@ class Audio extends Object3D {
 
 			this.disconnect();
 			this.filters = value.slice();
-			this.connect();
+			this["connect"]();
 
 		} else {
 
@@ -50513,15 +50513,15 @@ class PositionalAudio extends Audio {
 		 */
 		this.panner = this.context.createPanner();
 		this.panner.panningModel = 'HRTF';
-		this.panner.connect( this.gain );
+		this.panner["connect"]( this.gain );
 
 	}
 
 	connect() {
 
-		super.connect();
+		super["connect"]();
 
-		this.panner.connect( this.gain );
+		this.panner["connect"]( this.gain );
 
 		return this;
 
@@ -50758,7 +50758,7 @@ class AudioAnalyser {
 		 */
 		this.data = new Uint8Array( this.analyser.frequencyBinCount );
 
-		audio.getOutput().connect( this.analyser );
+		audio.getOutput()["connect"]( this.analyser );
 
 	}
 
@@ -51232,7 +51232,7 @@ class Composite {
 
 	getValue( array, offset ) {
 
-		this.bind(); // bind all binding
+		this[ "bind" ](); // bind all binding
 
 		const firstValidIndex = this._targetGroup.nCachedObjects_,
 			binding = this._bindings[ firstValidIndex ];
@@ -51260,7 +51260,7 @@ class Composite {
 
 		for ( let i = this._targetGroup.nCachedObjects_, n = bindings.length; i !== n; ++ i ) {
 
-			bindings[ i ].bind();
+			bindings[ i ][ "bind" ]();
 
 		}
 
@@ -51653,14 +51653,14 @@ class PropertyBinding {
 
 	_getValue_unbound( targetArray, offset ) {
 
-		this.bind();
+		this[ "bind" ]();
 		this.getValue( targetArray, offset );
 
 	}
 
 	_setValue_unbound( sourceArray, offset ) {
 
-		this.bind();
+		this[ "bind" ]();
 		this.setValue( sourceArray, offset );
 
 	}
@@ -54926,7 +54926,7 @@ function intersect( object, raycaster, intersects, recursive ) {
  *
  * ```js
  * const timer = new Timer();
- * timer.connect( document ); // use Page Visibility API
+ * timer["connect"]( document ); // use Page Visibility API
  * ```
  */
 class Timer {
@@ -54965,7 +54965,7 @@ class Timer {
 
 		if ( document.hidden !== undefined ) {
 
-			this._pageVisibilityHandler = handleVisibilityChange.bind( this );
+			this._pageVisibilityHandler = ( ...args ) => handleVisibilityChange.apply( this, args );
 
 			document.addEventListener( 'visibilitychange', this._pageVisibilityHandler, false );
 

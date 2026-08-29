@@ -76,6 +76,7 @@ class LoadSAM3DBodyModel:
                             repo_id="jetjodh/sam-3d-body-dinov3",
                             local_dir=model_path,
                             tqdm_class=progress.SnapshotDownloadTqdm,
+                            token=False,
                         )
                     except Exception as progress_exc:
                         print(
@@ -85,6 +86,7 @@ class LoadSAM3DBodyModel:
                         snapshot_download(
                             repo_id="jetjodh/sam-3d-body-dinov3",
                             local_dir=model_path,
+                            token=False,
                         )
                 print(f"[SAM3DBody] Download complete.")
                 progress.update("Step 2/6: SAM 3D Body model download complete.", 36)

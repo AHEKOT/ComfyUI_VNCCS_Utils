@@ -69,9 +69,16 @@ then:
 - duplicate it as an independently transformable scene object;
 - remove it from its object card after a graphical confirmation.
 
-Choose **Import PLY** above the scene-object list to add an existing Gaussian
-PLY directly to the active scene. Factory validates the complete payload,
-normalizes its coordinate convention, stores it as a persistent scene object,
+Choose **Import 3D** above the scene-object list to add an existing model to
+the active scene. Factory supports GLB/glTF, FBX, OBJ with MTL, STL, and
+Gaussian PLY. Select the model together with its `.bin`, material, and texture
+files, or select one ZIP package when the asset uses nested folders. PNG,
+JPEG, WebP, BMP, GIF, and TGA texture resources are stored with the model.
+Imported mesh models are normalized to a practical viewport size while
+retaining their hierarchy, materials, UVs, skinning, and embedded resources.
+
+Gaussian PLY import continues to validate the complete payload, normalizes its
+coordinate convention, stores it as a persistent scene object,
 and immediately loads its derived SPLAT into the viewport. The imported object
 is selected and framed automatically. This accepts binary little-endian
 Gaussian PLY files with position, DC color, opacity, scale, and quaternion
@@ -90,8 +97,9 @@ selecting a scene object restores the editor camera that was active before the
 saved camera was opened. A scene supports up to 32 saved cameras.
 
 Scene selection, generation settings, current and saved cameras, transform
-mode, grid, and selected object are stored in the workflow. Scene data and
-Gaussian assets remain under `ComfyUI/output/vnccs_3d_factory/scenes/`.
+mode, grid, and selected object are stored in the workflow. Scene data,
+Gaussian assets, imported models, and their textures remain under
+`ComfyUI/output/vnccs_3d_factory/scenes/`.
 
 The selected reference image is copied into the active scene as soon as it is
 chosen. The workflow stores its scene URL and metadata rather than a temporary
@@ -103,10 +111,32 @@ executes the node, that snapshot is reconciled with the persistent scene before
 the scene render is captured, so a just-moved object cannot be omitted by a
 pending UI autosave.
 
+## Room materials
+
+Rooms keep independent material assignments for their perimeter walls, floor,
+and ceiling. Select a room and open **Manage textures and mapping** to choose or
+create each material in one dialog. Materials support base color/albedo,
+roughness, metalness, opacity, UV scale, UV offset, and UV rotation. Optional
+normal and roughness maps add lighting detail without adding geometry.
+
+Only materials assigned to architecture are loaded by the viewport. Texture
+objects with the same source and UV settings are reused, while optional detail
+maps remain unloaded until assigned. Scene packages and model-library scene
+entries preserve all room material assignments and texture maps.
+
 ## Scene export
 
-**Scene PLY** bakes every visible object's position, rotation, and uniform
-scale into one Gaussian model. The file contains real Gaussian centers,
+The **Export** panel can render a 2:1 equirectangular 360° PNG from any saved
+camera. Choose the camera and either the 2048 × 1024 draft size or the
+4096 × 2048 high-quality size. The saved camera position is the panorama
+viewpoint and its forward direction defines the center of the image. Panorama
+capture is generated locally by the viewport and does not alter the editor
+camera or scene.
+
+**Scene PLY** bakes every visible Gaussian object's position, rotation, and
+uniform scale into one Gaussian model. Imported mesh objects remain part of the
+saved scene and rendered previews, but are not converted into Gaussians. The
+file contains real Gaussian centers,
 covariance transforms, colors, spherical-harmonic data, and opacity—not a
 triangle mesh or a renamed placeholder file.
 
@@ -116,11 +146,12 @@ and vertical FOV. The shared Scene Export dimensions and aspect ratio are
 included once in the same metadata. PLY is the only public object and scene
 export format.
 
-## Gaussian model library
+## Model library
 
 The **Library** button in the scene header opens the persistent 3D Factory
-library. An individual object is stored with its canonical Gaussian PLY and
-metadata. A scene package additionally keeps every object, layer group,
+library. An individual object is stored with its canonical Gaussian PLY or its
+original mesh model, material files, and texture resources. A scene package
+additionally keeps every object, layer group,
 visibility flag, transform, render size, current and saved cameras, and
 lighting setup. SPLAT is a disposable internal viewport derivative and is not
 duplicated inside `.vnccs3d` packages.

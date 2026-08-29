@@ -3,7 +3,6 @@
 # This software may be used and distributed in accordance with
 # the terms of the DINOv3 License Agreement.
 
-import os
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -53,9 +52,7 @@ def get_user_checkpoint_path(
     if checkpoint_path is None:
         return None
 
-    username = getattr(os, "environ").get("USER")
-    assert username is not None
-    return checkpoint_path / username
+    return checkpoint_path / "vnccs"
 
 
 def get_slurm_qos(cluster_type: Optional[ClusterType] = None) -> Optional[str]:

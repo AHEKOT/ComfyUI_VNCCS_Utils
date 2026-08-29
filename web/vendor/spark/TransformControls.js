@@ -351,15 +351,15 @@ class TransformControls extends Controls {
 		this._quaternionStart = new Quaternion();
 		this._scaleStart = new Vector3();
 
-		this._getPointer = getPointer.bind( this );
-		this._onPointerDown = onPointerDown.bind( this );
-		this._onPointerHover = onPointerHover.bind( this );
-		this._onPointerMove = onPointerMove.bind( this );
-		this._onPointerUp = onPointerUp.bind( this );
+		this._getPointer = ( ...args ) => getPointer.apply( this, args );
+		this._onPointerDown = ( ...args ) => onPointerDown.apply( this, args );
+		this._onPointerHover = ( ...args ) => onPointerHover.apply( this, args );
+		this._onPointerMove = ( ...args ) => onPointerMove.apply( this, args );
+		this._onPointerUp = ( ...args ) => onPointerUp.apply( this, args );
 
 		if ( domElement !== null ) {
 
-			this.connect( domElement );
+			this["connect"]( domElement );
 
 		}
 
@@ -367,7 +367,7 @@ class TransformControls extends Controls {
 
 	connect( element ) {
 
-		super.connect( element );
+		super["connect"]( element );
 
 		this.domElement.addEventListener( 'pointerdown', this._onPointerDown );
 		this.domElement.addEventListener( 'pointermove', this._onPointerHover );

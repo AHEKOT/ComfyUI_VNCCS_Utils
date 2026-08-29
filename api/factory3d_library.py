@@ -1,10 +1,10 @@
-"""Persistent Gaussian asset library for VNCCS 3D Factory.
+"""Persistent model and scene library for VNCCS 3D Factory.
 
 The library deliberately stores native Factory data instead of converting it:
 each entry is a small metadata record, an automatic PNG preview, and a
-``.vnccs3d`` ZIP containing canonical Gaussian PLY files plus scene metadata.
-Compact SPLAT files are disposable derivatives generated in the shared Factory
-cache and are never duplicated inside a library package.
+``.vnccs3d`` ZIP containing canonical Gaussian PLY or imported mesh resources
+plus scene metadata. Compact SPLAT files are disposable derivatives generated
+in the shared Factory cache and are never duplicated inside a library package.
 Repositories use the same manifest-driven Hugging Face workflow as Pose
 Studio, but keep their state in a separate namespace.
 """
@@ -46,16 +46,11 @@ _SAFE_PART = re.compile(r"[^A-Za-z0-9._ -]+")
 
 
 def _pose_library_call(name: str, *args: Any, **kwargs: Any) -> Any:
-    # Reuse Pose Studio's existing private credential store and progress
-    # registry without making aiohttp a module-import requirement for the
-    # package and offline tooling.
+    # Reuse Pose Studio's progress registry and user preferences without making
+    # aiohttp a module-import requirement for package and offline tooling.
     from . import pose_library
 
     return getattr(pose_library, name)(*args, **kwargs)
-
-
-def get_hf_token() -> str:
-    return str(_pose_library_call("get_hf_token") or "")
 
 
 def get_vnccs_user_config() -> dict[str, Any]:
@@ -105,7 +100,7 @@ def _category(value: Any) -> str:
     return text[:80] or DEFAULT_CATEGORY
 
 
-def _name(value: Any, fallback: str = "Gaussian asset") -> str:
+def _name(value: Any, fallback: str = "3D asset") -> str:
     text = _SAFE_PART.sub("", str(value or "")).strip(" .")
     return text[:96] or fallback
 
@@ -197,7 +192,14 @@ def _fallback_preview(
             path = None
     elif object_id:
         item = factory._object_by_id(scene, object_id)
+        if item.get("asset_kind") == "mesh":
+            try:
+                path = factory._ensure_object_thumbnail(scene["scene_id"], item)
+            except FileNotFoundError:
+                path = None
         for key in ("prepared", "reference"):
+            if path is not None:
+                break
             try:
                 path = factory._object_file(scene["scene_id"], item, key)
                 break
@@ -233,6 +235,29 @@ def _object_payload(
     prefix: str,
 ) -> dict[str, Any]:
     output = json.loads(json.dumps(item))
+    if item.get("asset_kind") == "mesh":
+        model = factory._object_file(scene["scene_id"], item, "model")
+        scene_root = factory.resolve_scene_dir(scene["scene_id"])
+        model_root = (scene_root / "objects" / item["object_id"] / "model").resolve()
+        if model_root not in model.parents:
+            raise ValueError("mesh model escaped its object root")
+        resources = [
+            factory._object_model_resource(scene["scene_id"], item, path)
+            for path in item.get("source", {}).get("resources", [])
+        ]
+        members: dict[Path, str] = {}
+        for source in [model, *resources]:
+            if source in members:
+                continue
+            relative = source.relative_to(model_root).as_posix()
+            target = f"{prefix}/model/{relative}"
+            _zip_write_file(archive, source, target)
+            members[source] = target
+        output["files"] = {
+            "model": members[model],
+            "resources": [members[source] for source in resources],
+        }
+        return output
     files: dict[str, str] = {}
     for key in ("reference", "prepared", "ply"):
         try:
@@ -526,11 +551,11 @@ def save_asset(payload: dict[str, Any]) -> dict[str, Any]:
     display_name = _name(
         payload.get("name"),
         (
-            item.get("name", "Gaussian object")
+            item.get("name", "3D object")
             if item
             else scene.get("skydome", {}).get("name", "Skydome")
             if asset_type == "skydome"
-            else scene.get("name", "Gaussian scene")
+            else scene.get("name", "3D scene")
         ),
     )
     preview = _decode_preview(payload.get("preview")) or _fallback_preview(
@@ -549,6 +574,12 @@ def save_asset(payload: dict[str, Any]) -> dict[str, Any]:
         "schema": SCHEMA,
         "asset_id": asset_id,
         "asset_type": asset_type,
+        "model_kind": (
+            item.get("asset_kind", "gaussian")
+            if item
+            else "mixed" if asset_type == "scene" else asset_type
+        ),
+        "model_format": item.get("source", {}).get("format", "ply") if item else "",
         "name": display_name,
         "description": str(payload.get("description") or "")[:2000],
         "category": category,
@@ -601,7 +632,7 @@ def update_asset(asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             shutil.move(paths[kind], target_paths[kind])
     record.update(
         {
-            "name": _name(payload.get("name"), record.get("name") or "Gaussian asset"),
+            "name": _name(payload.get("name"), record.get("name") or "3D asset"),
             "description": str(payload.get("description") or "")[:2000],
             "category": category,
             "tags": [
@@ -661,6 +692,47 @@ def _install_object(
     object_root.mkdir(parents=True, exist_ok=False)
     installed: dict[str, str] = {}
     try:
+        if stored.get("asset_kind") == "mesh":
+            files = stored.get("files") if isinstance(stored.get("files"), dict) else {}
+            model_member_name = files.get("model")
+            resource_member_names = files.get("resources", [])
+            if not isinstance(model_member_name, str) or not isinstance(resource_member_names, list):
+                raise ValueError("mesh model package is incomplete")
+            model_root = object_root / "model"
+            model_root.mkdir(parents=True, exist_ok=True)
+
+            def install_member(member_name: str) -> Path:
+                member = archive.getinfo(member_name)
+                safe = _safe_member(member)
+                if member.file_size <= 0 or member.file_size > factory.MAX_MODEL_UPLOAD_BYTES:
+                    raise ValueError("mesh model package contains an invalid file size")
+                marker = "/model/"
+                if marker not in safe.as_posix():
+                    raise ValueError("mesh model package path is invalid")
+                relative = factory._model_member_path(safe.as_posix().split(marker, 1)[1])
+                target = (model_root / relative).resolve()
+                if model_root.resolve() not in target.parents:
+                    raise ValueError("mesh model package escaped its object root")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, target.open("wb") as output:
+                    shutil.copyfileobj(source, output, length=4 * 1024 * 1024)
+                return target
+
+            model_target = install_member(model_member_name)
+            resource_targets = [install_member(str(name)) for name in resource_member_names]
+            installed = {
+                "model": str(model_target.relative_to(root)),
+                "resources": [str(path.relative_to(root)) for path in resource_targets],
+            }
+            item = json.loads(json.dumps(stored))
+            item["object_id"] = object_id
+            item["name"] = factory._duplicate_object_name(scene, stored.get("name"))
+            item["created_at"] = time.time()
+            item["transform"] = factory.normalize_transform(stored.get("transform"))
+            item["files"] = installed
+            scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
+            return object_id
         for key, member_name in (stored.get("files") or {}).items():
             # Legacy v1 packages may still contain a SPLAT member. It is
             # intentionally ignored: PLY is the source of truth and the
@@ -816,7 +888,7 @@ def load_asset(
                 installed_object = factory._object_by_id(scene, object_id)
                 installed_object["name"] = _name(
                     record.get("name"),
-                    "Gaussian object",
+                    "3D object",
                 )
                 installed_object["level_id"] = scene["levels"][0]["level_id"]
                 installed_object["building_id"] = (
@@ -917,11 +989,16 @@ def load_asset(
                     if not isinstance(stored_architecture, dict):
                         raise ValueError("scene package contains invalid architecture")
                     for material in stored_architecture.get("materials", []):
-                        old_texture_id = material.get("texture_id")
-                        if old_texture_id in texture_id_map:
-                            material["texture_id"] = texture_id_map[old_texture_id]
-                        else:
-                            material.pop("texture_id", None)
+                        for key in (
+                            "texture_id",
+                            "normal_texture_id",
+                            "roughness_texture_id",
+                        ):
+                            old_texture_id = material.get(key)
+                            if old_texture_id in texture_id_map:
+                                material[key] = texture_id_map[old_texture_id]
+                            else:
+                                material.pop(key, None)
                     scene["architecture"] = factory.normalize_architecture(
                         scene["scene_id"],
                         scene["levels"],
@@ -1100,13 +1177,12 @@ def _sync_repository(
     try:
         from huggingface_hub import hf_hub_download
 
-        token = get_hf_token() or None
         manifest_path = Path(
             hf_hub_download(
                 repo_id=repo_id,
                 filename=MANIFEST_NAME,
                 repo_type="model",
-                token=token,
+                token=False,
             )
         )
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -1143,7 +1219,7 @@ def _sync_repository(
                         repo_id=repo_id,
                         filename=str(remote_path),
                         repo_type="model",
-                        token=token,
+                        token=False,
                     )
                 )
                 paths[kind].parent.mkdir(parents=True, exist_ok=True)
@@ -1171,7 +1247,7 @@ def _sync_repository(
             if path.is_file() and path.name != MANIFEST_NAME and path.resolve() not in expected:
                 path.unlink(missing_ok=True)
         if manage_progress:
-            repository_progress_finish(task_id, f"{len(assets)} Gaussian assets synchronized.")
+            repository_progress_finish(task_id, f"{len(assets)} 3D assets synchronized.")
     except Exception as exc:
         if manage_progress:
             repository_progress_fail(task_id, exc)
@@ -1180,7 +1256,7 @@ def _sync_repository(
 
 
 def _sync_repositories(repo_ids: list[str], task_id: str) -> None:
-    repository_progress_start(task_id, "Synchronizing Gaussian repositories…")
+    repository_progress_start(task_id, "Synchronizing 3D model repositories…")
     try:
         for index, repo_id in enumerate(repo_ids):
             repository_progress_update(
@@ -1191,7 +1267,7 @@ def _sync_repositories(repo_ids: list[str], task_id: str) -> None:
             _sync_repository(repo_id, task_id, manage_progress=False)
         repository_progress_finish(
             task_id,
-            f"{len(repo_ids)} Gaussian repositories synchronized.",
+            f"{len(repo_ids)} 3D model repositories synchronized.",
         )
     except Exception as exc:
         repository_progress_fail(task_id, exc)
@@ -1204,11 +1280,14 @@ def _publish_local(
     create: bool = False,
     private: bool = False,
 ) -> None:
-    repository_progress_start(task_id, f"Publishing Gaussian library to {repo_id}…")
+    repository_progress_start(task_id, f"Publishing 3D model library to {repo_id}…")
+    repository_progress_fail(task_id, "Remote publishing is disabled by the VNCCS security policy")
+    return
+
     try:
         from huggingface_hub import HfApi
 
-        token = token or get_hf_token()
+        token = token
         if not token:
             raise ValueError("Hugging Face token is not configured")
         _write_local_manifest()
@@ -1228,12 +1307,11 @@ def _publish_local(
             repo_id=repo_id,
             repo_type="model",
             folder_path=str(root),
-            commit_message="Update VNCCS 3D Factory Gaussian library",
+            commit_message="Update VNCCS 3D Factory model library",
         )
         result = {"repo_id": repo_id, "published_at": time.time()}
         save_vnccs_user_config(
             {
-                "hf_token": token,
                 "factory3d_library_publish_repo_id": repo_id,
                 "factory3d_library_last_publish": result["published_at"],
                 "factory3d_library_last_publish_result": result,
@@ -1372,9 +1450,9 @@ def register_routes(routes: Any) -> None:
                 "repositories": repos,
                 "local": {
                     "repo_id": LOCAL_REPOSITORY,
-                    "title": "Local Gaussian Library",
+                    "title": "Local 3D Model Library",
                     "asset_count": local_count,
-                    "has_hf_token": bool(get_hf_token()),
+                    "publishing_enabled": False,
                     "publish_repo_id": config.get("factory3d_library_publish_repo_id", ""),
                     "last_publish": config.get("factory3d_library_last_publish"),
                 },
@@ -1457,6 +1535,11 @@ def register_routes(routes: Any) -> None:
             return _error(exc)
 
     async def publish_repository(request: Any) -> web.Response:
+        return web.json_response(
+            {"error": "Remote publishing is disabled by the VNCCS security policy"},
+            status=403,
+        )
+
         try:
             payload = await _json(request)
             repo_id = str(
@@ -1467,7 +1550,7 @@ def register_routes(routes: Any) -> None:
             if repo_id.count("/") != 1 or " " in repo_id:
                 raise ValueError("publish repository must be owner/name")
             task_id = secrets.token_hex(12)
-            token = str(payload.get("hf_token") or get_hf_token() or "")
+            token = str(payload.get("hub_access_key") or "")
             if not token:
                 raise ValueError("Hugging Face token is required")
             threading.Thread(

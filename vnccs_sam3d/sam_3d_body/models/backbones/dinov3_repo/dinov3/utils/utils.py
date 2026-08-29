@@ -4,9 +4,7 @@
 # the terms of the DINOv3 License Agreement.
 
 import logging
-import os
 import random
-import subprocess
 from typing import Callable, List, Optional, Tuple
 
 import numpy as np
@@ -89,31 +87,11 @@ def fix_random_seeds(seed: int = 31):
 
 
 def get_sha() -> str:
-    cwd = os.path.dirname(os.path.abspath(__file__))
-
-    def _run(command):
-        return subprocess.check_output(command, cwd=cwd).decode("ascii").strip()
-
-    sha = "N/A"
-    diff = "clean"
-    branch = "N/A"
-    try:
-        sha = _run(["git", "rev-parse", "HEAD"])
-        subprocess.check_output(["git", "diff"], cwd=cwd)
-        diff = _run(["git", "diff-index", "HEAD"])
-        diff = "has uncommited changes" if diff else "clean"
-        branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
-    except Exception:
-        pass
-    message = f"sha: {sha}, status: {diff}, branch: {branch}"
-    return message
+    return "sha: unavailable, status: unavailable, branch: unavailable"
 
 
 def get_conda_env() -> Tuple[Optional[str], Optional[str]]:
-    env = getattr(os, "environ")
-    conda_env_name = env.get("CONDA_DEFAULT_ENV")
-    conda_env_path = env.get("CONDA_PREFIX")
-    return conda_env_name, conda_env_path
+    return None, None
 
 
 def count_parameters(module: nn.Module) -> int:

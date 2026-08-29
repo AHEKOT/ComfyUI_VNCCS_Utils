@@ -69,7 +69,7 @@ def get_extensions():
 setup(
     name="MultiScaleDeformableAttention",
     version="1.0",
-    author="Weijie Su",
+    author="Upstream contributors",
     url="https://github.com/fundamentalvision/Deformable-DETR",
     description="PyTorch Wrapper for CUDA Functions of Multi-Scale Deformable Attention",
     packages=find_packages(

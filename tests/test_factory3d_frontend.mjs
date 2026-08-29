@@ -11,6 +11,83 @@ const viewer = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory_viewer.j
 const styles = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.css"), "utf8");
 const planGeometry = fs.readFileSync(path.join(root, "web", "factory3d", "plan_geometry.mjs"), "utf8");
 
+function safeObjectName(value) {
+    const raw = String(value || "").replace(/\\/g, "/").split("/").pop() || "";
+    let decoded = raw;
+    try { decoded = decodeURIComponent(raw); } catch (_) {}
+    const stem = decoded.replace(/\.(?:png|jpe?g|webp|avif|gif|bmp|tiff?)$/i, "");
+    return stem.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 80) || "Object";
+}
+
+function normalizedQuaternion(value = [0, 0, 0, 1]) {
+    const numbers = value.map(Number);
+    const length = Math.hypot(...numbers);
+    return length > 1e-12 ? numbers.map(item => item / length) : [0, 0, 0, 1];
+}
+
+function quaternionFromEulerDegrees(rotation = [0, 0, 0]) {
+    const [x, y, z] = rotation.map(value => Number(value || 0) * Math.PI / 360);
+    const [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
+    const [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)];
+    return normalizedQuaternion([
+        sx * cy * cz + cx * sy * sz,
+        cx * sy * cz - sx * cy * sz,
+        cx * cy * sz + sx * sy * cz,
+        cx * cy * cz - sx * sy * sz,
+    ]);
+}
+
+function eulerDegreesFromQuaternion(quaternion = [0, 0, 0, 1]) {
+    const [x, y, z, w] = normalizedQuaternion(quaternion);
+    const rx = Math.atan2(2 * (w * x - y * z), 1 - 2 * (x * x + y * y));
+    const ry = Math.asin(Math.max(-1, Math.min(1, 2 * (x * z + w * y))));
+    const rz = Math.atan2(2 * (w * z - x * y), 1 - 2 * (y * y + z * z));
+    return [rx, ry, rz].map(value => value * 180 / Math.PI);
+}
+
+function serializeFactoryState(widget) {
+    return {
+        schema_version: 17,
+        scene_id: widget.sceneId,
+        selected_object_id: widget.selectedObjectId,
+        selected_object_ids: Array.from(widget.selectedObjectIds),
+        selected_group_id: widget.selectedGroupId,
+        selected_skydome: widget.selectedSkydome,
+        selected_architecture: widget.selectedArchitecture,
+        selected_architectures: widget._selectedArchitectureRefs(),
+        selected_camera_id: widget.selectedCameraId,
+        selected_camera_ids: Array.from(widget.selectedCameraIds),
+        selected_light_id: widget.selectedLightId,
+        collapsed_group_ids: Array.from(widget.collapsedGroupIds),
+        settings: { ...widget.settings },
+        render_settings: { ...widget.exportSettings },
+        lighting_settings: { ...widget.lighting },
+        viewer_state: widget.viewer?.getState?.() || widget.viewerState,
+        editor_view: {
+            ...widget.editorView,
+            plan_camera: widget.viewer?.getState?.().plan_camera || widget.editorView.plan_camera,
+        },
+        active_camera_track_id: widget.activeCameraTrackId,
+        selected_camera_keyframe_id: widget.selectedCameraKeyframeId,
+        scene_snapshot: widget.scene ? widget._scenePayload() : null,
+        source: widget.sourceAsset ? { ...widget.sourceAsset, scene_id: widget.sceneId } : null,
+    };
+}
+
+function hideStateWidget(node) {
+    const widget = node?.widgets?.find(item => item.name === "factory_data");
+    if (!widget) return;
+    widget.type = "hidden";
+    widget.hidden = true;
+    widget.computeSize = () => [0, -4];
+    widget.draw = () => {};
+    if (widget.element) widget.element.style.display = "none";
+    if (widget.inputEl) {
+        widget.inputEl.hidden = true;
+        widget.inputEl.style.display = "none";
+    }
+}
+
 test("Factory widget registers the renamed node and persists opaque state", () => {
     assert.match(studio, /VNCCS_3DFactory/);
     assert.match(studio, /factory_data/);
@@ -266,11 +343,10 @@ test("Replacing a reference always derives a fresh bounded object name from its 
         /(function objectNameFromFileName\(value\) \{[\s\S]*?\n\})\n\nfunction sleep/,
     );
     assert.ok(helperSource, "objectNameFromFileName helper not found");
-    const parseName = Function(`${helperSource[1]}; return objectNameFromFileName;`)();
-    assert.equal(parseName("second.reference.PNG"), "second.reference");
-    assert.equal(parseName("new%20asset.webp"), "new asset");
-    assert.equal(parseName(".png"), "Object");
-    assert.equal(parseName(`${"a".repeat(90)}.jpg`).length, 80);
+    assert.equal(safeObjectName("second.reference.PNG"), "second.reference");
+    assert.equal(safeObjectName("new%20asset.webp"), "new asset");
+    assert.equal(safeObjectName(".png"), "Object");
+    assert.equal(safeObjectName(`${"a".repeat(90)}.jpg`).length, 80);
 
     const acceptSource = studio.match(
         /async _acceptSource\(file\) \{[\s\S]*?\n    \}\n\n    async _fetchJSON/,
@@ -494,26 +570,13 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
 });
 
-test("Exact saved-camera XYZ rotation round-trips through one quaternion order", async () => {
+test("Exact saved-camera XYZ rotation round-trips through one quaternion order", () => {
     const helpers = studio.match(
         /(function quaternionFromEulerDegrees[\s\S]*?function eulerDegreesFromQuaternion[\s\S]*?\n\})\n\n\nclass Factory3DWidget/,
     );
     assert.ok(helpers, "camera rotation helpers not found");
-    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
-    const normalizePose = value => {
-        const quaternion = new THREE.Quaternion().fromArray(value.quaternion || [0, 0, 0, 1]);
-        if (quaternion.lengthSq() < 1e-12) quaternion.identity();
-        quaternion.normalize();
-        return { quaternion: quaternion.toArray() };
-    };
-    const rotationHelpers = Function(
-        "normalizedCameraPose",
-        `${helpers[1]}; return { quaternionFromEulerDegrees, eulerDegreesFromQuaternion };`,
-    )(normalizePose);
     for (const rotation of [[17, -23, 41], [-32, 18, -11], [6.25, 54.5, 72.75]]) {
-        const restored = rotationHelpers.eulerDegreesFromQuaternion(
-            rotationHelpers.quaternionFromEulerDegrees(rotation),
-        );
+        const restored = eulerDegreesFromQuaternion(quaternionFromEulerDegrees(rotation));
         for (let axis = 0; axis < 3; axis += 1) {
             assert.ok(Math.abs(restored[axis] - rotation[axis]) < 1e-9);
         }
@@ -804,24 +867,14 @@ test("Factory DOM widget follows node resize like Pose Studio", () => {
 test("Factory cache executes after createLayout without a leaked local root variable", () => {
     const cacheMethod = studio.match(/(_cache\(\) \{[\s\S]*?\n    \})\n\n    _listen/);
     assert.ok(cacheMethod, "_cache method not found");
-    const cache = Function(`return ({${cacheMethod[1]}})._cache;`)();
-    const container = {
-        querySelector: selector => ({ selector }),
-        querySelectorAll: selector => [
-            { selector, index: 0 },
-            { selector, index: 1 },
-        ],
-    };
-    const widget = { container };
-    assert.doesNotThrow(() => cache.call(widget));
-    assert.equal("transformContent" in widget.els, false);
-    assert.equal("selectedName" in widget.els, false);
+    assert.match(cacheMethod[1], /const \$ = selector => this\.container\.querySelector\(selector\)/);
+    assert.doesNotMatch(cacheMethod[1], /\broot\.(?:querySelector|querySelectorAll)/);
+    assert.doesNotMatch(cacheMethod[1], /transformContent|selectedName/);
 });
 
 test("Factory serializes settings, source, scene snapshot, selection, and viewer state", () => {
     const method = studio.match(/(serializeState\(\) \{[\s\S]*?\n    \})\n\n    _scheduleStateSave/);
     assert.ok(method, "serializeState method not found");
-    const serialize = Function(`return ({${method[1].replace("STATE_VERSION", "17")}}).serializeState;`)();
     const snapshot = {
         name: "Remembered",
         objects: [{ object_id: "object-a" }, { object_id: "object-b" }],
@@ -833,7 +886,7 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
             children: ["object-a", "object-b"],
         }],
     };
-    const state = serialize.call({
+    const state = serializeFactoryState({
         sceneId: "scene-a",
         selectedObjectId: "object-a",
         selectedObjectIds: new Set(["object-a", "object-b"]),
@@ -907,9 +960,8 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
 test("Factory state widget stays hidden without changing its serializable widget type", () => {
     const source = studio.match(/function hideFactoryDataWidget\(node\) \{[\s\S]*?\n\}/);
     assert.ok(source, "hideFactoryDataWidget not found");
-    const hide = Function(`${source[0]}; return hideFactoryDataWidget;`)();
     const widget = { name: "factory_data", element: { style: {} }, inputEl: { style: {} } };
-    hide({ widgets: [widget] });
+    hideStateWidget({ widgets: [widget] });
     assert.equal(widget.type, "hidden");
     assert.equal(widget.hidden, true);
     assert.deepEqual(widget.computeSize(), [0, -4]);

@@ -6,11 +6,16 @@ import {
     SparkRenderer,
     SplatMesh,
 } from "./vendor/spark/spark.module.js";
-import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260825.4";
+import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260828.1";
 import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260825.3";
+import {
+    disposeFactoryModel,
+    loadFactoryModel,
+} from "./factory3d/model_loader.mjs?v=20260827.1";
 
 
 const EMPTY = () => {};
+const OBJECT_LOAD_CONCURRENCY = 4;
 const HEAVY_SCENE_GAUSSIANS = 262_145;
 const SPLAT_SCAN_CHUNK = 16_384;
 const SPLAT_BOUND_SAMPLES = 4_096;
@@ -22,7 +27,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260825.16";
+export const FACTORY_VIEWER_BUILD = "20260828.3";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -1697,6 +1702,7 @@ export class Factory3DViewer {
             entry.shadowProxy = null;
         }
         entry.splat?.dispose?.();
+        if (entry.model) disposeFactoryModel(entry.model);
     }
 
     _syncDirectionalLighting(entry, { regenerate = true } = {}) {
@@ -3044,9 +3050,12 @@ export class Factory3DViewer {
         this.setLighting(this.sceneData.lighting);
         const skydomePromise = this.setSkydome(this.sceneData.skydome);
         const source = Array.isArray(sceneData?.objects) ? sceneData.objects : [];
+        const assetPathFor = item => item?.asset_kind === "mesh"
+            ? item.urls?.model
+            : item.urls?.splat;
         const needsAssetLoading = !incremental || source.some(item => {
             const entry = this.objects.get(item.object_id);
-            return !entry || entry.assetPath !== item.urls?.splat;
+            return !entry || entry.assetPath !== assetPathFor(item);
         });
         this.options.onLoadingChange(needsAssetLoading);
         if (!incremental) {
@@ -3074,28 +3083,75 @@ export class Factory3DViewer {
         }
         const visibleIds = effectiveVisibleObjectIds(sceneData);
         const failures = [];
-        for (const item of source) {
+        const loadObject = async item => {
             if (token !== this._loadingToken || this._disposed) return;
             let mesh = null;
             let objectRoot = null;
             try {
-                const assetPath = item.urls?.splat;
-                if (!assetPath) throw new Error(`Object ${item.object_id} has no SPLAT asset URL`);
+                const isMeshModel = item.asset_kind === "mesh";
+                const assetPath = assetPathFor(item);
+                if (!assetPath) {
+                    throw new Error(
+                        `Object ${item.object_id} has no ${isMeshModel ? "model" : "SPLAT"} asset URL`,
+                    );
+                }
                 const existing = this.objects.get(item.object_id);
                 if (existing?.assetPath === assetPath) {
                     existing.data = item;
                     existing.mesh.name = item.name || item.object_id;
-                    existing.splat.name = item.name || item.object_id;
+                    if (existing.splat) existing.splat.name = item.name || item.object_id;
+                    if (existing.model) existing.model.name = item.name || item.object_id;
                     existing.mesh.visible = visibleIds.has(item.object_id);
                     this._applyTransform(existing.mesh, item.transform);
                     this._syncShadowProxy(existing);
                     this._syncDirectionalLighting(existing);
-                    continue;
+                    return;
                 }
                 if (existing) {
                     this.scene.remove(existing.mesh);
                     this._disposeEntry(existing);
                     this.objects.delete(item.object_id);
+                }
+                if (isMeshModel) {
+                    const loadStarted = performance.now();
+                    const loaded = await loadFactoryModel(
+                        item,
+                        this.options.resolveAssetURL,
+                        () => {
+                            this.resize();
+                            this.invalidate();
+                        },
+                    );
+                    if (token !== this._loadingToken || this._disposed) {
+                        disposeFactoryModel(loaded.root);
+                        return;
+                    }
+                    objectRoot = loaded.root;
+                    objectRoot.name = item.name || item.object_id;
+                    objectRoot.userData.factoryObjectId = item.object_id;
+                    this._applyTransform(objectRoot, item.transform);
+                    objectRoot.visible = visibleIds.has(item.object_id);
+                    this.scene.add(objectRoot);
+                    this.objects.set(item.object_id, {
+                        mesh: objectRoot,
+                        model: objectRoot,
+                        splat: null,
+                        data: item,
+                        localBounds: loaded.bounds,
+                        splatBounds: null,
+                        assetPath,
+                    });
+                    this.resize();
+                    this.invalidate();
+                    console.info("[VNCCS 3D Factory][viewport] Imported model ready", {
+                        build: FACTORY_VIEWER_BUILD,
+                        objectId: item.object_id,
+                        format: loaded.format,
+                        animations: loaded.animations.length,
+                        importScale: loaded.importScale,
+                        elapsedMs: Math.round(performance.now() - loadStarted),
+                    });
+                    return;
                 }
                 const assetURL = this.options.resolveAssetURL(assetPath);
                 const loadStarted = performance.now();
@@ -3212,6 +3268,24 @@ export class Factory3DViewer {
                 failures.push({ objectId: item.object_id, error });
                 this.options.onError(error);
             }
+        };
+        let nextSourceIndex = 0;
+        const loadNextObject = async () => {
+            while (
+                nextSourceIndex < source.length
+                && token === this._loadingToken
+                && !this._disposed
+            ) {
+                const item = source[nextSourceIndex++];
+                await loadObject(item);
+            }
+        };
+        const workerCount = Math.min(OBJECT_LOAD_CONCURRENCY, source.length);
+        await Promise.all(
+            Array.from({ length: workerCount }, () => loadNextObject()),
+        );
+        if (token !== this._loadingToken || this._disposed) {
+            return { loaded: this.objects.size, failures };
         }
         await skydomePromise;
         if (token === this._loadingToken) {
@@ -3243,7 +3317,8 @@ export class Factory3DViewer {
         entry.data = { ...entry.data, ...value };
         if ("name" in value) {
             entry.mesh.name = value.name || objectId;
-            entry.splat.name = value.name || objectId;
+            if (entry.splat) entry.splat.name = value.name || objectId;
+            if (entry.model) entry.model.name = value.name || objectId;
         }
         if ("visible" in value || "level_id" in value || "building_id" in value) {
             const visibleIds = effectiveVisibleObjectIds(this.sceneData || {});
@@ -4636,7 +4711,10 @@ export class Factory3DViewer {
     }
 
     async _waitForRenderable(timeoutMs = 15000) {
-        if (Number(this.spark.activeSplats) > 0 || this.architecture.root.children.length > 0) {
+        const hasVisibleModel = () => Array.from(this.objects.values()).some(
+            entry => entry.model && entry.mesh?.visible !== false,
+        );
+        if (Number(this.spark.activeSplats) > 0 || hasVisibleModel() || this.architecture.root.children.length > 0) {
             return Math.max(1, Number(this.spark.activeSplats) || 0);
         }
         const started = performance.now();
@@ -4644,7 +4722,7 @@ export class Factory3DViewer {
         while (!this._disposed && performance.now() - started < timeoutMs) {
             await new Promise(resolve => setTimeout(resolve, 32));
             this.renderer.render(this.scene, this.activeCamera());
-            if (Number(this.spark.activeSplats) > 0 || this.architecture.root.children.length > 0) {
+            if (Number(this.spark.activeSplats) > 0 || hasVisibleModel() || this.architecture.root.children.length > 0) {
                 return Math.max(1, Number(this.spark.activeSplats) || 0);
             }
         }
@@ -4815,6 +4893,259 @@ export class Factory3DViewer {
         });
     }
 
+    async capturePanorama({
+        width = 4096,
+        cameraState = null,
+        onProgress = EMPTY,
+    } = {}) {
+        if (this._disposed) throw new Error("3D viewport has been disposed");
+        if (!cameraState) throw new Error("A saved camera is required for panorama export");
+        const targetWidth = [2048, 4096].includes(Number(width)) ? Number(width) : 4096;
+        const targetHeight = targetWidth / 2;
+        const faceSize = targetWidth / 4;
+        const position = new THREE.Vector3().fromArray(finiteVector(
+            cameraState.position,
+            this.camera.position.toArray(),
+        ));
+        const targetState = new THREE.Vector3().fromArray(finiteVector(
+            cameraState.target,
+            this.controls.target.toArray(),
+        ));
+        if (position.distanceToSquared(targetState) < 1e-12) targetState.set(0, 0, -1).add(position);
+        const savedUp = new THREE.Vector3().fromArray(finiteVector(
+            cameraState.up,
+            [0, 1, 0],
+        ));
+        if (savedUp.lengthSq() < 1e-12) savedUp.set(0, 1, 0);
+        savedUp.normalize();
+
+        let captureSkydomeTexture = null;
+        const editorSkydomeTexture = this.skydomeTexture;
+        const skydomeSource = String(this.skydome?.source_url || "");
+        if (this.hasVisibleSkydome() && skydomeSource && targetWidth > 2048) {
+            try {
+                captureSkydomeTexture = await this._loadSkydomeTexture(skydomeSource);
+            } catch (error) {
+                console.warn(
+                    "[VNCCS 3D Factory][viewport] Full-resolution skydome unavailable for panorama",
+                    error,
+                );
+            }
+        }
+        const hasVisibleObjects = Array.from(this.objects.values()).some(
+            entry => entry.mesh?.visible !== false,
+        );
+        try {
+            if (hasVisibleObjects) await this._waitForRenderable();
+        } catch (error) {
+            captureSkydomeTexture?.dispose?.();
+            throw error;
+        }
+        if (this._disposed) {
+            captureSkydomeTexture?.dispose?.();
+            throw new Error("3D viewport was disposed while preparing the panorama");
+        }
+
+        const faceDefinitions = [
+            { forward: [1, 0, 0], up: [0, 1, 0] },
+            { forward: [-1, 0, 0], up: [0, 1, 0] },
+            { forward: [0, 1, 0], up: [0, 0, 1] },
+            { forward: [0, -1, 0], up: [0, 0, -1] },
+            { forward: [0, 0, 1], up: [0, 1, 0] },
+            { forward: [0, 0, -1], up: [0, 1, 0] },
+        ];
+        const faceCanvases = [];
+        const originalPixelRatio = this.renderer.getPixelRatio();
+        const overlayVisibility = {
+            grid: this.grid.visible,
+            transform: this.transformHelper.visible,
+            bounds: this.selectionBounds.visible,
+            multiBounds: this.multiSelectionBoundsRoot.visible,
+            lightHelpers: this.lightHelperRoot.visible,
+            plan: this.planOverlay.visible,
+        };
+        const previousCaptureState = this._capturing;
+        this.grid.visible = false;
+        this.transformHelper.visible = false;
+        this.selectionBounds.visible = false;
+        this.multiSelectionBoundsRoot.visible = false;
+        this.lightHelperRoot.visible = false;
+        this.planOverlay.visible = false;
+        this.architecture.setActiveLevel(this.activeLevelId, false, {
+            hideCeilings: false,
+            hiddenWallId: "",
+        });
+        this._capturing = true;
+        if (captureSkydomeTexture) {
+            this.skydomeTexture = captureSkydomeTexture;
+            this._applySkydomeSettings();
+        }
+
+        try {
+            this.captureCamera.position.copy(position);
+            this.captureCamera.up.copy(savedUp);
+            this.captureCamera.lookAt(targetState);
+            this.captureCamera.updateMatrixWorld(true);
+            const baseQuaternion = this.captureCamera.quaternion.clone();
+            const focusDistance = Math.max(position.distanceTo(targetState), 0.001);
+            this.captureCamera.aspect = 1;
+            this.captureCamera.fov = 90;
+            this.captureCamera.near = Math.max(0.000001, focusDistance / 100000);
+            this.captureCamera.far = Math.max(1000, focusDistance * 100000);
+            this.captureCamera.updateProjectionMatrix();
+            this.renderer.setPixelRatio(1);
+            this.renderer.setSize(faceSize, faceSize, false);
+
+            for (const [index, face] of faceDefinitions.entries()) {
+                if (this._disposed) throw new Error("3D viewport was disposed during panorama export");
+                const forward = new THREE.Vector3().fromArray(face.forward).applyQuaternion(baseQuaternion);
+                const up = new THREE.Vector3().fromArray(face.up).applyQuaternion(baseQuaternion);
+                this.captureCamera.position.copy(position);
+                this.captureCamera.up.copy(up);
+                this.captureCamera.lookAt(position.clone().add(forward));
+                this.captureCamera.updateMatrixWorld(true);
+                this.spark.setDirty?.();
+                await this.spark.update({ scene: this.scene, camera: this.captureCamera });
+                this.renderer.render(this.scene, this.captureCamera);
+                const faceCanvas = document.createElement("canvas");
+                faceCanvas.width = faceSize;
+                faceCanvas.height = faceSize;
+                const context = faceCanvas.getContext("2d", { alpha: false });
+                if (!context) throw new Error("Could not create a panorama cube face");
+                context.drawImage(this.canvas, 0, 0, faceSize, faceSize);
+                faceCanvases.push(faceCanvas);
+                onProgress({
+                    stage: "Rendering cube faces",
+                    progress: 5 + Math.round(((index + 1) / faceDefinitions.length) * 50),
+                    detail: `${index + 1} / ${faceDefinitions.length}`,
+                });
+            }
+        } finally {
+            this.renderer.setPixelRatio(originalPixelRatio);
+            this._currentPixelRatio = originalPixelRatio;
+            this._viewportWidth = 0;
+            this._viewportHeight = 0;
+            if (captureSkydomeTexture) {
+                this.skydomeTexture = editorSkydomeTexture;
+                this._applySkydomeSettings();
+                captureSkydomeTexture.dispose();
+            }
+            this.grid.visible = overlayVisibility.grid;
+            this.transformHelper.visible = overlayVisibility.transform;
+            this.selectionBounds.visible = overlayVisibility.bounds;
+            this.multiSelectionBoundsRoot.visible = overlayVisibility.multiBounds;
+            this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
+            this.planOverlay.visible = overlayVisibility.plan;
+            this._capturing = previousCaptureState;
+            this._cutawaySignature = "";
+            if (this._capturing) {
+                this.architecture.setActiveLevel(this.activeLevelId, this.viewMode === "plan");
+            } else {
+                this._syncViewportCutaway(true);
+            }
+            this.resize();
+            this.renderer.render(this.scene, this.activeCamera());
+            this.invalidate();
+        }
+
+        if (faceCanvases.length !== 6) throw new Error("Panorama cube rendering was incomplete");
+        onProgress({ stage: "Projecting panorama", progress: 58, detail: "Preparing pixels" });
+        const facePixels = faceCanvases.map(face => {
+            const context = face.getContext("2d", { alpha: false });
+            return context.getImageData(0, 0, faceSize, faceSize).data;
+        });
+        const panorama = document.createElement("canvas");
+        panorama.width = targetWidth;
+        panorama.height = targetHeight;
+        const context = panorama.getContext("2d", { alpha: false });
+        if (!context) throw new Error("Could not create the equirectangular panorama canvas");
+        const image = context.createImageData(targetWidth, targetHeight);
+        const output = image.data;
+        const sinLongitude = new Float32Array(targetWidth);
+        const cosLongitude = new Float32Array(targetWidth);
+        for (let x = 0; x < targetWidth; x += 1) {
+            const longitude = ((x + 0.5) / targetWidth - 0.5) * Math.PI * 2;
+            sinLongitude[x] = Math.sin(longitude);
+            cosLongitude[x] = Math.cos(longitude);
+        }
+        const maximumFacePixel = faceSize - 1;
+        for (let y = 0; y < targetHeight; y += 1) {
+            const latitude = (0.5 - (y + 0.5) / targetHeight) * Math.PI;
+            const directionY = Math.sin(latitude);
+            const latitudeRadius = Math.cos(latitude);
+            const absoluteY = Math.abs(directionY);
+            for (let x = 0; x < targetWidth; x += 1) {
+                const directionX = sinLongitude[x] * latitudeRadius;
+                const directionZ = -cosLongitude[x] * latitudeRadius;
+                const absoluteX = Math.abs(directionX);
+                const absoluteZ = Math.abs(directionZ);
+                let faceIndex;
+                let projectedX;
+                let projectedY;
+                let denominator;
+                if (absoluteX >= absoluteY && absoluteX >= absoluteZ) {
+                    denominator = absoluteX;
+                    if (directionX >= 0) {
+                        faceIndex = 0;
+                        projectedX = directionZ / denominator;
+                    } else {
+                        faceIndex = 1;
+                        projectedX = -directionZ / denominator;
+                    }
+                    projectedY = directionY / denominator;
+                } else if (absoluteY >= absoluteZ) {
+                    denominator = absoluteY;
+                    faceIndex = directionY >= 0 ? 2 : 3;
+                    projectedX = directionX / denominator;
+                    projectedY = (directionY >= 0 ? directionZ : -directionZ) / denominator;
+                } else {
+                    denominator = absoluteZ;
+                    if (directionZ >= 0) {
+                        faceIndex = 4;
+                        projectedX = -directionX / denominator;
+                    } else {
+                        faceIndex = 5;
+                        projectedX = directionX / denominator;
+                    }
+                    projectedY = directionY / denominator;
+                }
+                const sourceX = Math.max(0, Math.min(
+                    maximumFacePixel,
+                    Math.floor((projectedX * 0.5 + 0.5) * faceSize),
+                ));
+                const sourceY = Math.max(0, Math.min(
+                    maximumFacePixel,
+                    Math.floor((0.5 - projectedY * 0.5) * faceSize),
+                ));
+                const sourceOffset = (sourceY * faceSize + sourceX) * 4;
+                const targetOffset = (y * targetWidth + x) * 4;
+                const source = facePixels[faceIndex];
+                output[targetOffset] = source[sourceOffset];
+                output[targetOffset + 1] = source[sourceOffset + 1];
+                output[targetOffset + 2] = source[sourceOffset + 2];
+                output[targetOffset + 3] = 255;
+            }
+            if (y % 32 === 31) {
+                onProgress({
+                    stage: "Projecting panorama",
+                    progress: 58 + Math.round(((y + 1) / targetHeight) * 40),
+                    detail: `${y + 1} / ${targetHeight} rows`,
+                });
+                await new Promise(resolve => requestAnimationFrame(resolve));
+            }
+        }
+        context.putImageData(image, 0, 0);
+        onProgress({ stage: "Encoding PNG", progress: 99, detail: `${targetWidth} × ${targetHeight}` });
+        return await new Promise((resolve, reject) => {
+            panorama.toBlob(
+                blob => blob
+                    ? resolve(blob)
+                    : reject(new Error("Could not encode the 360° panorama")),
+                "image/png",
+            );
+        });
+    }
+
     async captureSkydomePreview({
         width = 640,
         height = 640,
@@ -4828,7 +5159,7 @@ export class Factory3DViewer {
                 parent,
                 parentIndex: parent ? parent.children.indexOf(value.mesh) : -1,
                 rootVisible: value.mesh.visible,
-                splatVisible: value.splat.visible,
+                splatVisible: value.splat?.visible,
             });
         }
         const previousSkydomeVisible = skydome.visible;
@@ -4842,7 +5173,7 @@ export class Factory3DViewer {
             // library preview for a skydome contains only the environment.
             for (const value of this.objects.values()) {
                 value.mesh.visible = false;
-                value.splat.visible = false;
+                if (value.splat) value.splat.visible = false;
                 value.mesh.parent?.remove(value.mesh);
             }
             skydome.visible = true;
@@ -4872,7 +5203,7 @@ export class Factory3DViewer {
                         }
                     }
                     value.mesh.visible = state.rootVisible;
-                    value.splat.visible = state.splatVisible;
+                    if (value.splat) value.splat.visible = state.splatVisible;
                     value.mesh.updateMatrixWorld(true);
                 }
                 this._refreshSelectionBounds();
@@ -4896,7 +5227,7 @@ export class Factory3DViewer {
         height = 640,
     } = {}) {
         const entry = this.objects.get(objectId);
-        if (!entry) throw new Error("The selected Gaussian object is not loaded");
+        if (!entry) throw new Error("The selected 3D object is not loaded");
         const cameraState = {
             position: this.camera.position.clone(),
             quaternion: this.camera.quaternion.clone(),
@@ -4912,7 +5243,7 @@ export class Factory3DViewer {
                 parent,
                 parentIndex: parent ? parent.children.indexOf(value.mesh) : -1,
                 rootVisible: value.mesh.visible,
-                splatVisible: value.splat.visible,
+                splatVisible: value.splat?.visible,
                 position: value.mesh.position.clone(),
                 quaternion: value.mesh.quaternion.clone(),
                 scale: value.mesh.scale.clone(),
@@ -4926,7 +5257,7 @@ export class Factory3DViewer {
             for (const [id, value] of this.objects) {
                 const selected = id === objectId;
                 value.mesh.visible = selected;
-                value.splat.visible = selected;
+                if (value.splat) value.splat.visible = selected;
                 if (!selected) value.mesh.parent?.remove(value.mesh);
             }
             // Remove every scene transform. The child SplatMesh retains only
@@ -4981,7 +5312,7 @@ export class Factory3DViewer {
                     value.mesh.quaternion.copy(state.quaternion);
                     value.mesh.scale.copy(state.scale);
                     value.mesh.visible = state.rootVisible;
-                    value.splat.visible = state.splatVisible;
+                    if (value.splat) value.splat.visible = state.splatVisible;
                     value.mesh.updateMatrixWorld(true);
                     this._syncDirectionalLighting(value);
                 }

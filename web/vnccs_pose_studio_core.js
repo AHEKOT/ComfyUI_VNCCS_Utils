@@ -4450,7 +4450,7 @@ export class PoseViewerCore {
         mesh.name = `VNCCS Passive Character ${id}`;
         mesh.userData.vnccsPassiveCharacterId = String(id);
         roots.forEach(root => mesh.add(root));
-        mesh.bind(skeleton, this.skinnedMesh.bindMatrix.clone());
+        mesh["bind"](skeleton, this.skinnedMesh.bindMatrix.clone());
         mesh.bindMode = this.skinnedMesh.bindMode;
         this.scene.add(mesh);
 

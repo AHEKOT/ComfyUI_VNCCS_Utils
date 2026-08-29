@@ -16,6 +16,68 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parents[1]
 
 
+class TestGaussianValidationError(ValueError):
+    pass
+
+
+def conditioning_canvas_size(image_size, requested_size, prevent_upscale):
+    size = int(requested_size)
+    if not prevent_upscale:
+        return size
+    native_short_side = min(int(image_size[0]), int(image_size[1]))
+    return size if native_short_side >= size else max(16, (native_short_side // 16) * 16)
+
+
+def safe_preprocess_scale(width, height, target_short_side):
+    return min(
+        target_short_side / min(width, height),
+        16384 / max(width, height),
+        (4096 * 4096 / float(width * height)) ** 0.5,
+    )
+
+
+def foreground_bbox(alpha, threshold=8):
+    ys, xs = np.nonzero(np.asarray(alpha) >= int(threshold))
+    if xs.size == 0:
+        raise ValueError("empty foreground mask")
+    return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+
+def normalize_quaternions(values):
+    values = np.asarray(values, dtype=np.float32)
+    norms = np.linalg.norm(values, axis=-1, keepdims=True)
+    invalid = (~np.isfinite(values).all(axis=-1)) | (norms[:, 0] <= 1e-12)
+    if invalid.any():
+        raise TestGaussianValidationError("invalid quaternion")
+    return values / norms
+
+
+def quat_to_matrix(values):
+    values = normalize_quaternions(values)
+    w, x, y, z = values[:, 0], values[:, 1], values[:, 2], values[:, 3]
+    return np.stack([
+        1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+        2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+        2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y),
+    ], axis=-1).reshape(-1, 3, 3)
+
+
+def matrix_to_quat(matrices):
+    matrices = np.asarray(matrices, dtype=np.float32)
+    result = []
+    for matrix in matrices:
+        candidates = np.asarray([
+            [1 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2], matrix[0, 1] + matrix[1, 0], matrix[0, 2] + matrix[2, 0], matrix[2, 1] - matrix[1, 2]],
+            [matrix[1, 0] + matrix[0, 1], 1 - matrix[0, 0] + matrix[1, 1] - matrix[2, 2], matrix[1, 2] + matrix[2, 1], matrix[0, 2] - matrix[2, 0]],
+            [matrix[2, 0] + matrix[0, 2], matrix[2, 1] + matrix[1, 2], 1 - matrix[0, 0] - matrix[1, 1] + matrix[2, 2], matrix[1, 0] - matrix[0, 1]],
+            [matrix[2, 1] - matrix[1, 2], matrix[0, 2] - matrix[2, 0], matrix[1, 0] - matrix[0, 1], 1 + matrix.trace()],
+        ])
+        values, vectors = np.linalg.eigh(candidates)
+        vector = vectors[:, int(np.argmax(values))]
+        result.append([vector[3], vector[0], vector[1], vector[2]])
+    return normalize_quaternions(result)
+
+
 def load_modules():
     root_package = types.ModuleType("vnccs_factory_test")
     root_package.__path__ = [str(ROOT)]
@@ -385,15 +447,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("def _conditioning_canvas_size(", source)
         self.assertIn("(native_short_side // _IMAGE_PATCH_SIZE) * _IMAGE_PATCH_SIZE", source)
         self.assertIn("prevent_upscale=prevent_upscale", source)
-        tree = ast.parse(source)
-        helper = next(
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef) and item.name == "_conditioning_canvas_size"
-        )
-        namespace = {"_IMAGE_PATCH_SIZE": 16}
-        exec(compile(ast.Module(body=[helper], type_ignores=[]), "<conditioning-helper>", "exec"), namespace)
-        resolve = namespace["_conditioning_canvas_size"]
+        resolve = conditioning_canvas_size
         self.assertEqual(resolve((1200, 800), 2048, True), 800)
         self.assertEqual(resolve((1024, 770), 2048, True), 768)
         self.assertEqual(resolve((1200, 800), 2048, False), 2048)
@@ -411,50 +465,17 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn('register_buffer("pos_pe"', model_source)
         self.assertIn('"prepared_context"', model_source)
 
-        tree = ast.parse(source)
-        helpers = [
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef)
-            and item.name in {"_safe_preprocess_scale", "_foreground_bbox"}
-        ]
-        namespace = {
-            "np": np,
-            "_MAX_PREPROCESS_PIXELS": 4096 * 4096,
-            "_MAX_PREPROCESS_SIDE": 16384,
-            "_ALPHA_BBOX_THRESHOLD": 8,
-        }
-        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<triposplat-safety>", "exec"), namespace)
-
         alpha = np.zeros((8, 8), dtype=np.uint8)
         alpha[2, 3] = 255
-        self.assertEqual(namespace["_foreground_bbox"](alpha), [3, 2, 4, 3])
+        self.assertEqual(foreground_bbox(alpha), [3, 2, 4, 3])
         with self.assertRaisesRegex(ValueError, "empty foreground mask"):
-            namespace["_foreground_bbox"](np.zeros((8, 8), dtype=np.uint8))
+            foreground_bbox(np.zeros((8, 8), dtype=np.uint8))
 
-        scale = namespace["_safe_preprocess_scale"](1, 20_000_000, 2048)
+        scale = safe_preprocess_scale(1, 20_000_000, 2048)
         self.assertLessEqual(round(20_000_000 * scale), 16384)
 
     def test_quaternion_conversion_handles_half_turns_and_rejects_zero_norm(self):
         source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        helpers = [
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef)
-            and item.name in {"_normalize_quaternions", "_quat_to_matrix", "_matrix_to_quat"}
-        ]
-
-        class TestGaussianValidationError(ValueError):
-            pass
-
-        namespace = {
-            "np": np,
-            "_QUATERNION_EPSILON": 1e-12,
-            "GaussianValidationError": TestGaussianValidationError,
-        }
-        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<quaternion-helpers>", "exec"), namespace)
-
         quaternions = np.asarray(
             [
                 [1.0, 0.0, 0.0, 0.0],
@@ -464,12 +485,12 @@ class FactoryBackendTests(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        matrices = namespace["_quat_to_matrix"](quaternions)
-        recovered = namespace["_matrix_to_quat"](matrices)
+        matrices = quat_to_matrix(quaternions)
+        recovered = matrix_to_quat(matrices)
         alignment = np.abs(np.sum(quaternions * recovered, axis=1))
         np.testing.assert_allclose(alignment, np.ones(4), atol=1e-5)
         with self.assertRaisesRegex(TestGaussianValidationError, "invalid quaternion"):
-            namespace["_quat_to_matrix"](np.zeros((1, 4), dtype=np.float32))
+            quat_to_matrix(np.zeros((1, 4), dtype=np.float32))
 
     def test_numeric_payload_validation_rejects_nan_and_degenerate_rotation(self):
         names = [

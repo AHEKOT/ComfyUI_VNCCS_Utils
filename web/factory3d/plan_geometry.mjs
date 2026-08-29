@@ -9,7 +9,7 @@ const DEFAULT_SURFACE = Object.freeze({
     kind: "standard",
 });
 
-function materialFromData(value = {}, texture = null) {
+function materialFromData(value = {}, maps = {}) {
     const data = { ...DEFAULT_SURFACE, ...(value || {}) };
     const shared = {
         color: data.color,
@@ -24,7 +24,13 @@ function materialFromData(value = {}, texture = null) {
         // light angles. Back-face casting keeps the physical wall thickness
         // as the occluder and avoids self-shadow blocks on the visible face.
         shadowSide: data.kind === "glass" ? THREE.DoubleSide : THREE.BackSide,
-        map: texture || null,
+        map: maps.color || null,
+        normalMap: maps.normal || null,
+        roughnessMap: maps.roughness || null,
+        normalScale: new THREE.Vector2(
+            Number(data.normal_strength) || 0,
+            Number(data.normal_strength) || 0,
+        ),
     };
     if (data.kind === "glass") {
         const transmission = Number(data.transmission);
@@ -71,28 +77,51 @@ export class FactoryMaterialRegistry {
         if (signature === this.signature) return;
         const token = ++this._setToken;
         this.disposeCustom();
-        for (const entry of materialEntries) {
-            let texture = null;
-            if (entry?.texture_id) {
-                try {
-                    texture = await this.resolveTexture(entry.texture_id);
-                    if (this.disposed || token !== this._setToken) {
-                        texture?.dispose?.();
-                        return;
-                    }
-                    if (texture) {
-                        texture.colorSpace = THREE.SRGBColorSpace;
-                        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-                        texture.repeat.fromArray(entry.uv_scale || [1, 1]);
-                        texture.rotation = THREE.MathUtils.degToRad(Number(entry.uv_rotation) || 0);
-                        texture.center.set(0.5, 0.5);
-                        this.textures.set(entry.texture_id, texture);
-                    }
-                } catch (_) {
-                    texture = null;
-                }
+        const pendingTextures = new Map();
+        const textureFor = (entry, field, colorSpace) => {
+            const textureId = entry?.[field];
+            if (!textureId) return Promise.resolve(null);
+            const uvScale = entry.uv_scale || [1, 1];
+            const uvOffset = entry.uv_offset || [0, 0];
+            const key = JSON.stringify([
+                textureId,
+                colorSpace,
+                uvScale,
+                uvOffset,
+                Number(entry.uv_rotation) || 0,
+            ]);
+            if (!pendingTextures.has(key)) {
+                pendingTextures.set(key, this.resolveTexture(textureId).then(texture => {
+                    if (!texture) return null;
+                    texture.colorSpace = colorSpace;
+                    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+                    texture.repeat.fromArray(uvScale);
+                    texture.offset.fromArray(uvOffset);
+                    texture.rotation = THREE.MathUtils.degToRad(Number(entry.uv_rotation) || 0);
+                    texture.center.set(0.5, 0.5);
+                    return texture;
+                }).catch(() => null));
             }
-            this.materials.set(entry.material_id, materialFromData(entry, texture));
+            return pendingTextures.get(key);
+        };
+        const resolved = await Promise.all(materialEntries.map(async entry => {
+            const [color, normal, roughness] = await Promise.all([
+                textureFor(entry, "texture_id", THREE.SRGBColorSpace),
+                textureFor(entry, "normal_texture_id", THREE.NoColorSpace),
+                textureFor(entry, "roughness_texture_id", THREE.NoColorSpace),
+            ]);
+            return { entry, maps: { color, normal, roughness } };
+        }));
+        if (this.disposed || token !== this._setToken) {
+            const retired = new Set(resolved.flatMap(value => Object.values(value.maps)).filter(Boolean));
+            for (const texture of retired) texture.dispose?.();
+            return;
+        }
+        for (const { entry, maps } of resolved) {
+            for (const [kind, texture] of Object.entries(maps)) {
+                if (texture) this.textures.set(`${entry.material_id}:${kind}`, texture);
+            }
+            this.materials.set(entry.material_id, materialFromData(entry, maps));
         }
         if (!this.disposed && token === this._setToken) this.signature = signature;
     }
@@ -107,7 +136,7 @@ export class FactoryMaterialRegistry {
 
     disposeCustom() {
         for (const material of this.materials.values()) material.dispose?.();
-        for (const texture of this.textures.values()) texture.dispose?.();
+        for (const texture of new Set(this.textures.values())) texture.dispose?.();
         this.materials.clear();
         this.textures.clear();
         this.signature = "";
@@ -434,7 +463,21 @@ export class FactoryArchitectureRuntime {
         this.clear();
         this.sceneData = sceneData;
         const architecture = sceneData.architecture || {};
-        await this.materials.set(architecture.materials || []);
+        const usedMaterialIds = new Set();
+        for (const wall of architecture.walls || []) {
+            usedMaterialIds.add(wall.material_left);
+            usedMaterialIds.add(wall.material_right);
+            usedMaterialIds.add(wall.material_caps);
+        }
+        for (const room of architecture.rooms || []) {
+            usedMaterialIds.add(room.floor?.material_id);
+            usedMaterialIds.add(room.ceiling?.material_id);
+        }
+        for (const opening of architecture.openings || []) usedMaterialIds.add(opening.material_id);
+        usedMaterialIds.delete("");
+        await this.materials.set(
+            (architecture.materials || []).filter(material => usedMaterialIds.has(material.material_id)),
+        );
         if (this.disposed || token !== this._setToken) return;
         const levels = new Map((sceneData.levels || []).map(item => [item.level_id, item]));
         const buildings = Array.isArray(architecture.buildings) ? architecture.buildings : [];

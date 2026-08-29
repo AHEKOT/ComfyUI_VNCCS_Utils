@@ -434,27 +434,27 @@ class OrbitControls extends Controls {
 
 		// event listeners
 
-		this._onPointerMove = onPointerMove.bind( this );
-		this._onPointerDown = onPointerDown.bind( this );
-		this._onPointerUp = onPointerUp.bind( this );
-		this._onContextMenu = onContextMenu.bind( this );
-		this._onMouseWheel = onMouseWheel.bind( this );
-		this._onKeyDown = onKeyDown.bind( this );
+		this._onPointerMove = ( ...args ) => onPointerMove.apply( this, args );
+		this._onPointerDown = ( ...args ) => onPointerDown.apply( this, args );
+		this._onPointerUp = ( ...args ) => onPointerUp.apply( this, args );
+		this._onContextMenu = ( ...args ) => onContextMenu.apply( this, args );
+		this._onMouseWheel = ( ...args ) => onMouseWheel.apply( this, args );
+		this._onKeyDown = ( ...args ) => onKeyDown.apply( this, args );
 
-		this._onTouchStart = onTouchStart.bind( this );
-		this._onTouchMove = onTouchMove.bind( this );
+		this._onTouchStart = ( ...args ) => onTouchStart.apply( this, args );
+		this._onTouchMove = ( ...args ) => onTouchMove.apply( this, args );
 
-		this._onMouseDown = onMouseDown.bind( this );
-		this._onMouseMove = onMouseMove.bind( this );
+		this._onMouseDown = ( ...args ) => onMouseDown.apply( this, args );
+		this._onMouseMove = ( ...args ) => onMouseMove.apply( this, args );
 
-		this._interceptControlDown = interceptControlDown.bind( this );
-		this._interceptControlUp = interceptControlUp.bind( this );
+		this._interceptControlDown = ( ...args ) => interceptControlDown.apply( this, args );
+		this._interceptControlUp = ( ...args ) => interceptControlUp.apply( this, args );
 
 		//
 
 		if ( this.domElement !== null ) {
 
-			this.connect( this.domElement );
+			this["connect"]( this.domElement );
 
 		}
 
@@ -464,7 +464,7 @@ class OrbitControls extends Controls {
 
 	connect( element ) {
 
-		super.connect( element );
+		super["connect"]( element );
 
 		this.domElement.addEventListener( 'pointerdown', this._onPointerDown );
 		this.domElement.addEventListener( 'pointercancel', this._onPointerUp );

@@ -48,13 +48,14 @@ def _ensure_snapshot():
                 repo_id=_MODEL_REPO,
                 local_dir=_MODEL_DIR,
                 tqdm_class=progress.SnapshotDownloadTqdm,
+                token=False,
             )
         except Exception as progress_exc:
             print(
                 "[SAM3DBody] Progress-aware BiRefNet download failed; "
                 f"retrying with the default downloader. Error: {progress_exc}"
             )
-            snapshot_download(repo_id=_MODEL_REPO, local_dir=_MODEL_DIR)
+            snapshot_download(repo_id=_MODEL_REPO, local_dir=_MODEL_DIR, token=False)
     if not os.path.isfile(os.path.join(_MODEL_DIR, "config.json")):
         raise RuntimeError(f"[SAM3DBody] BiRefNet download completed but config.json is missing under {_MODEL_DIR}")
     print("[SAM3DBody] BiRefNet lite download complete.")

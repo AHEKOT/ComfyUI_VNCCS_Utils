@@ -39,7 +39,6 @@ import os
 import json
 import re
 import numpy as np
-import tempfile
 import time
 
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -48,12 +47,23 @@ _CAPTURE_CACHE_MAX_TOTAL_CHARS = 64 * 1024 * 1024
 _POSE_ANIMATION_CACHE_MAX = 24
 _POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS = 48 * 1024 * 1024
 _POSE_ANIMATION_CACHE_MAX_KEYS = 300_000
-_POSE_ANIMATION_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_pose_animation_cache")
+def _vnccs_runtime_temp_root():
+    try:
+        import folder_paths
+
+        root = folder_paths.get_temp_directory()
+    except Exception:
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime_cache")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+_POSE_ANIMATION_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_pose_animation_cache")
 _POSE_ANIMATION_DISK_CACHE_MAX_FILES = 256
 _POSE_ANIMATION_DISK_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_MAX = 10
 _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
-_UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_unicanvas_state_cache")
 _UNICANVAS_STATE_DISK_CACHE_MAX_FILES = 64
 _UNICANVAS_STATE_DISK_CACHE_MAX_BYTES = 1024 * 1024 * 1024
 _DISK_CACHE_TTL_SECONDS = 180 * 24 * 60 * 60

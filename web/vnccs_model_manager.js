@@ -80,7 +80,7 @@ class VNCCS_ModelListWidget {
         const settingsBtn = document.createElement("div");
         settingsBtn.innerHTML = "⚙️";
         settingsBtn.style.cssText = "cursor: pointer; font-size: 16px; transition: opacity 0.2s; opacity: 0.7;";
-        settingsBtn.title = "Manage API Tokens";
+        settingsBtn.title = "Download policy";
         settingsBtn.onmouseover = () => settingsBtn.style.opacity = "1";
         settingsBtn.onmouseout = () => settingsBtn.style.opacity = "0.7";
         settingsBtn.onclick = () => this.showApiKeyDialog();
@@ -363,102 +363,7 @@ class VNCCS_ModelListWidget {
     }
 
     showApiKeyDialog(modelName, repoId, version) {
-        // Create an overlay (simple div over the listArea)
-        const overlay = document.createElement("div");
-        overlay.style.cssText = `
-            position: absolute; top:0; left:0; width:100%; height:100%; 
-            background: rgba(0,0,0,0.85); z-index: 100;
-            display: flex; flex-direction: column; justify-content: center; align-items: center;
-            padding: 20px; box-sizing: border-box; text-align: center;
-        `;
-
-        const dialog = document.createElement("div");
-        dialog.style.cssText = `
-            background: #2a2a2a; border: 1px solid #555; border-radius: 8px; 
-            padding: 15px; width: 100%; max-width: 350px;
-            display: flex; flex-direction: column; gap: 10px;
-        `;
-
-        dialog.innerHTML = `
-            <h3 style="margin:0 0 5px 0; color: #fff;">VNCCS Settings</h3>
-            <p style="margin:0; font-size: 11px; color: #ccc; line-height: 1.4;">
-                Provide tokens to enable faster downloads and higher rate limits.
-            </p>
-            
-            <div style="text-align: left;">
-                <label style="font-size: 11px; color: #aaa; display: block; margin-bottom: 2px;">Civitai API Key</label>
-                <input type="password" id="civitai-api-key" placeholder="Paste Civitai Key here..." style="
-                    background: #111; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; width: 100%; font-size: 11px;
-                ">
-                <a href="https://civitai.com/user/account" target="_blank" style="color: #6cf; font-size: 10px;">Get Civitai Key</a>
-            </div>
-
-            <div style="text-align: left; margin-top: 5px;">
-                <label style="font-size: 11px; color: #aaa; display: block; margin-bottom: 2px;">Hugging Face Token</label>
-                <input type="password" id="hf-token" placeholder="Paste HF Token here..." style="
-                    background: #111; border: 1px solid #444; color: #fff; padding: 6px; border-radius: 4px; width: 100%; font-size: 11px;
-                ">
-                <a href="https://huggingface.co/settings/tokens" target="_blank" style="color: #6cf; font-size: 10px;">Get HF Token</a>
-            </div>
-
-            <div style="display: flex; gap: 10px; justify-content: flex-end; margin-top: 5px;">
-                <button id="cancel-key-btn" style="background: #444; border:none; color:white; padding: 5px 10px; border-radius:4px; cursor:pointer;">Cancel</button>
-                <button id="save-key-btn" style="background: #4a4; border:none; color:white; padding: 5px 10px; border-radius:4px; cursor:pointer; font-weight:bold;">Save Changes</button>
-            </div>
-        `;
-
-        overlay.appendChild(dialog);
-        this.container.appendChild(overlay);
-
-        // Event Listeners
-        const civitaiInput = dialog.querySelector("#civitai-api-key");
-        const hfInput = dialog.querySelector("#hf-token");
-        const cancelBtn = dialog.querySelector("#cancel-key-btn");
-        const saveBtn = dialog.querySelector("#save-key-btn");
-
-        // Try to load current tokens from local storage or wait for next fetch?
-        // Actually, better to just let user paste. If we want pre-fill, we'd need another API endpoint.
-        // For now, let's keep it simple. User pastes, we save.
-
-        cancelBtn.onclick = () => {
-            this.container.removeChild(overlay);
-        };
-
-        saveBtn.onclick = async () => {
-            const civitaiToken = civitaiInput.value.trim();
-            const hfToken = hfInput.value.trim();
-
-            const payload = {};
-            if (civitaiToken) payload.civitai_token = civitaiToken;
-            if (hfToken) payload.hf_token = hfToken;
-
-            if (Object.keys(payload).length === 0) {
-                this.showMessage("Please enter at least one token.", true);
-                return;
-            }
-
-            // Send to backend
-            try {
-                const response = await api.fetchApi("/vnccs/manager/save_token", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify(payload)
-                });
-
-                if (response.ok) {
-                    // Close dialog
-                    this.container.removeChild(overlay);
-                    // Retry download if we were triggered by one
-                    if (modelName && repoId && version) {
-                        this.downloadModel(repoId, modelName, version);
-                    }
-                } else {
-                    this.showMessage("Failed to save tokens on server.", true);
-                }
-            } catch (e) {
-                this.showMessage("Failed to save tokens: " + e.message, true);
-            }
-        };
+        this.showMessage("VNCCS downloads only public Hugging Face assets and never stores credentials.");
     }
 
     async updateStatuses() {

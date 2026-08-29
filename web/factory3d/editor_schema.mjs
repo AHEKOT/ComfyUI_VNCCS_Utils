@@ -97,6 +97,40 @@ export function finitePoint3(value, fallback = [0, 0, 0]) {
     ];
 }
 
+function normalizedMaterial(value = {}, index = 0) {
+    const source = value && typeof value === "object" ? value : {};
+    const output = {
+        ...source,
+        material_id: String(source.material_id || factoryId()),
+        name: String(source.name || `Material ${index + 1}`).slice(0, 80),
+        kind: source.kind === "glass" ? "glass" : "standard",
+        color: /^#[0-9a-f]{6}$/i.test(String(source.color || ""))
+            ? String(source.color).toLowerCase()
+            : "#d7d2ca",
+        roughness: finiteNumber(source.roughness, 0.78, 0, 1),
+        metalness: finiteNumber(source.metalness, 0, 0, 1),
+        opacity: finiteNumber(source.opacity, 1, 0, 1),
+        transmission: finiteNumber(source.transmission, source.kind === "glass" ? 1 : 0, 0, 1),
+        ior: finiteNumber(source.ior, 1.5, 1, 2.5),
+        uv_scale: [
+            finiteNumber(source.uv_scale?.[0], 1, 0.001, 1000),
+            finiteNumber(source.uv_scale?.[1], 1, 0.001, 1000),
+        ],
+        uv_offset: [
+            finiteNumber(source.uv_offset?.[0], 0, -10000, 10000),
+            finiteNumber(source.uv_offset?.[1], 0, -10000, 10000),
+        ],
+        uv_rotation: finiteNumber(source.uv_rotation, 0, -36000, 36000),
+        normal_strength: finiteNumber(source.normal_strength, 1, 0, 4),
+    };
+    for (const key of ["texture_id", "normal_texture_id", "roughness_texture_id"]) {
+        const textureId = String(source[key] || "");
+        if (textureId) output[key] = textureId;
+        else delete output[key];
+    }
+    return output;
+}
+
 export function isSimpleRoomPolygon(points = []) {
     if (!Array.isArray(points) || points.length < 3) return false;
     const polygon = points.map(point => finitePoint2(point));
@@ -385,7 +419,8 @@ export function normalizedArchitecture(value = {}, levels = []) {
     }
     return {
         units: "m",
-        materials: Array.isArray(source.materials) ? source.materials : [],
+        materials: (Array.isArray(source.materials) ? source.materials : [])
+            .map((material, index) => normalizedMaterial(material, index)),
         buildings,
         walls,
         rooms,

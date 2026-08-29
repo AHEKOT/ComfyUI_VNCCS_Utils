@@ -4267,7 +4267,7 @@ class PoseStudioWidget {
         this._lastAppliedMorphSeq = 0;
         this._morphSolveInFlight = false;
         this._pendingMorphSolve = null;
-        this._morphLoadRequests = new Map();
+        this._morphLoadTasks = new Map();
         this._morphSeqCharacterIds = new Map();
         this._modelLoadPromise = null;
         this._modelLoadKey = null;
@@ -6257,12 +6257,12 @@ class PoseStudioWidget {
     async waitForMorphIdle(timeoutMs = 120000) {
         const deadline = Date.now() + timeoutMs;
         while (
-            (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadRequests?.size)
+            (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadTasks?.size)
             && Date.now() < deadline
         ) {
             await new Promise(resolve => setTimeout(resolve, 16));
         }
-        if (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadRequests?.size) {
+        if (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadTasks?.size) {
             throw new Error("Pose Studio model morph is still in progress.");
         }
     }
@@ -11181,8 +11181,11 @@ class PoseStudioWidget {
     }
 
     async publishLocalPoseRepository(forceConfigure = false) {
+        this.showMessage("Remote publishing is disabled by the VNCCS security policy.", true);
+        return;
+
         const repo = this.localPoseRepository || {};
-        if (forceConfigure || !repo.publish_repo_id || !repo.has_hf_token) {
+        if (forceConfigure || !repo.publish_repo_id || !repo.publishing_enabled) {
             this.showPublishLocalRepositoryModal(forceConfigure);
             return;
         }
@@ -11220,10 +11223,7 @@ class PoseStudioWidget {
                         <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
                     </label>
                 </label>
-                <label class="vnccs-ps-library-field">
-                    <span>HF token ${current.has_hf_token ? '(saved)' : ''}</span>
-                    <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" placeholder="${current.has_hf_token ? 'Leave empty to use saved token' : 'hf_...'}">
-                </label>
+                <p class="vnccs-ps-library-field">Remote publishing is disabled by the VNCCS security policy.</p>
             </div>
             <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
@@ -11249,7 +11249,6 @@ class PoseStudioWidget {
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
             const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
-            const token = modal.querySelector('.vnccs-ps-publish-token').value.trim();
             if (!repoId) {
                 const repoInput = modal.querySelector('.vnccs-ps-publish-repo');
                 repoInput.style.borderColor = "rgba(255,71,87,0.7)";
@@ -11260,7 +11259,6 @@ class PoseStudioWidget {
             overlay.remove();
             await this.runLocalPoseRepositoryPublish({
                 repo_id: repoId,
-                hf_token: token,
                 create: modeEl.value === "create",
                 private: modal.querySelector('.vnccs-ps-publish-private').checked,
             });
@@ -13313,11 +13311,11 @@ class PoseStudioWidget {
         this._morphSeqCharacterIds.set(seq, this.activeCharacterId);
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 reject(new Error("Timed out while loading the Pose Studio MakeHuman asset."));
             }, 120000);
-            this._morphLoadRequests.set(seq, { resolve, reject, timeout });
+            this._morphLoadTasks.set(seq, { resolve, reject, timeout });
             try {
                 worker.postMessage({
                     type: "solve",
@@ -13328,7 +13326,7 @@ class PoseStudioWidget {
                 });
             } catch (error) {
                 clearTimeout(timeout);
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 reject(error);
             }
@@ -13500,12 +13498,12 @@ class PoseStudioWidget {
             this._morphSolveInFlight = false;
             this._pendingMorphSolve = null;
             const failedRequests = message.seq == null
-                ? [...this._morphLoadRequests.entries()]
-                : [[message.seq, this._morphLoadRequests.get(message.seq)]];
+                ? [...this._morphLoadTasks.entries()]
+                : [[message.seq, this._morphLoadTasks.get(message.seq)]];
             for (const [seq, request] of failedRequests) {
                 if (!request) continue;
                 clearTimeout(request.timeout);
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 request.reject(new Error(message.message || "Pose Studio MakeHuman worker failed."));
             }
@@ -13514,10 +13512,10 @@ class PoseStudioWidget {
         if (message.type !== "result") return;
         const requestCharacterId = this._morphSeqCharacterIds.get(message.seq);
         this._morphSeqCharacterIds.delete(message.seq);
-        const loadRequest = this._morphLoadRequests.get(message.seq);
+        const loadRequest = this._morphLoadTasks.get(message.seq);
         if (loadRequest) {
             clearTimeout(loadRequest.timeout);
-            this._morphLoadRequests.delete(message.seq);
+            this._morphLoadTasks.delete(message.seq);
             this._lastAppliedMorphSeq = Math.max(this._lastAppliedMorphSeq, message.seq);
             loadRequest.resolve(message);
             this.flushPendingMorphSolve();
@@ -15665,10 +15663,10 @@ app.registerExtension({
                 this.studioWidget._activeSaveLibraryClose?.(true);
                 this.studioWidget._pendingMorphSolve = null;
                 this.studioWidget._morphSolveInFlight = false;
-                for (const request of this.studioWidget._morphLoadRequests.values()) {
+                for (const request of this.studioWidget._morphLoadTasks.values()) {
                     clearTimeout(request.timeout);
                 }
-                this.studioWidget._morphLoadRequests.clear();
+                this.studioWidget._morphLoadTasks.clear();
                 this.studioWidget._morphSeqCharacterIds?.clear?.();
                 if (this.studioWidget._morphWorker) {
                     if (this.studioWidget._morphClientId) {

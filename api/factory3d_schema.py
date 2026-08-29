@@ -198,7 +198,6 @@ def normalize_levels(scene_id: str, value: Any, *, strict: bool = False) -> list
 
 def _normalize_texture_slot(value: Any) -> dict[str, Any]:
     data = value if isinstance(value, dict) else {}
-    texture_id = _id(data.get("texture_id"))
     output = {
         "color": (
             str(data.get("color")).lower()
@@ -212,10 +211,17 @@ def _normalize_texture_slot(value: Any) -> dict[str, Any]:
             _bounded(_point2(data.get("uv_scale"), (1.0, 1.0))[0], 0.001, 1000.0, 1.0),
             _bounded(_point2(data.get("uv_scale"), (1.0, 1.0))[1], 0.001, 1000.0, 1.0),
         ],
+        "uv_offset": [
+            _bounded(_point2(data.get("uv_offset"))[0], -10000.0, 10000.0, 0.0),
+            _bounded(_point2(data.get("uv_offset"))[1], -10000.0, 10000.0, 0.0),
+        ],
         "uv_rotation": _bounded(data.get("uv_rotation"), -36000.0, 36000.0, 0.0),
+        "normal_strength": _bounded(data.get("normal_strength"), 0.0, 4.0, 1.0),
     }
-    if texture_id:
-        output["texture_id"] = texture_id
+    for key in ("texture_id", "normal_texture_id", "roughness_texture_id"):
+        texture_id = _id(data.get(key))
+        if texture_id:
+            output[key] = texture_id
     return output
 
 

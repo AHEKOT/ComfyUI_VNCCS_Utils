@@ -93,30 +93,12 @@ class PoseLibraryProgressTests(unittest.TestCase):
         self.assertTrue(repositories[1]["builtin"])
         self.assertEqual(repositories[1]["title"], "General Poses PoseStudio")
 
-    def test_git_clone_uses_one_shot_os_temp_without_directory_promotion(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = Path(temporary) / "one-shot-clone"
-
-            def clone_into_checkout(command):
-                self.assertEqual(command[-1], str(checkout))
-                (checkout / ".git").mkdir(parents=True)
-                return ""
-
-            with (
-                mock.patch.object(POSE_LIBRARY.shutil, "which", return_value="/usr/bin/git"),
-                mock.patch.object(
-                    POSE_LIBRARY.tempfile,
-                    "mkdtemp",
-                    side_effect=lambda **kwargs: (checkout.mkdir(), str(checkout))[1],
-                ) as make_temp,
-                mock.patch.object(POSE_LIBRARY, "run_pose_repository_git", side_effect=clone_into_checkout),
-                mock.patch.object(POSE_LIBRARY.os, "replace") as promote_directory,
-            ):
-                result = POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
-
-            self.assertEqual(result, str(checkout))
-            self.assertEqual(make_temp.call_args.kwargs, {"prefix": "vnccs_pose_repository_"})
-            promote_directory.assert_not_called()
+    def test_process_based_repository_transport_is_disabled(self):
+        with self.assertRaisesRegex(
+            POSE_LIBRARY.GitRepositorySyncUnavailable,
+            "Process-based repository transport is disabled",
+        ):
+            POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
 
     def test_generated_manifest_preserves_a_custom_title(self):
         manifest = POSE_LIBRARY.build_pose_manifest(
@@ -156,91 +138,12 @@ class PoseLibraryProgressTests(unittest.TestCase):
         self.assertEqual(repositories["official/main"]["title"], "Official Pose Library")
         self.assertEqual(repositories["artist/poses"]["title"], "artist/poses")
 
-    def test_create_publish_is_exclusive_and_uploads_only_to_requested_target(self):
-        calls = {"create": [], "uploads": []}
-
-        class FakeHfApi:
-            def __init__(self, token=None):
-                self.token = token
-
-            def create_repo(self, **kwargs):
-                calls["create"].append(kwargs)
-
-            def list_repo_files(self, **_kwargs):
-                return []
-
-            def upload_file(self, **kwargs):
-                recorded = dict(kwargs)
-                if kwargs.get("path_in_repo", "").endswith(".json"):
-                    recorded["uploaded_json"] = json.loads(
-                        Path(kwargs["path_or_fileobj"]).read_text(encoding="utf-8")
-                    )
-                calls["uploads"].append(recorded)
-
-        fake_hub = types.ModuleType("huggingface_hub")
-        fake_hub.HfApi = FakeHfApi
-        with tempfile.TemporaryDirectory() as temporary:
-            pose_path = Path(temporary) / "pose.json"
-            saved_pose = {
-                "cameraParams": {
-                    "offset_x": 2.5,
-                    "offset_y": -1.25,
-                    "zoom": 1.75,
-                    "yaw_deg": 15,
-                    "pitch_deg": -5,
-                },
-                "sam_projection": {
-                    "fov": 37.5,
-                    "cameraPosition": {"x": -1.25, "y": 12.5, "z": 42},
-                },
-            }
-            pose_path.write_text(json.dumps(saved_pose), encoding="utf-8")
-            local_pose = {
-                "name": "Standing",
-                "category": "General",
-                "tags": [],
-                "asset_type": "pose",
-                "json_path": str(pose_path),
-                "preview_path": "",
-                "preview_type": "",
-                "hub_json_path": "poses/General/Standing.json",
-                "hub_preview_path": "",
-                "json_sha256": POSE_LIBRARY.sha256_file(pose_path),
-                "preview_sha256": "",
-            }
-            with (
-                mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}),
-                mock.patch.object(POSE_LIBRARY, "collect_local_pose_files", return_value=[local_pose]),
-                mock.patch.object(POSE_LIBRARY, "load_remote_pose_manifest", return_value={}),
-                mock.patch.object(POSE_LIBRARY, "save_vnccs_user_config"),
-            ):
-                result = POSE_LIBRARY.publish_local_repository_to_hf(
-                    "owner/new-library",
-                    token="hf_test",
-                    create=True,
-                    task_id="publish-test",
-                )
-
-        self.assertEqual(result["repo_id"], "owner/new-library")
-        self.assertEqual(calls["create"], [{
-            "repo_id": "owner/new-library",
-            "repo_type": "model",
-            "private": False,
-            "exist_ok": False,
-        }])
-        self.assertTrue(calls["uploads"])
-        self.assertEqual(
-            {call["repo_id"] for call in calls["uploads"]},
-            {"owner/new-library"},
-        )
-        pose_upload = next(
-            call for call in calls["uploads"]
-            if call["path_in_repo"] == "poses/General/Standing.json"
-        )
-        self.assertEqual(
-            pose_upload["uploaded_json"],
-            saved_pose,
-        )
+    def test_remote_publish_is_disabled(self):
+        with self.assertRaisesRegex(PermissionError, "Remote publishing is disabled"):
+            POSE_LIBRARY.publish_local_repository_to_hf(
+                "owner/new-library",
+                task_id="publish-test",
+            )
 
     def test_publish_endpoint_never_falls_back_to_saved_repository(self):
         class FakeRequest:
@@ -248,7 +151,7 @@ class PoseLibraryProgressTests(unittest.TestCase):
             can_read_body = False
 
             async def json(self):
-                return {"create": True, "hf_token": "hf_test"}
+                return {"create": True}
 
         class FakeResponse:
             def __init__(self, payload, status=200):
@@ -269,8 +172,8 @@ class PoseLibraryProgressTests(unittest.TestCase):
         ):
             response = asyncio.run(POSE_LIBRARY.publish_local_pose_repository(FakeRequest()))
 
-        self.assertEqual(response.status, 400)
-        self.assertEqual(response.payload["error"], "Repository id is required")
+        self.assertEqual(response.status, 403)
+        self.assertIn("disabled", response.payload["error"])
         publish.assert_not_called()
 
     def test_add_repository_downloads_it_before_responding(self):
@@ -420,7 +323,6 @@ class PoseLibraryProgressTests(unittest.TestCase):
             with (
                 mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}),
                 mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)),
-                mock.patch.object(POSE_LIBRARY, "get_hf_token", return_value=None),
                 mock.patch.object(
                     POSE_LIBRARY,
                     "update_git_pose_repository_checkout",
@@ -470,7 +372,6 @@ class PoseLibraryProgressTests(unittest.TestCase):
             with (
                 mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}),
                 mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)),
-                mock.patch.object(POSE_LIBRARY, "get_hf_token", return_value=None),
                 mock.patch.object(
                     POSE_LIBRARY,
                     "update_git_pose_repository_checkout",
@@ -502,24 +403,11 @@ class PoseLibraryProgressTests(unittest.TestCase):
             http_manifest.assert_called_once()
             http_asset.assert_called_once()
 
-    def test_failed_clone_removes_its_one_shot_checkout(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = Path(temporary) / "failed-clone"
-            checkout.mkdir()
-
-            with (
-                mock.patch.object(POSE_LIBRARY.shutil, "which", return_value="/usr/bin/git"),
-                mock.patch.object(POSE_LIBRARY.tempfile, "mkdtemp", return_value=str(checkout)),
-                mock.patch.object(
-                    POSE_LIBRARY,
-                    "run_pose_repository_git",
-                    side_effect=POSE_LIBRARY.GitRepositorySyncUnavailable("clone timeout"),
-                ),
-            ):
-                with self.assertRaises(POSE_LIBRARY.GitRepositorySyncUnavailable):
-                    POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
-
-            self.assertFalse(checkout.exists())
+    def test_disabled_process_transport_creates_no_checkout(self):
+        with mock.patch.object(POSE_LIBRARY.tempfile, "mkdtemp") as make_temp:
+            with self.assertRaises(POSE_LIBRARY.GitRepositorySyncUnavailable):
+                POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
+        make_temp.assert_not_called()
 
     def test_pose_library_walker_hides_internal_git_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:

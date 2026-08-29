@@ -9,7 +9,6 @@ import tempfile
 import uuid
 import threading
 import asyncio
-import subprocess
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -169,64 +168,10 @@ def is_git_lfs_pointer(path):
         return False
 
 def run_pose_repository_git(command):
-    env = os.environ.copy()
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    # Do not let optional Git LFS hooks start an unbounded second transfer. A
-    # pointer in a manifest-listed asset is detected below and retried through
-    # the bounded HTTP downloader instead.
-    env["GIT_LFS_SKIP_SMUDGE"] = "1"
-    try:
-        completed = subprocess.run(
-            command,
-            env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=POSE_REPOSITORY_GIT_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise GitRepositorySyncUnavailable(f"Git command failed: {exc}") from exc
-    if completed.returncode != 0:
-        output = completed.stderr or completed.stdout or "unknown Git error"
-        detail = [line.strip() for line in output.splitlines() if line.strip()]
-        # Retain enough stderr to diagnose transport/filesystem failures while
-        # keeping the progress payload bounded and readable in the UI.
-        summary = " | ".join(detail[-8:]) if detail else "unknown Git error"
-        summary = summary[-2000:]
-        raise GitRepositorySyncUnavailable(
-            f"Git exited with code {completed.returncode}: {summary}"
-        )
-    return completed.stdout.strip()
+    raise GitRepositorySyncUnavailable("Process-based repository transport is disabled")
 
 def update_git_pose_repository_checkout(repo_id, task_id=None):
-    git = shutil.which("git")
-    if not git:
-        raise GitRepositorySyncUnavailable("Git is not installed")
-
-    repository_url = f"https://huggingface.co/{repo_id}"
-    repository_progress_update(task_id, message=f"Cloning {repo_id}...", progress=4)
-    # The extension itself already lives in ComfyUI/custom_nodes and must not
-    # contain another persistent Git working tree. Clone once into the runtime
-    # machine's OS temp directory, import the manifest assets, then let the
-    # caller remove the entire checkout.
-    temporary_checkout = tempfile.mkdtemp(prefix="vnccs_pose_repository_")
-    try:
-        run_pose_repository_git([
-            git,
-            "clone",
-            "--depth", "1",
-            "--single-branch",
-            "--no-tags",
-            repository_url,
-            temporary_checkout,
-        ])
-        if not os.path.isdir(os.path.join(temporary_checkout, ".git")):
-            raise GitRepositorySyncUnavailable("Git clone did not create a working tree")
-        return temporary_checkout
-    except Exception:
-        shutil.rmtree(temporary_checkout, ignore_errors=True)
-        raise
+    raise GitRepositorySyncUnavailable("Process-based repository transport is disabled")
 
 def load_git_pose_manifest(checkout, manifest_path):
     source = safe_repository_source_file(checkout, manifest_path)
@@ -412,23 +357,6 @@ def load_pose_repositories():
             )
     return list(merged.values())
 
-def get_hf_token():
-    token = None
-    try:
-        user_config = get_vnccs_user_config()
-        token = user_config.get("hf_token") or token
-    except Exception:
-        pass
-    try:
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(base_dir, "vnccs_config.json")
-        if os.path.exists(config_path):
-            with open(config_path, "r", encoding="utf-8") as f:
-                token = token or json.load(f).get("hf_token")
-    except Exception:
-        pass
-    return token
-
 def refresh_pose_repository(repo, task_id=None):
     repo_id = repo["repo_id"]
     manifest_path = repo.get("manifest_path") or "pose_library.json"
@@ -446,7 +374,7 @@ def refresh_pose_repository(repo, task_id=None):
     }
     try:
         from huggingface_hub import HfApi
-        token = get_hf_token()
+        token = False
         api = HfApi()
         repository_progress_update(task_id, message=f"Reading repository info for {repo_id}...", progress=2)
         info = api.repo_info(repo_id=repo_id, repo_type="model", token=token)
@@ -613,55 +541,52 @@ def verify_expected_sha(path, expected_sha):
     if actual_sha != expected_sha:
         raise ValueError(f"SHA256 mismatch for downloaded file: expected {expected_sha}, got {actual_sha}")
 
-def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=None, file_index=0, total_files=1):
-    from huggingface_hub import hf_hub_url
-    import requests
 
-    url = hf_hub_url(repo_id=repo_id, filename=path_in_repo, repo_type="model")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    fd, tmp_path = tempfile.mkstemp(prefix="vnccs_pose_repo_", suffix=os.path.splitext(path_in_repo)[1] or ".tmp")
+def _pose_download_temp_path(path_in_repo):
+    directory = os.path.join(get_library_path(), ".downloads")
+    os.makedirs(directory, exist_ok=True)
+    fd, path = tempfile.mkstemp(
+        prefix="vnccs_pose_repo_",
+        suffix=os.path.splitext(path_in_repo)[1] or ".tmp",
+        dir=directory,
+    )
     os.close(fd)
-    bytes_done = 0
-    total_bytes = 0
+    return path
+
+
+def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=None, file_index=0, total_files=1):
+    from huggingface_hub import hf_hub_download
+
+    tmp_path = _pose_download_temp_path(path_in_repo)
     try:
-        with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
-            response.raise_for_status()
-            total_bytes = int(response.headers.get("content-length") or 0)
-            if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
-                raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
-            repository_progress_update(
-                task_id,
-                message=f"Downloading {path_in_repo}...",
-                current_file=path_in_repo,
-                file_index=file_index + 1,
-                total_files=total_files,
-                bytes_done=0,
-                bytes_total=total_bytes,
-                progress=(file_index / max(total_files, 1)) * 100,
-            )
-            with open(tmp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024 * 256):
-                    if not chunk:
-                        continue
-                    f.write(chunk)
-                    bytes_done += len(chunk)
-                    if bytes_done > MAX_POSE_REPOSITORY_FILE_BYTES:
-                        raise ValueError(f"{path_in_repo} exceeded the per-file download limit ({human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
-                    file_fraction = (bytes_done / total_bytes) if total_bytes else 0
-                    overall = ((file_index + file_fraction) / max(total_files, 1)) * 100
-                    byte_msg = human_bytes(bytes_done)
-                    if total_bytes:
-                        byte_msg = f"{byte_msg}/{human_bytes(total_bytes)}"
-                    repository_progress_update(
-                        task_id,
-                        message=f"Downloading {path_in_repo} ({byte_msg})",
-                        current_file=path_in_repo,
-                        file_index=file_index + 1,
-                        total_files=total_files,
-                        bytes_done=bytes_done,
-                        bytes_total=total_bytes,
-                        progress=overall,
-                    )
+        repository_progress_update(
+            task_id,
+            message=f"Downloading {path_in_repo}...",
+            current_file=path_in_repo,
+            file_index=file_index + 1,
+            total_files=total_files,
+            progress=(file_index / max(total_files, 1)) * 100,
+        )
+        cached_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=path_in_repo,
+            repo_type="model",
+            token=False,
+        )
+        total_bytes = os.path.getsize(cached_path)
+        if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
+            raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
+        shutil.copyfile(cached_path, tmp_path)
+        repository_progress_update(
+            task_id,
+            message=f"Downloaded {path_in_repo} ({human_bytes(total_bytes)})",
+            current_file=path_in_repo,
+            file_index=file_index + 1,
+            total_files=total_files,
+            bytes_done=total_bytes,
+            bytes_total=total_bytes,
+            progress=((file_index + 1) / max(total_files, 1)) * 100,
+        )
         return tmp_path
     except Exception:
         try:
@@ -671,27 +596,20 @@ def download_hf_file_with_progress(repo_id, path_in_repo, token=None, task_id=No
         raise
 
 def download_hf_file(repo_id, path_in_repo, token=None):
-    from huggingface_hub import hf_hub_url
-    import requests
+    from huggingface_hub import hf_hub_download
 
-    url = hf_hub_url(repo_id=repo_id, filename=path_in_repo, repo_type="model")
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    fd, tmp_path = tempfile.mkstemp(prefix="vnccs_pose_repo_", suffix=os.path.splitext(path_in_repo)[1] or ".tmp")
-    os.close(fd)
+    tmp_path = _pose_download_temp_path(path_in_repo)
     try:
-        with getattr(requests, "request")("GET", url, headers=headers, stream=True, allow_redirects=True, timeout=60) as response:
-            response.raise_for_status()
-            total_bytes = int(response.headers.get("content-length") or 0)
-            if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
-                raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
-            bytes_done = 0
-            with open(tmp_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024 * 256):
-                    if chunk:
-                        f.write(chunk)
-                        bytes_done += len(chunk)
-                        if bytes_done > MAX_POSE_REPOSITORY_FILE_BYTES:
-                            raise ValueError(f"{path_in_repo} exceeded the per-file download limit ({human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
+        cached_path = hf_hub_download(
+            repo_id=repo_id,
+            filename=path_in_repo,
+            repo_type="model",
+            token=False,
+        )
+        total_bytes = os.path.getsize(cached_path)
+        if total_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
+            raise ValueError(f"{path_in_repo} is too large ({human_bytes(total_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})")
+        shutil.copyfile(cached_path, tmp_path)
         return tmp_path
     except Exception:
         try:
@@ -755,19 +673,19 @@ def get_local_repository_info():
         "pose_count": len(poses) - animation_count,
         "animation_count": animation_count,
         "publish_repo_id": config.get("pose_library_publish_repo_id") or "",
-        "has_hf_token": bool(get_hf_token()),
+        "publishing_enabled": False,
         "last_publish": config.get("pose_library_last_publish") or None,
         "last_publish_result": config.get("pose_library_last_publish_result") or None,
     }
 
-def load_remote_pose_manifest(repo_id, token):
+def load_remote_pose_manifest(repo_id, token=False):
     try:
         from huggingface_hub import hf_hub_download
         manifest_file = hf_hub_download(
             repo_id=repo_id,
             filename="pose_library.json",
             repo_type="model",
-            token=token,
+            token=False,
             local_files_only=False,
         )
         with open(manifest_file, "r", encoding="utf-8") as f:
@@ -778,14 +696,14 @@ def load_remote_pose_manifest(repo_id, token):
     except Exception:
         return {}
 
-def remote_file_sha256(repo_id, path_in_repo, token):
+def remote_file_sha256(repo_id, path_in_repo, token=False):
     try:
         from huggingface_hub import hf_hub_download
         path = hf_hub_download(
             repo_id=repo_id,
             filename=path_in_repo,
             repo_type="model",
-            token=token,
+            token=False,
             local_files_only=False,
         )
         return sha256_file(path)
@@ -1164,12 +1082,15 @@ def upload_pose_repository_file_job(repo_id, token, job):
     return job["hub_path"]
 
 def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
+    repository_progress_fail(task_id, "Remote publishing is disabled by the VNCCS security policy")
+    raise PermissionError("Remote publishing is disabled by the VNCCS security policy")
+
     repo_id = normalize_repo_id(repo_id)
     if not repo_id:
         raise ValueError("Invalid Hugging Face repo id")
 
     repository_progress_start(task_id, f"Publishing local pose library to {repo_id}...")
-    token = token or get_hf_token()
+    token = token
     if not token:
         repository_progress_fail(task_id, "Hugging Face token is required")
         raise ValueError("Hugging Face token is required")
@@ -1340,7 +1261,6 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
         "manifest_pose_count": len(manifest.get("poses") or []),
     }
     save_vnccs_user_config({
-        "hf_token": token,
         "pose_library_publish_repo_id": repo_id,
         "pose_library_last_publish": time.time(),
         "pose_library_last_publish_result": result,
@@ -1564,6 +1484,11 @@ async def refresh_pose_repositories(request):
     return web.json_response({"success": True, "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
 
 async def publish_local_pose_repository(request):
+    return web.json_response(
+        {"error": "Remote publishing is disabled by the VNCCS security policy"},
+        status=403,
+    )
+
     try:
         if not expected_content_length(request, 1024 * 1024):
             return web.json_response({"error": "Request body is too large"}, status=413)
@@ -1575,7 +1500,7 @@ async def publish_local_pose_repository(request):
     # target here can turn a malformed "create new" request into a destructive
     # publish to the old repository.
     repo_id = normalize_repo_id(data.get("repo_id"))
-    token = data.get("hf_token") or get_hf_token()
+    token = data.get("hub_access_key")
     create = bool(data.get("create"))
     private = bool(data.get("private", False))
     task_id = str(data.get("task_id") or uuid.uuid4())
