@@ -28,7 +28,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260829.22";
+export const FACTORY_VIEWER_BUILD = "20260829.25";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -2512,6 +2512,26 @@ export class Factory3DViewer {
         }
     }
 
+    _localShadowCameraFar(position) {
+        const bounds = this._viewBounds({ scope: "scene" });
+        if (!hasFiniteBounds(bounds)) return 100;
+        let farthestDistanceSq = 0;
+        for (const x of [bounds.min.x, bounds.max.x]) {
+            for (const y of [bounds.min.y, bounds.max.y]) {
+                for (const z of [bounds.min.z, bounds.max.z]) {
+                    const dx = x - position.x;
+                    const dy = y - position.y;
+                    const dz = z - position.z;
+                    farthestDistanceSq = Math.max(
+                        farthestDistanceSq,
+                        dx * dx + dy * dy + dz * dz,
+                    );
+                }
+            }
+        }
+        return Math.max(0.03, Math.sqrt(farthestDistanceSq) * 1.05 + 0.05);
+    }
+
     _syncThreeLights() {
         const qualitySizes = { low: 512, medium: 1024, high: 2048, ultra: 4096 };
         const qualityBlurRadius = { low: 2.5, medium: 3, high: 3.5, ultra: 4 };
@@ -2570,23 +2590,32 @@ export class Factory3DViewer {
             if (light.castShadow) shadowLightCount += 1;
             if (light.shadow) {
                 light.shadow.mapSize.set(mapSize, mapSize);
-                light.shadow.bias = this.lighting.shadows?.bias ?? DEFAULT_LIGHTING.shadows.bias;
+                const configuredBias = this.lighting.shadows?.bias
+                    ?? DEFAULT_LIGHTING.shadows.bias;
                 const configuredNormalBias = this.lighting.shadows?.normal_bias
                     ?? DEFAULT_LIGHTING.shadows.normal_bias;
-                // Opaque architecture casts back faces into the shadow map,
-                // so a large receiver offset is unnecessary and would open
-                // gaps at wall/slab junctions. Retain only the small baseline
-                // offset for local lights to absorb depth quantization.
+                const localLight = data.kind === "point" || data.kind === "spot";
+                // A normalized negative bias turns into a large world-space
+                // gap when a local shadow camera has a long range. Keep local
+                // contact shadows unbiased so they remain visible at walls.
+                light.shadow.bias = localLight
+                    ? 0
+                    : configuredBias;
                 light.shadow.normalBias = data.kind === "directional"
                     ? configuredNormalBias
-                    : Math.max(configuredNormalBias, DEFAULT_LIGHTING.shadows.normal_bias);
-                light.shadow.radius = qualityBlurRadius[this.lighting.shadows?.quality] || 3;
-                light.shadow.blurSamples = qualityBlurSamples[this.lighting.shadows?.quality] || 12;
+                    : 0;
+                light.shadow.radius = localLight
+                    ? 1.25
+                    : qualityBlurRadius[this.lighting.shadows?.quality] || 3;
+                light.shadow.blurSamples = localLight
+                    ? 8
+                    : qualityBlurSamples[this.lighting.shadows?.quality] || 12;
                 light.shadow.camera.near = 0.001;
                 if (data.kind === "point" || data.kind === "spot") {
                     light.shadow.camera.far = data.distance > 0
                         ? Math.max(0.03, data.distance)
-                        : 1000;
+                        : this._localShadowCameraFar(light.position);
+                    light.shadow.camera.updateProjectionMatrix();
                 }
                 if (data.kind === "directional") {
                     light.shadow.camera.left = -25;

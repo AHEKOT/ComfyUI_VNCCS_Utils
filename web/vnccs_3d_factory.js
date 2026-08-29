@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260829.22";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260829.25";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
     DEFAULT_LEVEL,
@@ -64,7 +64,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260829.22";
+const FRONTEND_BUILD = "20260829.25";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
