@@ -19,15 +19,16 @@ const OBJECT_LOAD_CONCURRENCY = 4;
 const HEAVY_SCENE_GAUSSIANS = 262_145;
 const SPLAT_SCAN_CHUNK = 16_384;
 const SPLAT_BOUND_SAMPLES = 4_096;
-const SHADOW_PROXY_MAX_SPLATS = 1_536;
+const SHADOW_PROXY_MAX_SPLATS = 32_768;
 const SHADOW_PROXY_CANDIDATE_MULTIPLIER = 4;
+const SHADOW_SURFACE_RESOLUTION = 80;
 const INTERACTIVE_FRAME_MS = 1000 / 30;
 const LIGHTING_UPDATE_MS = 1000 / 15;
 const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260829.8";
+export const FACTORY_VIEWER_BUILD = "20260829.22";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -578,18 +579,17 @@ export function computeRobustSplatBounds(mesh, options = {}) {
 
 /**
  * Select a bounded, deterministic subset of visible Gaussians for a cheap
- * shadow-only silhouette. This preserves an object's actual outline without
- * asking the browser to render every source splat into every shadow map.
+ * fallback shadow-only silhouette.
  */
 export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
     if (!mesh || !hasFiniteBounds(bounds)) return [];
     const maxInstances = Math.max(
         32,
-        Math.min(4_096, Math.floor(Number(options.maxInstances) || SHADOW_PROXY_MAX_SPLATS)),
+        Math.min(65_536, Math.floor(Number(options.maxInstances) || SHADOW_PROXY_MAX_SPLATS)),
     );
     const opacityThreshold = Math.max(
         0,
-        Math.min(1, Number(options.opacityThreshold) || 0.08),
+        Math.min(1, Number(options.opacityThreshold) || 0.02),
     );
     const splatCount = Math.max(0, Number(mesh.numSplats) || 0);
     if (!splatCount) return [];
@@ -600,12 +600,11 @@ export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
     const boundsSize = safeBounds.getSize(new THREE.Vector3());
     const largestExtent = Math.max(boundsSize.x, boundsSize.y, boundsSize.z, 0.001);
     safeBounds.expandByScalar(largestExtent * 0.04);
-    const maximumRadius = largestExtent * 0.16;
+    const maximumRadius = largestExtent * 0.035;
     const minimumRadius = Math.max(largestExtent * 0.00035, 0.00001);
     const candidates = [];
 
-    const collect = (index, center, scales, quaternion, opacity) => {
-        if (index % stride !== 0) return;
+    const collect = (_index, center, scales, quaternion, opacity) => {
         const alpha = Number(opacity);
         if (Number.isFinite(alpha) && alpha < opacityThreshold) return;
         const position = new THREE.Vector3(
@@ -617,22 +616,32 @@ export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
             !position.toArray().every(Number.isFinite)
             || !safeBounds.containsPoint(position)
         ) return;
-        const radiusFactor = 1.35 + 0.9 * Math.max(
+        const radiusFactor = 2.8 + 1.2 * Math.max(
             0,
             Math.min(1, Number.isFinite(alpha) ? alpha : 1),
         );
+        const sourceScale = new THREE.Vector3(
+            Math.abs(Number(scales?.x)) || minimumRadius,
+            Math.abs(Number(scales?.y)) || minimumRadius,
+            Math.abs(Number(scales?.z)) || minimumRadius,
+        );
+        const majorRadius = Math.min(
+            maximumRadius,
+            Math.max(sourceScale.x, sourceScale.y, sourceScale.z),
+        );
+        const volumeFloor = Math.max(minimumRadius, majorRadius * 0.55);
         const scale = new THREE.Vector3(
             Math.max(
-                minimumRadius,
-                Math.min(maximumRadius, Math.abs(Number(scales?.x)) || minimumRadius),
+                volumeFloor,
+                Math.min(maximumRadius, sourceScale.x),
             ),
             Math.max(
-                minimumRadius,
-                Math.min(maximumRadius, Math.abs(Number(scales?.y)) || minimumRadius),
+                volumeFloor,
+                Math.min(maximumRadius, sourceScale.y),
             ),
             Math.max(
-                minimumRadius,
-                Math.min(maximumRadius, Math.abs(Number(scales?.z)) || minimumRadius),
+                volumeFloor,
+                Math.min(maximumRadius, sourceScale.z),
             ),
         ).multiplyScalar(radiusFactor);
         const rotation = new THREE.Quaternion(
@@ -646,12 +655,20 @@ export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
 
     try {
         if (typeof mesh.splats?.getSplat === "function") {
-            for (let index = 0; index < splatCount; index += stride) {
+            const sampleCount = Math.min(splatCount, candidateLimit);
+            const goldenRatioConjugate = 0.6180339887498949;
+            for (let sample = 0; sample < sampleCount; sample += 1) {
+                const index = Math.min(
+                    splatCount - 1,
+                    Math.floor(((sample + 0.5) * goldenRatioConjugate % 1) * splatCount),
+                );
                 const splat = mesh.splats.getSplat(index);
                 collect(index, splat.center, splat.scales, splat.quaternion, splat.opacity);
             }
         } else if (typeof mesh.forEachSplat === "function") {
-            mesh.forEachSplat(collect);
+            mesh.forEachSplat((index, center, scales, quaternion, opacity) => {
+                if (index % stride === 0) collect(index, center, scales, quaternion, opacity);
+            });
         }
     } catch (_) {
         return [];
@@ -664,6 +681,250 @@ export function gaussianShadowProxyTransforms(mesh, bounds, options = {}) {
         output.push(candidates[Math.min(candidates.length - 1, Math.floor((index + 0.5) * step))]);
     }
     return output;
+}
+
+/**
+ * Voxelize every visible Gaussian center and reconstruct one closed, opaque
+ * surface for shadow maps. No source opacity or sampling pattern reaches the
+ * shadow pass after this conversion.
+ */
+export function gaussianShadowSurfaceGeometry(mesh, bounds, options = {}) {
+    if (!mesh || !hasFiniteBounds(bounds)) return null;
+    const splatCount = Math.max(0, Number(mesh.numSplats) || 0);
+    if (!splatCount) return null;
+    const resolution = Math.max(
+        40,
+        Math.min(96, Math.round(Number(options.resolution) || SHADOW_SURFACE_RESOLUTION)),
+    );
+    const opacityThreshold = Math.max(
+        0,
+        Math.min(1, Number(options.opacityThreshold) || 0.05),
+    );
+    const safeBounds = bounds.clone();
+    const sourceSize = safeBounds.getSize(new THREE.Vector3());
+    const largestExtent = Math.max(sourceSize.x, sourceSize.y, sourceSize.z, 0.001);
+    safeBounds.expandByScalar(largestExtent * 0.08);
+    const size = safeBounds.getSize(new THREE.Vector3());
+    const dimensions = size.toArray().map(extent => Math.max(
+        20,
+        Math.min(resolution, Math.round(resolution * extent / largestExtent)),
+    ));
+    const [countX, countY, countZ] = dimensions;
+    const step = new THREE.Vector3(
+        size.x / Math.max(1, countX - 1),
+        size.y / Math.max(1, countY - 1),
+        size.z / Math.max(1, countZ - 1),
+    );
+    const field = new Float32Array(countX * countY * countZ);
+    const fieldIndex = (x, y, z) => x + countX * (y + countY * z);
+    const stamp = (center, scales, opacity) => {
+        const alpha = Number(opacity);
+        if (Number.isFinite(alpha) && alpha < opacityThreshold) return;
+        const positionX = Number(center?.x);
+        const positionY = Number(center?.y);
+        const positionZ = Number(center?.z);
+        if (
+            !Number.isFinite(positionX)
+            || !Number.isFinite(positionY)
+            || !Number.isFinite(positionZ)
+            || positionX < safeBounds.min.x
+            || positionX > safeBounds.max.x
+            || positionY < safeBounds.min.y
+            || positionY > safeBounds.max.y
+            || positionZ < safeBounds.min.z
+            || positionZ > safeBounds.max.z
+        ) return;
+        const centerX = Math.round(
+            (positionX - safeBounds.min.x) / Math.max(step.x, 1e-9),
+        );
+        const centerY = Math.round(
+            (positionY - safeBounds.min.y) / Math.max(step.y, 1e-9),
+        );
+        const centerZ = Math.round(
+            (positionZ - safeBounds.min.z) / Math.max(step.z, 1e-9),
+        );
+        const gaussianRadius = Math.max(
+            Math.abs(Number(scales?.x)) || 0,
+            Math.abs(Number(scales?.y)) || 0,
+            Math.abs(Number(scales?.z)) || 0,
+        ) * 2.25;
+        const radiusX = Math.max(1, Math.min(2, Math.ceil(gaussianRadius / Math.max(step.x, 1e-9))));
+        const radiusY = Math.max(1, Math.min(2, Math.ceil(gaussianRadius / Math.max(step.y, 1e-9))));
+        const radiusZ = Math.max(1, Math.min(2, Math.ceil(gaussianRadius / Math.max(step.z, 1e-9))));
+        for (let z = Math.max(1, centerZ - radiusZ); z <= Math.min(countZ - 2, centerZ + radiusZ); z += 1) {
+            for (let y = Math.max(1, centerY - radiusY); y <= Math.min(countY - 2, centerY + radiusY); y += 1) {
+                for (let x = Math.max(1, centerX - radiusX); x <= Math.min(countX - 2, centerX + radiusX); x += 1) {
+                    field[fieldIndex(x, y, z)] = 1;
+                }
+            }
+        }
+    };
+
+    try {
+        if (typeof mesh.forEachSplat === "function") {
+            mesh.forEachSplat((_index, center, scales, _quaternion, opacity) => {
+                stamp(center, scales, opacity);
+            });
+        } else if (typeof mesh.splats?.getSplat === "function") {
+            for (let index = 0; index < splatCount; index += 1) {
+                const splat = mesh.splats.getSplat(index);
+                stamp(splat.center, splat.scales, splat.opacity);
+            }
+        }
+    } catch (_) {
+        return null;
+    }
+
+    const insideGrid = (x, y, z) => (
+        x >= 0 && x < countX && y >= 0 && y < countY && z >= 0 && z < countZ
+    );
+    const neighbours = Object.freeze([
+        [-1, 0, 0], [1, 0, 0], [0, -1, 0],
+        [0, 1, 0], [0, 0, -1], [0, 0, 1],
+    ]);
+    const morphologyNeighbours = [];
+    for (let dz = -1; dz <= 1; dz += 1) {
+        for (let dy = -1; dy <= 1; dy += 1) {
+            for (let dx = -1; dx <= 1; dx += 1) {
+                if (dx || dy || dz) morphologyNeighbours.push([dx, dy, dz]);
+            }
+        }
+    }
+    Object.freeze(morphologyNeighbours);
+    let occupancy = new Uint8Array(field.length);
+    for (let index = 0; index < field.length; index += 1) {
+        occupancy[index] = field[index] > 0 ? 1 : 0;
+    }
+    const dilate = source => {
+        const output = new Uint8Array(source.length);
+        for (let z = 1; z < countZ - 1; z += 1) {
+            for (let y = 1; y < countY - 1; y += 1) {
+                for (let x = 1; x < countX - 1; x += 1) {
+                    const offset = fieldIndex(x, y, z);
+                    if (
+                        source[offset]
+                        || morphologyNeighbours.some(
+                            ([dx, dy, dz]) => source[fieldIndex(x + dx, y + dy, z + dz)],
+                        )
+                    ) {
+                        output[offset] = 1;
+                    }
+                }
+            }
+        }
+        return output;
+    };
+    const erode = source => {
+        const output = new Uint8Array(source.length);
+        for (let z = 1; z < countZ - 1; z += 1) {
+            for (let y = 1; y < countY - 1; y += 1) {
+                for (let x = 1; x < countX - 1; x += 1) {
+                    const offset = fieldIndex(x, y, z);
+                    if (
+                        source[offset]
+                        && neighbours.every(([dx, dy, dz]) => source[fieldIndex(x + dx, y + dy, z + dz)])
+                    ) output[offset] = 1;
+                }
+            }
+        }
+        return output;
+    };
+    // Gaussian scale already supplies the source thickness. A compact close
+    // seals residual one-cell gaps without turning separate parts into a blob.
+    for (let pass = 0; pass < 2; pass += 1) occupancy = dilate(occupancy);
+    occupancy = erode(occupancy);
+
+    // Flood-fill empty boundary space, then solidify any enclosed cavities
+    // left inside the reconstructed caster.
+    const exterior = new Uint8Array(field.length);
+    const queue = new Int32Array(field.length);
+    let queueHead = 0;
+    let queueTail = 0;
+    const enqueueExterior = (x, y, z) => {
+        const offset = fieldIndex(x, y, z);
+        if (occupancy[offset] || exterior[offset]) return;
+        exterior[offset] = 1;
+        queue[queueTail] = offset;
+        queueTail += 1;
+    };
+    for (let z = 0; z < countZ; z += 1) {
+        for (let y = 0; y < countY; y += 1) {
+            enqueueExterior(0, y, z);
+            enqueueExterior(countX - 1, y, z);
+        }
+    }
+    for (let z = 0; z < countZ; z += 1) {
+        for (let x = 0; x < countX; x += 1) {
+            enqueueExterior(x, 0, z);
+            enqueueExterior(x, countY - 1, z);
+        }
+    }
+    for (let y = 0; y < countY; y += 1) {
+        for (let x = 0; x < countX; x += 1) {
+            enqueueExterior(x, y, 0);
+            enqueueExterior(x, y, countZ - 1);
+        }
+    }
+    const planeSize = countX * countY;
+    while (queueHead < queueTail) {
+        const offset = queue[queueHead];
+        queueHead += 1;
+        const z = Math.floor(offset / planeSize);
+        const remainder = offset - z * planeSize;
+        const y = Math.floor(remainder / countX);
+        const x = remainder - y * countX;
+        for (const [dx, dy, dz] of neighbours) {
+            const nextX = x + dx;
+            const nextY = y + dy;
+            const nextZ = z + dz;
+            if (insideGrid(nextX, nextY, nextZ)) enqueueExterior(nextX, nextY, nextZ);
+        }
+    }
+    for (let index = 0; index < occupancy.length; index += 1) {
+        if (!occupancy[index] && !exterior[index]) occupancy[index] = 1;
+    }
+
+    // Emit only faces between solid and empty cells. Unlike the previous
+    // marching surface, this cannot create internal slice planes: every face
+    // belongs to the boundary of one sealed opaque volume.
+    const positions = [];
+    const faceDefinitions = Object.freeze([
+        { direction: [-1, 0, 0], corners: [[-0.5, -0.5, -0.5], [-0.5, -0.5, 0.5], [-0.5, 0.5, 0.5], [-0.5, 0.5, -0.5]] },
+        { direction: [1, 0, 0], corners: [[0.5, -0.5, 0.5], [0.5, -0.5, -0.5], [0.5, 0.5, -0.5], [0.5, 0.5, 0.5]] },
+        { direction: [0, -1, 0], corners: [[-0.5, -0.5, 0.5], [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5]] },
+        { direction: [0, 1, 0], corners: [[-0.5, 0.5, -0.5], [-0.5, 0.5, 0.5], [0.5, 0.5, 0.5], [0.5, 0.5, -0.5]] },
+        { direction: [0, 0, -1], corners: [[0.5, -0.5, -0.5], [-0.5, -0.5, -0.5], [-0.5, 0.5, -0.5], [0.5, 0.5, -0.5]] },
+        { direction: [0, 0, 1], corners: [[-0.5, -0.5, 0.5], [0.5, -0.5, 0.5], [0.5, 0.5, 0.5], [-0.5, 0.5, 0.5]] },
+    ]);
+    const appendFace = (centerX, centerY, centerZ, corners) => {
+        const vertices = corners.map(([offsetX, offsetY, offsetZ]) => [
+            centerX + offsetX * step.x,
+            centerY + offsetY * step.y,
+            centerZ + offsetZ * step.z,
+        ]);
+        for (const index of [0, 1, 2, 0, 2, 3]) positions.push(...vertices[index]);
+    };
+    for (let z = 1; z < countZ - 1; z += 1) {
+        for (let y = 1; y < countY - 1; y += 1) {
+            for (let x = 1; x < countX - 1; x += 1) {
+                if (!occupancy[fieldIndex(x, y, z)]) continue;
+                const centerX = safeBounds.min.x + x * step.x;
+                const centerY = safeBounds.min.y + y * step.y;
+                const centerZ = safeBounds.min.z + z * step.z;
+                for (const face of faceDefinitions) {
+                    const [dx, dy, dz] = face.direction;
+                    if (occupancy[fieldIndex(x + dx, y + dy, z + dz)]) continue;
+                    appendFace(centerX, centerY, centerZ, face.corners);
+                }
+            }
+        }
+    }
+    if (positions.length < 9) return null;
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
+    return geometry;
 }
 
 function robustCoordinateBounds(coordinates, options = {}) {
@@ -921,7 +1182,7 @@ export class Factory3DViewer {
         });
         this.renderer.outputColorSpace = THREE.SRGBColorSpace;
         this.renderer.shadowMap.enabled = true;
-        this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+        this.renderer.shadowMap.type = THREE.VSMShadowMap;
         this._nativePixelRatio = Math.min(window.devicePixelRatio || 1, 1.5);
         this.renderer.setPixelRatio(1);
 
@@ -940,6 +1201,10 @@ export class Factory3DViewer {
             coneFov: 145,
             coneFoveate: 0.35,
         });
+        // Spark is the color-pass renderer only. Gaussian quads must never be
+        // submitted to shadow maps; closed proxy meshes own those passes.
+        this.spark.castShadow = false;
+        this.spark.receiveShadow = false;
         // Spark marks itself dirty again when worker-side sorting or mapping
         // finishes. That callback is what makes render-on-demand safe: a new
         // frame is requested only when the GPU output can actually change.
@@ -2034,11 +2299,12 @@ export class Factory3DViewer {
 
     _attachShadowProxy(entry) {
         if (!entry?.mesh || !entry?.splat || !hasFiniteBounds(entry.splatBounds)) return;
+        // Spark's source object must never participate in Three.js shadow
+        // passes; only the reconstructed solid caster below is allowed to do so.
+        entry.splat.castShadow = false;
+        entry.splat.receiveShadow = false;
         const transforms = gaussianShadowProxyTransforms(entry.splat, entry.splatBounds);
         if (!transforms.length) return;
-        // One low-poly ellipsoid per sampled Gaussian gives the shadow map a
-        // recognizable silhouette in one instanced draw call. A 1,536-instance
-        // cap keeps point-light cube shadows practical in large scenes.
         const geometry = new THREE.IcosahedronGeometry(1, 0);
         const material = new THREE.MeshBasicMaterial({
             colorWrite: false,
@@ -2060,14 +2326,18 @@ export class Factory3DViewer {
         proxy.quaternion.copy(entry.splat.quaternion);
         proxy.scale.copy(entry.splat.scale);
         proxy.updateMatrix();
-        proxy.name = "VNCCS Gaussian shadow proxy";
+        proxy.name = "VNCCS Gaussian filtered shadow caster";
         proxy.customDepthMaterial = new THREE.MeshDepthMaterial({
             depthPacking: THREE.RGBADepthPacking,
+            side: THREE.DoubleSide,
+        });
+        proxy.customDistanceMaterial = new THREE.MeshDistanceMaterial({
             side: THREE.DoubleSide,
         });
         proxy.castShadow = true;
         proxy.receiveShadow = false;
         proxy.userData.factoryShadowProxy = true;
+        proxy.userData.factoryShadowProxyMode = "filtered_gaussian_silhouette";
         entry.mesh.add(proxy);
         entry.shadowProxy = proxy;
         this._syncShadowProxy(entry);
@@ -2089,6 +2359,7 @@ export class Factory3DViewer {
             entry.shadowProxy.geometry?.dispose?.();
             entry.shadowProxy.material?.dispose?.();
             entry.shadowProxy.customDepthMaterial?.dispose?.();
+            entry.shadowProxy.customDistanceMaterial?.dispose?.();
             entry.shadowProxy.parent?.remove(entry.shadowProxy);
             entry.shadowProxy = null;
         }
@@ -2243,6 +2514,8 @@ export class Factory3DViewer {
 
     _syncThreeLights() {
         const qualitySizes = { low: 512, medium: 1024, high: 2048, ultra: 4096 };
+        const qualityBlurRadius = { low: 2.5, medium: 3, high: 3.5, ultra: 4 };
+        const qualityBlurSamples = { low: 8, medium: 12, high: 16, ultra: 24 };
         const shadowsEnabled = Boolean(
             this.lighting.shadows?.enabled && this.lighting.shadows?.quality !== "off",
         );
@@ -2255,6 +2528,8 @@ export class Factory3DViewer {
         this.sunLight.shadow.bias = this.lighting.shadows?.bias ?? DEFAULT_LIGHTING.shadows.bias;
         this.sunLight.shadow.normalBias = this.lighting.shadows?.normal_bias
             ?? DEFAULT_LIGHTING.shadows.normal_bias;
+        this.sunLight.shadow.radius = qualityBlurRadius[this.lighting.shadows?.quality] || 3;
+        this.sunLight.shadow.blurSamples = qualityBlurSamples[this.lighting.shadows?.quality] || 12;
         this._fitSunShadowCamera();
         for (const child of [...this.lightRig.children]) {
             if ([this.ambientLight, this.sunLight, this.sunLight.target].includes(child)) continue;
@@ -2305,7 +2580,9 @@ export class Factory3DViewer {
                 light.shadow.normalBias = data.kind === "directional"
                     ? configuredNormalBias
                     : Math.max(configuredNormalBias, DEFAULT_LIGHTING.shadows.normal_bias);
-                light.shadow.camera.near = 0.02;
+                light.shadow.radius = qualityBlurRadius[this.lighting.shadows?.quality] || 3;
+                light.shadow.blurSamples = qualityBlurSamples[this.lighting.shadows?.quality] || 12;
+                light.shadow.camera.near = 0.001;
                 if (data.kind === "point" || data.kind === "spot") {
                     light.shadow.camera.far = data.distance > 0
                         ? Math.max(0.03, data.distance)
