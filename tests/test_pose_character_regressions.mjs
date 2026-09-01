@@ -40,6 +40,24 @@ test("Pose Studio imports one strict version of its transform-track modules", ()
     );
 });
 
+test("connected pose images capture their exact size only when enabled", () => {
+    assert.match(poseStudioSource, /capture_image_size:\s*false/);
+    assert.match(poseStudioSource, /<strong>Capture Image Size<\/strong>/);
+    const applyMethod = methodSource(
+        poseStudioSource,
+        "applyCapturedImageSize(width, height)",
+        "\n    refreshPoseManagerControls()",
+    );
+    assert.match(applyMethod, /this\.exportParams\.capture_image_size !== true/);
+    assert.match(applyMethod, /this\.exportParams\.view_width = nextWidth/);
+    assert.match(applyMethod, /this\.exportParams\.view_height = nextHeight/);
+    assert.match(applyMethod, /this\.updateCaptureCameraPreview\(\)/);
+    assert.match(
+        poseStudioSource,
+        /widget\.applyCapturedImageSize\([\s\S]*event\.detail\.image_width[\s\S]*event\.detail\.image_height/,
+    );
+});
+
 
 test("scene animation cache stores all character clips in one compact bundle", () => {
     const buildMethod = methodSource(

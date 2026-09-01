@@ -391,7 +391,10 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()
-        self.assertEqual(capabilities["formats"], ["ply"])
+        self.assertEqual(capabilities["formats"], ["ply", "glb"])
+        self.assertEqual(set(capabilities["generators"]), {"triposplat", "pixal3d", "trellis2"})
+        self.assertEqual(capabilities["generators"]["pixal3d"]["output_format"], "glb")
+        self.assertEqual(capabilities["generators"]["trellis2"]["output_kind"], "mesh")
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
@@ -426,6 +429,56 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("remove_background: bool = True", source)
         self.assertIn('image = image.convert("RGBA")', source)
         self.assertNotIn('image = image.convert("RGB").convert("RGBA")', source)
+
+    def test_mesh_generation_settings_are_provider_specific(self):
+        settings = self.factory._generation_settings({
+            "provider": "pixal3d",
+            "quality": "balanced",
+            "structure_steps": "14",
+            "shape_steps": "22",
+            "upsample_steps": "11",
+            "texture_steps": "9",
+            "remove_background": "0",
+            "seed": "42",
+        })
+        self.assertEqual(settings["provider"], "pixal3d")
+        self.assertEqual(settings["quality"], "balanced")
+        self.assertEqual(settings["target_face_count"], 350000)
+        self.assertEqual(settings["texture_resolution"], 2048)
+        self.assertEqual(settings["structure_steps"], 14)
+        self.assertFalse(settings["remove_background"])
+        with self.assertRaisesRegex(ValueError, "generator"):
+            self.factory._generation_settings({"provider": "unknown"})
+
+    def test_mesh_pipeline_prepares_comfy_v3_hidden_context(self):
+        class FakeOutput:
+            def __init__(self, *args):
+                self.args = args
+                self.block_execution = None
+
+            @property
+            def result(self):
+                return self.args
+
+        class FakeV3Node:
+            FUNCTION = "execute"
+            hidden = None
+
+            @classmethod
+            def PREPARE_CLASS_CLONE(cls, _v3_data):
+                class Prepared(cls):
+                    hidden = types.SimpleNamespace(unique_id=None)
+
+                return Prepared
+
+            def execute(self, value):
+                self.__class__.hidden.unique_id
+                return FakeOutput(value + 1)
+
+        nodes_stub = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"FakeV3": FakeV3Node})
+        with mock.patch.dict(sys.modules, {"nodes": nodes_stub}):
+            result = self.factory.factory3d_generation._call_node("FakeV3", value=4)
+        self.assertEqual(result, (5,))
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
         capabilities = self.factory.capabilities()
@@ -683,6 +736,55 @@ class FactoryBackendTests(unittest.TestCase):
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
         source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
         self.assertIn('"scene": _public_scene(scene)', source)
+
+    def test_pixal_generation_commits_a_textured_mesh_asset(self):
+        scene = self.factory.create_scene("Pixal")
+        object_id = self.factory._new_id()
+        image_stream = io.BytesIO()
+        Image.new("RGB", (96, 64), (24, 48, 72)).save(image_stream, format="PNG")
+        settings = self.factory._generation_settings({
+            "provider": "pixal3d",
+            "quality": "preview",
+            "seed": "7",
+        })
+        job = self.factory._new_job("generation", scene["scene_id"])
+
+        def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
+            target.write_bytes(b"glTF" + b"\0" * 32)
+            Image.new("RGB", (1024, 1024), (0, 0, 0)).save(prepared, format="PNG")
+            return {
+                "provider": "pixal3d",
+                "format": "glb",
+                "size": target.stat().st_size,
+                "prepared_width": 1024,
+                "prepared_height": 1024,
+            }
+
+        with mock.patch.object(
+            self.factory,
+            "_provider_weights_status",
+            return_value={"ready": True},
+        ), mock.patch.object(
+            self.factory.factory3d_generation,
+            "run_mesh_generation",
+            side_effect=fake_generate,
+        ):
+            result = self.factory._generate_mesh_object(
+                job,
+                image_stream.getvalue(),
+                object_id,
+                "Pixal object",
+                settings,
+            )
+
+        item = result["scene"]["objects"][0]
+        self.assertEqual(item["asset_kind"], "mesh")
+        self.assertEqual(item["source"]["type"], "generated_model")
+        self.assertEqual(item["source"]["generator"], "pixal3d")
+        self.assertEqual(item["source"]["format"], "glb")
+        self.assertIn("/asset/model", item["urls"]["model"])
+        stored = self.factory.load_scene(scene["scene_id"])["objects"][0]
+        self.assertTrue(self.factory._object_file(scene["scene_id"], stored, "model").is_file())
 
     def test_object_updates_cannot_replace_server_file_metadata(self):
         scene = self.factory.create_scene("Scene")
@@ -1487,6 +1589,7 @@ class FactoryBackendTests(unittest.TestCase):
             ("POST", "/vnccs/3d-factory/splat-cache/settings"),
             ("POST", "/vnccs/3d-factory/splat-cache/clear"),
             ("POST", "/vnccs/3d-factory/weights/download"),
+            ("POST", "/vnccs/3d-factory/generators/{provider}/weights/download"),
             ("GET", "/vnccs/3d-factory/scenes"),
             ("POST", "/vnccs/3d-factory/scenes"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}"),

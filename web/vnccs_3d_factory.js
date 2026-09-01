@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260829.25";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260830.37";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
     DEFAULT_LEVEL,
@@ -12,7 +12,7 @@ import {
     normalizedEditorView,
     normalizedLevels,
     normalizedObjectEditorProperties,
-} from "./factory3d/editor_schema.mjs?v=20260828.1";
+} from "./factory3d/editor_schema.mjs?v=20260830.2";
 import {
     FactoryCommandHistory,
     preserveScrollState,
@@ -35,6 +35,7 @@ const ENDPOINTS = Object.freeze({
     splatCacheSettings: `${API_BASE}/splat-cache/settings`,
     splatCacheClear: `${API_BASE}/splat-cache/clear`,
     weightsDownload: `${API_BASE}/weights/download`,
+    generatorWeightsDownload: provider => `${API_BASE}/generators/${encodeURIComponent(provider)}/weights/download`,
     scenes: `${API_BASE}/scenes`,
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
@@ -47,6 +48,7 @@ const ENDPOINTS = Object.freeze({
     generate: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/generate`,
     importObject: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/import`,
     importModel: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/import-model`,
+    createPrimitive: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/primitive`,
     exportScene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/export`,
     job: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
     cancelJob: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/cancel`,
@@ -64,7 +66,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260829.25";
+const FRONTEND_BUILD = "20260830.37";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -72,6 +74,7 @@ const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const MAX_TEXTURE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
+    generator: "triposplat",
     name: "",
     steps: 20,
     guidance_scale: 3,
@@ -82,6 +85,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     splat_cache_limit_gb: 32,
     seed: 0,
     seed_mode: "randomize",
+    mesh_quality: "high",
+    mesh_structure_steps: 12,
+    mesh_shape_steps: 20,
+    mesh_upsample_steps: 12,
+    mesh_texture_steps: 12,
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -320,6 +328,22 @@ function objectNameFromFileName(value) {
         || "Object";
 }
 
+function imageFileDimensions(file) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve({ width: image.naturalWidth, height: image.naturalHeight });
+        };
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error("The selected image could not be decoded."));
+        };
+        image.src = url;
+    });
+}
+
 function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
@@ -465,6 +489,8 @@ class Factory3DWidget {
         this.currentJobId = "";
         this.currentJobToken = 0;
         this.importingPly = false;
+        this._pointerInside = false;
+        this._deletingSelectedObjects = false;
         this._listeners = [];
         this._timers = new Set();
         this._saveTimer = 0;
@@ -663,20 +689,24 @@ class Factory3DWidget {
                     </div>
                 </section>
                 <section class="vnccs-i3s__section">
-                    <div class="vnccs-i3s__section-head"><span>TripoSplat</span></div>
+                    <div class="vnccs-i3s__section-head"><span>Generator</span></div>
                     <div class="vnccs-i3s__section-body">
-                        <div class="vnccs-i3s__provider-card">
-                            <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot"></span>
-                            <div class="vnccs-i3s__provider-copy">
-                                <div class="vnccs-i3s__provider-name">Official model</div>
-                                <div class="vnccs-i3s__provider-model vnccs-i3s__weights-summary">Checking weights…</div>
-                            </div>
+                        <div class="vnccs-i3s__provider-card vnccs-i3s__generator-card">
+                            <button class="vnccs-i3s__generator-select" type="button" aria-haspopup="dialog" title="Choose generator">
+                                <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot"></span>
+                                <span class="vnccs-i3s__provider-copy">
+                                    <span class="vnccs-i3s__provider-name vnccs-i3s__generator-name">TripoSplat</span>
+                                    <span class="vnccs-i3s__provider-model vnccs-i3s__weights-summary">Checking weights…</span>
+                                </span>
+                                <span class="vnccs-i3s__generator-chevron" aria-hidden="true">⌄</span>
+                            </button>
                             <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button vnccs-i3s__model-setup" type="button" title="Model setup">${ICONS.settings}</button>
                         </div>
                         <label class="vnccs-i3s__field">
                             <span class="vnccs-i3s__label">Object name</span>
                             <input class="vnccs-i3s__input vnccs-i3s__object-name-input" maxlength="80" placeholder="Generated object" />
                         </label>
+                        <div class="vnccs-i3s__generator-settings" data-generator-settings="triposplat">
                         <div class="vnccs-i3s__field-row">
                             <label class="vnccs-i3s__field">
                                 <span class="vnccs-i3s__label">Gaussians</span>
@@ -701,6 +731,29 @@ class Factory3DWidget {
                             <span class="vnccs-i3s__label"><span>Guidance</span><span class="vnccs-i3s__guidance-value">3.0</span></span>
                             <input class="vnccs-i3s__range vnccs-i3s__guidance" type="range" min="1" max="10" step=".1" />
                         </label>
+                        </div>
+                        <div class="vnccs-i3s__generator-settings vnccs-i3s__mesh-settings" data-generator-settings="mesh" hidden>
+                            <label class="vnccs-i3s__field">
+                                <span class="vnccs-i3s__label">Quality</span>
+                                <select class="vnccs-i3s__select vnccs-i3s__mesh-quality">
+                                    <option value="preview">Preview · 1K</option>
+                                    <option value="balanced">Balanced · 2K</option>
+                                    <option value="high">High · 4K</option>
+                                </select>
+                            </label>
+                            <div class="vnccs-i3s__mesh-quality-summary">Textured GLB · 700K face target · 4K material</div>
+                            <details class="vnccs-i3s__advanced-settings">
+                                <summary>Advanced sampling</summary>
+                                <div class="vnccs-i3s__field-row">
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Structure</span><input class="vnccs-i3s__input vnccs-i3s__mesh-structure-steps" type="number" min="1" max="100" step="1" /></label>
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Shape</span><input class="vnccs-i3s__input vnccs-i3s__mesh-shape-steps" type="number" min="1" max="100" step="1" /></label>
+                                </div>
+                                <div class="vnccs-i3s__field-row">
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Upsample</span><input class="vnccs-i3s__input vnccs-i3s__mesh-upsample-steps" type="number" min="1" max="100" step="1" /></label>
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Texture</span><input class="vnccs-i3s__input vnccs-i3s__mesh-texture-steps" type="number" min="1" max="100" step="1" /></label>
+                                </div>
+                            </details>
+                        </div>
                         <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
                             <span class="vnccs-i3s__background-title">Remove background</span>
                             <button class="vnccs-i3s__switch vnccs-i3s__remove-background" type="button" role="switch" aria-checked="true" aria-label="Remove image background"></button>
@@ -774,7 +827,6 @@ class Factory3DWidget {
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-track-delete" type="button" title="Delete active camera path" aria-label="Delete active camera path">${ICONS.trash}</button>
                             </div>
                             <input class="vnccs-i3s__input vnccs-i3s__camera-track-name" maxlength="80" placeholder="Camera path name" aria-label="Camera path name" />
-                            <select class="vnccs-i3s__select vnccs-i3s__camera-track-building" aria-label="Camera path building"></select>
                             <div class="vnccs-i3s__camera-track-actions">
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-keyframe-add" type="button">Add point</button>
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-track-play" type="button">Play</button>
@@ -987,10 +1039,6 @@ class Factory3DWidget {
                     <button class="vnccs-ps-btn primary vnccs-i3s__library-open" type="button">
                         <span class="vnccs-ps-btn-icon" aria-hidden="true">${ICONS.library}</span> Model Library
                     </button>
-                    <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import GLB, glTF, FBX, OBJ, STL, ZIP, or Gaussian PLY into the active scene">
-                        ${ICONS.upload}<span>Import 3D</span>
-                    </button>
-                    <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" multiple accept=".glb,.gltf,.fbx,.obj,.stl,.zip,.ply,.mtl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tga,application/octet-stream" tabindex="-1" />
                 </div>
                 <div class="vnccs-i3s__workspace-tabs vnccs-i3s__workspace-tabs--three" role="tablist" aria-label="Scene workspace">
                     <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
@@ -1029,6 +1077,18 @@ class Factory3DWidget {
                         </button>
                     </div>
                     <div class="vnccs-i3s__section-body">
+                        <div class="vnccs-i3s__object-create-menu">
+                            <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import GLB, glTF, FBX, OBJ, STL, ZIP, or Gaussian PLY into the active scene">
+                                ${ICONS.upload}<span>Import</span>
+                            </button>
+                            <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" multiple accept=".glb,.gltf,.fbx,.obj,.stl,.zip,.ply,.mtl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tga,application/octet-stream" tabindex="-1" />
+                            <div class="vnccs-i3s__object-create-label">Create</div>
+                            <div class="vnccs-i3s__primitive-launcher" aria-label="Create scene objects">
+                                <button class="vnccs-i3s__button vnccs-i3s__image-import" type="button" title="Import an image as a proportionally sized plane">${ICONS.image}<span>Image</span></button>
+                                <button class="vnccs-i3s__button vnccs-i3s__terrain-add" type="button" title="Create an editable terrain surface">${ICONS.grid}<span>Terrain</span></button>
+                                <input class="vnccs-i3s__file-input vnccs-i3s__image-input" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" />
+                            </div>
+                        </div>
                         <section class="vnccs-i3s__level-panel" aria-label="Floor levels" hidden>
                             <div class="vnccs-i3s__level-panel-head">
                                 <div><strong>Levels</strong><small>Active drawing plane</small></div>
@@ -1137,6 +1197,9 @@ class Factory3DWidget {
             sourceChange: $(".vnccs-i3s__source-change"),
             weightsDot: $(".vnccs-i3s__weights-dot"),
             weightsSummary: $(".vnccs-i3s__weights-summary"),
+            generatorName: $(".vnccs-i3s__generator-name"),
+            generatorSelect: $(".vnccs-i3s__generator-select"),
+            generatorPanels: Array.from(this.container.querySelectorAll("[data-generator-settings]")),
             modelSetup: $(".vnccs-i3s__model-setup"),
             objectName: $(".vnccs-i3s__object-name-input"),
             density: $(".vnccs-i3s__density"),
@@ -1144,6 +1207,12 @@ class Factory3DWidget {
             steps: $(".vnccs-i3s__steps"),
             guidance: $(".vnccs-i3s__guidance"),
             guidanceValue: $(".vnccs-i3s__guidance-value"),
+            meshQuality: $(".vnccs-i3s__mesh-quality"),
+            meshQualitySummary: $(".vnccs-i3s__mesh-quality-summary"),
+            meshStructureSteps: $(".vnccs-i3s__mesh-structure-steps"),
+            meshShapeSteps: $(".vnccs-i3s__mesh-shape-steps"),
+            meshUpsampleSteps: $(".vnccs-i3s__mesh-upsample-steps"),
+            meshTextureSteps: $(".vnccs-i3s__mesh-texture-steps"),
             removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
             seedDice: $(".vnccs-i3s__seed-dice"),
@@ -1158,7 +1227,6 @@ class Factory3DWidget {
             cameraTrackAdd: $(".vnccs-i3s__camera-track-add"),
             cameraTrackDelete: $(".vnccs-i3s__camera-track-delete"),
             cameraTrackName: $(".vnccs-i3s__camera-track-name"),
-            cameraTrackBuilding: $(".vnccs-i3s__camera-track-building"),
             cameraKeyframeAdd: $(".vnccs-i3s__camera-keyframe-add"),
             cameraTrackPlay: $(".vnccs-i3s__camera-track-play"),
             cameraTrackTime: $(".vnccs-i3s__camera-track-time"),
@@ -1171,6 +1239,9 @@ class Factory3DWidget {
             libraryOpen: $(".vnccs-i3s__library-open"),
             plyImport: $(".vnccs-i3s__ply-import"),
             plyInput: $(".vnccs-i3s__ply-input"),
+            imageImport: $(".vnccs-i3s__image-import"),
+            imageInput: $(".vnccs-i3s__image-input"),
+            terrainAdd: $(".vnccs-i3s__terrain-add"),
             status: $(".vnccs-i3s__status-pill"),
             viewerHost: $(".vnccs-i3s__viewer-host"),
             view3d: $(".vnccs-i3s__view-3d"),
@@ -1376,6 +1447,11 @@ class Factory3DWidget {
             [this.els.steps, "steps", "integer"],
             [this.els.guidance, "guidance_scale", "number"],
             [this.els.seed, "seed", "integer"],
+            [this.els.meshQuality, "mesh_quality", "string"],
+            [this.els.meshStructureSteps, "mesh_structure_steps", "integer"],
+            [this.els.meshShapeSteps, "mesh_shape_steps", "integer"],
+            [this.els.meshUpsampleSteps, "mesh_upsample_steps", "integer"],
+            [this.els.meshTextureSteps, "mesh_texture_steps", "integer"],
         ];
         for (const [control, key, kind] of settings) {
             const update = () => {
@@ -1383,6 +1459,7 @@ class Factory3DWidget {
                 this.settings[key] = kind === "string" ? value : kind === "integer" ? Math.round(Number(value)) : Number(value);
                 this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
                 if (key === "num_gaussians") this._syncDensityMode();
+                if (key === "mesh_quality") this._syncMeshQuality();
                 this._scheduleStateSave();
             };
             this._listen(control, "input", update);
@@ -1401,6 +1478,7 @@ class Factory3DWidget {
         this._listen(this.els.donateLink, "pointerdown", event => event.stopPropagation());
         this._listen(this.els.donateLink, "click", event => event.stopPropagation());
         this._listen(this.els.modelSetup, "click", () => this.openModelSetup());
+        this._listen(this.els.generatorSelect, "click", () => void this.openGeneratorSelector());
         this._listen(this.els.generate, "click", () => void this.generate());
         this._bindCameraControls();
         this._listen(this.els.cameraAdd, "click", () => void this.addCamera());
@@ -1430,18 +1508,6 @@ class Factory3DWidget {
             this._scheduleSceneSave(0);
             this._syncToolbar();
         });
-        this._listen(this.els.cameraTrackBuilding, "change", () => {
-            const track = this._activeCameraTrack();
-            if (!track) return;
-            const before = this._captureEditorSnapshot();
-            track.building_id = this._validBuildingId(this.els.cameraTrackBuilding.value);
-            if (track.building_id) this.editorView.active_building_id = track.building_id;
-            this.history.push("Assign camera path to building", before, this._captureEditorSnapshot());
-            this._renderCameraTracks();
-            this._scheduleSceneSave(0);
-            this._scheduleStateSave(0);
-            this._syncToolbar();
-        });
         this._listen(this.els.cameraTrackTime, "input", () => {
             this._setCameraTrackTime(Number(this.els.cameraTrackTime.value));
         });
@@ -1465,6 +1531,13 @@ class Factory3DWidget {
                 void this.importModel(files);
             }
         });
+        this._listen(this.els.imageImport, "click", () => this.els.imageInput.click());
+        this._listen(this.els.imageInput, "change", () => {
+            const file = this.els.imageInput.files?.[0];
+            this.els.imageInput.value = "";
+            if (file) void this.importImagePlane(file);
+        });
+        this._listen(this.els.terrainAdd, "click", () => void this.createPrimitive("terrain"));
         this._listen(this.els.sceneManager, "click", () => void this.openSceneManager());
         this._listen(this.els.sceneName, "change", () => {
             if (!this.scene) return;
@@ -1562,33 +1635,41 @@ class Factory3DWidget {
             this._syncToolbar();
             this._scheduleStateSave(0);
         });
-        this._listen(this.els.snapGrid, "change", () => {
+        const updateSnapGrid = () => {
+            if (this.els.snapGrid.value === "") return;
             const step = clamp(this.els.snapGrid.value, 0.001, 1000);
             this.editorView.plan_grid.step = step;
             // Preserve the legacy serialized alias for older frontends.
             this.editorView.snap.grid = step;
             this._syncToolbar();
             this._scheduleStateSave(0);
-        });
+        };
+        this._listen(this.els.snapGrid, "input", updateSnapGrid);
+        this._listen(this.els.snapGrid, "change", updateSnapGrid);
         for (const control of this.els.planSettings) {
-            this._listen(control, "change", () => {
+            const updatePlanSetting = () => {
                 const key = control.dataset.planSetting;
                 if (key === "opening_kind") {
                     this.editorView.opening_kind = control.value;
                 } else if (key === "grid_step") {
+                    if (control.value === "") return;
                     const step = clamp(control.value, 0.001, 1000);
                     this.editorView.plan_grid.step = step;
                     this.editorView.snap.grid = step;
                 } else if (key === "major_every") {
+                    if (control.value === "") return;
                     this.editorView.plan_grid.major_every = Math.round(clamp(control.value, 2, 100));
                 } else if (control.type === "checkbox") {
                     this.editorView.snap[key] = control.checked;
                 } else {
+                    if (control.value === "") return;
                     this.editorView.snap[key] = clamp(control.value, 0, 180);
                 }
                 this._syncToolbar();
                 this._scheduleStateSave(0);
-            });
+            };
+            if (control.type === "number") this._listen(control, "input", updatePlanSetting);
+            this._listen(control, "change", updatePlanSetting);
         }
         this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
         this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
@@ -1678,11 +1759,13 @@ class Factory3DWidget {
                 this.els.planSettingsPanel.open = false;
             }
         });
-        // Match Pose Studio's timeline shortcut routing: capture the command
-        // before ComfyUI's global graph handlers, but only while this Factory
-        // editor owns focus and never while the user edits a form control.
+        this._listen(this.container, "pointerenter", () => { this._pointerInside = true; });
+        this._listen(this.container, "pointerleave", () => { this._pointerInside = false; });
+        // Match Pose Studio's shortcut routing: capture the command before
+        // ComfyUI's graph handlers while the pointer is inside this editor.
         this._listen(window, "keydown", event => {
-            const activeWithin = this.container.contains(event.target)
+            const activeWithin = this._pointerInside
+                || this.container.contains(event.target)
                 || this.container.contains(document.activeElement);
             if (!activeWithin) return;
             if (
@@ -1696,8 +1779,14 @@ class Factory3DWidget {
                 || target?.isContentEditable;
             if (editing) return;
             if (event.key === "Delete" || event.key === "Backspace") {
+                const selectedObjectIds = new Set(this.selectedObjectIds);
+                if (this.selectedObjectId) selectedObjectIds.add(this.selectedObjectId);
                 event.preventDefault();
                 event.stopImmediatePropagation();
+                if (selectedObjectIds.size) {
+                    void this._deleteSelectedObjects(selectedObjectIds);
+                    return;
+                }
                 const deleteControl = this.els.inspector.querySelector(
                     '[data-inspector-action="delete"]',
                 );
@@ -1946,6 +2035,7 @@ class Factory3DWidget {
         };
         for (const anchor of ["width", "height"]) {
             const control = anchor === "width" ? this.els.sceneWidth : this.els.sceneHeight;
+            this._listen(control, "input", () => updateExportSide(anchor));
             this._listen(control, "change", () => updateExportSide(anchor));
             this._listen(control, "keydown", event => {
                 if (event.key === "Enter") {
@@ -2292,14 +2382,6 @@ class Factory3DWidget {
         return buildings.some(building => building.building_id === requested)
             ? requested
             : "";
-    }
-
-    _buildingOptions(selectedId = "") {
-        const valid = this._validBuildingId(selectedId);
-        return `<option value=""${valid ? "" : " selected"}>No building</option>`
-            + (this.scene?.architecture?.buildings || []).map(building => (
-            `<option value="${building.building_id}"${building.building_id === valid ? " selected" : ""}>${escapeHTML(building.name || "Building")}</option>`
-        )).join("");
     }
 
     _transformPointWithBuilding(point, previousPosition, nextPosition, deltaRotationDegrees) {
@@ -3149,14 +3231,16 @@ class Factory3DWidget {
         }
     }
 
-    _previewArchitectureMaterials() {
+    _previewArchitectureMaterials(sceneData = this.scene, { persist = true } = {}) {
         clearTimeout(this._architecturePreviewTimer);
         this._architecturePreviewTimer = setTimeout(() => {
             this._architecturePreviewTimer = 0;
-            void this.viewer.refreshArchitecture(this.scene);
+            void this.viewer.refreshArchitecture(sceneData);
         }, 50);
-        this._scheduleSceneSave(220);
-        this._scheduleStateSave(220);
+        if (persist) {
+            this._scheduleSceneSave(220);
+            this._scheduleStateSave(220);
+        }
     }
 
     _architectureSelectionKey(selection) {
@@ -3377,9 +3461,36 @@ class Factory3DWidget {
             const opening = this.scene?.architecture?.openings?.find(item => item.opening_id === change.id);
             const wall = this.scene?.architecture?.walls?.find(item => item.wall_id === opening?.wall_id);
             const building = this._buildingForItem(wall);
+            const phase = ["start", "move", "end", "cancel"].includes(change.phase)
+                ? change.phase
+                : "end";
+            const activeDrag = this._architecturePlanDrag?.type === "opening"
+                && this._architecturePlanDrag.id === change.id
+                ? this._architecturePlanDrag
+                : null;
+            if (phase === "cancel") {
+                if (opening && activeDrag) {
+                    opening.offset = activeDrag.offset;
+                    opening.width = activeDrag.width;
+                    this.viewer.updateArchitectureItem("opening", opening.opening_id, this.scene);
+                }
+                this._architecturePlanDrag = null;
+                return;
+            }
             if (!opening || !wall || opening.locked || wall.locked || building?.locked) {
                 return this.viewer.setArchitectureSelection(this.selectedArchitecture);
             }
+            if (phase === "start") {
+                this._architecturePlanDrag = {
+                    type: "opening",
+                    id: opening.opening_id,
+                    before: this._captureEditorSnapshot(),
+                    offset: opening.offset,
+                    width: opening.width,
+                };
+                return;
+            }
+            if (!Array.isArray(change.point)) return;
             const point = this._worldToLocalPlan(
                 this._snapPlanPoint(change.point, change.event || {}),
                 building,
@@ -3391,9 +3502,12 @@ class Factory3DWidget {
             const requestedOffset = ((point[0] - wall.start[0]) * dx + (point[1] - wall.start[1]) * dz) / lengthSquared;
             const fitted = this._fitOpeningOnWall(wall, requestedOffset, opening.width, opening.opening_id);
             if (!fitted) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
-            const before = this._captureEditorSnapshot();
+            const before = activeDrag?.before || this._captureEditorSnapshot();
             opening.offset = fitted.offset;
             opening.width = fitted.width;
+            this.viewer.updateArchitectureItem("opening", opening.opening_id, this.scene);
+            if (phase === "move") return;
+            this._architecturePlanDrag = null;
             this.history.push("Move opening", before, this._captureEditorSnapshot());
             void this._commitArchitecture({ targeted: true });
             return;
@@ -3409,6 +3523,45 @@ class Factory3DWidget {
             this.viewer.setArchitectureSelection(this.selectedArchitecture);
             return;
         }
+        const phase = ["start", "move", "end", "cancel"].includes(change.phase)
+            ? change.phase
+            : "end";
+        const activeDrag = this._architecturePlanDrag?.type === "wall"
+            && this._architecturePlanDrag.id === change.id
+            && this._architecturePlanDrag.endpoint === change.endpoint
+            ? this._architecturePlanDrag
+            : null;
+        if (phase === "cancel") {
+            if (activeDrag) {
+                wall.start = [...activeDrag.start];
+                wall.end = [...activeDrag.end];
+                for (const original of activeDrag.rooms) {
+                    const linked = this.scene.architecture.rooms?.find(item => item.room_id === original.room_id);
+                    if (linked) linked.polygon = original.polygon.map(point => [...point]);
+                }
+                this.viewer.updateArchitectureItem("wall", wall.wall_id, this.scene);
+            }
+            this._architecturePlanDrag = null;
+            return;
+        }
+        if (phase === "start") {
+            this._architecturePlanDrag = {
+                type: "wall",
+                id: wall.wall_id,
+                endpoint: change.endpoint,
+                before: this._captureEditorSnapshot(),
+                start: [...wall.start],
+                end: [...wall.end],
+                rooms: (this.scene.architecture.rooms || [])
+                    .filter(room => room.wall_ids?.includes(wall.wall_id))
+                    .map(room => ({
+                        room_id: room.room_id,
+                        polygon: room.polygon.map(point => [...point]),
+                    })),
+            };
+            return;
+        }
+        if (!Array.isArray(change.point)) return;
         const worldPoint = this._snapPlanPoint(change.point, change.event || {});
         const building = this._buildingForItem(wall);
         const point = this._worldToLocalPlan(worldPoint, building);
@@ -3416,10 +3569,15 @@ class Factory3DWidget {
             point[0] - wall[change.endpoint === "start" ? "end" : "start"][0],
             point[1] - wall[change.endpoint === "start" ? "end" : "start"][1],
         ) < 0.001) {
+            if (activeDrag && phase === "end") {
+                this._architecturePlanDrag = null;
+                this.history.push("Move wall endpoint", activeDrag.before, this._captureEditorSnapshot());
+                void this._commitArchitecture();
+            }
             this.viewer.setArchitectureSelection(this.selectedArchitecture);
             return;
         }
-        const before = this._captureEditorSnapshot();
+        const before = activeDrag?.before || this._captureEditorSnapshot();
         wall[change.endpoint] = point;
         for (const room of this.scene.architecture.rooms || []) {
             const index = room.wall_ids?.indexOf(wall.wall_id) ?? -1;
@@ -3429,6 +3587,9 @@ class Factory3DWidget {
                 : (index + 1) % room.polygon.length;
             room.polygon[endpointIndex] = [...point];
         }
+        this.viewer.updateArchitectureItem("wall", wall.wall_id, this.scene);
+        if (phase === "move") return;
+        this._architecturePlanDrag = null;
         this.history.push("Move wall endpoint", before, this._captureEditorSnapshot());
         void this._commitArchitecture();
         this._syncToolbar();
@@ -3648,7 +3809,6 @@ class Factory3DWidget {
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-light-property="level_id">
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${light.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
             </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-light-property="building_id">${this._buildingOptions(light.building_id)}</select></label>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
                 ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `light.position.${index}`, light.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
             </div>
@@ -3704,9 +3864,6 @@ class Factory3DWidget {
                     target.position[1] += delta;
                     target.target[1] += delta;
                     target.level_id = value;
-                } else if (key === "building_id") {
-                    target.building_id = this._validBuildingId(value);
-                    if (target.building_id) this.editorView.active_building_id = target.building_id;
                 } else {
                     target[key] = value;
                 }
@@ -3747,32 +3904,47 @@ class Factory3DWidget {
             <div class="vnccs-i3s__inspector-group"><b>Scale factor</b>
                 ${this._numericControl("Scale", "group.scale", 1, { minimum: 0.001, maximum: 100, step: 0.001 })}
             </div>
-            <div class="vnccs-i3s__inspector-actions"><button class="vnccs-i3s__button vnccs-i3s__button--primary" type="button" data-group-apply>Apply to ${group.children.length} objects</button></div>`;
+            <div class="vnccs-i3s__hint">All group changes are applied to the viewport immediately.</div>`;
         const staged = { position: [...center], rotation: [0, 0, 0], scale: 1 };
+        let before = null;
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const apply = final => {
+            this._suppressViewerTransformHistory = true;
+            try { this.viewer.applyGroupDelta(staged, { final }); }
+            finally {
+                this._suppressViewerTransformHistory = false;
+                this._viewerTransformHistoryBefore = null;
+            }
+        };
         for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
+                begin();
                 const [, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
+                const value = this._numericControlInputValue(control);
                 if (!Number.isFinite(value)) return;
                 if (rawIndex !== undefined) staged[key][Number(rawIndex)] = value;
                 else staged[key] = value;
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(value);
-                }
+                this._syncNumericControlPeers(
+                    this.els.inspector,
+                    control.dataset.editorPath,
+                    value,
+                    control,
+                );
+                apply(false);
+            });
+            control.addEventListener("change", () => {
+                if (!before) return;
+                apply(true);
+                this.history.push("Transform group", before, this._captureEditorSnapshot());
+                before = null;
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._renderInspector();
+                this._syncToolbar();
             });
         }
-        this.els.inspector.querySelector("[data-group-apply]")?.addEventListener("click", () => {
-            this._recordEditorCommand("Transform group", () => {
-                this._suppressViewerTransformHistory = true;
-                try { this.viewer.applyGroupDelta(staged); }
-                finally {
-                    this._suppressViewerTransformHistory = false;
-                    this._viewerTransformHistoryBefore = null;
-                }
-                this._renderInspector();
-                this._scheduleSceneSave(0);
-            });
-        });
     }
 
     _renderCameraInspector(camera) {
@@ -3787,9 +3959,6 @@ class Factory3DWidget {
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-camera-property="name" value="${escapeHTML(camera.name || "Camera")}" maxlength="80" /></label>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-camera-property="level_id">
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${camera.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
-            </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-camera-property="building_id">
-                ${this._buildingOptions(camera.building_id)}
             </select></label>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
                 ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
@@ -3912,19 +4081,6 @@ class Factory3DWidget {
             this.viewer?.showCameraPreview?.(camera);
             this._scheduleSceneSave(0);
         });
-        this.els.inspector.querySelector('[data-camera-property="building_id"]')?.addEventListener("change", event => {
-            const original = this._captureEditorSnapshot();
-            camera.building_id = this._validBuildingId(event.currentTarget.value);
-            if (camera.building_id) this.editorView.active_building_id = camera.building_id;
-            this.history.push("Assign camera to building", original, this._captureEditorSnapshot());
-            this.viewer.setCameraMarkers(this.scene.cameras);
-            this._renderCameras();
-            this._renderObjects();
-            this.viewer?.showCameraPreview?.(camera, { refresh: false });
-            this._syncToolbar();
-            this._scheduleSceneSave(0);
-            this._scheduleStateSave(0);
-        });
         this.els.inspector.querySelector('[data-inspector-action="preview-camera"]')?.addEventListener("click", () => {
             if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
             else this._enterCameraView(camera.camera_id);
@@ -3951,7 +4107,6 @@ class Factory3DWidget {
         this.els.inspectorKind.textContent = "Camera path point";
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(track.name || "Camera path")}</div>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-track-property="building_id">${this._buildingOptions(track.building_id)}</select></label>
             <div class="vnccs-i3s__inspector-group"><b>Timeline</b>
                 ${this._numericControl("Time", "keyframe.time", frame.time, { minimum: 0, maximum: track.duration, step: 0.001 })}
                 ${this._numericControl("Duration", "track.duration", track.duration, { minimum: 0.1, maximum: 86400, step: 0.01 })}
@@ -4028,6 +4183,11 @@ class Factory3DWidget {
                     appliedValue,
                     control,
                 );
+                if (scope === "track" || key === "time") {
+                    track.keyframes.sort((left, right) => left.time - right.time);
+                    this.els.cameraTrackTime.value = String(frame.time);
+                    this._renderCameraTracks();
+                }
             });
             control.addEventListener("change", () => {
                 track.keyframes.sort((left, right) => left.time - right.time);
@@ -4044,10 +4204,6 @@ class Factory3DWidget {
                 const target = control.dataset.trackProperty ? track : frame;
                 const key = control.dataset.trackProperty || control.dataset.keyframeProperty;
                 target[key] = control.type === "checkbox" ? control.checked : control.value;
-                if (control.dataset.trackProperty === "building_id") {
-                    track.building_id = this._validBuildingId(control.value);
-                    this.editorView.active_building_id = track.building_id;
-                }
                 this.history.push("Edit camera path", original, this._captureEditorSnapshot());
                 this._renderCameraTracks();
                 this._scheduleSceneSave(0);
@@ -4081,9 +4237,28 @@ class Factory3DWidget {
             scale: Math.max(0.001, Number(transform.scale) || 1),
         };
         const editor = normalizedObjectEditorProperties(item);
-        this.els.inspectorKind.textContent = item.asset_kind === "mesh"
-            ? `${String(item.source?.format || "3D").toUpperCase()} model`
-            : "Gaussian object";
+        Object.assign(item, editor);
+        const primitive = editor.primitive;
+        const primitiveControl = (label, path, value, options) => this._numericControl(
+            label,
+            path,
+            value,
+            options,
+        ).replaceAll("data-editor-path", "data-primitive-path");
+        const emissionControl = (label, path, value, options) => this._numericControl(
+            label,
+            path,
+            value,
+            options,
+        ).replaceAll("data-editor-path", "data-emission-path");
+        const textureName = this.scene?.textures?.find(
+            texture => texture.texture_id === primitive?.texture_id,
+        )?.name || "No texture";
+        this.els.inspectorKind.textContent = item.asset_kind === "primitive"
+            ? `${primitive?.kind === "image" ? "Image plane" : primitive?.kind === "terrain" ? "Terrain" : "Plane"}`
+            : item.asset_kind === "mesh"
+                ? `${String(item.source?.format || "3D").toUpperCase()} model`
+                : "Gaussian object";
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Object")}</div>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
@@ -4095,11 +4270,46 @@ class Factory3DWidget {
             <div class="vnccs-i3s__inspector-group"><b>Uniform scale</b>
                 ${this._numericControl("Scale", "scale", transform.scale, { minimum: 0.001, maximum: 1000, step: 0.001, disabled: editor.locked })}
             </div>
+            ${primitive ? `
+                <div class="vnccs-i3s__inspector-group"><b>${primitive.kind === "image" ? "Image plane" : primitive.kind === "terrain" ? "Terrain" : "Plane"} geometry</b>
+                    ${primitiveControl("Width", "width", primitive.width, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.width), step: 0.01, disabled: editor.locked })}
+                    ${primitive.kind === "image"
+                        ? primitiveControl("Height", "height", primitive.height, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.height), step: 0.01, disabled: editor.locked })
+                        : primitiveControl("Depth", "depth", primitive.depth, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.depth), step: 0.01, disabled: editor.locked })}
+                    ${primitiveControl("Extrusion", "extrusion", primitive.extrusion, { minimum: 0, maximum: 100000, sliderMinimum: 0, sliderMaximum: Math.max(5, primitive.extrusion), step: 0.01, disabled: editor.locked })}
+                    ${primitive.kind === "terrain" ? `
+                        ${primitiveControl("Segments X", "segments.0", primitive.segments[0], { minimum: 1, maximum: 128, step: 1, range: false, disabled: editor.locked })}
+                        ${primitiveControl("Segments Z", "segments.1", primitive.segments[1], { minimum: 1, maximum: 128, step: 1, range: false, disabled: editor.locked })}` : ""}
+                </div>
+                <div class="vnccs-i3s__inspector-group"><b>Surface texture</b>
+                    <div class="vnccs-i3s__hint">${escapeHTML(textureName)}</div>
+                    <div class="vnccs-i3s__inspector-actions">
+                        <button class="vnccs-i3s__button" type="button" data-primitive-texture-pick>${primitive.texture_id ? "Replace texture" : "Load texture"}</button>
+                        ${primitive.kind !== "image" && primitive.texture_id ? `<button class="vnccs-i3s__button" type="button" data-primitive-texture-clear>Clear</button>` : ""}
+                    </div>
+                    <input class="vnccs-i3s__file-input" type="file" accept="image/png,image/jpeg,image/webp" data-primitive-texture-file />
+                    ${primitiveControl(primitive.kind === "terrain" ? "Tile density X" : "Texture scale X", "uv_scale.0", primitive.uv_scale[0], { minimum: 0.001, maximum: 1000, sliderMinimum: 0.01, sliderMaximum: 20, step: 0.01 })}
+                    ${primitiveControl(primitive.kind === "terrain" ? "Tile density Y" : "Texture scale Y", "uv_scale.1", primitive.uv_scale[1], { minimum: 0.001, maximum: 1000, sliderMinimum: 0.01, sliderMaximum: 20, step: 0.01 })}
+                    ${primitiveControl("Texture offset X", "uv_offset.0", primitive.uv_offset[0], { minimum: -1000, maximum: 1000, sliderMinimum: -2, sliderMaximum: 2, step: 0.01 })}
+                    ${primitiveControl("Texture offset Y", "uv_offset.1", primitive.uv_offset[1], { minimum: -1000, maximum: 1000, sliderMinimum: -2, sliderMaximum: 2, step: 0.01 })}
+                    ${primitiveControl("Texture rotation", "uv_rotation", primitive.uv_rotation, { minimum: -36000, maximum: 36000, sliderMinimum: -180, sliderMaximum: 180, step: 0.1 })}
+                    <label class="vnccs-i3s__lighting-color-row"><span><b>Base color</b></span><span class="vnccs-i3s__lighting-color-control"><input type="color" data-primitive-property="color" value="${primitive.color}" aria-label="Primitive base color" /><output>${primitive.color.toUpperCase()}</output></span></label>
+                    ${primitiveControl("Opacity", "opacity", primitive.opacity, { minimum: 0, maximum: 1, step: 0.01 })}
+                    <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-primitive-property="double_sided"${primitive.double_sided ? " checked" : ""} /> Double-sided surface</label>
+                </div>` : ""}
+            <div class="vnccs-i3s__inspector-group"><b>Surface emission</b>
+                <div class="vnccs-i3s__hint">Emits sampled object colors from distributed area lights across the object surface.</div>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-emission-property="enabled"${editor.emission.enabled ? " checked" : ""} /> Emit light</label>
+                ${emissionControl("Intensity", "intensity", editor.emission.intensity, { minimum: 0, maximum: 1000, sliderMinimum: 0, sliderMaximum: 25, step: 0.1 })}
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Area sampling</span><select class="vnccs-i3s__select" data-emission-property="quality">
+                    <option value="low"${editor.emission.quality === "low" ? " selected" : ""}>Low</option>
+                    <option value="medium"${editor.emission.quality === "medium" ? " selected" : ""}>Medium</option>
+                    <option value="high"${editor.emission.quality === "high" ? " selected" : ""}>High</option>
+                </select></label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-emission-property="two_sided"${editor.emission.two_sided ? " checked" : ""} /> Emit from both sides</label>
+            </div>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-object-property="level_id"${editor.locked ? " disabled" : ""}>
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
-            </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-object-property="building_id"${editor.locked ? " disabled" : ""}>
-                ${this._buildingOptions(item.building_id)}
             </select></label>
             <div class="vnccs-i3s__inspector-grid">
                 <label><span>Collision</span><select class="vnccs-i3s__select" data-object-property="collision_proxy.mode">
@@ -4160,6 +4370,136 @@ class Factory3DWidget {
             });
             control.addEventListener("change", () => finish("Edit transform"));
         }
+        for (const control of this.els.inspector.querySelectorAll("[data-primitive-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            const apply = () => {
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                const [key, rawIndex] = control.dataset.primitivePath.split(".");
+                const primitive = { ...item.primitive };
+                if (rawIndex === undefined) primitive[key] = value;
+                else {
+                    primitive[key] = [...(Array.isArray(primitive[key]) ? primitive[key] : [0, 0])];
+                    primitive[key][Number(rawIndex)] = value;
+                }
+                item.primitive = normalizedObjectEditorProperties({ ...item, primitive }).primitive;
+                const applied = rawIndex === undefined
+                    ? item.primitive[key]
+                    : item.primitive[key][Number(rawIndex)];
+                for (const peer of this.els.inspector.querySelectorAll(`[data-primitive-path="${control.dataset.primitivePath}"]`)) {
+                    if (peer !== control) peer.value = this._formatControlNumber(applied, peer.step);
+                }
+            };
+            control.addEventListener("input", () => {
+                apply();
+                this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+            });
+            control.addEventListener("change", () => {
+                apply();
+                this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+                finish("Edit primitive geometry");
+            });
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-primitive-property]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            const apply = () => {
+                const key = control.dataset.primitiveProperty;
+                const primitive = {
+                    ...item.primitive,
+                    [key]: control.type === "checkbox" ? control.checked : control.value,
+                };
+                item.primitive = normalizedObjectEditorProperties({ ...item, primitive }).primitive;
+                control.closest(".vnccs-i3s__lighting-color-control")?.querySelector("output")
+                    ?.replaceChildren(item.primitive.color.toUpperCase());
+                this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+            };
+            if (control.type === "color") control.addEventListener("input", apply);
+            control.addEventListener("change", () => {
+                apply();
+                finish("Edit primitive surface");
+            });
+        }
+        const primitiveTextureInput = this.els.inspector.querySelector("[data-primitive-texture-file]");
+        this.els.inspector.querySelector("[data-primitive-texture-pick]")?.addEventListener("click", () => {
+            primitiveTextureInput?.click();
+        });
+        primitiveTextureInput?.addEventListener("change", async () => {
+            const file = primitiveTextureInput.files?.[0];
+            primitiveTextureInput.value = "";
+            if (!file || !item.primitive) return;
+            const original = this._captureEditorSnapshot();
+            try {
+                const texture = await this._uploadSceneTexture(file);
+                item.primitive = normalizedObjectEditorProperties({
+                    ...item,
+                    primitive: { ...item.primitive, texture_id: texture.texture_id },
+                }).primitive;
+                await this.viewer.setScene(this.scene, { incremental: true });
+                this.history.push("Replace primitive texture", original, this._captureEditorSnapshot());
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._scheduleScenePreview(120);
+                this._renderInspector();
+            } catch (error) {
+                this._showError("Texture could not be applied", error);
+            }
+        });
+        this.els.inspector.querySelector("[data-primitive-texture-clear]")?.addEventListener("click", () => {
+            const original = this._captureEditorSnapshot();
+            item.primitive = normalizedObjectEditorProperties({
+                ...item,
+                primitive: { ...item.primitive, texture_id: "" },
+            }).primitive;
+            this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+            this.history.push("Clear primitive texture", original, this._captureEditorSnapshot());
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+            this._scheduleScenePreview(120);
+            this._renderInspector();
+        });
+        for (const control of this.els.inspector.querySelectorAll("[data-emission-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            const apply = () => {
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                item.emission = normalizedObjectEditorProperties({
+                    ...item,
+                    emission: { ...item.emission, [control.dataset.emissionPath]: value },
+                }).emission;
+                for (const peer of this.els.inspector.querySelectorAll(`[data-emission-path="${control.dataset.emissionPath}"]`)) {
+                    if (peer !== control) peer.value = this._formatControlNumber(item.emission[control.dataset.emissionPath], peer.step);
+                }
+                this.viewer.updateObject(item.object_id, { emission: item.emission });
+                this._scheduleSceneSave(180);
+                this._scheduleStateSave(180);
+            };
+            control.addEventListener("input", apply);
+            control.addEventListener("change", () => {
+                apply();
+                finish("Edit object emission");
+            });
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-emission-property]")) {
+            control.addEventListener("change", () => {
+                const original = this._captureEditorSnapshot();
+                const key = control.dataset.emissionProperty;
+                item.emission = normalizedObjectEditorProperties({
+                    ...item,
+                    emission: {
+                        ...item.emission,
+                        [key]: control.type === "checkbox" ? control.checked : control.value,
+                    },
+                }).emission;
+                this.viewer.updateObject(item.object_id, { emission: item.emission });
+                this.history.push("Edit object emission", original, this._captureEditorSnapshot());
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._scheduleScenePreview(120);
+            });
+        }
         for (const control of this.els.inspector.querySelectorAll("[data-proxy-path]")) {
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
@@ -4193,10 +4533,6 @@ class Factory3DWidget {
                         - (Number(previousLevel?.elevation) || 0);
                     item.level_id = control.value;
                 }
-                else if (key === "building_id") {
-                    item.building_id = this._validBuildingId(control.value);
-                    if (item.building_id) this.editorView.active_building_id = item.building_id;
-                }
                 else {
                     item[key] = control.value;
                     if (key === "light_transport" && control.value === "transmissive" && !item.transmission) {
@@ -4207,7 +4543,6 @@ class Factory3DWidget {
                 this.history.push("Edit object properties", original, this._captureEditorSnapshot());
                 this._scheduleSceneSave(0);
                 this._scheduleStateSave(0);
-                if (key === "building_id") this._syncToolbar();
                 if (["collision_proxy.mode", "light_transport", "locked"].includes(key)) this._renderInspector();
             });
         }
@@ -4306,8 +4641,8 @@ class Factory3DWidget {
         ) {
             throw new Error("Texture must be a JPEG, PNG, or WebP image up to 32 MB.");
         }
-        // Resolve any queued metadata edit first so the texture mutation and
-        // its following material PATCH share a current optimistic revision.
+        // Resolve any queued metadata edit before the texture mutation so the
+        // following material update starts from the latest local scene state.
         if (flushScene) await this._saveSceneNow({ showError: false });
         if (!this.scene || this.sceneId !== sceneId) {
             throw new Error("The active scene changed before the texture upload started.");
@@ -4377,6 +4712,7 @@ class Factory3DWidget {
         const pendingFiles = new Map();
         let activeSurface = "walls";
         let advancedOpen = false;
+        let committed = false;
         const body = element("div", "vnccs-i3s__material-manager");
         const cancel = button("vnccs-i3s__button", "Cancel");
         const apply = button("vnccs-i3s__button vnccs-i3s__button--primary", "Apply to room");
@@ -4384,6 +4720,32 @@ class Factory3DWidget {
         const activeMaterial = () => materials.find(
             material => material.material_id === assignments[activeSurface],
         ) || null;
+        const draftScene = () => ({
+            ...this.scene,
+            architecture: {
+                ...architecture,
+                materials,
+                walls: architecture.walls.map(wall => room.wall_ids?.includes(wall.wall_id)
+                    ? {
+                        ...wall,
+                        material_left: assignments.walls,
+                        material_right: assignments.walls,
+                        material_caps: assignments.walls,
+                    }
+                    : wall),
+                rooms: architecture.rooms.map(value => value.room_id === room.room_id
+                    ? {
+                        ...value,
+                        floor: { ...(value.floor || {}), material_id: assignments.floor },
+                        ceiling: { ...(value.ceiling || {}), material_id: assignments.ceiling },
+                    }
+                    : value),
+            },
+        });
+        const previewDraft = () => this._previewArchitectureMaterials(
+            draftScene(),
+            { persist: false },
+        );
         const textureName = textureId => (
             this.scene.textures?.find(texture => texture.texture_id === textureId)?.name || "Assigned texture"
         );
@@ -4467,6 +4829,7 @@ class Factory3DWidget {
             );
             body.querySelector("[data-material-assignment]")?.addEventListener("change", event => {
                 assignments[activeSurface] = event.currentTarget.value;
+                previewDraft();
                 render();
             });
             body.querySelector("[data-material-create]")?.addEventListener("click", () => {
@@ -4474,6 +4837,7 @@ class Factory3DWidget {
                 const created = this._newArchitectureMaterial(`${surfaceLabels[activeSurface]} material`);
                 materials.push(created);
                 assignments[activeSurface] = created.material_id;
+                previewDraft();
                 render();
             });
             body.querySelector("[data-material-duplicate]")?.addEventListener("click", () => {
@@ -4484,21 +4848,27 @@ class Factory3DWidget {
                 copy.name = `${source.name || "Material"} copy`.slice(0, 80);
                 materials.push(copy);
                 assignments[activeSurface] = copy.material_id;
+                previewDraft();
                 render();
             });
             body.querySelectorAll("[data-material-draft]").forEach(control => {
-                control.addEventListener("change", () => {
+                const updateDraft = () => {
                     const target = activeMaterial();
                     if (!target) return;
                     const parts = control.dataset.materialDraft.split(".");
                     let owner = target;
                     while (parts.length > 1) owner = owner[parts.shift()];
+                    if (control.type === "number" && control.value === "") return;
                     owner[parts[0]] = control.type === "number" ? Number(control.value) : control.value;
                     if (control.dataset.materialDraft === "kind") {
                         if (control.value === "glass" && !(Number(target.transmission) > 0)) target.transmission = 1;
+                        previewDraft();
                         render();
+                        return;
                     }
-                });
+                    previewDraft();
+                };
+                control.addEventListener(control.tagName === "SELECT" ? "change" : "input", updateDraft);
             });
             body.querySelectorAll("[data-material-map-pick]").forEach(control => {
                 control.addEventListener("click", () => body.querySelector(
@@ -4521,6 +4891,7 @@ class Factory3DWidget {
                     const field = control.dataset.materialMapClear;
                     delete target[field];
                     pendingFiles.delete(`${target.material_id}:${field}`);
+                    previewDraft();
                     render();
                 });
             });
@@ -4552,6 +4923,7 @@ class Factory3DWidget {
                 }
                 this.history.push("Edit room materials", before, this._captureEditorSnapshot());
                 await this._commitArchitecture();
+                committed = true;
                 this.closeModal();
                 this.toast("Room materials updated.", "success");
             } catch (error) {
@@ -4566,6 +4938,11 @@ class Factory3DWidget {
             body,
             actions: [cancel, apply],
             wide: true,
+            onClose: () => {
+                clearTimeout(this._architecturePreviewTimer);
+                this._architecturePreviewTimer = 0;
+                if (!committed) void this.viewer.refreshArchitecture(this.scene);
+            },
         });
     }
 
@@ -5226,16 +5603,6 @@ class Factory3DWidget {
         this.els.cameraTrackDelete.disabled = !active;
         this.els.cameraTrackName.disabled = !active;
         this.els.cameraTrackName.value = active?.name || "";
-        this.els.cameraTrackBuilding.disabled = !active;
-        const unassignedBuilding = element("option", "", "No building");
-        unassignedBuilding.value = "";
-        unassignedBuilding.selected = !this._validBuildingId(active?.building_id);
-        this.els.cameraTrackBuilding.replaceChildren(unassignedBuilding, ...(this.scene?.architecture?.buildings || []).map(building => {
-            const option = element("option", "", building.name || "Building");
-            option.value = building.building_id;
-            option.selected = building.building_id === this._validBuildingId(active?.building_id);
-            return option;
-        }));
         this.els.cameraKeyframeAdd.disabled = !active;
         this.els.cameraTrackPlay.disabled = !active || active.keyframes.length < 2;
         this.els.cameraTrackTime.max = String(active?.duration || 5);
@@ -5375,6 +5742,7 @@ class Factory3DWidget {
                 if (camera) {
                     Object.assign(camera, this.viewer.getCameraState());
                     this.viewer.setCameraMarkers(this.scene.cameras);
+                    this.viewer?.showCameraPreview?.(camera, { realtime: true });
                     this._scheduleSceneSave(140);
                     this._scheduleStateSave(140);
                 }
@@ -5989,6 +6357,7 @@ class Factory3DWidget {
             this.viewer?.setCameraState?.(camera, { emit: false });
         }
         if (!final) {
+            this.viewer?.showCameraPreview?.(camera, { realtime: true });
             this._scheduleStateSave(100);
             return;
         }
@@ -6304,9 +6673,7 @@ class Factory3DWidget {
     async loadCapabilities() {
         try {
             this.capabilities = await this._fetchJSON(ENDPOINTS.capabilities);
-            const ready = Boolean(this.capabilities.weights?.ready);
-            this.els.weightsDot.classList.toggle("is-ready", ready);
-            this._syncTripoSummary();
+            this._syncGeneratorUI();
             return this.capabilities;
         } catch (error) {
             this.els.weightsSummary.textContent = "Backend unavailable";
@@ -6316,16 +6683,109 @@ class Factory3DWidget {
     }
 
     _syncTripoSummary() {
-        const ready = Boolean(this.capabilities?.weights?.ready);
+        this._syncGeneratorUI();
+    }
+
+    _generatorCapability(provider = this.settings.generator) {
+        const key = ["triposplat", "pixal3d", "trellis2"].includes(provider)
+            ? provider
+            : "triposplat";
+        const generator = safeObject(this.capabilities?.generators?.[key]);
+        if (Object.keys(generator).length) return generator;
+        return key === "triposplat"
+            ? {
+                key,
+                name: "TripoSplat",
+                output_label: "Gaussian PLY",
+                description: "Gaussian splat generation with adjustable density.",
+                weights: safeObject(this.capabilities?.weights),
+                runtime: { ready: true },
+            }
+            : { key, name: key === "pixal3d" ? "Pixal3D" : "TRELLIS.2", weights: {}, runtime: {} };
+    }
+
+    _syncGeneratorUI() {
+        const provider = ["triposplat", "pixal3d", "trellis2"].includes(this.settings.generator)
+            ? this.settings.generator
+            : "triposplat";
+        this.settings.generator = provider;
+        const generator = this._generatorCapability(provider);
+        const ready = Boolean(generator.weights?.ready) && generator.runtime?.ready !== false;
+        const tripoNativeCap = this.settings.prevent_upscale ? "native cap" : "";
         this.els.weightsDot.classList.toggle("is-ready", ready);
-        this.els.weightsSummary.textContent = ready
-            ? [
-                this.capabilities.device || "device",
-                formatBytes(this.capabilities.weights.installed_bytes),
-                `${Number(this.settings.conditioning_resolution) || 1024}²`,
-                this.settings.prevent_upscale ? "native cap" : "",
-            ].filter(Boolean).join(" · ")
-            : "Weights are not installed";
+        this.els.weightsDot.classList.toggle("is-unavailable", generator.runtime?.ready === false);
+        this.els.generatorName.textContent = generator.name || provider;
+        this.els.weightsSummary.textContent = generator.runtime?.ready === false
+            ? "ComfyUI update required"
+            : ready
+                ? [
+                    generator.output_label,
+                    formatBytes(generator.weights?.installed_bytes),
+                    provider === "triposplat" ? `${Number(this.settings.conditioning_resolution) || 1024}²` : "",
+                    provider === "triposplat" ? tripoNativeCap : "",
+                ].filter(Boolean).join(" · ")
+                : "Weights are not installed";
+        for (const panel of this.els.generatorPanels) {
+            const active = panel.dataset.generatorSettings === (provider === "triposplat" ? "triposplat" : "mesh");
+            panel.hidden = !active;
+        }
+        const generateLabel = this.els.generate?.querySelector("span:last-child");
+        if (generateLabel) generateLabel.textContent = provider === "triposplat" ? "Generate Gaussian" : "Generate mesh";
+        this._syncMeshQuality();
+        this._customSelects?.refresh?.();
+    }
+
+    _syncMeshQuality() {
+        if (!this.els.meshQualitySummary) return;
+        const summaries = {
+            preview: "Textured GLB · 150K face target · 1K material",
+            balanced: "Textured GLB · 350K face target · 2K material",
+            high: "Textured GLB · 700K face target · 4K material",
+        };
+        this.els.meshQualitySummary.textContent = summaries[this.settings.mesh_quality] || summaries.high;
+    }
+
+    _setGenerator(provider, { save = true } = {}) {
+        if (!["triposplat", "pixal3d", "trellis2"].includes(provider)) return;
+        this.settings.generator = provider;
+        this._syncGeneratorUI();
+        if (save) this._scheduleStateSave(0);
+    }
+
+    async openGeneratorSelector() {
+        const capabilities = this.capabilities || await this.loadCapabilities();
+        if (!capabilities) return;
+        const body = element("div", "vnccs-i3s__generator-options");
+        for (const provider of ["triposplat", "pixal3d", "trellis2"]) {
+            const generator = this._generatorCapability(provider);
+            const ready = Boolean(generator.weights?.ready) && generator.runtime?.ready !== false;
+            const unavailable = generator.runtime?.ready === false;
+            const option = button(
+                `vnccs-i3s__generator-option${provider === this.settings.generator ? " is-selected" : ""}`,
+                "",
+            );
+            option.dataset.provider = provider;
+            option.setAttribute("aria-pressed", String(provider === this.settings.generator));
+            const status = element(
+                "span",
+                `vnccs-i3s__generator-option-status${ready ? " is-ready" : ""}${unavailable ? " is-unavailable" : ""}`,
+                unavailable ? "Update required" : ready ? "Ready" : "Weights missing",
+            );
+            option.replaceChildren(
+                element("span", "vnccs-i3s__generator-option-name", generator.name || provider),
+                element("span", "vnccs-i3s__generator-option-output", generator.output_label || "3D model"),
+                element("span", "vnccs-i3s__generator-option-description", generator.description || ""),
+                status,
+            );
+            option.addEventListener("click", () => {
+                this._setGenerator(provider);
+                this.closeModal();
+            });
+            body.appendChild(option);
+        }
+        const close = button("vnccs-i3s__button", "Close");
+        close.addEventListener("click", () => this.closeModal());
+        this.openModal({ title: "Choose 3D generator", body, actions: [close], wide: true });
     }
 
     async ensureScene(snapshot = null, { preserveSource = false } = {}) {
@@ -6845,14 +7305,16 @@ class Factory3DWidget {
             objects.length + lightCount + (skydome ? 1 : 0) + wallCount + roomCount,
         );
         const meshCount = objects.filter(item => item.asset_kind === "mesh").length;
-        const gaussianCount = objects.length - meshCount;
+        const primitiveCount = objects.filter(item => item.asset_kind === "primitive").length;
+        const gaussianCount = objects.length - meshCount - primitiveCount;
         const gaussianSummary = objects.length
             ? `${visibleIds.size}/${objects.length} models visible`
                 + `${gaussianCount ? ` · ${objects.reduce(
                 (sum, item) => sum + (visibleIds.has(item.object_id) ? Number(item.gaussians) || 0 : 0),
                 0,
-            ).toLocaleString()} Gaussians` : ""}`
+                ).toLocaleString()} Gaussians` : ""}`
                 + `${meshCount ? ` · ${meshCount} mesh${meshCount === 1 ? "" : "es"}` : ""}`
+                + `${primitiveCount ? ` · ${primitiveCount} surface${primitiveCount === 1 ? "" : "s"}` : ""}`
             : "No 3D models";
         const contentSummary = skydome
             ? `${gaussianSummary} · Skydome ${skydome.visible === false ? "hidden" : "visible"}`
@@ -7570,6 +8032,7 @@ class Factory3DWidget {
         const importedPly = item.source?.type === "ply_import"
             || item.settings?.source === "ply_import";
         const importedModel = item.asset_kind === "mesh";
+        const primitiveObject = item.asset_kind === "primitive";
         const levelName = this.scene?.levels?.find(level => level.level_id === item.level_id)?.name || "";
         const buildingName = this.scene?.architecture?.buildings?.find(
             building => building.building_id === item.building_id,
@@ -7581,9 +8044,12 @@ class Factory3DWidget {
                 "vnccs-i3s__object-meta",
                 [
                     viewportFailure ? "Viewport failed" : "",
-                    importedModel
+                    primitiveObject
+                        ? `${item.primitive?.kind === "image" ? "Image plane" : item.primitive?.kind === "terrain" ? "Terrain" : "Plane"}`
+                        : importedModel
                         ? `${String(item.source?.format || "3D").toUpperCase()} model`
                         : `${Number(item.gaussians || 0).toLocaleString()} splats`,
+                    item.emission?.enabled ? "Emissive" : "",
                     importedPly ? "Imported PLY" : "",
                     buildingName,
                     levelName,
@@ -7653,7 +8119,12 @@ class Factory3DWidget {
             control.setAttribute("aria-label", control.title);
             control.addEventListener("dblclick", event => event.stopPropagation());
         }
-        actions.append(visibility, exportObject, saveModel, duplicate, remove);
+        actions.append(
+            visibility,
+            ...(!primitiveObject ? [exportObject, saveModel] : []),
+            duplicate,
+            remove,
+        );
         card.append(thumbnail, copy, actions);
         card.addEventListener("click", event => {
             if (event.target.closest("button,input")) return;
@@ -8121,7 +8592,6 @@ class Factory3DWidget {
             ? this.scene?.camera
             : this.viewer?.getCameraState?.() || this.viewerState.camera;
         return {
-            base_edit_revision: Math.max(0, Number(this.scene?.edit_revision) || 0),
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
             lighting: { ...this.lighting },
@@ -8207,16 +8677,7 @@ class Factory3DWidget {
         try {
             return await operation;
         } catch (error) {
-            if (showError) {
-                if (error.status === 409) {
-                    this._showError(
-                        "Scene changed elsewhere",
-                        new Error("Reload the scene before saving to avoid overwriting newer edits."),
-                    );
-                } else {
-                    this._showError("Scene save failed", error);
-                }
-            }
+            if (showError) this._showError("Scene save failed", error);
             throw error;
         }
     }
@@ -8309,14 +8770,33 @@ class Factory3DWidget {
         }
     }
 
-    async _saveExecutionCaptureSet(captureToken) {
+    async _saveExecutionCaptureSet(captureToken, request = {}) {
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
         const sceneId = this.sceneId;
         const operation = this._previewSaveSerial.then(async () => {
             if (this.destroyed || !sceneId || this.sceneId !== sceneId) return null;
-            const savedScene = await this._saveSceneNow({ showError: false });
-            if (this.destroyed || this.sceneId !== sceneId) return null;
+            const sceneRevision = Number(request.scene_revision);
+            const renderRevision = Number(request.render_revision);
+            const savedScene = {
+                revision: Number.isFinite(sceneRevision)
+                    ? sceneRevision
+                    : Math.max(0, Number(this.scene?.revision) || 0),
+                render_revision: Number.isFinite(renderRevision)
+                    ? renderRevision
+                    : Math.max(0, Number(this.scene?.render_revision) || 0),
+                render: this._normalizeExportSettings({
+                    ...this.exportSettings,
+                    ...safeObject(request.render),
+                }),
+                camera: this._normalizeCameraState(
+                    safeObject(request.camera),
+                    this.viewer.getCameraState(),
+                ),
+                cameras: Array.isArray(request.cameras)
+                    ? request.cameras
+                    : this.scene?.cameras,
+            };
             const cameras = this._normalizeSceneCameras(savedScene.cameras);
             const dimensions = {
                 width: Number(savedScene.render?.width) || this.exportSettings.width,
@@ -8324,7 +8804,7 @@ class Factory3DWidget {
             };
             const current = await this.viewer.capturePreview({
                 ...dimensions,
-                cameraState: this.viewer.getCameraState(),
+                cameraState: savedScene.camera,
             });
             if (!current) throw new Error("The current 3D view could not be captured.");
             const form = new FormData();
@@ -8334,6 +8814,9 @@ class Factory3DWidget {
                 JSON.stringify(cameras.map(camera => camera.camera_id)),
             );
             for (const camera of cameras) {
+                // Full-resolution offscreen readback is unreliable on some
+                // WebGL drivers even though the small inset target succeeds.
+                // Use the proven export canvas path for persisted camera frames.
                 const blob = await this.viewer.capturePreview({
                     ...dimensions,
                     cameraState: camera,
@@ -8394,7 +8877,19 @@ class Factory3DWidget {
                 renderRevision: detail.render_revision,
                 documentVisible: document.visibilityState,
             });
-            const captureSet = await this._saveExecutionCaptureSet(captureToken);
+            clearTimeout(this._sceneSaveTimer);
+            this._sceneSaveTimer = 0;
+            const editRevision = Number(detail.edit_revision);
+            if (this.scene && Number.isFinite(editRevision)) {
+                this.scene.edit_revision = Math.max(0, editRevision);
+            }
+            if (this.scene && Number.isFinite(Number(detail.scene_revision))) {
+                this.scene.revision = Math.max(0, Number(detail.scene_revision));
+            }
+            if (this.scene && Number.isFinite(Number(detail.render_revision))) {
+                this.scene.render_revision = Math.max(0, Number(detail.render_revision));
+            }
+            const captureSet = await this._saveExecutionCaptureSet(captureToken, detail);
             if (!captureSet) throw new Error("The 3D viewport returned no execution captures.");
             console.info("[VNCCS 3D Factory][viewport] Execution preview completed", {
                 sceneId,
@@ -8421,7 +8916,9 @@ class Factory3DWidget {
             return;
         }
         const capabilities = this.capabilities || await this.loadCapabilities();
-        if (!capabilities?.weights?.ready) {
+        const provider = this.settings.generator || "triposplat";
+        const generator = this._generatorCapability(provider);
+        if (generator.runtime?.ready === false || !generator.weights?.ready) {
             this.openModelSetup();
             return;
         }
@@ -8436,22 +8933,102 @@ class Factory3DWidget {
         else form.append("use_scene_reference", "1");
         const sourceName = this.sourceFile?.name || this.sourceAsset?.name || "Object";
         form.append("name", this.settings.name || sourceName.replace(/\.[^.]+$/, ""));
-        for (const key of [
-            "steps",
-            "guidance_scale",
-            "num_gaussians",
-            "conditioning_resolution",
-            "seed",
-        ]) {
-            form.append(key, String(this.settings[key]));
+        form.append("provider", provider);
+        if (provider === "triposplat") {
+            for (const key of [
+                "steps",
+                "guidance_scale",
+                "num_gaussians",
+                "conditioning_resolution",
+            ]) {
+                form.append(key, String(this.settings[key]));
+            }
+            form.append("prevent_upscale", this.settings.prevent_upscale ? "1" : "0");
+        } else {
+            form.append("quality", String(this.settings.mesh_quality));
+            form.append("structure_steps", String(this.settings.mesh_structure_steps));
+            form.append("shape_steps", String(this.settings.mesh_shape_steps));
+            form.append("upsample_steps", String(this.settings.mesh_upsample_steps));
+            form.append("texture_steps", String(this.settings.mesh_texture_steps));
         }
-        form.append("prevent_upscale", this.settings.prevent_upscale ? "1" : "0");
+        form.append("seed", String(this.settings.seed));
         form.append("remove_background", this.settings.remove_background ? "1" : "0");
         try {
             const job = await this._fetchJSON(ENDPOINTS.generate(this.sceneId), { method: "POST", body: form });
             await this._monitorJob(job.job_id);
         } catch (error) {
             if (!error?.factoryErrorShown) this._showError("Generation failed", error);
+        }
+    }
+
+    async createPrimitive(kind, options = {}) {
+        if (this.currentJobId || (this.importingPly && !options.allowWhileImporting)) return null;
+        const primitiveKind = ["image", "plane", "terrain"].includes(kind) ? kind : "plane";
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            const sceneId = this.sceneId;
+            const defaults = primitiveKind === "terrain"
+                ? { width: 10, height: 2, depth: 10, extrusion: 0.2, segments: [32, 32] }
+                : primitiveKind === "image"
+                    ? { width: 2, height: 2, depth: 0.02, extrusion: 0, segments: [1, 1] }
+                    : { width: 2, height: 2, depth: 2, extrusion: 0, segments: [1, 1] };
+            const result = await this._fetchJSON(ENDPOINTS.createPrimitive(sceneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: options.name || (primitiveKind === "image" ? "Image" : primitiveKind === "terrain" ? "Terrain" : "Plane"),
+                    primitive: {
+                        kind: primitiveKind,
+                        ...defaults,
+                        ...safeObject(options.primitive),
+                        texture_id: String(options.textureId || options.primitive?.texture_id || ""),
+                    },
+                }),
+            });
+            if (this.sceneId !== sceneId) return result;
+            await this._applyScene(result.scene, { preserveSource: true });
+            this._placeNewObjectOnActiveFloor(result.object_id);
+            this._selectObject(result.object_id);
+            this.viewer.fit(result.object_id);
+            this._scheduleScenePreview(120);
+            this._scheduleStateSave(0);
+            this.toast(`${primitiveKind === "image" ? "Image plane" : primitiveKind === "terrain" ? "Terrain" : "Plane"} added.`, "success");
+            return result;
+        } catch (error) {
+            this._showError("Primitive could not be created", error);
+            return null;
+        }
+    }
+
+    async importImagePlane(file) {
+        if (!file || this.currentJobId || this.importingPly) return;
+        if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || !file.size || file.size > MAX_TEXTURE_BYTES) {
+            this.toast("Choose a JPEG, PNG, or WebP image up to 32 MB.", "error");
+            return;
+        }
+        this.importingPly = true;
+        this.els.imageImport.disabled = true;
+        this._setStatus("Importing image", "working");
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            const dimensions = await imageFileDimensions(file);
+            const texture = await this._uploadSceneTexture(file);
+            const aspect = dimensions.width / Math.max(1, dimensions.height);
+            const width = aspect >= 1 ? 2 : 2 * aspect;
+            const height = aspect >= 1 ? 2 / aspect : 2;
+            const result = await this.createPrimitive("image", {
+                name: objectNameFromFileName(file.name),
+                textureId: texture.texture_id,
+                primitive: { width, height },
+                allowWhileImporting: true,
+            });
+            if (result) this._setStatus("Image imported", "success");
+        } catch (error) {
+            this._setStatus("Image import failed", "error");
+            this._showError("Image could not be imported", error);
+        } finally {
+            this.importingPly = false;
+            if (this.els.imageImport.isConnected) this.els.imageImport.disabled = false;
         }
     }
 
@@ -8619,7 +9196,9 @@ class Factory3DWidget {
                                 true,
                                 100,
                                 "Loading generated object",
-                                "Backend generation completed · decoding SPLAT for the viewport",
+                                job.provider === "triposplat"
+                                    ? "Backend generation completed · decoding SPLAT for the viewport"
+                                    : "Backend generation completed · loading textured GLB in the viewport",
                             );
                             const scene = generatedScene.scene_id
                                 ? generatedScene
@@ -8632,7 +9211,8 @@ class Factory3DWidget {
                             this._setStatus("Complete", "success");
                             await this.loadCapabilities();
                             this.closeModal();
-                            this.toast("TripoSplat weights installed.", "success");
+                            const generator = this._generatorCapability(job.provider || this.settings.generator);
+                            this.toast(`${generator.name || "Generator"} weights installed.`, "success");
                         }
                         return job;
                     }
@@ -8672,7 +9252,9 @@ class Factory3DWidget {
     async exportScene() {
         const visibleIds = this._effectiveVisibleObjectIds();
         const hasGaussian = (this.scene?.objects || []).some(
-            item => item.asset_kind !== "mesh" && visibleIds.has(item.object_id),
+            item => item.asset_kind !== "mesh"
+                && item.asset_kind !== "primitive"
+                && visibleIds.has(item.object_id),
         );
         if (!hasGaussian) {
             this.toast("Show at least one Gaussian object before exporting PLY.", "error");
@@ -9149,6 +9731,36 @@ class Factory3DWidget {
             }
         });
         this.openModal({ title: "Remove object", body, actions: [cancel, remove], initialFocus: cancel });
+    }
+
+    async _deleteSelectedObjects(objectIds = this.selectedObjectIds) {
+        if (!this.sceneId || this._deletingSelectedObjects) return false;
+        const ids = Array.from(new Set(objectIds || [])).filter(objectId => (
+            this.scene?.objects?.some(item => item.object_id === objectId)
+        ));
+        if (!ids.length) return false;
+        this._deletingSelectedObjects = true;
+        this._setStatus("Removing selection", "working");
+        let updatedScene = null;
+        try {
+            for (const objectId of ids) {
+                updatedScene = await this._fetchJSON(
+                    `${ENDPOINTS.scene(this.sceneId)}/objects/${encodeURIComponent(objectId)}`,
+                    { method: "DELETE" },
+                );
+            }
+            await this._applyScene(updatedScene, { preserveSource: true });
+            this._setStatus("Selection removed", "success");
+            this.toast(`${ids.length} object${ids.length === 1 ? "" : "s"} removed.`, "success");
+            return true;
+        } catch (error) {
+            if (updatedScene) await this._applyScene(updatedScene, { preserveSource: true });
+            this._setStatus("Removal failed", "error");
+            this._showError("Selected objects could not be removed", error);
+            return false;
+        } finally {
+            this._deletingSelectedObjects = false;
+        }
     }
 
     async openSceneManager() {
@@ -10301,7 +10913,80 @@ class Factory3DWidget {
         this.openModal({ title: "New scene", body, actions: [cancel, create], initialFocus: input });
     }
 
+    async openMeshModelSetup(provider) {
+        const capabilities = await this.loadCapabilities();
+        const generator = this._generatorCapability(provider);
+        const weights = safeObject(generator.weights);
+        const runtime = safeObject(generator.runtime);
+        const body = element("div", "vnccs-i3s__setup-grid vnccs-i3s__setup-grid--single");
+        const models = element("section", "vnccs-i3s__setup-block vnccs-i3s__setup-block--models");
+        const head = element("div", "vnccs-i3s__setup-head");
+        const title = element("div");
+        title.append(
+            element("div", "vnccs-i3s__setup-title", `${generator.name || provider} models`),
+            element("div", "vnccs-i3s__setup-subtitle", generator.output_label || "Textured GLB"),
+        );
+        const action = button(
+            "vnccs-i3s__button vnccs-i3s__setup-action",
+            weights.ready ? "Recheck" : "Download weights",
+            weights.ready ? "check" : "download",
+        );
+        action.disabled = runtime.ready === false;
+        head.append(title, action);
+        const runtimeNotice = element(
+            "div",
+            `vnccs-i3s__runtime-notice${runtime.ready === false ? " is-error" : ""}`,
+            runtime.ready === false
+                ? `Update ComfyUI before using this generator. Missing nodes: ${(runtime.missing_nodes || []).join(", ")}`
+                : "Required comfy-core nodes are available.",
+        );
+        const root = element("div", "vnccs-i3s__failure-context", weights.root || "");
+        const list = element("div", "vnccs-i3s__weight-list");
+        for (const file of weights.files || []) {
+            const row = element("div", "vnccs-i3s__weight");
+            row.append(
+                element("span", `vnccs-i3s__weight-dot${file.ready ? " is-ready" : ""}`),
+                element("span", "vnccs-i3s__weight-path", file.path),
+                element("span", "vnccs-i3s__object-meta", formatBytes(file.size)),
+            );
+            list.appendChild(row);
+        }
+        models.append(head, runtimeNotice, root, list);
+        body.appendChild(models);
+        const close = button("vnccs-i3s__button", "Close");
+        close.addEventListener("click", () => this.closeModal());
+        action.addEventListener("click", async () => {
+            if (weights.ready) {
+                await this.openMeshModelSetup(provider);
+                return;
+            }
+            action.disabled = true;
+            close.disabled = true;
+            try {
+                const job = await this._fetchJSON(
+                    ENDPOINTS.generatorWeightsDownload(provider),
+                    { method: "POST" },
+                );
+                await this._monitorJob(job.job_id, { modal: true });
+            } catch (_) {
+                action.disabled = false;
+                close.disabled = false;
+            }
+        });
+        this.openModal({
+            title: `${generator.name || provider} setup`,
+            body,
+            actions: [close],
+            wide: true,
+            initialFocus: action.disabled ? close : action,
+        });
+    }
+
     async openModelSetup(draftSettings = null) {
+        const provider = this.settings.generator || "triposplat";
+        if (provider !== "triposplat") {
+            return this.openMeshModelSetup(provider);
+        }
         const capabilities = await this.loadCapabilities();
         const weights = capabilities?.weights || { files: [] };
         const allowedResolutions = Array.isArray(capabilities?.conditioning_resolutions)
@@ -10528,7 +11213,8 @@ class Factory3DWidget {
         cacheLimitRange.addEventListener("input", () => {
             syncCacheLimit(cacheLimitRange.value, cacheLimitRange);
         });
-        cacheLimitInput.addEventListener("change", () => {
+        cacheLimitInput.addEventListener("input", () => {
+            if (cacheLimitInput.value === "") return;
             syncCacheLimit(cacheLimitInput.value, cacheLimitInput);
         });
         cache.append(
@@ -10721,8 +11407,9 @@ class Factory3DWidget {
         });
     }
 
-    openModal({ title, body, actions = [], wide = false, initialFocus = null }) {
+    openModal({ title, body, actions = [], wide = false, initialFocus = null, onClose = null }) {
         this.closeModal();
+        this._modalOnClose = typeof onClose === "function" ? onClose : null;
         const modal = element("section", `vnccs-i3s__modal${wide ? " is-wide" : ""}`);
         modal.setAttribute("role", "dialog");
         modal.setAttribute("aria-modal", "true");
@@ -10759,12 +11446,15 @@ class Factory3DWidget {
     }
 
     closeModal() {
+        const onClose = this._modalOnClose;
+        this._modalOnClose = null;
         this._modalCleanup?.();
         this._modalCleanup = null;
         this.els.modalLayer.classList.remove("is-open");
         this.els.modalLayer.replaceChildren();
         this._previousFocus?.focus?.({ preventScroll: true });
         this._previousFocus = null;
+        onClose?.();
     }
 
     _setStatus(text, tone = "idle") {
@@ -10788,10 +11478,16 @@ class Factory3DWidget {
         this.els.steps.value = String(this.settings.steps);
         this.els.guidance.value = String(this.settings.guidance_scale);
         this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
+        this.els.meshQuality.value = String(this.settings.mesh_quality || "high");
+        this.els.meshStructureSteps.value = String(this.settings.mesh_structure_steps);
+        this.els.meshShapeSteps.value = String(this.settings.mesh_shape_steps);
+        this.els.meshUpsampleSteps.value = String(this.settings.mesh_upsample_steps);
+        this.els.meshTextureSteps.value = String(this.settings.mesh_texture_steps);
         this.els.seed.value = String(this.settings.seed);
         this._syncBackgroundRemoval();
         this._syncSeedMode();
         this._syncDensityMode();
+        this._syncGeneratorUI();
         const exportLabel = this.els.sceneExport?.querySelector("span:last-child");
         if (exportLabel) exportLabel.textContent = "Gaussian PLY";
         if (this.els.sceneExport) {
@@ -11076,6 +11772,20 @@ class Factory3DWidget {
             );
             const savedSettings = safeObject(state.settings);
             this.settings = { ...DEFAULT_SETTINGS, ...savedSettings };
+            this.settings.generator = ["triposplat", "pixal3d", "trellis2"].includes(this.settings.generator)
+                ? this.settings.generator
+                : "triposplat";
+            this.settings.mesh_quality = ["preview", "balanced", "high"].includes(this.settings.mesh_quality)
+                ? this.settings.mesh_quality
+                : "high";
+            for (const key of [
+                "mesh_structure_steps",
+                "mesh_shape_steps",
+                "mesh_upsample_steps",
+                "mesh_texture_steps",
+            ]) {
+                this.settings[key] = Math.round(clamp(this.settings[key], 1, 100));
+            }
             if (!Object.hasOwn(savedSettings, "seed_mode")) {
                 this.settings.seed_mode = Number(savedSettings.seed) < 0 ? "randomize" : "fixed";
             }

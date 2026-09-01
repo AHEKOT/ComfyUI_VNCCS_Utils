@@ -261,7 +261,10 @@ export function normalizedObjectEditorProperties(value = {}) {
     const lightTransport = ["opaque", "cutout", "transmissive"].includes(value.light_transport)
         ? value.light_transport
         : "opaque";
-    return {
+    const emissionSource = value.emission && typeof value.emission === "object"
+        ? value.emission
+        : {};
+    const result = {
         building_id: String(value.building_id || ""),
         collision_proxy: normalizedCollisionProxy(value.collision_proxy),
         light_transport: lightTransport,
@@ -272,7 +275,40 @@ export function normalizedObjectEditorProperties(value = {}) {
             1,
         ),
         locked: value.locked === true,
+        emission: {
+            enabled: emissionSource.enabled === true,
+            intensity: finiteNumber(emissionSource.intensity, 4, 0, 1000),
+            quality: ["low", "medium", "high"].includes(emissionSource.quality)
+                ? emissionSource.quality
+                : "medium",
+            two_sided: emissionSource.two_sided !== false,
+        },
     };
+    if (value.primitive && typeof value.primitive === "object") {
+        const source = value.primitive;
+        const kind = ["image", "plane", "terrain"].includes(source.kind)
+            ? source.kind
+            : "plane";
+        const segments = Array.isArray(source.segments) ? source.segments : [1, 1];
+        result.primitive = {
+            kind,
+            width: finiteNumber(source.width, 2, 0.001, 100000),
+            height: finiteNumber(source.height, 2, 0.001, 100000),
+            depth: finiteNumber(source.depth, 2, 0.001, 100000),
+            extrusion: finiteNumber(source.extrusion, 0, 0, 100000),
+            segments: [0, 1].map(index => Math.round(finiteNumber(segments[index], 1, 1, 128))),
+            texture_id: String(source.texture_id || ""),
+            color: /^#[0-9a-f]{6}$/i.test(String(source.color || ""))
+                ? String(source.color).toLowerCase()
+                : "#ffffff",
+            opacity: finiteNumber(source.opacity, 1, 0, 1),
+            double_sided: source.double_sided !== false,
+            uv_scale: finitePoint2(source.uv_scale, [1, 1]).map(item => Math.max(0.001, Math.min(1000, item))),
+            uv_offset: finitePoint2(source.uv_offset).map(item => Math.max(-1000, Math.min(1000, item))),
+            uv_rotation: finiteNumber(source.uv_rotation, 0, -36000, 36000),
+        };
+    }
+    return result;
 }
 
 export function normalizedArchitecture(value = {}, levels = []) {

@@ -290,6 +290,18 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     assert.equal(poseWidget.computeSize()[1], -4);
 
     const studio = node.studioWidget;
+    assert.equal(studio.exportParams.capture_image_size, false);
+    assert.equal(studio.applyCapturedImageSize(1344, 768), false);
+    assert.deepEqual(
+        [studio.exportParams.view_width, studio.exportParams.view_height],
+        [1024, 1024],
+    );
+    studio.exportParams.capture_image_size = true;
+    assert.equal(studio.applyCapturedImageSize(1344, 768), true);
+    assert.deepEqual(
+        [studio.exportParams.view_width, studio.exportParams.view_height],
+        [1344, 768],
+    );
     studio.exportParams.editor_mode = "image";
     studio.poses = [
         {

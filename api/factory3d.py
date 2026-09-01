@@ -23,6 +23,7 @@ from typing import Any, BinaryIO, Callable
 
 from PIL import Image, ImageDraw, ImageOps
 
+from . import factory3d_generation
 from .gaussian_scene import (
     export_gaussian_scene,
     inspect_ply,
@@ -46,6 +47,7 @@ SCHEMA_VERSION = 11
 EXPORT_FORMAT_VERSION = 8
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
+UPSTREAM_HF_REVISION = "56a96e603204ec410c4da60c13ea4fa09a2169a9"
 MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 MAX_PLY_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MODEL_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024
@@ -973,6 +975,65 @@ def _duplicate_object_name(scene: dict[str, Any], source_name: Any) -> str:
     raise ValueError("could not allocate a unique duplicate object name")
 
 
+def create_primitive_object(scene_id: str, payload: Any) -> dict[str, Any]:
+    safe_scene_id = _validate_id(scene_id, "scene id")
+    data = payload if isinstance(payload, dict) else {}
+    object_id = _new_id()
+    object_root = resolve_scene_dir(safe_scene_id) / "objects" / object_id
+    try:
+        with _STATE_LOCK:
+            scene = load_scene(safe_scene_id)
+            normalized = normalize_object_editor_properties({
+                "primitive": data.get("primitive"),
+                "emission": data.get("emission"),
+            })
+            primitive = normalized.get("primitive")
+            if not isinstance(primitive, dict):
+                raise ValueError("primitive settings are required")
+            texture_id = primitive.get("texture_id")
+            if texture_id and not any(
+                isinstance(texture, dict) and texture.get("texture_id") == texture_id
+                for texture in scene.get("textures", [])
+            ):
+                raise ValueError("primitive references an unknown scene texture")
+            if primitive["kind"] == "image" and not texture_id:
+                raise ValueError("image planes require a texture")
+            object_root.mkdir(parents=True, exist_ok=False)
+            if not texture_id:
+                _write_imported_object_thumbnail(
+                    object_root / "thumbnail.png",
+                    primitive["kind"].upper(),
+                )
+            item = {
+                "object_id": object_id,
+                "asset_kind": "primitive",
+                "name": _clean_name(data.get("name"), primitive["kind"].title(), 80),
+                "created_at": _now(),
+                "visible": True,
+                "transform": normalize_transform(data.get("transform")),
+                **normalize_object_editor_properties({
+                    **normalized,
+                    "collision_proxy": {"mode": "auto_box", "supports_objects": True},
+                }),
+                "source": {"type": "procedural_primitive"},
+                "settings": {"source": "procedural_primitive"},
+                "files": {},
+                "level_id": scene["levels"][0]["level_id"],
+                "building_id": (
+                    scene["architecture"]["buildings"][0]["building_id"]
+                    if scene["architecture"]["buildings"] else ""
+                ),
+            }
+            scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
+            scene["exports"] = {}
+            _save_scene(scene)
+            return {"scene": scene, "object_id": object_id}
+    except Exception:
+        shutil.rmtree(object_root, ignore_errors=True)
+        raise
+
+
 def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
     safe_scene_id = _validate_id(scene_id, "scene id")
     safe_object_id = _validate_id(object_id, "object id")
@@ -990,7 +1051,15 @@ def duplicate_object(scene_id: str, object_id: str) -> dict[str, Any]:
             source_item = _object_by_id(scene, safe_object_id)
             duplicate_root.mkdir(parents=True, exist_ok=False)
             duplicate_files: dict[str, str] = {}
-            if source_item.get("asset_kind") == "mesh":
+            if source_item.get("asset_kind") == "primitive":
+                thumbnail = resolve_scene_dir(safe_scene_id) / "objects" / safe_object_id / "thumbnail.png"
+                if thumbnail.is_file():
+                    target = duplicate_root / "thumbnail.png"
+                    try:
+                        os.link(thumbnail, target)
+                    except OSError:
+                        shutil.copy2(thumbnail, target)
+            elif source_item.get("asset_kind") == "mesh":
                 source_model = _object_file(safe_scene_id, source_item, "model")
                 source_model_root = scene_root / "objects" / safe_object_id / "model"
                 target_model_root = duplicate_root / "model"
@@ -1512,6 +1581,18 @@ def _ensure_scene_skydome_viewport(scene: dict[str, Any]) -> Path:
 
 
 def _ensure_object_thumbnail(scene_id: str, item: dict[str, Any]) -> Path:
+    if item.get("asset_kind") == "primitive":
+        texture_id = item.get("primitive", {}).get("texture_id")
+        if texture_id:
+            return _scene_texture_file(load_scene(scene_id), texture_id)
+        target = resolve_scene_dir(scene_id) / "objects" / item["object_id"] / "thumbnail.png"
+        if not target.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _write_imported_object_thumbnail(
+                target,
+                str(item.get("primitive", {}).get("kind") or "plane").upper(),
+            )
+        return target
     if item.get("asset_kind") == "mesh":
         _object_file(scene_id, item, "model")
         object_root = resolve_scene_dir(scene_id) / "objects" / item["object_id"]
@@ -1866,6 +1947,10 @@ def remove_scene_texture(scene_id: str, texture_id: Any) -> dict[str, Any]:
             for key in ("texture_id", "normal_texture_id", "roughness_texture_id"):
                 if material.get(key) == normalized_id:
                     material.pop(key, None)
+        for item in scene.get("objects", []):
+            primitive = item.get("primitive")
+            if isinstance(primitive, dict) and primitive.get("texture_id") == normalized_id:
+                primitive.pop("texture_id", None)
         scene["render_revision"] = max(
             0,
             int(scene.get("render_revision", scene.get("revision", 0))),
@@ -2171,16 +2256,34 @@ def _weight_paths() -> dict[str, Path]:
     return output
 
 
-def _weights_status() -> dict[str, Any]:
-    root = _model_root()
+def _provider_weight_files(provider: Any) -> tuple[str, ...]:
+    key = factory3d_generation.normalize_provider(provider)
+    if key == factory3d_generation.TRIPOSPLAT:
+        return _WEIGHT_FILES
+    return factory3d_generation.PROVIDER_WEIGHT_FILES[key]
+
+
+def _provider_weight_paths(provider: Any) -> dict[str, Path]:
+    return {
+        relative: next(
+            (path for path in _weight_candidates(relative) if _valid_weight(path)),
+            _weight_candidates(relative)[0],
+        )
+        for relative in _provider_weight_files(provider)
+    }
+
+
+def _provider_weights_status(provider: Any) -> dict[str, Any]:
+    key = factory3d_generation.normalize_provider(provider)
     files = []
     ready = True
     total_size = 0
-    for relative, path in _weight_paths().items():
+    for relative, path in _provider_weight_paths(key).items():
         exists = _valid_weight(path)
         size = path.stat().st_size if exists else 0
         total_size += size
         ready = ready and exists
+        spec = factory3d_generation.WEIGHT_SPECS.get(relative, {})
         files.append(
             {
                 "path": relative,
@@ -2188,15 +2291,23 @@ def _weights_status() -> dict[str, Any]:
                 "size": size,
                 "resolved_path": str(path),
                 "searched_paths": [str(candidate) for candidate in _weight_candidates(relative)],
+                "repository": spec.get("repo_id", UPSTREAM_REPOSITORY),
+                "revision": spec.get("revision", UPSTREAM_HF_REVISION),
             }
         )
+    repositories = sorted({str(item["repository"]) for item in files})
     return {
         "ready": ready,
-        "root": str(root),
+        "root": str(_model_root()),
         "files": files,
         "installed_bytes": total_size,
-        "repository": UPSTREAM_REPOSITORY,
+        "repository": repositories[0] if len(repositories) == 1 else "multiple",
+        "repositories": repositories,
     }
+
+
+def _weights_status() -> dict[str, Any]:
+    return _provider_weights_status(factory3d_generation.TRIPOSPLAT)
 
 
 def capabilities() -> dict[str, Any]:
@@ -2220,12 +2331,34 @@ def capabilities() -> dict[str, Any]:
                 device = "cpu"
     except Exception as exc:
         error = str(exc)
+    generators = {}
+    for provider in factory3d_generation.PROVIDER_KEYS:
+        public = dict(factory3d_generation.PROVIDER_PUBLIC[provider])
+        public["weights"] = _provider_weights_status(provider)
+        public["runtime"] = factory3d_generation.runtime_status(provider)
+        public["defaults"] = (
+            {
+                "steps": 20,
+                "guidance_scale": 3.0,
+                "num_gaussians": 131072,
+                "conditioning_resolution": 1024,
+                "prevent_upscale": False,
+                "remove_background": True,
+                "seed": -1,
+            }
+            if provider == factory3d_generation.TRIPOSPLAT
+            else dict(factory3d_generation.MESH_DEFAULTS)
+        )
+        if provider != factory3d_generation.TRIPOSPLAT:
+            public["quality_presets"] = factory3d_generation.QUALITY_PRESETS
+        generators[provider] = public
     return {
         "schema_version": SCHEMA_VERSION,
         "backend": "TripoSplat",
         "backend_repository": "https://github.com/VAST-AI-Research/TripoSplat",
         "backend_commit": UPSTREAM_COMMIT,
-        "formats": ["ply"],
+        "formats": ["ply", "glb"],
+        "generators": generators,
         "import_formats": ["glb", "gltf", "fbx", "obj", "stl", "ply", "zip"],
         "model_texture_formats": ["png", "jpg", "jpeg", "webp", "bmp", "gif", "tga"],
         "gaussian_counts": list(GAUSSIAN_COUNTS),
@@ -2258,6 +2391,11 @@ def capabilities() -> dict[str, Any]:
 
 def _generation_settings(values: Any) -> dict[str, Any]:
     data = values if hasattr(values, "get") else {}
+    provider = factory3d_generation.normalize_provider(data.get("provider"))
+    if provider in factory3d_generation.MESH_PROVIDER_KEYS:
+        mesh_values = dict(data)
+        mesh_values["provider"] = provider
+        return factory3d_generation.normalize_mesh_settings(mesh_values)
     conditioning_resolution = int(data.get("conditioning_resolution", 1024))
     if conditioning_resolution not in CONDITIONING_RESOLUTIONS:
         raise ValueError(
@@ -2277,6 +2415,7 @@ def _generation_settings(values: Any) -> dict[str, Any]:
         "on",
     }
     return {
+        "provider": factory3d_generation.TRIPOSPLAT,
         "steps": max(1, min(100, int(data.get("steps", 20)))),
         "guidance_scale": max(1.0, min(20.0, float(data.get("guidance_scale", 3.0)))),
         "num_gaussians": max(
@@ -2435,39 +2574,49 @@ def _track_task(coroutine: Any) -> None:
     task.add_done_callback(_BACKGROUND_TASKS.discard)
 
 
-def _download_weights(job: dict[str, Any]) -> dict[str, Any]:
+def _download_provider_weights(job: dict[str, Any], provider: Any) -> dict[str, Any]:
     from huggingface_hub import hf_hub_download
 
+    key = factory3d_generation.normalize_provider(provider)
+    provider_name = factory3d_generation.PROVIDER_PUBLIC[key]["name"]
+    files = _provider_weight_files(key)
     root = _model_root()
     root.mkdir(parents=True, exist_ok=True)
-    _emit(job, "weights", 2, "Preparing TripoSplat weights", detail=str(root))
-    for index, relative in enumerate(_WEIGHT_FILES):
+    job["provider"] = key
+    _emit(job, "weights", 2, f"Preparing {provider_name} weights", detail=str(root))
+    for index, relative in enumerate(files):
         _check_cancel(job)
-        start = 5 + index / len(_WEIGHT_FILES) * 90
+        start = 5 + index / len(files) * 90
         _emit(
             job,
             "weights",
             start,
-            f"Downloading {index + 1}/{len(_WEIGHT_FILES)}",
+            f"Downloading {index + 1}/{len(files)}",
             detail=relative,
         )
+        spec = factory3d_generation.WEIGHT_SPECS.get(relative)
         hf_hub_download(
-            repo_id=UPSTREAM_REPOSITORY,
-            filename=relative,
+            repo_id=str(spec["repo_id"]) if spec else UPSTREAM_REPOSITORY,
+            filename=str(spec["filename"]) if spec else relative,
             local_dir=str(root),
+            revision=str(spec["revision"]) if spec else UPSTREAM_HF_REVISION,
             token=False,
         )
         _emit(
             job,
             "weights",
-            5 + (index + 1) / len(_WEIGHT_FILES) * 90,
-            f"Verified {index + 1}/{len(_WEIGHT_FILES)}",
+            5 + (index + 1) / len(files) * 90,
+            f"Verified {index + 1}/{len(files)}",
             detail=relative,
         )
-    status = _weights_status()
+    status = _provider_weights_status(key)
     if not status["ready"]:
-        raise RuntimeError("TripoSplat weight download finished with missing files")
-    return {"weights": status}
+        raise RuntimeError(f"{provider_name} weight download finished with missing files")
+    return {"provider": key, "weights": status}
+
+
+def _download_weights(job: dict[str, Any]) -> dict[str, Any]:
+    return _download_provider_weights(job, factory3d_generation.TRIPOSPLAT)
 
 
 def _device() -> str:
@@ -3131,6 +3280,127 @@ def _generate_object(
         raise
 
 
+def _generate_mesh_object(
+    job: dict[str, Any],
+    image_bytes: bytes,
+    object_id: str,
+    object_name: str,
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    scene_id = job["scene_id"]
+    provider = factory3d_generation.normalize_provider(settings.get("provider"))
+    provider_name = factory3d_generation.PROVIDER_PUBLIC[provider]["name"]
+    weights = _provider_weights_status(provider)
+    if not weights["ready"]:
+        raise RuntimeError(f"{provider_name} weights are not installed")
+
+    scene_root = resolve_scene_dir(scene_id)
+    object_root = scene_root / "objects" / object_id
+    model_root = object_root / "model"
+    object_root.mkdir(parents=True, exist_ok=False)
+    model_root.mkdir(parents=True, exist_ok=False)
+    try:
+        _emit(job, "input", 2, "Validating reference image")
+        image = _decode_image(image_bytes)
+        reference_path = object_root / "reference.png"
+        prepared_path = object_root / "prepared.png"
+        model_path = model_root / "model.glb"
+        image.save(reference_path, format="PNG")
+
+        thumbnail = ImageOps.exif_transpose(image).convert("RGB")
+        thumbnail.thumbnail(OBJECT_THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+        thumbnail.save(object_root / "thumbnail.png", format="PNG", optimize=True)
+        seed = int(settings["seed"])
+        if seed < 0:
+            seed = secrets.randbelow(2**31 - 1)
+        effective_settings = {**settings, "provider": provider, "seed": seed}
+        job["provider"] = provider
+        _emit(
+            job,
+            "input",
+            3,
+            f"{provider_name} settings fixed",
+            detail=(
+                f"seed={seed} · quality={settings['quality']} · "
+                f"steps={settings['structure_steps']}/{settings['shape_steps']}/"
+                f"{settings['upsample_steps']}/{settings['texture_steps']}"
+            ),
+        )
+        with _INFERENCE_LOCK:
+            result = factory3d_generation.run_mesh_generation(
+                provider,
+                image,
+                model_path,
+                prepared_path,
+                effective_settings,
+                emit=lambda stage, progress, message, detail="": _emit(
+                    job,
+                    stage,
+                    progress,
+                    message,
+                    detail=detail,
+                ),
+                check_cancel=lambda: _check_cancel(job),
+            )
+        _check_cancel(job)
+
+        relative_root = Path("objects") / object_id
+        item = {
+            "object_id": object_id,
+            "asset_kind": "mesh",
+            "name": object_name,
+            "created_at": _now(),
+            "visible": True,
+            "transform": normalize_transform({}),
+            **normalize_object_editor_properties({}),
+            "seed": seed,
+            "source": {
+                "type": "generated_model",
+                "generator": provider,
+                "filename": "model.glb",
+                "format": "glb",
+                "model_path": "model.glb",
+                "resources": [],
+                "file_count": 1,
+                "size": result["size"],
+            },
+            "settings": {
+                "source": "generated_model",
+                **effective_settings,
+                "prepared_width": result["prepared_width"],
+                "prepared_height": result["prepared_height"],
+            },
+            "files": {
+                "reference": str(relative_root / "reference.png"),
+                "prepared": str(relative_root / "prepared.png"),
+                "model": str(relative_root / "model" / "model.glb"),
+                "resources": [],
+            },
+        }
+        _emit(job, "scene", 99, "Adding generated mesh to scene", detail=object_name)
+        with _STATE_LOCK:
+            scene = load_scene(scene_id)
+            item["level_id"] = scene["levels"][0]["level_id"]
+            item["building_id"] = (
+                scene["architecture"]["buildings"][0]["building_id"]
+                if scene["architecture"]["buildings"] else ""
+            )
+            scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
+            scene["exports"] = {}
+            _save_scene(scene)
+        return {
+            "scene_id": scene_id,
+            "object_id": object_id,
+            "scene_revision": scene["revision"],
+            "provider": provider,
+            "scene": _public_scene(scene),
+        }
+    except Exception:
+        shutil.rmtree(object_root, ignore_errors=True)
+        raise
+
+
 def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
     value = json.loads(json.dumps(scene))
     value.pop("capture_set", None)
@@ -3180,7 +3450,12 @@ def _public_scene(scene: dict[str, Any]) -> dict[str, Any]:
     for item in value.get("objects", []):
         object_id = item["object_id"]
         base = f"{API_BASE}/scenes/{scene_id}/objects/{object_id}"
-        if item.get("asset_kind") == "mesh":
+        if item.get("asset_kind") == "primitive":
+            thumbnail_version = int(value.get("edit_revision", value.get("revision", 0)))
+            item["urls"] = {
+                "thumbnail": f"{base}/asset/thumbnail?v={thumbnail_version}",
+            }
+        elif item.get("asset_kind") == "mesh":
             item["urls"] = {
                 "model": f"{base}/asset/model",
                 "resources": {
@@ -3212,15 +3487,6 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
         raise ValueError("scene update must be an object")
     with _STATE_LOCK:
         scene = load_scene(scene_id)
-        if "base_edit_revision" in payload:
-            try:
-                base_edit_revision = int(payload["base_edit_revision"])
-            except (TypeError, ValueError) as exc:
-                raise ValueError("base edit revision is invalid") from exc
-            if base_edit_revision != int(scene.get("edit_revision", 0)):
-                raise RuntimeError(
-                    "scene was changed by another editor; reload it before saving"
-                )
         visible_before = _visible_object_ids(scene)
         changed = False
         render_changed = False
@@ -3290,16 +3556,30 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                         changed = True
                 if any(
                     key in incoming
-                    for key in ("collision_proxy", "light_transport", "transmission", "locked")
+                    for key in (
+                        "collision_proxy", "light_transport", "transmission", "locked",
+                        "primitive", "emission",
+                    )
                 ):
                     editor_properties = normalize_object_editor_properties({
                         **item,
                         **incoming,
                     })
+                    primitive = editor_properties.get("primitive")
+                    if isinstance(primitive, dict) and primitive.get("texture_id"):
+                        texture_ids = {
+                            texture.get("texture_id")
+                            for texture in scene.get("textures", [])
+                            if isinstance(texture, dict)
+                        }
+                        if primitive["texture_id"] not in texture_ids:
+                            raise ValueError("primitive references an unknown scene texture")
                     previous_editor_properties = normalize_object_editor_properties(item)
                     if editor_properties != previous_editor_properties:
                         item.update(editor_properties)
                         changed = True
+                        if "primitive" in incoming or "emission" in incoming:
+                            render_changed = True
                         if (
                             editor_properties["light_transport"]
                             != previous_editor_properties["light_transport"]
@@ -3307,6 +3587,10 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                             != previous_editor_properties["transmission"]
                             or editor_properties["collision_proxy"]
                             != previous_editor_properties["collision_proxy"]
+                            or editor_properties.get("primitive")
+                            != previous_editor_properties.get("primitive")
+                            or editor_properties["emission"]
+                            != previous_editor_properties["emission"]
                         ):
                             preview_changed = True
         if "layers" in payload:
@@ -3481,7 +3765,7 @@ def _scene_sources(scene: dict[str, Any], only_object_id: str = "") -> list[tupl
     output = []
     visible_ids = _visible_object_ids(scene) if not only_object_id else set()
     for item in scene.get("objects", []):
-        if item.get("asset_kind") == "mesh":
+        if item.get("asset_kind") in {"mesh", "primitive"}:
             continue
         if only_object_id and item.get("object_id") != only_object_id:
             continue
@@ -3646,8 +3930,8 @@ def _ensure_object_ply_export(scene_id: str, object_id: str) -> Path:
     with _STATE_LOCK:
         scene = load_scene(scene_id)
         item = _object_by_id(scene, object_id)
-        if item.get("asset_kind") == "mesh":
-            raise ValueError("mesh models keep their original format and cannot be exported as Gaussian PLY")
+        if item.get("asset_kind") in {"mesh", "primitive"}:
+            raise ValueError("only Gaussian objects can be exported as PLY")
         revision = int(scene.get("revision", 0))
         source = _object_file(scene_id, item, "ply")
         transform = item.get("transform")
@@ -3712,6 +3996,23 @@ def register_routes(routes: Any) -> None:
         try:
             job = _new_job("weights")
             _track_task(asyncio.to_thread(_run_job, job, _download_weights))
+            return web.json_response(_job_public(job), status=202)
+        except Exception as exc:
+            return _json_error(web, exc, 409)
+
+    @routes.post(f"{API_BASE}/generators/{{provider}}/weights/download")
+    async def factory_generator_weights_download(request: Any) -> Any:
+        try:
+            provider = factory3d_generation.normalize_provider(request.match_info["provider"])
+            job = _new_job("weights")
+            job["provider"] = provider
+            _track_task(
+                asyncio.to_thread(
+                    _run_job,
+                    job,
+                    lambda current: _download_provider_weights(current, provider),
+                )
+            )
             return web.json_response(_job_public(job), status=202)
         except Exception as exc:
             return _json_error(web, exc, 409)
@@ -4076,11 +4377,18 @@ def register_routes(routes: Any) -> None:
             object_id = _new_id()
             name = _clean_name(post.get("name"), f"Object {object_id[:6]}", 80)
             job = _new_job("generation", scene_id)
+            provider = settings["provider"]
+            job["provider"] = provider
+            generator = (
+                _generate_mesh_object
+                if provider in factory3d_generation.MESH_PROVIDER_KEYS
+                else _generate_object
+            )
             _track_task(
                 asyncio.to_thread(
                     _run_job,
                     job,
-                    lambda current: _generate_object(
+                    lambda current: generator(
                         current,
                         image_bytes,
                         object_id,
@@ -4249,6 +4557,26 @@ def register_routes(routes: Any) -> None:
                 {"scene": _public_scene(result["scene"]), "object_id": result["object_id"]},
                 status=201,
             )
+        except FileNotFoundError as exc:
+            return _json_error(web, exc, 404)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/objects/primitive")
+    async def factory_primitive_create(request: Any) -> Any:
+        try:
+            if not _content_length_ok(request, 256 * 1024):
+                return web.json_response({"error": "primitive request is too large"}, status=413)
+            payload = await request.json()
+            result = await asyncio.to_thread(
+                create_primitive_object,
+                request.match_info["scene_id"],
+                payload,
+            )
+            return web.json_response({
+                "scene": _public_scene(result["scene"]),
+                "object_id": result["object_id"],
+            }, status=201)
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
         except Exception as exc:

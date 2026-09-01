@@ -523,6 +523,10 @@ def _request_scene_preview(
                 "render_revision": int(
                     scene.get("render_revision", scene.get("revision", 0))
                 ),
+                "edit_revision": int(scene.get("edit_revision", 0)),
+                "render": scene.get("render", {}),
+                "camera": scene.get("camera", {}),
+                "cameras": scene.get("cameras", []),
                 "capture_token": capture_token,
             },
         )
@@ -701,8 +705,9 @@ class VNCCS_3DFactory:
         try:
             snapshot = state.get("scene_snapshot")
             if isinstance(snapshot, dict):
-                backend.update_scene(scene_id, snapshot)
-            scene = backend.load_scene(scene_id)
+                scene = backend.update_scene(scene_id, dict(snapshot))
+            else:
+                scene = backend.load_scene(scene_id)
         except (FileNotFoundError, ValueError) as exc:
             raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 

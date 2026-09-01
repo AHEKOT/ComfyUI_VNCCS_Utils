@@ -28,7 +28,10 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260829.25";
+export const FACTORY_VIEWER_BUILD = "20260830.37";
+
+const MAX_OBJECT_AREA_LIGHTS = 32;
+const PLAN_BACKGROUND = "#0b0d14";
 
 const DEFAULT_LIGHTING = Object.freeze({
     preset: "day",
@@ -105,6 +108,206 @@ export function normalizedLighting(value = {}) {
         },
         lights,
     };
+}
+
+function primitiveAssetSignature(item) {
+    return `primitive:${JSON.stringify(item?.primitive || {})}`;
+}
+
+function factoryPrimitiveMetrics(primitive = {}) {
+    const kind = ["image", "plane", "terrain"].includes(primitive.kind)
+        ? primitive.kind
+        : "plane";
+    const width = Math.max(0.001, Number(primitive.width) || 2);
+    const height = Math.max(0.001, Number(primitive.height) || 2);
+    const depth = Math.max(0.001, Number(primitive.depth) || 2);
+    const extrusion = Math.max(0, Number(primitive.extrusion) || 0);
+    const segments = Array.isArray(primitive.segments) ? primitive.segments : [1, 1];
+    const segmentsX = Math.max(1, Math.min(128, Math.round(Number(segments[0]) || 1)));
+    const segmentsY = Math.max(1, Math.min(128, Math.round(Number(segments[1]) || 1)));
+    return { kind, width, height, depth, extrusion, segmentsX, segmentsY };
+}
+
+function primitiveGeometrySignature(primitive = {}) {
+    const metrics = factoryPrimitiveMetrics(primitive);
+    return JSON.stringify(metrics);
+}
+
+function createFactoryPrimitiveGeometry(primitive = {}) {
+    const metrics = factoryPrimitiveMetrics(primitive);
+    const { kind, width, height, depth, extrusion, segmentsX, segmentsY } = metrics;
+    let geometry;
+    if (kind === "image") {
+        geometry = extrusion > 0.0001
+            ? new THREE.BoxGeometry(width, height, extrusion, segmentsX, segmentsY, 1)
+            : new THREE.PlaneGeometry(width, height, segmentsX, segmentsY);
+        geometry.translate(0, height * 0.5, 0);
+    } else if (extrusion > 0.0001) {
+        geometry = new THREE.BoxGeometry(width, extrusion, depth, segmentsX, 1, segmentsY);
+        geometry.translate(0, extrusion * 0.5, 0);
+    } else {
+        geometry = new THREE.PlaneGeometry(width, depth, segmentsX, segmentsY);
+        geometry.rotateX(-Math.PI * 0.5);
+    }
+    geometry.computeBoundingBox();
+    return { geometry, ...metrics };
+}
+
+function applyFactoryPrimitiveTexture(texture, primitive = {}, metrics = {}) {
+    if (!texture) return;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.wrapS = THREE.RepeatWrapping;
+    texture.wrapT = THREE.RepeatWrapping;
+    const uvScale = Array.isArray(primitive.uv_scale) ? primitive.uv_scale : [1, 1];
+    const uvOffset = Array.isArray(primitive.uv_offset) ? primitive.uv_offset : [0, 0];
+    const terrainTileBase = metrics.kind === "terrain"
+        ? [metrics.width || 1, metrics.depth || 1]
+        : [1, 1];
+    texture.repeat.set(
+        Math.max(0.001, (Number(uvScale[0]) || 1) * terrainTileBase[0]),
+        Math.max(0.001, (Number(uvScale[1]) || 1) * terrainTileBase[1]),
+    );
+    texture.offset.set(Number(uvOffset[0]) || 0, Number(uvOffset[1]) || 0);
+    texture.center.set(0.5, 0.5);
+    texture.rotation = THREE.MathUtils.degToRad(Number(primitive.uv_rotation) || 0);
+    texture.anisotropy = 2;
+    texture.needsUpdate = true;
+}
+
+function applyFactoryPrimitiveMaterial(material, primitive = {}, kind = "plane") {
+    if (!material) return;
+    const opacity = Math.max(0, Math.min(1, Number(primitive.opacity ?? 1)));
+    material.color.set(primitive.color || "#ffffff");
+    material.side = primitive.double_sided === false ? THREE.FrontSide : THREE.DoubleSide;
+    material.transparent = kind === "image" || opacity < 1;
+    material.opacity = opacity;
+    material.alphaTest = kind === "image" ? 0.01 : 0;
+    material.depthWrite = opacity >= 0.98;
+    material.needsUpdate = true;
+}
+
+async function createFactoryPrimitive(item, textureURL = "") {
+    const primitive = item?.primitive || {};
+    const metrics = createFactoryPrimitiveGeometry(primitive);
+    const { geometry, kind } = metrics;
+    let texture = null;
+    if (textureURL) {
+        texture = await new THREE.TextureLoader().loadAsync(textureURL);
+        applyFactoryPrimitiveTexture(texture, primitive, metrics);
+    }
+    const opacity = Math.max(0, Math.min(1, Number(primitive.opacity ?? 1)));
+    const material = new THREE.MeshStandardMaterial({
+        color: primitive.color || "#ffffff",
+        map: texture,
+        roughness: 0.72,
+        metalness: 0.02,
+        side: primitive.double_sided === false ? THREE.FrontSide : THREE.DoubleSide,
+        transparent: kind === "image" || opacity < 1,
+        opacity,
+        alphaTest: kind === "image" ? 0.01 : 0,
+        depthWrite: opacity >= 0.98,
+    });
+    applyFactoryPrimitiveMaterial(material, primitive, kind);
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.name = `${item?.name || kind} surface`;
+    const root = new THREE.Group();
+    root.name = item?.name || kind;
+    root.userData.factoryObjectId = item?.object_id || "";
+    root.userData.factoryPrimitiveKind = kind;
+    root.add(mesh);
+    root.updateMatrixWorld(true);
+    return {
+        root,
+        bounds: new THREE.Box3().setFromObject(root),
+        surface: mesh,
+        texture,
+    };
+}
+
+function textureColorSamples(texture, columns = 1, rows = 1) {
+    const fallback = Array.from({ length: columns * rows }, () => new THREE.Color(0xffffff));
+    const image = texture?.image;
+    if (!image) return fallback;
+    try {
+        const canvas = document.createElement("canvas");
+        canvas.width = columns;
+        canvas.height = rows;
+        const context = canvas.getContext("2d", { willReadFrequently: true });
+        if (!context) return fallback;
+        context.drawImage(image, 0, 0, columns, rows);
+        const pixels = context.getImageData(0, 0, columns, rows).data;
+        return Array.from({ length: columns * rows }, (_, index) => {
+            const offset = index * 4;
+            const alpha = pixels[offset + 3] / 255;
+            return new THREE.Color().setRGB(
+                (pixels[offset] / 255) * alpha,
+                (pixels[offset + 1] / 255) * alpha,
+                (pixels[offset + 2] / 255) * alpha,
+            );
+        });
+    } catch (_error) {
+        return fallback;
+    }
+}
+
+function objectMaterialColor(entry) {
+    if (entry?.emissionColor?.isColor) return entry.emissionColor.clone();
+    const colors = [];
+    entry?.model?.traverse?.(object => {
+        if (!object.isMesh) return;
+        for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+            if (material?.map?.image) colors.push(textureColorSamples(material.map, 1, 1)[0]);
+            else if (material?.color?.isColor) colors.push(material.color.clone());
+        }
+    });
+    if (!colors.length) return new THREE.Color(0xffffff);
+    const result = new THREE.Color(0x000000);
+    for (const color of colors) result.add(color);
+    return result.multiplyScalar(1 / colors.length);
+}
+
+function averageSplatColor(buffer, maximumSamples = 4096) {
+    const bytes = new Uint8Array(buffer);
+    const count = Math.floor(bytes.byteLength / 32);
+    if (!count) return new THREE.Color(0xffffff);
+    const stride = Math.max(1, Math.floor(count / maximumSamples));
+    let red = 0;
+    let green = 0;
+    let blue = 0;
+    let weight = 0;
+    for (let index = 0; index < count; index += stride) {
+        const offset = index * 32 + 24;
+        const alpha = bytes[offset + 3] / 255;
+        red += bytes[offset] * alpha;
+        green += bytes[offset + 1] * alpha;
+        blue += bytes[offset + 2] * alpha;
+        weight += alpha;
+    }
+    if (weight <= 0) return new THREE.Color(0xffffff);
+    return new THREE.Color().setRGB(
+        red / weight / 255,
+        green / weight / 255,
+        blue / weight / 255,
+    );
+}
+
+function addRectEmitter(root, color, intensity, width, height, position, direction) {
+    const light = new THREE.RectAreaLight(
+        color,
+        Math.max(0, Number(intensity) || 0),
+        Math.max(0.001, width),
+        Math.max(0.001, height),
+    );
+    light.position.copy(position);
+    light.quaternion.setFromUnitVectors(
+        new THREE.Vector3(0, 0, -1),
+        direction.clone().normalize(),
+    );
+    light.name = "VNCCS object area emitter";
+    root.add(light);
+    return light;
 }
 
 export function lightSourceDirection(
@@ -1040,6 +1243,7 @@ export class Factory3DViewer {
         this._cameraInsetScheduleKind = "";
         this._cameraInsetSerial = Promise.resolve();
         this._cameraInsetObjectURL = "";
+        this._captureSerial = Promise.resolve();
         this._lightDrag = null;
         this.captureWidth = 1024;
         this.captureHeight = 1024;
@@ -1134,7 +1338,9 @@ export class Factory3DViewer {
                 <span class="vnccs-i3s__camera-inset-status" role="status">Rendering preview…</span>
             </div>`;
         this.cameraInsetTitle = this.cameraInset.querySelector(".vnccs-i3s__camera-inset-title");
+        this.cameraInsetMedia = this.cameraInset.querySelector(".vnccs-i3s__camera-inset-media");
         this.cameraInsetImage = this.cameraInset.querySelector("img");
+        this.cameraInsetImage.style.objectFit = "contain";
         this.cameraInsetStatus = this.cameraInset.querySelector(".vnccs-i3s__camera-inset-status");
         this.cameraInset.querySelector(".vnccs-i3s__camera-inset-open")?.addEventListener("click", () => {
             const cameraId = this.cameraInset.dataset.cameraId || "";
@@ -1533,15 +1739,14 @@ export class Factory3DViewer {
                         moved: false,
                     };
                     this.canvas.setPointerCapture?.(event.pointerId);
-                    if (this._architectureDrag.type === "room") {
-                        this.canvas.style.cursor = "grabbing";
-                        this.options.onArchitectureEdit({
-                            phase: "start",
-                            type: "room",
-                            id: this._architectureDrag.id,
-                            event,
-                        });
-                    }
+                    if (this._architectureDrag.type === "room") this.canvas.style.cursor = "grabbing";
+                    this.options.onArchitectureEdit({
+                        phase: "start",
+                        type: this._architectureDrag.type,
+                        id: this._architectureDrag.id,
+                        endpoint: this._architectureDrag.endpoint,
+                        event,
+                    });
                     event.preventDefault();
                     return;
                 }
@@ -1757,11 +1962,12 @@ export class Factory3DViewer {
                         thickness: this._architectureDrag.thickness,
                     });
                 }
-                if (this._architectureDrag.type === "room" && this._architectureDrag.moved) {
+                if (this._architectureDrag.moved) {
                     this.options.onArchitectureEdit({
                         phase: "move",
-                        type: "room",
+                        type: this._architectureDrag.type,
                         id: this._architectureDrag.id,
+                        endpoint: this._architectureDrag.endpoint,
                         point,
                         event,
                     });
@@ -1916,7 +2122,7 @@ export class Factory3DViewer {
                 this.setPlanDraft(null);
                 this.canvas.releasePointerCapture?.(event.pointerId);
                 if (drag.type === "room") this.canvas.style.cursor = "default";
-                if (drag.type === "room" && !drag.moved) {
+                if (!drag.moved) {
                     this.options.onArchitectureEdit({
                         phase: "cancel",
                         type: drag.type,
@@ -1975,14 +2181,13 @@ export class Factory3DViewer {
                 this._architectureDrag = null;
                 this.setPlanDraft(null);
                 if (drag.type === "room") this.canvas.style.cursor = "default";
-                if (drag.type === "room") {
-                    this.options.onArchitectureEdit({
-                        phase: "cancel",
-                        type: drag.type,
-                        id: drag.id,
-                        event,
-                    });
-                }
+                this.options.onArchitectureEdit({
+                    phase: "cancel",
+                    type: drag.type,
+                    id: drag.id,
+                    endpoint: drag.endpoint,
+                    event,
+                });
             }
             if (
                 this._planMarquee
@@ -2209,6 +2414,9 @@ export class Factory3DViewer {
         const sameCamera = this.cameraInset.dataset.cameraId === cameraId;
         this.cameraInset.dataset.cameraId = cameraId;
         this.cameraInset.hidden = false;
+        this.cameraInsetMedia.style.aspectRatio = (
+            `${Math.max(1, this.captureWidth)} / ${Math.max(1, this.captureHeight)}`
+        );
         this.cameraInsetTitle.textContent = camera.name || "Camera preview";
         this.cameraInsetImage.alt = `${camera.name || "Camera"} preview`;
         if (!refresh && sameCamera && this._cameraInsetObjectURL) return;
@@ -2240,16 +2448,35 @@ export class Factory3DViewer {
                 this._cameraInsetSchedule = requestAnimationFrame(capture);
                 return;
             }
+            const maximumWidth = realtime ? 256 : 320;
+            const maximumHeight = realtime ? 180 : 240;
+            const captureAspect = this.captureWidth / Math.max(1, this.captureHeight);
+            let previewWidth = maximumWidth;
+            let previewHeight = Math.round(previewWidth / captureAspect);
+            if (previewHeight > maximumHeight) {
+                previewHeight = maximumHeight;
+                previewWidth = Math.round(previewHeight * captureAspect);
+            }
             const operation = this._cameraInsetSerial.then(async () => {
                 if (request !== this._cameraInsetRequest || this._disposed) return;
                 const blob = await this.captureCameraPreview({
-                    width: realtime ? 256 : 320,
-                    height: realtime ? 144 : 180,
+                    width: Math.max(64, previewWidth),
+                    height: Math.max(64, previewHeight),
                     cameraState: camera,
                 });
-                if (request !== this._cameraInsetRequest || this._disposed) return;
+                const frameIsRelevant = () => Boolean(
+                    !this._disposed
+                    && !this.cameraInset.hidden
+                    && this.cameraInset.dataset.cameraId === cameraId
+                    && (request === this._cameraInsetRequest || realtime)
+                );
+                // Continuous slider input advances the request id faster than
+                // a GPU readback can finish. Publish the completed intermediate
+                // frame for the same camera, then let the queued latest request
+                // replace it instead of leaving the inset blank until pointerup.
+                if (!frameIsRelevant()) return;
                 const objectURL = URL.createObjectURL(blob);
-                if (request !== this._cameraInsetRequest || this._disposed) {
+                if (!frameIsRelevant()) {
                     URL.revokeObjectURL(objectURL);
                     return;
                 }
@@ -2353,8 +2580,112 @@ export class Factory3DViewer {
         );
     }
 
+    _clearObjectEmission(entry) {
+        if (!entry?.emissionRoot) return;
+        entry.emissionRoot.parent?.remove(entry.emissionRoot);
+        entry.emissionRoot.clear();
+        entry.emissionRoot = null;
+    }
+
+    _syncObjectEmission(entry) {
+        if (!entry?.mesh) return;
+        const emission = entry.data?.emission || {};
+        const enabled = emission.enabled === true;
+        const intensity = Math.max(0, Math.min(1000, Number(emission.intensity) || 0));
+        entry.model?.traverse?.(object => {
+            if (!object.isMesh) return;
+            for (const material of Array.isArray(object.material) ? object.material : [object.material]) {
+                if (!material?.emissive?.isColor) continue;
+                material.userData ||= {};
+                material.userData.factoryEmissionBase ||= {
+                    color: material.emissive.clone(),
+                    map: material.emissiveMap || null,
+                    intensity: Number(material.emissiveIntensity) || 0,
+                };
+                const base = material.userData.factoryEmissionBase;
+                if (enabled) {
+                    material.emissive.copy(material.color?.isColor ? material.color : new THREE.Color(0xffffff));
+                    material.emissiveMap = material.map || base.map;
+                    material.emissiveIntensity = intensity;
+                } else {
+                    material.emissive.copy(base.color);
+                    material.emissiveMap = base.map;
+                    material.emissiveIntensity = base.intensity;
+                }
+                material.needsUpdate = true;
+            }
+        });
+        this._clearObjectEmission(entry);
+        if (!enabled || intensity <= 0 || !hasFiniteBounds(entry.localBounds)) return;
+        const root = new THREE.Group();
+        root.name = "VNCCS distributed object emission";
+        entry.mesh.add(root);
+        entry.emissionRoot = root;
+        let emitterBudget = Math.max(
+            0,
+            MAX_OBJECT_AREA_LIGHTS - [...this.objects.values()].reduce(
+                (total, candidate) => candidate === entry
+                    ? total
+                    : total + (candidate.emissionRoot?.children?.length || 0),
+                0,
+            ),
+        );
+        const addEmitter = (...args) => {
+            if (emitterBudget <= 0) return null;
+            emitterBudget -= 1;
+            return addRectEmitter(root, ...args);
+        };
+        const bounds = entry.localBounds;
+        const center = bounds.getCenter(new THREE.Vector3());
+        const size = bounds.getSize(new THREE.Vector3());
+        const primitive = entry.data?.primitive;
+        const twoSided = emission.two_sided !== false;
+        if (primitive && entry.primitive) {
+            const grids = {
+                low: [1, 1],
+                medium: [2, 2],
+                high: [3, 2],
+            };
+            const [columns, rows] = grids[emission.quality] || grids.medium;
+            const samples = textureColorSamples(entry.primitive.material?.map, columns, rows);
+            const kind = primitive.kind || "plane";
+            const epsilon = Math.max(0.001, Math.min(size.x, size.y, size.z) * 0.002 || 0.002);
+            for (let row = 0; row < rows; row += 1) {
+                for (let column = 0; column < columns; column += 1) {
+                    const color = samples[row * columns + column] || objectMaterialColor(entry);
+                    if (kind === "image") {
+                        const x = bounds.min.x + size.x * ((column + 0.5) / columns);
+                        const y = bounds.min.y + size.y * ((rows - row - 0.5) / rows);
+                        addEmitter(color, intensity, size.x / columns, size.y / rows, new THREE.Vector3(x, y, bounds.max.z + epsilon), new THREE.Vector3(0, 0, 1));
+                        if (twoSided) addEmitter(color, intensity, size.x / columns, size.y / rows, new THREE.Vector3(x, y, bounds.min.z - epsilon), new THREE.Vector3(0, 0, -1));
+                    } else {
+                        const x = bounds.min.x + size.x * ((column + 0.5) / columns);
+                        const z = bounds.min.z + size.z * ((rows - row - 0.5) / rows);
+                        addEmitter(color, intensity, size.x / columns, size.z / rows, new THREE.Vector3(x, bounds.max.y + epsilon, z), new THREE.Vector3(0, 1, 0));
+                        if (twoSided) addEmitter(color, intensity, size.x / columns, size.z / rows, new THREE.Vector3(x, bounds.min.y - epsilon, z), new THREE.Vector3(0, -1, 0));
+                    }
+                }
+            }
+            return;
+        }
+        const color = objectMaterialColor(entry);
+        const epsilon = Math.max(0.001, Math.min(size.x, size.y, size.z) * 0.002 || 0.002);
+        const faces = [
+            [new THREE.Vector3(bounds.max.x + epsilon, center.y, center.z), new THREE.Vector3(1, 0, 0), size.z, size.y],
+            [new THREE.Vector3(bounds.min.x - epsilon, center.y, center.z), new THREE.Vector3(-1, 0, 0), size.z, size.y],
+            [new THREE.Vector3(center.x, bounds.max.y + epsilon, center.z), new THREE.Vector3(0, 1, 0), size.x, size.z],
+            [new THREE.Vector3(center.x, bounds.min.y - epsilon, center.z), new THREE.Vector3(0, -1, 0), size.x, size.z],
+            [new THREE.Vector3(center.x, center.y, bounds.max.z + epsilon), new THREE.Vector3(0, 0, 1), size.x, size.y],
+            [new THREE.Vector3(center.x, center.y, bounds.min.z - epsilon), new THREE.Vector3(0, 0, -1), size.x, size.y],
+        ];
+        for (const [position, direction, width, height] of faces) {
+            addEmitter(color, intensity, width, height, position, direction);
+        }
+    }
+
     _disposeEntry(entry) {
         if (!entry) return;
+        this._clearObjectEmission(entry);
         if (entry.shadowProxy) {
             entry.shadowProxy.geometry?.dispose?.();
             entry.shadowProxy.material?.dispose?.();
@@ -2397,6 +2728,11 @@ export class Factory3DViewer {
             state.directionalScale.value.multiplyScalar(this._directionalVisibility(entry));
         }
         this._applyLocalLightGain(entry, state.baseGain.value);
+        if (entry.data?.emission?.enabled) {
+            state.baseGain.value.multiplyScalar(
+                1 + Math.max(0, Math.min(1000, Number(entry.data.emission.intensity) || 0)),
+            );
+        }
         if (regenerate) entry.splat.updateVersion();
     }
 
@@ -2452,7 +2788,7 @@ export class Factory3DViewer {
     }
 
     _applyLocalLightGain(entry, target) {
-        if (!this.lighting.lights?.length || !entry.localBounds) return;
+        if (!entry.localBounds) return;
         const center = entry.localBounds.clone().applyMatrix4(entry.mesh.matrixWorld)
             .getCenter(new THREE.Vector3());
         const shadowBudget = { low: 2, medium: 4, high: 6, ultra: 8 }[
@@ -2510,6 +2846,39 @@ export class Factory3DViewer {
             target.y += color.g * response;
             target.z += color.b * response;
         }
+        for (const sourceEntry of this.objects.values()) {
+            if (
+                sourceEntry === entry
+                || sourceEntry.mesh?.visible === false
+                || sourceEntry.data?.emission?.enabled !== true
+                || !hasFiniteBounds(sourceEntry.localBounds)
+            ) continue;
+            if (
+                sourceEntry.data?.level_id
+                && entry.data?.level_id
+                && sourceEntry.data.level_id !== entry.data.level_id
+            ) continue;
+            sourceEntry.mesh.updateMatrixWorld(true);
+            const sourceBounds = sourceEntry.localBounds.clone()
+                .applyMatrix4(sourceEntry.mesh.matrixWorld);
+            const nearest = sourceBounds.clampPoint(center, new THREE.Vector3());
+            const distanceSquared = Math.max(0.04, center.distanceToSquared(nearest));
+            const size = sourceBounds.getSize(new THREE.Vector3());
+            const emittingArea = Math.max(
+                0.01,
+                2 * (size.x * size.y + size.x * size.z + size.y * size.z),
+            );
+            const intensity = Math.max(
+                0,
+                Math.min(1000, Number(sourceEntry.data.emission.intensity) || 0),
+            );
+            const response = intensity * Math.min(1, emittingArea) * 0.08
+                / Math.max(1, distanceSquared);
+            const color = objectMaterialColor(sourceEntry);
+            target.x += color.r * response;
+            target.y += color.g * response;
+            target.z += color.b * response;
+        }
     }
 
     _localShadowCameraFar(position) {
@@ -2532,6 +2901,24 @@ export class Factory3DViewer {
         return Math.max(0.03, Math.sqrt(farthestDistanceSq) * 1.05 + 0.05);
     }
 
+    _setShadowMapSize(light, requestedSize) {
+        const shadow = light?.shadow;
+        if (!shadow) return;
+        const maximumSize = Math.max(
+            512,
+            Number(this.renderer?.capabilities?.maxTextureSize) || requestedSize,
+        );
+        const size = Math.max(512, Math.min(maximumSize, requestedSize));
+        const changed = shadow.mapSize.x !== size || shadow.mapSize.y !== size;
+        if (changed && (shadow.map || shadow.mapPass)) {
+            shadow.dispose?.();
+            shadow.map = null;
+            shadow.mapPass = null;
+        }
+        shadow.mapSize.set(size, size);
+        shadow.needsUpdate = true;
+    }
+
     _syncThreeLights() {
         const qualitySizes = { low: 512, medium: 1024, high: 2048, ultra: 4096 };
         const qualityBlurRadius = { low: 2.5, medium: 3, high: 3.5, ultra: 4 };
@@ -2544,7 +2931,7 @@ export class Factory3DViewer {
         this.sunLight.intensity = this.lighting.preset === "off" ? 0 : this.lighting.intensity;
         this.sunLight.castShadow = shadowsEnabled;
         const mapSize = qualitySizes[this.lighting.shadows?.quality] || 1024;
-        this.sunLight.shadow.mapSize.set(mapSize, mapSize);
+        this._setShadowMapSize(this.sunLight, mapSize);
         this.sunLight.shadow.bias = this.lighting.shadows?.bias ?? DEFAULT_LIGHTING.shadows.bias;
         this.sunLight.shadow.normalBias = this.lighting.shadows?.normal_bias
             ?? DEFAULT_LIGHTING.shadows.normal_bias;
@@ -2554,7 +2941,11 @@ export class Factory3DViewer {
         for (const child of [...this.lightRig.children]) {
             if ([this.ambientLight, this.sunLight, this.sunLight.target].includes(child)) continue;
             this.lightRig.remove(child);
-            child.shadow?.map?.dispose?.();
+            child.shadow?.dispose?.();
+            if (child.shadow) {
+                child.shadow.map = null;
+                child.shadow.mapPass = null;
+            }
         }
         const shadowLightBudget = { low: 2, medium: 4, high: 6, ultra: 8 }[
             this.lighting.shadows?.quality
@@ -2589,7 +2980,7 @@ export class Factory3DViewer {
             light.castShadow = requiresShadow;
             if (light.castShadow) shadowLightCount += 1;
             if (light.shadow) {
-                light.shadow.mapSize.set(mapSize, mapSize);
+                this._setShadowMapSize(light, mapSize);
                 const configuredBias = this.lighting.shadows?.bias
                     ?? DEFAULT_LIGHTING.shadows.bias;
                 const configuredNormalBias = this.lighting.shadows?.normal_bias
@@ -2630,6 +3021,7 @@ export class Factory3DViewer {
             }
             this.lightRig.add(light);
         }
+        this.renderer.shadowMap.needsUpdate = true;
     }
 
     _fitSunShadowCamera() {
@@ -2739,7 +3131,16 @@ export class Factory3DViewer {
 
     _applySkydomeSettings() {
         if (!this.scene) return;
-        if (this.skydomeTexture && this.skydome?.visible !== false) {
+        if (this.viewMode === "plan") {
+            if (this.scene.background?.isColor) {
+                this.scene.background.set(PLAN_BACKGROUND);
+            } else {
+                this.scene.background = new THREE.Color(PLAN_BACKGROUND);
+            }
+            this.scene.backgroundRotation?.set(0, 0, 0);
+            this.scene.backgroundIntensity = 1;
+            this.scene.backgroundBlurriness = 0;
+        } else if (this.skydomeTexture && this.skydome?.visible !== false) {
             this.scene.background = this.skydomeTexture;
             this.scene.backgroundRotation?.set(
                 radians(this.skydome.pitch),
@@ -3807,9 +4208,11 @@ export class Factory3DViewer {
         this.setLighting(this.sceneData.lighting);
         const skydomePromise = this.setSkydome(this.sceneData.skydome);
         const source = Array.isArray(sceneData?.objects) ? sceneData.objects : [];
-        const assetPathFor = item => item?.asset_kind === "mesh"
-            ? item.urls?.model
-            : item.urls?.splat;
+        const assetPathFor = item => item?.asset_kind === "primitive"
+            ? primitiveAssetSignature(item)
+            : item?.asset_kind === "mesh"
+                ? item.urls?.model
+                : item.urls?.splat;
         const needsAssetLoading = !incremental || source.some(item => {
             const entry = this.objects.get(item.object_id);
             return !entry || entry.assetPath !== assetPathFor(item);
@@ -3845,9 +4248,10 @@ export class Factory3DViewer {
             let mesh = null;
             let objectRoot = null;
             try {
+                const isPrimitive = item.asset_kind === "primitive";
                 const isMeshModel = item.asset_kind === "mesh";
                 const assetPath = assetPathFor(item);
-                if (!assetPath) {
+                if (!assetPath && !isPrimitive) {
                     throw new Error(
                         `Object ${item.object_id} has no ${isMeshModel ? "model" : "SPLAT"} asset URL`,
                     );
@@ -3862,12 +4266,48 @@ export class Factory3DViewer {
                     this._applyTransform(existing.mesh, item.transform);
                     this._syncShadowProxy(existing);
                     this._syncDirectionalLighting(existing);
+                    this._syncObjectEmission(existing);
                     return;
                 }
                 if (existing) {
                     this.scene.remove(existing.mesh);
                     this._disposeEntry(existing);
                     this.objects.delete(item.object_id);
+                }
+                if (isPrimitive) {
+                    const textureId = String(item.primitive?.texture_id || "");
+                    const textureURL = textureId
+                        ? this.options.resolveAssetURL(
+                            `/vnccs/3d-factory/scenes/${encodeURIComponent(sceneData.scene_id)}`
+                            + `/textures/${encodeURIComponent(textureId)}`,
+                        )
+                        : "";
+                    const loaded = await createFactoryPrimitive(item, textureURL);
+                    if (token !== this._loadingToken || this._disposed) {
+                        disposeFactoryModel(loaded.root);
+                        return;
+                    }
+                    objectRoot = loaded.root;
+                    this._applyTransform(objectRoot, item.transform);
+                    objectRoot.visible = visibleIds.has(item.object_id);
+                    this.scene.add(objectRoot);
+                    const entry = {
+                        mesh: objectRoot,
+                        model: objectRoot,
+                        primitive: loaded.surface,
+                        primitiveTextureId: textureId,
+                        primitiveGeometrySignature: primitiveGeometrySignature(item.primitive),
+                        splat: null,
+                        data: item,
+                        localBounds: loaded.bounds,
+                        splatBounds: null,
+                        assetPath,
+                    };
+                    this.objects.set(item.object_id, entry);
+                    this._syncObjectEmission(entry);
+                    this.resize();
+                    this.invalidate();
+                    return;
                 }
                 if (isMeshModel) {
                     const loadStarted = performance.now();
@@ -3889,7 +4329,7 @@ export class Factory3DViewer {
                     this._applyTransform(objectRoot, item.transform);
                     objectRoot.visible = visibleIds.has(item.object_id);
                     this.scene.add(objectRoot);
-                    this.objects.set(item.object_id, {
+                    const entry = {
                         mesh: objectRoot,
                         model: objectRoot,
                         splat: null,
@@ -3897,7 +4337,9 @@ export class Factory3DViewer {
                         localBounds: loaded.bounds,
                         splatBounds: null,
                         assetPath,
-                    });
+                    };
+                    this.objects.set(item.object_id, entry);
+                    this._syncObjectEmission(entry);
                     this.resize();
                     this.invalidate();
                     console.info("[VNCCS 3D Factory][viewport] Imported model ready", {
@@ -3938,6 +4380,7 @@ export class Factory3DViewer {
                 );
                 const fileBytes = preparedAsset.buffer;
                 const gaussianCount = fileBytes.byteLength / 32;
+                const emissionColor = averageSplatColor(fileBytes);
                 const createMesh = () => {
                     const value = new SplatMesh({
                         fileBytes,
@@ -3993,10 +4436,12 @@ export class Factory3DViewer {
                     localBounds,
                     splatBounds,
                     assetPath,
+                    emissionColor,
                 };
                 this.objects.set(item.object_id, entry);
                 this._attachShadowProxy(entry);
                 this._attachDirectionalLighting(entry);
+                this._syncObjectEmission(entry);
                 this.spark.setDirty?.();
                 this.resize();
                 this.invalidate();
@@ -4072,6 +4517,46 @@ export class Factory3DViewer {
         const entry = this.objects.get(objectId);
         if (!entry) return;
         entry.data = { ...entry.data, ...value };
+        if ("primitive" in value && entry.data.asset_kind === "primitive") {
+            const textureId = String(entry.data.primitive?.texture_id || "");
+            if (textureId !== String(entry.primitiveTextureId || "")) {
+                void this.setScene(this.sceneData, { incremental: true });
+                return;
+            }
+            const metrics = factoryPrimitiveMetrics(entry.data.primitive);
+            const geometrySignature = primitiveGeometrySignature(entry.data.primitive);
+            const geometryChanged = geometrySignature !== entry.primitiveGeometrySignature;
+            if (entry.primitive) {
+                if (geometryChanged) {
+                    const nextGeometry = createFactoryPrimitiveGeometry(entry.data.primitive).geometry;
+                    const previousGeometry = entry.primitive.geometry;
+                    entry.primitive.geometry = nextGeometry;
+                    previousGeometry?.dispose?.();
+                    entry.localBounds = nextGeometry.boundingBox?.clone()
+                        || new THREE.Box3().setFromObject(entry.primitive);
+                    entry.primitiveGeometrySignature = geometrySignature;
+                }
+                applyFactoryPrimitiveTexture(
+                    entry.primitive.material?.map,
+                    entry.data.primitive,
+                    metrics,
+                );
+                applyFactoryPrimitiveMaterial(
+                    entry.primitive.material,
+                    entry.data.primitive,
+                    metrics.kind,
+                );
+                entry.assetPath = primitiveAssetSignature(entry.data);
+                this._syncObjectEmission(entry);
+                if (geometryChanged) this._fitSunShadowCamera();
+            }
+            if (objectId === this.selectedId || this.selectedGroupObjectIds.includes(objectId)) {
+                this._refreshSelectionBounds();
+            }
+            this.spark.setDirty?.();
+            this.invalidate();
+            return;
+        }
         if ("name" in value) {
             entry.mesh.name = value.name || objectId;
             if (entry.splat) entry.splat.name = value.name || objectId;
@@ -4083,6 +4568,12 @@ export class Factory3DViewer {
                 && (this.viewMode !== "plan" || !entry.data.level_id || entry.data.level_id === this.activeLevelId);
         }
         this._syncShadowProxy(entry);
+        if ("emission" in value) {
+            this._syncObjectEmission(entry);
+            for (const candidate of this.objects.values()) {
+                this._syncDirectionalLighting(candidate);
+            }
+        }
         if (value.transform) {
             this._applyTransform(entry.mesh, value.transform);
             for (const candidate of this.objects.values()) {
@@ -4187,9 +4678,9 @@ export class Factory3DViewer {
         return this.groupPivot.position.toArray();
     }
 
-    applyGroupDelta({ position, rotation, scale } = {}) {
+    applyGroupDelta({ position, rotation, scale } = {}, { final = true } = {}) {
         if (!this.selectedGroupId) return false;
-        this._configureGroupPivot();
+        if (!this._groupTransformStart) this._configureGroupPivot();
         this._beginGroupTransform();
         if (!this._groupTransformStart) return false;
         if (Array.isArray(position) && position.length === 3) {
@@ -4204,8 +4695,8 @@ export class Factory3DViewer {
         );
         this.groupPivot.scale.setScalar(Math.max(0.001, Math.min(1000, Number(scale) || 1)));
         this.groupPivot.updateMatrixWorld(true);
-        this._applyGroupTransform(true);
-        this._configureGroupPivot();
+        this._applyGroupTransform(final);
+        if (final) this._configureGroupPivot();
         return true;
     }
 
@@ -4348,6 +4839,7 @@ export class Factory3DViewer {
         this.architecture.setActiveLevel(this.activeLevelId, next === "plan");
         this.applySceneVisibility(this.sceneData);
         this._syncThreeLights();
+        this._applySkydomeSettings();
         this.planOverlay.visible = next === "plan";
         this.canvas.style.cursor = next === "plan" && this.planTool !== "select"
             ? "crosshair"
@@ -5538,7 +6030,17 @@ export class Factory3DViewer {
         );
     }
 
-    async capturePreview({
+    _enqueueCapture(operation) {
+        const capture = this._captureSerial.then(operation);
+        this._captureSerial = capture.catch(() => null);
+        return capture;
+    }
+
+    async capturePreview(options = {}) {
+        return await this._enqueueCapture(() => this._capturePreviewNow(options));
+    }
+
+    async _capturePreviewNow({
         width = this.captureWidth,
         height = this.captureHeight,
         cameraState = null,
@@ -5705,11 +6207,15 @@ export class Factory3DViewer {
         });
     }
 
-    async captureCameraPreview({ width = 320, height = 180, cameraState = null } = {}) {
+    async captureCameraPreview(options = {}) {
+        return await this._enqueueCapture(() => this._captureCameraPreviewNow(options));
+    }
+
+    async _captureCameraPreviewNow({ width = 320, height = 180, cameraState = null } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
         if (!cameraState) throw new Error("A saved camera is required for camera preview");
-        const targetWidth = Math.max(64, Math.min(640, Math.round(Number(width) || 320)));
-        const targetHeight = Math.max(64, Math.min(360, Math.round(Number(height) || 180)));
+        const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 320)));
+        const targetHeight = Math.max(64, Math.min(4096, Math.round(Number(height) || 180)));
         const position = finiteVector(cameraState.position, this.camera.position.toArray());
         const targetState = finiteVector(cameraState.target, this.controls.target.toArray());
         const up = finiteVector(cameraState.up, this.camera.up.toArray());

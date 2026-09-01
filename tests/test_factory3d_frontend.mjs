@@ -95,7 +95,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260825\.26"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260830\.37"/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -283,6 +283,36 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
     assert.match(styles, /\.vnccs-i3s__lighting-panel/);
 });
 
+test("Every continuous 3D Factory editor path has a live input or drag preview", () => {
+    assert.match(studio, /\[this\.els\.guidance, "guidance_scale", "number"\][\s\S]*?this\._listen\(control, "input", update\)/);
+    assert.match(studio, /this\._listen\(this\.els\.cameraZoomSpeedRange, "input"/);
+    assert.match(studio, /this\._listen\(this\.els\.cameraTrackTime, "input"/);
+    assert.match(studio, /this\._listen\(this\.els\.snapGrid, "input", updateSnapGrid\)/);
+    assert.match(studio, /if \(control\.type === "number"\) this\._listen\(control, "input", updatePlanSetting\)/);
+    assert.match(studio, /this\._listen\(control, "input", \(\) => \{[\s\S]*?this\._commitSkydome\(\)/);
+    assert.match(studio, /this\._listen\(this\.els\.lightIntensity, "input"/);
+    assert.match(studio, /this\._listen\(this\.els\.lightColor, "input"/);
+    assert.match(studio, /this\._listen\(this\.els\.lightElevation, "input"/);
+    assert.match(studio, /_bindLightingRadar\(\)[\s\S]*?this\._listen\(canvas, "pointermove"/);
+    assert.match(studio, /this\._listen\(control, "input", \(\) => updateExportSide\(anchor\)\)/);
+    assert.match(studio, /this\._listen\(this\.els\.cameraLook, "pointermove"/);
+    assert.match(studio, /this\.viewer\.applyGroupDelta\(staged, \{ final \}\)/);
+    assert.match(studio, /control\.addEventListener\("input", \(\) => \{[\s\S]*?apply\(false\)/);
+    assert.match(studio, /querySelectorAll\("\[data-primitive-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
+    assert.match(studio, /querySelectorAll\("\[data-emission-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
+    assert.match(studio, /querySelectorAll\("\[data-proxy-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
+    assert.match(studio, /querySelectorAll\("\[data-material-property\]"\)[\s\S]*?control\.addEventListener\("input"/);
+    assert.match(studio, /control\.addEventListener\(control\.tagName === "SELECT" \? "change" : "input", updateDraft\)/);
+    assert.match(studio, /previewDraft\(\);/);
+    assert.match(studio, /cacheLimitInput\.addEventListener\("input"/);
+    assert.match(studio, /this\.viewer\?\.showCameraPreview\?\.\(camera, \{ realtime: true \}\)/);
+    assert.match(viewer, /if \(this\._architectureDrag\.moved\) \{[\s\S]*?phase: "move",[\s\S]*?type: this\._architectureDrag\.type/);
+    assert.match(viewer, /this\.transform\.addEventListener\("objectChange", \(\) => this\._onTransformObjectChange\(\)\)/);
+    assert.match(viewer, /_updatePlanObjectDrag\(event\)[\s\S]*?final: false/);
+    assert.match(viewer, /applyGroupDelta\(\{ position, rotation, scale \} = \{\}, \{ final = true \} = \{\}\)/);
+    assert.match(viewer, /this\._applyGroupTransform\(final\)/);
+});
+
 test("Architecture shadows use closed geometry without hidden full-wall shadow casters", () => {
     assert.match(planGeometry, /shadowSide: data\.kind === "glass" \? THREE\.DoubleSide : THREE\.BackSide/);
     assert.doesNotMatch(planGeometry, /shadowSeal|factoryShadowSeal|WALL_SHADOW_SEAL/);
@@ -425,6 +455,18 @@ test("Generation exposes background removal and UniCanvas-style seed mode withou
     assert.match(studio, /vnccs-i3s__seed-dice/);
     assert.match(studio, /this\.settings\.seed_mode === "randomize"/);
     assert.match(styles, /\.vnccs-i3s__seed-dice\.active/);
+});
+
+test("Factory generation switches between TripoSplat, Pixal3D, and TRELLIS.2 with scoped settings", () => {
+    assert.match(studio, /generator: "triposplat"/);
+    assert.match(studio, /data-generator-settings="triposplat"/);
+    assert.match(studio, /data-generator-settings="mesh" hidden/);
+    assert.match(studio, /for \(const provider of \["triposplat", "pixal3d", "trellis2"\]\)/);
+    assert.match(studio, /generatorWeightsDownload: provider/);
+    assert.match(studio, /form\.append\("provider", provider\)/);
+    assert.match(studio, /form\.append\("quality", String\(this\.settings\.mesh_quality\)\)/);
+    assert.match(studio, /this\._listen\(control, "input", update\)/);
+    assert.match(studio, /Textured GLB · 700K face target · 4K material/);
 });
 
 test("Factory reuses the UniCanvas support banner in the lower-left panel", () => {
@@ -1139,7 +1181,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260825.16");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260830.37");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);

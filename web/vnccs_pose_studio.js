@@ -4165,6 +4165,7 @@ class PoseStudioWidget {
             background_url: null,
             interface_mode: "studio",
             manager_auto_analyze_proportions: true,
+            capture_image_size: false,
             editor_mode: "image",
             hand_controls_v2: true,
             directional_skydome_enabled: false,
@@ -4638,6 +4639,40 @@ class PoseStudioWidget {
             return;
         }
         this.syncToNode(false, { skipCapture: true });
+    }
+
+    applyCapturedImageSize(width, height) {
+        if (this.exportParams.capture_image_size !== true) return false;
+        const nextWidth = Number(width);
+        const nextHeight = Number(height);
+        if (
+            !Number.isInteger(nextWidth)
+            || !Number.isInteger(nextHeight)
+            || nextWidth < 1
+            || nextHeight < 1
+            || nextWidth > 4096
+            || nextHeight > 4096
+            || nextWidth * nextHeight > 4096 * 4096
+        ) {
+            console.warn("[VNCCS PoseStudio] Ignored invalid pose image dimensions:", width, height);
+            return false;
+        }
+
+        this.exportParams.view_width = nextWidth;
+        this.exportParams.view_height = nextHeight;
+        for (const [key, value] of [["view_width", nextWidth], ["view_height", nextHeight]]) {
+            const widget = this.exportWidgets?.[key];
+            if (!widget) continue;
+            if (typeof widget.update === "function") widget.update(value);
+            else widget.value = value;
+        }
+        this.refreshPoseManagerControls();
+        this._lastResizeW = 0;
+        this._lastResizeH = 0;
+        this.resize();
+        this.updateCaptureCameraPreview();
+        this.schedulePoseManagerGridLayout();
+        return true;
     }
 
     refreshPoseManagerControls() {
@@ -12836,6 +12871,26 @@ class PoseStudioWidget {
         interfaceRow.appendChild(interfaceToggle);
         content.appendChild(interfaceRow);
 
+        const captureImageSizeRow = document.createElement("div");
+        captureImageSizeRow.className = "vnccs-ps-field";
+        captureImageSizeRow.style.marginBottom = "14px";
+
+        const captureImageSizeLabel = document.createElement("label");
+        captureImageSizeLabel.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+        const captureImageSizeCheckbox = document.createElement("input");
+        captureImageSizeCheckbox.type = "checkbox";
+        captureImageSizeCheckbox.checked = this.exportParams.capture_image_size === true;
+        captureImageSizeCheckbox.style.marginTop = "2px";
+        captureImageSizeCheckbox.addEventListener("change", () => {
+            this.exportParams.capture_image_size = captureImageSizeCheckbox.checked;
+            this.syncToNode(false, { skipCapture: true });
+        });
+        const captureImageSizeText = document.createElement("span");
+        captureImageSizeText.innerHTML = "<strong>Capture Image Size</strong><small style='display:block;color:#888;margin-top:3px;line-height:1.35'>When enabled, a connected pose-analysis image sets the canvas and exported capture to its exact width, height, and aspect ratio.</small>";
+        captureImageSizeLabel.append(captureImageSizeCheckbox, captureImageSizeText);
+        captureImageSizeRow.appendChild(captureImageSizeLabel);
+        content.appendChild(captureImageSizeRow);
+
         const handControlsRow = document.createElement("div");
         handControlsRow.className = "vnccs-ps-field";
         handControlsRow.style.marginBottom = "14px";
@@ -15310,6 +15365,10 @@ app.registerExtension({
 
             try {
                 const widget = node.studioWidget;
+                widget.applyCapturedImageSize(
+                    Number(event.detail.image_width),
+                    Number(event.detail.image_height),
+                );
                 if (!widget.viewer || !widget.viewer.isInitialized()) {
                     await widget.loadModel();
                 }
