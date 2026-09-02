@@ -505,11 +505,47 @@
 .vnccs-i3s__actions { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 7px; }
 
 .vnccs-i3s__provider-card { display: flex; align-items: center; gap: 8px; padding: 8px; border: 1px solid var(--i3-line); border-radius: var(--i3-radius-sm); background: rgba(255,255,255,.025); }
-.vnccs-i3s__generator-card { padding: 4px; }
-.vnccs-i3s__generator-select { min-width: 0; flex: 1; display: flex; align-items: center; gap: 8px; padding: 5px; border: 0; border-radius: 7px; background: transparent; color: inherit; text-align: left; cursor: pointer; }
-.vnccs-i3s__generator-select:hover { background: var(--i3-hover); }
-.vnccs-i3s__generator-select:focus-visible { outline: 2px solid var(--i3-pink); outline-offset: 1px; }
-.vnccs-i3s__generator-chevron { flex: none; color: var(--i3-muted); font-size: 1.1em; }
+.vnccs-i3s__generator-card {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(0,1fr) calc(34px * var(--i3-scale));
+    align-items: stretch;
+    gap: 4px;
+    padding: 4px;
+    background: rgba(255,255,255,.018);
+}
+.vnccs-i3s__generator-select {
+    min-width: 0;
+    width: 100%;
+    display: grid;
+    grid-template-columns: auto minmax(0,1fr) auto;
+    align-items: center;
+    gap: 9px;
+    padding: calc(7px * var(--i3-scale)) calc(8px * var(--i3-scale));
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: rgba(255,255,255,.018);
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition: border-color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+.vnccs-i3s__generator-select:hover { border-color: var(--i3-line-strong); background: var(--i3-hover); }
+.vnccs-i3s__generator-select:focus-visible {
+    outline: none;
+    border-color: var(--i3-pink);
+    box-shadow: inset 0 0 0 1px var(--i3-pink), 0 0 0 1px rgba(255,143,163,.16);
+}
+.vnccs-i3s__generator-chevron { width: 16px; height: 16px; display: grid; place-items: center; color: var(--i3-muted); }
+.vnccs-i3s__generator-chevron svg { width: 14px; height: 14px; transform: rotate(90deg); }
+.vnccs-i3s__generator-card .vnccs-i3s__model-setup {
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 100%;
+    border-radius: 8px;
+}
+.vnccs-i3s__generator-card .vnccs-i3s__model-setup svg { width: 16px; height: 16px; }
 .vnccs-i3s__generator-settings { display: flex; flex-direction: column; gap: calc(8px * var(--i3-scale)); }
 .vnccs-i3s__mesh-quality-summary { padding: 7px 8px; border: 1px solid rgba(184,169,232,.18); border-radius: 7px; background: rgba(184,169,232,.04); color: var(--i3-muted); font-size: .72em; line-height: 1.35; }
 .vnccs-i3s__advanced-settings { border: 1px solid var(--i3-line); border-radius: 8px; background: rgba(255,255,255,.018); }
@@ -520,9 +556,9 @@
 .vnccs-i3s__provider-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--i3-dim); box-shadow: 0 0 0 3px rgba(98,96,115,.12); }
 .vnccs-i3s__provider-dot.is-ready { background: var(--i3-green); box-shadow: 0 0 0 3px rgba(0,214,143,.11); }
 .vnccs-i3s__provider-dot.is-unavailable { background: var(--i3-red); box-shadow: 0 0 0 3px rgba(255,91,107,.11); }
-.vnccs-i3s__provider-copy { flex: 1; min-width: 0; }
-.vnccs-i3s__provider-name { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.vnccs-i3s__provider-model { color: var(--i3-dim); font: .77em var(--i3-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.vnccs-i3s__provider-copy { min-width: 0; display: grid; gap: 2px; }
+.vnccs-i3s__provider-name { min-width: 0; display: block; overflow: hidden; color: var(--i3-text); font-size: .86em; font-weight: 700; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.vnccs-i3s__provider-model { min-width: 0; max-width: 100%; display: block; overflow: hidden; color: var(--i3-dim); font: .66em/1.3 var(--i3-mono); text-overflow: ellipsis; white-space: nowrap; }
 .vnccs-i3s__icon-button { width: calc(30px * var(--i3-scale)); min-width: calc(30px * var(--i3-scale)); height: calc(30px * var(--i3-scale)); min-height: 0; padding: 0; }
 
 .vnccs-i3s__topbar { height: calc(43px * var(--i3-scale)); min-height: 38px; display: flex; align-items: center; gap: 9px; padding: 0 calc(10px * var(--i3-scale)); border-bottom: 1px solid var(--i3-line); background: rgba(12,10,17,.86); }

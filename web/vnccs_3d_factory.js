@@ -66,7 +66,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260830.37";
+const FRONTEND_BUILD = "20260901.1";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -212,7 +212,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./vnccs_3d_factory.css?v=20260828.2", import.meta.url).href;
+    const href = new URL("./vnccs_3d_factory.css?v=20260901.1", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;
@@ -692,15 +692,15 @@ class Factory3DWidget {
                     <div class="vnccs-i3s__section-head"><span>Generator</span></div>
                     <div class="vnccs-i3s__section-body">
                         <div class="vnccs-i3s__provider-card vnccs-i3s__generator-card">
-                            <button class="vnccs-i3s__generator-select" type="button" aria-haspopup="dialog" title="Choose generator">
-                                <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot"></span>
+                            <button class="vnccs-i3s__generator-select" type="button" aria-haspopup="dialog" aria-label="Choose 3D generator">
+                                <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot" aria-hidden="true"></span>
                                 <span class="vnccs-i3s__provider-copy">
                                     <span class="vnccs-i3s__provider-name vnccs-i3s__generator-name">TripoSplat</span>
                                     <span class="vnccs-i3s__provider-model vnccs-i3s__weights-summary">Checking weights…</span>
                                 </span>
-                                <span class="vnccs-i3s__generator-chevron" aria-hidden="true">⌄</span>
+                                <span class="vnccs-i3s__generator-chevron" aria-hidden="true">${ICONS.chevron}</span>
                             </button>
-                            <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button vnccs-i3s__model-setup" type="button" title="Model setup">${ICONS.settings}</button>
+                            <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button vnccs-i3s__model-setup" type="button" title="Model setup" aria-label="Open model setup">${ICONS.settings}</button>
                         </div>
                         <label class="vnccs-i3s__field">
                             <span class="vnccs-i3s__label">Object name</span>
@@ -6715,8 +6715,13 @@ class Factory3DWidget {
         this.els.weightsDot.classList.toggle("is-ready", ready);
         this.els.weightsDot.classList.toggle("is-unavailable", generator.runtime?.ready === false);
         this.els.generatorName.textContent = generator.name || provider;
-        this.els.weightsSummary.textContent = generator.runtime?.ready === false
+        const summary = generator.runtime?.ready === false
             ? "ComfyUI update required"
+            : ready
+                ? `${generator.output_label || "3D model"} · Ready`
+                : `${generator.output_label || "3D model"} · Setup required`;
+        const details = generator.runtime?.ready === false
+            ? "This generator requires a newer ComfyUI version"
             : ready
                 ? [
                     generator.output_label,
@@ -6724,7 +6729,13 @@ class Factory3DWidget {
                     provider === "triposplat" ? `${Number(this.settings.conditioning_resolution) || 1024}²` : "",
                     provider === "triposplat" ? tripoNativeCap : "",
                 ].filter(Boolean).join(" · ")
-                : "Weights are not installed";
+                : "Required model weights are not installed";
+        this.els.weightsSummary.textContent = summary;
+        this.els.weightsSummary.title = details;
+        this.els.generatorSelect.setAttribute(
+            "aria-label",
+            `Choose 3D generator. Current: ${generator.name || provider}. ${details}`,
+        );
         for (const panel of this.els.generatorPanels) {
             const active = panel.dataset.generatorSettings === (provider === "triposplat" ? "triposplat" : "mesh");
             panel.hidden = !active;

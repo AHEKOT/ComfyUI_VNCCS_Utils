@@ -95,7 +95,8 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260830\.37"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260901\.1"/);
+    assert.match(studio, /vnccs_3d_factory\.css\?v=20260901\.1/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -467,6 +468,15 @@ test("Factory generation switches between TripoSplat, Pixal3D, and TRELLIS.2 wit
     assert.match(studio, /form\.append\("quality", String\(this\.settings\.mesh_quality\)\)/);
     assert.match(studio, /this\._listen\(control, "input", update\)/);
     assert.match(studio, /Textured GLB · 700K face target · 4K material/);
+});
+
+test("Generator selector keeps its name, status, and actions in a compact overflow-safe row", () => {
+    assert.match(studio, /aria-label="Choose 3D generator"/);
+    assert.match(studio, /aria-label="Open model setup"/);
+    assert.match(studio, /\$\{generator\.output_label \|\| "3D model"\} · Ready/);
+    assert.match(styles, /\.vnccs-i3s__generator-card \{[\s\S]*grid-template-columns: minmax\(0,1fr\)/);
+    assert.match(styles, /\.vnccs-i3s__provider-copy \{[^}]*display: grid/);
+    assert.match(styles, /\.vnccs-i3s__provider-model \{[^}]*text-overflow: ellipsis/);
 });
 
 test("Factory reuses the UniCanvas support banner in the lower-left panel", () => {

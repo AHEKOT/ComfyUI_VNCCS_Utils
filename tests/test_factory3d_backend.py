@@ -450,6 +450,24 @@ class FactoryBackendTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "generator"):
             self.factory._generation_settings({"provider": "unknown"})
 
+    def test_mesh_preprocess_detaches_autograd_tensors_before_numpy_nodes(self):
+        class GradTensor:
+            def __init__(self, detached=False):
+                self.detached = detached
+
+            def detach(self):
+                return GradTensor(detached=True)
+
+        result = self.factory.factory3d_generation._detach_tensor(GradTensor())
+        self.assertTrue(result.detached)
+        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        pipeline_index = source.index("def run_mesh_generation")
+        remove_index = source.index('"RemoveBackground"', pipeline_index)
+        crop_index = source.index('"ImageCropToMask"', remove_index)
+        detach_index = source.rfind("mask = _detach_tensor(", pipeline_index, crop_index)
+        self.assertGreaterEqual(detach_index, 0)
+        self.assertLess(detach_index, remove_index)
+
     def test_mesh_pipeline_prepares_comfy_v3_hidden_context(self):
         class FakeOutput:
             def __init__(self, *args):
@@ -479,6 +497,50 @@ class FactoryBackendTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"nodes": nodes_stub}):
             result = self.factory.factory3d_generation._call_node("FakeV3", value=4)
         self.assertEqual(result, (5,))
+
+    def test_direct_mesh_nodes_receive_a_thread_local_comfy_progress_context(self):
+        state = {"active": False, "contexts": []}
+
+        class FakeContext:
+            def __init__(self, *, prompt_id, node_id, list_index):
+                state["contexts"].append((prompt_id, node_id, list_index))
+
+            def __enter__(self):
+                state["active"] = True
+
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                state["active"] = False
+
+        class ProgressNode:
+            FUNCTION = "execute"
+
+            def execute(self, value):
+                if not state["active"]:
+                    raise AttributeError("PromptServer has no last_prompt_id")
+                return (value + 1,)
+
+        nodes_stub = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"ProgressNode": ProgressNode})
+        execution_package = types.ModuleType("comfy_execution")
+        execution_package.__path__ = []
+        execution_utils = types.ModuleType("comfy_execution.utils")
+        execution_utils.CurrentNodeContext = FakeContext
+        execution_utils.get_executing_context = lambda: None
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "nodes": nodes_stub,
+                "comfy_execution": execution_package,
+                "comfy_execution.utils": execution_utils,
+            },
+        ):
+            result = self.factory.factory3d_generation._call_node("ProgressNode", value=6)
+        self.assertEqual(result, (7,))
+        self.assertFalse(state["active"])
+        self.assertEqual(len(state["contexts"]), 1)
+        prompt_id, node_id, list_index = state["contexts"][0]
+        self.assertTrue(prompt_id.startswith("vnccs-3d-factory-"))
+        self.assertEqual(node_id, "vnccs-3d-factory-ProgressNode")
+        self.assertEqual(list_index, 0)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
         capabilities = self.factory.capabilities()

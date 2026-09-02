@@ -13,6 +13,8 @@ import asyncio
 import gc
 import inspect
 import shutil
+import threading
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -279,6 +281,22 @@ def _node_input_names(node_cls: Any) -> set[str]:
     return names
 
 
+def _comfy_execution_context(node_type: str) -> Any:
+    """Give direct node calls a thread-local prompt context for progress hooks."""
+    try:
+        from comfy_execution.utils import CurrentNodeContext, get_executing_context
+    except (ImportError, AttributeError):
+        return nullcontext()
+    if get_executing_context() is not None:
+        return nullcontext()
+    worker_id = threading.get_ident()
+    return CurrentNodeContext(
+        prompt_id=f"vnccs-3d-factory-{worker_id}",
+        node_id=f"vnccs-3d-factory-{node_type}",
+        list_index=0,
+    )
+
+
 def _call_node(node_type: str, **kwargs: Any) -> tuple[Any, ...]:
     import nodes as comfy_nodes
 
@@ -313,10 +331,11 @@ def _call_node(node_type: str, **kwargs: Any) -> tuple[Any, ...]:
         accepted = {key: value for key, value in kwargs.items() if key in signature.parameters}
 
     def invoke() -> Any:
-        result = method(**accepted)
-        if inspect.isawaitable(result):
-            return asyncio.run(result)
-        return result
+        with _comfy_execution_context(node_type):
+            result = method(**accepted)
+            if inspect.isawaitable(result):
+                return asyncio.run(result)
+            return result
 
     try:
         return _unwrap_node_output(invoke())
@@ -349,6 +368,12 @@ def _image_tensor(image: Image.Image) -> tuple[Any, Any]:
     rgb = torch.from_numpy(array[..., :3].copy()).unsqueeze(0)
     alpha = torch.from_numpy(array[..., 3].copy()).unsqueeze(0)
     return rgb, alpha
+
+
+def _detach_tensor(value: Any) -> Any:
+    """Remove autograd state before passing tensors to CPU/NumPy Comfy nodes."""
+    detach = getattr(value, "detach", None)
+    return detach() if callable(detach) else value
 
 
 def _save_prepared_image(tensor: Any, target: Path) -> None:
@@ -440,25 +465,29 @@ def run_mesh_generation(
             "LoadBackgroundRemovalModel",
             bg_removal_name="birefnet.safetensors",
         )[0]
-        mask = _call_node(
-            "RemoveBackground",
-            bg_removal_model=bg_model,
-            image=source_image,
-        )[0]
+        mask = _detach_tensor(
+            _call_node(
+                "RemoveBackground",
+                bg_removal_model=bg_model,
+                image=source_image,
+            )[0]
+        )
     else:
         mask = source_alpha
         if float(mask.max().item()) <= 0.0:
             mask = mask.new_ones(mask.shape)
-    prepared = _call_node(
-        "ImageCropToMask",
-        images=source_image,
-        masks=mask,
-        width=1024,
-        height=1024,
-        pad_factor=1.1,
-        grow_mask=0,
-        background="#000000",
-    )[0]
+    prepared = _detach_tensor(
+        _call_node(
+            "ImageCropToMask",
+            images=source_image,
+            masks=mask,
+            width=1024,
+            height=1024,
+            pad_factor=1.1,
+            grow_mask=0,
+            background="#000000",
+        )[0]
+    )
     _save_prepared_image(prepared, prepared_path)
     check_cancel()
 
