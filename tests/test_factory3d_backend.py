@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -447,6 +448,11 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(settings["texture_resolution"], 2048)
         self.assertEqual(settings["structure_steps"], 14)
         self.assertFalse(settings["remove_background"])
+        high = self.factory._generation_settings({"provider": "pixal3d", "quality": "high"})
+        self.assertEqual(high["target_resolution"], 1536)
+        self.assertEqual(high["remesh_resolution"], 768)
+        self.assertEqual(high["target_face_count"], 700000)
+        self.assertEqual(high["texture_resolution"], 2048)
         with self.assertRaisesRegex(ValueError, "generator"):
             self.factory._generation_settings({"provider": "unknown"})
 
@@ -541,6 +547,84 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertTrue(prompt_id.startswith("vnccs-3d-factory-"))
         self.assertEqual(node_id, "vnccs-3d-factory-ProgressNode")
         self.assertEqual(list_index, 0)
+
+    def test_direct_mesh_progress_is_hidden_from_the_global_comfy_queue(self):
+        generation = self.factory.factory3d_generation
+        events = []
+        instance = types.SimpleNamespace(
+            send_sync=lambda *args, **kwargs: events.append(
+                args[0] if args else kwargs.get("event")
+            )
+        )
+        prompt_server = types.SimpleNamespace(instance=instance)
+        server_stub = types.ModuleType("server")
+        server_stub.PromptServer = prompt_server
+        original_patched = generation._COMFY_PROGRESS_PATCHED
+        generation._COMFY_PROGRESS_PATCHED = False
+        try:
+            with mock.patch.dict(sys.modules, {"server": server_stub}):
+                with generation._SuppressComfyProgress():
+                    instance.send_sync("progress", {})
+                    instance.send_sync("status", {})
+                instance.send_sync("progress", {})
+        finally:
+            generation._COMFY_PROGRESS_PATCHED = original_patched
+        self.assertEqual(events, ["status", "progress"])
+
+    def test_mesh_pipeline_uses_inference_mode_and_releases_moge_before_dino(self):
+        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        pipeline_index = source.index("def run_mesh_generation")
+        moge_index = source.index('"MoGeInference"', pipeline_index)
+        release_index = source.index("del geometry, moge", moge_index)
+        clip_index = source.index('"CLIPVisionLoader"', release_index)
+        self.assertIn("@_torch_inference\ndef run_mesh_generation", source)
+        self.assertIn("finally:\n                release_runtime_memory()", source)
+        self.assertLess(moge_index, release_index)
+        self.assertLess(release_index, clip_index)
+        self.assertIn("release_runtime_memory()", source[release_index:clip_index])
+
+    def test_factory_model_lifecycle_matches_unicanvas_without_global_unload(self):
+        factory_source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
+        generation_source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        self.assertNotIn("unload_all_models()", generation_source)
+        self.assertIn('getattr(model_management, "cleanup_models", None)', generation_source)
+        self.assertIn("with _FactoryModelOperation(job), torch.inference_mode():", factory_source)
+        self.assertIn("_release_cached_triposplat_pipeline()", factory_source)
+        self.assertIn("factory3d_generation.release_runtime_memory()", factory_source)
+        self.assertIn("self.lock.release()", factory_source)
+
+    def test_factory_reuses_the_loaded_unicanvas_model_operation_lock(self):
+        shared_lock = threading.RLock()
+        module_name = "vnccs_factory_test.nodes.unicanvas"
+        module = types.ModuleType(module_name)
+        module._COMFY_MODEL_OP_LOCK = shared_lock
+        with mock.patch.dict(sys.modules, {module_name: module}):
+            self.assertIs(self.factory._model_operation_lock(), shared_lock)
+
+    def test_cancelled_factory_lock_acquisition_cannot_leak_the_lock(self):
+        class RecordingLock:
+            def __init__(self):
+                self.locked = False
+
+            def acquire(self, timeout=None):
+                self.locked = True
+                return True
+
+            def release(self):
+                self.locked = False
+
+        lock = RecordingLock()
+        job = {
+            "job_id": "a" * 32,
+            "cancel_event": threading.Event(),
+            "progress": 0,
+        }
+        job["cancel_event"].set()
+        with mock.patch.object(self.factory, "_model_operation_lock", return_value=lock):
+            with self.assertRaises(self.factory.JobCancelled):
+                with self.factory._FactoryModelOperation(job):
+                    pass
+        self.assertFalse(lock.locked)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
         capabilities = self.factory.capabilities()
@@ -841,9 +925,12 @@ class FactoryBackendTests(unittest.TestCase):
 
         item = result["scene"]["objects"][0]
         self.assertEqual(item["asset_kind"], "mesh")
-        self.assertEqual(item["source"]["type"], "generated_model")
+        self.assertEqual(item["source"]["type"], "model_import")
         self.assertEqual(item["source"]["generator"], "pixal3d")
+        self.assertTrue(item["source"]["generated"])
         self.assertEqual(item["source"]["format"], "glb")
+        self.assertEqual(item["settings"]["source"], "model_import")
+        self.assertEqual(item["settings"]["generation_source"], "pixal3d")
         self.assertIn("/asset/model", item["urls"]["model"])
         stored = self.factory.load_scene(scene["scene_id"])["objects"][0]
         self.assertTrue(self.factory._object_file(scene["scene_id"], stored, "model").is_file())

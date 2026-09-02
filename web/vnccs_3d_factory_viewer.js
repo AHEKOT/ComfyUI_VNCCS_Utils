@@ -11,7 +11,7 @@ import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260825.3"
 import {
     disposeFactoryModel,
     loadFactoryModel,
-} from "./factory3d/model_loader.mjs?v=20260827.1";
+} from "./factory3d/model_loader.mjs?v=20260902.2";
 
 
 const EMPTY = () => {};
@@ -28,7 +28,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260830.37";
+export const FACTORY_VIEWER_BUILD = "20260902.2";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";

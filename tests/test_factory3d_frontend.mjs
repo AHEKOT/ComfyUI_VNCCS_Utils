@@ -95,7 +95,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260901\.1"/);
+    assert.match(studio, /FRONTEND_BUILD = "20260902\.2"/);
     assert.match(studio, /vnccs_3d_factory\.css\?v=20260901\.1/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
@@ -467,7 +467,7 @@ test("Factory generation switches between TripoSplat, Pixal3D, and TRELLIS.2 wit
     assert.match(studio, /form\.append\("provider", provider\)/);
     assert.match(studio, /form\.append\("quality", String\(this\.settings\.mesh_quality\)\)/);
     assert.match(studio, /this\._listen\(control, "input", update\)/);
-    assert.match(studio, /Textured GLB · 700K face target · 4K material/);
+    assert.match(studio, /Textured GLB · 700K face target · 2K material/);
 });
 
 test("Generator selector keeps its name, status, and actions in a compact overflow-safe row", () => {
@@ -1191,7 +1191,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260830.37");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260902.2");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);

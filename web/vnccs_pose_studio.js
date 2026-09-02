@@ -4167,6 +4167,7 @@ class PoseStudioWidget {
             manager_auto_analyze_proportions: true,
             capture_image_size: false,
             editor_mode: "image",
+            animation_image_batch: false,
             hand_controls_v2: true,
             directional_skydome_enabled: false,
         };
@@ -5291,7 +5292,37 @@ class PoseStudioWidget {
     applyEditorMode() {
         if (!this.container) return;
         const animation = this.isAnimationMode();
-        this.node?._vnccsSetAnimationOutputMode?.(animation);
+        const imageBatch = this.exportParams.animation_image_batch === true;
+        const imageBatchWidget = this.getNodeWidget("animation_image_batch");
+        if (imageBatchWidget && imageBatchWidget.value !== imageBatch) {
+            imageBatchWidget.value = imageBatch;
+            imageBatchWidget.callback?.(imageBatch);
+        }
+        const poseWidget = this.getNodeWidget("pose_data");
+        if (poseWidget) {
+            try {
+                const poseData = JSON.parse(poseWidget.value || "{}");
+                const savedExport = poseData.export && typeof poseData.export === "object"
+                    ? poseData.export
+                    : {};
+                if (
+                    savedExport.editor_mode !== this.exportParams.editor_mode
+                    || savedExport.animation_image_batch !== imageBatch
+                ) {
+                    poseData.export = {
+                        ...savedExport,
+                        editor_mode: this.exportParams.editor_mode,
+                        animation_image_batch: imageBatch,
+                    };
+                    poseWidget.value = JSON.stringify(poseData);
+                    poseWidget.callback?.(poseWidget.value);
+                }
+            } catch (_) { }
+        }
+        this.node?._vnccsSetAnimationOutputMode?.(
+            animation,
+            imageBatch,
+        );
         this.container.classList.toggle("vnccs-ps-editor-animation", animation);
         this.animationTimeline?.setVisible(animation && this.interfaceMode !== "manager");
         requestAnimationFrame(() => this.resize());
@@ -12787,7 +12818,21 @@ class PoseStudioWidget {
             this.animationState.loop,
             checked => this.updateAnimationSettings({ loop: checked }),
         );
-        animationSettings.append(autoKeySetting.label, loopSetting.label);
+        const imageBatchSetting = makeAnimationCheck(
+            "Output as Image Batch",
+            "Return all animation frames as one ComfyUI IMAGE batch instead of VIDEO.",
+            this.exportParams.animation_image_batch === true,
+            checked => {
+                this.exportParams.animation_image_batch = checked;
+                this.applyEditorMode();
+                this.syncToNode(false, { skipCapture: true });
+            },
+        );
+        animationSettings.append(
+            autoKeySetting.label,
+            loopSetting.label,
+            imageBatchSetting.label,
+        );
         content.appendChild(animationSettings);
 
         const refreshEditorSettings = () => {
@@ -12801,6 +12846,7 @@ class PoseStudioWidget {
             durationSetting.input.value = String(Number(this.animationState.duration.toFixed(3)));
             autoKeySetting.checkbox.checked = this.animationState.autoKey;
             loopSetting.checkbox.checked = this.animationState.loop;
+            imageBatchSetting.checkbox.checked = this.exportParams.animation_image_batch === true;
             fpsInfo.textContent = `${this.animationState.frameCount} frames will be generated · frames 0–${this.animationState.frameCount - 1}`;
         };
         imageModeBtn.onclick = () => {
@@ -15338,6 +15384,7 @@ app.registerExtension({
                         );
                     }
                     await waitForPoseStudioSyncIdle(node.studioWidget);
+                    node.studioWidget.applyEditorMode();
                     node.studioWidget.syncToNode(true, {
                         cameraPrompt,
                         executionCapture: true,
@@ -15437,15 +15484,18 @@ app.registerExtension({
             return accepted.includes("*") || accepted.includes(valueType);
         };
 
-        const setAnimationOutputMode = (node, animation) => {
+        const setAnimationOutputMode = (node, animation, imageBatch = false) => {
             const output = node?.outputs?.[0];
             if (!output) return;
             if (!("_vnccsImageOutputShape" in node)) {
                 node._vnccsImageOutputShape = output.shape;
             }
 
-            const nextType = animation ? "VIDEO" : "IMAGE";
-            const nextName = animation ? "video" : "images";
+            const useVideo = animation && !imageBatch;
+            const nextType = useVideo ? "VIDEO" : "IMAGE";
+            const nextName = useVideo
+                ? "video"
+                : animation && imageBatch ? "IMAGE" : "images";
             const typeChanged = output.type !== nextType;
 
             if (typeChanged && Array.isArray(output.links)) {
@@ -15465,7 +15515,7 @@ app.registerExtension({
             output.name = nextName;
             output.label = nextName;
             const liteGraph = globalThis.LiteGraph;
-            const nextShape = animation
+            const nextShape = useVideo || (animation && imageBatch)
                 ? liteGraph?.CIRCLE_SHAPE
                 : node._vnccsImageOutputShape ?? liteGraph?.GRID_SHAPE;
             if (nextShape !== undefined) {
@@ -15541,13 +15591,29 @@ app.registerExtension({
             });
         };
 
-        const hidePoseDataWidget = (node) => {
-            const poseWidget = node?.widgets?.find(widget => widget.name === "pose_data");
-            if (!poseWidget) return;
-            poseWidget.type = "hidden";
-            poseWidget.computeSize = () => [0, -4];
-            poseWidget.hidden = true;
-            if (poseWidget.element) poseWidget.element.style.display = "none";
+        const hideInternalWidget = (node, name) => {
+            const widget = node?.widgets?.find(candidate => candidate.name === name);
+            if (!widget) return;
+            widget.type = "hidden";
+            widget.computeSize = () => [0, -4];
+            widget.hidden = true;
+            if (widget.element) widget.element.style.display = "none";
+        };
+
+        const ensureAnimationImageBatchWidget = (node) => {
+            let widget = node?.widgets?.find(candidate => candidate.name === "animation_image_batch");
+            if (!widget && typeof node?.addWidget === "function") {
+                widget = node.addWidget(
+                    "toggle",
+                    "animation_image_batch",
+                    false,
+                    value => {
+                        if (!node.studioWidget) return;
+                        node.studioWidget.exportParams.animation_image_batch = value === true;
+                    },
+                );
+            }
+            return widget;
         };
 
         const onCreated = nodeType.prototype.onNodeCreated;
@@ -15557,11 +15623,15 @@ app.registerExtension({
             // pose_data is internal state, never user-facing UI. Hide it before
             // constructing the DOM widget so a later initialization exception
             // cannot expand megabytes of JSON across the ComfyUI canvas.
-            hidePoseDataWidget(this);
+            hideInternalWidget(this, "pose_data");
+            ensureAnimationImageBatchWidget(this);
+            hideInternalWidget(this, "animation_image_batch");
             this.setSize([900, 740]);
 
             // Create widget
-            this._vnccsSetAnimationOutputMode = (animation) => setAnimationOutputMode(this, animation);
+            this._vnccsSetAnimationOutputMode = (animation, imageBatch = false) => (
+                setAnimationOutputMode(this, animation, imageBatch)
+            );
             this.studioWidget = new PoseStudioWidget(this);
             this._vnccsEnsurePoseImageInput = () => ensurePoseImageInput(this);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);

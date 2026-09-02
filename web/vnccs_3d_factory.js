@@ -1,7 +1,7 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260830.37";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260902.2";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
     DEFAULT_LEVEL,
@@ -66,7 +66,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260901.1";
+const FRONTEND_BUILD = "20260902.2";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -6751,7 +6751,7 @@ class Factory3DWidget {
         const summaries = {
             preview: "Textured GLB · 150K face target · 1K material",
             balanced: "Textured GLB · 350K face target · 2K material",
-            high: "Textured GLB · 700K face target · 4K material",
+            high: "Textured GLB · 700K face target · 2K material",
         };
         this.els.meshQualitySummary.textContent = summaries[this.settings.mesh_quality] || summaries.high;
     }

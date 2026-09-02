@@ -15,6 +15,7 @@ import inspect
 import shutil
 import threading
 from contextlib import nullcontext
+from functools import wraps
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
@@ -27,6 +28,10 @@ PIXAL3D = "pixal3d"
 TRELLIS2 = "trellis2"
 PROVIDER_KEYS = (TRIPOSPLAT, PIXAL3D, TRELLIS2)
 MESH_PROVIDER_KEYS = (PIXAL3D, TRELLIS2)
+
+_COMFY_PROGRESS_LOCAL = threading.local()
+_COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
+_COMFY_PROGRESS_PATCHED = False
 
 
 # Revisions are pinned to the public repository heads used while importing the
@@ -151,7 +156,7 @@ QUALITY_PRESETS: dict[str, dict[str, int]] = {
         "target_resolution": 1536,
         "remesh_resolution": 768,
         "target_face_count": 700_000,
-        "texture_resolution": 4096,
+        "texture_resolution": 2048,
         "normal_resolution": 2048,
         "ao_resolution": 1024,
         "ao_samples": 64,
@@ -297,6 +302,54 @@ def _comfy_execution_context(node_type: str) -> Any:
     )
 
 
+def _install_comfy_progress_suppressor() -> None:
+    """Hide direct Factory calls from ComfyUI's global prompt progress bar."""
+    global _COMFY_PROGRESS_PATCHED
+    if _COMFY_PROGRESS_PATCHED:
+        return
+    with _COMFY_PROGRESS_PATCH_LOCK:
+        if _COMFY_PROGRESS_PATCHED:
+            return
+        try:
+            from server import PromptServer
+
+            instance = PromptServer.instance
+            original_send_sync = getattr(instance, "send_sync", None)
+            if callable(original_send_sync) and not getattr(
+                original_send_sync,
+                "_vnccs_factory3d_progress_guard",
+                False,
+            ):
+                def guarded_send_sync(*args: Any, **kwargs: Any) -> Any:
+                    event = args[0] if args else kwargs.get("event")
+                    if event == "progress" and getattr(_COMFY_PROGRESS_LOCAL, "suppress", 0):
+                        return None
+                    return original_send_sync(*args, **kwargs)
+
+                guarded_send_sync._vnccs_factory3d_progress_guard = True  # type: ignore[attr-defined]
+                setattr(instance, "send_sync", guarded_send_sync)
+        except Exception:
+            pass
+        _COMFY_PROGRESS_PATCHED = True
+
+
+class _SuppressComfyProgress:
+    def __enter__(self) -> "_SuppressComfyProgress":
+        _install_comfy_progress_suppressor()
+        self.depth = int(getattr(_COMFY_PROGRESS_LOCAL, "suppress", 0) or 0)
+        _COMFY_PROGRESS_LOCAL.suppress = self.depth + 1
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> None:
+        if self.depth:
+            _COMFY_PROGRESS_LOCAL.suppress = self.depth
+        else:
+            try:
+                delattr(_COMFY_PROGRESS_LOCAL, "suppress")
+            except AttributeError:
+                pass
+
+
 def _call_node(node_type: str, **kwargs: Any) -> tuple[Any, ...]:
     import nodes as comfy_nodes
 
@@ -331,7 +384,7 @@ def _call_node(node_type: str, **kwargs: Any) -> tuple[Any, ...]:
         accepted = {key: value for key, value in kwargs.items() if key in signature.parameters}
 
     def invoke() -> Any:
-        with _comfy_execution_context(node_type):
+        with _comfy_execution_context(node_type), _SuppressComfyProgress():
             result = method(**accepted)
             if inspect.isawaitable(result):
                 return asyncio.run(result)
@@ -374,6 +427,53 @@ def _detach_tensor(value: Any) -> Any:
     """Remove autograd state before passing tensors to CPU/NumPy Comfy nodes."""
     detach = getattr(value, "detach", None)
     return detach() if callable(detach) else value
+
+
+def _torch_inference(function: Callable[..., Any]) -> Callable[..., Any]:
+    """Match ComfyUI's normal executor by disabling autograd for direct jobs."""
+    @wraps(function)
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        import torch
+
+        with torch.inference_mode():
+            try:
+                return function(*args, **kwargs)
+            finally:
+                release_runtime_memory()
+
+    return wrapped
+
+
+def release_runtime_memory() -> None:
+    """Release unused direct-call models without disturbing active Comfy jobs.
+
+    ``unload_all_models`` is deliberately forbidden here. Factory generation
+    runs outside ComfyUI's prompt executor, so globally unloading every model
+    can invalidate a model that another editor or queued prompt is using. The
+    model manager's cleanup pass only evicts entries whose Python owners have
+    already been released by the completed Factory stage.
+    """
+    gc.collect()
+    try:
+        import comfy.model_management as model_management
+
+        cleanup_models = getattr(model_management, "cleanup_models", None)
+        if callable(cleanup_models):
+            cleanup_models()
+        soft_empty_cache = getattr(model_management, "soft_empty_cache", None)
+        if callable(soft_empty_cache):
+            soft_empty_cache()
+    except Exception:
+        pass
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+    except Exception:
+        pass
 
 
 def _save_prepared_image(tensor: Any, target: Path) -> None:
@@ -436,6 +536,7 @@ def _save_file3d(value: Any, target: Path) -> None:
         raise RuntimeError("Pixal3D/TRELLIS.2 produced an invalid GLB file")
 
 
+@_torch_inference
 def run_mesh_generation(
     provider: str,
     image: Image.Image,
@@ -489,27 +590,12 @@ def run_mesh_generation(
         )[0]
     )
     _save_prepared_image(prepared, prepared_path)
-    check_cancel()
-
-    emit("models", 10, "Loading shared Pixal3D/TRELLIS.2 components", key)
-    clip = _call_node(
-        "CLIPVisionLoader",
-        clip_name="dino_v3_L_naf_fp32.safetensors",
-    )[0]
-    shape_vae = _call_node(
-        "VAELoader",
-        vae_name="trellis_2_shape_vae_bf16.safetensors",
-    )[0]
-    texture_vae = _call_node(
-        "VAELoader",
-        vae_name="trellis_2_texture_vae_bf16.safetensors",
-    )[0]
-    unet_name = (
-        "pixal3d_int8_convrot.safetensors"
-        if key == PIXAL3D
-        else "trellis_2_int8_convrot.safetensors"
-    )
-    model = _call_node("UNETLoader", unet_name=unet_name, weight_dtype="default")[0]
+    prepared_width = int(prepared.shape[2])
+    prepared_height = int(prepared.shape[1])
+    if settings["remove_background"]:
+        del bg_model
+    del mask, source_alpha
+    release_runtime_memory()
     check_cancel()
 
     emit("conditioning", 18, "Encoding model conditioning", key)
@@ -534,19 +620,41 @@ def run_mesh_generation(
             axis="horizontal",
             unit="degrees",
         )[0]
+        del geometry, moge
+        release_runtime_memory()
+    clip = _call_node(
+        "CLIPVisionLoader",
+        clip_name="dino_v3_L_naf_fp32.safetensors",
+    )[0]
+    if key == PIXAL3D:
         positive, negative = _call_node(
             "Pixal3DConditioning",
             clip_vision_model=clip,
             image=prepared,
             camera_angle_x=fov,
         )[:2]
+        del fov
     else:
         positive, negative = _call_node(
             "Trellis2Conditioning",
             clip_vision_model=clip,
             image=prepared,
         )[:2]
+    del clip, prepared, source_image
+    release_runtime_memory()
     check_cancel()
+
+    emit("models", 22, "Loading diffusion and shape components", key)
+    unet_name = (
+        "pixal3d_int8_convrot.safetensors"
+        if key == PIXAL3D
+        else "trellis_2_int8_convrot.safetensors"
+    )
+    model = _call_node("UNETLoader", unet_name=unet_name, weight_dtype="default")[0]
+    shape_vae = _call_node(
+        "VAELoader",
+        vae_name="trellis_2_shape_vae_bf16.safetensors",
+    )[0]
 
     structure_model = _call_node(
         "CFGOverride", model=model, cfg=1.0, start_percent=0.667, end_percent=1.0,
@@ -646,12 +754,42 @@ def run_mesh_generation(
         cfg=1.0,
         scheduler="normal",
     )
+    texture_vae = _call_node(
+        "VAELoader",
+        vae_name="trellis_2_texture_vae_bf16.safetensors",
+    )[0]
     voxel_colors = _call_node(
         "VaeDecodeTextureTrellis",
         samples=texture_sample,
         vae=texture_vae,
         shape_subdivides=shape_subdivides,
     )[0]
+    del (
+        model,
+        structure_model,
+        shape_model,
+        shape_vae,
+        texture_vae,
+        positive,
+        negative,
+        structure_latent,
+        structure_sample,
+        voxel,
+        shape_positive,
+        shape_negative,
+        shape_latent,
+        shape_sample,
+        up_positive,
+        up_negative,
+        up_latent,
+        upsampled,
+        shape_subdivides,
+        tex_positive,
+        tex_negative,
+        tex_latent,
+        texture_sample,
+    )
+    release_runtime_memory()
     check_cancel()
 
     emit(
@@ -744,17 +882,10 @@ def run_mesh_generation(
     emit("validate", 98, "Validated textured GLB", f"{file_size:,} bytes")
 
     del file3d, textured, low_poly, high_poly, mesh, voxel_colors
-    gc.collect()
-    try:
-        import comfy.model_management as model_management
-
-        model_management.soft_empty_cache()
-    except Exception:
-        pass
     return {
         "provider": key,
         "format": "glb",
         "size": file_size,
-        "prepared_width": int(prepared.shape[2]),
-        "prepared_height": int(prepared.shape[1]),
+        "prepared_width": prepared_width,
+        "prepared_height": prepared_height,
     }

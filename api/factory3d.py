@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import hashlib
 import io
 import json
@@ -12,6 +13,7 @@ import os
 import re
 import secrets
 import shutil
+import sys
 import threading
 import time
 import traceback
@@ -118,7 +120,7 @@ _WEIGHT_FILES = (
 )
 
 _STATE_LOCK = threading.RLock()
-_INFERENCE_LOCK = threading.Lock()
+_INFERENCE_LOCK = threading.RLock()
 _SPLAT_CACHE_LOCK = threading.RLock()
 _PLY_HASH_CACHE: dict[tuple[int, int, int, int], str] = {}
 _PIPELINE: Any = None
@@ -130,6 +132,75 @@ _REGISTERED = False
 
 class JobCancelled(RuntimeError):
     pass
+
+
+def _model_operation_lock() -> Any:
+    """Use UniCanvas' process-wide model lock when that reference is loaded.
+
+    Both editors execute model code outside ComfyUI's normal prompt queue. A
+    shared lock prevents one editor from moving or releasing weights while the
+    other is sampling. Tests and standalone imports fall back to Factory's own
+    lock without importing the full UniCanvas node.
+    """
+    package_root = (__package__ or "").rsplit(".", 1)[0]
+    module_name = f"{package_root}.nodes.unicanvas" if package_root else ""
+    module = sys.modules.get(module_name) if module_name else None
+    lock = getattr(module, "_COMFY_MODEL_OP_LOCK", None)
+    return lock if hasattr(lock, "acquire") and hasattr(lock, "release") else _INFERENCE_LOCK
+
+
+class _FactoryModelOperation:
+    """Cancellable acquisition of the shared direct-model execution slot."""
+
+    def __init__(self, job: dict[str, Any]) -> None:
+        self.job = job
+        self.lock = _model_operation_lock()
+        self.acquired = False
+
+    def __enter__(self) -> "_FactoryModelOperation":
+        announced = False
+        while not self.lock.acquire(timeout=0.25):
+            _check_cancel(self.job)
+            if not announced:
+                _emit(
+                    self.job,
+                    "queued",
+                    self.job.get("progress", 0),
+                    "Waiting for the GPU model slot",
+                )
+                announced = True
+        self.acquired = True
+        try:
+            _check_cancel(self.job)
+        except Exception:
+            self.acquired = False
+            self.lock.release()
+            raise
+        return self
+
+    def __exit__(self, _exc_type: Any, _exc_value: Any, _traceback: Any) -> None:
+        if self.acquired:
+            try:
+                # Cleanup is part of the protected model operation. Releasing
+                # the lock first would let UniCanvas start loading while this
+                # thread is still asking ComfyUI to evict stale model entries.
+                factory3d_generation.release_runtime_memory()
+            finally:
+                self.acquired = False
+                self.lock.release()
+
+
+def _release_cached_triposplat_pipeline() -> None:
+    """Drop the CPU model cache before switching to a native mesh generator."""
+    global _PIPELINE, _PIPELINE_SIGNATURE
+
+    pipeline = _PIPELINE
+    _PIPELINE = None
+    _PIPELINE_SIGNATURE = None
+    if pipeline is not None:
+        del pipeline
+        gc.collect()
+    factory3d_generation.release_runtime_memory()
 
 
 def _now() -> float:
@@ -1296,6 +1367,49 @@ def _write_model_stream(source: BinaryIO, target: Path, remaining: list[int]) ->
     return total
 
 
+def _standard_model_item(
+    *,
+    scene_root: Path,
+    object_root: Path,
+    model_root: Path,
+    object_id: str,
+    main: Path,
+    resources: list[Path],
+    logical_resources: list[str],
+    object_name: Any,
+    stored_bytes: int,
+) -> dict[str, Any]:
+    """Build the one canonical scene item used by every mesh import path."""
+    model_format = main.suffix.lower().lstrip(".")
+    name = _clean_name(object_name, main.stem or "Imported model", 80)
+    thumbnail_path = object_root / "thumbnail.png"
+    if not thumbnail_path.is_file():
+        _write_imported_object_thumbnail(thumbnail_path, model_format)
+    return {
+        "object_id": object_id,
+        "asset_kind": "mesh",
+        "name": name,
+        "created_at": _now(),
+        "visible": True,
+        "transform": normalize_transform({}),
+        **normalize_object_editor_properties({}),
+        "source": {
+            "type": "model_import",
+            "filename": main.name,
+            "format": model_format,
+            "model_path": main.relative_to(model_root).as_posix(),
+            "resources": logical_resources,
+            "file_count": 1 + len(resources),
+            "size": stored_bytes,
+        },
+        "settings": {"source": "model_import"},
+        "files": {
+            "model": str(main.relative_to(scene_root)),
+            "resources": [str(path.relative_to(scene_root)) for path in resources],
+        },
+    }
+
+
 def import_model_object(
     scene_id: str,
     uploads: list[tuple[str, BinaryIO]],
@@ -1391,32 +1505,17 @@ def import_model_object(
             logical_resources.append(logical.as_posix())
         if len({path.casefold() for path in logical_resources}) != len(logical_resources):
             raise ValueError("3D model resources resolve to duplicate paths")
-        model_format = main.suffix.lower().lstrip(".")
-        name = _clean_name(object_name, main.stem or "Imported model", 80)
-        _write_imported_object_thumbnail(object_root / "thumbnail.png", model_format)
-        item = {
-            "object_id": object_id,
-            "asset_kind": "mesh",
-            "name": name,
-            "created_at": _now(),
-            "visible": True,
-            "transform": normalize_transform({}),
-            **normalize_object_editor_properties({}),
-            "source": {
-                "type": "model_import",
-                "filename": main.name,
-                "format": model_format,
-                "model_path": main.relative_to(model_root).as_posix(),
-                "resources": logical_resources,
-                "file_count": len(stored_files),
-                "size": uploaded_bytes,
-            },
-            "settings": {"source": "model_import"},
-            "files": {
-                "model": str(main.relative_to(scene_root)),
-                "resources": [str(path.relative_to(scene_root)) for path in resources],
-            },
-        }
+        item = _standard_model_item(
+            scene_root=scene_root,
+            object_root=object_root,
+            model_root=model_root,
+            object_id=object_id,
+            main=main,
+            resources=resources,
+            logical_resources=logical_resources,
+            object_name=object_name,
+            stored_bytes=uploaded_bytes,
+        )
         with _STATE_LOCK:
             scene = load_scene(safe_scene_id)
             item["level_id"] = scene["levels"][0]["level_id"]
@@ -2730,6 +2829,16 @@ def _pipeline_for_job(job: dict[str, Any]) -> Any:
         _emit(job, "model", 12, "Using cached TripoSplat pipeline", detail=device)
         return _PIPELINE
 
+    # Never keep an obsolete pipeline alive while constructing its replacement;
+    # doing so briefly doubles host RAM and can make the process unrecoverable.
+    if _PIPELINE is not None:
+        stale_pipeline = _PIPELINE
+        _PIPELINE = None
+        _PIPELINE_SIGNATURE = None
+        del stale_pipeline
+        gc.collect()
+        factory3d_generation.release_runtime_memory()
+
     _emit(job, "model", 5, "Importing the pinned TripoSplat runtime", detail=device)
     _PIPELINE = _load_pipeline(paths, device, job)
     _PIPELINE_SIGNATURE = signature
@@ -2981,7 +3090,7 @@ def _generate_object(
         image.save(object_root / "reference.png", format="PNG")
         _check_cancel(job)
 
-        with _INFERENCE_LOCK:
+        with _FactoryModelOperation(job), torch.inference_mode():
             _check_cancel(job)
             pipeline = _pipeline_for_job(job)
             seed = settings["seed"]
@@ -3326,7 +3435,8 @@ def _generate_mesh_object(
                 f"{settings['upsample_steps']}/{settings['texture_steps']}"
             ),
         )
-        with _INFERENCE_LOCK:
+        with _FactoryModelOperation(job):
+            _release_cached_triposplat_pipeline()
             result = factory3d_generation.run_mesh_generation(
                 provider,
                 image,
@@ -3345,38 +3455,32 @@ def _generate_mesh_object(
         _check_cancel(job)
 
         relative_root = Path("objects") / object_id
-        item = {
-            "object_id": object_id,
-            "asset_kind": "mesh",
-            "name": object_name,
-            "created_at": _now(),
-            "visible": True,
-            "transform": normalize_transform({}),
-            **normalize_object_editor_properties({}),
-            "seed": seed,
-            "source": {
-                "type": "generated_model",
-                "generator": provider,
-                "filename": "model.glb",
-                "format": "glb",
-                "model_path": "model.glb",
-                "resources": [],
-                "file_count": 1,
-                "size": result["size"],
-            },
-            "settings": {
-                "source": "generated_model",
-                **effective_settings,
-                "prepared_width": result["prepared_width"],
-                "prepared_height": result["prepared_height"],
-            },
-            "files": {
-                "reference": str(relative_root / "reference.png"),
-                "prepared": str(relative_root / "prepared.png"),
-                "model": str(relative_root / "model" / "model.glb"),
-                "resources": [],
-            },
-        }
+        item = _standard_model_item(
+            scene_root=scene_root,
+            object_root=object_root,
+            model_root=model_root,
+            object_id=object_id,
+            main=model_path,
+            resources=[],
+            logical_resources=[],
+            object_name=object_name,
+            stored_bytes=result["size"],
+        )
+        item["seed"] = seed
+        item["source"].update({
+            "generator": provider,
+            "generated": True,
+        })
+        item["settings"].update({
+            "generation_source": provider,
+            **effective_settings,
+            "prepared_width": result["prepared_width"],
+            "prepared_height": result["prepared_height"],
+        })
+        item["files"].update({
+            "reference": str(relative_root / "reference.png"),
+            "prepared": str(relative_root / "prepared.png"),
+        })
         _emit(job, "scene", 99, "Adding generated mesh to scene", detail=object_name)
         with _STATE_LOCK:
             scene = load_scene(scene_id)
