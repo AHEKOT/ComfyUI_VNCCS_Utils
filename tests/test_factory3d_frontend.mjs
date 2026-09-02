@@ -114,8 +114,8 @@ test("Factory widget registers the renamed node and persists opaque state", () =
 test("Factory provides a native Gaussian object and scene library with HF repositories", () => {
     assert.match(studio, /> Model Library\n/);
     assert.doesNotMatch(studio, /Model Library Gallery/);
-    assert.match(studio, /GAUSSIAN_LIBRARY_SCHEMA = "vnccs-3d-factory-library\/v1"/);
-    assert.match(studio, /Rejected non-Gaussian library records/);
+    assert.match(studio, /MODEL_LIBRARY_SCHEMA = "vnccs-3d-factory-library\/v1"/);
+    assert.match(studio, /Rejected incompatible library records/);
     assert.match(studio, /apiUrl\(item\.preview_url\)/);
     assert.match(studio, /vnccs-ps-library-modal/);
     assert.match(studio, /vnccs-ps-library-modal-header/);
@@ -189,9 +189,10 @@ test("Factory exposes scenes, generation, transforms, and PLY export", () => {
     assert.match(studio, /download\(scene\.exports\.urls\.ply\)/);
 });
 
-test("Factory imports an existing Gaussian PLY into the scene and viewport", () => {
-    assert.match(studio, />Import PLY</);
-    assert.match(studio, /accept="\.ply,application\/octet-stream"/);
+test("Factory imports an existing Gaussian PLY through the unified 3D import control", () => {
+    assert.match(studio, /<span>Import<\/span>/);
+    assert.match(studio, /Import GLB, glTF, FBX, OBJ, STL, ZIP, or Gaussian PLY/);
+    assert.match(studio, /accept="\.glb,\.gltf,\.fbx,\.obj,\.stl,\.zip,\.ply,[^"]*application\/octet-stream"/);
     assert.match(
         studio,
         /importObject: sceneId => `\$\{API_BASE\}\/scenes\/\$\{encodeURIComponent\(sceneId\)\}\/objects\/import`/,
@@ -319,7 +320,8 @@ test("Architecture shadows use closed geometry without hidden full-wall shadow c
     assert.doesNotMatch(planGeometry, /shadowSeal|factoryShadowSeal|WALL_SHADOW_SEAL/);
     assert.match(planGeometry, /mesh\.castShadow = true/);
     assert.match(planGeometry, /mesh\.receiveShadow = true/);
-    assert.match(viewer, /Math\.max\(configuredNormalBias, DEFAULT_LIGHTING\.shadows\.normal_bias\)/);
+    assert.match(viewer, /light\.shadow\.bias = localLight[\s\S]*?\? 0[\s\S]*?: configuredBias/);
+    assert.match(viewer, /light\.shadow\.normalBias = data\.kind === "directional"[\s\S]*?\? configuredNormalBias[\s\S]*?: 0/);
     assert.doesNotMatch(viewer, /Math\.max\(configuredNormalBias, 0\.006\)/);
 });
 
@@ -504,7 +506,7 @@ test("Factory production code contains no retired LLM integrations", () => {
     }
 });
 
-test("Viewer uses true splats, transform controls, adaptive clipping, and no floor mesh", () => {
+test("Viewer uses true splats, transform controls, adaptive clipping, and no implicit floor mesh", () => {
     assert.match(viewer, /SplatMesh/);
     assert.match(viewer, /SparkRenderer/);
     assert.match(viewer, /fileType: "splat"/);
@@ -539,7 +541,9 @@ test("Viewer uses true splats, transform controls, adaptive clipping, and no flo
     assert.match(viewer, /boundedObjectHit/);
     assert.match(viewer, /selectionBounds/);
     assert.match(viewer, /_updateClipPlanes/);
-    assert.doesNotMatch(viewer, /PlaneGeometry/);
+    assert.match(viewer, /function createFactoryPrimitiveGeometry/);
+    assert.match(viewer, /new THREE\.PlaneGeometry/);
+    assert.doesNotMatch(viewer, /floorMesh|groundMesh|factoryFloor/);
     assert.doesNotMatch(viewer, /intersectObjects\(meshes/);
 });
 
@@ -617,7 +621,7 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(studio, /form\.append\("current", current, "current\.png"\)/);
     assert.match(studio, /for \(const camera of cameras\)/);
     assert.match(studio, /camera_\$\{camera\.camera_id\}/);
-    assert.match(studio, /_saveExecutionCaptureSet\(captureToken\)/);
+    assert.match(studio, /_saveExecutionCaptureSet\(captureToken, detail\)/);
     assert.match(styles, /vnccs-i3s__camera-look-reticle/);
     assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
 });
@@ -678,7 +682,7 @@ test("Canvas gizmos and the Inspector provide coarse and precise transforms", ()
     assert.match(studio, /step: 0\.01/);
     assert.match(studio, /Duplicate object/);
     assert.match(studio, /confirmDeleteObject\(item\.object_id\)/);
-    assert.match(studio, /actions\.append\(visibility, exportObject, duplicate, remove\)/);
+    assert.match(studio, /actions\.append\([\s\S]*?visibility,[\s\S]*?\.\.\.\(!primitiveObject \? \[exportObject, saveModel\] : \[\]\),[\s\S]*?duplicate,[\s\S]*?remove,[\s\S]*?\)/);
     assert.match(styles, /\.vnccs-i3s \[hidden\] \{ display: none !important; \}/);
     assert.match(studio, /W\/E\/R: move\/rotate\/scale/);
 });
@@ -721,7 +725,7 @@ test("Plan mode exposes distinct, previewed building workflows and explicit snap
     assert.match(studio, /phase !== "end"/);
     assert.match(studio, /if \(!gesture\.moved\)/);
     assert.match(studio, /this\.planHover = \{ tool, point, opening: placement \}/);
-    assert.match(studio, /Drag to aim the camera/);
+    assert.match(studio, /Click to place the camera, or drag to aim it/);
     assert.match(studio, /_fitOpeningOnWall/);
     assert.match(viewer, /snapPlanPoint: options\.snapPlanPoint/);
     assert.match(viewer, /setPlanDraft\(draft\)/);
@@ -733,7 +737,7 @@ test("Plan mode exposes distinct, previewed building workflows and explicit snap
     assert.match(studio, /if \(phase === "move"\) \{[\s\S]*?_queueSelectedArchitecturePreview\(\{ persist: false \}\)/);
 });
 
-test("Editor workflows keep buildings optional and make levels, selection, floor drop, and camera exits explicit", () => {
+test("Editor workflows keep building assignment menus removed and make levels, selection, floor drop, and camera exits explicit", () => {
     assert.doesNotMatch(studio, /\+ Building/);
     assert.doesNotMatch(studio, /vnccs-i3s__building-select/);
     assert.match(studio, /Move building/);
@@ -741,11 +745,12 @@ test("Editor workflows keep buildings optional and make levels, selection, floor
     assert.match(studio, /No replacement Building will be created/);
     assert.doesNotMatch(studio, /_ensureBuilding|_createDefaultBuilding/);
     assert.match(studio, /_applyBuildingTransform/);
-    assert.match(studio, /Assign camera to building/);
-    assert.match(studio, /data-object-property="building_id"/);
-    assert.match(studio, /data-camera-property="building_id"/);
-    assert.match(studio, /data-light-property="building_id"/);
-    assert.match(studio, /vnccs-i3s__camera-track-building/);
+    assert.doesNotMatch(studio, /No building/i);
+    assert.doesNotMatch(studio, /Assign camera to building/);
+    assert.doesNotMatch(studio, /data-object-property="building_id"/);
+    assert.doesNotMatch(studio, /data-camera-property="building_id"/);
+    assert.doesNotMatch(studio, /data-light-property="building_id"/);
+    assert.doesNotMatch(studio, /vnccs-i3s__camera-track-building/);
     assert.match(studio, /track\.building_id !== building\.building_id/);
     assert.match(studio, /active_building_id/);
     assert.match(studio, /vnccs-i3s__level-panel/);
