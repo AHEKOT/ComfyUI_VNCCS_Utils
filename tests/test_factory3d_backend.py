@@ -126,6 +126,43 @@ class FactoryBackendTests(unittest.TestCase):
         self.factory._category_roots = self.original_category_roots
         self.temporary.cleanup()
 
+    def test_upgrade_preserves_original_assets_and_parametric_recipe(self):
+        original = self.factory.create_scene("Original")
+        scene_id = original["scene_id"]
+        root = self.factory.resolve_scene_dir(scene_id)
+        (root / "reference-test.txt").write_text("asset bytes")
+        before = (root / "scene.json").read_bytes()
+        with self.assertRaisesRegex(ValueError, "Upgrade"):
+            self.factory.create_primitive_object(scene_id, {"primitive": {"kind": "stairs"}})
+        upgraded = self.factory.upgrade_scene(scene_id)
+        self.assertNotEqual(upgraded["scene_id"], scene_id)
+        self.assertEqual((root / "scene.json").read_bytes(), before)
+        copied_root = self.factory.resolve_scene_dir(upgraded["scene_id"])
+        self.assertEqual((copied_root / "reference-test.txt").read_text(), "asset bytes")
+        created = self.factory.create_primitive_object(upgraded["scene_id"], {
+            "primitive": {"kind": "stairs", "steps": 17, "width": 1.2, "height": 3, "depth": 4},
+        })
+        item = created["scene"]["objects"][0]
+        self.assertEqual(item["primitive"]["kind"], "stairs")
+        self.assertEqual(item["primitive"]["steps"], 17)
+        loaded = self.factory.load_scene(upgraded["scene_id"])
+        self.assertEqual(loaded["schema_version"], 12)
+        with self.assertRaisesRegex(ValueError, "Editor 12 writer"):
+            self.factory.update_scene(upgraded["scene_id"], {"name": "Old writer"})
+        self.factory.update_scene(upgraded["scene_id"], {"schema_version": 12, "name": "New writer"})
+        self.assertEqual(self.factory.upgrade_scene(upgraded["scene_id"])["scene_id"], upgraded["scene_id"])
+
+    def test_upgrade_failure_removes_only_new_copy(self):
+        original = self.factory.create_scene("Original")
+        scene_id = original["scene_id"]
+        root = self.factory.resolve_scene_dir(scene_id)
+        before = (root / "scene.json").read_bytes()
+        with mock.patch.object(self.factory, "_save_scene", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.factory.upgrade_scene(scene_id)
+        self.assertEqual((root / "scene.json").read_bytes(), before)
+        self.assertEqual(len(list(root.parent.iterdir())), 1)
+
     def _write_valid_ply(self, path: Path, count: int = 1) -> None:
         names = [
             "x", "y", "z",

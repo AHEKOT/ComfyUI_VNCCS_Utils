@@ -1,3 +1,4 @@
+import { parametricMetrics, createParametricGeometry } from "./factory3d/geometry/parametric_parts.mjs";
 import * as THREE from "./vendor/spark/three.module.js";
 import { OrbitControls } from "./vendor/spark/OrbitControls.js";
 import { TransformControls } from "./vendor/spark/TransformControls.js";
@@ -7,7 +8,8 @@ import {
     SplatMesh,
 } from "./vendor/spark/spark.module.js";
 import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260829.2";
-import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260825.3";
+import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260905.4";
+import { allocateLocalLightShadows } from "./factory3d/lighting_policy.mjs?v=20260905.1";
 import {
     disposeFactoryModel,
     loadFactoryModel,
@@ -28,7 +30,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260902.2";
+export const FACTORY_VIEWER_BUILD = "20260905.5";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";
@@ -115,17 +117,7 @@ function primitiveAssetSignature(item) {
 }
 
 function factoryPrimitiveMetrics(primitive = {}) {
-    const kind = ["image", "plane", "terrain"].includes(primitive.kind)
-        ? primitive.kind
-        : "plane";
-    const width = Math.max(0.001, Number(primitive.width) || 2);
-    const height = Math.max(0.001, Number(primitive.height) || 2);
-    const depth = Math.max(0.001, Number(primitive.depth) || 2);
-    const extrusion = Math.max(0, Number(primitive.extrusion) || 0);
-    const segments = Array.isArray(primitive.segments) ? primitive.segments : [1, 1];
-    const segmentsX = Math.max(1, Math.min(128, Math.round(Number(segments[0]) || 1)));
-    const segmentsY = Math.max(1, Math.min(128, Math.round(Number(segments[1]) || 1)));
-    return { kind, width, height, depth, extrusion, segmentsX, segmentsY };
+    return parametricMetrics(primitive);
 }
 
 function primitiveGeometrySignature(primitive = {}) {
@@ -136,7 +128,10 @@ function primitiveGeometrySignature(primitive = {}) {
 function createFactoryPrimitiveGeometry(primitive = {}) {
     const metrics = factoryPrimitiveMetrics(primitive);
     const { kind, width, height, depth, extrusion, segmentsX, segmentsY } = metrics;
-    let geometry;
+    let geometry = createParametricGeometry(primitive);
+    if (geometry) {
+        return { geometry, ...metrics };
+    }
     if (kind === "image") {
         geometry = extrusion > 0.0001
             ? new THREE.BoxGeometry(width, height, extrusion, segmentsX, segmentsY, 1)
@@ -174,11 +169,20 @@ function applyFactoryPrimitiveTexture(texture, primitive = {}, metrics = {}) {
     texture.needsUpdate = true;
 }
 
-function applyFactoryPrimitiveMaterial(material, primitive = {}, kind = "plane") {
+export function applyFactoryPrimitiveMaterial(material, primitive = {}, kind = "plane") {
     if (!material) return;
     const opacity = Math.max(0, Math.min(1, Number(primitive.opacity ?? 1)));
     material.color.set(primitive.color || "#ffffff");
     material.side = primitive.double_sided === false ? THREE.FrontSide : THREE.DoubleSide;
+    const metrics = factoryPrimitiveMetrics(primitive);
+    const closed = !["image", "plane", "terrain"].includes(metrics.kind)
+        || metrics.extrusion > 0.0001
+        || (metrics.kind === "terrain" && metrics.amplitude > 0);
+    // Visible double-sided shading must not make a closed solid cast from its
+    // receiving front faces. That causes terrain acne at point-shadow cube faces.
+    // Thin sheets and alpha-cutout images still need both shadow-casting sides.
+    material.shadowSide = closed && kind !== "image" && opacity >= 1
+        ? THREE.BackSide : THREE.DoubleSide;
     material.transparent = kind === "image" || opacity < 1;
     material.opacity = opacity;
     material.alphaTest = kind === "image" ? 0.01 : 0;
@@ -1276,6 +1280,8 @@ export class Factory3DViewer {
         this._lightingUpdateTimer = 0;
         this._pendingLightingEntries = new Set();
         this._lightingRigSignature = "";
+        this._localLights = new Map();
+        this._localLightAllocation = new Map();
         this.lighting = { ...DEFAULT_LIGHTING };
         this._lightColor = new THREE.Color(DEFAULT_LIGHTING.color);
         this._lightBaseGain = new THREE.Vector3(1, 1, 1);
@@ -2791,16 +2797,10 @@ export class Factory3DViewer {
         if (!entry.localBounds) return;
         const center = entry.localBounds.clone().applyMatrix4(entry.mesh.matrixWorld)
             .getCenter(new THREE.Vector3());
-        const shadowBudget = { low: 2, medium: 4, high: 6, ultra: 8 }[
-            this.lighting.shadows?.quality
-        ] || 0;
-        let shadowCount = 0;
+        const allocation = this._localLightAllocation;
         for (const light of this.lighting.lights) {
-            if (light.visible === false || light.intensity <= 0) continue;
-            const owner = this.sceneData?.architecture?.buildings?.find(
-                building => building.building_id === light.building_id,
-            );
-            if (owner?.visible === false) continue;
+            const state = allocation?.get(light.light_id);
+            if (!state?.enabled) continue;
             if (
                 light.level_id
                 && entry.data?.level_id
@@ -2832,15 +2832,8 @@ export class Factory3DViewer {
                 if (lightDirection.lengthSq() < 1e-12) lightDirection.set(0, 1, 0);
                 lightDirection.normalize();
             }
-            const requiresOcclusion = Boolean(
-                light.cast_shadow
-                && this.lighting.shadows?.enabled
-                && this.lighting.shadows?.quality !== "off",
-            );
-            if (requiresOcclusion && shadowCount >= shadowBudget) continue;
-            if (requiresOcclusion) {
+            if (state.castShadow) {
                 response *= this._visibilityAlongRay(entry, lightDirection, maximumDistance);
-                shadowCount += 1;
             }
             target.x += color.r * response;
             target.y += color.g * response;
@@ -2938,48 +2931,51 @@ export class Factory3DViewer {
         this.sunLight.shadow.radius = qualityBlurRadius[this.lighting.shadows?.quality] || 3;
         this.sunLight.shadow.blurSamples = qualityBlurSamples[this.lighting.shadows?.quality] || 12;
         this._fitSunShadowCamera();
-        for (const child of [...this.lightRig.children]) {
-            if ([this.ambientLight, this.sunLight, this.sunLight.target].includes(child)) continue;
-            this.lightRig.remove(child);
-            child.shadow?.dispose?.();
-            if (child.shadow) {
-                child.shadow.map = null;
-                child.shadow.mapPass = null;
-            }
-        }
-        const shadowLightBudget = { low: 2, medium: 4, high: 6, ultra: 8 }[
-            this.lighting.shadows?.quality
-        ] || 0;
-        let shadowLightCount = 0;
+        this._localLights ||= new Map();
+        this._localLightAllocation = allocateLocalLightShadows(this.lighting, this.sceneData, {
+            viewMode: this.viewMode,
+            activeLevelId: this.activeLevelId,
+        });
+        const retained = new Set();
         for (const data of this.lighting.lights || []) {
-            if (this.viewMode === "plan" && data.level_id && data.level_id !== this.activeLevelId) continue;
-            const owner = this.sceneData?.architecture?.buildings?.find(
-                building => building.building_id === data.building_id,
-            );
-            if (owner?.visible === false) continue;
-            const requiresShadow = Boolean(data.cast_shadow && shadowsEnabled);
-            if (requiresShadow && shadowLightCount >= shadowLightBudget) continue;
-            let light;
-            if (data.kind === "spot") {
-                light = new THREE.SpotLight(
-                    data.color,
-                    data.intensity,
-                    data.distance,
-                    THREE.MathUtils.degToRad(data.angle),
-                    data.penumbra,
-                );
-            } else if (data.kind === "directional") {
-                light = new THREE.DirectionalLight(data.color, data.intensity);
-            } else {
-                light = new THREE.PointLight(data.color, data.intensity, data.distance);
+            const state = this._localLightAllocation.get(data.light_id);
+            retained.add(data.light_id);
+            let light = this._localLights.get(data.light_id);
+            if (light && light.userData.factoryLightKind !== data.kind) {
+                this._disposeLocalLight(light);
+                light = null;
+            }
+            if (!light) {
+                if (data.kind === "spot") {
+                    light = new THREE.SpotLight();
+                } else if (data.kind === "directional") {
+                    light = new THREE.DirectionalLight();
+                } else {
+                    light = new THREE.PointLight(data.color, data.intensity, data.distance);
+                }
+                light.userData.factoryLightKind = data.kind;
+                this._localLights.set(data.light_id, light);
+                this.lightRig.add(light);
+                if (light.target) this.lightRig.add(light.target);
             }
             light.name = data.name || "Factory light";
             light.userData.factoryLightId = data.light_id || "";
+            light.color.set(data.color);
+            light.intensity = data.intensity;
             light.position.fromArray(data.position);
-            light.visible = data.visible !== false;
-            light.castShadow = requiresShadow;
-            if (light.castShadow) shadowLightCount += 1;
-            if (light.shadow) {
+            light.visible = state.enabled;
+            light.castShadow = state.castShadow;
+            if (light.isPointLight || light.isSpotLight) light.distance = data.distance;
+            if (light.isSpotLight) {
+                light.angle = THREE.MathUtils.degToRad(data.angle);
+                light.penumbra = data.penumbra;
+            }
+            if (!light.castShadow && (light.shadow?.map || light.shadow?.mapPass)) {
+                light.shadow.dispose();
+                light.shadow.map = null;
+                light.shadow.mapPass = null;
+            }
+            if (light.castShadow && light.shadow) {
                 this._setShadowMapSize(light, mapSize);
                 const configuredBias = this.lighting.shadows?.bias
                     ?? DEFAULT_LIGHTING.shadows.bias;
@@ -2988,13 +2984,13 @@ export class Factory3DViewer {
                 const localLight = data.kind === "point" || data.kind === "spot";
                 // A normalized negative bias turns into a large world-space
                 // gap when a local shadow camera has a long range. Keep local
-                // contact shadows unbiased so they remain visible at walls.
+                // depth bias at zero so contact shadows remain visible at walls.
                 light.shadow.bias = localLight
                     ? 0
                     : configuredBias;
-                light.shadow.normalBias = data.kind === "directional"
-                    ? configuredNormalBias
-                    : 0;
+                // Normal bias is in world units, including for point/spot lights;
+                // unlike depth bias it does not grow with the light's range.
+                light.shadow.normalBias = configuredNormalBias;
                 light.shadow.radius = localLight
                     ? 1.25
                     : qualityBlurRadius[this.lighting.shadows?.quality] || 3;
@@ -3017,11 +3013,24 @@ export class Factory3DViewer {
             }
             if (light.target) {
                 light.target.position.fromArray(data.target);
-                this.lightRig.add(light.target);
             }
-            this.lightRig.add(light);
+        }
+        for (const [id, light] of this._localLights) {
+            if (retained.has(id)) continue;
+            this._disposeLocalLight(light);
+            this._localLights.delete(id);
         }
         this.renderer.shadowMap.needsUpdate = true;
+    }
+
+    _disposeLocalLight(light) {
+        light.removeFromParent();
+        light.target?.removeFromParent();
+        light.shadow?.dispose?.();
+        if (light.shadow) {
+            light.shadow.map = null;
+            light.shadow.mapPass = null;
+        }
     }
 
     _fitSunShadowCamera() {
@@ -3113,7 +3122,14 @@ export class Factory3DViewer {
             this._lightBaseGain.set(1, 1, 1);
             this._lightDirectionalScale.set(0, 0, 0);
         }
-        const rigSignature = JSON.stringify(this.lighting);
+        const rigSignature = JSON.stringify([
+            this.lighting,
+            this.viewMode,
+            this.activeLevelId,
+            (this.sceneData?.architecture?.buildings || []).map(
+                building => [building.building_id, building.visible],
+            ),
+        ]);
         if (rigSignature !== this._lightingRigSignature) {
             this._syncThreeLights();
             this._lightingRigSignature = rigSignature;
@@ -4555,7 +4571,9 @@ export class Factory3DViewer {
             }
             this.spark.setDirty?.();
             this.invalidate();
-            return;
+            // Full item updates also carry floor placement, visibility and
+            // transforms. Geometry handling must not swallow those fields.
+            if (Object.keys(value).every(key => key === "primitive")) return;
         }
         if ("name" in value) {
             entry.mesh.name = value.name || objectId;
@@ -4598,6 +4616,8 @@ export class Factory3DViewer {
             entry.mesh.visible = visibleIds.has(objectId)
                 && (this.viewMode !== "plan" || !entry.data.level_id || entry.data.level_id === this.activeLevelId);
         }
+        this._syncThreeLights();
+        for (const entry of this.objects.values()) this._syncDirectionalLighting(entry);
         this._refreshSelectionBounds();
         this.spark.setDirty?.();
         if (this.host?.getBoundingClientRect) this.resize();
@@ -4838,7 +4858,6 @@ export class Factory3DViewer {
         this.cameraHelperRoot.visible = next === "3d";
         this.architecture.setActiveLevel(this.activeLevelId, next === "plan");
         this.applySceneVisibility(this.sceneData);
-        this._syncThreeLights();
         this._applySkydomeSettings();
         this.planOverlay.visible = next === "plan";
         this.canvas.style.cursor = next === "plan" && this.planTool !== "select"
@@ -5158,7 +5177,7 @@ export class Factory3DViewer {
 
         if (draft?.tool === "room") {
             const rectangle = Array.isArray(draft.rectangle) ? draft.rectangle : [];
-            if (rectangle.length === 4) {
+            if (rectangle.length >= 3) {
                 const shape = new THREE.Shape();
                 rectangle.forEach((point, index) => {
                     if (index === 0) shape.moveTo(point[0], point[1]);
@@ -5193,6 +5212,7 @@ export class Factory3DViewer {
                 addLine([...rectangle, rectangle[0]], "#d7ccff", 1, 51);
                 for (const point of rectangle) addMarker(point, "#d7ccff", 0.052, 52);
             } else {
+                addLine(cursor ? [...points, cursor] : points, "#d7ccff", 1, 51);
                 for (const point of points) addMarker(point, "#d7ccff", 0.065, 52);
             }
             if (cursor) addMarker(cursor, "#f0ebff", 0.075, 54);
@@ -5465,8 +5485,6 @@ export class Factory3DViewer {
         this._planGridSignature = "";
         this.setCameraMarkers(this.sceneData.cameras || []);
         this.setLightMarkers(this.lighting.lights || []);
-        this._syncThreeLights();
-        for (const entry of this.objects.values()) this._syncDirectionalLighting(entry);
         this._syncPlanCamera();
         this._emitState();
         this.invalidate();
@@ -6839,7 +6857,10 @@ export class Factory3DViewer {
         this.scene.remove(this.spark);
         this.spark.onDirty = null;
         this.spark?.dispose?.();
-        for (const child of this.lightRig.children) child.shadow?.map?.dispose?.();
+        for (const light of this._localLights.values()) this._disposeLocalLight(light);
+        this._localLights.clear();
+        this._localLightAllocation.clear();
+        this.sunLight.shadow?.dispose?.();
         this.scene.remove(this.lightRig);
         this.grid.geometry.dispose();
         this.grid.material.dispose();

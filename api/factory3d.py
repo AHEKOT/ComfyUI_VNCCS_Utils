@@ -26,6 +26,7 @@ from typing import Any, BinaryIO, Callable
 from PIL import Image, ImageDraw, ImageOps
 
 from . import factory3d_generation
+from .factory3d_migrations import migrate_scene_11_to_12
 from .gaussian_scene import (
     export_gaussian_scene,
     inspect_ply,
@@ -46,6 +47,7 @@ from .factory3d_schema import (
 LOGGER = logging.getLogger("vnccs.3d_factory")
 API_BASE = "/vnccs/3d-factory"
 SCHEMA_VERSION = 11
+MAX_READABLE_SCHEMA_VERSION = 12
 EXPORT_FORMAT_VERSION = 8
 UPSTREAM_REPOSITORY = "VAST-AI/TripoSplat"
 UPSTREAM_COMMIT = "a78fa12d06dbf1381ca548bfac32bb68cb8c451d"
@@ -832,6 +834,8 @@ def load_scene(scene_id: str) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict) or value.get("scene_id") != scene_id:
         raise ValueError("scene metadata is invalid")
+    if int(value.get("schema_version", 0) or 0) > MAX_READABLE_SCHEMA_VERSION:
+        raise ValueError("This scene requires a newer 3D Factory version; the original scene was not changed")
     _migrate_scene_to_ply_only(path, value)
     if not isinstance(value.get("objects"), list):
         value["objects"] = []
@@ -907,7 +911,7 @@ def load_scene(scene_id: str) -> dict[str, Any]:
         0,
         int(value.get("edit_revision", value.get("revision", 0))),
     )
-    value["schema_version"] = SCHEMA_VERSION
+    value["schema_version"] = max(SCHEMA_VERSION, int(value.get("schema_version", SCHEMA_VERSION)))
     return value
 
 
@@ -931,6 +935,36 @@ def _save_scene(
     scene["updated_at"] = _now()
     _atomic_json(_scene_path(scene_id), scene)
     return scene
+
+
+def upgrade_scene(scene_id: str) -> dict[str, Any]:
+    """Opt into new features in a separate directory; keep the v11 original."""
+    with _STATE_LOCK:
+        source = load_scene(scene_id)
+        if source.get("schema_version") == 12:
+            return source
+        original_root = resolve_scene_dir(scene_id)
+        if any(path.is_symlink() for path in original_root.rglob("*")):
+            raise ValueError("Scene upgrade cannot copy symbolic links")
+        new_id = _new_id()
+        new_root = resolve_scene_dir(new_id)
+        created = False
+        try:
+            new_root.mkdir(parents=False, exist_ok=False)
+            created = True
+            shutil.copytree(original_root, new_root, dirs_exist_ok=True)
+            upgraded = migrate_scene_11_to_12(source)
+            upgraded["scene_id"] = new_id
+            upgraded["name"] = _clean_name(f"{source.get('name', 'Scene')} · Editor 12", "Scene · Editor 12")
+            upgraded["migration"] = {"source_scene_id": scene_id, "from_version": 11}
+            upgraded.pop("capture_set", None)
+            upgraded["exports"] = {}
+            _save_scene(upgraded)
+            return upgraded
+        except Exception:
+            if created:
+                shutil.rmtree(new_root, ignore_errors=True)
+            raise
 
 
 def create_scene(name: Any = "") -> dict[str, Any]:
@@ -1061,6 +1095,8 @@ def create_primitive_object(scene_id: str, payload: Any) -> dict[str, Any]:
             primitive = normalized.get("primitive")
             if not isinstance(primitive, dict):
                 raise ValueError("primitive settings are required")
+            if (primitive["kind"] not in {"image", "plane", "terrain"} or primitive.get("height_amplitude", 0) > 0) and scene.get("schema_version", 11) < 12:
+                raise ValueError("Upgrade a copy of the scene to version 12 before adding parametric geometry")
             texture_id = primitive.get("texture_id")
             if texture_id and not any(
                 isinstance(texture, dict) and texture.get("texture_id") == texture_id
@@ -3591,6 +3627,8 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
         raise ValueError("scene update must be an object")
     with _STATE_LOCK:
         scene = load_scene(scene_id)
+        if scene.get("schema_version", 11) >= 12 and payload.get("schema_version") != 12:
+            raise ValueError("This scene requires an Editor 12 writer; reload the extension before saving")
         visible_before = _visible_object_ids(scene)
         changed = False
         render_changed = False
@@ -3678,6 +3716,12 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
                         }
                         if primitive["texture_id"] not in texture_ids:
                             raise ValueError("primitive references an unknown scene texture")
+                    primitive = editor_properties.get("primitive", {})
+                    if scene.get("schema_version", 11) < 12 and (
+                        primitive.get("kind", "plane") not in {"image", "plane", "terrain"}
+                        or primitive.get("height_amplitude", 0) > 0
+                    ):
+                        raise ValueError("Upgrade a copy before using procedural geometry")
                     previous_editor_properties = normalize_object_editor_properties(item)
                     if editor_properties != previous_editor_properties:
                         item.update(editor_properties)
@@ -4127,6 +4171,14 @@ def register_routes(routes: Any) -> None:
             payload = await request.json() if request.can_read_body else {}
             scene = create_scene(payload.get("name") if isinstance(payload, dict) else "")
             return web.json_response(_public_scene(scene), status=201)
+        except Exception as exc:
+            return _json_error(web, exc)
+
+    @routes.post(f"{API_BASE}/scenes/{{scene_id}}/upgrade")
+    async def factory_scene_upgrade(request: Any) -> Any:
+        try:
+            scene = await asyncio.to_thread(upgrade_scene, request.match_info["scene_id"])
+            return web.json_response(_public_scene(scene))
         except Exception as exc:
             return _json_error(web, exc)
 

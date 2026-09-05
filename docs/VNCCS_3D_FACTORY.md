@@ -59,6 +59,67 @@ a graphical diagnostic with the Python traceback and a full-log download.
 
 ## Scene workflow
 
+Scenes containing only walls or rooms can produce the node's preview output;
+generating or importing a model is not required. Saved cameras retain the
+existing ordered image-list output behavior.
+
+Local lights remain on when the realtime shadow budget is exhausted. Low,
+Medium, High and Ultra allocate shadows to up to 2, 4, 6 and 8 eligible local
+lights respectively, in stored light order. Hidden lights, zero-strength
+lights, lights in hidden buildings, and other-floor lights in Plan mode do
+not consume a slot. A light with shadows explicitly disabled also uses no
+shadow slot. The scene list and light Inspector show the current status.
+`Shadows deferred` means the light still illuminates but can shine through
+walls. Increase shadow quality or disable shadows on less important sources
+to free a slot. Current captures use the same shadow policy as the preview.
+
+The workspace bar provides **Assets**, **Scene tools**, six layout presets,
+**Commands**, **Panel mode**, and **Expand editor**. Docks resize by dragging
+their dividers or using arrow keys; double-click a divider to reset its size.
+Expansion keeps the same scene and canvas. At narrow widths Assets becomes a
+closed drawer. **Cmd/Ctrl+K** searches tools and actions.
+
+**Objects**, **Inspector**, and **Export** are separate tabs in every layout,
+including expanded mode. Objects shows the hierarchy and creation actions;
+Inspector shows properties of the current selection. Each uses the full panel
+height and retains its own scrolling. Panel mode changes dock sizing only.
+
+Closed opaque terrain and solids cast shadows from their back faces to avoid
+self-shadow speckling. Thin sheets keep two-sided shadows. Point and spot lights
+use the configured world-space normal bias, independent of light range.
+
+Light, model-transform, primitive, wall-dimension and camera numeric controls
+update continuously. Exact fields accept units such as `25cm`, `1.5m`, `90deg`
+or `1.57rad` where appropriate, and relative edits such as `+=25cm` or `*=2`.
+Drag a numeric label to scrub; Shift adjusts finely and Alt adjusts coarsely.
+The reset arrow resets one field. Escape cancels the current gesture; Enter,
+release or valid blur commits one undo step. An unfinished number leaves the
+last valid frame visible. Limits appear inline. Saved camera edits update its
+helper/preview; entering the camera viewpoint is a separate action. Target
+distance controls the look-at target, not optical depth of field.
+
+**Shape** adds editable boxes, ellipsoids, cylinders, cones, ramps, solid stairs
+and solid gable-roof wedges. Dimensions are in meters; stairs expose step count
+and calculated tread/riser sizes. **Terrain** adds seeded procedural relief
+with adjustable height, frequency, octaves, grid segments and base thickness.
+The current grid limit is 128×128 cells; tiled sculpting, brush painting and
+heightmap import are not implemented yet. Drop to surface uses the actual
+primitive triangles beneath the object's footprint.
+
+The first new procedural feature upgrades a copy of an old scene to version
+12. The original remains available in Scenes. Native library scene and object
+packages preserve primitive recipes and surface textures. A shape loaded into
+an old scene also creates a compatible scene copy when needed.
+
+In Plan view, choose **Room → Polygon** to draw a concave room contour. Click
+corners, then click the first corner or press Enter / **Finish room**. Backspace
+/ **Remove point** removes the last corner; Escape cancels. Crossing contours
+are rejected. A valid contour creates linked walls, floor and ceiling in one
+undo command. Rectangle mode keeps the original press-and-drag workflow.
+
+Undo history retains up to 200 commands within a 128 MiB serialized-payload
+budget. Discarding old steps shows a notification and keeps the live scene.
+
 Use **Scenes** in the top bar to create or reopen scenes. Every new generation
 is added to the active scene. Select an object in the right panel or viewport,
 then:

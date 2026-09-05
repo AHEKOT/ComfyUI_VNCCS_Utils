@@ -1,3 +1,4 @@
+import { meshSupportHeight } from "./geometry/surface_support.mjs";
 import * as THREE from "../vendor/spark/three.module.js";
 
 function intersectsXZ(left, right, tolerance = 1e-5) {
@@ -45,12 +46,15 @@ export function solveDropToSurface({
         if (entry?.data?.collision_proxy?.supports_objects === false) continue;
         const bounds = proxyBounds(entry);
         if (!bounds || bounds.isEmpty() || !intersectsXZ(selectedBounds, bounds)) continue;
-        const supportCenterY = (bounds.min.y + bounds.max.y) * 0.5;
-        const belowOrPenetratingFromBelow = bounds.max.y <= selectedBounds.min.y + clearance
+        const geometrySupport = entry.primitive && entry.data?.collision_proxy?.mode !== "box";
+        const surfaceY = geometrySupport ? meshSupportHeight(entry.primitive, selectedBounds) : bounds.max.y;
+        if (surfaceY === null) continue;
+        const supportCenterY = (bounds.min.y + surfaceY) * 0.5;
+        const belowOrPenetratingFromBelow = surfaceY <= selectedBounds.min.y + clearance
             || bounds.min.y <= selectedBounds.min.y + clearance
             || supportCenterY < selectedCenterY;
         if (belowOrPenetratingFromBelow) {
-            supportY = Math.max(supportY, bounds.max.y);
+            supportY = Math.max(supportY, surfaceY);
         }
     }
     const deltaY = supportY - selectedBounds.min.y + Math.max(0, Number(clearance) || 0);

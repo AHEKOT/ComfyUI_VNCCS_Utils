@@ -68,6 +68,33 @@ class FactoryLibraryTests(unittest.TestCase):
         self.library._root = self.original_library_root
         self.temporary.cleanup()
 
+    def test_parametric_scene_and_object_packages_preserve_recipe_and_texture(self):
+        scene = self.factory.create_scene("Procedural")
+        scene = self.factory.upgrade_scene(scene["scene_id"])
+        image = io.BytesIO()
+        Image.new("RGBA", (8, 8), (23, 90, 120, 255)).save(image, "PNG")
+        scene, texture = self.factory.store_scene_texture(scene["scene_id"], image.getvalue(), "Surface.png")
+        created = self.factory.create_primitive_object(scene["scene_id"], {
+            "primitive": {"kind": "stairs", "steps": 17, "width": 2, "height": 3, "depth": 4, "texture_id": texture["texture_id"]},
+        })
+        object_id = created["object_id"]
+        for asset_type in ("scene", "object"):
+            with self.subTest(asset_type=asset_type):
+                record = self.library.save_asset({"scene_id": scene["scene_id"], "object_id": object_id,
+                                                  "asset_type": asset_type, "name": "Stairs", "category": "Architecture"})
+                target = self.factory.create_scene("Target")
+                result = self.library.load_asset(record["asset_id"], repository=record["repository"],
+                                                 category=record["category"], scene_id=target["scene_id"])
+                restored = self.factory.load_scene(result["scene"]["scene_id"])
+                self.assertEqual(restored["schema_version"], 12)
+                item = restored["objects"][0]
+                self.assertEqual(item["primitive"]["kind"], "stairs")
+                self.assertEqual(item["primitive"]["steps"], 17)
+                self.assertNotEqual(item["primitive"]["texture_id"], texture["texture_id"])
+                with Image.open(self.factory._scene_texture_file(restored, item["primitive"]["texture_id"])) as decoded:
+                    self.assertEqual(decoded.getpixel((0, 0)), (23, 90, 120, 255))
+                self.assertEqual(self.factory.load_scene(target["scene_id"])["objects"], [])
+
     def make_scene(self):
         scene = self.factory.create_scene("Library scene")
         object_id = self.factory._new_id()

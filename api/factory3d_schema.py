@@ -617,7 +617,7 @@ def normalize_object_editor_properties(value: Any) -> dict[str, Any]:
     primitive = data.get("primitive")
     if isinstance(primitive, dict):
         kind = str(primitive.get("kind") or "plane").lower()
-        if kind not in {"image", "plane", "terrain"}:
+        if kind not in {"image", "plane", "terrain", "box", "sphere", "cylinder", "cone", "ramp", "stairs", "gable_roof"}:
             kind = "plane"
         segments = primitive.get("segments") if isinstance(primitive.get("segments"), (list, tuple)) else []
         color = str(primitive.get("color") or "#ffffff").lower()
@@ -633,6 +633,12 @@ def normalize_object_editor_properties(value: Any) -> dict[str, Any]:
                 int(_bounded(segments[index] if index < len(segments) else None, 1.0, 128.0, 1.0))
                 for index in range(2)
             ],
+            "height_amplitude": _bounded(primitive.get("height_amplitude"), 0, 10000, 0),
+            "noise_frequency": _bounded(primitive.get("noise_frequency"), 0.00001, 100, 0.1),
+            "noise_seed": int(_bounded(primitive.get("noise_seed"), 0, 2147483647, 1)),
+            "noise_octaves": int(_bounded(primitive.get("noise_octaves"), 1, 8, 4)),
+            "steps": int(_bounded(primitive.get("steps"), 1, 256, 12)),
+            "radial_segments": int(_bounded(primitive.get("radial_segments"), 8, 128, 32)),
             "texture_id": _id(primitive.get("texture_id")),
             "color": color,
             "opacity": _bounded(primitive.get("opacity"), 0.0, 1.0, 1.0),

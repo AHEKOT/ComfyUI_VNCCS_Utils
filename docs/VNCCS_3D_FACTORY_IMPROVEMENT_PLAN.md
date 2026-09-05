@@ -1,12 +1,45 @@
 # VNCCS 3D Factory: scene editor implementation plan
 
-Status: proposed implementation specification; no production changes are made by this document.
+Status: implementation started; the specification below remains the target unless explicitly marked complete in the progress record.
 
 Prepared: 2026-09-05. Baseline commit: `60bbc4577977a3cdbd502306bd58aa4ab1458b3a`.
 
 Scope: `ComfyUI_VNCCS_Utils`, exclusively the 3D Factory feature and additive Factory-specific nodes. This plan permits a complete replacement of the Factory UI shell. Preserve existing scene assets, generation providers, working imports, node identity, workflow connections, and unrelated VNCCS utilities.
 
 Document language follows the project's English documentation convention. Product labels below are implementation-ready English labels. All new paths, types, endpoints, and identifiers marked as proposed are specifications, not claims that they already exist.
+
+### Implementation progress — 2026-09-05
+
+Implementation is in progress, not a completed release. The user's current validation constraint is explicit: do not open, operate, or test against ComfyUI; do not generate models on the development Mac. Validation below is local code/math/storage testing only.
+
+| Work package | Current implementation | Remaining acceptance work |
+|---|---|---|
+| WP01 Baseline defects | Architecture-only capture eligibility; retained local lights; illumination remains active beyond 2/4/6/8 shadow slots; allocation status in scene list and Inspector | Runtime instrumentation and device evidence remain outside current validation scope |
+| WP02 Contracts/migrations | Editor 17→18 pure migration; future editor versions rejected by UI and node; scene 11→12 copy upgrade with preserved original assets; shared light numeric contracts | Full ID-domain fixtures, transform-v2 migration and capture-v2 contracts |
+| WP03 Transactions/store | Typed scalar patches for light, model transform, primitive geometry and wall dimensions; coupled camera-pose patches; one undo per gesture; cancel; bounded mixed history; frozen save payload and scene ownership; preserve edits during primitive creation | General store extraction, optimistic backend transactions, immutable capture barriers |
+| WP04 Runtime | Local light identity retained across value edits; primitive geometry replaced on its existing mesh; geometry-only edits avoid transform work; no full scene load for these previews | General resource cache, scheduler, shadow invalidation and worker services |
+| WP05 Controls | Descriptor-driven exact/range fields, units (`m`, `cm`, `mm`, `km`, degrees/radians), relative expressions, invalid-draft handling, label scrubbing, reset, keyboard stepping, Escape and pointer cancellation | Port remaining legacy control families; group reset/mixed multi-edit; rendered alignment acceptance |
+| WP06 Workspace | Resizable docks, separate Objects/Inspector tabs, six layouts, expanded editor retaining the same canvas/store, narrow drawers, dock fit/reset, command search, modal focus repair | Full menu/status/bottom-dock design, final outliner integration and host visual acceptance |
+| WP09 Cameras | Actual YXZ quaternion/Euler conversion; position/rotation/FOV/target-distance numeric gestures; selecting/editing a saved camera does not enter its viewpoint | Physical lens/shift/orthographic fields, reference roles, perspective calibration and shot data |
+| WP10 Indoor topology | Existing rectangular room workflow retained; polygon room drawing with live outline/fill, close-at-first-point/Enter, remove-point/Backspace and Escape; simple-contour validation; linked walls/floor/ceiling in one command | General wall joins/opening assemblies, floor holes, building-local hierarchy migration and full parametric architecture |
+| WP13 Surface placement | Primitive support tests actual upward triangles clipped to the selected footprint, including transformed ramps, stairs and terrain | Pivot modes, normal alignment, mesh/splat transform-v2 semantics and full snapping |
+| WP11 / WP13 Parametric parts | Editable box, ellipsoid, cylinder, cone, ramp, solid stairs and solid gable-roof wedge; bounded topology, physical dimensions, stair tread/riser readout, Shape menu and command access | Ghost placement, assemblies/railings/roof thickness, spline profiles and material slots |
+| WP14 Terrain | Deterministic procedural relief, seed/frequency/octaves/amplitude, bounded grid up to 128×128 cells, base/skirt, triangle-consistent sampling; zero amplitude preserves old flat geometry | This is a recipe foundation, not tiled sculpt terrain: Float32 tile assets, brushes, heightmap I/O, holes, paint layers, workers and LOD remain |
+| WP20 Packages | Native primitive recipes do not require PLY; scene/object packages include/remap primitive textures; v12 scene loading preserves its version; new-only object loading upgrades a scene copy | Full native-v2 dependencies, geometry GLB/coverage export, conditioning ZIP and broader cold round trips |
+| WP07–08, WP12, WP15–19, WP21–22 | Existing capabilities retained; remaining work as specified below | Unified virtualized hierarchy, conditioning outputs, scatter/splines, advanced lighting/materials/assets, large scenes, variants/render host and release gates |
+
+#### Implemented boundaries and compatibility
+
+- `core/editor_migrations.mjs` changes UI metadata only. `api/factory3d_migrations.py` and the equivalent JS migration preserve existing geometry/transforms. Scene 12 currently explicitly declares `{transforms:1,captures:1,procedural_geometry:1}`. This is a staged schema activation: do not interpret version 12 alone as the complete transform/capture-v2 specification below.
+- `POST /scenes/{scene_id}/upgrade` copies scene assets to a new managed ID, saves the migrated document there and preserves the v11 original. Failed copying/saving removes only the new directory. Reference URLs are rebound to the copied scene. New geometry cannot be written into scene 11; scene-12 PATCH requests require a matching writer version.
+- `property_descriptors.mjs`, `property_gesture.mjs` and `numeric_property_binding.mjs` resolve entities by `{kind,id,sceneId}` and update visible runtime objects on input/pointer movement. Persistence happens after settling; Escape restores the edited property or coupled camera pose. Unfinished numeric text never coerces to zero. `+=25cm`, `*=2`, and radians are parsed without evaluation.
+- `editor_commands.mjs` combines existing snapshots and new patches in one 200-command/128 MiB encoded-payload history. This bounds retained serialized commands, not total JavaScript heap. Discarding history is disclosed. Camera patches include only pose fields, not unrelated camera metadata.
+- `ui/workspace.mjs` owns layout/expansion, not scene state or a second renderer. Desktop default docks are 240/300 CSS pixels; stored sizes survive responsive fitting. Expansion and layout changes preserve the scene and viewport. Objects, Inspector and Export remain mutually exclusive tabs in all layouts, including expanded mode. Panel mode changes dock sizing only. This user-requested correction supersedes the original simultaneous outliner/Inspector proposal; do not combine these panels again.
+- Procedural parts are Three geometries with XZ-centered origin and base Y=0. Stairs use one closed extruded profile, not overlapping boxes. The gable roof currently represents a solid roof wedge; it is not yet an editable roof assembly. Terrain uses deterministic `value-noise-v1` lattice hashing and octave synthesis with persisted parameters, not sampled/sculpted tile assets.
+- `surface_support.mjs` clips transformed upward triangles against the selected world-space XZ footprint before choosing its support height. Explicit box proxies retain their existing semantics; Gaussian placement still uses its declared proxy approximation.
+- The original node output remains slot 0 `preview`, IMAGE list, current view followed by saved cameras. New conditioning nodes/passes are not registered yet. Captures use current preview lighting; deferred shadows can leak through walls. No exact Gaussian geometry pass is claimed.
+
+Validation record: 64 focused JS geometry/transaction/frontend/light tests; 9 Python node tests; 2 Python migration/storage tests; 1 native-package test covering both scene and object packages; shared numeric normalization cases; required security scanner/integrity checks. No ComfyUI interaction, model generation, GPU benchmarks or visual acceptance is claimed. See the remaining work-package table and release gates before treating this as a release.
 
 ## Contents
 
@@ -91,7 +124,7 @@ The renderer vendors **Three.js r180** and **Spark v2.1.0**, with provenance in 
 | B04 | `_renderInspector()` substitutes a selection-count message for mixed/multiple selection | Implement shared-property editing and batch commands |
 | B05 | `createFactoryPrimitiveGeometry()` creates terrain as plane/box geometry | Add a real heightfield; preserve existing flat terrain appearances |
 | B06 | Main output is one RGB IMAGE LIST; no graph geometry passes | Add explicit rendering/conditioning contracts |
-| B07 | Objects and Inspector occupy mutually exclusive right tabs | Replace shell with simultaneous outliner and Inspector |
+| B07 | Objects and Inspector need distinct responsibilities | Keep mutually exclusive right tabs with full-height content; preserve selection and independent scroll |
 | B08 | `_renderLightInspector()` exposes Point fields although runtime handles Spot/Directional | Expose actual supported properties through capability-driven inspectors |
 | B09 | Object transform scale is scalar; gizmo space is world; exact field bounds vary by entity | Introduce versioned transforms and one property specification |
 | B10 | `normalizeModel()` normalizes imports to a 2 m maximum extent | Offer physical units and explicit normalization modes without resizing legacy imports |
@@ -389,24 +422,21 @@ Queue barrier: finish or explicitly reject the active invalid draft -> commit pe
 Default embedded node remains usable around its current 1100 x 760 size. Expanded editor uses the available ComfyUI application viewport. Layout dimensions below are CSS pixels at application zoom 100%; graph zoom is handled by the existing node integration.
 
 ```text
-+--------------------------------------------------------------------------+
-| Scene name / Saved | File Edit Add | Layout | Quality | Capture / Output  |
-+------------------+-------------------------------------+-----------------+
-| Scene | Assets   | 3D / Plan / Camera  | view controls | Inspector       |
-| search + filters | W/E/R  Local/World  Pivot  Snap      | selection name  |
-|                  | active tool options                | type + actions  |
-| virtualized tree |                                     |                 |
-| building         |                                     | Transform       |
-|   floor          |             VIEWPORT                | Geometry        |
-|     room         |                                     | Materials       |
-|     furniture    |                                     | Placement       |
-| terrain/scatter  |                                     | Visibility      |
-| lights/cameras   |                                     | Advanced        |
-+------------------+-------------------------------------+-----------------+
-| Optional bottom: Shots / Camera path / Output preview                    |
-+--------------------------------------------------------------------------+
-| active tool hint | meters | selection | frame time | jobs | save state   |
-+--------------------------------------------------------------------------+
++---------------------------------------------------------------------------+
+| Scene / Saved | File Edit Add | Layout | Quality | Capture / Output         |
++----------------+-----------------------------------+----------------------+
+| Assets/Cameras | 3D / Plan / Camera | view controls | Objects Inspector    |
+| search/import  | W/E/R Local/World Pivot Snap       | Export               |
+| library        | active tool options               +----------------------+
+| generation     |                                   | ONE active panel:    |
+| references     |             VIEWPORT              | hierarchy OR         |
+| camera list    |                                   | selection properties |
+|                |                                   | OR export settings   |
++----------------+-----------------------------------+----------------------+
+| Optional bottom: Shots / Camera path / Output preview                      |
++---------------------------------------------------------------------------+
+| active tool hint | meters | selection | frame time | jobs | save state     |
++---------------------------------------------------------------------------+
 ```
 
 Default sizes: top bar 40, viewport toolbar 36, contextual options 36 when needed, status 24; left dock 240, right dock 300; adjustable left 180-420/right 240-480. Bottom dock starts closed, opens to 180 and can resize between 120 and 40% of available height. Splitter hit region is 8 px with a 1 px visible divider. Double-click a splitter resets its size.
@@ -419,7 +449,7 @@ At 1100 px width, two default docks leave about 540 px before splitters for the 
 | --- | --- |
 | 1200+ | Both docks visible; bottom optional; full text tool options |
 | 980-1199 | Both docks visible at compact defaults; wrap only secondary toolbar options into an overflow menu |
-| 760-979 | Right Inspector visible; left tree in a toggle drawer by default; user can pin both if viewport remains >=320 |
+| 760-979 | Right Objects/Inspector/Export tabs visible; left Assets in a toggle drawer by default; user can pin both if viewport remains >=320 |
 | Below 760 | Viewport plus one active drawer; show `Expand editor`; preserve all commands through menus |
 
 Expanded mode reparents the **same** editor root to a Factory-owned overlay in the current ComfyUI document; it does not create a second store or WebGL context. Keep a placeholder in the node, call resize after reparenting, restore on Close/Escape, workflow unload, or node removal. Do not require browser Fullscreen API. Keyboard focus returns to Expand editor. No renderer-owned canvas is cloned.
@@ -455,7 +485,7 @@ Layouts: `Scene`, `Architecture`, `Landscape`, `Lighting`, `Camera`, `Output`. T
 
 Inspector is composed from property descriptors and entity capabilities. Stable section keys: `identity`, `transform`, `geometry`, `materials`, `placement`, `lighting`, `visibility`, `advanced`. Keep common section order and remember expansion per entity kind. Different entity types may omit inapplicable sections.
 
-An empty selection shows scene units, active building/floor, environment shortcut and creation actions. Selecting in the outliner updates Inspector without replacing the outliner. Selecting a camera selects its object; entering its viewpoint is an explicit separate action. Editing saved-camera fields updates camera helper/inset immediately but does not teleport the editor camera unless already in Camera view.
+An empty selection shows scene units, active building/floor, environment shortcut and creation actions. Selection in Objects updates the Inspector data; switching to Inspector shows only its property panel. Returning to Objects restores the same tree state and scroll position. Selecting a camera selects its object; entering its viewpoint is an explicit separate action. Editing saved-camera fields updates camera helper/inset immediately but does not teleport the editor camera unless already in Camera view.
 
 Multiple selection exposes the intersection of editable properties. Show `Mixed` for unequal values; entering a value assigns all applicable targets. Transform controls offer `Set absolute` and `Apply delta`. Mixed-type selection includes only meaningful shared actions. Disallowed targets must be listed in a pre-action count, not quietly skipped.
 
@@ -954,7 +984,7 @@ Deliver each work package as a reviewable change with focused fixtures. A row is
 | WP03 Transactions/store | P0 / WP02 | Store facade, typed commands, dirty refs, patch history, per-gesture cancel, revisions, queue barrier | core modules + backend transactions/storage | One command per gesture; undo/redo/cancel; stale saves cannot overwrite newest data |
 | WP04 Retained runtime | P0 / WP03 | Extract resource cache/scheduler/light map behind old viewer API; targeted invalidation | runtime modules + viewer facade | Identity/resource-count tests prove no unrelated rebuild on transforms/light edits |
 | WP05 UI primitives | P0 / WP03 | Numeric/vector/color components, focus/scroll manager, menus/command registry, property capability model | UI components and CSS | Live peers, invalid drafts, row alignment and keyboard behavior meet section 7 |
-| WP06 Editor shell | P0 / WP05 | Replace side tabs with docks; expanded mode; outliner/Inspector coexist; port generation/library/cameras/export | workspace, panels, widget facade | All existing tools reachable; resize/fullscreen/restore works without extra renderer |
+| WP06 Editor shell | P0 / WP05 | Resize side docks; expanded mode; distinct Objects/Inspector tabs; port generation/library/cameras/export | workspace, panels, widget facade | All existing tools reachable; resize/fullscreen/restore works without extra renderer |
 | WP07 Mixed selection/transforms | P1 / WP04-06 | TRS v2, multi-property editing, pivot/space/snaps, typed selection, align/distribute | transform/selection tools, Inspector | World-preserving migration and reparent; mixed edits one undo; unsupported shear detected |
 | WP08 Capture core and node outputs | P0 / WP02-04 | Fix frozen snapshot handling; staged capture API; stable handle output and render/mask nodes; mesh/proxy pass shaders | capture pipeline/backend/nodes | Plane depth/normals/IDs correct; lists preserve order; original slot-0 links survive |
 | WP09 Reference and camera matching | P0 / WP05-06, WP08 metadata | Reference roles, camera lens/target separation, guide drawing, calibrated solver, compare overlay | camera match, reference assets, shots UI | Synthetic reference calibration converges and preserves projection through save/reload |
@@ -1064,7 +1094,7 @@ Respect the project verification boundary: do not use the browser skill or in-ap
 
 ### 19.3 UI completion checklist
 
-- [ ] Outliner and Inspector are simultaneously useful in default expanded mode.
+- [ ] Objects, Inspector and Export each show only their own full-height panel in embedded and expanded modes.
 - [ ] Every retained legacy generation/import/library/camera/export function has a reachable UI entry.
 - [ ] Every continuous property has visible feedback during mouse, pen and keyboard interaction.
 - [ ] Numeric and slider peers show the same accepted value; drafts do not move geometry to zero.
@@ -1127,12 +1157,12 @@ These gates are not unspecified design tasks. Each has a concrete implementation
 
 ## 23. First implementation iteration: exact starting checklist
 
-- [ ] Add a permanent node test for an architecture-only room with no model, skydome or saved camera.
-- [ ] Fix renderability in Python using the same documented cases as `_hasRenderableScene()`; cover empty and camera-only behavior explicitly.
-- [ ] Add a retained-light test with more lights than shadow slots, including hidden/zero-intensity entries; fix illumination and allocation without changing legacy brightness units.
+- [x] Add a permanent node test for an architecture-only room with no model, skydome or saved camera.
+- [x] Fix renderability in Python using the same documented cases as `_hasRenderableScene()`; cover empty and camera-only behavior explicitly.
+- [x] Add a retained-light test with more lights than shadow slots, including hidden/zero-intensity entries; fix illumination and allocation without changing legacy brightness units.
 - [ ] Instrument current light/gizmo changes to count asset reloads, light identities and target allocations.
 - [ ] Freeze representative scene-11/editor-17 fixtures and old workflow output links.
-- [ ] Define property descriptors for Transform, Wall, Light and Camera first; port one Inspector section to prove live inputs and patch history.
+- [x] Define property descriptors for Transform, Wall, Light and Camera first; port one Inspector section to prove live inputs and patch history.
 - [ ] Prove mesh depth/normal/ID capture on a synthetic scene before adding UI for all pass settings.
 - [ ] Build the docked shell with unchanged renderer and working old capabilities; evaluate it on the actual ComfyUI host.
 

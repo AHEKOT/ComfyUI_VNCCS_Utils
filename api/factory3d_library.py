@@ -235,6 +235,10 @@ def _object_payload(
     prefix: str,
 ) -> dict[str, Any]:
     output = json.loads(json.dumps(item))
+    if item.get("asset_kind") == "primitive":
+        output.update(factory.normalize_object_editor_properties(item))
+        output["files"] = {}
+        return output
     if item.get("asset_kind") == "mesh":
         model = factory._object_file(scene["scene_id"], item, "model")
         scene_root = factory.resolve_scene_dir(scene["scene_id"])
@@ -328,6 +332,12 @@ def _build_package(
                 item = factory._object_by_id(scene, object_id)
                 stored = _object_payload(archive, scene, item, "payload/object")
                 payload = {"object": stored}
+                if item.get("asset_kind") == "primitive":
+                    texture_id = item.get("primitive", {}).get("texture_id")
+                    payload["textures"] = _texture_payloads(archive, {
+                        **scene, "textures": [texture for texture in scene.get("textures", [])
+                                             if texture.get("texture_id") == texture_id],
+                    })
                 item_count = 1
                 gaussian_count = int(item.get("gaussians", 0) or 0)
             elif asset_type == "skydome":
@@ -685,6 +695,7 @@ def _install_object(
     archive: zipfile.ZipFile,
     stored: dict[str, Any],
     scene: dict[str, Any],
+    texture_id_map: dict[str, str] | None = None,
 ) -> str:
     object_id = factory._new_id()
     root = factory.resolve_scene_dir(scene["scene_id"])
@@ -692,6 +703,33 @@ def _install_object(
     object_root.mkdir(parents=True, exist_ok=False)
     installed: dict[str, str] = {}
     try:
+        if stored.get("asset_kind") == "primitive":
+            properties = factory.normalize_object_editor_properties(stored)
+            primitive = properties.get("primitive")
+            if not primitive:
+                raise ValueError("primitive package is missing its geometry recipe")
+            if stored.get("primitive", {}).get("kind", "plane") != primitive["kind"]:
+                raise ValueError("unsupported primitive recipe in library package")
+            texture_id = primitive.get("texture_id")
+            if texture_id:
+                if not texture_id_map or texture_id not in texture_id_map:
+                    raise ValueError("primitive package is missing its surface texture")
+                primitive["texture_id"] = texture_id_map[texture_id]
+            if primitive["kind"] == "image" and not primitive.get("texture_id"):
+                raise ValueError("image plane package is missing its image")
+            item = {
+                "object_id": object_id, "asset_kind": "primitive",
+                "name": factory._duplicate_object_name(scene, stored.get("name")),
+                "created_at": time.time(), "visible": stored.get("visible") is not False,
+                "transform": factory.normalize_transform(stored.get("transform")),
+                "level_id": stored.get("level_id", ""), "building_id": stored.get("building_id", ""),
+                "files": {}, "source": {"type": "procedural_primitive"},
+                "settings": {"source": "procedural_primitive"}, **properties,
+            }
+            factory._write_imported_object_thumbnail(object_root / "thumbnail.png", primitive["kind"].upper())
+            scene["objects"].append(item)
+            scene["layers"].append({"type": "object", "object_id": object_id})
+            return object_id
         if stored.get("asset_kind") == "mesh":
             files = stored.get("files") if isinstance(stored.get("files"), dict) else {}
             model_member_name = files.get("model")
@@ -884,23 +922,48 @@ def load_asset(
         if asset_type == "object":
             with factory._STATE_LOCK:
                 scene = factory.load_scene(scene_id)
-                object_id = _install_object(archive, payload.get("object") or {}, scene)
-                installed_object = factory._object_by_id(scene, object_id)
-                installed_object["name"] = _name(
-                    record.get("name"),
-                    "3D object",
-                )
-                installed_object["level_id"] = scene["levels"][0]["level_id"]
-                installed_object["building_id"] = (
-                    scene["architecture"]["buildings"][0]["building_id"]
-                    if scene["architecture"]["buildings"] else ""
-                )
-                scene["exports"] = {}
-                factory._save_scene(scene)
+                stored = payload.get("object") or {}
+                primitive = factory.normalize_object_editor_properties(stored).get("primitive", {})
+                copied_scene = False
+                if stored.get("asset_kind") == "primitive" and scene.get("schema_version", 11) < 12 and (
+                    primitive.get("kind", "plane") not in {"image", "plane", "terrain"}
+                    or primitive.get("height_amplitude", 0) > 0
+                ):
+                    scene = factory.upgrade_scene(scene_id)
+                    copied_scene = True
+                original_objects = {item["object_id"] for item in scene["objects"]}
+                original_textures = {item["texture_id"] for item in scene.get("textures", [])}
+                try:
+                    texture_id_map = _install_textures(archive, payload.get("textures", []), scene)
+                    object_id = _install_object(archive, stored, scene, texture_id_map)
+                    installed_object = factory._object_by_id(scene, object_id)
+                    installed_object["name"] = _name(
+                        record.get("name"),
+                        "3D object",
+                    )
+                    installed_object["level_id"] = scene["levels"][0]["level_id"]
+                    installed_object["building_id"] = (
+                        scene["architecture"]["buildings"][0]["building_id"]
+                        if scene["architecture"]["buildings"] else ""
+                    )
+                    scene["exports"] = {}
+                    factory._save_scene(scene)
+                except Exception:
+                    if copied_scene:
+                        shutil.rmtree(factory.resolve_scene_dir(scene["scene_id"]), ignore_errors=True)
+                    else:
+                        scene_root = factory.resolve_scene_dir(scene["scene_id"])
+                        for item in scene["objects"]:
+                            if item["object_id"] not in original_objects:
+                                shutil.rmtree(scene_root / "objects" / factory._validate_id(item["object_id"], "object id"), ignore_errors=True)
+                        for texture in scene.get("textures", []):
+                            if texture["texture_id"] not in original_textures:
+                                factory._scene_texture_file(scene, texture["texture_id"]).unlink(missing_ok=True)
+                    raise
             return {
                 "scene": factory._public_scene(scene),
                 "object_id": object_id,
-                "created_scene": False,
+                "created_scene": copied_scene,
             }
         if asset_type == "skydome":
             with factory._STATE_LOCK:
@@ -931,11 +994,17 @@ def load_asset(
         stored_scene = payload.get("scene")
         if not isinstance(stored_scene, dict):
             raise ValueError("scene package is incomplete")
+        stored_version = stored_scene.get("schema_version", 11)
+        if isinstance(stored_version, bool) or not isinstance(stored_version, int) or not 0 <= stored_version <= factory.MAX_READABLE_SCHEMA_VERSION:
+            raise ValueError("unsupported scene package version")
         scene = factory.create_scene(record.get("name") or stored_scene.get("name"))
         id_map: dict[str, str] = {}
         try:
             with factory._STATE_LOCK:
                 scene = factory.load_scene(scene["scene_id"])
+                if stored_version == 12:
+                    scene = factory.migrate_scene_11_to_12(scene)
+
                 texture_id_map = _install_textures(
                     archive,
                     stored_scene.get("textures", []),
@@ -945,7 +1014,7 @@ def load_asset(
                     old_id = factory._validate_id(stored.get("object_id"), "object id")
                     if old_id in id_map:
                         raise ValueError("scene package contains duplicate object ids")
-                    id_map[old_id] = _install_object(archive, stored, scene)
+                    id_map[old_id] = _install_object(archive, stored, scene, texture_id_map)
                 scene["layers"] = []
                 for layer in stored_scene.get("layers", []):
                     if layer.get("type") == "object" and layer.get("object_id") in id_map:

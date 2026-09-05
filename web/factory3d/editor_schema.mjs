@@ -1,4 +1,7 @@
-export const FACTORY_EDITOR_SCHEMA_VERSION = 17;
+import { terrainSettings } from "./geometry/terrain_heightfield.mjs";
+import { PRIMITIVE_KINDS } from "./geometry/parametric_parts.mjs";
+import { EDITOR_VERSION, normalizedWorkspace } from "./core/editor_migrations.mjs";
+export const FACTORY_EDITOR_SCHEMA_VERSION = EDITOR_VERSION;
 
 export const DEFAULT_BUILDING = Object.freeze({
     name: "Building 1",
@@ -39,6 +42,7 @@ export const DEFAULT_ROOM = Object.freeze({
 export const DEFAULT_EDITOR_VIEW = Object.freeze({
     view_mode: "3d",
     plan_tool: "select",
+    room_shape: "rectangle",
     opening_kind: "window",
     active_level_id: "",
     active_building_id: "",
@@ -202,6 +206,7 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
         : null;
     return {
         view_mode: source.view_mode === "plan" ? "plan" : "3d",
+        room_shape: source.room_shape === "polygon" ? "polygon" : "rectangle",
         plan_tool: ["select", "wall", "room", "opening", "camera"].includes(source.plan_tool)
             ? source.plan_tool
             : "select",
@@ -210,14 +215,7 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
             : "window",
         active_level_id: String(source.active_level_id || activeLevelId || ""),
         active_building_id: String(source.active_building_id || ""),
-        workspace: {
-            left: ["generate", "cameras"].includes(workspace.left)
-                ? workspace.left
-                : "generate",
-            right: ["objects", "inspector", "export"].includes(workspace.right)
-                ? workspace.right
-                : "objects",
-        },
+        workspace: normalizedWorkspace(workspace),
         interior_cutaway: {
             // Plan has historically hidden ceilings. Preserve that behavior,
             // while keeping the 3D viewport opt-in for existing workflows.
@@ -286,7 +284,7 @@ export function normalizedObjectEditorProperties(value = {}) {
     };
     if (value.primitive && typeof value.primitive === "object") {
         const source = value.primitive;
-        const kind = ["image", "plane", "terrain"].includes(source.kind)
+        const kind = PRIMITIVE_KINDS.includes(source.kind)
             ? source.kind
             : "plane";
         const segments = Array.isArray(source.segments) ? source.segments : [1, 1];
@@ -296,7 +294,13 @@ export function normalizedObjectEditorProperties(value = {}) {
             height: finiteNumber(source.height, 2, 0.001, 100000),
             depth: finiteNumber(source.depth, 2, 0.001, 100000),
             extrusion: finiteNumber(source.extrusion, 0, 0, 100000),
-            segments: [0, 1].map(index => Math.round(finiteNumber(segments[index], 1, 1, 128))),
+            segments: [0, 1].map(index => Math.trunc(finiteNumber(segments[index], 1, 1, 128))),
+            height_amplitude: terrainSettings(source).amplitude,
+            noise_frequency: terrainSettings(source).frequency,
+            noise_seed: terrainSettings(source).seed,
+            noise_octaves: terrainSettings(source).octaves,
+            steps: Math.trunc(finiteNumber(source.steps, 12, 1, 256)),
+            radial_segments: Math.trunc(finiteNumber(source.radial_segments, 32, 8, 128)),
             texture_id: String(source.texture_id || ""),
             color: /^#[0-9a-f]{6}$/i.test(String(source.color || ""))
                 ? String(source.color).toLowerCase()

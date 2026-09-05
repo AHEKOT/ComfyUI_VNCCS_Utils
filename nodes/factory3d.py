@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 
 
-_EMPTY_STATE = '{"schema_version":17,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
+_EMPTY_STATE = '{"schema_version":18,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
 _MAX_STATE_CHARS = 16 * 1024 * 1024
 _MAX_PREVIEW_PIXELS = 4096 * 4096
 _MAX_SCENE_CAMERAS = 32
@@ -33,6 +33,9 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
         raise ValueError("3D Factory state is not valid JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("3D Factory state must be an object")
+    version = value.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 <= version <= 18:
+        raise ValueError("Unsupported 3D Factory editor version; update the extension before executing this workflow")
     for key in ("scene_id", "selected_object_id", "selected_group_id"):
         item = value.get(key, "")
         if item and (not isinstance(item, str) or not _ID_RE.fullmatch(item)):
@@ -644,6 +647,19 @@ def _backend():
     return factory3d
 
 
+def _has_renderable_scene(scene: dict[str, Any]) -> bool:
+    """Keep capture eligibility aligned with the Factory viewport."""
+    architecture = scene.get("architecture") or {}
+    skydome = scene.get("skydome")
+    return bool(
+        scene.get("objects")
+        or architecture.get("walls")
+        or architecture.get("rooms")
+        or scene.get("cameras")
+        or (skydome and skydome.get("visible") is not False)
+    )
+
+
 class VNCCS_3DFactory:
     """Render a saved Factory scene into the ComfyUI graph."""
 
@@ -711,10 +727,7 @@ class VNCCS_3DFactory:
         except (FileNotFoundError, ValueError) as exc:
             raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 
-        has_renderable_scene = bool(
-            scene.get("objects") or scene.get("skydome") or scene.get("cameras")
-        )
-        if has_renderable_scene:
+        if _has_renderable_scene(scene):
             capture_token = uuid.uuid4().hex if unique_id is not None else ""
             requested = _request_scene_preview(unique_id, scene, capture_token)
             if requested:

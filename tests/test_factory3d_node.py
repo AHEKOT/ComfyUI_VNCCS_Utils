@@ -40,6 +40,48 @@ class FactoryNodeTests(unittest.TestCase):
         self.assertIn("factory_data", node.INPUT_TYPES()["required"])
         self.assertEqual(node.CATEGORY, "VNCCS/3D")
 
+    def test_capture_eligibility_matches_shared_frontend_cases(self):
+        cases = json.loads((ROOT / "tests/fixtures/factory3d/renderable_scenes.json").read_text())
+        for case in cases:
+            with self.subTest(case=case["name"]):
+                self.assertEqual(self.module._has_renderable_scene(case["scene"]), case["renderable"])
+
+    def test_architecture_only_execution_requests_a_fresh_capture(self):
+        scene_id = "a" * 32
+        for kind in ("walls", "rooms"):
+            with self.subTest(kind=kind):
+                scene = {
+                    "scene_id": scene_id,
+                    "objects": [],
+                    "cameras": [],
+                    "architecture": {kind: [{"name": "Architecture"}]},
+                }
+                backend = types.SimpleNamespace(load_scene=lambda _id: scene)
+                with (
+                    mock.patch.object(self.module, "_backend", return_value=backend),
+                    mock.patch.object(self.module, "_request_scene_preview", return_value=True) as request,
+                    mock.patch.object(self.module, "_wait_for_scene_capture_set", return_value=["room.png"]) as wait,
+                    mock.patch.object(self.module, "_preview_tensor", return_value="architecture-render") as tensor,
+                    mock.patch.object(self.module, "_empty_image") as empty,
+                ):
+                    result = self.module.VNCCS_3DFactory().load_scene(
+                        json.dumps({"scene_id": scene_id}), unique_id="17",
+                    )
+                self.assertEqual(result, (["architecture-render"],))
+                request.assert_called_once()
+                self.assertEqual(request.call_args.args[:2], ("17", scene))
+                token = request.call_args.args[2]
+                self.assertEqual(len(token), 32)
+                wait.assert_called_once_with(backend, scene_id, capture_token=token)
+                tensor.assert_called_once_with("room.png")
+                empty.assert_not_called()
+
+    def test_state_validation_rejects_future_editor_without_rewriting(self):
+        for version in (99, -1, 18.5, True, "18"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ValueError, "Unsupported"):
+                    self.module._parse_state(json.dumps({"schema_version": version}))
+
     def test_state_validation_accepts_opaque_ids_and_rejects_paths(self):
         valid = json.dumps(
             {

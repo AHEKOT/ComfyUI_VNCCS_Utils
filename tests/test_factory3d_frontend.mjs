@@ -1,3 +1,4 @@
+import { factoryCameraQuaternion as quaternionFromEulerDegrees, factoryCameraEuler as eulerDegreesFromQuaternion } from "../web/factory3d/core/camera_rotation.mjs";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -25,25 +26,6 @@ function normalizedQuaternion(value = [0, 0, 0, 1]) {
     return length > 1e-12 ? numbers.map(item => item / length) : [0, 0, 0, 1];
 }
 
-function quaternionFromEulerDegrees(rotation = [0, 0, 0]) {
-    const [x, y, z] = rotation.map(value => Number(value || 0) * Math.PI / 360);
-    const [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
-    const [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)];
-    return normalizedQuaternion([
-        sx * cy * cz + cx * sy * sz,
-        cx * sy * cz - sx * cy * sz,
-        cx * cy * sz + sx * sy * cz,
-        cx * cy * cz - sx * sy * sz,
-    ]);
-}
-
-function eulerDegreesFromQuaternion(quaternion = [0, 0, 0, 1]) {
-    const [x, y, z, w] = normalizedQuaternion(quaternion);
-    const rx = Math.atan2(2 * (w * x - y * z), 1 - 2 * (x * x + y * y));
-    const ry = Math.asin(Math.max(-1, Math.min(1, 2 * (x * z + w * y))));
-    const rz = Math.atan2(2 * (w * z - x * y), 1 - 2 * (y * y + z * z));
-    return [rx, ry, rz].map(value => value * 180 / Math.PI);
-}
 
 function serializeFactoryState(widget) {
     return {
@@ -95,8 +77,8 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260902\.2"/);
-    assert.match(studio, /vnccs_3d_factory\.css\?v=20260901\.1/);
+    assert.match(studio, /FRONTEND_BUILD = "20260905\.5"/);
+    assert.match(studio, /vnccs_3d_factory\.css\?v=20260905\.5/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -273,7 +255,7 @@ test("Factory provides persistent realtime lighting for Gaussian scenes", () => 
     assert.match(viewer, /setLighting\(value = \{\}\)/);
     assert.match(viewer, /for \(const entry of this\.objects\.values\(\)\)/);
     assert.match(studio, /Occlusion shadows/);
-    assert.match(studio, /Active shadow-casting point lights/);
+    assert.match(studio, /Active local shadow lights/);
     assert.match(studio, /vnccs-i3s__local-light-add/);
     assert.match(studio, /this\.lighting\.lights\.push\(\{/);
     assert.match(studio, /kind: "point"/);
@@ -300,7 +282,7 @@ test("Every continuous 3D Factory editor path has a live input or drag preview",
     assert.match(studio, /this\._listen\(this\.els\.cameraLook, "pointermove"/);
     assert.match(studio, /this\.viewer\.applyGroupDelta\(staged, \{ final \}\)/);
     assert.match(studio, /control\.addEventListener\("input", \(\) => \{[\s\S]*?apply\(false\)/);
-    assert.match(studio, /querySelectorAll\("\[data-primitive-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
+    assert.match(studio, /_bindEntityNumeric\(\{ kind: "model"[^\n]+MODEL_NUMERIC_PROPERTIES\)/);
     assert.match(studio, /querySelectorAll\("\[data-emission-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
     assert.match(studio, /querySelectorAll\("\[data-proxy-path\]"\)[\s\S]*?control\.addEventListener\("input"/);
     assert.match(studio, /querySelectorAll\("\[data-material-property\]"\)[\s\S]*?control\.addEventListener\("input"/);
@@ -321,7 +303,7 @@ test("Architecture shadows use closed geometry without hidden full-wall shadow c
     assert.match(planGeometry, /mesh\.castShadow = true/);
     assert.match(planGeometry, /mesh\.receiveShadow = true/);
     assert.match(viewer, /light\.shadow\.bias = localLight[\s\S]*?\? 0[\s\S]*?: configuredBias/);
-    assert.match(viewer, /light\.shadow\.normalBias = data\.kind === "directional"[\s\S]*?\? configuredNormalBias[\s\S]*?: 0/);
+    assert.match(viewer, /light\.shadow\.normalBias = configuredNormalBias/);
     assert.doesNotMatch(viewer, /Math\.max\(configuredNormalBias, 0\.006\)/);
 });
 
@@ -626,7 +608,7 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(styles, /vnccs-i3s__camera-item\.is-selected/);
 });
 
-test("Exact saved-camera XYZ rotation round-trips through one quaternion order", () => {
+test("Exact saved-camera pitch/yaw/roll round-trips through the actual YXZ helpers", () => {
     const helpers = studio.match(
         /(function quaternionFromEulerDegrees[\s\S]*?function eulerDegreesFromQuaternion[\s\S]*?\n\})\n\n\nclass Factory3DWidget/,
     );
@@ -769,7 +751,7 @@ test("Editor workflows keep building assignment menus removed and make levels, s
     assert.match(studio, /Update from current view/);
     assert.match(studio, /Add camera as path point/);
     assert.match(studio, /Delete active camera path/);
-    assert.match(studio, /Precise edits in 3D enter the saved camera non-destructively/);
+    assert.match(studio, /if \(this\.previewCameraId === ref\.id\) this\.viewer\.setCameraState\(entity, \{ emit: false \}\)/);
     assert.match(studio, /selected_architecture: this\.selectedArchitecture/);
     assert.match(studio, /selected_camera_keyframe_id: this\.selectedCameraKeyframeId/);
     assert.match(studio, /this\._listen\(window, "keydown", event =>/);
@@ -1196,7 +1178,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260902.2");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260905.5");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);
