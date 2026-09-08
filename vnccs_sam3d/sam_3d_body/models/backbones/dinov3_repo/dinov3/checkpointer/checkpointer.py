@@ -26,7 +26,6 @@ Distributed checkpointer docs:
 
 import logging
 import shutil
-import subprocess
 import tempfile
 from enum import Enum
 from pathlib import Path
@@ -249,10 +248,13 @@ def keep_last_n_checkpoints(ckpt_dir: Path | str, n: int | None):
 
 
 def keep_checkpoint_copy(src: Path | str):
-    """Copy a file/directory next to itself with a _keep suffix. Files are hardlinked."""
+    """Copy a file or directory next to itself with a ``_keep`` suffix."""
     src = Path(src)
     dst = src.parent / f"{src.name}_keep"
-    subprocess.check_output(["cp", "--recursive", "--link", src, dst])
+    if src.is_dir():
+        shutil.copytree(src, dst)
+    else:
+        shutil.copy2(src, dst)
     logger.info(f"Copied: {src} -> {dst}")
 
 

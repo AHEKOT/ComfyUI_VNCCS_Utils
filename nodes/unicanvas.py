@@ -60,7 +60,18 @@ _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
 _MAX_UPLOAD_BYTES = 48 * 1024 * 1024
 _MAX_PIXELS = 4096 * 4096
 UNICANVAS_DEBUG = 0
-_UNICANVAS_STATE_CACHE_DIR = os.path.join(tempfile.gettempdir(), "vnccs_unicanvas_state_cache")
+def _unicanvas_runtime_temp_root() -> str:
+    try:
+        import folder_paths
+
+        root = folder_paths.get_temp_directory()
+    except Exception:
+        root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".runtime_cache")
+    os.makedirs(root, exist_ok=True)
+    return os.path.abspath(root)
+
+
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(_unicanvas_runtime_temp_root(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 OUTPAINT_PROMPT_SUFFIX = "outpaint black part of image"
 ANIMA_LLLITE_REPO_ID = "kohya-ss/Anima-LLLite"
@@ -2737,6 +2748,7 @@ def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknow
             filename=Z_IMAGE_FUN_CONTROLNET_FILENAME,
             repo_type="model",
             local_files_only=False,
+            token=False,
         )
         tmp_path = target_path + ".tmp"
         shutil.copy2(cached_path, tmp_path)
@@ -2795,6 +2807,7 @@ def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> st
             filename=ANIMA_LLLITE_INPAINT_FILENAME,
             repo_type="model",
             local_files_only=False,
+            token=False,
         )
         tmp_path = target_path + ".tmp"
         shutil.copy2(cached_path, tmp_path)
@@ -3407,7 +3420,7 @@ def _unicanvas_temp_dir() -> str:
         temp_dir = getattr(folder_paths, "get_temp_directory", lambda: os.path.join(base, "temp"))()
         return os.path.abspath(temp_dir)
     except Exception:
-        return os.path.abspath(tempfile.gettempdir())
+        return _unicanvas_runtime_temp_root()
 
 
 def _unicanvas_max_download_bytes() -> int:
@@ -3563,53 +3576,30 @@ def _unicanvas_download_worker_loop() -> None:
                 continue
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Initializing", "progress": 0}
             if asset.get("url"):
-                url = str(asset.get("url") or "")
-            else:
-                from huggingface_hub import hf_hub_url
+                raise ValueError("Direct preset URLs are disabled; use a public Hugging Face repository asset")
+            from huggingface_hub import hf_hub_download
 
-                repo_id = str(asset.get("hf_repo") or "")
-                filename = str(asset.get("hf_path") or "")
-                if not repo_id or not filename:
-                    raise ValueError("Preset asset needs hf_repo and hf_path")
-                if filename.startswith(f"{repo_id}/"):
-                    filename = filename[len(repo_id) + 1 :]
-                url = hf_hub_url(repo_id, filename)
+            repo_id = str(asset.get("hf_repo") or "")
+            filename = str(asset.get("hf_path") or "")
+            if not repo_id or not filename:
+                raise ValueError("Preset asset needs hf_repo and hf_path")
+            if filename.startswith(f"{repo_id}/"):
+                filename = filename[len(repo_id) + 1 :]
 
-            if not url.startswith("https://"):
-                raise ValueError("Preset download URL must use HTTPS")
-
-            import requests
-
-            response = requests.get(url, stream=True, allow_redirects=True, timeout=_PRESET_DOWNLOAD_TIMEOUT)
-            response.raise_for_status()
             expected_name = os.path.basename(target_path)
-            total_size, max_bytes = _unicanvas_validate_download_response(response, expected_name)
             temp_dir = _unicanvas_temp_dir()
             os.makedirs(temp_dir, exist_ok=True)
             temp_path = os.path.join(temp_dir, f"vnccs_unicanvas_{re.sub(r'[^A-Za-z0-9]+', '_', download_key)}.tmp")
-            downloaded = 0
-            with open(temp_path, "wb") as handle:
-                for chunk in response.iter_content(chunk_size=1024 * 1024):
-                    if not chunk:
-                        continue
-                    handle.write(chunk)
-                    downloaded += len(chunk)
-                    if downloaded > max_bytes:
-                        raise ValueError(f"{expected_name} exceeded max download size")
-                    mb_done = downloaded / (1024 * 1024)
-                    if total_size > 0:
-                        mb_total = total_size / (1024 * 1024)
-                        _PRESET_DOWNLOAD_STATUS[download_key] = {
-                            "status": "downloading",
-                            "message": f"{mb_done:.1f}/{mb_total:.1f} MB",
-                            "progress": (downloaded / total_size) * 100,
-                        }
-                    else:
-                        _PRESET_DOWNLOAD_STATUS[download_key] = {
-                            "status": "downloading",
-                            "message": f"{mb_done:.1f} MB",
-                            "progress": 0,
-                        }
+            cached_path = hf_hub_download(
+                repo_id=repo_id,
+                filename=filename,
+                repo_type="model",
+                token=False,
+            )
+            size = os.path.getsize(cached_path)
+            if size > _unicanvas_max_download_bytes():
+                raise ValueError(f"{expected_name} exceeded max download size")
+            shutil.copy2(cached_path, temp_path)
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Validating", "progress": 99}
             _unicanvas_validate_downloaded_file(temp_path, expected_name)
             os.makedirs(os.path.dirname(target_path), exist_ok=True)

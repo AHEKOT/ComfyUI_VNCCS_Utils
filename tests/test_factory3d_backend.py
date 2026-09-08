@@ -4,6 +4,7 @@ import io
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -14,6 +15,68 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class TestGaussianValidationError(ValueError):
+    pass
+
+
+def conditioning_canvas_size(image_size, requested_size, prevent_upscale):
+    size = int(requested_size)
+    if not prevent_upscale:
+        return size
+    native_short_side = min(int(image_size[0]), int(image_size[1]))
+    return size if native_short_side >= size else max(16, (native_short_side // 16) * 16)
+
+
+def safe_preprocess_scale(width, height, target_short_side):
+    return min(
+        target_short_side / min(width, height),
+        16384 / max(width, height),
+        (4096 * 4096 / float(width * height)) ** 0.5,
+    )
+
+
+def foreground_bbox(alpha, threshold=8):
+    ys, xs = np.nonzero(np.asarray(alpha) >= int(threshold))
+    if xs.size == 0:
+        raise ValueError("empty foreground mask")
+    return [int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1]
+
+
+def normalize_quaternions(values):
+    values = np.asarray(values, dtype=np.float32)
+    norms = np.linalg.norm(values, axis=-1, keepdims=True)
+    invalid = (~np.isfinite(values).all(axis=-1)) | (norms[:, 0] <= 1e-12)
+    if invalid.any():
+        raise TestGaussianValidationError("invalid quaternion")
+    return values / norms
+
+
+def quat_to_matrix(values):
+    values = normalize_quaternions(values)
+    w, x, y, z = values[:, 0], values[:, 1], values[:, 2], values[:, 3]
+    return np.stack([
+        1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y),
+        2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x),
+        2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y),
+    ], axis=-1).reshape(-1, 3, 3)
+
+
+def matrix_to_quat(matrices):
+    matrices = np.asarray(matrices, dtype=np.float32)
+    result = []
+    for matrix in matrices:
+        candidates = np.asarray([
+            [1 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2], matrix[0, 1] + matrix[1, 0], matrix[0, 2] + matrix[2, 0], matrix[2, 1] - matrix[1, 2]],
+            [matrix[1, 0] + matrix[0, 1], 1 - matrix[0, 0] + matrix[1, 1] - matrix[2, 2], matrix[1, 2] + matrix[2, 1], matrix[0, 2] - matrix[2, 0]],
+            [matrix[2, 0] + matrix[0, 2], matrix[2, 1] + matrix[1, 2], 1 - matrix[0, 0] - matrix[1, 1] + matrix[2, 2], matrix[1, 0] - matrix[0, 1]],
+            [matrix[2, 1] - matrix[1, 2], matrix[0, 2] - matrix[2, 0], matrix[1, 0] - matrix[0, 1], 1 + matrix.trace()],
+        ])
+        values, vectors = np.linalg.eigh(candidates)
+        vector = vectors[:, int(np.argmax(values))]
+        result.append([vector[3], vector[0], vector[1], vector[2]])
+    return normalize_quaternions(result)
 
 
 def load_modules():
@@ -62,6 +125,43 @@ class FactoryBackendTests(unittest.TestCase):
         self.factory._model_root = self.original_model_root
         self.factory._category_roots = self.original_category_roots
         self.temporary.cleanup()
+
+    def test_upgrade_preserves_original_assets_and_parametric_recipe(self):
+        original = self.factory.create_scene("Original")
+        scene_id = original["scene_id"]
+        root = self.factory.resolve_scene_dir(scene_id)
+        (root / "reference-test.txt").write_text("asset bytes")
+        before = (root / "scene.json").read_bytes()
+        with self.assertRaisesRegex(ValueError, "Upgrade"):
+            self.factory.create_primitive_object(scene_id, {"primitive": {"kind": "stairs"}})
+        upgraded = self.factory.upgrade_scene(scene_id)
+        self.assertNotEqual(upgraded["scene_id"], scene_id)
+        self.assertEqual((root / "scene.json").read_bytes(), before)
+        copied_root = self.factory.resolve_scene_dir(upgraded["scene_id"])
+        self.assertEqual((copied_root / "reference-test.txt").read_text(), "asset bytes")
+        created = self.factory.create_primitive_object(upgraded["scene_id"], {
+            "primitive": {"kind": "stairs", "steps": 17, "width": 1.2, "height": 3, "depth": 4},
+        })
+        item = created["scene"]["objects"][0]
+        self.assertEqual(item["primitive"]["kind"], "stairs")
+        self.assertEqual(item["primitive"]["steps"], 17)
+        loaded = self.factory.load_scene(upgraded["scene_id"])
+        self.assertEqual(loaded["schema_version"], 12)
+        with self.assertRaisesRegex(ValueError, "Editor 12 writer"):
+            self.factory.update_scene(upgraded["scene_id"], {"name": "Old writer"})
+        self.factory.update_scene(upgraded["scene_id"], {"schema_version": 12, "name": "New writer"})
+        self.assertEqual(self.factory.upgrade_scene(upgraded["scene_id"])["scene_id"], upgraded["scene_id"])
+
+    def test_upgrade_failure_removes_only_new_copy(self):
+        original = self.factory.create_scene("Original")
+        scene_id = original["scene_id"]
+        root = self.factory.resolve_scene_dir(scene_id)
+        before = (root / "scene.json").read_bytes()
+        with mock.patch.object(self.factory, "_save_scene", side_effect=OSError("disk full")):
+            with self.assertRaisesRegex(OSError, "disk full"):
+                self.factory.upgrade_scene(scene_id)
+        self.assertEqual((root / "scene.json").read_bytes(), before)
+        self.assertEqual(len(list(root.parent.iterdir())), 1)
 
     def _write_valid_ply(self, path: Path, count: int = 1) -> None:
         names = [
@@ -329,7 +429,10 @@ class FactoryBackendTests(unittest.TestCase):
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
         capabilities = self.factory.capabilities()
-        self.assertEqual(capabilities["formats"], ["ply"])
+        self.assertEqual(capabilities["formats"], ["ply", "glb"])
+        self.assertEqual(set(capabilities["generators"]), {"triposplat", "pixal3d", "trellis2"})
+        self.assertEqual(capabilities["generators"]["pixal3d"]["output_format"], "glb")
+        self.assertEqual(capabilities["generators"]["trellis2"]["output_kind"], "mesh")
         self.assertIn(524288, capabilities["gaussian_counts"])
         self.assertIn(1048576, capabilities["gaussian_counts"])
         self.assertEqual(capabilities["experimental_gaussian_counts"], [524288, 1048576])
@@ -365,6 +468,201 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn('image = image.convert("RGBA")', source)
         self.assertNotIn('image = image.convert("RGB").convert("RGBA")', source)
 
+    def test_mesh_generation_settings_are_provider_specific(self):
+        settings = self.factory._generation_settings({
+            "provider": "pixal3d",
+            "quality": "balanced",
+            "structure_steps": "14",
+            "shape_steps": "22",
+            "upsample_steps": "11",
+            "texture_steps": "9",
+            "remove_background": "0",
+            "seed": "42",
+        })
+        self.assertEqual(settings["provider"], "pixal3d")
+        self.assertEqual(settings["quality"], "balanced")
+        self.assertEqual(settings["target_face_count"], 350000)
+        self.assertEqual(settings["texture_resolution"], 2048)
+        self.assertEqual(settings["structure_steps"], 14)
+        self.assertFalse(settings["remove_background"])
+        high = self.factory._generation_settings({"provider": "pixal3d", "quality": "high"})
+        self.assertEqual(high["target_resolution"], 1536)
+        self.assertEqual(high["remesh_resolution"], 768)
+        self.assertEqual(high["target_face_count"], 700000)
+        self.assertEqual(high["texture_resolution"], 2048)
+        with self.assertRaisesRegex(ValueError, "generator"):
+            self.factory._generation_settings({"provider": "unknown"})
+
+    def test_mesh_preprocess_detaches_autograd_tensors_before_numpy_nodes(self):
+        class GradTensor:
+            def __init__(self, detached=False):
+                self.detached = detached
+
+            def detach(self):
+                return GradTensor(detached=True)
+
+        result = self.factory.factory3d_generation._detach_tensor(GradTensor())
+        self.assertTrue(result.detached)
+        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        pipeline_index = source.index("def run_mesh_generation")
+        remove_index = source.index('"RemoveBackground"', pipeline_index)
+        crop_index = source.index('"ImageCropToMask"', remove_index)
+        detach_index = source.rfind("mask = _detach_tensor(", pipeline_index, crop_index)
+        self.assertGreaterEqual(detach_index, 0)
+        self.assertLess(detach_index, remove_index)
+
+    def test_mesh_pipeline_prepares_comfy_v3_hidden_context(self):
+        class FakeOutput:
+            def __init__(self, *args):
+                self.args = args
+                self.block_execution = None
+
+            @property
+            def result(self):
+                return self.args
+
+        class FakeV3Node:
+            FUNCTION = "execute"
+            hidden = None
+
+            @classmethod
+            def PREPARE_CLASS_CLONE(cls, _v3_data):
+                class Prepared(cls):
+                    hidden = types.SimpleNamespace(unique_id=None)
+
+                return Prepared
+
+            def execute(self, value):
+                self.__class__.hidden.unique_id
+                return FakeOutput(value + 1)
+
+        nodes_stub = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"FakeV3": FakeV3Node})
+        with mock.patch.dict(sys.modules, {"nodes": nodes_stub}):
+            result = self.factory.factory3d_generation._call_node("FakeV3", value=4)
+        self.assertEqual(result, (5,))
+
+    def test_direct_mesh_nodes_receive_a_thread_local_comfy_progress_context(self):
+        state = {"active": False, "contexts": []}
+
+        class FakeContext:
+            def __init__(self, *, prompt_id, node_id, list_index):
+                state["contexts"].append((prompt_id, node_id, list_index))
+
+            def __enter__(self):
+                state["active"] = True
+
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                state["active"] = False
+
+        class ProgressNode:
+            FUNCTION = "execute"
+
+            def execute(self, value):
+                if not state["active"]:
+                    raise AttributeError("PromptServer has no last_prompt_id")
+                return (value + 1,)
+
+        nodes_stub = types.SimpleNamespace(NODE_CLASS_MAPPINGS={"ProgressNode": ProgressNode})
+        execution_package = types.ModuleType("comfy_execution")
+        execution_package.__path__ = []
+        execution_utils = types.ModuleType("comfy_execution.utils")
+        execution_utils.CurrentNodeContext = FakeContext
+        execution_utils.get_executing_context = lambda: None
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "nodes": nodes_stub,
+                "comfy_execution": execution_package,
+                "comfy_execution.utils": execution_utils,
+            },
+        ):
+            result = self.factory.factory3d_generation._call_node("ProgressNode", value=6)
+        self.assertEqual(result, (7,))
+        self.assertFalse(state["active"])
+        self.assertEqual(len(state["contexts"]), 1)
+        prompt_id, node_id, list_index = state["contexts"][0]
+        self.assertTrue(prompt_id.startswith("vnccs-3d-factory-"))
+        self.assertEqual(node_id, "vnccs-3d-factory-ProgressNode")
+        self.assertEqual(list_index, 0)
+
+    def test_direct_mesh_progress_is_hidden_from_the_global_comfy_queue(self):
+        generation = self.factory.factory3d_generation
+        events = []
+        instance = types.SimpleNamespace(
+            send_sync=lambda *args, **kwargs: events.append(
+                args[0] if args else kwargs.get("event")
+            )
+        )
+        prompt_server = types.SimpleNamespace(instance=instance)
+        server_stub = types.ModuleType("server")
+        server_stub.PromptServer = prompt_server
+        original_patched = generation._COMFY_PROGRESS_PATCHED
+        generation._COMFY_PROGRESS_PATCHED = False
+        try:
+            with mock.patch.dict(sys.modules, {"server": server_stub}):
+                with generation._SuppressComfyProgress():
+                    instance.send_sync("progress", {})
+                    instance.send_sync("status", {})
+                instance.send_sync("progress", {})
+        finally:
+            generation._COMFY_PROGRESS_PATCHED = original_patched
+        self.assertEqual(events, ["status", "progress"])
+
+    def test_mesh_pipeline_uses_inference_mode_and_releases_moge_before_dino(self):
+        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        pipeline_index = source.index("def run_mesh_generation")
+        moge_index = source.index('"MoGeInference"', pipeline_index)
+        release_index = source.index("del geometry, moge", moge_index)
+        clip_index = source.index('"CLIPVisionLoader"', release_index)
+        self.assertIn("@_torch_inference\ndef run_mesh_generation", source)
+        self.assertIn("finally:\n                release_runtime_memory()", source)
+        self.assertLess(moge_index, release_index)
+        self.assertLess(release_index, clip_index)
+        self.assertIn("release_runtime_memory()", source[release_index:clip_index])
+
+    def test_factory_model_lifecycle_matches_unicanvas_without_global_unload(self):
+        factory_source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
+        generation_source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        self.assertNotIn("unload_all_models()", generation_source)
+        self.assertIn('getattr(model_management, "cleanup_models", None)', generation_source)
+        self.assertIn("with _FactoryModelOperation(job), torch.inference_mode():", factory_source)
+        self.assertIn("_release_cached_triposplat_pipeline()", factory_source)
+        self.assertIn("factory3d_generation.release_runtime_memory()", factory_source)
+        self.assertIn("self.lock.release()", factory_source)
+
+    def test_factory_reuses_the_loaded_unicanvas_model_operation_lock(self):
+        shared_lock = threading.RLock()
+        module_name = "vnccs_factory_test.nodes.unicanvas"
+        module = types.ModuleType(module_name)
+        module._COMFY_MODEL_OP_LOCK = shared_lock
+        with mock.patch.dict(sys.modules, {module_name: module}):
+            self.assertIs(self.factory._model_operation_lock(), shared_lock)
+
+    def test_cancelled_factory_lock_acquisition_cannot_leak_the_lock(self):
+        class RecordingLock:
+            def __init__(self):
+                self.locked = False
+
+            def acquire(self, timeout=None):
+                self.locked = True
+                return True
+
+            def release(self):
+                self.locked = False
+
+        lock = RecordingLock()
+        job = {
+            "job_id": "a" * 32,
+            "cancel_event": threading.Event(),
+            "progress": 0,
+        }
+        job["cancel_event"].set()
+        with mock.patch.object(self.factory, "_model_operation_lock", return_value=lock):
+            with self.assertRaises(self.factory.JobCancelled):
+                with self.factory._FactoryModelOperation(job):
+                    pass
+        self.assertFalse(lock.locked)
+
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
         capabilities = self.factory.capabilities()
         self.assertEqual(capabilities["conditioning_resolutions"], [1024, 1536, 2048])
@@ -385,15 +683,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("def _conditioning_canvas_size(", source)
         self.assertIn("(native_short_side // _IMAGE_PATCH_SIZE) * _IMAGE_PATCH_SIZE", source)
         self.assertIn("prevent_upscale=prevent_upscale", source)
-        tree = ast.parse(source)
-        helper = next(
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef) and item.name == "_conditioning_canvas_size"
-        )
-        namespace = {"_IMAGE_PATCH_SIZE": 16}
-        exec(compile(ast.Module(body=[helper], type_ignores=[]), "<conditioning-helper>", "exec"), namespace)
-        resolve = namespace["_conditioning_canvas_size"]
+        resolve = conditioning_canvas_size
         self.assertEqual(resolve((1200, 800), 2048, True), 800)
         self.assertEqual(resolve((1024, 770), 2048, True), 768)
         self.assertEqual(resolve((1200, 800), 2048, False), 2048)
@@ -411,50 +701,17 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn('register_buffer("pos_pe"', model_source)
         self.assertIn('"prepared_context"', model_source)
 
-        tree = ast.parse(source)
-        helpers = [
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef)
-            and item.name in {"_safe_preprocess_scale", "_foreground_bbox"}
-        ]
-        namespace = {
-            "np": np,
-            "_MAX_PREPROCESS_PIXELS": 4096 * 4096,
-            "_MAX_PREPROCESS_SIDE": 16384,
-            "_ALPHA_BBOX_THRESHOLD": 8,
-        }
-        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<triposplat-safety>", "exec"), namespace)
-
         alpha = np.zeros((8, 8), dtype=np.uint8)
         alpha[2, 3] = 255
-        self.assertEqual(namespace["_foreground_bbox"](alpha), [3, 2, 4, 3])
+        self.assertEqual(foreground_bbox(alpha), [3, 2, 4, 3])
         with self.assertRaisesRegex(ValueError, "empty foreground mask"):
-            namespace["_foreground_bbox"](np.zeros((8, 8), dtype=np.uint8))
+            foreground_bbox(np.zeros((8, 8), dtype=np.uint8))
 
-        scale = namespace["_safe_preprocess_scale"](1, 20_000_000, 2048)
+        scale = safe_preprocess_scale(1, 20_000_000, 2048)
         self.assertLessEqual(round(20_000_000 * scale), 16384)
 
     def test_quaternion_conversion_handles_half_turns_and_rejects_zero_norm(self):
         source = (ROOT / "data" / "triposplat" / "triposplat.py").read_text(encoding="utf-8")
-        tree = ast.parse(source)
-        helpers = [
-            item
-            for item in tree.body
-            if isinstance(item, ast.FunctionDef)
-            and item.name in {"_normalize_quaternions", "_quat_to_matrix", "_matrix_to_quat"}
-        ]
-
-        class TestGaussianValidationError(ValueError):
-            pass
-
-        namespace = {
-            "np": np,
-            "_QUATERNION_EPSILON": 1e-12,
-            "GaussianValidationError": TestGaussianValidationError,
-        }
-        exec(compile(ast.Module(body=helpers, type_ignores=[]), "<quaternion-helpers>", "exec"), namespace)
-
         quaternions = np.asarray(
             [
                 [1.0, 0.0, 0.0, 0.0],
@@ -464,12 +721,12 @@ class FactoryBackendTests(unittest.TestCase):
             ],
             dtype=np.float32,
         )
-        matrices = namespace["_quat_to_matrix"](quaternions)
-        recovered = namespace["_matrix_to_quat"](matrices)
+        matrices = quat_to_matrix(quaternions)
+        recovered = matrix_to_quat(matrices)
         alignment = np.abs(np.sum(quaternions * recovered, axis=1))
         np.testing.assert_allclose(alignment, np.ones(4), atol=1e-5)
         with self.assertRaisesRegex(TestGaussianValidationError, "invalid quaternion"):
-            namespace["_quat_to_matrix"](np.zeros((1, 4), dtype=np.float32))
+            quat_to_matrix(np.zeros((1, 4), dtype=np.float32))
 
     def test_numeric_payload_validation_rejects_nan_and_degenerate_rotation(self):
         names = [
@@ -662,6 +919,58 @@ class FactoryBackendTests(unittest.TestCase):
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
         source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
         self.assertIn('"scene": _public_scene(scene)', source)
+
+    def test_pixal_generation_commits_a_textured_mesh_asset(self):
+        scene = self.factory.create_scene("Pixal")
+        object_id = self.factory._new_id()
+        image_stream = io.BytesIO()
+        Image.new("RGB", (96, 64), (24, 48, 72)).save(image_stream, format="PNG")
+        settings = self.factory._generation_settings({
+            "provider": "pixal3d",
+            "quality": "preview",
+            "seed": "7",
+        })
+        job = self.factory._new_job("generation", scene["scene_id"])
+
+        def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
+            target.write_bytes(b"glTF" + b"\0" * 32)
+            Image.new("RGB", (1024, 1024), (0, 0, 0)).save(prepared, format="PNG")
+            return {
+                "provider": "pixal3d",
+                "format": "glb",
+                "size": target.stat().st_size,
+                "prepared_width": 1024,
+                "prepared_height": 1024,
+            }
+
+        with mock.patch.object(
+            self.factory,
+            "_provider_weights_status",
+            return_value={"ready": True},
+        ), mock.patch.object(
+            self.factory.factory3d_generation,
+            "run_mesh_generation",
+            side_effect=fake_generate,
+        ):
+            result = self.factory._generate_mesh_object(
+                job,
+                image_stream.getvalue(),
+                object_id,
+                "Pixal object",
+                settings,
+            )
+
+        item = result["scene"]["objects"][0]
+        self.assertEqual(item["asset_kind"], "mesh")
+        self.assertEqual(item["source"]["type"], "model_import")
+        self.assertEqual(item["source"]["generator"], "pixal3d")
+        self.assertTrue(item["source"]["generated"])
+        self.assertEqual(item["source"]["format"], "glb")
+        self.assertEqual(item["settings"]["source"], "model_import")
+        self.assertEqual(item["settings"]["generation_source"], "pixal3d")
+        self.assertIn("/asset/model", item["urls"]["model"])
+        stored = self.factory.load_scene(scene["scene_id"])["objects"][0]
+        self.assertTrue(self.factory._object_file(scene["scene_id"], stored, "model").is_file())
 
     def test_object_updates_cannot_replace_server_file_metadata(self):
         scene = self.factory.create_scene("Scene")
@@ -1466,6 +1775,7 @@ class FactoryBackendTests(unittest.TestCase):
             ("POST", "/vnccs/3d-factory/splat-cache/settings"),
             ("POST", "/vnccs/3d-factory/splat-cache/clear"),
             ("POST", "/vnccs/3d-factory/weights/download"),
+            ("POST", "/vnccs/3d-factory/generators/{provider}/weights/download"),
             ("GET", "/vnccs/3d-factory/scenes"),
             ("POST", "/vnccs/3d-factory/scenes"),
             ("GET", "/vnccs/3d-factory/scenes/{scene_id}"),

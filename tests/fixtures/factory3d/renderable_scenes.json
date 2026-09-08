@@ -1,0 +1,13 @@
+[
+  {"name": "empty", "scene": {}, "renderable": false},
+  {"name": "empty architecture", "scene": {"architecture": {"walls": [], "rooms": []}}, "renderable": false},
+  {"name": "building only", "scene": {"architecture": {"buildings": [{"building_id": "a"}]}}, "renderable": false},
+  {"name": "wall only", "scene": {"architecture": {"walls": [{"wall_id": "a"}]}}, "renderable": true},
+  {"name": "room only", "scene": {"architecture": {"rooms": [{"room_id": "a"}]}}, "renderable": true},
+  {"name": "model only", "scene": {"objects": [{"object_id": "a"}]}, "renderable": true},
+  {"name": "saved camera only", "scene": {"cameras": [{"camera_id": "a"}]}, "renderable": true},
+  {"name": "navigation camera only", "scene": {"camera": {"position": [0, 0, 1]}}, "renderable": false},
+  {"name": "skydome", "scene": {"skydome": {"visible": true}}, "renderable": true},
+  {"name": "hidden skydome", "scene": {"skydome": {"visible": false}}, "renderable": false},
+  {"name": "hidden geometry still captures background", "scene": {"objects": [{"visible": false}]}, "renderable": true}
+]

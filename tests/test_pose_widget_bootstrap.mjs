@@ -164,6 +164,10 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
             observe() {}
             disconnect() {}
         },
+        LiteGraph: {
+            CIRCLE_SHAPE: 1,
+            GRID_SHAPE: 6,
+        },
         requestAnimationFrame() { return 1; },
         cancelAnimationFrame() {},
         setInterval() { return 1; },
@@ -258,6 +262,11 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                 value: "{}",
                 type: "text",
                 element: new FakeElement("textarea", document),
+            }, {
+                name: "animation_image_batch",
+                value: false,
+                type: "toggle",
+                element: new FakeElement("input", document),
             }];
         }
 
@@ -285,11 +294,41 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
     assert.ok(node.studioWidget?.container, "Pose Studio DOM widget must be created");
     assert.ok(node.widgets.some(widget => widget.name === "pose_studio_ui"));
     const poseWidget = node.widgets.find(widget => widget.name === "pose_data");
+    const imageBatchWidget = node.widgets.find(widget => widget.name === "animation_image_batch");
     assert.equal(poseWidget.hidden, true);
     assert.equal(poseWidget.computeSize()[0], 0);
     assert.equal(poseWidget.computeSize()[1], -4);
+    assert.equal(imageBatchWidget.hidden, true);
+    assert.equal(imageBatchWidget.computeSize()[0], 0);
+    assert.equal(imageBatchWidget.computeSize()[1], -4);
 
     const studio = node.studioWidget;
+    assert.equal(studio.exportParams.capture_image_size, false);
+    assert.equal(studio.exportParams.animation_image_batch, false);
+    studio.exportParams.editor_mode = "animation";
+    studio.applyEditorMode();
+    assert.equal(node.outputs[0].type, "VIDEO");
+    assert.equal(node.outputs[0].name, "video");
+    assert.equal(node.outputs[0].shape, 1);
+    studio.exportParams.animation_image_batch = true;
+    studio.applyEditorMode();
+    assert.equal(node.outputs[0].type, "IMAGE");
+    assert.equal(node.outputs[0].name, "IMAGE");
+    assert.equal(node.outputs[0].shape, 1);
+    assert.equal(imageBatchWidget.value, true);
+    assert.equal(JSON.parse(poseWidget.value).export.editor_mode, "animation");
+    assert.equal(JSON.parse(poseWidget.value).export.animation_image_batch, true);
+    assert.equal(studio.applyCapturedImageSize(1344, 768), false);
+    assert.deepEqual(
+        [studio.exportParams.view_width, studio.exportParams.view_height],
+        [1024, 1024],
+    );
+    studio.exportParams.capture_image_size = true;
+    assert.equal(studio.applyCapturedImageSize(1344, 768), true);
+    assert.deepEqual(
+        [studio.exportParams.view_width, studio.exportParams.view_height],
+        [1344, 768],
+    );
     studio.exportParams.editor_mode = "image";
     studio.poses = [
         {

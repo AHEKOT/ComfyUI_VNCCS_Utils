@@ -3,16 +3,14 @@ import json
 from aiohttp import web
 import server
 import folder_paths
-from huggingface_hub import hf_hub_download, hf_hub_url
+from huggingface_hub import hf_hub_download
 import threading
 import traceback
 import asyncio
-import requests
 import queue
 import urllib.parse
 import time
 import ipaddress
-import socket
 
 # Cache for model_updater.json to prevent excessive HEAD requests
 # Structure: { repo_id: { "timestamp": float, "remote_timestamp": float, "path": str } }
@@ -90,12 +88,6 @@ def validate_download_url(url):
     except ValueError as exc:
         if "download hosts" in str(exc):
             raise
-    try:
-        for family, _socktype, _proto, _canonname, sockaddr in socket.getaddrinfo(host, parsed.port or 443):
-            if family in (socket.AF_INET, socket.AF_INET6):
-                _reject_local_download_ip(sockaddr[0])
-    except socket.gaierror as exc:
-        raise ValueError(f"Could not resolve download host: {host}") from exc
     return urllib.parse.urlunparse(parsed)
 
 def _download_url_origin(url):
@@ -106,47 +98,6 @@ def _download_url_is_host(url, domain):
     host = (urllib.parse.urlparse(str(url or "")).hostname or "").lower()
     domain = str(domain).lower().lstrip(".")
     return host == domain or host.endswith(f".{domain}")
-
-def open_validated_download_stream(url, headers=None, request_fn=None):
-    """Open a streaming response while validating every redirect destination.
-
-    ``requests`` validates neither redirect schemes nor resolved IP ranges. Model
-    manifests are remote data, so redirects must be followed manually to keep a
-    public manifest URL from reaching a private service. Authorization is also
-    stripped whenever a redirect changes origin, matching requests' safe default.
-    """
-    current_url = validate_download_url(url)
-    current_headers = dict(headers or {})
-    request_fn = request_fn or requests.request
-
-    for redirect_count in range(MAX_DOWNLOAD_REDIRECTS + 1):
-        response = request_fn(
-            "GET",
-            current_url,
-            headers=current_headers,
-            stream=True,
-            allow_redirects=False,
-            timeout=REQUEST_TIMEOUT,
-        )
-        if response.status_code not in _DOWNLOAD_REDIRECT_STATUSES:
-            if 300 <= response.status_code < 400:
-                response.close()
-                raise ValueError(f"Unsupported download redirect status: {response.status_code}")
-            return response
-
-        location = response.headers.get("location")
-        response.close()
-        if not location:
-            raise ValueError("Download redirect is missing a Location header")
-        if redirect_count >= MAX_DOWNLOAD_REDIRECTS:
-            raise ValueError("Download exceeded the redirect limit")
-
-        next_url = validate_download_url(urllib.parse.urljoin(current_url, location))
-        if _download_url_origin(next_url) != _download_url_origin(current_url):
-            current_headers.pop("Authorization", None)
-        current_url = next_url
-
-    raise ValueError("Download exceeded the redirect limit")
 
 def get_cached_config_path(repo_id, force_refresh=False):
     now = time.time()
@@ -163,10 +114,6 @@ def get_cached_config_path(repo_id, force_refresh=False):
     # Tier 2: Check remote if enough time passed or forced
     needs_remote = force_refresh or not cached or (now - cached.get("remote_timestamp", 0) > UPDATE_CHECK_TTL)
     
-    # Load user config for tokens
-    user_config = get_vnccs_config()
-    hf_token = user_config.get("hf_token")
-
     if needs_remote:
         try:
             print(f"[VNCCS] Checking for updates on HF: {repo_id}...")
@@ -174,7 +121,7 @@ def get_cached_config_path(repo_id, force_refresh=False):
                 repo_id=repo_id, 
                 filename="model_updater.json", 
                 local_files_only=False,
-                token=hf_token
+                token=False,
             )
             _CONFIG_CACHE[repo_id] = {
                 "timestamp": now, 
@@ -202,7 +149,7 @@ def get_cached_config_path(repo_id, force_refresh=False):
             repo_id=repo_id, 
             filename="model_updater.json", 
             local_files_only=True,
-            token=hf_token
+            token=False,
         )
         _CONFIG_CACHE[repo_id] = {
             "timestamp": now, 
@@ -250,135 +197,50 @@ def worker_loop():
         task = download_queue.get()
         if task is None:
             break
-        
+
         repo_id, model_name, target_model = task
-        
-        # Support per-model repository override
-        download_repo_id = target_model.get("hf_repo", repo_id)
-        
         temp_path = None
         try:
             _set_download_status(repo_id, model_name, {"status": "downloading", "message": "Initializing..."})
-            
-            url = ""
-            headers = {}
-            
-            if "url" in target_model and target_model["url"]:
-                # Direct URL (Civitai, etc.)
-                url = target_model["url"]
-                
-                # --- Auto-Conversion for Civitai Web Links ---
-                if _download_url_is_host(url, "civitai.com") and "/models/" in urllib.parse.urlparse(url).path and "api/download" not in url:
-                    parsed = urllib.parse.urlparse(url)
-                    qs = urllib.parse.parse_qs(parsed.query)
-                    if "modelVersionId" in qs:
-                        ver_id = qs["modelVersionId"][0]
-                        url = f"https://civitai.com/api/download/models/{ver_id}"
-                        print(f"[VNCCS] Auto-converted Civitai Web Link to API: {url}")
+            if target_model.get("url"):
+                raise ValueError("Direct model URLs are disabled; use a public Hugging Face repository asset")
 
-                url = validate_download_url(url)
+            download_repo_id = str(target_model.get("hf_repo") or repo_id)
+            filename = str(target_model.get("hf_path") or "")
+            if not download_repo_id or not filename:
+                raise ValueError("Model manifest must provide hf_repo and hf_path")
+            if filename.startswith(f"{download_repo_id}/"):
+                filename = filename[len(download_repo_id) + 1:]
 
-                print(f"[VNCCS] Starting download from URL: {url}...")
-                
-                # Civitai specific: Add API key
-                if _download_url_is_host(url, "civitai.com"):
-                    # Load token from user config
-                    user_config = get_vnccs_config()
-                    civitai_token = user_config.get("civitai_token", "")
-                    
-                    if civitai_token:
-                        headers = {"Authorization": f"Bearer {civitai_token}"}
-            else:
-                # HuggingFace Logic
-                # 1. Prepare filename (sanitize)
-                filename = target_model["hf_path"]
-                if filename.startswith(f"{download_repo_id}/"):
-                    filename = filename[len(download_repo_id) + 1:]
+            cached_path = hf_hub_download(
+                repo_id=download_repo_id,
+                filename=filename,
+                repo_type="model",
+                token=False,
+            )
+            if os.path.getsize(cached_path) > MAX_DOWNLOAD_BYTES:
+                raise ValueError("Download is larger than the allowed safety limit")
 
-                # Resolve URL and Token
-                url = hf_hub_url(download_repo_id, filename)
-                user_config = get_vnccs_config()
-                token = user_config.get("hf_token")
-                headers = {"Authorization": f"Bearer {token}"} if token else {}
-
-            # Follow redirects manually so every hop is checked against the SSRF guard.
-            with open_validated_download_stream(url, headers=headers) as response:
-                response.raise_for_status()
-
-                total_size = int(response.headers.get('content-length', 0))
-                if total_size > MAX_DOWNLOAD_BYTES:
-                    raise ValueError("Download is larger than the allowed safety limit")
-                downloadStart = 0
-
-                # Temp file approach
-                import tempfile
-                temp_dir = os.path.join(folder_paths.base_path, "temp")
-                os.makedirs(temp_dir, exist_ok=True)
-
-                # Generate shorter temp name
-                sanitized_name = "".join(x for x in model_name if x.isalnum()) or "model"
-                fd, temp_path = tempfile.mkstemp(prefix=f"vnccs_{sanitized_name}_", suffix=".tmp", dir=temp_dir)
-                os.close(fd)
-
-                with open(temp_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=1024 * 256):
-                        if chunk:
-                            f.write(chunk)
-                            downloadStart += len(chunk)
-                            if downloadStart > MAX_DOWNLOAD_BYTES:
-                                raise ValueError("Download exceeded the allowed safety limit")
-                            # Update status every chunk; assignment is atomic enough for UI polling.
-                            if total_size > 0:
-                                percent = (downloadStart / total_size) * 100
-                                mb_done = downloadStart / (1024 * 1024)
-                                mb_total = total_size / (1024 * 1024)
-                                msg = f"{mb_done:.1f}/{mb_total:.1f} MB"
-                                _set_download_status(repo_id, model_name, {
-                                    "status": "downloading",
-                                    "message": msg,
-                                    "progress": percent
-                                })
-                            else:
-                                 mb_done = downloadStart / (1024 * 1024)
-                                 _set_download_status(repo_id, model_name, {
-                                    "status": "downloading",
-                                    "message": f"{mb_done:.1f} MB",
-                                    "progress": 0
-                                 })
-
-            # 3. Install
             _set_download_status(repo_id, model_name, {"status": "downloading", "message": "Installing...", "progress": 100})
             target_abs_path = resolve_model_local_path(target_model["local_path"])
             target_dir = os.path.dirname(target_abs_path)
             os.makedirs(target_dir, exist_ok=True)
-            
             import shutil
-            shutil.move(temp_path, target_abs_path) # Move is instant usually
+
+            temp_path = f"{target_abs_path}.tmp.{os.getpid()}.{threading.get_ident()}"
+            shutil.copy2(cached_path, temp_path)
+            os.replace(temp_path, target_abs_path)
             temp_path = None
-            
-            # 4. Update registry
+
             update_installed_version(model_name, target_model["version"], repo_id)
             print(f"[VNCCS] Successfully installed {model_name} to {target_abs_path}")
             _set_download_status(repo_id, model_name, {"status": "success", "message": "Installed"})
-
         except Exception as e:
             print(f"[VNCCS] Failed to download {model_name}:")
-            # Check for 401 specifically in the exception (requests raises HTTPError)
-            is_auth_error = False
-            if isinstance(e, requests.exceptions.HTTPError):
-                if e.response.status_code == 401:
-                    is_auth_error = True
-
             err_msg = str(e)
-            status_code = "error"
-            
-            if is_auth_error:
-                status_code = "auth_required"
-                err_msg = "API Key Required"
-            elif "404" in err_msg or "EntryNotFoundError" in err_msg:
+            if "404" in err_msg or "EntryNotFoundError" in err_msg:
                 err_msg = "File not found (404)"
-            
-            _set_download_status(repo_id, model_name, {"status": status_code, "message": err_msg})
+            _set_download_status(repo_id, model_name, {"status": "error", "message": err_msg})
             if temp_path and os.path.exists(temp_path):
                 try:
                     os.remove(temp_path)
@@ -500,20 +362,10 @@ def save_vnccs_config(new_data):
 
 @server.PromptServer.instance.routes.post("/vnccs/manager/save_token")
 async def save_api_token(request):
-    try:
-        data = await request.json()
-        tokens = {}
-        if "token" in data: # Legacy single token (Civitai)
-            tokens["civitai_token"] = data["token"]
-        if "civitai_token" in data:
-            tokens["civitai_token"] = data["civitai_token"]
-        if "hf_token" in data:
-            tokens["hf_token"] = data["hf_token"]
-            
-        save_vnccs_config(tokens)
-        return web.json_response({"status": "saved"})
-    except Exception as e:
-        return web.json_response({"error": str(e)}, status=500)
+    return web.json_response(
+        {"error": "Credential storage is disabled; only public model repositories are supported"},
+        status=410,
+    )
 
 @server.PromptServer.instance.routes.post("/vnccs/manager/set_active")
 async def set_active_version(request):
@@ -690,7 +542,7 @@ async def download_model(request):
         try:
             resolve_model_local_path(target_model.get("local_path"))
             if target_model.get("url"):
-                validate_download_url(target_model.get("url"))
+                raise ValueError("Direct model URLs are disabled; use hf_repo and hf_path")
         except ValueError as exc:
             return web.json_response({"error": str(exc)}, status=400)
             

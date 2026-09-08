@@ -1,7 +1,7 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
-version = "0.6.6"
+version = "0.6.7"
 license = {file = "LICENSE"} 
 
 dependencies = [
@@ -42,7 +42,7 @@ Documentation = "https://github.com/AHEKOT/ComfyUI_VNCCS_Utils"
 [tool.comfy]
 PublisherId = "vnccs"
 DisplayName = "VNCCS - Collection of utility nodes"
-Icon = "https://raw.githubusercontent.com/AHEKOT/ComfyUI_VNCCS/refs/heads/main/images/VNCCS_LOGO.png"
+Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/blob/main/images/VNCCS_LOGO.png?raw=1"
 NodeIds = [
     "VNCCS_PositionControl",
     "VNCCS_VisualPositionControl",

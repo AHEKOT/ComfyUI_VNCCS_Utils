@@ -1,7 +1,13 @@
+import { PARAMETRIC_PARTS, PRIMITIVE_KINDS, primitiveLabel } from "./factory3d/geometry/parametric_parts.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260825.16";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260908.4";
+import { hasRenderableFactoryScene } from "./factory3d/scene_content.mjs?v=20260905.1";
+import {
+    allocateLocalLightShadows,
+    localLightStatusLabel,
+} from "./factory3d/lighting_policy.mjs?v=20260905.1";
 import {
     FACTORY_EDITOR_SCHEMA_VERSION,
     DEFAULT_LEVEL,
@@ -9,14 +15,24 @@ import {
     DEFAULT_WALL,
     factoryId,
     normalizedArchitecture,
+    isSimpleRoomPolygon,
     normalizedEditorView,
     normalizedLevels,
     normalizedObjectEditorProperties,
-} from "./factory3d/editor_schema.mjs?v=20260825.9";
+} from "./factory3d/editor_schema.mjs?v=20260905.4";
 import {
     FactoryCommandHistory,
     preserveScrollState,
-} from "./factory3d/editor_commands.mjs?v=20260824.4";
+} from "./factory3d/editor_commands.mjs?v=20260908.4";
+import { LIGHT_NUMERIC_PROPERTIES, PRIMITIVE_NUMERIC_PROPERTIES, MODEL_NUMERIC_PROPERTIES, TRANSFORM_NUMERIC_PROPERTIES, CAMERA_NUMERIC_PROPERTIES, WALL_NUMERIC_PROPERTIES, readNumericProperty, writeNumericProperty, readLightProperty, writeLightProperty } from "./factory3d/core/property_descriptors.mjs";
+import { FactoryPropertyGesture } from "./factory3d/core/property_gesture.mjs";
+import { bindNumericPropertyInputs } from "./factory3d/ui/numeric_property_binding.mjs";
+import { enqueueFactorySceneSave } from "./factory3d/core/save_queue.mjs";
+import { migrateEditorState } from "./factory3d/core/editor_migrations.mjs";
+import { FactoryWorkspace, activateWorkspaceTab } from "./factory3d/ui/workspace.mjs?v=20260908.2";
+import { ensureFactorySceneOutput } from "./factory3d/core/node_outputs.mjs?v=20260908.1";
+import { factoryCameraQuaternion, factoryCameraEuler } from "./factory3d/core/camera_rotation.mjs";
+import { findFactoryCommands } from "./factory3d/ui/command_registry.mjs";
 import {
     FactoryCameraPath,
     cameraPoseFromLegacy,
@@ -28,13 +44,14 @@ import {
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 const API_BASE = "/vnccs/3d-factory";
 const LIBRARY_BASE = `${API_BASE}/library`;
-const GAUSSIAN_LIBRARY_SCHEMA = "vnccs-3d-factory-library/v1";
+const MODEL_LIBRARY_SCHEMA = "vnccs-3d-factory-library/v1";
 const ENDPOINTS = Object.freeze({
     capabilities: `${API_BASE}/capabilities`,
     splatCache: `${API_BASE}/splat-cache`,
     splatCacheSettings: `${API_BASE}/splat-cache/settings`,
     splatCacheClear: `${API_BASE}/splat-cache/clear`,
     weightsDownload: `${API_BASE}/weights/download`,
+    generatorWeightsDownload: provider => `${API_BASE}/generators/${encodeURIComponent(provider)}/weights/download`,
     scenes: `${API_BASE}/scenes`,
     scene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}`,
     reference: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/reference`,
@@ -46,6 +63,9 @@ const ENDPOINTS = Object.freeze({
     previewError: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/preview/error`,
     generate: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/generate`,
     importObject: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/import`,
+    importModel: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/import-model`,
+    upgradeScene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/upgrade`,
+    createPrimitive: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/objects/primitive`,
     exportScene: sceneId => `${API_BASE}/scenes/${encodeURIComponent(sceneId)}/export`,
     job: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}`,
     cancelJob: jobId => `${API_BASE}/jobs/${encodeURIComponent(jobId)}/cancel`,
@@ -63,13 +83,15 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260825.26";
+const FRONTEND_BUILD = "20260908.4";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
 const MAX_SKYDOME_BYTES = 64 * 1024 * 1024;
 const MAX_TEXTURE_BYTES = 32 * 1024 * 1024;
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 const DEFAULT_SETTINGS = Object.freeze({
+    generator: "triposplat",
     name: "",
     steps: 20,
     guidance_scale: 3,
@@ -80,6 +102,11 @@ const DEFAULT_SETTINGS = Object.freeze({
     splat_cache_limit_gb: 32,
     seed: 0,
     seed_mode: "randomize",
+    mesh_quality: "high",
+    mesh_structure_steps: 12,
+    mesh_shape_steps: 20,
+    mesh_upsample_steps: 12,
+    mesh_texture_steps: 12,
 });
 const DEFAULT_EXPORT_SETTINGS = Object.freeze({
     width: 1024,
@@ -202,7 +229,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./vnccs_3d_factory.css?v=20260825.9", import.meta.url).href;
+    const href = new URL("./vnccs_3d_factory.css?v=20260908.2", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;
@@ -318,6 +345,22 @@ function objectNameFromFileName(value) {
         || "Object";
 }
 
+function imageFileDimensions(file) {
+    return new Promise((resolve, reject) => {
+        const url = URL.createObjectURL(file);
+        const image = new Image();
+        image.onload = () => {
+            URL.revokeObjectURL(url);
+            resolve({ width: image.naturalWidth, height: image.naturalHeight });
+        };
+        image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error("The selected image could not be decoded."));
+        };
+        image.src = url;
+    });
+}
+
 function sleep(milliseconds) {
     return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
@@ -366,17 +409,7 @@ function blobToDataURL(blob) {
 }
 
 function quaternionFromEulerDegrees(rotation = [0, 0, 0]) {
-    const [x, y, z] = rotation.map(value => Number(value || 0) * Math.PI / 180 / 2);
-    const [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
-    const [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)];
-    return normalizedCameraPose({
-        quaternion: [
-            sx * cy * cz + cx * sy * sz,
-            cx * sy * cz - sx * cy * sz,
-            cx * cy * sz + sx * sy * cz,
-            cx * cy * cz - sx * sy * sz,
-        ],
-    }).quaternion;
+    return factoryCameraQuaternion(rotation);
 }
 
 function multiplyQuaternions(left = [0, 0, 0, 1], right = [0, 0, 0, 1]) {
@@ -393,14 +426,7 @@ function multiplyQuaternions(left = [0, 0, 0, 1], right = [0, 0, 0, 1]) {
 }
 
 function eulerDegreesFromQuaternion(quaternion = [0, 0, 0, 1]) {
-    const [x, y, z, w] = normalizedCameraPose({ quaternion }).quaternion;
-    // Inverse of quaternionFromEulerDegrees' intrinsic XYZ order. Mixing this
-    // with the common ZYX yaw/pitch/roll equations makes exact camera fields
-    // drift as soon as more than one axis is rotated.
-    const rotationX = Math.atan2(2 * (w * x - y * z), 1 - 2 * (x * x + y * y));
-    const rotationY = Math.asin(Math.max(-1, Math.min(1, 2 * (x * z + w * y))));
-    const rotationZ = Math.atan2(2 * (w * z - x * y), 1 - 2 * (y * y + z * z));
-    return [rotationX, rotationY, rotationZ].map(value => value * 180 / Math.PI);
+    return factoryCameraEuler(quaternion);
 }
 
 
@@ -446,12 +472,17 @@ class Factory3DWidget {
         this.viewportFailures = new Map();
         this.settings = { ...DEFAULT_SETTINGS };
         this.exportSettings = { ...DEFAULT_EXPORT_SETTINGS };
+        this.panoramaCameraId = "";
+        this.panoramaWidth = 4096;
+        this.exportingPanorama = false;
         this.lighting = { ...DEFAULT_LIGHTING };
         this.viewerState = { mode: "translate", grid: false, zoom_sensitivity: 0.1 };
         this.capabilities = null;
         this.currentJobId = "";
         this.currentJobToken = 0;
         this.importingPly = false;
+        this._pointerInside = false;
+        this._deletingSelectedObjects = false;
         this._listeners = [];
         this._timers = new Set();
         this._saveTimer = 0;
@@ -461,6 +492,7 @@ class Factory3DWidget {
         this._lightingApplyTimer = 0;
         this._lightingHistoryBefore = null;
         this._lightTransformHistoryBefore = null;
+        this._cameraTransformHistoryBefore = null;
         this._searchRenderFrame = 0;
         this._sceneSaveSerial = Promise.resolve();
         this._architectureCommitSerial = Promise.resolve();
@@ -489,13 +521,41 @@ class Factory3DWidget {
         this._libraryAutoRefreshStarted = false;
         this._suppressViewerStatePersistence = false;
         this.history = new FactoryCommandHistory({
-            limit: 100,
+            limit: 200,
+            onChange: () => this._syncHistoryControls(),
+            onDiscard: () => this.toast("Oldest undo steps were discarded to stay within the history budget.", "info"),
+            onPatch: (patches, context) => {
+                const owner = this.scene;
+                const operation = this._historyRestoreSerial.then(() => {
+                    if (this.scene === owner) this._restoreLightPatches(patches, context.direction);
+                });
+                this._historyRestoreSerial = operation.catch(() => null);
+                return operation;
+            },
             onRestore: snapshot => {
+                const owner = this.scene;
                 const operation = this._historyRestoreSerial.then(
-                    () => this._restoreEditorSnapshot(snapshot),
+                    () => this.scene === owner ? this._restoreEditorSnapshot(snapshot) : undefined,
                 );
                 this._historyRestoreSerial = operation.catch(() => null);
                 return operation;
+            },
+        });
+        this.lightPropertyGesture = new FactoryPropertyGesture({
+            history: this.history,
+            read: (ref, path) => {
+                const light = this._resolvePropertyLight(ref);
+                return light ? readLightProperty(light, path) : undefined;
+            },
+            write: (ref, path, value) => {
+                const light = this._resolvePropertyLight(ref);
+                if (light) writeLightProperty(light, path, value);
+            },
+            preview: () => this._commitLighting({ persist: false }),
+            finish: () => {
+                this._commitLighting({ final: true });
+                this._renderObjects();
+                this._syncToolbar();
             },
         });
         // Keep callbacks read-only until the serialized ComfyUI widget state has
@@ -512,10 +572,18 @@ class Factory3DWidget {
             }),
             onTransformChange: (id, transform, options) => this._onViewerTransform(id, transform, options),
             onArchitectureSelection: selection => this._selectArchitecture(selection, {
+                fromViewer: true,
                 additive: Boolean(selection?.additive),
             }),
             onArchitectureEdit: change => this._onArchitectureEdit(change),
-            onLightSelection: lightId => this._selectLight(lightId),
+            onCameraSelection: cameraId => this._selectCamera(cameraId, { fromViewer: true }),
+            onCameraTransform: (cameraId, transform, options) => this._onViewerCameraTransform(
+                cameraId,
+                transform,
+                options,
+            ),
+            onCameraPreviewOpen: cameraId => this._enterCameraView(cameraId),
+            onLightSelection: lightId => this._selectLight(lightId, { fromViewer: true }),
             onLightTransform: (lightId, position, options) => this._onViewerLightTransform(
                 lightId,
                 position,
@@ -528,7 +596,7 @@ class Factory3DWidget {
                 context?.origin || null,
             ),
             onPlanGesture: gesture => this._onPlanGesture(gesture),
-            onPlanHover: (tool, point, event) => this._queuePlanHover(tool, point, event),
+            onPlanHover: (tool, point, event, wallId) => this._queuePlanHover(tool, point, event, wallId),
             onStateChange: state => {
                 const previousState = this.viewerState;
                 const cameraChanged = !cameraStatesEqual(
@@ -581,6 +649,18 @@ class Factory3DWidget {
             resolveAssetURL: apiUrl,
         });
         this._customSelects = installCustomSelects(this.container, { theme: "pose-studio" });
+        this.workspace = new FactoryWorkspace({
+            root: this.container,
+            getState: () => this.editorView.workspace,
+            setState: (value, final) => {
+                this.editorView.workspace = value;
+                this._syncWorkspace();
+                if (final) this._scheduleStateSave(0);
+            },
+            resize: () => this.resize(),
+            selectTab: (side, tab) => this._setWorkspaceTab(side, tab),
+            command: command => command === "lighting" ? this._setLightingPanelOpen(true) : this._openCommandPalette(),
+        });
         this._resizeObserver = new ResizeObserver(() => this.resize());
         this._resizeObserver.observe(this.container);
         this._navigationCleanup = enableCanvasNavigationForwarding(this.container);
@@ -642,20 +722,24 @@ class Factory3DWidget {
                     </div>
                 </section>
                 <section class="vnccs-i3s__section">
-                    <div class="vnccs-i3s__section-head"><span>TripoSplat</span></div>
+                    <div class="vnccs-i3s__section-head"><span>Generator</span></div>
                     <div class="vnccs-i3s__section-body">
-                        <div class="vnccs-i3s__provider-card">
-                            <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot"></span>
-                            <div class="vnccs-i3s__provider-copy">
-                                <div class="vnccs-i3s__provider-name">Official model</div>
-                                <div class="vnccs-i3s__provider-model vnccs-i3s__weights-summary">Checking weights…</div>
-                            </div>
-                            <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button vnccs-i3s__model-setup" type="button" title="Model setup">${ICONS.settings}</button>
+                        <div class="vnccs-i3s__provider-card vnccs-i3s__generator-card">
+                            <button class="vnccs-i3s__generator-select" type="button" aria-haspopup="dialog" aria-label="Choose 3D generator">
+                                <span class="vnccs-i3s__provider-dot vnccs-i3s__weights-dot" aria-hidden="true"></span>
+                                <span class="vnccs-i3s__provider-copy">
+                                    <span class="vnccs-i3s__provider-name vnccs-i3s__generator-name">TripoSplat</span>
+                                    <span class="vnccs-i3s__provider-model vnccs-i3s__weights-summary">Checking weights…</span>
+                                </span>
+                                <span class="vnccs-i3s__generator-chevron" aria-hidden="true">${ICONS.chevron}</span>
+                            </button>
+                            <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button vnccs-i3s__model-setup" type="button" title="Model setup" aria-label="Open model setup">${ICONS.settings}</button>
                         </div>
                         <label class="vnccs-i3s__field">
                             <span class="vnccs-i3s__label">Object name</span>
                             <input class="vnccs-i3s__input vnccs-i3s__object-name-input" maxlength="80" placeholder="Generated object" />
                         </label>
+                        <div class="vnccs-i3s__generator-settings" data-generator-settings="triposplat">
                         <div class="vnccs-i3s__field-row">
                             <label class="vnccs-i3s__field">
                                 <span class="vnccs-i3s__label">Gaussians</span>
@@ -680,6 +764,29 @@ class Factory3DWidget {
                             <span class="vnccs-i3s__label"><span>Guidance</span><span class="vnccs-i3s__guidance-value">3.0</span></span>
                             <input class="vnccs-i3s__range vnccs-i3s__guidance" type="range" min="1" max="10" step=".1" />
                         </label>
+                        </div>
+                        <div class="vnccs-i3s__generator-settings vnccs-i3s__mesh-settings" data-generator-settings="mesh" hidden>
+                            <label class="vnccs-i3s__field">
+                                <span class="vnccs-i3s__label">Quality</span>
+                                <select class="vnccs-i3s__select vnccs-i3s__mesh-quality">
+                                    <option value="preview">Preview · 1K</option>
+                                    <option value="balanced">Balanced · 2K</option>
+                                    <option value="high">High · 4K</option>
+                                </select>
+                            </label>
+                            <div class="vnccs-i3s__mesh-quality-summary">Textured GLB · 700K face target · 4K material</div>
+                            <details class="vnccs-i3s__advanced-settings">
+                                <summary>Advanced sampling</summary>
+                                <div class="vnccs-i3s__field-row">
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Structure</span><input class="vnccs-i3s__input vnccs-i3s__mesh-structure-steps" type="number" min="1" max="100" step="1" /></label>
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Shape</span><input class="vnccs-i3s__input vnccs-i3s__mesh-shape-steps" type="number" min="1" max="100" step="1" /></label>
+                                </div>
+                                <div class="vnccs-i3s__field-row">
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Upsample</span><input class="vnccs-i3s__input vnccs-i3s__mesh-upsample-steps" type="number" min="1" max="100" step="1" /></label>
+                                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Texture</span><input class="vnccs-i3s__input vnccs-i3s__mesh-texture-steps" type="number" min="1" max="100" step="1" /></label>
+                                </div>
+                            </details>
+                        </div>
                         <div class="vnccs-i3s__switch-row vnccs-i3s__background-row">
                             <span class="vnccs-i3s__background-title">Remove background</span>
                             <button class="vnccs-i3s__switch vnccs-i3s__remove-background" type="button" role="switch" aria-checked="true" aria-label="Remove image background"></button>
@@ -753,7 +860,6 @@ class Factory3DWidget {
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-track-delete" type="button" title="Delete active camera path" aria-label="Delete active camera path">${ICONS.trash}</button>
                             </div>
                             <input class="vnccs-i3s__input vnccs-i3s__camera-track-name" maxlength="80" placeholder="Camera path name" aria-label="Camera path name" />
-                            <select class="vnccs-i3s__select vnccs-i3s__camera-track-building" aria-label="Camera path building"></select>
                             <div class="vnccs-i3s__camera-track-actions">
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-keyframe-add" type="button">Add point</button>
                                 <button class="vnccs-i3s__button vnccs-i3s__camera-track-play" type="button">Play</button>
@@ -783,7 +889,7 @@ class Factory3DWidget {
                     </div>
                 </header>
                 <div class="vnccs-i3s__viewport">
-                    <div class="vnccs-i3s__viewer-host" aria-label="Gaussian scene viewport"></div>
+                    <div class="vnccs-i3s__viewer-host" aria-label="3D scene viewport"></div>
                     <div class="vnccs-i3s__toolbar" role="toolbar">
                         <div class="vnccs-i3s__view-switch" role="group" aria-label="Viewport mode">
                             <button class="vnccs-i3s__tool-label vnccs-i3s__view-3d" type="button" aria-pressed="true">3D</button>
@@ -810,7 +916,7 @@ class Factory3DWidget {
                         <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting and point lights" aria-label="Open scene lighting and point light controls" aria-pressed="false">${ICONS.sun}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-label="Toggle 3D grid" aria-pressed="false">${ICONS.grid}</button>
                     </div>
-                    <div class="vnccs-i3s__plan-tools" role="toolbar" aria-label="Floor plan tools" hidden>
+                    <div class="vnccs-i3s__plan-tools" role="toolbar" aria-label="Scene creation tools" hidden>
                         <button type="button" data-plan-tool="select" aria-pressed="true" title="Select and edit architecture"><span>Select</span></button>
                         <button type="button" data-plan-tool="wall" aria-pressed="false" title="Press and drag to draw a wall"><span>Wall</span></button>
                         <button type="button" data-plan-tool="room" aria-pressed="false" title="Press and drag diagonally to draw a rectangular room"><span>Room</span></button>
@@ -837,6 +943,9 @@ class Factory3DWidget {
                                 <label><input data-plan-setting="orthogonal" type="checkbox" /> Automatic orthogonal snap</label>
                             </div>
                         </details>
+                        <label class="vnccs-i3s__room-mode" hidden><span class="vnccs-i3s__label">Room shape</span><select class="vnccs-i3s__select" aria-label="Room shape"><option value="rectangle">Rectangle</option><option value="polygon">Polygon</option></select></label>
+                        <button type="button" class="vnccs-i3s__room-finish" hidden title="Close the contour and create the room (Enter)">Finish room</button>
+                        <button type="button" class="vnccs-i3s__room-back" hidden title="Remove the last contour point (Backspace)">Remove point</button>
                         <span class="vnccs-i3s__plan-hint">Choose a tool, then press and drag in the plan.</span>
                     </div>
                     <section class="vnccs-i3s__skydome-panel" aria-label="Skydome controls" hidden>
@@ -897,7 +1006,7 @@ class Factory3DWidget {
                         <div class="vnccs-i3s__lighting-head">
                             <div>
                                 <div class="vnccs-i3s__lighting-title">Scene lighting</div>
-                                <div class="vnccs-i3s__lighting-subtitle">Realtime Gaussian illumination</div>
+                                <div class="vnccs-i3s__lighting-subtitle">Realtime scene illumination</div>
                             </div>
                             <button class="vnccs-i3s__lighting-close" type="button" title="Close lighting">${ICONS.close}</button>
                         </div>
@@ -944,7 +1053,7 @@ class Factory3DWidget {
                                     <option value="low">Low · 512</option><option value="medium">Medium · 1024</option><option value="high">High · 2048</option><option value="ultra">Ultra · 4096</option>
                                 </select>
                             </label>
-                            <div class="vnccs-i3s__hint">Active shadow-casting point lights: Low 2 · Medium 4 · High 6 · Ultra 8. Lights beyond the active budget stay stored but do not illuminate until the budget is available.</div>
+                            <div class="vnccs-i3s__hint">Active local shadow lights: Low 2 · Medium 4 · High 6 · Ultra 8. Additional lights stay on without shadows. Deferred shadows can let light pass through walls; increase quality or disable shadows on less important lights to free a slot.</div>
                         </div>
                     </section>
                     <div class="vnccs-i3s__viewport-help">Click: select · Shift-click: multi-select · Drag gizmo: transform · W/E/R: move/rotate/scale · End: drop · F: frame</div>
@@ -966,10 +1075,6 @@ class Factory3DWidget {
                     <button class="vnccs-ps-btn primary vnccs-i3s__library-open" type="button">
                         <span class="vnccs-ps-btn-icon" aria-hidden="true">${ICONS.library}</span> Model Library
                     </button>
-                    <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import a Gaussian PLY into the active scene">
-                        ${ICONS.upload}<span>Import PLY</span>
-                    </button>
-                    <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" accept=".ply,application/octet-stream" tabindex="-1" />
                 </div>
                 <div class="vnccs-i3s__workspace-tabs vnccs-i3s__workspace-tabs--three" role="tablist" aria-label="Scene workspace">
                     <button class="vnccs-i3s__workspace-tab" type="button" role="tab"
@@ -1003,11 +1108,22 @@ class Factory3DWidget {
                     data-workspace-side="right" data-workspace-panel="objects">
                     <div class="vnccs-i3s__section-head">
                         <span>Scene hierarchy</span>
-                        <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__local-light-add" type="button" title="Add a point light to the scene">
-                            ${ICONS.sun}<span>Add light</span>
-                        </button>
                     </div>
                     <div class="vnccs-i3s__section-body">
+                        <div class="vnccs-i3s__object-create-menu">
+                            <button class="vnccs-i3s__button vnccs-i3s__ply-import" type="button" title="Import GLB, glTF, FBX, OBJ, STL, ZIP, or Gaussian PLY into the active scene">
+                                ${ICONS.upload}<span>Import</span>
+                            </button>
+                            <input class="vnccs-i3s__file-input vnccs-i3s__ply-input" type="file" multiple accept=".glb,.gltf,.fbx,.obj,.stl,.zip,.ply,.mtl,.bin,.png,.jpg,.jpeg,.webp,.bmp,.gif,.tga,application/octet-stream" tabindex="-1" />
+                            <div class="vnccs-i3s__object-create-label">Create</div>
+                            <div class="vnccs-i3s__primitive-launcher" aria-label="Create scene objects">
+                                <button class="vnccs-i3s__button vnccs-i3s__image-import" type="button" title="Import an image as a proportionally sized plane">${ICONS.image}<span>Image</span></button>
+                                <button class="vnccs-i3s__button vnccs-i3s__primitive-add" type="button" title="Add a parametric solid">${ICONS.grid}<span>Shape</span></button>
+                                <button class="vnccs-i3s__button vnccs-i3s__terrain-add" type="button" title="Create an editable terrain surface">${ICONS.grid}<span>Terrain</span></button>
+                                <button class="vnccs-i3s__button vnccs-i3s__local-light-add" type="button" title="Add a point light to the scene">${ICONS.sun}<span>Light</span></button>
+                                <input class="vnccs-i3s__file-input vnccs-i3s__image-input" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" />
+                            </div>
+                        </div>
                         <section class="vnccs-i3s__level-panel" aria-label="Floor levels" hidden>
                             <div class="vnccs-i3s__level-panel-head">
                                 <div><strong>Levels</strong><small>Active drawing plane</small></div>
@@ -1042,6 +1158,18 @@ class Factory3DWidget {
                     <div class="vnccs-i3s__section-head"><span>Output settings</span></div>
                     <div class="vnccs-i3s__section-body">
                         <div class="vnccs-i3s__hint vnccs-i3s__scene-summary">No objects in this scene.</div>
+                        <div class="vnccs-i3s__conditioning-output">
+                            <div class="vnccs-i3s__scene-frame-title">Generation maps</div>
+                            <p class="vnccs-i3s__hint">Connect this node's <b>scene</b> output to <b>Factory Render</b> for RGB, depth, normals, alpha and object IDs. Connect its <b>capture</b> output to <b>Factory Mask</b> for selected regions.</p>
+                            <p class="vnccs-i3s__hint">Set map dimensions and depth range in Factory Render. Gaussian objects require explicit coarse box approval there. Fresh captures use the 3D view.</p>
+                            <button class="vnccs-i3s__button vnccs-i3s__conditioning-selection" type="button">Get selection keys for Mask</button>
+                            <label class="vnccs-i3s__field">
+                                <span class="vnccs-i3s__label">Mask entity keys</span>
+                                <textarea class="vnccs-i3s__input vnccs-i3s__conditioning-keys" readonly rows="2" placeholder="Select geometry, then get its keys."></textarea>
+                            </label>
+                            <div class="vnccs-i3s__hint vnccs-i3s__conditioning-status" role="status" aria-live="polite">Ready for a Factory Render request.</div>
+                            <button class="vnccs-i3s__button vnccs-i3s__conditioning-cancel" type="button" hidden>Cancel capture</button>
+                        </div>
                         <div class="vnccs-i3s__scene-render-settings">
                             <label class="vnccs-i3s__field">
                                 <span class="vnccs-i3s__label">Aspect ratio</span>
@@ -1079,6 +1207,21 @@ class Factory3DWidget {
                         <div class="vnccs-i3s__export-grid">
                             <button class="vnccs-i3s__button vnccs-i3s__scene-export" type="button">${ICONS.download}<span>Gaussian PLY</span></button>
                         </div>
+                        <div class="vnccs-i3s__panorama-export">
+                            <div class="vnccs-i3s__scene-frame-title">360° panorama</div>
+                            <div class="vnccs-i3s__scene-frame-copy">Export a 2:1 equirectangular PNG from a saved camera position.</div>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Camera</span>
+                                <select class="vnccs-i3s__select vnccs-i3s__panorama-camera"></select>
+                            </label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Resolution</span>
+                                <select class="vnccs-i3s__select vnccs-i3s__panorama-size">
+                                    <option value="2048">2048 × 1024 · Draft</option>
+                                    <option value="4096">4096 × 2048 · High</option>
+                                </select>
+                            </label>
+                            <div class="vnccs-i3s__panorama-summary">Add a saved camera before exporting.</div>
+                            <button class="vnccs-i3s__button vnccs-i3s__button--primary vnccs-i3s__panorama-export-button" type="button" disabled>${ICONS.download}<span>Export 360° PNG</span></button>
+                        </div>
                     </div>
                 </section>
                 </div>
@@ -1101,6 +1244,9 @@ class Factory3DWidget {
             sourceChange: $(".vnccs-i3s__source-change"),
             weightsDot: $(".vnccs-i3s__weights-dot"),
             weightsSummary: $(".vnccs-i3s__weights-summary"),
+            generatorName: $(".vnccs-i3s__generator-name"),
+            generatorSelect: $(".vnccs-i3s__generator-select"),
+            generatorPanels: Array.from(this.container.querySelectorAll("[data-generator-settings]")),
             modelSetup: $(".vnccs-i3s__model-setup"),
             objectName: $(".vnccs-i3s__object-name-input"),
             density: $(".vnccs-i3s__density"),
@@ -1108,6 +1254,12 @@ class Factory3DWidget {
             steps: $(".vnccs-i3s__steps"),
             guidance: $(".vnccs-i3s__guidance"),
             guidanceValue: $(".vnccs-i3s__guidance-value"),
+            meshQuality: $(".vnccs-i3s__mesh-quality"),
+            meshQualitySummary: $(".vnccs-i3s__mesh-quality-summary"),
+            meshStructureSteps: $(".vnccs-i3s__mesh-structure-steps"),
+            meshShapeSteps: $(".vnccs-i3s__mesh-shape-steps"),
+            meshUpsampleSteps: $(".vnccs-i3s__mesh-upsample-steps"),
+            meshTextureSteps: $(".vnccs-i3s__mesh-texture-steps"),
             removeBackground: $(".vnccs-i3s__remove-background"),
             seed: $(".vnccs-i3s__seed"),
             seedDice: $(".vnccs-i3s__seed-dice"),
@@ -1122,7 +1274,6 @@ class Factory3DWidget {
             cameraTrackAdd: $(".vnccs-i3s__camera-track-add"),
             cameraTrackDelete: $(".vnccs-i3s__camera-track-delete"),
             cameraTrackName: $(".vnccs-i3s__camera-track-name"),
-            cameraTrackBuilding: $(".vnccs-i3s__camera-track-building"),
             cameraKeyframeAdd: $(".vnccs-i3s__camera-keyframe-add"),
             cameraTrackPlay: $(".vnccs-i3s__camera-track-play"),
             cameraTrackTime: $(".vnccs-i3s__camera-track-time"),
@@ -1135,6 +1286,10 @@ class Factory3DWidget {
             libraryOpen: $(".vnccs-i3s__library-open"),
             plyImport: $(".vnccs-i3s__ply-import"),
             plyInput: $(".vnccs-i3s__ply-input"),
+            imageImport: $(".vnccs-i3s__image-import"),
+            imageInput: $(".vnccs-i3s__image-input"),
+            terrainAdd: $(".vnccs-i3s__terrain-add"),
+            primitiveAdd: $(".vnccs-i3s__primitive-add"),
             status: $(".vnccs-i3s__status-pill"),
             viewerHost: $(".vnccs-i3s__viewer-host"),
             view3d: $(".vnccs-i3s__view-3d"),
@@ -1155,6 +1310,10 @@ class Factory3DWidget {
             planSettings: Array.from(this.container.querySelectorAll("[data-plan-setting]")),
             planSettingsPanel: $(".vnccs-i3s__plan-settings"),
             planHint: $(".vnccs-i3s__plan-hint"),
+            roomMode: $(".vnccs-i3s__room-mode"),
+            roomShape: $(".vnccs-i3s__room-mode select"),
+            roomFinish: $(".vnccs-i3s__room-finish"),
+            roomBack: $(".vnccs-i3s__room-back"),
             cameraPresets: Array.from(this.container.querySelectorAll("[data-camera-preset]")),
             cameraZoomSpeedRange: $(".vnccs-i3s__camera-zoom-speed-range"),
             cameraZoomSpeedValue: $(".vnccs-i3s__camera-zoom-speed-value"),
@@ -1217,12 +1376,20 @@ class Factory3DWidget {
             inspector: $(".vnccs-i3s__inspector"),
             inspectorKind: $(".vnccs-i3s__inspector-kind"),
             sceneSummary: $(".vnccs-i3s__scene-summary"),
+            conditioningSelection: $(".vnccs-i3s__conditioning-selection"),
+            conditioningKeys: $(".vnccs-i3s__conditioning-keys"),
+            conditioningStatus: $(".vnccs-i3s__conditioning-status"),
+            conditioningCancel: $(".vnccs-i3s__conditioning-cancel"),
             sceneAspect: $(".vnccs-i3s__scene-aspect"),
             sceneWidth: $(".vnccs-i3s__scene-width"),
             sceneHeight: $(".vnccs-i3s__scene-height"),
             sceneFrame: $(".vnccs-i3s__scene-frame"),
             sceneRenderSummary: $(".vnccs-i3s__scene-render-summary"),
             sceneExport: $(".vnccs-i3s__scene-export"),
+            panoramaCamera: $(".vnccs-i3s__panorama-camera"),
+            panoramaSize: $(".vnccs-i3s__panorama-size"),
+            panoramaSummary: $(".vnccs-i3s__panorama-summary"),
+            panoramaExport: $(".vnccs-i3s__panorama-export-button"),
             toasts: $(".vnccs-i3s__toasts"),
             modalLayer: $(".vnccs-i3s__modal-layer"),
         };
@@ -1233,28 +1400,72 @@ class Factory3DWidget {
         this._listeners.push(() => target?.removeEventListener(type, handler, options));
     }
 
+    _openCommandPalette() {
+        const body = element("div");
+        const input = element("input", "vnccs-i3s__input vnccs-i3s__command-search");
+        input.type = "search";
+        input.placeholder = "Search tools, panels and actions";
+        input.setAttribute("aria-label", "Search Factory commands");
+        const results = element("div", "vnccs-i3s__command-results");
+        const actions = {
+            save: () => this._saveSceneNow(), scenes: () => this.openSceneManager(),
+            library: () => this.openLibrary(), import: () => this.els.plyImport.click(),
+            primitive: () => this._openPrimitivePicker(),
+            terrain: () => this.createPrimitive("terrain"), light: () => this.els.localLightAdd.click(),
+            camera: () => this.addCamera(), lighting: () => this._setLightingPanelOpen(true),
+            "3d": () => this._setViewMode("3d"), plan: () => this._setViewMode("plan"),
+            wall: () => { this._setViewMode("plan"); this._setPlanTool("wall"); },
+            room: () => { this._setViewMode("plan"); this._setPlanTool("room"); },
+            polygon_room: () => { this.editorView.room_shape = "polygon"; this._setViewMode("plan"); this._setPlanTool("room"); },
+            opening: () => this._setPlanTool("opening"),
+            frame: () => this.viewer.frameSelection(), drop: () => this._dropSelectionToSurface(),
+            undo: () => this.history.undo(), redo: () => this.history.redo(),
+            output: () => { this.workspace.change({ right_visible: true }); this._setWorkspaceTab("right", "export"); },
+            expand: () => this.workspace.toggleExpanded(),
+        };
+        const refresh = () => {
+            results.replaceChildren();
+            for (const command of findFactoryCommands(input.value)) {
+                const control = button("vnccs-i3s__button", `${command.group} · ${command.label}`);
+                control.disabled = command.id === "undo" ? !this.history.canUndo
+                    : command.id === "redo" ? !this.history.canRedo
+                    : !this.scene && !["scenes", "expand", "library"].includes(command.id);
+                control.addEventListener("click", () => {
+                    this.closeModal();
+                    Promise.resolve(actions[command.id]?.()).catch(error => this._showError("Command failed", error));
+                });
+                results.append(control);
+            }
+            if (!results.children.length) results.append(element("div", "vnccs-i3s__hint", "No matching commands."));
+        };
+        input.addEventListener("input", refresh);
+        body.addEventListener("keydown", event => {
+            const buttons = [...results.querySelectorAll("button:not(:disabled)")];
+            if (event.key === "Enter" && event.target === input) { event.preventDefault(); buttons[0]?.click(); }
+            if (!["ArrowDown", "ArrowUp"].includes(event.key)) return;
+            event.preventDefault();
+            const index = buttons.indexOf(document.activeElement);
+            const next = event.key === "ArrowDown" ? (index + 1) % buttons.length : (index - 1 + buttons.length) % buttons.length;
+            buttons[next]?.focus();
+        });
+        body.append(input, results); refresh();
+        this.openModal({ title: "Factory commands", body, initialFocus: input });
+    }
+
     _setWorkspaceTab(side, tab, { save = true, focus = false } = {}) {
         const allowed = side === "left"
             ? new Set(["generate", "cameras"])
             : new Set(["objects", "inspector", "export"]);
         if (!allowed.has(tab)) return;
         this.editorView.workspace = {
+            ...this.editorView.workspace,
             left: this.editorView.workspace?.left || "generate",
             right: this.editorView.workspace?.right || "objects",
             [side]: tab,
         };
-        let activeButton = null;
-        for (const button of this.els.workspaceTabs) {
-            if (button.dataset.workspaceSide !== side) continue;
-            const active = button.dataset.workspaceTab === tab;
-            button.setAttribute("aria-selected", String(active));
-            button.tabIndex = active ? 0 : -1;
-            if (active) activeButton = button;
-        }
-        for (const panel of this.els.workspacePanels) {
-            if (panel.dataset.workspaceSide !== side) continue;
-            panel.hidden = panel.dataset.workspacePanel !== tab;
-        }
+        const activeButton = activateWorkspaceTab(this.els.workspaceTabs, this.els.workspacePanels, side, tab);
+        this.container.classList.toggle("workspace-output", this.editorView.workspace.right === "export");
+        this.workspace?.refresh();
         this._customSelects?.refresh?.();
         if (focus) activeButton?.focus({ preventScroll: true });
         if (save) this._scheduleStateSave(0);
@@ -1298,6 +1509,30 @@ class Factory3DWidget {
             if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
             void this._captureExecutionPreview(detail);
         });
+        this._listen(api, "vnccs_req_factory_conditioning", event => {
+            const detail = safeObject(event?.detail);
+            if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
+            void this._captureConditioning(detail);
+        });
+        this._listen(this.els.conditioningSelection, "click", () => {
+            const keys = [...this.selectedObjectIds].map(id => `object:${id}`);
+            for (const ref of this._selectedArchitectureRefs()) {
+                const kind = ["floor", "ceiling"].includes(ref.type) ? "room" : ref.type;
+                if (["room", "wall", "opening"].includes(kind)) keys.push(`${kind}:${ref.id}`);
+            }
+            this.els.conditioningKeys.value = [...new Set(keys)].join(",\n");
+            this.els.conditioningKeys.focus({ preventScroll: true });
+            this.els.conditioningKeys.select();
+        });
+        this._listen(this.els.conditioningCancel, "click", () => {
+            this._conditioningCancelled = true;
+            this.els.conditioningCancel.disabled = true;
+            this.els.conditioningStatus.textContent = "Cancelling capture…";
+            if (this._conditioningJobURL) void this._fetchJSON(`${this._conditioningJobURL}/error`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ error: "Capture cancelled by the user" }),
+            }).catch(() => {});
+        });
         const pick = () => !this.currentJobId && this.els.sourceInput.click();
         this._listen(this.els.sourceDrop, "click", event => {
             if (!event.target.closest(".vnccs-i3s__source-change")) pick();
@@ -1336,6 +1571,11 @@ class Factory3DWidget {
             [this.els.steps, "steps", "integer"],
             [this.els.guidance, "guidance_scale", "number"],
             [this.els.seed, "seed", "integer"],
+            [this.els.meshQuality, "mesh_quality", "string"],
+            [this.els.meshStructureSteps, "mesh_structure_steps", "integer"],
+            [this.els.meshShapeSteps, "mesh_shape_steps", "integer"],
+            [this.els.meshUpsampleSteps, "mesh_upsample_steps", "integer"],
+            [this.els.meshTextureSteps, "mesh_texture_steps", "integer"],
         ];
         for (const [control, key, kind] of settings) {
             const update = () => {
@@ -1343,6 +1583,7 @@ class Factory3DWidget {
                 this.settings[key] = kind === "string" ? value : kind === "integer" ? Math.round(Number(value)) : Number(value);
                 this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
                 if (key === "num_gaussians") this._syncDensityMode();
+                if (key === "mesh_quality") this._syncMeshQuality();
                 this._scheduleStateSave();
             };
             this._listen(control, "input", update);
@@ -1361,6 +1602,7 @@ class Factory3DWidget {
         this._listen(this.els.donateLink, "pointerdown", event => event.stopPropagation());
         this._listen(this.els.donateLink, "click", event => event.stopPropagation());
         this._listen(this.els.modelSetup, "click", () => this.openModelSetup());
+        this._listen(this.els.generatorSelect, "click", () => void this.openGeneratorSelector());
         this._listen(this.els.generate, "click", () => void this.generate());
         this._bindCameraControls();
         this._listen(this.els.cameraAdd, "click", () => void this.addCamera());
@@ -1390,18 +1632,6 @@ class Factory3DWidget {
             this._scheduleSceneSave(0);
             this._syncToolbar();
         });
-        this._listen(this.els.cameraTrackBuilding, "change", () => {
-            const track = this._activeCameraTrack();
-            if (!track) return;
-            const before = this._captureEditorSnapshot();
-            track.building_id = this._validBuildingId(this.els.cameraTrackBuilding.value);
-            if (track.building_id) this.editorView.active_building_id = track.building_id;
-            this.history.push("Assign camera path to building", before, this._captureEditorSnapshot());
-            this._renderCameraTracks();
-            this._scheduleSceneSave(0);
-            this._scheduleStateSave(0);
-            this._syncToolbar();
-        });
         this._listen(this.els.cameraTrackTime, "input", () => {
             this._setCameraTrackTime(Number(this.els.cameraTrackTime.value));
         });
@@ -1417,10 +1647,22 @@ class Factory3DWidget {
             this.els.plyInput.click();
         });
         this._listen(this.els.plyInput, "change", () => {
-            const file = this.els.plyInput.files?.[0];
+            const files = Array.from(this.els.plyInput.files || []);
             this.els.plyInput.value = "";
-            if (file) void this.importPly(file);
+            if (files.length === 1 && /\.ply$/i.test(files[0].name || "")) {
+                void this.importPly(files[0]);
+            } else if (files.length) {
+                void this.importModel(files);
+            }
         });
+        this._listen(this.els.imageImport, "click", () => this.els.imageInput.click());
+        this._listen(this.els.imageInput, "change", () => {
+            const file = this.els.imageInput.files?.[0];
+            this.els.imageInput.value = "";
+            if (file) void this.importImagePlane(file);
+        });
+        this._listen(this.els.primitiveAdd, "click", () => this._openPrimitivePicker());
+        this._listen(this.els.terrainAdd, "click", () => void this.createPrimitive("terrain"));
         this._listen(this.els.sceneManager, "click", () => void this.openSceneManager());
         this._listen(this.els.sceneName, "change", () => {
             if (!this.scene) return;
@@ -1508,6 +1750,13 @@ class Factory3DWidget {
         for (const control of this.els.planToolButtons) {
             this._listen(control, "click", () => this._setPlanTool(control.dataset.planTool));
         }
+        this._listen(this.els.roomShape, "change", () => {
+            this._cancelPlanDraft();
+            this.editorView.room_shape = this.els.roomShape.value;
+            this._syncToolbar(); this._scheduleStateSave(0);
+        });
+        this._listen(this.els.roomFinish, "click", () => this._finishPolygonRoom());
+        this._listen(this.els.roomBack, "click", () => this._removeRoomPoint());
         this._listen(this.els.planGridToggle, "click", () => {
             this.editorView.plan_grid.visible = !this.editorView.plan_grid.visible;
             this._syncToolbar();
@@ -1518,37 +1767,45 @@ class Factory3DWidget {
             this._syncToolbar();
             this._scheduleStateSave(0);
         });
-        this._listen(this.els.snapGrid, "change", () => {
+        const updateSnapGrid = () => {
+            if (this.els.snapGrid.value === "") return;
             const step = clamp(this.els.snapGrid.value, 0.001, 1000);
             this.editorView.plan_grid.step = step;
             // Preserve the legacy serialized alias for older frontends.
             this.editorView.snap.grid = step;
             this._syncToolbar();
             this._scheduleStateSave(0);
-        });
+        };
+        this._listen(this.els.snapGrid, "input", updateSnapGrid);
+        this._listen(this.els.snapGrid, "change", updateSnapGrid);
         for (const control of this.els.planSettings) {
-            this._listen(control, "change", () => {
+            const updatePlanSetting = () => {
                 const key = control.dataset.planSetting;
                 if (key === "opening_kind") {
                     this.editorView.opening_kind = control.value;
                 } else if (key === "grid_step") {
+                    if (control.value === "") return;
                     const step = clamp(control.value, 0.001, 1000);
                     this.editorView.plan_grid.step = step;
                     this.editorView.snap.grid = step;
                 } else if (key === "major_every") {
+                    if (control.value === "") return;
                     this.editorView.plan_grid.major_every = Math.round(clamp(control.value, 2, 100));
                 } else if (control.type === "checkbox") {
                     this.editorView.snap[key] = control.checked;
                 } else {
+                    if (control.value === "") return;
                     this.editorView.snap[key] = clamp(control.value, 0, 180);
                 }
                 this._syncToolbar();
                 this._scheduleStateSave(0);
-            });
+            };
+            if (control.type === "number") this._listen(control, "input", updatePlanSetting);
+            this._listen(control, "change", updatePlanSetting);
         }
-        this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
-        this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
-        this._listen(this.els.modeScale, "click", () => this.viewer.setMode("scale"));
+        this._listen(this.els.modeMove, "click", () => { this._setPlanTool("select"); this.viewer.setMode("translate"); });
+        this._listen(this.els.modeRotate, "click", () => { this._setPlanTool("select"); this.viewer.setMode("rotate"); });
+        this._listen(this.els.modeScale, "click", () => { this._setPlanTool("select"); this.viewer.setMode("scale"); });
         this._listen(this.els.dropSurface, "click", event => this._dropSelectionToSurface(event.shiftKey));
         this._listen(this.els.skydomeOpen, "click", event => {
             event.stopPropagation();
@@ -1634,11 +1891,13 @@ class Factory3DWidget {
                 this.els.planSettingsPanel.open = false;
             }
         });
-        // Match Pose Studio's timeline shortcut routing: capture the command
-        // before ComfyUI's global graph handlers, but only while this Factory
-        // editor owns focus and never while the user edits a form control.
+        this._listen(this.container, "pointerenter", () => { this._pointerInside = true; });
+        this._listen(this.container, "pointerleave", () => { this._pointerInside = false; });
+        // Match Pose Studio's shortcut routing: capture the command before
+        // ComfyUI's graph handlers while the pointer is inside this editor.
         this._listen(window, "keydown", event => {
-            const activeWithin = this.container.contains(event.target)
+            const activeWithin = this._pointerInside
+                || this.container.contains(event.target)
                 || this.container.contains(document.activeElement);
             if (!activeWithin) return;
             if (
@@ -1651,9 +1910,22 @@ class Factory3DWidget {
                 || target instanceof HTMLSelectElement
                 || target?.isContentEditable;
             if (editing) return;
+            if (this.editorView.view_mode === "plan" && this.editorView.plan_tool === "room"
+                && this.editorView.room_shape === "polygon" && ["Enter", "Backspace"].includes(event.key)) {
+                event.preventDefault(); event.stopImmediatePropagation();
+                if (event.key === "Enter") this._finishPolygonRoom(); else this._removeRoomPoint();
+                return;
+            }
+
             if (event.key === "Delete" || event.key === "Backspace") {
+                const selectedObjectIds = new Set(this.selectedObjectIds);
+                if (this.selectedObjectId) selectedObjectIds.add(this.selectedObjectId);
                 event.preventDefault();
                 event.stopImmediatePropagation();
+                if (selectedObjectIds.size) {
+                    void this._deleteSelectedObjects(selectedObjectIds);
+                    return;
+                }
                 const deleteControl = this.els.inspector.querySelector(
                     '[data-inspector-action="delete"]',
                 );
@@ -1677,6 +1949,11 @@ class Factory3DWidget {
                 || event.target instanceof HTMLSelectElement
                 || event.target?.isContentEditable;
             const modifier = event.ctrlKey || event.metaKey;
+            if (activeWithin && modifier && event.key.toLowerCase() === "k") {
+                event.preventDefault();
+                this._openCommandPalette();
+                return;
+            }
             if (activeWithin && !editing && modifier && event.key.toLowerCase() === "z") {
                 event.preventDefault();
                 if (event.shiftKey) this.history.redo();
@@ -1704,7 +1981,6 @@ class Factory3DWidget {
                 activeWithin
                 && !editing
                 && event.key === "Escape"
-                && this.editorView.view_mode === "plan"
                 && this.editorView.plan_tool !== "select"
             ) {
                 event.preventDefault();
@@ -1713,6 +1989,7 @@ class Factory3DWidget {
             }
             if (activeWithin && !editing && event.key.toLowerCase() === "v") {
                 event.preventDefault();
+                this._setPlanTool("select");
                 if (this.editorView.view_mode === "plan") this._setPlanTool("select");
                 else this.viewer.setMode("translate");
                 return;
@@ -1902,6 +2179,7 @@ class Factory3DWidget {
         };
         for (const anchor of ["width", "height"]) {
             const control = anchor === "width" ? this.els.sceneWidth : this.els.sceneHeight;
+            this._listen(control, "input", () => updateExportSide(anchor));
             this._listen(control, "change", () => updateExportSide(anchor));
             this._listen(control, "keydown", event => {
                 if (event.key === "Enter") {
@@ -1926,6 +2204,19 @@ class Factory3DWidget {
             this._moveLayer(this.dragLayer, null, "end");
         });
         this._listen(this.els.sceneExport, "click", () => void this.exportScene());
+        this._listen(this.els.panoramaCamera, "change", () => {
+            this.panoramaCameraId = this.els.panoramaCamera.value;
+            this._syncPanoramaExportControls();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.panoramaSize, "change", () => {
+            this.panoramaWidth = [2048, 4096].includes(Number(this.els.panoramaSize.value))
+                ? Number(this.els.panoramaSize.value)
+                : 4096;
+            this._syncPanoramaExportControls();
+            this._scheduleStateSave(0);
+        });
+        this._listen(this.els.panoramaExport, "click", () => void this.exportPanorama());
     }
 
     _captureEditorSnapshot() {
@@ -2023,12 +2314,31 @@ class Factory3DWidget {
 
     async _restoreEditorSnapshot(snapshot) {
         if (!this.scene || !snapshot) return;
+        const owner = this.scene;
+        await this._architectureCommitSerial;
+        if (this.scene !== owner) return;
+        const previous = this._captureEditorSnapshot();
+        const differs = (left, right) => JSON.stringify(left) !== JSON.stringify(right);
+        const architectureChanged = differs(previous.architecture, snapshot.architecture)
+            || differs(previous.levels, snapshot.levels);
+        const camerasChanged = differs(previous.cameras, snapshot.cameras);
+        const lightingChanged = differs(previous.lighting, snapshot.lighting);
+        const skydomeChanged = differs(previous.skydome, snapshot.skydome);
+        const renderChanged = differs(previous.render, snapshot.render);
+        const objectUpdates = [];
         this.scene.levels = normalizedLevels(snapshot.levels);
         this.scene.architecture = normalizedArchitecture(snapshot.architecture, this.scene.levels);
         const byId = new Map((snapshot.objects || []).map(item => [item.object_id, item]));
         for (const item of this.scene.objects || []) {
             const restored = byId.get(item.object_id);
-            if (restored) Object.assign(item, restored);
+            if (restored) {
+                const patch = Object.fromEntries(Object.entries(restored)
+                    .filter(([key, value]) => key !== "object_id" && differs(item[key], value)));
+                if (Object.keys(patch).length) {
+                    Object.assign(item, patch);
+                    objectUpdates.push([item.object_id, patch]);
+                }
+            }
         }
         this.scene.cameras = this._normalizeSceneCameras(snapshot.cameras);
         this.scene.camera_tracks = Array.isArray(snapshot.camera_tracks)
@@ -2046,24 +2356,31 @@ class Factory3DWidget {
             ? JSON.parse(JSON.stringify(snapshot.skydome))
             : null;
         this.exportSettings = { ...this.exportSettings, ...safeObject(snapshot.render) };
-        await this.viewer.setScene(this.scene, { incremental: true });
-        this.viewer.setViewMode(this.editorView.view_mode);
-        this.viewer.setPlanTool(this.editorView.plan_tool);
-        this.viewer.setActiveLevel(this.editorView.active_level_id);
-        this.viewer.setArchitectureSelection(
-            this.selectedArchitecture,
-            this._selectedArchitectureRefs(),
-        );
+        this.viewer.sceneData = this.scene;
+        this.viewer.architecture.sceneData = this.scene;
+        if (architectureChanged) {
+            if (!this.scene.levels.some(level => level.level_id === this.editorView.active_level_id)) {
+                this.editorView.active_level_id = this.scene.levels[0]?.level_id || "";
+            }
+            this.viewer.activeLevelId = this.editorView.active_level_id;
+            await this.viewer.refreshArchitecture(this.scene, { previous });
+            if (this.scene !== owner) return;
+            this.viewer.setArchitectureSelection(this.selectedArchitecture, this._selectedArchitectureRefs());
+        }
+        for (const [id, patch] of objectUpdates) this.viewer.updateObject(id, patch);
         this.viewer.applySceneVisibility(this.scene);
-        this.viewer.setCameraMarkers(this.scene.cameras || []);
-        this.viewer.setLighting(this.lighting);
+        if (camerasChanged) this.viewer.setCameraMarkers(this.scene.cameras || []);
+        if (lightingChanged) this.viewer.setLighting(this.lighting);
+        if (skydomeChanged) await this.viewer.setSkydome(this.scene.skydome);
+        if (this.scene !== owner) return;
+        this.viewer.invalidate();
         this._renderObjects();
         this._renderCameras();
         this._renderCameraTracks();
         this._renderInspector();
-        this._syncLighting();
-        this._syncSkydome();
-        this._syncExportSettings();
+        if (lightingChanged) this._syncLighting();
+        if (skydomeChanged) this._syncSkydome();
+        if (renderChanged) this._syncExportSettings();
         this._syncToolbar();
         this._scheduleSceneSave(0);
         this._scheduleScenePreview(120);
@@ -2071,6 +2388,7 @@ class Factory3DWidget {
     }
 
     _setViewMode(mode) {
+        this._setPlanTool("select");
         this.editorView.view_mode = mode === "plan" ? "plan" : "3d";
         if (this.editorView.view_mode !== "plan") this._cancelPlanDraft();
         this.viewer.setViewMode(this.editorView.view_mode);
@@ -2096,6 +2414,7 @@ class Factory3DWidget {
 
     _setPlanTool(tool) {
         if (!["select", "wall", "room", "opening", "camera"].includes(tool)) return;
+        if (tool !== "opening") this._openingWallId = "";
         if (this.planDraft && this.planDraft.tool !== tool) this._cancelPlanDraft();
         this._clearPlanHover();
         this.editorView.plan_tool = tool;
@@ -2112,9 +2431,10 @@ class Factory3DWidget {
         this.planHover = null;
     }
 
-    _queuePlanHover(tool, rawPoint, event = {}) {
+    _queuePlanHover(tool, rawPoint, event = {}, wallId = "") {
         this._pendingPlanHover = {
             tool,
+            wallId,
             point: Array.isArray(rawPoint) ? [...rawPoint] : null,
             event: {
                 altKey: Boolean(event.altKey),
@@ -2126,7 +2446,8 @@ class Factory3DWidget {
             this._planHoverFrame = 0;
             const pending = this._pendingPlanHover;
             this._pendingPlanHover = null;
-            if (!pending || this.editorView.view_mode !== "plan" || pending.tool !== this.editorView.plan_tool) {
+            if (!pending || pending.tool !== this.editorView.plan_tool
+                || (this.editorView.view_mode !== "plan" && pending.tool !== "opening")) {
                 return;
             }
             if (!pending.point) {
@@ -2139,10 +2460,12 @@ class Factory3DWidget {
             // wall at high zoom and make an otherwise valid click look inert.
             const point = pending.tool === "opening"
                 ? [...pending.point]
-                : this._snapPlanPoint(pending.point, pending.event);
+                : this._snapPlanPoint(pending.point, pending.event, pending.tool === "room" && this.editorView.room_shape === "polygon" ? this.planDraft?.points?.at(-1) : null);
             if (pending.tool === "opening") this.planSnapHint = "Wall projection";
             const nearest = pending.tool === "opening"
-                ? this._nearestWallProjection(point)
+                ? this.editorView.view_mode === "3d"
+                    ? this._editableWallProjection(point, pending.wallId)
+                    : this._nearestWallProjection(point)
                 : null;
             const openingKind = this.editorView.opening_kind || "window";
             const openingPlacement = nearest
@@ -2164,6 +2487,8 @@ class Factory3DWidget {
                     : nearest
                         ? "This wall has no free span for another opening."
                         : "Move over an editable wall, then press and drag.";
+            } else if (pending.tool === "room" && this.editorView.room_shape === "polygon") {
+                this.els.planHint.textContent = `Click next corner${measurement} · Enter: finish · Backspace: remove`;
             } else if (pending.tool === "camera" && previous) {
                 this.els.planHint.textContent = `Aim camera${measurement}`;
             } else {
@@ -2171,6 +2496,43 @@ class Factory3DWidget {
             }
             this._renderPlanPreview();
         });
+    }
+
+    _removeRoomPoint() {
+        if (this.planDraft?.tool !== "room" || this.editorView.room_shape !== "polygon") return;
+        this.planDraft.points.pop();
+        this._renderPlanPreview(); this._syncToolbar();
+    }
+
+    _finishPolygonRoom() {
+        const points = this.planDraft?.tool === "room" ? this.planDraft.points : [];
+        if (this.editorView.room_shape !== "polygon" || points.length < 3) {
+            this.toast("Place at least three corners to create a room.", "info"); return;
+        }
+        if (this._createRoomPolygon(points.map(point => [...point]))) {
+            this._cancelPlanDraft(); this._syncToolbar();
+        }
+    }
+
+    _polygonRoomGesture(phase, rawPoint, event) {
+        if (this._activeBuilding()?.locked) return;
+        if (!this.planDraft || this.planDraft.tool !== "room") this.planDraft = { tool: "room", points: [] };
+        const points = this.planDraft.points;
+        const point = this._snapPlanPoint(rawPoint, event, points.at(-1));
+        this.planHover = { tool: "room", point };
+        if (phase === "end") {
+            const epsilon = Math.max(0.01, Math.min(0.15, this.editorView.plan_grid.step * 0.25));
+            if (points.length >= 3 && Math.hypot(point[0] - points[0][0], point[1] - points[0][1]) <= epsilon) {
+                this._finishPolygonRoom(); return;
+            }
+            if (!points.length || Math.hypot(point[0] - points.at(-1)[0], point[1] - points.at(-1)[1]) > 0.001) {
+                if (points.length >= 512) this.toast("A room contour supports at most 512 corners.", "info");
+                else points.push(point);
+            }
+            this._syncToolbar();
+        }
+        this.els.planHint.textContent = `${points.length} corners · Click next corner · Enter: finish · Backspace: remove · Escape: cancel`;
+        this._renderPlanPreview();
     }
 
     _roomRectangle(start, end) {
@@ -2235,14 +2597,6 @@ class Factory3DWidget {
         return buildings.some(building => building.building_id === requested)
             ? requested
             : "";
-    }
-
-    _buildingOptions(selectedId = "") {
-        const valid = this._validBuildingId(selectedId);
-        return `<option value=""${valid ? "" : " selected"}>No building</option>`
-            + (this.scene?.architecture?.buildings || []).map(building => (
-            `<option value="${building.building_id}"${building.building_id === valid ? " selected" : ""}>${escapeHTML(building.name || "Building")}</option>`
-        )).join("");
     }
 
     _transformPointWithBuilding(point, previousPosition, nextPosition, deltaRotationDegrees) {
@@ -2369,10 +2723,15 @@ class Factory3DWidget {
         }
         if (this.planDraft?.tool === "room") {
             const start = this.planDraft.points?.[0];
+            const candidate = [...this.planDraft.points];
+            const cursor = hover?.point;
+            if (cursor && (!candidate.length || Math.hypot(cursor[0] - candidate.at(-1)[0], cursor[1] - candidate.at(-1)[1]) > 0.001)) candidate.push(cursor);
+            const outline = this.editorView.room_shape === "polygon"
+                ? (isSimpleRoomPolygon(candidate) ? candidate : []) : this._roomRectangle(start, cursor);
             this.viewer.setPlanDraft({
                 ...this.planDraft,
                 cursor: hover?.point || null,
-                rectangle: this._roomRectangle(start, hover?.point),
+                rectangle: outline,
                 thickness: DEFAULT_WALL.thickness,
             });
             return;
@@ -2514,6 +2873,14 @@ class Factory3DWidget {
         return placement;
     }
 
+    _editableWallProjection(point, wallId) {
+        if (this._openingWallId && this._openingWallId !== wallId) return null;
+        const wall = this.scene?.architecture.walls.find(value => value.wall_id === wallId);
+        if (!wall || wall.locked || this._buildingForItem(wall)?.locked
+            || this.scene.architecture.rooms.some(room => room.locked && room.wall_ids?.includes(wallId))) return null;
+        return this._wallProjection(point, wall);
+    }
+
     _createOpeningFromPlacement(placement, kind) {
         if (!placement) return false;
         if (this.scene.architecture.openings.length >= 4096) {
@@ -2529,8 +2896,8 @@ class Factory3DWidget {
                 kind,
                 offset: placement.offset,
                 width: placement.width,
-                height: kind === "door" ? 2 : 1.2,
-                sill_height: kind === "door" ? 0 : 0.9,
+                height: placement.height,
+                sill_height: placement.sill_height,
                 material_id: "",
                 visible: true,
                 locked: false,
@@ -2546,6 +2913,8 @@ class Factory3DWidget {
             );
             void this._commitArchitecture();
         });
+        this.workspace.change({ right_visible: true });
+        this._setWorkspaceTab("right", "inspector");
         return true;
     }
 
@@ -2556,12 +2925,21 @@ class Factory3DWidget {
         const rawPoint = Array.isArray(gesture.point) ? gesture.point : null;
         if (!this.scene || !["wall", "room", "opening", "camera"].includes(tool)) return;
 
+        if (phase === "exit") { this._setPlanTool("select"); return; }
+
         if (phase === "cancel") {
             this._cancelPlanDraft();
             this._syncToolbar();
             return;
         }
-        if (!rawPoint) return;
+        if (!rawPoint) {
+            this._cancelPlanDraft();
+            if (tool === "opening") this.els.planHint.textContent = "Point at a visible, unlocked wall to place an opening";
+            return;
+        }
+        if (tool === "room" && this.editorView.room_shape === "polygon") {
+            this._polygonRoomGesture(phase, rawPoint, event); return;
+        }
 
         if (phase === "start") {
             if (this._planHoverFrame) cancelAnimationFrame(this._planHoverFrame);
@@ -2573,13 +2951,15 @@ class Factory3DWidget {
                 return;
             }
             if (tool === "opening") {
-                const projection = this._nearestWallProjection(rawPoint);
+                const projection = gesture.viewMode === "3d"
+                    ? this._editableWallProjection(rawPoint, gesture.wallId)
+                    : this._nearestWallProjection(rawPoint);
                 this.planDraft = {
                     tool,
                     points: projection ? [projection.point] : [],
                     openingStart: projection,
                 };
-                this.planHover = { tool, point: [...rawPoint], opening: null };
+                this.planHover = { tool, point: [...rawPoint], opening: this._openingPlacement(projection) };
                 this.els.planHint.textContent = projection
                     ? "Drag along the wall to set the opening width"
                     : "Start the drag on an editable wall";
@@ -2591,7 +2971,7 @@ class Factory3DWidget {
                     ? "Drag to set wall length"
                     : tool === "room"
                         ? "Drag diagonally to size the room"
-                        : "Drag to aim the camera";
+                        : "Click to place the camera, or drag to aim it";
             }
             this._renderPlanPreview();
             return;
@@ -2603,7 +2983,9 @@ class Factory3DWidget {
         let placement = null;
         if (tool === "opening") {
             const kind = this.editorView.opening_kind || "window";
-            placement = this._openingDragPlacement(draft.openingStart, rawPoint, kind);
+            placement = gesture.moved
+                ? this._openingDragPlacement(draft.openingStart, rawPoint, kind)
+                : this._openingPlacement(draft.openingStart);
             const projected = this._wallProjection(rawPoint, draft.openingStart?.wall);
             point = projected?.point || rawPoint;
             this.planHover = { tool, point, opening: placement };
@@ -2631,6 +3013,12 @@ class Factory3DWidget {
 
         if (phase !== "end") return;
         if (!gesture.moved) {
+            if (tool === "camera") {
+                this._createCameraFromDrag(start, this._defaultCameraPlanTarget(start));
+            } else if (tool === "opening" && placement) {
+                this._createOpeningFromPlacement(placement, this.editorView.opening_kind || "window");
+                this._setPlanTool("select");
+            }
             this._cancelPlanDraft();
             this._syncToolbar();
             return;
@@ -2642,11 +3030,29 @@ class Factory3DWidget {
             this._createRectangularRoom(start, point);
         } else if (tool === "opening" && placement) {
             this._createOpeningFromPlacement(placement, this.editorView.opening_kind || "window");
+            this._setPlanTool("select");
         } else if (tool === "camera" && length >= 0.001) {
             this._createCameraFromDrag(start, point);
         }
         this._cancelPlanDraft();
         this._syncToolbar();
+    }
+
+    _defaultCameraPlanTarget(position) {
+        const state = this._normalizeCameraState(
+            this.viewer?.getCameraState?.() || {},
+            this.scene?.camera,
+        );
+        const direction = [
+            (Number(state.target?.[0]) || 0) - (Number(state.position?.[0]) || 0),
+            (Number(state.target?.[2]) || 0) - (Number(state.position?.[2]) || 0),
+        ];
+        const length = Math.hypot(direction[0], direction[1]);
+        if (length < 0.001) return [position[0], position[1] - 1];
+        return [
+            position[0] + direction[0] / length,
+            position[1] + direction[1] / length,
+        ];
     }
 
     _createWallFromDrag(start, end) {
@@ -2698,6 +3104,7 @@ class Factory3DWidget {
             };
             this.scene.cameras = [...(this.scene.cameras || []), camera];
             this._selectCamera(camera.camera_id);
+            this._renderObjects();
             this._scheduleSceneSave(0);
         });
         return true;
@@ -2737,8 +3144,9 @@ class Factory3DWidget {
         return nearest?.distance <= tolerance ? nearest : null;
     }
 
-    _openingPlacement(nearest, requestedWidth = 1.2) {
+    _openingPlacement(nearest, requestedWidth = this.editorView.opening_kind === "door" ? 0.9 : 1.2) {
         const wall = nearest?.wall;
+        if (this._openingWallId && this._openingWallId !== wall?.wall_id) return null;
         const length = Number(nearest?.length) || 0;
         if (!wall || length < 0.05) return null;
         const fitted = this._fitOpeningOnWall(wall, nearest.offset, requestedWidth);
@@ -2753,8 +3161,16 @@ class Factory3DWidget {
             wallStart[0] + (wallEnd[0] - wallStart[0]) * offset,
             wallStart[1] + (wallEnd[1] - wallStart[1]) * offset,
         ];
+        const kind = this.editorView.opening_kind || "window";
+        const wallHeight = Math.max(0.05, Number(wall.height) || DEFAULT_WALL.height);
+        const sill = kind === "door" ? 0 : Math.min(0.9, Math.max(0, wallHeight - 0.05));
+        const level = this.scene.levels.find(value => value.level_id === wall.level_id);
         return {
             wall,
+            kind,
+            base: (Number(level?.elevation) || 0) + (Number(building?.position?.[1]) || 0),
+            height: Math.min(kind === "door" ? 2 : 1.2, wallHeight - sill),
+            sill_height: sill,
             offset,
             width,
             thickness: Number(wall.thickness) || DEFAULT_WALL.thickness,
@@ -2864,17 +3280,29 @@ class Factory3DWidget {
             this.toast("Choose an opposite corner with both width and depth.", "error");
             return false;
         }
+        return this._createRoomPolygon(rectangle);
+    }
+
+    _createRoomPolygon(rectangle) {
+        if (!isSimpleRoomPolygon(rectangle)) {
+            this.toast("The room contour must enclose an area without crossing or touching itself.", "error");
+            return false;
+        }
+        if (this._activeBuilding()?.locked) {
+            this.toast("Unlock the active building before adding a room.", "info");
+            return false;
+        }
         if (this.scene.architecture.rooms.length >= 1024) {
             this.toast("The scene room limit has been reached.", "error");
             return false;
         }
-        if (this.scene.architecture.walls.length > 4092) {
-            this.toast("Four free wall slots are required to create a room.", "error");
+        if (this.scene.architecture.walls.length + rectangle.length > 4096) {
+            this.toast(`${rectangle.length} free wall slots are required to create this room.`, "error");
             return false;
         }
         const roomId = factoryId();
         this.planDraft = null;
-        this.planHover = { tool: "room", point: [...end] };
+        this.planHover = { tool: "room", point: [...rectangle.at(-1)] };
         this._renderPlanPreview();
         this._recordEditorCommand("Create room", () => {
             const building = this._activeBuilding();
@@ -3071,14 +3499,16 @@ class Factory3DWidget {
         }
     }
 
-    _previewArchitectureMaterials() {
+    _previewArchitectureMaterials(sceneData = this.scene, { persist = true } = {}) {
         clearTimeout(this._architecturePreviewTimer);
         this._architecturePreviewTimer = setTimeout(() => {
             this._architecturePreviewTimer = 0;
-            void this.viewer.refreshArchitecture(this.scene);
+            void this.viewer.refreshArchitecture(sceneData);
         }, 50);
-        this._scheduleSceneSave(220);
-        this._scheduleStateSave(220);
+        if (persist) {
+            this._scheduleSceneSave(220);
+            this._scheduleStateSave(220);
+        }
     }
 
     _architectureSelectionKey(selection) {
@@ -3102,7 +3532,8 @@ class Factory3DWidget {
         );
     }
 
-    _selectArchitecture(selection, { additive = false } = {}) {
+    _selectArchitecture(selection, { additive = false, fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         if (selection?.type === "camera") {
             this._selectCamera(selection.id);
             return;
@@ -3147,7 +3578,7 @@ class Factory3DWidget {
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
-        if (this.selectedArchitecture) this._setWorkspaceTab("right", "inspector");
+        if (this.selectedArchitecture && fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave(0);
     }
 
@@ -3195,6 +3626,10 @@ class Factory3DWidget {
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
+        const selectedCamera = this.selectedCameraIds.size === 1
+            ? this.scene.cameras.find(camera => camera.camera_id === this.selectedCameraId)
+            : null;
+        if (selectedCamera) this.viewer?.showCameraPreview?.(selectedCamera, { force: true });
         this._scheduleStateSave(0);
     }
 
@@ -3295,9 +3730,36 @@ class Factory3DWidget {
             const opening = this.scene?.architecture?.openings?.find(item => item.opening_id === change.id);
             const wall = this.scene?.architecture?.walls?.find(item => item.wall_id === opening?.wall_id);
             const building = this._buildingForItem(wall);
+            const phase = ["start", "move", "end", "cancel"].includes(change.phase)
+                ? change.phase
+                : "end";
+            const activeDrag = this._architecturePlanDrag?.type === "opening"
+                && this._architecturePlanDrag.id === change.id
+                ? this._architecturePlanDrag
+                : null;
+            if (phase === "cancel") {
+                if (opening && activeDrag) {
+                    opening.offset = activeDrag.offset;
+                    opening.width = activeDrag.width;
+                    this.viewer.updateArchitectureItem("opening", opening.opening_id, this.scene);
+                }
+                this._architecturePlanDrag = null;
+                return;
+            }
             if (!opening || !wall || opening.locked || wall.locked || building?.locked) {
                 return this.viewer.setArchitectureSelection(this.selectedArchitecture);
             }
+            if (phase === "start") {
+                this._architecturePlanDrag = {
+                    type: "opening",
+                    id: opening.opening_id,
+                    before: this._captureEditorSnapshot(),
+                    offset: opening.offset,
+                    width: opening.width,
+                };
+                return;
+            }
+            if (!Array.isArray(change.point)) return;
             const point = this._worldToLocalPlan(
                 this._snapPlanPoint(change.point, change.event || {}),
                 building,
@@ -3309,9 +3771,12 @@ class Factory3DWidget {
             const requestedOffset = ((point[0] - wall.start[0]) * dx + (point[1] - wall.start[1]) * dz) / lengthSquared;
             const fitted = this._fitOpeningOnWall(wall, requestedOffset, opening.width, opening.opening_id);
             if (!fitted) return this.viewer.setArchitectureSelection(this.selectedArchitecture);
-            const before = this._captureEditorSnapshot();
+            const before = activeDrag?.before || this._captureEditorSnapshot();
             opening.offset = fitted.offset;
             opening.width = fitted.width;
+            this.viewer.updateArchitectureItem("opening", opening.opening_id, this.scene);
+            if (phase === "move") return;
+            this._architecturePlanDrag = null;
             this.history.push("Move opening", before, this._captureEditorSnapshot());
             void this._commitArchitecture({ targeted: true });
             return;
@@ -3327,6 +3792,45 @@ class Factory3DWidget {
             this.viewer.setArchitectureSelection(this.selectedArchitecture);
             return;
         }
+        const phase = ["start", "move", "end", "cancel"].includes(change.phase)
+            ? change.phase
+            : "end";
+        const activeDrag = this._architecturePlanDrag?.type === "wall"
+            && this._architecturePlanDrag.id === change.id
+            && this._architecturePlanDrag.endpoint === change.endpoint
+            ? this._architecturePlanDrag
+            : null;
+        if (phase === "cancel") {
+            if (activeDrag) {
+                wall.start = [...activeDrag.start];
+                wall.end = [...activeDrag.end];
+                for (const original of activeDrag.rooms) {
+                    const linked = this.scene.architecture.rooms?.find(item => item.room_id === original.room_id);
+                    if (linked) linked.polygon = original.polygon.map(point => [...point]);
+                }
+                this.viewer.updateArchitectureItem("wall", wall.wall_id, this.scene);
+            }
+            this._architecturePlanDrag = null;
+            return;
+        }
+        if (phase === "start") {
+            this._architecturePlanDrag = {
+                type: "wall",
+                id: wall.wall_id,
+                endpoint: change.endpoint,
+                before: this._captureEditorSnapshot(),
+                start: [...wall.start],
+                end: [...wall.end],
+                rooms: (this.scene.architecture.rooms || [])
+                    .filter(room => room.wall_ids?.includes(wall.wall_id))
+                    .map(room => ({
+                        room_id: room.room_id,
+                        polygon: room.polygon.map(point => [...point]),
+                    })),
+            };
+            return;
+        }
+        if (!Array.isArray(change.point)) return;
         const worldPoint = this._snapPlanPoint(change.point, change.event || {});
         const building = this._buildingForItem(wall);
         const point = this._worldToLocalPlan(worldPoint, building);
@@ -3334,10 +3838,15 @@ class Factory3DWidget {
             point[0] - wall[change.endpoint === "start" ? "end" : "start"][0],
             point[1] - wall[change.endpoint === "start" ? "end" : "start"][1],
         ) < 0.001) {
+            if (activeDrag && phase === "end") {
+                this._architecturePlanDrag = null;
+                this.history.push("Move wall endpoint", activeDrag.before, this._captureEditorSnapshot());
+                void this._commitArchitecture();
+            }
             this.viewer.setArchitectureSelection(this.selectedArchitecture);
             return;
         }
-        const before = this._captureEditorSnapshot();
+        const before = activeDrag?.before || this._captureEditorSnapshot();
         wall[change.endpoint] = point;
         for (const room of this.scene.architecture.rooms || []) {
             const index = room.wall_ids?.indexOf(wall.wall_id) ?? -1;
@@ -3347,6 +3856,9 @@ class Factory3DWidget {
                 : (index + 1) % room.polygon.length;
             room.polygon[endpointIndex] = [...point];
         }
+        this.viewer.updateArchitectureItem("wall", wall.wall_id, this.scene);
+        if (phase === "move") return;
+        this._architecturePlanDrag = null;
         this.history.push("Move wall endpoint", before, this._captureEditorSnapshot());
         void this._commitArchitecture();
         this._syncToolbar();
@@ -3434,16 +3946,27 @@ class Factory3DWidget {
         range = true,
         sliderMinimum,
         sliderMaximum,
+        sliderScale = "linear",
         disabled = false,
+        preservePrecision = false,
     } = {}) {
         const numericValue = Number(value);
         const safeValue = Number.isFinite(numericValue) ? numericValue : 0;
         const disabledAttribute = disabled ? " disabled" : "";
+        const logarithmicSlider = sliderScale === "logarithmic"
+            && safeValue > 0
+            && Number(minimum) > 0
+            && Number(maximum) > 0;
         let rangeMinimum = Number.isFinite(sliderMinimum) ? sliderMinimum : minimum;
         let rangeMaximum = Number.isFinite(sliderMaximum) ? sliderMaximum : maximum;
         if (range && Number.isFinite(minimum) && Number.isFinite(maximum)) {
             const span = maximum - minimum;
-            if (!Number.isFinite(sliderMinimum) && !Number.isFinite(sliderMaximum) && span > 720) {
+            if (
+                !logarithmicSlider
+                && !Number.isFinite(sliderMinimum)
+                && !Number.isFinite(sliderMaximum)
+                && span > 720
+            ) {
                 const windowSize = path.includes("rotation")
                     ? 45
                     : path.includes("focus")
@@ -3457,21 +3980,47 @@ class Factory3DWidget {
         }
         rangeMinimum = Math.min(rangeMinimum, safeValue);
         rangeMaximum = Math.max(rangeMaximum, safeValue);
-        const controlValue = this._formatControlNumber(safeValue, step);
-        const controlMinimum = this._formatControlNumber(minimum, step);
-        const controlMaximum = this._formatControlNumber(maximum, step);
-        const rangeMinimumValue = this._formatControlNumber(rangeMinimum, step);
-        const rangeMaximumValue = this._formatControlNumber(rangeMaximum, step);
+        const controlValue = preservePrecision ? String(safeValue) : this._formatControlNumber(safeValue, step);
+        const controlMinimum = preservePrecision ? String(minimum) : this._formatControlNumber(minimum, step);
+        const controlMaximum = preservePrecision ? String(maximum) : this._formatControlNumber(maximum, step);
+        const rangeMinimumValue = logarithmicSlider
+            ? Math.log10(rangeMinimum)
+            : preservePrecision ? String(rangeMinimum) : this._formatControlNumber(rangeMinimum, step);
+        const rangeMaximumValue = logarithmicSlider
+            ? Math.log10(rangeMaximum)
+            : preservePrecision ? String(rangeMaximum) : this._formatControlNumber(rangeMaximum, step);
+        const rangeValue = logarithmicSlider ? Math.log10(safeValue) : controlValue;
+        const rangeStep = preservePrecision ? "any" : logarithmicSlider ? 0.001 : step;
+        const exactStep = preservePrecision ? "any" : step;
+        const rangeScaleAttribute = logarithmicSlider ? ' data-editor-scale="log10"' : "";
         return `
             <div class="vnccs-i3s__precision-row">
-                <span>${escapeHTML(label)}</span>
-                ${range ? `<input type="range" aria-label="${escapeHTML(label)} slider" data-editor-path="${path}" min="${rangeMinimumValue}" max="${rangeMaximumValue}" step="${step}" value="${controlValue}"${disabledAttribute} />` : ""}
-                <input class="vnccs-i3s__input" aria-label="${escapeHTML(label)} exact value" type="number" data-editor-path="${path}" min="${controlMinimum}" max="${controlMaximum}" step="${step}" value="${controlValue}"${disabledAttribute} />
+                ${preservePrecision ? `<button type="button" class="vnccs-i3s__numeric-scrub" data-numeric-scrub="${path}" title="Drag to adjust ${escapeHTML(label)}. Shift: fine; Alt: coarse."${disabledAttribute}>${escapeHTML(label)}</button>` : `<span>${escapeHTML(label)}</span>`}
+                ${range ? `<input type="range" aria-label="${escapeHTML(label)} slider" data-editor-path="${path}"${rangeScaleAttribute} min="${rangeMinimumValue}" max="${rangeMaximumValue}" step="${rangeStep}" value="${rangeValue}"${disabledAttribute} />` : ""}
+                <input class="vnccs-i3s__input" aria-label="${escapeHTML(label)} exact value" type="${preservePrecision ? "text" : "number"}" inputmode="decimal" data-editor-path="${path}" min="${controlMinimum}" max="${controlMaximum}" step="${exactStep}" value="${controlValue}"${disabledAttribute} />
+                ${preservePrecision ? `<button type="button" class="vnccs-i3s__numeric-reset" data-numeric-reset="${path}" title="Reset ${escapeHTML(label)}" aria-label="Reset ${escapeHTML(label)}"${disabledAttribute}>↺</button>` : ""}
             </div>`;
+    }
+
+    _numericControlInputValue(control) {
+        const rawValue = Number(control?.value);
+        if (!Number.isFinite(rawValue)) return NaN;
+        return control.dataset.editorScale === "log10" ? 10 ** rawValue : rawValue;
+    }
+
+    _syncNumericControlPeers(root, path, value, source = null) {
+        for (const peer of root.querySelectorAll(`[data-editor-path="${path}"]`)) {
+            if (peer === source) continue;
+            peer.value = peer.dataset.editorScale === "log10"
+                ? String(Math.log10(Math.max(Number.MIN_VALUE, value)))
+                : this._formatControlNumber(value, peer.step);
+        }
     }
 
     _renderInspector() {
         if (!this.els?.inspector) return;
+        this._numericInspectorCleanup?.();
+        this._numericInspectorCleanup = null;
         preserveScrollState(this.container, () => {
             const item = this.scene?.objects?.find(value => value.object_id === this.selectedObjectId);
             const architecture = this._selectedArchitectureValue();
@@ -3521,28 +4070,174 @@ class Factory3DWidget {
         });
     }
 
+    _resolvePropertyLight(ref) {
+        if (ref.kind !== "light" || ref.sceneId !== this.sceneId) return null;
+        return this.lighting?.lights?.find(light => light.light_id === ref.id) || null;
+    }
+
+    _restoreLightPatches(patches, direction) {
+        for (const patch of patches) {
+            const entity = this._resolveNumericEntity(patch.ref);
+            if (!entity) continue;
+            const value = direction === "undo" ? patch.before : patch.after;
+            if (patch.path === "$pose" && patch.ref.kind === "camera") Object.assign(entity, structuredClone(value));
+            else this._writeEditorProperty(patch.ref, patch.path, value);
+            this._previewEditorProperty(patch.ref, true, patch.path);
+        }
+        this._renderObjects();
+        this._renderInspector();
+        this._syncToolbar();
+        this._scheduleSceneSave(0);
+        this._scheduleStateSave(0);
+    }
+
+    _resolveNumericEntity(ref) {
+        if (ref.sceneId !== this.sceneId) return null;
+        if (ref.kind === "light") return this._resolvePropertyLight(ref);
+        if (ref.kind === "model") return this.scene?.objects?.find(item => item.object_id === ref.id);
+        if (ref.kind === "wall") return this.scene?.architecture?.walls?.find(item => item.wall_id === ref.id);
+        if (ref.kind === "camera") return this.scene?.cameras?.find(item => item.camera_id === ref.id);
+        return null;
+    }
+
+    _cameraNumericValues(camera) {
+        const pose = cameraPoseFromLegacy(camera);
+        return { position: pose.position, rotation: eulerDegreesFromQuaternion(pose.quaternion),
+            fov: pose.fov, focus_distance: pose.focus_distance };
+    }
+
+    _readEditorProperty(ref, path) {
+        const entity = this._resolveNumericEntity(ref);
+        if (!entity) return undefined;
+        if (ref.kind === "light") return readLightProperty(entity, path);
+        if (ref.kind === "model") return path.startsWith("primitive.")
+            ? readNumericProperty(entity.primitive, path.slice(10), PRIMITIVE_NUMERIC_PROPERTIES)
+            : readNumericProperty(entity.transform, path, TRANSFORM_NUMERIC_PROPERTIES);
+        if (ref.kind === "wall") return readNumericProperty(entity, path, WALL_NUMERIC_PROPERTIES);
+        return readNumericProperty(this._cameraNumericValues(entity), path, CAMERA_NUMERIC_PROPERTIES);
+    }
+
+    _writeEditorProperty(ref, path, value) {
+        const entity = this._resolveNumericEntity(ref);
+        if (!entity) return;
+        if (ref.kind === "light") writeLightProperty(entity, path, value);
+        else if (ref.kind === "model") {
+            if (path.startsWith("primitive.")) writeNumericProperty(entity.primitive, path.slice(10), value, PRIMITIVE_NUMERIC_PROPERTIES);
+            else writeNumericProperty(entity.transform, path, value, TRANSFORM_NUMERIC_PROPERTIES);
+        }
+        else if (ref.kind === "wall") writeNumericProperty(entity, path, value, WALL_NUMERIC_PROPERTIES);
+        else {
+            const values = this._cameraNumericValues(entity);
+            writeNumericProperty(values, path, value, CAMERA_NUMERIC_PROPERTIES);
+            Object.assign(entity, legacyCameraFromPose({ ...values, quaternion: quaternionFromEulerDegrees(values.rotation) }));
+        }
+    }
+
+    _previewEditorProperty(ref, final = false, path = "") {
+        const entity = this._resolveNumericEntity(ref);
+        if (!entity) return;
+        if (ref.kind === "light") this._commitLighting({ final, persist: final });
+        else if (ref.kind === "model") {
+            if (path.startsWith("primitive.")) this.viewer.updateObject(ref.id, { primitive: entity.primitive });
+            else this.viewer.updateObject(ref.id, { transform: entity.transform });
+            const dimensions = this.els.inspector.querySelector("[data-stair-dimensions]");
+            if (dimensions && entity.primitive?.kind === "stairs") dimensions.textContent = `Riser ${(entity.primitive.height / entity.primitive.steps).toFixed(3)} m · Tread ${(entity.primitive.depth / entity.primitive.steps).toFixed(3)} m`;
+        }
+        else if (ref.kind === "wall") this.viewer.updateArchitectureItem("wall", ref.id, this.scene);
+        else {
+            if (this.previewCameraId === ref.id) this.viewer.setCameraState(entity, { emit: false });
+            this.viewer.setCameraMarkers(this.scene.cameras);
+            this.viewer.showCameraPreview(entity, { realtime: !final });
+        }
+    }
+
+    _bindEntityNumeric(ref, descriptors, prefix = "") {
+        const feedback = element("div", "vnccs-i3s__hint");
+        feedback.setAttribute("role", "status");
+        this.els.inspector.append(feedback);
+        const capture = ref.kind === "camera" ? target => {
+            const camera = this._resolveNumericEntity(target);
+            return camera ? structuredClone({ position: camera.position, target: camera.target, up: camera.up, fov: camera.fov }) : null;
+        } : null;
+        const gesture = new FactoryPropertyGesture({
+            history: this.history,
+            read: (target, path) => this._readEditorProperty(target, path),
+            write: (target, path, value) => this._writeEditorProperty(target, path, value),
+            preview: (target, path) => this._previewEditorProperty(target, false, path),
+            capture,
+            restore: capture ? (target, snapshot) => {
+                const camera = this._resolveNumericEntity(target);
+                if (camera) Object.assign(camera, structuredClone(snapshot));
+            } : null,
+            finish: (target, path) => {
+                this._previewEditorProperty(target, true, path);
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._scheduleScenePreview(160);
+                this._syncToolbar();
+            },
+        });
+        this._activeNumericGesture = gesture;
+        this._numericInspectorCleanup = bindNumericPropertyInputs(this.els.inspector, {
+            ref, descriptors, prefix, gesture,
+            read: (target, path) => this._readEditorProperty(target, path),
+            feedback: text => { feedback.textContent = text; },
+        });
+    }
+
+    _descriptorControl(descriptor, path, value, extra = {}) {
+        return this._numericControl(descriptor.label, path, value, {
+            minimum: descriptor.hardMin, maximum: descriptor.hardMax, step: descriptor.step,
+            sliderMinimum: descriptor.sliderMin, sliderMaximum: descriptor.sliderMax,
+            preservePrecision: true, ...extra,
+        });
+    }
+
+    _lightNumericControl(path, light) {
+        const descriptor = LIGHT_NUMERIC_PROPERTIES[path];
+        return this._numericControl(descriptor.label, `light.${path}`, readLightProperty(light, path), {
+            minimum: descriptor.hardMin, maximum: descriptor.hardMax, step: descriptor.step,
+            sliderMinimum: descriptor.sliderMin, sliderMaximum: descriptor.sliderMax,
+            preservePrecision: true,
+        });
+    }
+
     _renderLightInspector(light) {
         const lightId = light.light_id;
         const currentLight = () => this.lighting?.lights?.find(
             item => item.light_id === lightId,
         );
-        this.els.inspectorKind.textContent = "Point light";
+        const kindLabel = { point: "Point light", spot: "Spot light", directional: "Directional light" }[light.kind] || "Point light";
+        this.els.inspectorKind.textContent = kindLabel;
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(light.name || "Point light")}</div>
             <div class="vnccs-i3s__hint">Scene object · editor sphere is excluded from camera exports.</div>
+            <div class="vnccs-i3s__hint" data-light-status="${lightId}">${localLightStatusLabel(this._lightShadowAllocation().get(lightId))}</div>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-light-property="name" value="${escapeHTML(light.name || "Point light")}" maxlength="80" /></label>
+            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Light type</span><select class="vnccs-i3s__select" data-light-property="kind">
+                ${["point", "spot", "directional"].map(kind => `<option value="${kind}"${light.kind === kind ? " selected" : ""}>${{ point: "Point", spot: "Spot", directional: "Directional" }[kind]}</option>`).join("")}
+            </select></label>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-light-property="level_id">
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${light.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
             </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-light-property="building_id">${this._buildingOptions(light.building_id)}</select></label>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `light.position.${index}`, light.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
+                ${[0, 1, 2].map(index => this._lightNumericControl(`position.${index}`, light)).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Emission</b>
-                <label class="vnccs-i3s__lighting-color-row"><span><b>Color</b></span><span class="vnccs-i3s__lighting-color-control"><input type="color" data-light-property="color" value="${light.color}" aria-label="Point light color" /><output>${escapeHTML(light.color.toUpperCase())}</output></span></label>
-                ${this._numericControl("Strength", "light.intensity", light.intensity, { minimum: 0, maximum: 100000, sliderMinimum: 0, sliderMaximum: 50, step: 0.1 })}
-                ${this._numericControl("Range", "light.distance", light.distance, { minimum: 0, maximum: 1000000, sliderMinimum: 0, sliderMaximum: 100, step: 0.1 })}
+                <label class="vnccs-i3s__lighting-color-row"><span><b>Color</b></span><span class="vnccs-i3s__lighting-color-control"><input type="color" data-light-property="color" value="${light.color}" aria-label="${kindLabel} color" /><output>${escapeHTML(light.color.toUpperCase())}</output></span></label>
+                ${this._lightNumericControl("intensity", light)}
+                ${light.kind !== "directional" ? this._lightNumericControl("distance", light) : ""}
             </div>
+            ${light.kind !== "point" ? `<div class="vnccs-i3s__inspector-group"><b>Direction target · m</b>
+                ${[0, 1, 2].map(index => this._lightNumericControl(`target.${index}`, light)).join("")}
+                <div class="vnccs-i3s__hint">Aim from the light position toward this world-space point.</div>
+            </div>` : ""}
+            ${light.kind === "spot" ? `<div class="vnccs-i3s__inspector-group"><b>Cone</b>
+                ${this._lightNumericControl("angle", light)}
+                ${this._lightNumericControl("penumbra", light)}
+                <div class="vnccs-i3s__hint">The full cone is twice the half-angle. Range 0 means unlimited.</div>
+            </div>` : ""}
+            <div class="vnccs-i3s__hint" data-property-feedback role="status" aria-live="polite"></div>
             <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-light-property="visible"${light.visible !== false ? " checked" : ""} /> Light visible</label>
             <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-light-property="cast_shadow"${light.cast_shadow !== false ? " checked" : ""} /> Cast shadow</label>
             <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete" title="Delete light (Delete/Backspace)">Delete light</button>`;
@@ -3552,29 +4247,20 @@ class Factory3DWidget {
             this._commitLighting();
             this.viewer?.selectLightMarker?.(lightId);
         };
-        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
-            control.addEventListener("pointerdown", begin);
-            control.addEventListener("focus", begin);
-            control.addEventListener("input", () => {
-                const [, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
-                const target = currentLight();
-                if (!target || !Number.isFinite(value)) return;
-                if (rawIndex !== undefined) target[key][Number(rawIndex)] = value;
-                else target[key] = value;
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(value);
-                }
-                apply();
-            });
-            control.addEventListener("change", () => {
-                if (before) this.history.push("Edit light", before, this._captureEditorSnapshot());
-                before = null;
-                this._commitLighting({ final: true });
-                this._renderObjects();
-                this._syncToolbar();
-            });
-        }
+        this._activeNumericGesture = this.lightPropertyGesture;
+        this._numericInspectorCleanup = bindNumericPropertyInputs(this.els.inspector, {
+            descriptors: LIGHT_NUMERIC_PROPERTIES,
+            ref: { kind: "light", id: lightId, sceneId: this.sceneId },
+            gesture: this.lightPropertyGesture,
+            read: (ref, path) => {
+                const target = this._resolvePropertyLight(ref);
+                return target ? readLightProperty(target, path) : undefined;
+            },
+            feedback: message => {
+                const output = this.els.inspector.querySelector("[data-property-feedback]");
+                if (output) output.textContent = message;
+            },
+        });
         for (const control of this.els.inspector.querySelectorAll("[data-light-property]")) {
             control.addEventListener("pointerdown", begin);
             control.addEventListener("focus", begin);
@@ -3590,9 +4276,6 @@ class Factory3DWidget {
                     target.position[1] += delta;
                     target.target[1] += delta;
                     target.level_id = value;
-                } else if (key === "building_id") {
-                    target.building_id = this._validBuildingId(value);
-                    if (target.building_id) this.editorView.active_building_id = target.building_id;
                 } else {
                     target[key] = value;
                 }
@@ -3633,32 +4316,47 @@ class Factory3DWidget {
             <div class="vnccs-i3s__inspector-group"><b>Scale factor</b>
                 ${this._numericControl("Scale", "group.scale", 1, { minimum: 0.001, maximum: 100, step: 0.001 })}
             </div>
-            <div class="vnccs-i3s__inspector-actions"><button class="vnccs-i3s__button vnccs-i3s__button--primary" type="button" data-group-apply>Apply to ${group.children.length} objects</button></div>`;
+            <div class="vnccs-i3s__hint">All group changes are applied to the viewport immediately.</div>`;
         const staged = { position: [...center], rotation: [0, 0, 0], scale: 1 };
+        let before = null;
+        const begin = () => { before ||= this._captureEditorSnapshot(); };
+        const apply = final => {
+            this._suppressViewerTransformHistory = true;
+            try { this.viewer.applyGroupDelta(staged, { final }); }
+            finally {
+                this._suppressViewerTransformHistory = false;
+                this._viewerTransformHistoryBefore = null;
+            }
+        };
         for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
+                begin();
                 const [, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
+                const value = this._numericControlInputValue(control);
                 if (!Number.isFinite(value)) return;
                 if (rawIndex !== undefined) staged[key][Number(rawIndex)] = value;
                 else staged[key] = value;
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(value);
-                }
+                this._syncNumericControlPeers(
+                    this.els.inspector,
+                    control.dataset.editorPath,
+                    value,
+                    control,
+                );
+                apply(false);
+            });
+            control.addEventListener("change", () => {
+                if (!before) return;
+                apply(true);
+                this.history.push("Transform group", before, this._captureEditorSnapshot());
+                before = null;
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._renderInspector();
+                this._syncToolbar();
             });
         }
-        this.els.inspector.querySelector("[data-group-apply]")?.addEventListener("click", () => {
-            this._recordEditorCommand("Transform group", () => {
-                this._suppressViewerTransformHistory = true;
-                try { this.viewer.applyGroupDelta(staged); }
-                finally {
-                    this._suppressViewerTransformHistory = false;
-                    this._viewerTransformHistoryBefore = null;
-                }
-                this._renderInspector();
-                this._scheduleSceneSave(0);
-            });
-        });
     }
 
     _renderCameraInspector(camera) {
@@ -3668,105 +4366,36 @@ class Factory3DWidget {
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(camera.name || "Camera")}</div>
             <div class="vnccs-i3s__hint">${this.previewCameraId === camera.camera_id
-                ? "Camera View is live: exact fields update the viewport immediately."
-                : "Exact fields update the saved Plan marker. Enter Camera View to preview rotation and lens."}</div>
+                ? "Camera View is live: exact fields update the viewport and inset preview immediately."
+                : "Exact fields update the saved camera and inset preview immediately."}</div>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-camera-property="name" value="${escapeHTML(camera.name || "Camera")}" maxlength="80" /></label>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-camera-property="level_id">
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${camera.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
             </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-camera-property="building_id">
-                ${this._buildingOptions(camera.building_id)}
-            </select></label>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
+                ${["X", "Y", "Z"].map((axis, index) => this._descriptorControl(CAMERA_NUMERIC_PROPERTIES[`position.${index}`], `camera.position.${index}`, pose.position[index])).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `camera.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+                ${["Pitch X", "Yaw Y", "Roll Z"].map((axis, index) => this._descriptorControl(CAMERA_NUMERIC_PROPERTIES[`rotation.${index}`], `camera.rotation.${index}`, rotation[index])).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Lens</b>
-                ${this._numericControl("FOV", "camera.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
-                ${this._numericControl("Focus distance", "camera.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 100000, step: 0.001 })}
+                ${this._descriptorControl(CAMERA_NUMERIC_PROPERTIES.fov, "camera.fov", pose.fov)}
+                ${this._descriptorControl(CAMERA_NUMERIC_PROPERTIES.focus_distance, "camera.focus_distance", pose.focus_distance)}
             </div>
             <div class="vnccs-i3s__inspector-actions">
                 <button class="vnccs-i3s__button" type="button" data-inspector-action="preview-camera">${this.previewCameraId === camera.camera_id ? "Exit camera view" : "Enter camera view"}</button>
                 <button class="vnccs-i3s__button" type="button" data-inspector-action="update-camera">Update from current view</button>
                 <button class="vnccs-i3s__button" type="button" data-inspector-action="keyframe">Add camera as path point</button>
             </div>`;
-        let before = null;
-        const edited = {
-            position: [...pose.position],
-            rotation: [...rotation],
-            fov: pose.fov,
-            focus_distance: pose.focus_distance,
-        };
-        const begin = () => { before ||= this._captureEditorSnapshot(); };
-        const apply = () => {
-            const legacy = legacyCameraFromPose({
-                position: edited.position,
-                quaternion: quaternionFromEulerDegrees(edited.rotation),
-                fov: edited.fov,
-                focus_distance: edited.focus_distance,
-            });
-            Object.assign(camera, legacy);
-            // Precise edits in 3D enter the saved camera non-destructively so
-            // every slider and exact value has an immediate viewport result.
-            // Plan mode keeps showing the saved marker and its FOV wedge.
-            if (this.editorView.view_mode === "3d" && this.previewCameraId !== camera.camera_id) {
-                if (!this.previewCameraId) {
-                    this._cameraReturnState = this._normalizeCameraState(
-                        this.viewer.getCameraState(),
-                        this.scene?.camera,
-                    );
-                }
-                this.previewCameraId = camera.camera_id;
-                if (this.scene.levels?.some(level => level.level_id === camera.level_id)) {
-                    this.editorView.active_level_id = camera.level_id;
-                    this.viewer.setActiveLevel(camera.level_id);
-                }
-                this._renderCameras();
-                const previewAction = this.els.inspector.querySelector(
-                    '[data-inspector-action="preview-camera"]',
-                );
-                if (previewAction) previewAction.textContent = "Exit camera view";
-                const hint = this.els.inspector.querySelector(".vnccs-i3s__hint");
-                if (hint) {
-                    hint.textContent = "Camera View is live: exact fields update the viewport immediately.";
-                }
-            }
-            if (this.previewCameraId === camera.camera_id) {
-                this.viewer.setCameraState(camera, { emit: false });
-            }
-            this.viewer.setCameraMarkers(this.scene.cameras);
-            this._scheduleSceneSave(180);
-            this._scheduleStateSave(180);
-        };
-        for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
-            control.addEventListener("pointerdown", begin);
-            control.addEventListener("focus", begin);
-            control.addEventListener("input", () => {
-                const [, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
-                if (!Number.isFinite(value)) return;
-                if (rawIndex !== undefined) edited[key][Number(rawIndex)] = value;
-                else edited[key] = value;
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(value);
-                }
-                apply();
-            });
-            control.addEventListener("change", () => {
-                if (before) this.history.push("Edit camera", before, this._captureEditorSnapshot());
-                before = null;
-                this._syncToolbar();
-                this._scheduleSceneSave(0);
-            });
-        }
+        this._bindEntityNumeric({ kind: "camera", id: camera.camera_id, sceneId: this.sceneId }, CAMERA_NUMERIC_PROPERTIES, "camera.");
         this.els.inspector.querySelector('[data-camera-property="name"]')?.addEventListener("change", event => {
             const original = this._captureEditorSnapshot();
             camera.name = String(event.currentTarget.value || "Camera").trim().slice(0, 80) || "Camera";
             this.history.push("Rename camera", original, this._captureEditorSnapshot());
             this._renderCameras();
+            this._renderObjects();
             this._renderInspector();
+            this.viewer?.showCameraPreview?.(camera, { refresh: false });
             this._scheduleSceneSave(0);
         });
         this.els.inspector.querySelector('[data-camera-property="level_id"]')?.addEventListener("change", event => {
@@ -3787,18 +4416,9 @@ class Factory3DWidget {
             this.history.push("Move camera to floor", original, this._captureEditorSnapshot());
             this.viewer.setCameraMarkers(this.scene.cameras);
             this._renderCameras();
+            this._renderObjects();
+            this.viewer?.showCameraPreview?.(camera);
             this._scheduleSceneSave(0);
-        });
-        this.els.inspector.querySelector('[data-camera-property="building_id"]')?.addEventListener("change", event => {
-            const original = this._captureEditorSnapshot();
-            camera.building_id = this._validBuildingId(event.currentTarget.value);
-            if (camera.building_id) this.editorView.active_building_id = camera.building_id;
-            this.history.push("Assign camera to building", original, this._captureEditorSnapshot());
-            this.viewer.setCameraMarkers(this.scene.cameras);
-            this._renderCameras();
-            this._syncToolbar();
-            this._scheduleSceneSave(0);
-            this._scheduleStateSave(0);
         });
         this.els.inspector.querySelector('[data-inspector-action="preview-camera"]')?.addEventListener("click", () => {
             if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
@@ -3811,6 +4431,7 @@ class Factory3DWidget {
             this.viewer.setCameraMarkers(this.scene.cameras);
             this._renderInspector();
             this._renderCameras();
+            this.viewer?.showCameraPreview?.(camera);
             this._scheduleSceneSave(0);
             this._syncToolbar();
         });
@@ -3825,7 +4446,6 @@ class Factory3DWidget {
         this.els.inspectorKind.textContent = "Camera path point";
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(track.name || "Camera path")}</div>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-track-property="building_id">${this._buildingOptions(track.building_id)}</select></label>
             <div class="vnccs-i3s__inspector-group"><b>Timeline</b>
                 ${this._numericControl("Time", "keyframe.time", frame.time, { minimum: 0, maximum: track.duration, step: 0.001 })}
                 ${this._numericControl("Duration", "track.duration", track.duration, { minimum: 0.1, maximum: 86400, step: 0.01 })}
@@ -3835,11 +4455,11 @@ class Factory3DWidget {
                 ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.position.${index}`, pose.position[index], { minimum: -10000, maximum: 10000, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `keyframe.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, step: 0.01 })).join("")}
+                ${["Pitch X", "Yaw Y", "Roll Z"].map((axis, index) => this._numericControl(axis, `keyframe.rotation.${index}`, rotation[index], { minimum: -36000, maximum: 36000, sliderMinimum: -180, sliderMaximum: 180, step: 0.01 })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Lens</b>
                 ${this._numericControl("FOV", "keyframe.fov", pose.fov, { minimum: 5, maximum: 120, step: 0.01 })}
-                ${this._numericControl("Focus", "keyframe.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 1000000, step: 0.001 })}
+                ${this._numericControl("Focus", "keyframe.focus_distance", pose.focus_distance, { minimum: 0.001, maximum: 1000000, step: 0.001, sliderScale: "logarithmic" })}
             </div>
             <div class="vnccs-i3s__inspector-grid">
                 <label><span>Interpolation</span><select class="vnccs-i3s__select" data-track-property="interpolation"><option value="linear"${track.interpolation === "linear" ? " selected" : ""}>Linear</option><option value="catmullrom"${track.interpolation === "catmullrom" ? " selected" : ""}>Smooth path</option></select></label>
@@ -3871,7 +4491,7 @@ class Factory3DWidget {
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
                 const [scope, key, rawIndex] = control.dataset.editorPath.split(".");
-                const value = Number(control.value);
+                const value = this._numericControlInputValue(control);
                 if (!Number.isFinite(value)) return;
                 if (scope === "track") {
                     if (key === "fps") track[key] = Math.round(value);
@@ -3893,9 +4513,19 @@ class Factory3DWidget {
                         : rawIndex !== undefined
                             ? edited[key][Number(rawIndex)]
                             : edited[key];
-                control.value = String(appliedValue);
-                for (const peer of this.els.inspector.querySelectorAll(`[data-editor-path="${control.dataset.editorPath}"]`)) {
-                    if (peer !== control) peer.value = String(appliedValue);
+                control.value = control.dataset.editorScale === "log10"
+                    ? String(Math.log10(Math.max(Number.MIN_VALUE, appliedValue)))
+                    : this._formatControlNumber(appliedValue, control.step);
+                this._syncNumericControlPeers(
+                    this.els.inspector,
+                    control.dataset.editorPath,
+                    appliedValue,
+                    control,
+                );
+                if (scope === "track" || key === "time") {
+                    track.keyframes.sort((left, right) => left.time - right.time);
+                    this.els.cameraTrackTime.value = String(frame.time);
+                    this._renderCameraTracks();
                 }
             });
             control.addEventListener("change", () => {
@@ -3913,10 +4543,6 @@ class Factory3DWidget {
                 const target = control.dataset.trackProperty ? track : frame;
                 const key = control.dataset.trackProperty || control.dataset.keyframeProperty;
                 target[key] = control.type === "checkbox" ? control.checked : control.value;
-                if (control.dataset.trackProperty === "building_id") {
-                    track.building_id = this._validBuildingId(control.value);
-                    this.editorView.active_building_id = track.building_id;
-                }
                 this.history.push("Edit camera path", original, this._captureEditorSnapshot());
                 this._renderCameraTracks();
                 this._scheduleSceneSave(0);
@@ -3950,23 +4576,88 @@ class Factory3DWidget {
             scale: Math.max(0.001, Number(transform.scale) || 1),
         };
         const editor = normalizedObjectEditorProperties(item);
-        this.els.inspectorKind.textContent = "Gaussian object";
+        Object.assign(item, editor);
+        const primitive = editor.primitive;
+        const primitiveControl = (label, path, value, options = {}) => this._descriptorControl(
+            { ...PRIMITIVE_NUMERIC_PROPERTIES[path], label }, `primitive.${path}`, value,
+            { ...options, disabled: editor.locked },
+        );
+        const emissionControl = (label, path, value, options) => this._numericControl(
+            label,
+            path,
+            value,
+            options,
+        ).replaceAll("data-editor-path", "data-emission-path");
+        const textureName = this.scene?.textures?.find(
+            texture => texture.texture_id === primitive?.texture_id,
+        )?.name || "No texture";
+        this.els.inspectorKind.textContent = item.asset_kind === "primitive"
+            ? primitiveLabel(primitive?.kind)
+            : item.asset_kind === "mesh"
+                ? `${String(item.source?.format || "3D").toUpperCase()} model`
+                : "Gaussian object";
         this.els.inspector.innerHTML = `
             <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Object")}</div>
             <div class="vnccs-i3s__inspector-group"><b>Position · m</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `position.${index}`, transform.position?.[index], { minimum: -1000, maximum: 1000, step: 0.01, disabled: editor.locked })).join("")}
+                ${["X", "Y", "Z"].map((axis, index) => this._descriptorControl(TRANSFORM_NUMERIC_PROPERTIES[`position.${index}`], `position.${index}`, transform.position?.[index], { disabled: editor.locked })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Rotation · degrees</b>
-                ${["X", "Y", "Z"].map((axis, index) => this._numericControl(axis, `rotation.${index}`, transform.rotation?.[index], { minimum: -180, maximum: 180, step: 0.01, disabled: editor.locked })).join("")}
+                ${["X", "Y", "Z"].map((axis, index) => this._descriptorControl(TRANSFORM_NUMERIC_PROPERTIES[`rotation.${index}`], `rotation.${index}`, transform.rotation?.[index], { disabled: editor.locked })).join("")}
             </div>
             <div class="vnccs-i3s__inspector-group"><b>Uniform scale</b>
-                ${this._numericControl("Scale", "scale", transform.scale, { minimum: 0.001, maximum: 1000, step: 0.001, disabled: editor.locked })}
+                ${this._descriptorControl(TRANSFORM_NUMERIC_PROPERTIES.scale, "scale", transform.scale, { disabled: editor.locked })}
+            </div>
+            ${primitive ? `
+                <div class="vnccs-i3s__inspector-group"><b>${primitiveLabel(primitive.kind)} geometry</b>
+                    ${primitiveControl("Width", "width", primitive.width, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.width), step: 0.01, disabled: editor.locked })}
+                    ${primitive.kind === "image"
+                        ? primitiveControl("Height", "height", primitive.height, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.height), step: 0.01, disabled: editor.locked })
+                        : primitiveControl("Depth", "depth", primitive.depth, { minimum: 0.001, maximum: 100000, sliderMinimum: 0.01, sliderMaximum: Math.max(20, primitive.depth), step: 0.01, disabled: editor.locked })}
+                    ${PARAMETRIC_PARTS[primitive.kind]
+                        ? primitiveControl("Height", "height", primitive.height)
+                        : primitiveControl("Extrusion", "extrusion", primitive.extrusion)}
+                    ${primitive.kind === "stairs" ? `${primitiveControl("Steps", "steps", primitive.steps)}<div class="vnccs-i3s__hint" data-stair-dimensions>Riser ${(primitive.height / primitive.steps).toFixed(3)} m · Tread ${(primitive.depth / primitive.steps).toFixed(3)} m</div>` : ""}
+                    ${["sphere", "cylinder", "cone"].includes(primitive.kind) ? primitiveControl("Radial segments", "radial_segments", primitive.radial_segments) : ""}
+                    ${primitive.kind === "terrain" && this.scene.schema_version >= 12 ? `
+                        ${primitiveControl("Relief height", "height_amplitude", primitive.height_amplitude)}
+                        ${primitiveControl("Noise frequency", "noise_frequency", primitive.noise_frequency)}
+                        ${primitiveControl("Seed", "noise_seed", primitive.noise_seed, { range: false })}
+                        ${primitiveControl("Detail octaves", "noise_octaves", primitive.noise_octaves)}
+                        <div class="vnccs-i3s__hint">Seeded relief · 128 × 128 cells maximum. Increase grid segments to resolve finer details. Zero relief keeps a flat slab.</div>` : ""}
+                    ${primitive.kind === "terrain" && this.scene.schema_version < 12 ? `<button type="button" class="vnccs-i3s__button" data-terrain-upgrade>Enable terrain relief in a scene copy</button>` : ""}
+                    ${primitive.kind === "terrain" ? `
+                        ${primitiveControl("Segments X", "segments.0", primitive.segments[0], { minimum: 1, maximum: 128, step: 1, range: false, disabled: editor.locked })}
+                        ${primitiveControl("Segments Z", "segments.1", primitive.segments[1], { minimum: 1, maximum: 128, step: 1, range: false, disabled: editor.locked })}` : ""}
+                </div>
+                <div class="vnccs-i3s__inspector-group"><b>Surface texture</b>
+                    <div class="vnccs-i3s__hint">${escapeHTML(textureName)}</div>
+                    <div class="vnccs-i3s__inspector-actions">
+                        <button class="vnccs-i3s__button" type="button" data-primitive-texture-pick>${primitive.texture_id ? "Replace texture" : "Load texture"}</button>
+                        ${primitive.kind !== "image" && primitive.texture_id ? `<button class="vnccs-i3s__button" type="button" data-primitive-texture-clear>Clear</button>` : ""}
+                    </div>
+                    <input class="vnccs-i3s__file-input" type="file" accept="image/png,image/jpeg,image/webp" data-primitive-texture-file />
+                    ${primitiveControl(primitive.kind === "terrain" ? "Tile density X" : "Texture scale X", "uv_scale.0", primitive.uv_scale[0], { minimum: 0.001, maximum: 1000, sliderMinimum: 0.01, sliderMaximum: 20, step: 0.01 })}
+                    ${primitiveControl(primitive.kind === "terrain" ? "Tile density Y" : "Texture scale Y", "uv_scale.1", primitive.uv_scale[1], { minimum: 0.001, maximum: 1000, sliderMinimum: 0.01, sliderMaximum: 20, step: 0.01 })}
+                    ${primitiveControl("Texture offset X", "uv_offset.0", primitive.uv_offset[0], { minimum: -1000, maximum: 1000, sliderMinimum: -2, sliderMaximum: 2, step: 0.01 })}
+                    ${primitiveControl("Texture offset Y", "uv_offset.1", primitive.uv_offset[1], { minimum: -1000, maximum: 1000, sliderMinimum: -2, sliderMaximum: 2, step: 0.01 })}
+                    ${primitiveControl("Texture rotation", "uv_rotation", primitive.uv_rotation, { minimum: -36000, maximum: 36000, sliderMinimum: -180, sliderMaximum: 180, step: 0.1 })}
+                    <label class="vnccs-i3s__lighting-color-row"><span><b>Base color</b></span><span class="vnccs-i3s__lighting-color-control"><input type="color" data-primitive-property="color" value="${primitive.color}" aria-label="Primitive base color" /><output>${primitive.color.toUpperCase()}</output></span></label>
+                    ${primitiveControl("Opacity", "opacity", primitive.opacity, { minimum: 0, maximum: 1, step: 0.01 })}
+                    <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-primitive-property="double_sided"${primitive.double_sided ? " checked" : ""} /> Double-sided surface</label>
+                </div>` : ""}
+            <div class="vnccs-i3s__inspector-group"><b>Surface emission</b>
+                <div class="vnccs-i3s__hint">Emits sampled object colors from distributed area lights across the object surface.</div>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-emission-property="enabled"${editor.emission.enabled ? " checked" : ""} /> Emit light</label>
+                ${emissionControl("Intensity", "intensity", editor.emission.intensity, { minimum: 0, maximum: 1000, sliderMinimum: 0, sliderMaximum: 25, step: 0.1 })}
+                <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Area sampling</span><select class="vnccs-i3s__select" data-emission-property="quality">
+                    <option value="low"${editor.emission.quality === "low" ? " selected" : ""}>Low</option>
+                    <option value="medium"${editor.emission.quality === "medium" ? " selected" : ""}>Medium</option>
+                    <option value="high"${editor.emission.quality === "high" ? " selected" : ""}>High</option>
+                </select></label>
+                <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-emission-property="two_sided"${editor.emission.two_sided ? " checked" : ""} /> Emit from both sides</label>
             </div>
             <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level</span><select class="vnccs-i3s__select" data-object-property="level_id"${editor.locked ? " disabled" : ""}>
                 ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
-            </select></label>
-            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Building</span><select class="vnccs-i3s__select" data-object-property="building_id"${editor.locked ? " disabled" : ""}>
-                ${this._buildingOptions(item.building_id)}
             </select></label>
             <div class="vnccs-i3s__inspector-grid">
                 <label><span>Collision</span><select class="vnccs-i3s__select" data-object-property="collision_proxy.mode">
@@ -3996,6 +4687,10 @@ class Factory3DWidget {
     }
 
     _bindObjectInspector(item) {
+        this._bindEntityNumeric({ kind: "model", id: item.object_id, sceneId: this.sceneId }, MODEL_NUMERIC_PROPERTIES);
+        this.els.inspector.querySelector("[data-terrain-upgrade]")?.addEventListener("click", () => {
+            void this._ensureProceduralScene().catch(error => this._showError("Terrain upgrade failed", error));
+        });
         let before = null;
         const begin = () => { before ||= this._captureEditorSnapshot(); };
         const finish = label => {
@@ -4007,6 +4702,7 @@ class Factory3DWidget {
             this._scheduleScenePreview(160);
         };
         for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            if (Object.hasOwn(MODEL_NUMERIC_PROPERTIES, control.dataset.editorPath)) continue;
             control.addEventListener("pointerdown", begin);
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
@@ -4026,6 +4722,105 @@ class Factory3DWidget {
                 this._scheduleStateSave(180);
             });
             control.addEventListener("change", () => finish("Edit transform"));
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-primitive-property]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            const apply = () => {
+                const key = control.dataset.primitiveProperty;
+                const primitive = {
+                    ...item.primitive,
+                    [key]: control.type === "checkbox" ? control.checked : control.value,
+                };
+                item.primitive = normalizedObjectEditorProperties({ ...item, primitive }).primitive;
+                control.closest(".vnccs-i3s__lighting-color-control")?.querySelector("output")
+                    ?.replaceChildren(item.primitive.color.toUpperCase());
+                this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+            };
+            if (control.type === "color") control.addEventListener("input", apply);
+            control.addEventListener("change", () => {
+                apply();
+                finish("Edit primitive surface");
+            });
+        }
+        const primitiveTextureInput = this.els.inspector.querySelector("[data-primitive-texture-file]");
+        this.els.inspector.querySelector("[data-primitive-texture-pick]")?.addEventListener("click", () => {
+            primitiveTextureInput?.click();
+        });
+        primitiveTextureInput?.addEventListener("change", async () => {
+            const file = primitiveTextureInput.files?.[0];
+            primitiveTextureInput.value = "";
+            if (!file || !item.primitive) return;
+            const original = this._captureEditorSnapshot();
+            try {
+                const texture = await this._uploadSceneTexture(file);
+                item.primitive = normalizedObjectEditorProperties({
+                    ...item,
+                    primitive: { ...item.primitive, texture_id: texture.texture_id },
+                }).primitive;
+                await this.viewer.setScene(this.scene, { incremental: true });
+                this.history.push("Replace primitive texture", original, this._captureEditorSnapshot());
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._scheduleScenePreview(120);
+                this._renderInspector();
+            } catch (error) {
+                this._showError("Texture could not be applied", error);
+            }
+        });
+        this.els.inspector.querySelector("[data-primitive-texture-clear]")?.addEventListener("click", () => {
+            const original = this._captureEditorSnapshot();
+            item.primitive = normalizedObjectEditorProperties({
+                ...item,
+                primitive: { ...item.primitive, texture_id: "" },
+            }).primitive;
+            this.viewer.updateObject(item.object_id, { primitive: item.primitive });
+            this.history.push("Clear primitive texture", original, this._captureEditorSnapshot());
+            this._scheduleSceneSave(0);
+            this._scheduleStateSave(0);
+            this._scheduleScenePreview(120);
+            this._renderInspector();
+        });
+        for (const control of this.els.inspector.querySelectorAll("[data-emission-path]")) {
+            control.addEventListener("pointerdown", begin);
+            control.addEventListener("focus", begin);
+            const apply = () => {
+                const value = Number(control.value);
+                if (!Number.isFinite(value)) return;
+                item.emission = normalizedObjectEditorProperties({
+                    ...item,
+                    emission: { ...item.emission, [control.dataset.emissionPath]: value },
+                }).emission;
+                for (const peer of this.els.inspector.querySelectorAll(`[data-emission-path="${control.dataset.emissionPath}"]`)) {
+                    if (peer !== control) peer.value = this._formatControlNumber(item.emission[control.dataset.emissionPath], peer.step);
+                }
+                this.viewer.updateObject(item.object_id, { emission: item.emission });
+                this._scheduleSceneSave(180);
+                this._scheduleStateSave(180);
+            };
+            control.addEventListener("input", apply);
+            control.addEventListener("change", () => {
+                apply();
+                finish("Edit object emission");
+            });
+        }
+        for (const control of this.els.inspector.querySelectorAll("[data-emission-property]")) {
+            control.addEventListener("change", () => {
+                const original = this._captureEditorSnapshot();
+                const key = control.dataset.emissionProperty;
+                item.emission = normalizedObjectEditorProperties({
+                    ...item,
+                    emission: {
+                        ...item.emission,
+                        [key]: control.type === "checkbox" ? control.checked : control.value,
+                    },
+                }).emission;
+                this.viewer.updateObject(item.object_id, { emission: item.emission });
+                this.history.push("Edit object emission", original, this._captureEditorSnapshot());
+                this._scheduleSceneSave(0);
+                this._scheduleStateSave(0);
+                this._scheduleScenePreview(120);
+            });
         }
         for (const control of this.els.inspector.querySelectorAll("[data-proxy-path]")) {
             control.addEventListener("focus", begin);
@@ -4060,10 +4855,6 @@ class Factory3DWidget {
                         - (Number(previousLevel?.elevation) || 0);
                     item.level_id = control.value;
                 }
-                else if (key === "building_id") {
-                    item.building_id = this._validBuildingId(control.value);
-                    if (item.building_id) this.editorView.active_building_id = item.building_id;
-                }
                 else {
                     item[key] = control.value;
                     if (key === "light_transport" && control.value === "transmissive" && !item.transmission) {
@@ -4074,7 +4865,6 @@ class Factory3DWidget {
                 this.history.push("Edit object properties", original, this._captureEditorSnapshot());
                 this._scheduleSceneSave(0);
                 this._scheduleStateSave(0);
-                if (key === "building_id") this._syncToolbar();
                 if (["collision_proxy.mode", "light_transport", "locked"].includes(key)) this._renderInspector();
             });
         }
@@ -4146,21 +4936,36 @@ class Factory3DWidget {
             </div>`;
     }
 
-    async _uploadTextureMaterial(file) {
+    _newArchitectureMaterial(name = "Material") {
+        return {
+            material_id: factoryId(),
+            name: String(name || "Material").slice(0, 80),
+            kind: "standard",
+            color: "#d7d2ca",
+            roughness: 0.78,
+            metalness: 0,
+            opacity: 1,
+            transmission: 0,
+            ior: 1.5,
+            uv_scale: [1, 1],
+            uv_offset: [0, 0],
+            uv_rotation: 0,
+            normal_strength: 1,
+        };
+    }
+
+    async _uploadSceneTexture(file, { flushScene = true } = {}) {
         if (!this.sceneId || !file) return null;
         const sceneId = this.sceneId;
-        if ((this.scene?.architecture?.materials?.length || 0) >= 512) {
-            throw new Error("The scene material limit has been reached.");
-        }
         if (
             !["image/jpeg", "image/png", "image/webp"].includes(file.type)
             || file.size > MAX_TEXTURE_BYTES
         ) {
             throw new Error("Texture must be a JPEG, PNG, or WebP image up to 32 MB.");
         }
-        // Resolve any queued metadata edit first so the texture mutation and
-        // its following material PATCH share a current optimistic revision.
-        await this._saveSceneNow({ showError: false });
+        // Resolve any queued metadata edit before the texture mutation so the
+        // following material update starts from the latest local scene state.
+        if (flushScene) await this._saveSceneNow({ showError: false });
         if (!this.scene || this.sceneId !== sceneId) {
             throw new Error("The active scene changed before the texture upload started.");
         }
@@ -4175,22 +4980,292 @@ class Factory3DWidget {
         }
         this.scene.textures = result.scene?.textures || this.scene.textures || [];
         this.scene.edit_revision = result.scene?.edit_revision ?? this.scene.edit_revision;
-        const material = {
-            material_id: factoryId(),
-            name: String(file.name || "Texture").replace(/\.[^.]+$/, "").slice(0, 80),
-            kind: "standard",
-            color: "#ffffff",
-            roughness: 0.78,
-            metalness: 0,
-            opacity: 1,
-            transmission: 0,
-            ior: 1.5,
-            uv_scale: [1, 1],
-            uv_rotation: 0,
-            texture_id: result.texture.texture_id,
-        };
+        return result.texture;
+    }
+
+    async _uploadTextureMaterial(file) {
+        if ((this.scene?.architecture?.materials?.length || 0) >= 512) {
+            throw new Error("The scene material limit has been reached.");
+        }
+        const texture = await this._uploadSceneTexture(file);
+        if (!texture) return null;
+        const material = this._newArchitectureMaterial(
+            String(file.name || "Texture").replace(/\.[^.]+$/, ""),
+        );
+        material.color = "#ffffff";
+        material.texture_id = texture.texture_id;
         this.scene.architecture.materials.push(material);
         return material;
+    }
+
+    _roomMaterialSummary(room, wallMaterialId = "") {
+        const names = new Map(
+            (this.scene?.architecture?.materials || []).map(material => [
+                material.material_id,
+                material.name || "Material",
+            ]),
+        );
+        const summary = [
+            ["Walls", wallMaterialId],
+            ["Floor", room.floor?.material_id],
+            ["Ceiling", room.ceiling?.material_id],
+        ].map(([label, materialId]) => `
+            <div class="vnccs-i3s__room-surface-row">
+                <span>${label}</span><b>${escapeHTML(names.get(materialId) || "Default")}</b>
+            </div>`).join("");
+        return `
+            <div class="vnccs-i3s__inspector-group vnccs-i3s__room-materials-summary">
+                <b>Room surfaces</b>${summary}
+                <button class="vnccs-i3s__button" type="button" data-room-materials>Manage textures and mapping</button>
+            </div>`;
+    }
+
+    _openRoomMaterialManager(room) {
+        if (!room || !this.scene?.architecture) return;
+        const architecture = this.scene.architecture;
+        const linkedWalls = architecture.walls.filter(wall => room.wall_ids?.includes(wall.wall_id));
+        const materials = JSON.parse(JSON.stringify(architecture.materials || []));
+        const assignments = {
+            walls: linkedWalls[0]?.material_left || "",
+            floor: room.floor?.material_id || "",
+            ceiling: room.ceiling?.material_id || "",
+        };
+        const surfaceLabels = { walls: "Walls", floor: "Floor", ceiling: "Ceiling" };
+        const pendingFiles = new Map();
+        let activeSurface = "walls";
+        let advancedOpen = false;
+        let committed = false;
+        const body = element("div", "vnccs-i3s__material-manager");
+        const cancel = button("vnccs-i3s__button", "Cancel");
+        const apply = button("vnccs-i3s__button vnccs-i3s__button--primary", "Apply to room");
+
+        const activeMaterial = () => materials.find(
+            material => material.material_id === assignments[activeSurface],
+        ) || null;
+        const draftScene = () => ({
+            ...this.scene,
+            architecture: {
+                ...architecture,
+                materials,
+                walls: architecture.walls.map(wall => room.wall_ids?.includes(wall.wall_id)
+                    ? {
+                        ...wall,
+                        material_left: assignments.walls,
+                        material_right: assignments.walls,
+                        material_caps: assignments.walls,
+                    }
+                    : wall),
+                rooms: architecture.rooms.map(value => value.room_id === room.room_id
+                    ? {
+                        ...value,
+                        floor: { ...(value.floor || {}), material_id: assignments.floor },
+                        ceiling: { ...(value.ceiling || {}), material_id: assignments.ceiling },
+                    }
+                    : value),
+            },
+        });
+        const previewDraft = () => this._previewArchitectureMaterials(
+            draftScene(),
+            { persist: false },
+        );
+        const textureName = textureId => (
+            this.scene.textures?.find(texture => texture.texture_id === textureId)?.name || "Assigned texture"
+        );
+        const options = selectedId => [
+            `<option value=""${selectedId ? "" : " selected"}>Default material</option>`,
+            ...materials.map(material => `
+                <option value="${material.material_id}"${material.material_id === selectedId ? " selected" : ""}>${escapeHTML(material.name || "Material")}</option>`),
+        ].join("");
+        const textureRow = (material, field, label, description) => {
+            const pending = pendingFiles.get(`${material.material_id}:${field}`);
+            const current = pending?.name || (material[field] ? textureName(material[field]) : "Not assigned");
+            return `
+                <div class="vnccs-i3s__material-map-row">
+                    <div><b>${label}</b><span>${escapeHTML(current)}</span><small>${description}</small></div>
+                    <input type="file" accept="image/jpeg,image/png,image/webp" data-material-map-file="${field}" hidden />
+                    <button class="vnccs-i3s__button" type="button" data-material-map-pick="${field}">Choose</button>
+                    <button class="vnccs-i3s__button vnccs-i3s__button--quiet" type="button" data-material-map-clear="${field}"${!pending && !material[field] ? " disabled" : ""}>Clear</button>
+                </div>`;
+        };
+
+        const render = () => {
+            const material = activeMaterial();
+            body.innerHTML = `
+                <div class="vnccs-i3s__material-surface-tabs" role="tablist" aria-label="Room surface">
+                    ${Object.entries(surfaceLabels).map(([key, label]) => `
+                        <button type="button" role="tab" data-material-surface="${key}" aria-selected="${key === activeSurface}">
+                            <span>${label}</span><small>${escapeHTML(materials.find(value => value.material_id === assignments[key])?.name || "Default")}</small>
+                        </button>`).join("")}
+                </div>
+                <div class="vnccs-i3s__material-toolbar">
+                    <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">${surfaceLabels[activeSurface]} material</span>
+                        <select class="vnccs-i3s__select" data-material-assignment>${options(assignments[activeSurface])}</select>
+                    </label>
+                    <button class="vnccs-i3s__button" type="button" data-material-create>New</button>
+                    <button class="vnccs-i3s__button" type="button" data-material-duplicate${material ? "" : " disabled"}>Duplicate</button>
+                </div>
+                ${material ? `
+                    <div class="vnccs-i3s__material-section">
+                        <div class="vnccs-i3s__material-section-title"><b>Base surface</b><span>Changes to this material affect every surface that uses it.</span></div>
+                        <div class="vnccs-i3s__material-fields">
+                            <label class="vnccs-i3s__field is-wide"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-material-draft="name" maxlength="80" value="${escapeHTML(material.name || "Material")}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Color</span><input class="vnccs-i3s__material-color" type="color" data-material-draft="color" value="${material.color || "#d7d2ca"}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Type</span><select class="vnccs-i3s__select" data-material-draft="kind"><option value="standard"${material.kind !== "glass" ? " selected" : ""}>Standard PBR</option><option value="glass"${material.kind === "glass" ? " selected" : ""}>Glass</option></select></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Roughness</span><input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-draft="roughness" value="${material.roughness ?? 0.78}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Metalness</span><input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-draft="metalness" value="${material.metalness ?? 0}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Opacity</span><input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-draft="opacity" value="${material.opacity ?? 1}" /></label>
+                            ${material.kind === "glass" ? `<label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Transmission</span><input class="vnccs-i3s__input" type="number" min="0" max="1" step="0.01" data-material-draft="transmission" value="${material.transmission ?? 1}" /></label><label class="vnccs-i3s__field"><span class="vnccs-i3s__label">IOR</span><input class="vnccs-i3s__input" type="number" min="1" max="2.5" step="0.01" data-material-draft="ior" value="${material.ior ?? 1.5}" /></label>` : ""}
+                        </div>
+                        ${textureRow(material, "texture_id", "Color / albedo map", "sRGB color texture")}
+                    </div>
+                    <div class="vnccs-i3s__material-section">
+                        <div class="vnccs-i3s__material-section-title"><b>Mapping</b><span>Shared by all maps in this material.</span></div>
+                        <div class="vnccs-i3s__material-fields">
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Scale X</span><input class="vnccs-i3s__input" type="number" min="0.001" max="1000" step="0.01" data-material-draft="uv_scale.0" value="${material.uv_scale?.[0] ?? 1}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Scale Y</span><input class="vnccs-i3s__input" type="number" min="0.001" max="1000" step="0.01" data-material-draft="uv_scale.1" value="${material.uv_scale?.[1] ?? 1}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Offset X</span><input class="vnccs-i3s__input" type="number" step="0.01" data-material-draft="uv_offset.0" value="${material.uv_offset?.[0] ?? 0}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Offset Y</span><input class="vnccs-i3s__input" type="number" step="0.01" data-material-draft="uv_offset.1" value="${material.uv_offset?.[1] ?? 0}" /></label>
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Rotation °</span><input class="vnccs-i3s__input" type="number" step="0.1" data-material-draft="uv_rotation" value="${material.uv_rotation ?? 0}" /></label>
+                        </div>
+                    </div>
+                    <details class="vnccs-i3s__material-advanced"${advancedOpen ? " open" : ""}>
+                        <summary>Surface detail <span>optional · adds GPU texture samples</span></summary>
+                        <div class="vnccs-i3s__material-advanced-body">
+                            ${textureRow(material, "normal_texture_id", "Normal map", "Adds lighting detail without extra geometry")}
+                            <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Normal strength</span><input class="vnccs-i3s__input" type="number" min="0" max="4" step="0.05" data-material-draft="normal_strength" value="${material.normal_strength ?? 1}" /></label>
+                            ${textureRow(material, "roughness_texture_id", "Roughness map", "Green channel controls local roughness")}
+                        </div>
+                    </details>` : `
+                    <div class="vnccs-i3s__modal-note">This surface uses the lightweight built-in material. Select an existing material or create a new one to assign textures.</div>`}
+                <div class="vnccs-i3s__material-budget-note">Only materials assigned to architecture are loaded. Identical texture and UV settings are reused; normal and roughness maps remain optional.</div>`;
+
+            body.querySelectorAll("[data-material-surface]").forEach(control => {
+                control.addEventListener("click", () => {
+                    activeSurface = control.dataset.materialSurface;
+                    render();
+                });
+            });
+            body.querySelector(".vnccs-i3s__material-advanced")?.addEventListener(
+                "toggle",
+                event => { advancedOpen = event.currentTarget.open; },
+            );
+            body.querySelector("[data-material-assignment]")?.addEventListener("change", event => {
+                assignments[activeSurface] = event.currentTarget.value;
+                previewDraft();
+                render();
+            });
+            body.querySelector("[data-material-create]")?.addEventListener("click", () => {
+                if (materials.length >= 512) return this.toast("The scene material limit has been reached.", "error");
+                const created = this._newArchitectureMaterial(`${surfaceLabels[activeSurface]} material`);
+                materials.push(created);
+                assignments[activeSurface] = created.material_id;
+                previewDraft();
+                render();
+            });
+            body.querySelector("[data-material-duplicate]")?.addEventListener("click", () => {
+                const source = activeMaterial();
+                if (!source || materials.length >= 512) return;
+                const copy = JSON.parse(JSON.stringify(source));
+                copy.material_id = factoryId();
+                copy.name = `${source.name || "Material"} copy`.slice(0, 80);
+                materials.push(copy);
+                assignments[activeSurface] = copy.material_id;
+                previewDraft();
+                render();
+            });
+            body.querySelectorAll("[data-material-draft]").forEach(control => {
+                const updateDraft = () => {
+                    const target = activeMaterial();
+                    if (!target) return;
+                    const parts = control.dataset.materialDraft.split(".");
+                    let owner = target;
+                    while (parts.length > 1) owner = owner[parts.shift()];
+                    if (control.type === "number" && control.value === "") return;
+                    owner[parts[0]] = control.type === "number" ? Number(control.value) : control.value;
+                    if (control.dataset.materialDraft === "kind") {
+                        if (control.value === "glass" && !(Number(target.transmission) > 0)) target.transmission = 1;
+                        previewDraft();
+                        render();
+                        return;
+                    }
+                    previewDraft();
+                };
+                control.addEventListener(control.tagName === "SELECT" ? "change" : "input", updateDraft);
+            });
+            body.querySelectorAll("[data-material-map-pick]").forEach(control => {
+                control.addEventListener("click", () => body.querySelector(
+                    `[data-material-map-file="${control.dataset.materialMapPick}"]`,
+                )?.click());
+            });
+            body.querySelectorAll("[data-material-map-file]").forEach(control => {
+                control.addEventListener("change", () => {
+                    const target = activeMaterial();
+                    const file = control.files?.[0];
+                    if (!target || !file) return;
+                    pendingFiles.set(`${target.material_id}:${control.dataset.materialMapFile}`, file);
+                    render();
+                });
+            });
+            body.querySelectorAll("[data-material-map-clear]").forEach(control => {
+                control.addEventListener("click", () => {
+                    const target = activeMaterial();
+                    if (!target) return;
+                    const field = control.dataset.materialMapClear;
+                    delete target[field];
+                    pendingFiles.delete(`${target.material_id}:${field}`);
+                    previewDraft();
+                    render();
+                });
+            });
+        };
+
+        cancel.addEventListener("click", () => this.closeModal());
+        apply.addEventListener("click", async () => {
+            const before = this._captureEditorSnapshot();
+            apply.disabled = true;
+            apply.querySelector("span").textContent = pendingFiles.size ? "Uploading…" : "Applying…";
+            try {
+                if (pendingFiles.size) await this._saveSceneNow({ showError: false });
+                for (const [key, file] of pendingFiles) {
+                    const separator = key.indexOf(":");
+                    const materialId = key.slice(0, separator);
+                    const field = key.slice(separator + 1);
+                    const target = materials.find(material => material.material_id === materialId);
+                    if (!target) continue;
+                    const texture = await this._uploadSceneTexture(file, { flushScene: false });
+                    if (texture) target[field] = texture.texture_id;
+                }
+                architecture.materials = materials;
+                room.floor = { ...(room.floor || {}), material_id: assignments.floor };
+                room.ceiling = { ...(room.ceiling || {}), material_id: assignments.ceiling };
+                for (const wall of linkedWalls) {
+                    wall.material_left = assignments.walls;
+                    wall.material_right = assignments.walls;
+                    wall.material_caps = assignments.walls;
+                }
+                this.history.push("Edit room materials", before, this._captureEditorSnapshot());
+                await this._commitArchitecture();
+                committed = true;
+                this.closeModal();
+                this.toast("Room materials updated.", "success");
+            } catch (error) {
+                apply.disabled = false;
+                apply.querySelector("span").textContent = "Apply to room";
+                this._showError("Room material update failed", error);
+            }
+        });
+        render();
+        this.openModal({
+            title: `Room materials · ${room.name || "Room"}`,
+            body,
+            actions: [cancel, apply],
+            wide: true,
+            onClose: () => {
+                clearTimeout(this._architecturePreviewTimer);
+                this._architecturePreviewTimer = 0;
+                if (!committed) void this.viewer.refreshArchitecture(this.scene);
+            },
+        });
     }
 
     _renderArchitectureInspector(item) {
@@ -4203,7 +5278,7 @@ class Factory3DWidget {
             const onlyBuilding = this.scene.architecture.buildings.length <= 1;
             this.els.inspector.innerHTML = `
                 <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Building")}</div>
-                <div class="vnccs-i3s__hint">Moves and rotates the structure together with every assigned Gaussian object, saved camera, and local light.</div>
+                <div class="vnccs-i3s__hint">Moves and rotates the structure together with every assigned 3D object, saved camera, and local light.</div>
                 <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Building")}" maxlength="80" /></label>
                 <div class="vnccs-i3s__inspector-group"><b>Building transform</b>
                     ${this._numericControl("X", "position.0", item.position?.[0], { minimum: -10000, maximum: 10000, step: 0.01 })}
@@ -4231,6 +5306,13 @@ class Factory3DWidget {
         } else if (type === "wall") {
             this.els.inspector.innerHTML = `
                 <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Wall")}</div>
+                <div class="vnccs-i3s__wall-openings" role="group" aria-label="Add wall opening">
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="door">Add door</button>
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="window">Add window</button>
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="empty">Add opening</button>
+                </div>
+                <div class="vnccs-i3s__hint" data-wall-opening-status hidden>Click this wall to place; drag to set width. Escape cancels.</div>
+                <button class="vnccs-i3s__button" type="button" data-wall-opening-cancel hidden>Cancel placement</button>
                 <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Wall")}" maxlength="80" /></label>
                 <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level${linkedRoom ? " · inherited from room" : ""}</span><select class="vnccs-i3s__select" data-architecture-property="level_id"${linkedRoom ? " disabled" : ""}>
                     ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
@@ -4240,27 +5322,9 @@ class Factory3DWidget {
                     ${this._numericControl("Start Z", "start.1", item.start[1], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
                     ${this._numericControl("End X", "end.0", item.end[0], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
                     ${this._numericControl("End Z", "end.1", item.end[1], { minimum: -10000, maximum: 10000, step: 0.01, range: false })}
-                    ${this._numericControl("Height", "height", item.height, {
-                        minimum: 0.05,
-                        maximum: 1000,
-                        sliderMinimum: 0.05,
-                        sliderMaximum: 10,
-                        step: 0.01,
-                    })}
-                    ${this._numericControl("Thickness", "thickness", item.thickness, {
-                        minimum: 0.01,
-                        maximum: 10,
-                        sliderMinimum: 0.01,
-                        sliderMaximum: 1,
-                        step: 0.01,
-                    })}
-                    ${this._numericControl("Base offset", "elevation_offset", item.elevation_offset, {
-                        minimum: -1000,
-                        maximum: 1000,
-                        sliderMinimum: -5,
-                        sliderMaximum: 5,
-                        step: 0.01,
-                    })}
+                    ${this._descriptorControl(this._wallPropertyDescriptors(item).height, "height", item.height)}
+                    ${this._descriptorControl(this._wallPropertyDescriptors(item).thickness, "thickness", item.thickness)}
+                    ${this._descriptorControl(this._wallPropertyDescriptors(item).elevation_offset, "elevation_offset", item.elevation_offset)}
                 </div>
                 <div class="vnccs-i3s__inspector-group"><b>Surfaces</b>
                     ${this._materialControls("material_left", item.material_left, "Left side")}
@@ -4329,10 +5393,7 @@ class Factory3DWidget {
                     ${this._numericControl("Floor slab", "floor.thickness", item.floor?.thickness, { minimum: 0, maximum: 10, sliderMinimum: 0, sliderMaximum: 1, step: 0.01 })}
                     ${this._numericControl("Ceiling slab", "ceiling.thickness", item.ceiling?.thickness, { minimum: 0, maximum: 10, sliderMinimum: 0, sliderMaximum: 1, step: 0.01 })}
                 </div>
-                ${this._materialControls("room_wall_material", wallMaterial, "Wall material")}
-                ${this._materialActions("room_wall_material")}
-                ${this._materialControls("floor.material_id", item.floor?.material_id, "Floor material")}
-                ${this._materialControls("ceiling.material_id", item.ceiling?.material_id, "Ceiling material")}
+                ${this._roomMaterialSummary(item, wallMaterial)}
                 <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="visible"${item.visible !== false ? " checked" : ""} /> Room visible</label>
                 <label class="vnccs-i3s__inspector-check"><input type="checkbox" data-architecture-property="locked"${item.locked ? " checked" : ""} /> Lock room</label>
                 <button class="vnccs-i3s__button vnccs-i3s__button--danger" type="button" data-inspector-action="delete" title="Delete room (Delete/Backspace)">Delete room and perimeter walls</button>`;
@@ -4352,11 +5413,34 @@ class Factory3DWidget {
                     control.disabled = true;
                 }
             }
+            const roomMaterials = this.els.inspector.querySelector("[data-room-materials]");
+            if (roomMaterials) roomMaterials.disabled = true;
         }
         this._bindArchitectureInspector(item, type);
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening]")) {
+            control.disabled = Boolean(item.locked || ownerBuilding?.locked || linkedRoom?.locked);
+            control.addEventListener("click", () => {
+                this.editorView.opening_kind = control.dataset.wallOpening;
+                this._setPlanTool("select");
+                this._openingWallId = item.wall_id;
+                this._setPlanTool("opening");
+            });
+        }
+        this.els.inspector.querySelector("[data-wall-opening-cancel]")?.addEventListener("click", () => this._setPlanTool("select"));
+    }
+
+    _wallPropertyDescriptors(wall) {
+        const minimumHeight = Math.max(0.05, ...(this.scene?.architecture?.openings || [])
+            .filter(opening => opening.wall_id === wall.wall_id)
+            .map(opening => Number(opening.sill_height || 0) + Number(opening.height || 0)));
+        return { ...WALL_NUMERIC_PROPERTIES,
+            height: { ...WALL_NUMERIC_PROPERTIES.height, hardMin: minimumHeight } };
     }
 
     _bindArchitectureInspector(item, type) {
+        if (type === "wall") this._bindEntityNumeric(
+            { kind: "wall", id: item.wall_id, sceneId: this.sceneId }, this._wallPropertyDescriptors(item),
+        );
         let before = null;
         const begin = () => { before ||= this._captureEditorSnapshot(); };
         const applyPath = (path, value) => {
@@ -4375,7 +5459,12 @@ class Factory3DWidget {
             while (parts.length > 1) target = target[parts.shift()];
             target[parts[0]] = value;
         };
+        this.els.inspector.querySelector("[data-room-materials]")?.addEventListener(
+            "click",
+            () => this._openRoomMaterialManager(item),
+        );
         for (const control of this.els.inspector.querySelectorAll("[data-editor-path]")) {
+            if (type === "wall" && Object.hasOwn(WALL_NUMERIC_PROPERTIES, control.dataset.editorPath)) continue;
             control.addEventListener("pointerdown", begin);
             control.addEventListener("focus", begin);
             control.addEventListener("input", () => {
@@ -4583,19 +5672,9 @@ class Factory3DWidget {
                         this.toast("The scene material limit has been reached.", "error");
                         return;
                     }
-                    const material = {
-                        material_id: factoryId(),
-                        name: `Material ${this.scene.architecture.materials.length + 1}`,
-                        kind: "standard",
-                        color: "#d7d2ca",
-                        roughness: 0.78,
-                        metalness: 0,
-                        opacity: 1,
-                        transmission: 0,
-                        ior: 1.5,
-                        uv_scale: [1, 1],
-                        uv_rotation: 0,
-                    };
+                    const material = this._newArchitectureMaterial(
+                        `Material ${this.scene.architecture.materials.length + 1}`,
+                    );
                     this.scene.architecture.materials.push(material);
                     applyPath(target, material.material_id);
                     void this._commitArchitecture();
@@ -4857,16 +5936,6 @@ class Factory3DWidget {
         this.els.cameraTrackDelete.disabled = !active;
         this.els.cameraTrackName.disabled = !active;
         this.els.cameraTrackName.value = active?.name || "";
-        this.els.cameraTrackBuilding.disabled = !active;
-        const unassignedBuilding = element("option", "", "No building");
-        unassignedBuilding.value = "";
-        unassignedBuilding.selected = !this._validBuildingId(active?.building_id);
-        this.els.cameraTrackBuilding.replaceChildren(unassignedBuilding, ...(this.scene?.architecture?.buildings || []).map(building => {
-            const option = element("option", "", building.name || "Building");
-            option.value = building.building_id;
-            option.selected = building.building_id === this._validBuildingId(active?.building_id);
-            return option;
-        }));
         this.els.cameraKeyframeAdd.disabled = !active;
         this.els.cameraTrackPlay.disabled = !active || active.keyframes.length < 2;
         this.els.cameraTrackTime.max = String(active?.duration || 5);
@@ -4898,7 +5967,7 @@ class Factory3DWidget {
                 this.viewer.setArchitectureSelection(null);
                 this.selectedObjectId = "";
                 this.selectedObjectIds.clear();
-                this.viewer.select("");
+                this.viewer.select("", { emit: false });
                 this.viewer.setCameraState(legacyCameraFromPose(frame), { emit: false });
                 this.els.cameraTrackTime.value = String(frame.time);
                 this._renderCameraTracks();
@@ -5006,6 +6075,7 @@ class Factory3DWidget {
                 if (camera) {
                     Object.assign(camera, this.viewer.getCameraState());
                     this.viewer.setCameraMarkers(this.scene.cameras);
+                    this.viewer?.showCameraPreview?.(camera, { realtime: true });
                     this._scheduleSceneSave(140);
                     this._scheduleStateSave(140);
                 }
@@ -5081,14 +6151,17 @@ class Factory3DWidget {
         this.history.push("Add camera", before, this._captureEditorSnapshot());
         this._selectCamera(camera.camera_id);
         this._renderCameras();
+        this._renderObjects();
         this._updateSceneSummary();
         await this._saveSceneNow();
         this.toast(`${camera.name} added.`, "success");
     }
 
-    _selectCamera(cameraId) {
+    _selectCamera(cameraId, { fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
         if (!camera) return;
+        this.panoramaCameraId = cameraId;
         const selectedBuildingId = this._validBuildingId(camera.building_id);
         if (selectedBuildingId) this.editorView.active_building_id = selectedBuildingId;
         if (this.cameraPlayback) this._toggleCameraPlayback();
@@ -5104,7 +6177,7 @@ class Factory3DWidget {
             this.selectedLightId = "";
             this.viewer.selectLightMarker("");
             this.viewer.setArchitectureSelection(null);
-            this.viewer.select("");
+            this.viewer.select("", { emit: false });
             this.selectedCameraId = cameraId;
             this.selectedCameraIds = new Set([cameraId]);
         } finally {
@@ -5114,7 +6187,9 @@ class Factory3DWidget {
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
-        this._setWorkspaceTab("right", "inspector");
+        this._syncPanoramaExportControls();
+        this.viewer?.showCameraPreview?.(camera, { force: true });
+        if (fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave();
     }
 
@@ -5139,6 +6214,7 @@ class Factory3DWidget {
         this.viewer.setCameraState(camera, { emit: false });
         this._syncToolbar();
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._scheduleStateSave(0);
     }
@@ -5161,6 +6237,7 @@ class Factory3DWidget {
             this._cameraSelectionTransition = false;
         }
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._scheduleStateSave();
     }
@@ -5173,11 +6250,13 @@ class Factory3DWidget {
         if (this.previewCameraId === cameraId) this._exitCameraView({ restore: true });
         if (this.selectedCameraId === cameraId) this.selectedCameraId = "";
         this.selectedCameraIds.delete(cameraId);
+        if (this.panoramaCameraId === cameraId) this.panoramaCameraId = "";
         this.scene.cameras = this.scene.cameras.filter(
             item => item.camera_id !== cameraId,
         );
         this.history.push("Delete camera", before, this._captureEditorSnapshot());
         this._renderCameras();
+        this._renderObjects();
         this._renderInspector();
         this._syncSelectionPresentation();
         this._syncToolbar();
@@ -5191,9 +6270,13 @@ class Factory3DWidget {
         const cameras = this._normalizeSceneCameras(this.scene?.cameras);
         if (this.scene) this.scene.cameras = cameras;
         this.viewer?.setCameraMarkers?.(cameras, this.selectedCameraIds);
+        if (!this.selectedCameraId || this.selectedCameraIds.size !== 1) {
+            this.viewer?.hideCameraPreview?.();
+        }
         this.els.cameraCount.textContent = String(cameras.length);
         this.els.cameraGroupCount.textContent = String(cameras.length);
         this.els.cameraAdd.disabled = !this.scene || cameras.length >= 32;
+        this._syncPanoramaExportControls();
         this.els.cameraList.replaceChildren();
         if (!cameras.length) {
             this.els.cameraList.appendChild(
@@ -5505,7 +6588,8 @@ class Factory3DWidget {
         }
     }
 
-    _selectLight(lightId) {
+    _selectLight(lightId, { fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const light = this.lighting?.lights?.find(item => item.light_id === lightId);
         if (!light) return;
         this.selectedLightId = light.light_id;
@@ -5518,14 +6602,14 @@ class Factory3DWidget {
         this.selectedCameraId = "";
         this.selectedCameraIds.clear();
         this.selectedCameraKeyframeId = "";
-        this.viewer?.select?.("");
+        this.viewer?.select?.("", { emit: false });
         this.viewer?.setArchitectureSelection?.(null);
         this.viewer?.selectLightMarker?.(light.light_id);
         this._renderObjects();
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
-        this._setWorkspaceTab("right", "inspector");
+        if (fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave(0);
     }
 
@@ -5588,6 +6672,48 @@ class Factory3DWidget {
         this._syncToolbar();
     }
 
+    _onViewerCameraTransform(
+        cameraId,
+        transform,
+        { final = false, cancelled = false, operation = "position" } = {},
+    ) {
+        const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
+        if (
+            !camera
+            || !Array.isArray(transform?.position)
+            || transform.position.length !== 3
+            || !Array.isArray(transform?.target)
+            || transform.target.length !== 3
+        ) return;
+        this._cameraTransformHistoryBefore ||= this._captureEditorSnapshot();
+        camera.position = transform.position.map(value => Number(value) || 0);
+        camera.target = transform.target.map(value => Number(value) || 0);
+        if (this.previewCameraId === cameraId) {
+            this.viewer?.setCameraState?.(camera, { emit: false });
+        }
+        if (!final) {
+            this.viewer?.showCameraPreview?.(camera, { realtime: true });
+            this._scheduleStateSave(100);
+            return;
+        }
+        if (!cancelled && this._cameraTransformHistoryBefore) {
+            this.history.push(
+                operation === "direction" ? "Rotate camera" : "Move camera",
+                this._cameraTransformHistoryBefore,
+                this._captureEditorSnapshot(),
+            );
+            this._scheduleSceneSave(0);
+        }
+        this._cameraTransformHistoryBefore = null;
+        this.viewer?.setCameraMarkers?.(this.scene.cameras, this.selectedCameraIds);
+        this._renderCameras();
+        this._renderObjects();
+        this._renderInspector();
+        this._syncToolbar();
+        this.viewer?.showCameraPreview?.(camera);
+        this._scheduleStateSave(0);
+    }
+
     _syncLighting() {
         this.lighting = this._normalizeLighting(this.lighting);
         this.els.lightIntensity.value = String(this.lighting.intensity);
@@ -5617,11 +6743,29 @@ class Factory3DWidget {
             ? "medium"
             : this.lighting.shadows.quality;
         this._drawLightingRadar();
+        this._syncLightStatuses();
     }
 
-    _commitLighting({ final = false } = {}) {
+    _lightShadowAllocation() {
+        return allocateLocalLightShadows(this.lighting, this.scene, {
+            viewMode: this.editorView.view_mode,
+            activeLevelId: this.editorView.active_level_id,
+        });
+    }
+
+    _syncLightStatuses() {
+        const allocation = this._lightShadowAllocation();
+        for (const label of this.container.querySelectorAll("[data-light-status]")) {
+            const text = localLightStatusLabel(allocation.get(label.dataset.lightStatus));
+            if (label.textContent !== text) label.textContent = text;
+            label.title = text;
+        }
+    }
+
+    _commitLighting({ final = false, persist = true } = {}) {
         this.lighting = this._normalizeLighting(this.lighting);
         if (this.scene) this.scene.lighting = { ...this.lighting };
+        this._syncLightStatuses();
         this.viewer?.setEditorInteraction("lighting", !final);
         if (final) {
             clearTimeout(this._lightingApplyTimer);
@@ -5636,6 +6780,7 @@ class Factory3DWidget {
                 if (!this.destroyed) this.viewer?.setLighting(this.lighting);
             }, 1000 / 15);
         }
+        if (!persist) return;
         this._scheduleStateSave(final ? 0 : 100);
         if (this.sceneId && this.scene) {
             this._scheduleSceneSave(final ? 0 : 180);
@@ -5882,9 +7027,7 @@ class Factory3DWidget {
     async loadCapabilities() {
         try {
             this.capabilities = await this._fetchJSON(ENDPOINTS.capabilities);
-            const ready = Boolean(this.capabilities.weights?.ready);
-            this.els.weightsDot.classList.toggle("is-ready", ready);
-            this._syncTripoSummary();
+            this._syncGeneratorUI();
             return this.capabilities;
         } catch (error) {
             this.els.weightsSummary.textContent = "Backend unavailable";
@@ -5894,16 +7037,120 @@ class Factory3DWidget {
     }
 
     _syncTripoSummary() {
-        const ready = Boolean(this.capabilities?.weights?.ready);
+        this._syncGeneratorUI();
+    }
+
+    _generatorCapability(provider = this.settings.generator) {
+        const key = ["triposplat", "pixal3d", "trellis2"].includes(provider)
+            ? provider
+            : "triposplat";
+        const generator = safeObject(this.capabilities?.generators?.[key]);
+        if (Object.keys(generator).length) return generator;
+        return key === "triposplat"
+            ? {
+                key,
+                name: "TripoSplat",
+                output_label: "Gaussian PLY",
+                description: "Gaussian splat generation with adjustable density.",
+                weights: safeObject(this.capabilities?.weights),
+                runtime: { ready: true },
+            }
+            : { key, name: key === "pixal3d" ? "Pixal3D" : "TRELLIS.2", weights: {}, runtime: {} };
+    }
+
+    _syncGeneratorUI() {
+        const provider = ["triposplat", "pixal3d", "trellis2"].includes(this.settings.generator)
+            ? this.settings.generator
+            : "triposplat";
+        this.settings.generator = provider;
+        const generator = this._generatorCapability(provider);
+        const ready = Boolean(generator.weights?.ready) && generator.runtime?.ready !== false;
+        const tripoNativeCap = this.settings.prevent_upscale ? "native cap" : "";
         this.els.weightsDot.classList.toggle("is-ready", ready);
-        this.els.weightsSummary.textContent = ready
-            ? [
-                this.capabilities.device || "device",
-                formatBytes(this.capabilities.weights.installed_bytes),
-                `${Number(this.settings.conditioning_resolution) || 1024}²`,
-                this.settings.prevent_upscale ? "native cap" : "",
-            ].filter(Boolean).join(" · ")
-            : "Weights are not installed";
+        this.els.weightsDot.classList.toggle("is-unavailable", generator.runtime?.ready === false);
+        this.els.generatorName.textContent = generator.name || provider;
+        const summary = generator.runtime?.ready === false
+            ? "ComfyUI update required"
+            : ready
+                ? `${generator.output_label || "3D model"} · Ready`
+                : `${generator.output_label || "3D model"} · Setup required`;
+        const details = generator.runtime?.ready === false
+            ? "This generator requires a newer ComfyUI version"
+            : ready
+                ? [
+                    generator.output_label,
+                    formatBytes(generator.weights?.installed_bytes),
+                    provider === "triposplat" ? `${Number(this.settings.conditioning_resolution) || 1024}²` : "",
+                    provider === "triposplat" ? tripoNativeCap : "",
+                ].filter(Boolean).join(" · ")
+                : "Required model weights are not installed";
+        this.els.weightsSummary.textContent = summary;
+        this.els.weightsSummary.title = details;
+        this.els.generatorSelect.setAttribute(
+            "aria-label",
+            `Choose 3D generator. Current: ${generator.name || provider}. ${details}`,
+        );
+        for (const panel of this.els.generatorPanels) {
+            const active = panel.dataset.generatorSettings === (provider === "triposplat" ? "triposplat" : "mesh");
+            panel.hidden = !active;
+        }
+        const generateLabel = this.els.generate?.querySelector("span:last-child");
+        if (generateLabel) generateLabel.textContent = provider === "triposplat" ? "Generate Gaussian" : "Generate mesh";
+        this._syncMeshQuality();
+        this._customSelects?.refresh?.();
+    }
+
+    _syncMeshQuality() {
+        if (!this.els.meshQualitySummary) return;
+        const summaries = {
+            preview: "Textured GLB · 150K face target · 1K material",
+            balanced: "Textured GLB · 350K face target · 2K material",
+            high: "Textured GLB · 700K face target · 2K material",
+        };
+        this.els.meshQualitySummary.textContent = summaries[this.settings.mesh_quality] || summaries.high;
+    }
+
+    _setGenerator(provider, { save = true } = {}) {
+        if (!["triposplat", "pixal3d", "trellis2"].includes(provider)) return;
+        this.settings.generator = provider;
+        this._syncGeneratorUI();
+        if (save) this._scheduleStateSave(0);
+    }
+
+    async openGeneratorSelector() {
+        const capabilities = this.capabilities || await this.loadCapabilities();
+        if (!capabilities) return;
+        const body = element("div", "vnccs-i3s__generator-options");
+        for (const provider of ["triposplat", "pixal3d", "trellis2"]) {
+            const generator = this._generatorCapability(provider);
+            const ready = Boolean(generator.weights?.ready) && generator.runtime?.ready !== false;
+            const unavailable = generator.runtime?.ready === false;
+            const option = button(
+                `vnccs-i3s__generator-option${provider === this.settings.generator ? " is-selected" : ""}`,
+                "",
+            );
+            option.dataset.provider = provider;
+            option.setAttribute("aria-pressed", String(provider === this.settings.generator));
+            const status = element(
+                "span",
+                `vnccs-i3s__generator-option-status${ready ? " is-ready" : ""}${unavailable ? " is-unavailable" : ""}`,
+                unavailable ? "Update required" : ready ? "Ready" : "Weights missing",
+            );
+            option.replaceChildren(
+                element("span", "vnccs-i3s__generator-option-name", generator.name || provider),
+                element("span", "vnccs-i3s__generator-option-output", generator.output_label || "3D model"),
+                element("span", "vnccs-i3s__generator-option-description", generator.description || ""),
+                status,
+            );
+            option.addEventListener("click", () => {
+                this._setGenerator(provider);
+                this.closeModal();
+            });
+            body.appendChild(option);
+        }
+        const close = button("vnccs-i3s__button", "Close");
+        close.addEventListener("click", () => this.closeModal());
+        this.openModal({ title: "Choose 3D generator", body, actions: [close], wide: true });
     }
 
     async ensureScene(snapshot = null, { preserveSource = false } = {}) {
@@ -5952,6 +7199,8 @@ class Factory3DWidget {
     }
 
     async _applyScene(scene, { preserveSource = false } = {}) {
+        this._numericInspectorCleanup?.({ cancel: true });
+        this._numericInspectorCleanup = null;
         const reopeningCurrentScene = Boolean(
             this.sceneId && this.sceneId === scene?.scene_id,
         );
@@ -5965,6 +7214,7 @@ class Factory3DWidget {
         const desiredObjectIds = new Set(this.selectedObjectIds);
         const desiredSkydome = reopeningCurrentScene && this.selectedSkydome;
         const desiredCameraId = this.selectedCameraId;
+        const desiredPanoramaCameraId = reopeningCurrentScene ? this.panoramaCameraId : "";
         const desiredCameraIds = new Set(this.selectedCameraIds);
         const desiredLightId = this.selectedLightId;
         if (desiredCameraId) desiredCameraIds.add(desiredCameraId);
@@ -6015,6 +7265,9 @@ class Factory3DWidget {
                 camera.level_id = this.scene.levels[0]?.level_id || "";
             }
         }
+        this.panoramaCameraId = this.scene.cameras.some(
+            camera => camera.camera_id === desiredPanoramaCameraId,
+        ) ? desiredPanoramaCameraId : this.scene.cameras[0]?.camera_id || "";
         if (this.scene.skydome) {
             this.scene.skydome = this._normalizeSkydome(this.scene.skydome);
         }
@@ -6137,7 +7390,7 @@ class Factory3DWidget {
             this.selectedObjectId = "";
             this.activeCameraTrackId = desiredKeyframeTrack.track_id;
             this.selectedCameraKeyframeId = desiredKeyframeId;
-            this.viewer.select("");
+            this.viewer.select("", { emit: false });
         } else {
             this.selectedSkydome = false;
             this.selectedGroupId = "";
@@ -6159,6 +7412,7 @@ class Factory3DWidget {
             this.selectedCameraId = Array.from(this.selectedCameraIds).at(-1) || "";
             this.viewer.select(this.selectedObjectId, {
                 additive: this.selectedObjectIds.size > 1,
+                emit: false,
             });
         }
         const selectionBuilding = this._activeBuilding();
@@ -6343,6 +7597,54 @@ class Factory3DWidget {
             + " · Camera follows the current 3D view"
         );
         this.viewer?.setCaptureSettings(settings);
+        this._syncPanoramaExportControls();
+        this._customSelects?.refresh?.();
+    }
+
+    _syncPanoramaExportControls() {
+        if (!this.els?.panoramaCamera) return;
+        const cameras = this.scene?.cameras || [];
+        if (!cameras.some(camera => camera.camera_id === this.panoramaCameraId)) {
+            this.panoramaCameraId = cameras.some(camera => camera.camera_id === this.selectedCameraId)
+                ? this.selectedCameraId
+                : cameras[0]?.camera_id || "";
+        }
+        const signature = cameras.map(camera => `${camera.camera_id}:${camera.name}`).join("|");
+        if (this.els.panoramaCamera.dataset.signature !== signature) {
+            this.els.panoramaCamera.replaceChildren(...(
+                cameras.length
+                    ? cameras.map(camera => {
+                        const option = document.createElement("option");
+                        option.value = camera.camera_id;
+                        option.textContent = camera.name || "Camera";
+                        return option;
+                    })
+                    : [(() => {
+                        const option = document.createElement("option");
+                        option.value = "";
+                        option.textContent = "No saved cameras";
+                        return option;
+                    })()]
+            ));
+            this.els.panoramaCamera.dataset.signature = signature;
+        }
+        this.els.panoramaCamera.value = this.panoramaCameraId;
+        this.panoramaWidth = [2048, 4096].includes(Number(this.panoramaWidth))
+            ? Number(this.panoramaWidth)
+            : 4096;
+        this.els.panoramaSize.value = String(this.panoramaWidth);
+        const camera = cameras.find(value => value.camera_id === this.panoramaCameraId);
+        const disabled = !camera || this.exportingPanorama;
+        this.els.panoramaCamera.disabled = this.exportingPanorama || !cameras.length;
+        this.els.panoramaSize.disabled = this.exportingPanorama;
+        this.els.panoramaExport.disabled = disabled;
+        this.els.sceneExport.disabled = this.exportingPanorama;
+        this.els.panoramaExport.setAttribute("aria-busy", String(this.exportingPanorama));
+        const label = this.els.panoramaExport.querySelector("span:last-child");
+        if (label) label.textContent = this.exportingPanorama ? "Rendering panorama…" : "Export 360° PNG";
+        this.els.panoramaSummary.textContent = camera
+            ? `${camera.name || "Camera"} · ${this.panoramaWidth} × ${this.panoramaWidth / 2} px · 2:1 equirectangular`
+            : "Add a saved camera before exporting.";
         this._customSelects?.refresh?.();
     }
 
@@ -6370,12 +7672,18 @@ class Factory3DWidget {
         this.els.objectCount.textContent = String(
             objects.length + lightCount + (skydome ? 1 : 0) + wallCount + roomCount,
         );
+        const meshCount = objects.filter(item => item.asset_kind === "mesh").length;
+        const primitiveCount = objects.filter(item => item.asset_kind === "primitive").length;
+        const gaussianCount = objects.length - meshCount - primitiveCount;
         const gaussianSummary = objects.length
-            ? `${visibleIds.size}/${objects.length} models visible · ${objects.reduce(
+            ? `${visibleIds.size}/${objects.length} models visible`
+                + `${gaussianCount ? ` · ${objects.reduce(
                 (sum, item) => sum + (visibleIds.has(item.object_id) ? Number(item.gaussians) || 0 : 0),
                 0,
-            ).toLocaleString()} Gaussians`
-            : "No Gaussian models";
+                ).toLocaleString()} Gaussians` : ""}`
+                + `${meshCount ? ` · ${meshCount} mesh${meshCount === 1 ? "" : "es"}` : ""}`
+                + `${primitiveCount ? ` · ${primitiveCount} surface${primitiveCount === 1 ? "" : "s"}` : ""}`
+            : "No 3D models";
         const contentSummary = skydome
             ? `${gaussianSummary} · Skydome ${skydome.visible === false ? "hidden" : "visible"}`
             : objects.length
@@ -6392,12 +7700,7 @@ class Factory3DWidget {
     }
 
     _hasRenderableScene() {
-        return Boolean(
-            this.scene?.objects?.length
-            || this.scene?.architecture?.walls?.length
-            || this.scene?.architecture?.rooms?.length
-            || (this.scene?.skydome && this.scene.skydome.visible !== false),
-        );
+        return hasRenderableFactoryScene(this.scene);
     }
 
     _selectSkydome() {
@@ -6416,7 +7719,7 @@ class Factory3DWidget {
         this.selectedLightId = "";
         this.viewer.selectLightMarker("");
         this.viewer.setArchitectureSelection(null);
-        this.viewer.select("");
+        this.viewer.select("", { emit: false });
         this.selectedSkydome = true;
         this._syncSelectionPresentation();
         this._renderInspector();
@@ -6436,7 +7739,7 @@ class Factory3DWidget {
         this.selectedLightId = "";
         this.selectedCameraKeyframeId = "";
         this.viewer.setArchitectureSelection(null);
-        this.viewer.select("");
+        this.viewer.select("", { emit: false });
         this.viewer.selectLightMarker("");
         this._syncSelectionPresentation();
         this._renderCameras();
@@ -6447,10 +7750,11 @@ class Factory3DWidget {
     }
 
     _selectObject(objectId, { fromViewer = false, additive = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const valid = this.scene?.objects?.some(item => item.object_id === objectId)
             ? objectId
             : "";
-        if (fromViewer && !valid && !additive) return;
+        if (fromViewer && !valid && !additive) { this._clearSelection(); return; }
         this.selectedSkydome = false;
         this.selectedLightId = "";
         this.viewer.selectLightMarker("");
@@ -6474,7 +7778,7 @@ class Factory3DWidget {
         this.selectedObjectId = valid && this.selectedObjectIds.has(valid)
             ? valid
             : Array.from(this.selectedObjectIds).at(-1) || "";
-        if (!fromViewer) this.viewer.select(this.selectedObjectId, { additive });
+        if (!fromViewer) this.viewer.select(this.selectedObjectId, { additive, emit: false });
         this.viewer.setArchitectureSelection(
             this.selectedArchitecture,
             this._selectedArchitectureRefs(),
@@ -6487,6 +7791,7 @@ class Factory3DWidget {
     }
 
     _selectGroup(groupId) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const group = this._groupById(groupId);
         this.selectedSkydome = false;
         this.selectedArchitecture = null;
@@ -6506,7 +7811,7 @@ class Factory3DWidget {
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
         if (group) this.viewer.selectGroup(group.group_id, group.children);
-        else this.viewer.select("");
+        else this.viewer.select("", { emit: false });
         this._syncSelectionPresentation();
         this._renderInspector();
         this._syncToolbar();
@@ -6561,6 +7866,14 @@ class Factory3DWidget {
             card.classList.toggle("is-selected", selected);
             card.classList.toggle("is-primary", selected);
         }
+        for (const card of this.els.objectList.querySelectorAll("[data-camera-object-id]")) {
+            const selected = this.selectedCameraIds.has(card.dataset.cameraObjectId);
+            card.classList.toggle("is-selected", selected);
+            card.classList.toggle("is-primary", card.dataset.cameraObjectId === this.selectedCameraId);
+        }
+        if (!this.selectedCameraId || this.selectedCameraIds.size !== 1) {
+            this.viewer?.hideCameraPreview?.();
+        }
         this._syncSelectionControls();
     }
 
@@ -6573,6 +7886,7 @@ class Factory3DWidget {
         const previousScrollLeft = this.els.objectList.scrollLeft;
         const query = this.els.objectSearch.value.trim().toLowerCase();
         const objects = new Map((this.scene?.objects || []).map(item => [item.object_id, item]));
+        const cameras = this.scene?.cameras || [];
         const lights = this.lighting?.lights || [];
         const skydome = this.scene?.skydome || null;
         const layers = this._normalizeSceneLayers();
@@ -6584,8 +7898,20 @@ class Factory3DWidget {
             fragment.appendChild(entry);
             rendered += 1;
         }
+        for (const camera of cameras) {
+            const levelName = this.scene?.levels?.find(
+                level => level.level_id === camera.level_id,
+            )?.name || "Unassigned floor";
+            const buildingName = this.scene?.architecture?.buildings?.find(
+                building => building.building_id === camera.building_id,
+            )?.name || "";
+            const searchable = `${camera.name || "Camera"} saved camera ${levelName} ${buildingName}`.toLowerCase();
+            if (query && !searchable.includes(query)) continue;
+            fragment.appendChild(this._createCameraObjectCard(camera));
+            rendered += 1;
+        }
         for (const light of lights) {
-            const searchable = `${light.name || "Point light"} point light ${light.color || ""}`.toLowerCase();
+            const searchable = `${light.name || "Light"} ${light.kind || "point"} light ${light.color || ""}`.toLowerCase();
             if (query && !searchable.includes(query)) continue;
             fragment.appendChild(this._createLightCard(light));
             rendered += 1;
@@ -6594,7 +7920,7 @@ class Factory3DWidget {
             fragment.appendChild(this._createSkydomeCard(skydome));
             rendered += 1;
         }
-        if (!objects.size && !lights.length && !skydome && !rendered) {
+        if (!objects.size && !cameras.length && !lights.length && !skydome && !rendered) {
             fragment.appendChild(element("div", "vnccs-i3s__tree-empty", query ? "No matching objects." : "Generated objects will appear here."));
             this.els.objectList.appendChild(fragment);
             return;
@@ -6761,6 +8087,75 @@ class Factory3DWidget {
         return output;
     }
 
+    _createCameraObjectCard(camera) {
+        const selected = this.selectedCameraIds.has(camera.camera_id);
+        const card = element(
+            "div",
+            `vnccs-i3s__object vnccs-i3s__camera-object`
+                + `${selected ? " is-selected" : ""}`
+                + `${camera.camera_id === this.selectedCameraId ? " is-primary" : ""}`,
+        );
+        card.tabIndex = 0;
+        card.dataset.cameraObjectId = camera.camera_id;
+        const thumbnail = element("span", "vnccs-i3s__object-thumb vnccs-i3s__camera-thumb");
+        thumbnail.innerHTML = ICONS.camera;
+        const levelName = this.scene?.levels?.find(
+            level => level.level_id === camera.level_id,
+        )?.name || "Unassigned floor";
+        const buildingName = this.scene?.architecture?.buildings?.find(
+            building => building.building_id === camera.building_id,
+        )?.name || "";
+        const copy = element("div", "vnccs-i3s__object-copy");
+        copy.append(
+            element("div", "vnccs-i3s__object-name", camera.name || "Camera"),
+            element(
+                "div",
+                "vnccs-i3s__object-meta",
+                `Saved camera · ${levelName}${buildingName ? ` · ${buildingName}` : ""}`,
+            ),
+        );
+        const actions = element("div", "vnccs-i3s__object-actions");
+        const preview = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            "eye",
+        );
+        preview.title = camera.camera_id === this.previewCameraId
+            ? "Exit camera view"
+            : "Enter camera view";
+        preview.setAttribute("aria-label", preview.title);
+        preview.addEventListener("click", event => {
+            event.stopPropagation();
+            this._selectCamera(camera.camera_id);
+            if (this.previewCameraId === camera.camera_id) this._exitCameraView({ restore: true });
+            else this._enterCameraView(camera.camera_id);
+        });
+        const remove = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__button--danger vnccs-i3s__icon-button",
+            "",
+            "trash",
+        );
+        remove.title = "Delete camera";
+        remove.setAttribute("aria-label", remove.title);
+        remove.addEventListener("click", event => {
+            event.stopPropagation();
+            void this._deleteCamera(camera.camera_id);
+        });
+        actions.append(preview, remove);
+        card.append(thumbnail, copy, actions);
+        const select = () => this._selectCamera(camera.camera_id);
+        card.addEventListener("click", event => {
+            if (!event.target.closest("button,input")) select();
+        });
+        card.addEventListener("keydown", event => {
+            if (event.target === card && (event.key === "Enter" || event.key === " ")) {
+                event.preventDefault();
+                select();
+            }
+        });
+        return card;
+    }
+
     _createLightCard(light) {
         const selected = light.light_id === this.selectedLightId;
         const card = element(
@@ -6780,10 +8175,16 @@ class Factory3DWidget {
             element(
                 "div",
                 "vnccs-i3s__object-meta",
-                `Point light · ${Number(light.intensity).toFixed(2)} strength`
+                `${{ point: "Point", spot: "Spot", directional: "Directional" }[light.kind] || "Point"} light · ${Number(light.intensity).toFixed(2)} strength`
                     + `${light.visible === false ? " · Hidden" : ""}`,
             ),
         );
+        const shadowStatus = element("span", "", localLightStatusLabel(
+            this._lightShadowAllocation().get(light.light_id),
+        ));
+        shadowStatus.dataset.lightStatus = light.light_id;
+        shadowStatus.title = shadowStatus.textContent;
+        copy.querySelector(".vnccs-i3s__object-meta").append(" · ", shadowStatus);
         const actions = element("div", "vnccs-i3s__object-actions");
         const visibility = button(
             "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
@@ -7001,6 +8402,8 @@ class Factory3DWidget {
         );
         const importedPly = item.source?.type === "ply_import"
             || item.settings?.source === "ply_import";
+        const importedModel = item.asset_kind === "mesh";
+        const primitiveObject = item.asset_kind === "primitive";
         const levelName = this.scene?.levels?.find(level => level.level_id === item.level_id)?.name || "";
         const buildingName = this.scene?.architecture?.buildings?.find(
             building => building.building_id === item.building_id,
@@ -7012,7 +8415,12 @@ class Factory3DWidget {
                 "vnccs-i3s__object-meta",
                 [
                     viewportFailure ? "Viewport failed" : "",
-                    `${Number(item.gaussians || 0).toLocaleString()} splats`,
+                    primitiveObject
+                        ? `${item.primitive?.kind === "image" ? "Image plane" : item.primitive?.kind === "terrain" ? "Terrain" : "Plane"}`
+                        : importedModel
+                        ? `${String(item.source?.format || "3D").toUpperCase()} model`
+                        : `${Number(item.gaussians || 0).toLocaleString()} splats`,
+                    item.emission?.enabled ? "Emissive" : "",
                     importedPly ? "Imported PLY" : "",
                     buildingName,
                     levelName,
@@ -7046,10 +8454,21 @@ class Factory3DWidget {
             "",
             "download",
         );
-        exportObject.title = "Export transformed PLY";
+        exportObject.title = importedModel ? "Download source model" : "Export transformed PLY";
         exportObject.addEventListener("click", event => {
             event.stopPropagation();
-            void this.exportObject(item, exportObject);
+            if (importedModel) download(item.urls.model);
+            else void this.exportObject(item, exportObject);
+        });
+        const saveModel = button(
+            "vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button",
+            "",
+            "library",
+        );
+        saveModel.title = "Save model to library";
+        saveModel.addEventListener("click", event => {
+            event.stopPropagation();
+            this.openSaveLibraryModal("object", item.object_id);
         });
         const duplicate = button("vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__icon-button", "", "duplicate");
         duplicate.title = "Duplicate object";
@@ -7067,11 +8486,16 @@ class Factory3DWidget {
             event.stopPropagation();
             this.confirmDeleteObject(item.object_id);
         });
-        for (const control of [visibility, exportObject, duplicate, remove]) {
+        for (const control of [visibility, exportObject, saveModel, duplicate, remove]) {
             control.setAttribute("aria-label", control.title);
             control.addEventListener("dblclick", event => event.stopPropagation());
         }
-        actions.append(visibility, exportObject, duplicate, remove);
+        actions.append(
+            visibility,
+            ...(!primitiveObject ? [exportObject, saveModel] : []),
+            duplicate,
+            remove,
+        );
         card.append(thumbnail, copy, actions);
         card.addEventListener("click", event => {
             if (event.target.closest("button,input")) return;
@@ -7487,7 +8911,7 @@ class Factory3DWidget {
             this.viewer.applySceneVisibility(this.scene);
             this._scheduleScenePreview(120);
         }
-        this.viewer.select(this.selectedObjectId, { additive: true });
+        this.viewer.select(this.selectedObjectId, { additive: true, emit: false });
         this.history.push("Ungroup objects", before, this._captureEditorSnapshot());
         this._updateSceneSummary();
         this._renderObjects();
@@ -7539,7 +8963,7 @@ class Factory3DWidget {
             ? this.scene?.camera
             : this.viewer?.getCameraState?.() || this.viewerState.camera;
         return {
-            base_edit_revision: Math.max(0, Number(this.scene?.edit_revision) || 0),
+            schema_version: this.scene?.schema_version || 11,
             name: this.els.sceneName.value.trim() || this.scene?.name || "Untitled scene",
             render: { ...this.exportSettings },
             lighting: { ...this.lighting },
@@ -7583,27 +9007,36 @@ class Factory3DWidget {
     }
 
     _scheduleSceneSave(delay = 180) {
+        this._conditioningEditEpoch = (this._conditioningEditEpoch || 0) + 1;
         clearTimeout(this._sceneSaveTimer);
         this._sceneSaveTimer = setTimeout(
-            () => void this._saveSceneNow().catch(() => {}),
+            () => {
+                if (this._activeNumericGesture?.pending) this._scheduleSceneSave(180);
+                else void this._saveSceneNow().catch(() => {});
+            },
             delay,
         );
     }
 
     async _saveSceneNow({ showError = true } = {}) {
+        const requestedScene = this.scene;
+        await this._historyRestoreSerial;
+        if (this.scene !== requestedScene) return null;
+        this._activeNumericGesture?.commit();
         clearTimeout(this._sceneSaveTimer);
         this._sceneSaveTimer = 0;
         if (!this.sceneId || !this.scene) return;
         this.scene.name = this.els.sceneName.value.trim() || this.scene.name || "Untitled scene";
         const sceneId = this.sceneId;
-        const operation = this._sceneSaveSerial.then(async () => {
-            const payload = this._scenePayload();
-            const updated = await this._fetchJSON(ENDPOINTS.scene(sceneId), {
+        const sceneOwner = this.scene;
+        const payload = this._scenePayload();
+        const operation = enqueueFactorySceneSave(this._sceneSaveSerial, sceneId, payload, async (ownerId, snapshot) => {
+            const updated = await this._fetchJSON(ENDPOINTS.scene(ownerId), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(payload),
+                body: JSON.stringify(snapshot),
             });
-            if (this.sceneId === sceneId && this.scene) {
+            if (this.sceneId === ownerId && this.scene === sceneOwner) {
                 this.scene.revision = updated.revision;
                 this.scene.render_revision = updated.render_revision;
                 this.scene.edit_revision = updated.edit_revision;
@@ -7625,16 +9058,7 @@ class Factory3DWidget {
         try {
             return await operation;
         } catch (error) {
-            if (showError) {
-                if (error.status === 409) {
-                    this._showError(
-                        "Scene changed elsewhere",
-                        new Error("Reload the scene before saving to avoid overwriting newer edits."),
-                    );
-                } else {
-                    this._showError("Scene save failed", error);
-                }
-            }
+            if (showError) this._showError("Scene save failed", error);
             throw error;
         }
     }
@@ -7671,6 +9095,7 @@ class Factory3DWidget {
     }
 
     async _saveScenePreviewNow({ captureToken = "", automatic = false } = {}) {
+        if (automatic && this._activeNumericGesture?.pending) return null;
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
         if (this._previewIdleHandle && typeof cancelIdleCallback === "function") {
@@ -7727,14 +9152,33 @@ class Factory3DWidget {
         }
     }
 
-    async _saveExecutionCaptureSet(captureToken) {
+    async _saveExecutionCaptureSet(captureToken, request = {}) {
         clearTimeout(this._previewSaveTimer);
         this._previewSaveTimer = 0;
         const sceneId = this.sceneId;
         const operation = this._previewSaveSerial.then(async () => {
             if (this.destroyed || !sceneId || this.sceneId !== sceneId) return null;
-            const savedScene = await this._saveSceneNow({ showError: false });
-            if (this.destroyed || this.sceneId !== sceneId) return null;
+            const sceneRevision = Number(request.scene_revision);
+            const renderRevision = Number(request.render_revision);
+            const savedScene = {
+                revision: Number.isFinite(sceneRevision)
+                    ? sceneRevision
+                    : Math.max(0, Number(this.scene?.revision) || 0),
+                render_revision: Number.isFinite(renderRevision)
+                    ? renderRevision
+                    : Math.max(0, Number(this.scene?.render_revision) || 0),
+                render: this._normalizeExportSettings({
+                    ...this.exportSettings,
+                    ...safeObject(request.render),
+                }),
+                camera: this._normalizeCameraState(
+                    safeObject(request.camera),
+                    this.viewer.getCameraState(),
+                ),
+                cameras: Array.isArray(request.cameras)
+                    ? request.cameras
+                    : this.scene?.cameras,
+            };
             const cameras = this._normalizeSceneCameras(savedScene.cameras);
             const dimensions = {
                 width: Number(savedScene.render?.width) || this.exportSettings.width,
@@ -7742,7 +9186,7 @@ class Factory3DWidget {
             };
             const current = await this.viewer.capturePreview({
                 ...dimensions,
-                cameraState: this.viewer.getCameraState(),
+                cameraState: savedScene.camera,
             });
             if (!current) throw new Error("The current 3D view could not be captured.");
             const form = new FormData();
@@ -7752,6 +9196,9 @@ class Factory3DWidget {
                 JSON.stringify(cameras.map(camera => camera.camera_id)),
             );
             for (const camera of cameras) {
+                // Full-resolution offscreen readback is unreliable on some
+                // WebGL drivers even though the small inset target succeeds.
+                // Use the proven export canvas path for persisted camera frames.
                 const blob = await this.viewer.capturePreview({
                     ...dimensions,
                     cameraState: camera,
@@ -7773,6 +9220,67 @@ class Factory3DWidget {
         });
         this._previewSaveSerial = operation.catch(() => null);
         return await operation;
+    }
+
+    async _captureConditioning(detail) {
+        const sceneId = String(detail.scene_id || ""), jobId = String(detail.job_id || "");
+        if (![sceneId, jobId].every(id => /^[a-f0-9]{32}$/.test(id))) return;
+        const url = `${API_BASE}/conditioning/${sceneId}/jobs/${jobId}`;
+        const operation = this._previewSaveSerial.then(async () => {
+            this._conditioningCancelled = false;
+            this._conditioningJobURL = url;
+            this.els.conditioningCancel.hidden = false;
+            this.els.conditioningCancel.disabled = false;
+            this.els.conditioningStatus.textContent = "Checking saved scene and capture settings…";
+            try {
+                await this._restoreSerial;
+                await this._sceneSaveSerial;
+                if (this.destroyed || this.sceneId !== sceneId) throw new Error("Open the requested scene in 3D Factory and execute again.");
+                if (this.viewer.viewMode !== "3d") throw new Error("Switch 3D Factory to the 3D view before conditioning capture.");
+                if (this._activeNumericGesture?.pending) throw new Error("Finish the active edit before conditioning capture.");
+                const baseline = JSON.stringify(this._scenePayload());
+                const epoch = this._conditioningEditEpoch || 0;
+                const check = () => {
+                    if (this._conditioningCancelled) throw new Error("Capture cancelled by the user.");
+                    if (this.destroyed || this.sceneId !== sceneId || (this._conditioningEditEpoch || 0) !== epoch
+                        || JSON.stringify(this._scenePayload()) !== baseline) {
+                        throw new Error("Scene changed during conditioning capture; execute again.");
+                    }
+                };
+                await this._saveSceneNow({ showError: false });
+                check();
+                const job = await this._fetchJSON(url);
+                check();
+                this.toast(`Capturing ${job.shots.length} conditioning view(s)…`, "info");
+                for (const [index, shot] of job.shots.entries()) {
+                    check();
+                    this.els.conditioningStatus.textContent = `Rendering view ${index + 1} of ${job.shots.length}: ${shot.camera.name || "Current view"}…`;
+                    const result = await this.viewer.captureConditioningShot(job, shot);
+                    check();
+                    this.els.conditioningStatus.textContent = `Saving view ${index + 1} of ${job.shots.length}…`;
+                    const form = new FormData();
+                    for (const [name, blob] of Object.entries(result.parts)) form.append(name, blob, `${name}.png`);
+                    form.append("metadata", JSON.stringify(result.metadata));
+                    await this._fetchJSON(`${url}/shots/${index}`, { method: "POST", body: form });
+                }
+                check();
+                this.els.conditioningCancel.disabled = true;
+                this.els.conditioningStatus.textContent = "Validating and publishing the complete capture…";
+                await this._fetchJSON(`${url}/publish`, { method: "POST" });
+                this.els.conditioningStatus.textContent = `${job.shots.length} view(s) saved at ${job.settings.width} × ${job.settings.height}. Geometry profile: ${job.settings.profile}.`;
+                this.toast("Conditioning capture saved.", "success");
+            } catch (error) {
+                this.els.conditioningStatus.textContent = errorText(error, "Conditioning capture failed");
+                this._showError("Conditioning capture failed", error);
+                await this._fetchJSON(`${url}/error`, { method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: errorText(error, "Conditioning capture failed") }) }).catch(() => {});
+            } finally {
+                this._conditioningJobURL = null;
+                this.els.conditioningCancel.hidden = true;
+            }
+        });
+        this._previewSaveSerial = operation.catch(() => null);
+        await operation;
     }
 
     async _reportExecutionPreviewFailure(sceneId, captureToken, error) {
@@ -7812,7 +9320,19 @@ class Factory3DWidget {
                 renderRevision: detail.render_revision,
                 documentVisible: document.visibilityState,
             });
-            const captureSet = await this._saveExecutionCaptureSet(captureToken);
+            clearTimeout(this._sceneSaveTimer);
+            this._sceneSaveTimer = 0;
+            const editRevision = Number(detail.edit_revision);
+            if (this.scene && Number.isFinite(editRevision)) {
+                this.scene.edit_revision = Math.max(0, editRevision);
+            }
+            if (this.scene && Number.isFinite(Number(detail.scene_revision))) {
+                this.scene.revision = Math.max(0, Number(detail.scene_revision));
+            }
+            if (this.scene && Number.isFinite(Number(detail.render_revision))) {
+                this.scene.render_revision = Math.max(0, Number(detail.render_revision));
+            }
+            const captureSet = await this._saveExecutionCaptureSet(captureToken, detail);
             if (!captureSet) throw new Error("The 3D viewport returned no execution captures.");
             console.info("[VNCCS 3D Factory][viewport] Execution preview completed", {
                 sceneId,
@@ -7839,7 +9359,9 @@ class Factory3DWidget {
             return;
         }
         const capabilities = this.capabilities || await this.loadCapabilities();
-        if (!capabilities?.weights?.ready) {
+        const provider = this.settings.generator || "triposplat";
+        const generator = this._generatorCapability(provider);
+        if (generator.runtime?.ready === false || !generator.weights?.ready) {
             this.openModelSetup();
             return;
         }
@@ -7854,22 +9376,148 @@ class Factory3DWidget {
         else form.append("use_scene_reference", "1");
         const sourceName = this.sourceFile?.name || this.sourceAsset?.name || "Object";
         form.append("name", this.settings.name || sourceName.replace(/\.[^.]+$/, ""));
-        for (const key of [
-            "steps",
-            "guidance_scale",
-            "num_gaussians",
-            "conditioning_resolution",
-            "seed",
-        ]) {
-            form.append(key, String(this.settings[key]));
+        form.append("provider", provider);
+        if (provider === "triposplat") {
+            for (const key of [
+                "steps",
+                "guidance_scale",
+                "num_gaussians",
+                "conditioning_resolution",
+            ]) {
+                form.append(key, String(this.settings[key]));
+            }
+            form.append("prevent_upscale", this.settings.prevent_upscale ? "1" : "0");
+        } else {
+            form.append("quality", String(this.settings.mesh_quality));
+            form.append("structure_steps", String(this.settings.mesh_structure_steps));
+            form.append("shape_steps", String(this.settings.mesh_shape_steps));
+            form.append("upsample_steps", String(this.settings.mesh_upsample_steps));
+            form.append("texture_steps", String(this.settings.mesh_texture_steps));
         }
-        form.append("prevent_upscale", this.settings.prevent_upscale ? "1" : "0");
+        form.append("seed", String(this.settings.seed));
         form.append("remove_background", this.settings.remove_background ? "1" : "0");
         try {
             const job = await this._fetchJSON(ENDPOINTS.generate(this.sceneId), { method: "POST", body: form });
             await this._monitorJob(job.job_id);
         } catch (error) {
             if (!error?.factoryErrorShown) this._showError("Generation failed", error);
+        }
+    }
+
+    async _ensureProceduralScene() {
+        if (this.scene?.schema_version >= 12) return true;
+        if (this._sceneUpgradePromise) return this._sceneUpgradePromise;
+        const owner = this.scene;
+        const sceneId = this.sceneId;
+        this._sceneUpgradePromise = (async () => {
+            await this._saveSceneNow();
+            if (this.scene !== owner) return false;
+            const upgraded = await this._fetchJSON(ENDPOINTS.upgradeScene(sceneId), { method: "POST" });
+            if (this.scene !== owner) return false;
+            await this._applyScene(upgraded, { preserveSource: false });
+            this.toast("Editable geometry enabled in a new scene copy. The original remains in Scenes.", "success");
+            return true;
+        })();
+        try { return await this._sceneUpgradePromise; }
+        finally { this._sceneUpgradePromise = null; }
+    }
+
+    _openPrimitivePicker() {
+        const body = element("div", "vnccs-i3s__primitive-picker");
+        body.append(element("p", "vnccs-i3s__hint", "Choose a shape, then adjust its dimensions in Inspector. All sizes are in meters; geometry stays editable."));
+        for (const [kind, recipe] of Object.entries(PARAMETRIC_PARTS)) {
+            const control = button("vnccs-i3s__button", recipe.label);
+            control.addEventListener("click", () => { this.closeModal(); void this.createPrimitive(kind); });
+            body.append(control);
+        }
+        body.append(element("p", "vnccs-i3s__hint", "Older scenes are preserved: the first parametric shape creates an upgraded scene copy."));
+        this.openModal({ title: "Add shape", body });
+    }
+
+    async createPrimitive(kind, options = {}) {
+        if (this._creatingPrimitive || this.currentJobId || (this.importingPly && !options.allowWhileImporting)) return null;
+        this._creatingPrimitive = true;
+        const primitiveKind = PRIMITIVE_KINDS.includes(kind) ? kind : "plane";
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            if ((PARAMETRIC_PARTS[primitiveKind] || primitiveKind === "terrain") && !await this._ensureProceduralScene()) return null;
+            const sceneOwner = this.scene;
+            await this._saveSceneNow();
+            if (this.scene !== sceneOwner) return null;
+            const sceneId = this.sceneId;
+            const defaults = PARAMETRIC_PARTS[primitiveKind] || (primitiveKind === "terrain"
+                ? { width: 20, height: 2, depth: 20, extrusion: 0.2, height_amplitude: 2, noise_frequency: 0.1, segments: [64, 64] }
+                : primitiveKind === "image"
+                    ? { width: 2, height: 2, depth: 0.02, extrusion: 0, segments: [1, 1] }
+                    : { width: 2, height: 2, depth: 2, extrusion: 0, segments: [1, 1] });
+            const result = await this._fetchJSON(ENDPOINTS.createPrimitive(sceneId), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    name: options.name || primitiveLabel(primitiveKind),
+                    primitive: {
+                        kind: primitiveKind,
+                        ...defaults,
+                        ...safeObject(options.primitive),
+                        texture_id: String(options.textureId || options.primitive?.texture_id || ""),
+                    },
+                }),
+            });
+            if (this.sceneId !== sceneId || this.scene !== sceneOwner) return result;
+            // Keep edits made while creation was in flight; the server owns the
+            // new asset, the live document owns existing editable properties.
+            const live = this._scenePayload();
+            const liveObjects = new Map(live.objects.map(item => [item.object_id, item]));
+            result.scene = {
+                ...result.scene, ...live,
+                objects: result.scene.objects.map(item => ({ ...item, ...(liveObjects.get(item.object_id) || {}) })),
+                layers: [...live.layers, { type: "object", object_id: result.object_id }],
+            };
+            await this._applyScene(result.scene, { preserveSource: true });
+            this._placeNewObjectOnActiveFloor(result.object_id);
+            this._selectObject(result.object_id);
+            this.viewer.fit(result.object_id);
+            this._scheduleScenePreview(120);
+            this._scheduleStateSave(0);
+            this.toast(`${primitiveLabel(primitiveKind)} added.`, "success");
+            return result;
+        } catch (error) {
+            this._showError("Primitive could not be created", error);
+            return null;
+        } finally {
+            this._creatingPrimitive = false;
+        }
+    }
+
+    async importImagePlane(file) {
+        if (!file || this.currentJobId || this.importingPly) return;
+        if (!["image/jpeg", "image/png", "image/webp"].includes(file.type) || !file.size || file.size > MAX_TEXTURE_BYTES) {
+            this.toast("Choose a JPEG, PNG, or WebP image up to 32 MB.", "error");
+            return;
+        }
+        this.importingPly = true;
+        this.els.imageImport.disabled = true;
+        this._setStatus("Importing image", "working");
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            const dimensions = await imageFileDimensions(file);
+            const texture = await this._uploadSceneTexture(file);
+            const aspect = dimensions.width / Math.max(1, dimensions.height);
+            const width = aspect >= 1 ? 2 : 2 * aspect;
+            const height = aspect >= 1 ? 2 / aspect : 2;
+            const result = await this.createPrimitive("image", {
+                name: objectNameFromFileName(file.name),
+                textureId: texture.texture_id,
+                primitive: { width, height },
+                allowWhileImporting: true,
+            });
+            if (result) this._setStatus("Image imported", "success");
+        } catch (error) {
+            this._setStatus("Image import failed", "error");
+            this._showError("Image could not be imported", error);
+        } finally {
+            this.importingPly = false;
+            if (this.els.imageImport.isConnected) this.els.imageImport.disabled = false;
         }
     }
 
@@ -7922,6 +9570,82 @@ class Factory3DWidget {
         }
     }
 
+    async importModel(files) {
+        if (!Array.isArray(files) || !files.length || this.currentJobId || this.importingPly) return;
+        const modelPattern = /\.(glb|gltf|fbx|obj|stl)$/i;
+        const resourcePattern = /\.(mtl|bin|png|jpe?g|webp|bmp|gif|tga)$/i;
+        const archives = files.filter(file => /\.zip$/i.test(String(file.name || "")));
+        const modelFiles = files.filter(file => modelPattern.test(String(file.name || "")));
+        if (archives.length) {
+            if (files.length !== 1) {
+                this.toast("Import a ZIP model package by itself.", "error");
+                return;
+            }
+        } else if (!modelFiles.length) {
+            this.toast("Choose a GLB, glTF, FBX, OBJ, or STL model.", "error");
+            return;
+        }
+        if (!archives.length && files.some(file => !modelPattern.test(file.name || "") && !resourcePattern.test(file.name || ""))) {
+            this.toast("The selection contains an unsupported model resource.", "error");
+            return;
+        }
+        const totalBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+        if (!totalBytes || totalBytes > MAX_MODEL_TOTAL_BYTES || files.some(file => file.size > MAX_PLY_BYTES)) {
+            this.toast(`Model packages must be smaller than ${formatBytes(MAX_MODEL_TOTAL_BYTES)}.`, "error");
+            return;
+        }
+        const priority = ["glb", "gltf", "fbx", "obj", "stl"];
+        const main = modelFiles.sort((left, right) => {
+            const leftFormat = String(left.name).split(".").at(-1).toLowerCase();
+            const rightFormat = String(right.name).split(".").at(-1).toLowerCase();
+            return priority.indexOf(leftFormat) - priority.indexOf(rightFormat);
+        })[0] || archives[0];
+        this.importingPly = true;
+        this.els.plyImport.disabled = true;
+        this._setStatus("Importing 3D model", "working");
+        try {
+            if (!this.sceneId) await this.ensureScene();
+            const sceneId = this.sceneId;
+            const form = new FormData();
+            const paths = [];
+            for (const file of files) {
+                const path = String(file.webkitRelativePath || file.name || "asset").replace(/\\/g, "/");
+                paths.push(path);
+                form.append("files", file, file.name || "asset");
+            }
+            form.append("paths", JSON.stringify(paths));
+            form.append("main_path", String(main?.webkitRelativePath || main?.name || ""));
+            form.append("name", objectNameFromFileName(main?.name || "Imported model"));
+            const result = await this._fetchJSON(ENDPOINTS.importModel(sceneId), {
+                method: "POST",
+                body: form,
+            });
+            if (this.sceneId !== sceneId) {
+                this._setStatus("3D model imported", "success");
+                this.toast("The model was added to the scene where the import started.", "success");
+                return;
+            }
+            await this._applyScene(result.scene, { preserveSource: true });
+            this._selectObject(result.object_id);
+            if (this.viewportFailures.has(result.object_id)) {
+                this._setStatus("Imported; preview failed", "error");
+                this.toast("The model was saved, but the viewport could not render it.", "error");
+                return;
+            }
+            this.viewer.fit(result.object_id);
+            this._scheduleScenePreview(120);
+            this._scheduleStateSave(0);
+            this._setStatus("3D model imported", "success");
+            this.toast("Model and textures added to the active scene.", "success");
+        } catch (error) {
+            this._setStatus("3D model import failed", "error");
+            this._showError("3D model could not be imported", error);
+        } finally {
+            this.importingPly = false;
+            if (this.els.plyImport.isConnected) this.els.plyImport.disabled = false;
+        }
+    }
+
     async _monitorJob(jobId, { modal = false } = {}) {
         const token = ++this.currentJobToken;
         this.currentJobId = jobId;
@@ -7961,7 +9685,9 @@ class Factory3DWidget {
                                 true,
                                 100,
                                 "Loading generated object",
-                                "Backend generation completed · decoding SPLAT for the viewport",
+                                job.provider === "triposplat"
+                                    ? "Backend generation completed · decoding SPLAT for the viewport"
+                                    : "Backend generation completed · loading textured GLB in the viewport",
                             );
                             const scene = generatedScene.scene_id
                                 ? generatedScene
@@ -7974,7 +9700,8 @@ class Factory3DWidget {
                             this._setStatus("Complete", "success");
                             await this.loadCapabilities();
                             this.closeModal();
-                            this.toast("TripoSplat weights installed.", "success");
+                            const generator = this._generatorCapability(job.provider || this.settings.generator);
+                            this.toast(`${generator.name || "Generator"} weights installed.`, "success");
                         }
                         return job;
                     }
@@ -8012,8 +9739,14 @@ class Factory3DWidget {
     }
 
     async exportScene() {
-        if (!this._effectiveVisibleObjectIds().size) {
-            this.toast("Show at least one object before exporting the scene.", "error");
+        const visibleIds = this._effectiveVisibleObjectIds();
+        const hasGaussian = (this.scene?.objects || []).some(
+            item => item.asset_kind !== "mesh"
+                && item.asset_kind !== "primitive"
+                && visibleIds.has(item.object_id),
+        );
+        if (!hasGaussian) {
+            this.toast("Show at least one Gaussian object before exporting PLY.", "error");
             return;
         }
         try {
@@ -8034,6 +9767,50 @@ class Factory3DWidget {
         } catch (error) {
             this._setStatus("Export failed", "error");
             this._showError("Scene export failed", error);
+        }
+    }
+
+    async exportPanorama() {
+        if (this.exportingPanorama) return;
+        if (this.currentJobId) {
+            this.toast("Wait for the current 3D Factory job before exporting a panorama.", "info");
+            return;
+        }
+        const camera = this.scene?.cameras?.find(
+            value => value.camera_id === this.panoramaCameraId,
+        );
+        if (!camera) {
+            this.toast("Choose a saved camera for the 360° panorama.", "error");
+            return;
+        }
+        this.exportingPanorama = true;
+        this._syncPanoramaExportControls();
+        this._setStatus("Rendering 360° panorama", "working");
+        this._setProgress(true, 2, "Preparing panorama", camera.name || "Saved camera");
+        try {
+            const blob = await this.viewer.capturePanorama({
+                width: this.panoramaWidth,
+                cameraState: camera,
+                onProgress: ({ stage, progress, detail }) => {
+                    this._setProgress(true, progress, stage, detail);
+                },
+            });
+            const baseName = `${this.scene?.name || "scene"}-${camera.name || "camera"}-360`
+                .replace(/[<>:"/\\|?*\u0000-\u001f\u007f]+/g, "-")
+                .replace(/\s+/g, " ")
+                .trim()
+                .slice(0, 140)
+                || "vnccs-3d-factory-360";
+            downloadBlob(blob, `${baseName}.png`);
+            this._setStatus("360° panorama exported", "success");
+            this.toast(`360° panorama exported from ${camera.name || "saved camera"}.`, "success");
+        } catch (error) {
+            this._setStatus("Panorama export failed", "error");
+            this._showError("360° panorama export failed", error);
+        } finally {
+            this.exportingPanorama = false;
+            this._setProgress(false);
+            this._syncPanoramaExportControls();
         }
     }
 
@@ -8445,6 +10222,36 @@ class Factory3DWidget {
         this.openModal({ title: "Remove object", body, actions: [cancel, remove], initialFocus: cancel });
     }
 
+    async _deleteSelectedObjects(objectIds = this.selectedObjectIds) {
+        if (!this.sceneId || this._deletingSelectedObjects) return false;
+        const ids = Array.from(new Set(objectIds || [])).filter(objectId => (
+            this.scene?.objects?.some(item => item.object_id === objectId)
+        ));
+        if (!ids.length) return false;
+        this._deletingSelectedObjects = true;
+        this._setStatus("Removing selection", "working");
+        let updatedScene = null;
+        try {
+            for (const objectId of ids) {
+                updatedScene = await this._fetchJSON(
+                    `${ENDPOINTS.scene(this.sceneId)}/objects/${encodeURIComponent(objectId)}`,
+                    { method: "DELETE" },
+                );
+            }
+            await this._applyScene(updatedScene, { preserveSource: true });
+            this._setStatus("Selection removed", "success");
+            this.toast(`${ids.length} object${ids.length === 1 ? "" : "s"} removed.`, "success");
+            return true;
+        } catch (error) {
+            if (updatedScene) await this._applyScene(updatedScene, { preserveSource: true });
+            this._setStatus("Removal failed", "error");
+            this._showError("Selected objects could not be removed", error);
+            return false;
+        } finally {
+            this._deletingSelectedObjects = false;
+        }
+    }
+
     async openSceneManager() {
         const body = element("div");
         const note = element("div", "vnccs-i3s__modal-note");
@@ -8735,27 +10542,27 @@ class Factory3DWidget {
     async refreshLibrary() {
         try {
             const result = await this._fetchJSON(ENDPOINTS.libraryItems);
-            if (result.schema !== GAUSSIAN_LIBRARY_SCHEMA) {
+            if (result.schema !== MODEL_LIBRARY_SCHEMA) {
                 throw new Error(
-                    "The server returned a non-Gaussian library. Restart ComfyUI to load the 3D Factory library routes.",
+                    "The server returned an incompatible model library. Restart ComfyUI to load the 3D Factory library routes.",
                 );
             }
             const received = Array.isArray(result.items) ? result.items : [];
             const rejected = received.filter(item => (
                 !item
-                || item.schema !== GAUSSIAN_LIBRARY_SCHEMA
+                || item.schema !== MODEL_LIBRARY_SCHEMA
                 || !["object", "scene", "skydome"].includes(item.asset_type)
                 || !/^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
             ));
             if (rejected.length) {
-                console.error("[VNCCS 3D Factory] Rejected non-Gaussian library records", {
+                console.error("[VNCCS 3D Factory] Rejected incompatible library records", {
                     rejected: rejected.length,
                     total: received.length,
                 });
             }
             this.libraryItems = received.filter(item => (
                 item
-                && item.schema === GAUSSIAN_LIBRARY_SCHEMA
+                && item.schema === MODEL_LIBRARY_SCHEMA
                 && ["object", "scene", "skydome"].includes(item.asset_type)
                 && /^[a-f0-9]{24}$/.test(String(item.asset_id || ""))
             ));
@@ -8787,7 +10594,10 @@ class Factory3DWidget {
         return this.libraryItems.filter(item => {
             if (this.libraryActiveCategory !== "All" && (item.category || "Uncategorized") !== this.libraryActiveCategory) return false;
             if (!query) return true;
-            return [item.name, item.asset_type, item.category, item.repository, ...(item.tags || [])]
+            return [
+                item.name, item.asset_type, item.model_kind, item.model_format,
+                item.category, item.repository, ...(item.tags || []),
+            ]
                 .join(" ").toLowerCase().includes(query);
         });
     }
@@ -8886,7 +10696,14 @@ class Factory3DWidget {
             ? "Scene"
             : item.asset_type === "skydome"
                 ? "Skydome"
-                : "Gaussian model";
+                : item.model_kind === "mesh"
+                    ? `${String(item.model_format || "3D").toUpperCase()} model`
+                    : "Gaussian model";
+        const modelStats = item.asset_type === "skydome"
+            ? ""
+            : item.model_kind === "mesh"
+                ? ""
+                : ` · ${Number(item.gaussians || 0).toLocaleString()} splats`;
         const local = item.repository === "local_user_models";
         const disabled = local ? "" : "disabled";
         this.libraryInspector.innerHTML = `
@@ -8901,7 +10718,7 @@ class Factory3DWidget {
                 <label class="vnccs-ps-library-field"><span>Repository</span><input class="vnccs-ps-input" type="text" value="${escapeHTML(item.repository)}" disabled></label>
                 <label class="vnccs-ps-library-field"><span>Tags</span><input class="vnccs-ps-input vnccs-ps-library-edit-tags" type="text" value="${escapeHTML((item.tags || []).join(", "))}" ${disabled}></label>
                 <label class="vnccs-ps-library-field"><span>Description</span><textarea class="vnccs-ps-textarea vnccs-ps-library-edit-description" ${disabled}>${escapeHTML(item.description || "")}</textarea></label>
-                <div class="vnccs-ps-library-system-tag">${assetLabel}${item.asset_type === "skydome" ? "" : ` · ${Number(item.gaussians || 0).toLocaleString()} splats`} · ${formatBytes(item.bytes)}</div>
+                <div class="vnccs-ps-library-system-tag">${assetLabel}${modelStats} · ${formatBytes(item.bytes)}</div>
                 ${local ? `
                     <label class="vnccs-ps-library-field"><span>Custom Image</span><input class="vnccs-ps-library-preview-input" type="file" accept="image/*"></label>
                     <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
@@ -8987,7 +10804,7 @@ class Factory3DWidget {
                 <div class="vnccs-ps-library-settings-head">
                     <div>
                         <div class="vnccs-ps-library-settings-title">Library Repositories</div>
-                        <div class="vnccs-ps-library-settings-subtitle">Gaussian model and scene libraries on Hugging Face can be enabled, disabled, refreshed, or removed.</div>
+                        <div class="vnccs-ps-library-settings-subtitle">3D model and scene libraries on Hugging Face can be enabled, disabled, refreshed, or removed.</div>
                     </div>
                     <button class="vnccs-ps-btn vnccs-ps-library-settings-back">Back to library</button>
                 </div>
@@ -9144,10 +10961,7 @@ class Factory3DWidget {
                             <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
                         </label>
                     </label>
-                    <label class="vnccs-ps-library-field">
-                        <span>HF token ${current.has_hf_token ? "(saved)" : ""}</span>
-                        <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" placeholder="${current.has_hf_token ? "Leave empty to use saved token" : "hf_..."}">
-                    </label>
+                    <p class="vnccs-ps-library-field">Remote publishing is disabled by the VNCCS security policy.</p>
                 </div>
                 <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
                 <button class="vnccs-ps-modal-btn cancel">Cancel</button>
@@ -9168,7 +10982,6 @@ class Factory3DWidget {
                 if (!value) return input.focus();
                 close({
                     repo_id: value,
-                    hf_token: modal.querySelector(".vnccs-ps-publish-token").value.trim(),
                     create: mode.value === "create",
                     private: modal.querySelector(".vnccs-ps-publish-private").checked,
                 });
@@ -9213,7 +11026,7 @@ class Factory3DWidget {
                     ? "Library scene opened."
                     : result.skydome_id
                         ? "Library skydome applied to scene."
-                        : "Gaussian object added to scene.",
+                        : "3D object added to scene.",
                 "success",
             );
         } catch (error) {
@@ -9440,7 +11253,7 @@ class Factory3DWidget {
         back.addEventListener("click", () => void this.openLibrary());
         close.addEventListener("click", () => this.closeModal());
         this.openModal({
-            title: "Gaussian library repositories",
+            title: "3D model library repositories",
             body,
             actions: [back, close],
             wide: true,
@@ -9451,7 +11264,7 @@ class Factory3DWidget {
             const local = element("section", "vnccs-i3s__library-repo is-local");
             const localCopy = element("div", "vnccs-i3s__library-repo-copy");
             localCopy.append(
-                element("strong", "", "Local Gaussian Library"),
+                element("strong", "", "Local 3D Model Library"),
                 element("span", "", `${Number(data.local?.asset_count || 0)} saved assets`),
             );
             const publishRow = element("div", "vnccs-i3s__library-repo-publish");
@@ -9459,10 +11272,8 @@ class Factory3DWidget {
             publishId.placeholder = "HuggingFace owner/repository";
             publishId.value = data.local?.publish_repo_id || "";
             const publish = button("vnccs-i3s__button vnccs-i3s__button--primary", "Publish", "upload");
-            publish.disabled = !data.local?.has_hf_token;
-            publish.title = data.local?.has_hf_token
-                ? "Upload local packages, previews, and manifest"
-                : "Configure the Hugging Face token in VNCCS settings first";
+            publish.disabled = true;
+            publish.title = "Remote publishing is disabled by the VNCCS security policy";
             publish.addEventListener("click", async () => {
                 publish.disabled = true;
                 try {
@@ -9472,7 +11283,7 @@ class Factory3DWidget {
                         body: JSON.stringify({ repo_id: publishId.value.trim() }),
                     });
                     await this._waitLibraryRepositoryTask(result.task_id, progress);
-                    this.toast("Gaussian library published to Hugging Face.", "success");
+                    this.toast("3D model library published to Hugging Face.", "success");
                     await this.openLibraryRepositories();
                 } catch (error) {
                     publish.disabled = false;
@@ -9490,7 +11301,7 @@ class Factory3DWidget {
                 copy.append(
                     element("strong", "", repo.title || repo.repo_id),
                     element("span", "", `${repo.repo_id} · ${Number(repo.asset_count || 0)} assets`),
-                    element("small", "", repo.description || "Hugging Face Gaussian asset repository"),
+                    element("small", "", repo.description || "Hugging Face 3D asset repository"),
                 );
                 const actions = element("div", "vnccs-i3s__library-repo-actions");
                 const toggle = button(
@@ -9591,7 +11402,80 @@ class Factory3DWidget {
         this.openModal({ title: "New scene", body, actions: [cancel, create], initialFocus: input });
     }
 
+    async openMeshModelSetup(provider) {
+        const capabilities = await this.loadCapabilities();
+        const generator = this._generatorCapability(provider);
+        const weights = safeObject(generator.weights);
+        const runtime = safeObject(generator.runtime);
+        const body = element("div", "vnccs-i3s__setup-grid vnccs-i3s__setup-grid--single");
+        const models = element("section", "vnccs-i3s__setup-block vnccs-i3s__setup-block--models");
+        const head = element("div", "vnccs-i3s__setup-head");
+        const title = element("div");
+        title.append(
+            element("div", "vnccs-i3s__setup-title", `${generator.name || provider} models`),
+            element("div", "vnccs-i3s__setup-subtitle", generator.output_label || "Textured GLB"),
+        );
+        const action = button(
+            "vnccs-i3s__button vnccs-i3s__setup-action",
+            weights.ready ? "Recheck" : "Download weights",
+            weights.ready ? "check" : "download",
+        );
+        action.disabled = runtime.ready === false;
+        head.append(title, action);
+        const runtimeNotice = element(
+            "div",
+            `vnccs-i3s__runtime-notice${runtime.ready === false ? " is-error" : ""}`,
+            runtime.ready === false
+                ? `Update ComfyUI before using this generator. Missing nodes: ${(runtime.missing_nodes || []).join(", ")}`
+                : "Required comfy-core nodes are available.",
+        );
+        const root = element("div", "vnccs-i3s__failure-context", weights.root || "");
+        const list = element("div", "vnccs-i3s__weight-list");
+        for (const file of weights.files || []) {
+            const row = element("div", "vnccs-i3s__weight");
+            row.append(
+                element("span", `vnccs-i3s__weight-dot${file.ready ? " is-ready" : ""}`),
+                element("span", "vnccs-i3s__weight-path", file.path),
+                element("span", "vnccs-i3s__object-meta", formatBytes(file.size)),
+            );
+            list.appendChild(row);
+        }
+        models.append(head, runtimeNotice, root, list);
+        body.appendChild(models);
+        const close = button("vnccs-i3s__button", "Close");
+        close.addEventListener("click", () => this.closeModal());
+        action.addEventListener("click", async () => {
+            if (weights.ready) {
+                await this.openMeshModelSetup(provider);
+                return;
+            }
+            action.disabled = true;
+            close.disabled = true;
+            try {
+                const job = await this._fetchJSON(
+                    ENDPOINTS.generatorWeightsDownload(provider),
+                    { method: "POST" },
+                );
+                await this._monitorJob(job.job_id, { modal: true });
+            } catch (_) {
+                action.disabled = false;
+                close.disabled = false;
+            }
+        });
+        this.openModal({
+            title: `${generator.name || provider} setup`,
+            body,
+            actions: [close],
+            wide: true,
+            initialFocus: action.disabled ? close : action,
+        });
+    }
+
     async openModelSetup(draftSettings = null) {
+        const provider = this.settings.generator || "triposplat";
+        if (provider !== "triposplat") {
+            return this.openMeshModelSetup(provider);
+        }
         const capabilities = await this.loadCapabilities();
         const weights = capabilities?.weights || { files: [] };
         const allowedResolutions = Array.isArray(capabilities?.conditioning_resolutions)
@@ -9818,7 +11702,8 @@ class Factory3DWidget {
         cacheLimitRange.addEventListener("input", () => {
             syncCacheLimit(cacheLimitRange.value, cacheLimitRange);
         });
-        cacheLimitInput.addEventListener("change", () => {
+        cacheLimitInput.addEventListener("input", () => {
+            if (cacheLimitInput.value === "") return;
             syncCacheLimit(cacheLimitInput.value, cacheLimitInput);
         });
         cache.append(
@@ -10011,8 +11896,9 @@ class Factory3DWidget {
         });
     }
 
-    openModal({ title, body, actions = [], wide = false, initialFocus = null }) {
+    openModal({ title, body, actions = [], wide = false, initialFocus = null, onClose = null }) {
         this.closeModal();
+        this._modalOnClose = typeof onClose === "function" ? onClose : null;
         const modal = element("section", `vnccs-i3s__modal${wide ? " is-wide" : ""}`);
         modal.setAttribute("role", "dialog");
         modal.setAttribute("aria-modal", "true");
@@ -10033,7 +11919,15 @@ class Factory3DWidget {
         this.els.modalLayer.classList.add("is-open");
         this._previousFocus = document.activeElement;
         const onKey = event => {
-            if (event.key === "Escape") this.closeModal();
+            if (event.key === "Escape") {
+                event.preventDefault(); event.stopImmediatePropagation(); this.closeModal(); return;
+            }
+            if (event.key !== "Tab") return;
+            const controls = [...modal.querySelectorAll('button, input, select, textarea, [tabindex="0"]')]
+                .filter(control => !control.disabled && control.getClientRects().length);
+            const first = controls[0], last = controls.at(-1);
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
         };
         const onBackdrop = event => {
             if (event.target === this.els.modalLayer) this.closeModal();
@@ -10045,16 +11939,23 @@ class Factory3DWidget {
             document.removeEventListener("keydown", onKey, true);
             this.els.modalLayer.removeEventListener("pointerdown", onBackdrop);
         };
-        requestAnimationFrame(() => initialFocus?.focus?.() || modal.querySelector("button,input")?.focus?.());
+        requestAnimationFrame(() => {
+            if (!modal.isConnected) return;
+            const target = initialFocus?.isConnected ? initialFocus : modal.querySelector("button,input");
+            target?.focus?.({ preventScroll: true });
+        });
     }
 
     closeModal() {
+        const onClose = this._modalOnClose;
+        this._modalOnClose = null;
         this._modalCleanup?.();
         this._modalCleanup = null;
         this.els.modalLayer.classList.remove("is-open");
         this.els.modalLayer.replaceChildren();
         this._previousFocus?.focus?.({ preventScroll: true });
         this._previousFocus = null;
+        onClose?.();
     }
 
     _setStatus(text, tone = "idle") {
@@ -10078,10 +11979,16 @@ class Factory3DWidget {
         this.els.steps.value = String(this.settings.steps);
         this.els.guidance.value = String(this.settings.guidance_scale);
         this.els.guidanceValue.textContent = Number(this.settings.guidance_scale).toFixed(1);
+        this.els.meshQuality.value = String(this.settings.mesh_quality || "high");
+        this.els.meshStructureSteps.value = String(this.settings.mesh_structure_steps);
+        this.els.meshShapeSteps.value = String(this.settings.mesh_shape_steps);
+        this.els.meshUpsampleSteps.value = String(this.settings.mesh_upsample_steps);
+        this.els.meshTextureSteps.value = String(this.settings.mesh_texture_steps);
         this.els.seed.value = String(this.settings.seed);
         this._syncBackgroundRemoval();
         this._syncSeedMode();
         this._syncDensityMode();
+        this._syncGeneratorUI();
         const exportLabel = this.els.sceneExport?.querySelector("span:last-child");
         if (exportLabel) exportLabel.textContent = "Gaussian PLY";
         if (this.els.sceneExport) {
@@ -10116,7 +12023,13 @@ class Factory3DWidget {
         this.els.density.closest(".vnccs-i3s__field")?.classList.toggle("is-extreme", extreme);
     }
 
+    _syncHistoryControls() {
+        if (this.els?.undo) this.els.undo.disabled = !this.history.canUndo;
+        if (this.els?.redo) this.els.redo.disabled = !this.history.canRedo;
+    }
+
     _syncToolbar() {
+        this._syncLightStatuses();
         this._syncWorkspace();
         const mode = this.viewerState.mode || "translate";
         this.els.modeMove.setAttribute("aria-pressed", String(mode === "translate"));
@@ -10124,11 +12037,14 @@ class Factory3DWidget {
         this.els.modeScale.setAttribute("aria-pressed", String(mode === "scale"));
         this.els.grid.setAttribute("aria-pressed", String(Boolean(this.viewerState.grid)));
         const plan = this.editorView.view_mode === "plan";
-        this.els.fit.disabled = plan;
-        this.els.fit.title = plan ? "Available in 3D view" : "Frame complete 3D scene";
+        this.els.fit.disabled = false;
+        this.els.fit.title = plan ? "Frame complete plan" : "Frame complete 3D scene";
         this._syncCameraPanelControls();
         this.els.view3d.setAttribute("aria-pressed", String(!plan));
         this.els.viewPlan.setAttribute("aria-pressed", String(plan));
+        this.els.grid.hidden = plan;
+        this.els.modeRotate.hidden = plan;
+        this.els.modeScale.hidden = plan;
         const cutawayKey = plan ? "plan" : "three_d";
         const cutawayEnabled = Boolean(this.editorView.interior_cutaway?.[cutawayKey]);
         this.els.cutaway.setAttribute("aria-pressed", String(cutawayEnabled));
@@ -10137,7 +12053,21 @@ class Factory3DWidget {
             : "Interior cutaway (viewport only): hide ceilings and the nearest blocking wall";
         this.viewer?.setInteriorCutaway?.(cutawayEnabled);
         this.els.planTools.hidden = !plan;
-        this.els.openingKindShortcut.hidden = !plan || this.editorView.plan_tool !== "opening";
+        const placingOnWall = this.editorView.plan_tool === "opening" && Boolean(this._openingWallId);
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening-status], [data-wall-opening-cancel]")) control.hidden = !placingOnWall;
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening]")) {
+            control.setAttribute("aria-pressed", String(placingOnWall && control.dataset.wallOpening === this.editorView.opening_kind));
+        }
+        this.els.planTools.classList.toggle("is-3d", !plan);
+        this.els.openingKindShortcut.hidden = this.editorView.plan_tool !== "opening";
+        for (const control of [this.els.planGridToggle, this.els.snapToggle, this.els.snapGrid.closest("label"), this.els.planSettingsPanel]) control.hidden = !plan;
+        const roomTool = plan && this.editorView.plan_tool === "room";
+        const polygonRoom = roomTool && this.editorView.room_shape === "polygon";
+        this.els.roomMode.hidden = !roomTool;
+        this.els.roomShape.value = this.editorView.room_shape || "rectangle";
+        this.els.roomFinish.hidden = this.els.roomBack.hidden = !polygonRoom;
+        this.els.roomFinish.disabled = (this.planDraft?.points?.length || 0) < 3;
+        this.els.roomBack.disabled = !this.planDraft?.points?.length;
         this.els.modeMove.disabled = plan && this.editorView.plan_tool !== "select";
         this.els.modeRotate.disabled = plan || Boolean(this.selectedLightId);
         this.els.modeScale.disabled = plan || Boolean(this.selectedLightId);
@@ -10149,6 +12079,7 @@ class Factory3DWidget {
             camera: "Press and drag to place and aim a saved camera",
         };
         for (const control of this.els.planToolButtons) {
+            control.hidden = !plan && !["select", "opening"].includes(control.dataset.planTool);
             control.disabled = false;
             control.title = planToolTitles[control.dataset.planTool] || "";
             control.setAttribute(
@@ -10160,16 +12091,16 @@ class Factory3DWidget {
             select: "Click an object · Drag empty space for box selection",
             wall: "Press and drag to draw a wall",
             room: "Press and drag diagonally to draw a room",
-            opening: "Press on a wall and drag to set width",
+            opening: "Click a wall to place · Drag to set width · Esc: select",
             camera: "Press and drag to place and aim",
         };
-        this.els.planHint.textContent = planHints[this.editorView.plan_tool] || planHints.select;
+        this.els.planHint.textContent = polygonRoom ? "Click corners · Enter: finish · Backspace: remove · Escape: cancel" : planHints[this.editorView.plan_tool] || planHints.select;
         this.els.planGridToggle.setAttribute(
             "aria-pressed",
             String(this.editorView.plan_grid.visible),
         );
         this.els.snapToggle.setAttribute("aria-pressed", String(this.editorView.snap.enabled));
-        this.els.snapGrid.value = String(this.editorView.plan_grid.step);
+        if (document.activeElement !== this.els.snapGrid) this.els.snapGrid.value = String(this.editorView.plan_grid.step);
         for (const control of this.els.planSettings) {
             const key = control.dataset.planSetting;
             const value = key === "major_every"
@@ -10180,7 +12111,7 @@ class Factory3DWidget {
                         ? this.editorView.opening_kind
                         : this.editorView.snap[key];
             if (control.type === "checkbox") control.checked = value !== false;
-            else control.value = String(value ?? 0);
+            else if (document.activeElement !== control) control.value = String(value ?? 0);
         }
         this.viewer?.setPlanGrid?.({
             visible: this.editorView.plan_grid.visible,
@@ -10272,6 +12203,8 @@ class Factory3DWidget {
             collapsed_group_ids: Array.from(this.collapsedGroupIds),
             settings: { ...this.settings },
             render_settings: { ...this.exportSettings },
+            panorama_camera_id: this.panoramaCameraId,
+            panorama_width: this.panoramaWidth,
             lighting_settings: { ...this.lighting },
             viewer_state: this.viewer?.getState?.() || this.viewerState,
             editor_view: {
@@ -10294,7 +12227,7 @@ class Factory3DWidget {
     }
 
     syncToNode() {
-        if (this._isRestoring) return;
+        if (this._isRestoring || this._unsupportedEditorState) return;
         clearTimeout(this._saveTimer);
         this._saveTimer = 0;
         const widget = this.node?.widgets?.find(item => item.name === "factory_data");
@@ -10302,7 +12235,8 @@ class Factory3DWidget {
         const value = JSON.stringify(this.serializeState());
         if (widget.value !== value) {
             widget.value = value;
-            widget.callback?.(value);
+            // This is serialized editor state, not an interactive host control.
+            // Host callbacks expect their original widget/event contract.
         }
     }
 
@@ -10313,6 +12247,14 @@ class Factory3DWidget {
         try {
             try { state = safeObject(JSON.parse(String(widget?.value || "{}"))); }
             catch (error) { this._showError("Saved state is invalid", error); }
+            try {
+                state = migrateEditorState(state);
+                this._unsupportedEditorState = false;
+            } catch (error) {
+                this._unsupportedEditorState = true;
+                this._showError("Workflow requires a newer Factory editor", error);
+                return;
+            }
             this.sceneId = String(state.scene_id || "");
             this.selectedObjectId = String(state.selected_object_id || "");
             this.selectedObjectIds = new Set(
@@ -10352,6 +12294,10 @@ class Factory3DWidget {
                         : [],
             );
             if (this.selectedCameraId) this.selectedCameraIds.add(this.selectedCameraId);
+            this.panoramaCameraId = String(state.panorama_camera_id || this.selectedCameraId || "");
+            this.panoramaWidth = [2048, 4096].includes(Number(state.panorama_width))
+                ? Number(state.panorama_width)
+                : 4096;
             this.selectedLightId = String(state.selected_light_id || "");
             this.collapsedGroupIds = new Set(
                 Array.isArray(state.collapsed_group_ids)
@@ -10360,6 +12306,20 @@ class Factory3DWidget {
             );
             const savedSettings = safeObject(state.settings);
             this.settings = { ...DEFAULT_SETTINGS, ...savedSettings };
+            this.settings.generator = ["triposplat", "pixal3d", "trellis2"].includes(this.settings.generator)
+                ? this.settings.generator
+                : "triposplat";
+            this.settings.mesh_quality = ["preview", "balanced", "high"].includes(this.settings.mesh_quality)
+                ? this.settings.mesh_quality
+                : "high";
+            for (const key of [
+                "mesh_structure_steps",
+                "mesh_shape_steps",
+                "mesh_upsample_steps",
+                "mesh_texture_steps",
+            ]) {
+                this.settings[key] = Math.round(clamp(this.settings[key], 1, 100));
+            }
             if (!Object.hasOwn(savedSettings, "seed_mode")) {
                 this.settings.seed_mode = Number(savedSettings.seed) < 0 ? "randomize" : "fixed";
             }
@@ -10433,7 +12393,7 @@ class Factory3DWidget {
         const height = this.container.clientHeight || DEFAULT_NODE_SIZE[1];
         this.container.classList.toggle("is-compact", width < 980);
         this.container.classList.toggle("is-narrow", width < 760);
-        const scale = clamp(Math.min(width / 1100, height / 720), 0.72, 1.08);
+        const scale = 1;
         const scaleValue = scale.toFixed(3);
         if (scaleValue !== this._uiScaleValue) {
             this._uiScaleValue = scaleValue;
@@ -10446,6 +12406,9 @@ class Factory3DWidget {
 
     dispose() {
         if (this.destroyed) return;
+        this.workspace?.dispose();
+        this._numericInspectorCleanup?.({ cancel: true });
+        this._numericInspectorCleanup = null;
         if (this._sceneSaveTimer) {
             void this._saveSceneNow({ showError: false }).catch(error => {
                 console.error("[VNCCS 3D Factory] Final scene save failed", error);
@@ -10677,7 +12640,6 @@ function enableCanvasNavigationForwarding(root) {
 function hideFactoryDataWidget(node) {
     const widget = node?.widgets?.find(item => item.name === "factory_data");
     if (!widget) return;
-    widget.type = "hidden";
     widget.hidden = true;
     widget.computeSize = () => [0, -4];
     widget.draw = () => {};
@@ -10732,6 +12694,7 @@ app.registerExtension({
 
         nodeType.prototype.onNodeCreated = function () {
             originalCreated?.apply(this, arguments);
+            ensureFactorySceneOutput(this);
             if (this.vnccs3DFactory) return;
             this._vnccsFactoryConfigured = false;
             this.setSize?.([...DEFAULT_NODE_SIZE]);
@@ -10770,6 +12733,7 @@ app.registerExtension({
             clearTimeout(this._vnccsFactoryInit);
             this._vnccsFactoryInit = 0;
             originalConfigure?.apply(this, arguments);
+            ensureFactorySceneOutput(this);
             hideFactoryDataWidget(this);
             syncDOMWidgetWidth(this);
             clearTimeout(this._vnccsFactoryConfigure);

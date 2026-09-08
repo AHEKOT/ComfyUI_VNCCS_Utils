@@ -7,6 +7,7 @@
  * avoids the common +179 -> -179 full-spin interpolation bug.
  */
 
+
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
@@ -210,8 +211,8 @@ export function validatedAnimationCharacterTransform(source) {
         throw new TypeError("Animation character transform requires finite x, y, z, and zoom.");
     }
     if (
-        source.x < -50 || source.x > 50
-        || source.y < -50 || source.y > 50
+        Math.abs(source.x) > 50
+        || Math.abs(source.y) > 50
         || source.z < -40 || source.z > 40
         || source.zoom < 0.1 || source.zoom > 7
     ) {
@@ -225,17 +226,35 @@ export function validatedAnimationCharacterTransform(source) {
     };
 }
 
+const BONE_POSITION_PREFIX = "@bonePosition:";
+
+export function bonePositionTrackName(boneName) {
+    return `${BONE_POSITION_PREFIX}${boneName}`;
+}
+
+export function boneNameForPositionTrack(trackName) {
+    return isBonePositionTrack(trackName) ? trackName.slice(BONE_POSITION_PREFIX.length) : trackName;
+}
+
+export function isBonePositionTrack(trackName) {
+    return typeof trackName === "string" && trackName.startsWith(BONE_POSITION_PREFIX);
+}
+
 export function isCharacterTransformTrack(trackName) {
     return CHARACTER_TRANSFORM_TRACKS.includes(trackName);
 }
 
 function valueTypeForTrack(trackName) {
+    if (isBonePositionTrack(trackName)) return "vector3";
     if (trackName === CHARACTER_POSITION_TRACK) return "vector2";
     if (trackName === CHARACTER_ZOOM_TRACK) return "scalar";
     return "quaternion";
 }
 
 function isValidTrackValue(trackName, value) {
+    if (isBonePositionTrack(trackName)) {
+        return Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+    }
     if (trackName === CHARACTER_POSITION_TRACK) {
         return Array.isArray(value)
             && value.length === 2
@@ -246,11 +265,15 @@ function isValidTrackValue(trackName, value) {
 }
 
 function canonicalTrackValue(trackName, value) {
+    if (isBonePositionTrack(trackName)) {
+        if (!isValidTrackValue(trackName, value)) throw new TypeError("Bone position key must be a finite vector3.");
+        return value.slice();
+    }
     if (trackName === CHARACTER_POSITION_TRACK) {
         if (!isValidTrackValue(trackName, value)) {
             throw new TypeError("Character position key must be [x, y].");
         }
-        if (value[0] < -50 || value[0] > 50 || value[1] < -50 || value[1] > 50) {
+        if (Math.abs(value[0]) > 50 || Math.abs(value[1]) > 50) {
             throw new RangeError("Character position key is outside the supported range.");
         }
         return value.slice();
@@ -268,6 +291,9 @@ function canonicalTrackValue(trackName, value) {
 }
 
 export function getPoseTrackEuler(pose, trackName) {
+    if (isBonePositionTrack(trackName)) {
+        return (pose?.bonePositions?.[boneNameForPositionTrack(trackName)] || [0, 0, 0]).slice(0, 3);
+    }
     if (trackName === MODEL_ROTATION_TRACK) {
         return (pose?.modelRotation || [0, 0, 0]).slice(0, 3).map(value => finiteNumber(value));
     }
@@ -281,6 +307,7 @@ function normalizeKeyframe(key, trackName, lastFrame, sourceLastFrame = lastFram
     let value = key.value ?? key.rotation;
     if (
         !isCharacterTransformTrack(trackName)
+        && !isBonePositionTrack(trackName)
         && Array.isArray(value)
         && value.length === 3
     ) {
@@ -465,6 +492,7 @@ function baseQuaternionForTrack(state, trackName) {
 }
 
 function baseValueForTrack(state, trackName) {
+    if (isBonePositionTrack(trackName)) return getPoseTrackEuler(state.basePose, trackName);
     const transform = validatedAnimationCharacterTransform(state.baseTransform);
     if (trackName === CHARACTER_POSITION_TRACK) return [transform.x, transform.y];
     if (trackName === CHARACTER_ZOOM_TRACK) return transform.zoom;
@@ -507,7 +535,7 @@ export function evaluateTrackValue(state, trackName, frameValue) {
 }
 
 export function evaluateTrackQuaternion(state, trackName, frameValue) {
-    if (isCharacterTransformTrack(trackName)) return [0, 0, 0, 1];
+    if (isCharacterTransformTrack(trackName) || isBonePositionTrack(trackName)) return [0, 0, 0, 1];
     return evaluateTrackValue(state, trackName, frameValue);
 }
 
@@ -540,6 +568,10 @@ export function evaluateAnimationFrame(state, frameValue) {
     };
     for (const trackName of Object.keys(state.tracks || {})) {
         if (isCharacterTransformTrack(trackName)) continue;
+        if (isBonePositionTrack(trackName)) {
+            pose.bonePositions = { ...pose.bonePositions, [boneNameForPositionTrack(trackName)]: evaluateTrackValue(state, trackName, normalizedFrame) };
+            continue;
+        }
         const value = quaternionToEulerDegrees(evaluateTrackQuaternion(state, trackName, normalizedFrame));
         if (trackName === MODEL_ROTATION_TRACK) pose.modelRotation = value;
         else pose.bones[trackName] = value;
@@ -619,6 +651,7 @@ export function createAnimationStateFromPoses(poses, options = {}) {
         : null;
     const framesForTrack = trackName => {
         if (!perTrackKeyframes) return keyedFrames;
+        if (isBonePositionTrack(trackName)) return keyedFrames;
         const source = perTrackKeyframes[trackName];
         if (!Array.isArray(source)) return [];
         return Array.from(new Set(source.map(frame => (
@@ -629,6 +662,7 @@ export function createAnimationStateFromPoses(poses, options = {}) {
     const boneNames = new Set();
     for (const pose of frames.slice(0, frameCount)) {
         for (const boneName of Object.keys(pose.bones || {})) boneNames.add(boneName);
+        for (const boneName of Object.keys(pose.bonePositions || {})) boneNames.add(bonePositionTrackName(boneName));
     }
     for (const boneName of boneNames) {
         for (const frame of framesForTrack(boneName)) {
@@ -697,7 +731,8 @@ export function setTrackKeyframe(state, trackName, frameValue, trackValue, inter
 }
 
 export function setTrackKeyframeFromEuler(state, trackName, frame, eulerValue, interpolation) {
-    return setTrackKeyframe(state, trackName, frame, eulerDegreesToQuaternion(eulerValue), interpolation);
+    return setTrackKeyframe(state, trackName, frame,
+        isBonePositionTrack(trackName) ? eulerValue : eulerDegreesToQuaternion(eulerValue), interpolation);
 }
 
 export function setCharacterTransformKeyframe(
@@ -1051,6 +1086,17 @@ function shortestAngleDelta(a, b) {
 
 export function findChangedPoseTracks(expectedPose, actualPose, epsilon = 0.01) {
     const changed = [];
+    const positionNames = new Set([
+        ...Object.keys(expectedPose?.bonePositions || {}),
+        ...Object.keys(actualPose?.bonePositions || {}),
+    ]);
+    for (const name of positionNames) {
+        const expected = expectedPose?.bonePositions?.[name];
+        const actual = actualPose?.bonePositions?.[name];
+        if (actual && (!expected || actual.some((value, index) => Math.abs(value - expected[index]) > 1e-6))) {
+            changed.push(bonePositionTrackName(name));
+        }
+    }
     const names = new Set([
         ...Object.keys(expectedPose?.bones || {}),
         ...Object.keys(actualPose?.bones || {}),
@@ -1091,6 +1137,7 @@ function trackSide(name) {
 }
 
 export function timelineGroupIdForTrack(name) {
+    name = boneNameForPositionTrack(name);
     if (name === MODEL_ROTATION_TRACK || isCharacterTransformTrack(name)) return "scene";
     const clean = cleanBoneName(name).toLowerCase();
     const side = trackSide(clean);
@@ -1140,6 +1187,7 @@ function numberedPartLabel(base, number) {
 }
 
 export function humanizeBoneName(name) {
+    if (isBonePositionTrack(name)) return `${humanizeBoneName(boneNameForPositionTrack(name))} Position`;
     if (name === MODEL_ROTATION_TRACK) return "Model Rotation";
     if (name === CHARACTER_POSITION_TRACK) return "Position in Frame";
     if (name === CHARACTER_ZOOM_TRACK) return "Model Zoom";

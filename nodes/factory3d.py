@@ -16,7 +16,7 @@ import torch
 from PIL import Image
 
 
-_EMPTY_STATE = '{"schema_version":17,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
+_EMPTY_STATE = '{"schema_version":18,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
 _MAX_STATE_CHARS = 16 * 1024 * 1024
 _MAX_PREVIEW_PIXELS = 4096 * 4096
 _MAX_SCENE_CAMERAS = 32
@@ -33,6 +33,9 @@ def _parse_state(factory_data: Any) -> dict[str, Any]:
         raise ValueError("3D Factory state is not valid JSON") from exc
     if not isinstance(value, dict):
         raise ValueError("3D Factory state must be an object")
+    version = value.get("schema_version", 0)
+    if isinstance(version, bool) or not isinstance(version, int) or not 0 <= version <= 18:
+        raise ValueError("Unsupported 3D Factory editor version; update the extension before executing this workflow")
     for key in ("scene_id", "selected_object_id", "selected_group_id"):
         item = value.get(key, "")
         if item and (not isinstance(item, str) or not _ID_RE.fullmatch(item)):
@@ -523,6 +526,10 @@ def _request_scene_preview(
                 "render_revision": int(
                     scene.get("render_revision", scene.get("revision", 0))
                 ),
+                "edit_revision": int(scene.get("edit_revision", 0)),
+                "render": scene.get("render", {}),
+                "camera": scene.get("camera", {}),
+                "cameras": scene.get("cameras", []),
                 "capture_token": capture_token,
             },
         )
@@ -640,12 +647,30 @@ def _backend():
     return factory3d
 
 
+def _has_renderable_scene(scene: dict[str, Any]) -> bool:
+    """Keep capture eligibility aligned with the Factory viewport."""
+    architecture = scene.get("architecture") or {}
+    skydome = scene.get("skydome")
+    return bool(
+        scene.get("objects")
+        or architecture.get("walls")
+        or architecture.get("rooms")
+        or scene.get("cameras")
+        or (skydome and skydome.get("visible") is not False)
+    )
+
+
+def _scene_handle(backend, scene, unique_id):
+    from ..api.factory3d_conditioning import create_scene_handle
+    return create_scene_handle(backend, scene, unique_id)
+
+
 class VNCCS_3DFactory:
     """Render a saved Factory scene into the ComfyUI graph."""
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("preview",)
-    OUTPUT_IS_LIST = (True,)
+    RETURN_TYPES = ("IMAGE", "VNCCS_FACTORY_SCENE")
+    RETURN_NAMES = ("preview", "scene")
+    OUTPUT_IS_LIST = (True, False)
     FUNCTION = "load_scene"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -695,21 +720,19 @@ class VNCCS_3DFactory:
         state = _parse_state(factory_data)
         scene_id = str(state.get("scene_id") or "")
         if not scene_id:
-            return ([_empty_image()],)
+            return ([_empty_image()], None)
 
         backend = _backend()
         try:
             snapshot = state.get("scene_snapshot")
             if isinstance(snapshot, dict):
-                backend.update_scene(scene_id, snapshot)
-            scene = backend.load_scene(scene_id)
+                scene = backend.update_scene(scene_id, dict(snapshot))
+            else:
+                scene = backend.load_scene(scene_id)
         except (FileNotFoundError, ValueError) as exc:
             raise RuntimeError(f"3D Factory scene {scene_id} could not be loaded: {exc}") from exc
 
-        has_renderable_scene = bool(
-            scene.get("objects") or scene.get("skydome") or scene.get("cameras")
-        )
-        if has_renderable_scene:
+        if _has_renderable_scene(scene):
             capture_token = uuid.uuid4().hex if unique_id is not None else ""
             requested = _request_scene_preview(unique_id, scene, capture_token)
             if requested:
@@ -733,4 +756,5 @@ class VNCCS_3DFactory:
             previews = [_preview_tensor(path) for path in capture_paths]
         else:
             previews = [_empty_image()]
-        return (previews,)
+        handle = _scene_handle(backend, scene, unique_id)
+        return (previews, handle)

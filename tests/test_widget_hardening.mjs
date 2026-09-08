@@ -419,7 +419,7 @@ test("Pose Manager RUN uploads the visible cards without rendering again", () =>
 });
 
 test("Reset clears library framing together with the pose", () => {
-    const fitStart = poseStudioSource.indexOf("\n    fitActiveRestPoseToFrame() {");
+    const fitStart = poseStudioSource.indexOf("\n    fitActiveRestPoseToFrame(");
     const resetStart = poseStudioSource.indexOf("\n    resetCurrentPose() {");
     const resetEnd = poseStudioSource.indexOf("\n    resetCurrentAnimation()", resetStart);
     const fitMethod = poseStudioSource.slice(fitStart, resetStart);
@@ -437,7 +437,8 @@ test("Reset clears library framing together with the pose", () => {
 
     const proportionsStart = poseStudioSource.indexOf("\n    resetMeshProportions() {");
     const proportionsEnd = poseStudioSource.indexOf("\n    resetCurrentAnimation()", proportionsStart);
-    const proportionsMethod = poseStudioSource.slice(proportionsStart, proportionsEnd);
+    const proportionsMethod = poseStudioSource.slice(poseStudioSource.indexOf("\n    applyCurrentMeshProportions()"), proportionsEnd);
+    assert.match(poseStudioSource.slice(proportionsStart, proportionsEnd), /this\.applyCurrentMeshProportions\(\);/);
     assert.match(
         proportionsMethod,
         /Object\.assign\(this\.meshParams, DEFAULT_POSE_STUDIO_MESH_PROPORTIONS\);/,
@@ -527,14 +528,14 @@ test("the original camera positioning widget controls the selected character", (
     const persistEnd = poseStudioSource.indexOf("\n    currentCameraParams()", persistStart);
     const persistMethod = poseStudioSource.slice(persistStart, persistEnd);
     assert.match(persistMethod, /const cameraParams = this\.currentCameraParams\(\)/);
-    assert.match(persistMethod, /x:\s*cameraParams\.offset_x/);
-    assert.match(persistMethod, /y:\s*cameraParams\.offset_y/);
-    assert.match(persistMethod, /zoom:\s*cameraParams\.zoom/);
+    assert.match(persistMethod, /x:\s*this\.exportParams\.cam_offset_x/);
+    assert.match(persistMethod, /y:\s*this\.exportParams\.cam_offset_y/);
+    assert.match(persistMethod, /zoom:\s*this\.exportParams\.cam_zoom/);
 
     const radarStart = poseStudioSource.indexOf("createCameraRadar(section)");
     const radarEnd = poseStudioSource.indexOf("\n    createLightRadar", radarStart);
     const radarMethod = poseStudioSource.slice(radarStart, radarEnd);
-    const yUpdate = radarMethod.indexOf("this.exportParams.cam_offset_y = -normY * rangeY");
+    const yUpdate = radarMethod.indexOf("this.exportParams.cam_offset_y = next.y");
     const selectedCharacterUpdate = radarMethod.indexOf("this.persistActivePoseCameraParams()", yUpdate);
     assert.ok(yUpdate >= 0 && selectedCharacterUpdate > yUpdate);
 });
@@ -698,4 +699,8 @@ test("repository Git fallback keeps clone diagnostics visible", () => {
     const addMethod = poseStudioSource.slice(addStart, addEnd);
     assert.match(addMethod, /!refreshed\.git_error/);
     assert.match(addMethod, /Open Git diagnostics below/);
+});
+
+test("Pose Studio redraws its position marker after viewport rendering", () => {
+    assert.match(poseStudioSource, /onViewportRender: \(\) => this\.radarRedraw\?\.\(\)/);
 });

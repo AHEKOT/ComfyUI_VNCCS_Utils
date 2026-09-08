@@ -4,8 +4,6 @@
 # the terms of the DINOv3 License Agreement.
 
 import contextlib
-import importlib
-import inspect
 import os
 import sys
 from pathlib import Path
@@ -19,18 +17,8 @@ def _load_modules_from_dir(dir_: str):
 
 
 def load_custom_callable(module_path: str | Path, callable_name: str):
-    module_full_path = os.path.realpath(module_path)
-    assert os.path.exists(module_full_path), f"module {module_full_path} does not exist"
-    module_dir, module_filename = os.path.split(module_full_path)
-    module_name, _ = os.path.splitext(module_filename)
-
-    with _load_modules_from_dir(module_dir):
-        module = importlib.import_module(module_name)
-        if inspect.getfile(module) != module_full_path:
-            importlib.reload(module)
-        callable_ = getattr(module, callable_name)
-
-    return callable_
+    del module_path, callable_name
+    raise RuntimeError("Loading executable Python modules from configuration is disabled")
 
 
 @contextlib.contextmanager

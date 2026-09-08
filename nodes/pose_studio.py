@@ -162,6 +162,18 @@ def _positive_int(value, name, default):
     return int(number)
 
 
+def _pose_image_dimensions(pose_image):
+    """Return the exact width and height of a ComfyUI IMAGE tensor."""
+    shape = getattr(pose_image, "shape", None)
+    if shape is None or len(shape) < 3:
+        raise ValueError("Capture Image Size requires a valid IMAGE input")
+    height = _positive_int(shape[-3], "pose_image height", None)
+    width = _positive_int(shape[-2], "pose_image width", None)
+    if width > 4096 or height > 4096 or width * height > _POSE_OUTPUT_MAX_PIXELS:
+        raise ValueError("Capture Image Size supports images up to 4096 x 4096 pixels")
+    return width, height
+
+
 def _create_comfy_video(frame_batch, fps):
     """Build the same VIDEO value as ComfyUI's built-in CreateVideo node."""
     try:
@@ -220,8 +232,8 @@ class VNCCS_PoseStudio:
     """Pose Studio with mesh editing and multiple pose generation."""
     
     # The first socket is narrowed to IMAGE or VIDEO by the frontend according
-    # to editor_mode. Keeping the backend union makes both workflow variants
-    # valid during server-side prompt validation.
+    # to editor_mode and the animation image-batch setting. Keeping the backend
+    # union makes every workflow variant valid during server-side validation.
     RETURN_TYPES = ("IMAGE,VIDEO", "STRING")
     RETURN_NAMES = ("images", "lighting_prompt")
     OUTPUT_IS_LIST = (True, True)
@@ -242,6 +254,10 @@ class VNCCS_PoseStudio:
                     "forceInput": True,
                     "tooltip": "Camera direction from VNCCS Visual Camera Control.",
                 }),
+                "animation_image_batch": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Return animation frames as one IMAGE batch instead of VIDEO.",
+                }),
             },
             "hidden": {
                 "unique_id": "UNIQUE_ID"
@@ -254,6 +270,7 @@ class VNCCS_PoseStudio:
         pose_data: str = "{}",
         pose_image=None,
         camera_prompt: str = "",
+        animation_image_batch: bool = False,
         unique_id: str = None,
     ):
         # Force re-execution if Debug Mode is enabled
@@ -265,6 +282,7 @@ class VNCCS_PoseStudio:
         except Exception:
             pass
         change_key = f"{pose_data}|camera_prompt:{camera_prompt or ''}"
+        change_key += f"|animation_image_batch:{animation_image_batch is True}"
         if pose_image is None:
             return change_key
         try:
@@ -311,6 +329,7 @@ class VNCCS_PoseStudio:
         unique_id,
         camera_prompt="",
         apply_mode="pose",
+        image_size=None,
     ):
         if pose_image is None or not unique_id:
             return None
@@ -335,13 +354,16 @@ class VNCCS_PoseStudio:
 
             sync_token = uuid.uuid4().hex
             start_time = time.time()
-            PromptServer.instance.send_sync("vnccs_apply_sam3d_pose", {
+            event_payload = {
                 "node_id": unique_id,
                 "pose_data": pose_payload,
                 "camera_prompt": camera_prompt or "",
                 "apply_mode": apply_mode,
                 "sync_token": sync_token,
-            })
+            }
+            if image_size is not None:
+                event_payload["image_width"], event_payload["image_height"] = image_size
+            PromptServer.instance.send_sync("vnccs_apply_sam3d_pose", event_payload)
             synced = self._wait_for_frontend_sync(
                 unique_id,
                 start_time,
@@ -364,6 +386,7 @@ class VNCCS_PoseStudio:
         pose_data: str = "{}",
         pose_image=None,
         camera_prompt: str = "",
+        animation_image_batch: bool = False,
         unique_id: str = None
     ):
         """Generate rendered mesh images for all poses."""
@@ -384,11 +407,18 @@ class VNCCS_PoseStudio:
                 pose_image = None
 
             if pose_image is not None:
+                image_size = None
+                if (
+                    isinstance(export_settings, dict)
+                    and export_settings.get("capture_image_size") is True
+                ):
+                    image_size = _pose_image_dimensions(pose_image)
                 synced = self._apply_pose_image_via_frontend(
                     pose_image,
                     unique_id,
                     camera_prompt,
                     pose_image_analysis_mode,
+                    image_size,
                 )
                 if isinstance(synced, dict):
                     data = _hydrate_cached_pose_animation(synced)
@@ -469,6 +499,18 @@ class VNCCS_PoseStudio:
         bg_color = export.get("bg_color", [40, 40, 40])  # RGB
         
         editor_mode = export.get("editor_mode", export.get("content_mode", "image"))
+        animation_outputs_image_batch = (
+            editor_mode == "animation"
+            and (
+                animation_image_batch is True
+                or export.get("animation_image_batch") is True
+            )
+        )
+        # ComfyUI IMAGE batches are single tensor values [B,H,W,C], not data
+        # lists. This instance-level flag is read by the executor after
+        # generate() returns, while the legacy image-mode LIST output keeps the
+        # class-level list contract.
+        self.OUTPUT_IS_LIST = (not animation_outputs_image_batch, True)
             
         # === 1. Try Client-Side Rendered Images (CSR) ===
         # If frontend sent captured images, use them directly.
@@ -488,6 +530,16 @@ class VNCCS_PoseStudio:
             rendered_images = _decode_captured_images(captured_images)
             
             if rendered_images:
+                if export.get("capture_image_size") is True:
+                    mismatched = [
+                        img.size for img in rendered_images
+                        if img.size != (view_width, view_height)
+                    ]
+                    if mismatched:
+                        raise RuntimeError(
+                            "Capture Image Size expected browser captures at "
+                            f"{view_width} x {view_height}, received {mismatched[0][0]} x {mismatched[0][1]}"
+                        )
                 # Convert to tensors
                 tensors = []
                 for img in rendered_images:
@@ -496,6 +548,8 @@ class VNCCS_PoseStudio:
 
                 if editor_mode == "animation":
                     frame_batch = torch.stack(tensors, dim=0)
+                    if animation_outputs_image_batch:
+                        return (frame_batch, lighting_prompts)
                     video = _create_comfy_video(
                         frame_batch,
                         _animation_frame_rate(data),

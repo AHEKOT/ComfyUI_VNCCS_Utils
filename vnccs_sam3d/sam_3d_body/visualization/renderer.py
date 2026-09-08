@@ -1,10 +1,5 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 
-import os
-
-_ENV = getattr(os, "environ")
-if "PYOPENGL_PLATFORM" not in _ENV:
-    _ENV["PYOPENGL_PLATFORM"] = "pyglet" if os.name == "nt" else "egl"
 from typing import List, Optional
 
 import cv2

@@ -198,7 +198,6 @@ def normalize_levels(scene_id: str, value: Any, *, strict: bool = False) -> list
 
 def _normalize_texture_slot(value: Any) -> dict[str, Any]:
     data = value if isinstance(value, dict) else {}
-    texture_id = _id(data.get("texture_id"))
     output = {
         "color": (
             str(data.get("color")).lower()
@@ -212,10 +211,17 @@ def _normalize_texture_slot(value: Any) -> dict[str, Any]:
             _bounded(_point2(data.get("uv_scale"), (1.0, 1.0))[0], 0.001, 1000.0, 1.0),
             _bounded(_point2(data.get("uv_scale"), (1.0, 1.0))[1], 0.001, 1000.0, 1.0),
         ],
+        "uv_offset": [
+            _bounded(_point2(data.get("uv_offset"))[0], -10000.0, 10000.0, 0.0),
+            _bounded(_point2(data.get("uv_offset"))[1], -10000.0, 10000.0, 0.0),
+        ],
         "uv_rotation": _bounded(data.get("uv_rotation"), -36000.0, 36000.0, 0.0),
+        "normal_strength": _bounded(data.get("normal_strength"), 0.0, 4.0, 1.0),
     }
-    if texture_id:
-        output["texture_id"] = texture_id
+    for key in ("texture_id", "normal_texture_id", "roughness_texture_id"):
+        texture_id = _id(data.get(key))
+        if texture_id:
+            output[key] = texture_id
     return output
 
 
@@ -585,7 +591,8 @@ def normalize_object_editor_properties(value: Any) -> dict[str, Any]:
     light_transport = str(data.get("light_transport") or "opaque").lower()
     if light_transport not in {"opaque", "cutout", "transmissive"}:
         light_transport = "opaque"
-    return {
+    emission = data.get("emission") if isinstance(data.get("emission"), dict) else {}
+    result = {
         "collision_proxy": {
             "mode": mode,
             "center": _point3(collision.get("center")),
@@ -598,7 +605,55 @@ def normalize_object_editor_properties(value: Any) -> dict[str, Any]:
         "light_transport": light_transport,
         "transmission": _bounded(data.get("transmission"), 0.0, 1.0, 1.0 if light_transport == "transmissive" else 0.0),
         "locked": data.get("locked") is True,
+        "emission": {
+            "enabled": emission.get("enabled") is True,
+            "intensity": _bounded(emission.get("intensity"), 0.0, 1000.0, 4.0),
+            "quality": str(emission.get("quality") or "medium")
+            if str(emission.get("quality") or "medium") in {"low", "medium", "high"}
+            else "medium",
+            "two_sided": emission.get("two_sided") is not False,
+        },
     }
+    primitive = data.get("primitive")
+    if isinstance(primitive, dict):
+        kind = str(primitive.get("kind") or "plane").lower()
+        if kind not in {"image", "plane", "terrain", "box", "sphere", "cylinder", "cone", "ramp", "stairs", "gable_roof"}:
+            kind = "plane"
+        segments = primitive.get("segments") if isinstance(primitive.get("segments"), (list, tuple)) else []
+        color = str(primitive.get("color") or "#ffffff").lower()
+        if not HEX_COLOR_RE.fullmatch(color):
+            color = "#ffffff"
+        result["primitive"] = {
+            "kind": kind,
+            "width": _bounded(primitive.get("width"), 0.001, 100000.0, 2.0),
+            "height": _bounded(primitive.get("height"), 0.001, 100000.0, 2.0),
+            "depth": _bounded(primitive.get("depth"), 0.001, 100000.0, 2.0),
+            "extrusion": _bounded(primitive.get("extrusion"), 0.0, 100000.0, 0.0),
+            "segments": [
+                int(_bounded(segments[index] if index < len(segments) else None, 1.0, 128.0, 1.0))
+                for index in range(2)
+            ],
+            "height_amplitude": _bounded(primitive.get("height_amplitude"), 0, 10000, 0),
+            "noise_frequency": _bounded(primitive.get("noise_frequency"), 0.00001, 100, 0.1),
+            "noise_seed": int(_bounded(primitive.get("noise_seed"), 0, 2147483647, 1)),
+            "noise_octaves": int(_bounded(primitive.get("noise_octaves"), 1, 8, 4)),
+            "steps": int(_bounded(primitive.get("steps"), 1, 256, 12)),
+            "radial_segments": int(_bounded(primitive.get("radial_segments"), 8, 128, 32)),
+            "texture_id": _id(primitive.get("texture_id")),
+            "color": color,
+            "opacity": _bounded(primitive.get("opacity"), 0.0, 1.0, 1.0),
+            "double_sided": primitive.get("double_sided") is not False,
+            "uv_scale": [
+                _bounded(component, 0.001, 1000.0, 1.0)
+                for component in _point2(primitive.get("uv_scale"), (1.0, 1.0))
+            ],
+            "uv_offset": [
+                _bounded(component, -1000.0, 1000.0, 0.0)
+                for component in _point2(primitive.get("uv_offset"))
+            ],
+            "uv_rotation": _bounded(primitive.get("uv_rotation"), -36000.0, 36000.0, 0.0),
+        }
+    return result
 
 
 def normalize_camera_tracks(value: Any, *, strict: bool = False) -> list[dict[str, Any]]:

@@ -10,7 +10,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./vnccs_pose_studio_core.js?v=20260824.9";
+} from "./vnccs_pose_studio_core.js?v=20260908.14";
 import {
     cameraPromptToSkydomeRotation,
 } from "./vnccs_camera_control_utils.mjs";
@@ -34,7 +34,7 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./vnccs_pose_characters.mjs?v=20260824.5";
+} from "./vnccs_pose_characters.mjs?v=20260908.14";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -55,6 +55,9 @@ import {
     zoomVideoTimelineViewport,
 } from "./vnccs_video_import.mjs";
 import {
+    boneNameForPositionTrack,
+    bonePositionTrackName,
+    isBonePositionTrack,
     CHARACTER_POSITION_TRACK,
     CHARACTER_ZOOM_TRACK,
     MODEL_ROTATION_TRACK,
@@ -79,7 +82,7 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./vnccs_pose_animation.mjs?v=20260725.2";
+} from "./vnccs_pose_animation.mjs?v=20260908.14";
 
 const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
@@ -4165,7 +4168,9 @@ class PoseStudioWidget {
             background_url: null,
             interface_mode: "studio",
             manager_auto_analyze_proportions: true,
+            capture_image_size: false,
             editor_mode: "image",
+            animation_image_batch: false,
             hand_controls_v2: true,
             directional_skydome_enabled: false,
         };
@@ -4267,7 +4272,7 @@ class PoseStudioWidget {
         this._lastAppliedMorphSeq = 0;
         this._morphSolveInFlight = false;
         this._pendingMorphSolve = null;
-        this._morphLoadRequests = new Map();
+        this._morphLoadTasks = new Map();
         this._morphSeqCharacterIds = new Map();
         this._modelLoadPromise = null;
         this._modelLoadKey = null;
@@ -4475,6 +4480,7 @@ class PoseStudioWidget {
         slider.max = def.max;
         slider.step = def.step;
 
+        this.trackPoseGesture(slider, { recordPose: true });
         slider.addEventListener("input", () => {
             const next = this.normalizeManagerNumber(slider.value, def);
             slider.value = next;
@@ -4512,14 +4518,15 @@ class PoseStudioWidget {
         input.max = def.max;
         input.step = def.step;
 
-        input.addEventListener("change", () => {
+        input.addEventListener("input", () => {
+            if (input.value === "" || !Number.isFinite(Number(input.value))) return;
             const next = this.normalizeManagerNumber(input.value, def);
-            input.value = next;
             this.applyManagerExportValue(def.key, next);
         });
 
         field.appendChild(label);
         field.appendChild(input);
+        input.addEventListener("change", () => { input.value = this.exportParams[def.key]; });
         this.managerControls[def.key] = { input, group: "export", def };
         return field;
     }
@@ -4640,6 +4647,40 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true });
     }
 
+    applyCapturedImageSize(width, height) {
+        if (this.exportParams.capture_image_size !== true) return false;
+        const nextWidth = Number(width);
+        const nextHeight = Number(height);
+        if (
+            !Number.isInteger(nextWidth)
+            || !Number.isInteger(nextHeight)
+            || nextWidth < 1
+            || nextHeight < 1
+            || nextWidth > 4096
+            || nextHeight > 4096
+            || nextWidth * nextHeight > 4096 * 4096
+        ) {
+            console.warn("[VNCCS PoseStudio] Ignored invalid pose image dimensions:", width, height);
+            return false;
+        }
+
+        this.exportParams.view_width = nextWidth;
+        this.exportParams.view_height = nextHeight;
+        for (const [key, value] of [["view_width", nextWidth], ["view_height", nextHeight]]) {
+            const widget = this.exportWidgets?.[key];
+            if (!widget) continue;
+            if (typeof widget.update === "function") widget.update(value);
+            else widget.value = value;
+        }
+        this.refreshPoseManagerControls();
+        this._lastResizeW = 0;
+        this._lastResizeH = 0;
+        this.resize();
+        this.updateCaptureCameraPreview();
+        this.schedulePoseManagerGridLayout();
+        return true;
+    }
+
     refreshPoseManagerControls() {
         if (this.managerAutoAnalyzeCheckbox) {
             this.managerAutoAnalyzeCheckbox.checked = this.exportParams.manager_auto_analyze_proportions !== false;
@@ -4653,7 +4694,8 @@ class PoseStudioWidget {
         for (const [key, info] of Object.entries(this.managerControls || {})) {
             const source = info.group === "export" ? this.exportParams : this.meshParams;
             const value = source[key];
-            if (info.input && value !== undefined) info.input.value = value;
+            if (info.input && value !== undefined
+                && !(info.input.type === "number" && document.activeElement === info.input)) info.input.value = value;
             if (info.value) info.value.innerText = this.formatManagerValue(key, value);
         }
 
@@ -4842,6 +4884,7 @@ class PoseStudioWidget {
                 slider.value = 0;
                 valueSpan.innerText = "0°";
                 if (this.viewer) {
+                    if (!this.isAnimationMode()) this.viewer.recordState();
                     this.viewer.setModelRotation(axis === 'x' ? 0 : undefined, axis === 'y' ? 0 : undefined, axis === 'z' ? 0 : undefined);
                     this.syncToNode();
                 }
@@ -4868,6 +4911,7 @@ class PoseStudioWidget {
             slider.step = 1;
             slider.value = 0;
 
+            this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
                 const val = parseFloat(slider.value);
                 valueSpan.innerText = `${val}°`;
@@ -5098,6 +5142,7 @@ class PoseStudioWidget {
         refBtn.title = "Load or Remove Background Image";
         refBtn.onclick = () => {
             if (this.viewer && this.viewer.hasReferenceImage()) {
+                this._referenceReadToken = (this._referenceReadToken || 0) + 1;
                 this.viewer.removeReferenceImage();
                 this.exportParams.background_url = null;
                 this.syncToNode(false);
@@ -5169,25 +5214,25 @@ class PoseStudioWidget {
                     this.viewer?.selectBoneByName?.(null);
                     return;
                 }
-                this.viewer?.selectBoneByName?.(trackName);
+                this.viewer?.selectBoneByName?.(boneNameForPositionTrack(trackName));
             },
             onTrackHover: (trackName) => {
                 const boneName = (
                     trackName
                     && trackName !== MODEL_ROTATION_TRACK
                     && !isCharacterTransformTrack(trackName)
-                ) ? trackName : null;
+                ) ? boneNameForPositionTrack(trackName) : null;
                 this.viewer?.setExternalHoveredBone?.(boneName);
             },
             getPreferredTrack: () => {
                 const activeTrack = this.animationTimeline?.activeTrack;
-                if (isCharacterTransformTrack(activeTrack)) return activeTrack;
+                if (isCharacterTransformTrack(activeTrack) || isBonePositionTrack(activeTrack)) return activeTrack;
                 return this.viewer?.selectedBone?.name || MODEL_ROTATION_TRACK;
             },
             getFocusTracks: (trackName) => {
                 if (!trackName || trackName === MODEL_ROTATION_TRACK) return [MODEL_ROTATION_TRACK];
                 if (isCharacterTransformTrack(trackName)) return [trackName];
-                return this.viewer?.getBoneTimelineContext?.(trackName) || [trackName];
+                return [trackName, ...(this.viewer?.getBoneTimelineContext?.(boneNameForPositionTrack(trackName)) || [])];
             },
         });
         parent.appendChild(this.animationTimeline.element);
@@ -5227,6 +5272,10 @@ class PoseStudioWidget {
 
     setEditorMode(mode, { sync = true } = {}) {
         const normalized = mode === "animation" ? "animation" : "image";
+        if (normalized !== this.exportParams.editor_mode) {
+            this._finishPoseGesture?.();
+            this.clearPoseHistory();
+        }
         if (normalized === "animation") {
             this.ensureAnimationInitialized();
             if (this.interfaceMode !== "studio") this.setInterfaceMode("studio", { sync: false });
@@ -5256,7 +5305,37 @@ class PoseStudioWidget {
     applyEditorMode() {
         if (!this.container) return;
         const animation = this.isAnimationMode();
-        this.node?._vnccsSetAnimationOutputMode?.(animation);
+        const imageBatch = this.exportParams.animation_image_batch === true;
+        const imageBatchWidget = this.getNodeWidget("animation_image_batch");
+        if (imageBatchWidget && imageBatchWidget.value !== imageBatch) {
+            imageBatchWidget.value = imageBatch;
+            imageBatchWidget.callback?.(imageBatch);
+        }
+        const poseWidget = this.getNodeWidget("pose_data");
+        if (poseWidget) {
+            try {
+                const poseData = JSON.parse(poseWidget.value || "{}");
+                const savedExport = poseData.export && typeof poseData.export === "object"
+                    ? poseData.export
+                    : {};
+                if (
+                    savedExport.editor_mode !== this.exportParams.editor_mode
+                    || savedExport.animation_image_batch !== imageBatch
+                ) {
+                    poseData.export = {
+                        ...savedExport,
+                        editor_mode: this.exportParams.editor_mode,
+                        animation_image_batch: imageBatch,
+                    };
+                    poseWidget.value = JSON.stringify(poseData);
+                    poseWidget.callback?.(poseWidget.value);
+                }
+            } catch (_) { }
+        }
+        this.node?._vnccsSetAnimationOutputMode?.(
+            animation,
+            imageBatch,
+        );
         this.container.classList.toggle("vnccs-ps-editor-animation", animation);
         this.animationTimeline?.setVisible(animation && this.interfaceMode !== "manager");
         requestAnimationFrame(() => this.resize());
@@ -5322,9 +5401,14 @@ class PoseStudioWidget {
             this.syncToNode(false, { skipCapture: true });
             return;
         }
-        const pose = this.viewer?.isInitialized?.()
+        const pose = this.poseWithRestPositions(this.viewer?.isInitialized?.()
             ? this.viewer.getPose()
-            : evaluateAnimationFrame(this.animationState, frame);
+            : evaluateAnimationFrame(this.animationState, frame));
+        if (isBonePositionTrack(trackName)) {
+            const name = boneNameForPositionTrack(trackName);
+            const base = this.poseWithRestPositions(this.animationState.basePose);
+            (this.animationState.basePose.bonePositions ||= {})[name] ||= base.bonePositions[name];
+        }
         setTrackKeyframeFromEuler(
             this.animationState,
             trackName,
@@ -5332,19 +5416,42 @@ class PoseStudioWidget {
             getPoseTrackEuler(pose, trackName),
             this.animationState.defaultInterpolation,
         );
+        // A manually keyed root pose includes translation even with Auto Key off.
+        const bone = this.viewer?.boneList?.find(candidate => candidate.name === trackName);
+        if (bone && !bone.userData?.parentName && pose.bonePositions?.[trackName]) {
+            const positions = this.animationState.basePose.bonePositions ||= {};
+            positions[trackName] ||= this.poseWithRestPositions(this.animationState.basePose).bonePositions[trackName];
+            setTrackKeyframeFromEuler(this.animationState, bonePositionTrackName(trackName), frame,
+                pose.bonePositions[trackName], this.animationState.defaultInterpolation);
+        }
         this.animationState.currentFrame = Math.round(Number(frame) || 0);
         this.animationTimeline?.renderTracks();
         this.animationTimeline?.updatePlayheads();
         this.syncToNode(false, { skipCapture: true });
     }
 
+    poseWithRestPositions(pose) {
+        const positions = { ...pose?.bonePositions };
+        for (const bone of this.viewer?.boneList || []) {
+            const rest = this.viewer.shapedBoneRestPositions?.[bone.name]
+                || this.viewer.initialBoneStates?.[bone.name]?.position;
+            if (!positions[bone.name] && rest) positions[bone.name] = [rest.x, rest.y, rest.z];
+        }
+        return { ...pose, bonePositions: positions };
+    }
+
     captureAnimationEdits(pose = null) {
         if (!this.isAnimationMode() || !this.animationState?.autoKey || this._applyingAnimationPose) return [];
         if (!this.viewer?.isInitialized?.()) return [];
-        const actual = pose || this.viewer.getPose();
-        const expected = evaluateAnimationFrame(this.animationState, this.animationState.currentFrame);
+        const actual = this.poseWithRestPositions(pose || this.viewer.getPose());
+        const expected = this.poseWithRestPositions(evaluateAnimationFrame(this.animationState, this.animationState.currentFrame));
         const changedTracks = findChangedPoseTracks(expected, actual);
         for (const trackName of changedTracks) {
+            if (isBonePositionTrack(trackName)) {
+                const name = boneNameForPositionTrack(trackName);
+                const positions = this.animationState.basePose.bonePositions ||= {};
+                if (!positions[name]) positions[name] = (expected.bonePositions[name] || actual.bonePositions[name]).slice();
+            }
             setTrackKeyframeFromEuler(
                 this.animationState,
                 trackName,
@@ -5639,12 +5746,18 @@ class PoseStudioWidget {
     resetAnimationHistory() {
         this._animationUndoStack = [];
         this._animationRedoStack = [];
-        this._animationCommittedSnapshot = this.animationSnapshot();
+        this._animationCommittedSnapshot = this.animationHistorySnapshot();
+    }
+
+    animationHistorySnapshot() {
+        const state = JSON.parse(this.animationSnapshot());
+        if (this.meshParams) state.editorMesh = { ...this.meshParams };
+        return JSON.stringify(state);
     }
 
     commitAnimationHistory() {
-        if (!this._animationInitialized) return;
-        const snapshot = this.animationSnapshot();
+        if (!this._animationInitialized || this._poseGestureActive || this.pendingAgeCameraFit || this._restoringAnimationHistory) return;
+        const snapshot = this.animationHistorySnapshot();
         if (snapshot === this._animationCommittedSnapshot) return;
         if (this._animationCommittedSnapshot) {
             this._animationUndoStack.push(this._animationCommittedSnapshot);
@@ -5656,19 +5769,30 @@ class PoseStudioWidget {
 
     restoreAnimationSnapshot(snapshot) {
         if (!snapshot) return;
-        const currentFrame = this.animationState.currentFrame;
-        const activeCharacter = this.getActiveCharacter();
-        this.animationState = restoreAnimationStateSnapshot(snapshot, {
-            currentFrame,
-            fallbackPose: this.animationState.basePose || {},
-        });
-        if (activeCharacter) activeCharacter.animationState = this.animationState;
-        this._animationInitialized = true;
-        this.animationTimeline?.setState(this.animationState);
-        this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+        this._restoringAnimationHistory = true;
+        try {
+            const currentFrame = this.animationState.currentFrame;
+            const activeCharacter = this.getActiveCharacter();
+            this.pendingAgeCameraFit = false;
+            const editorMesh = JSON.parse(snapshot).editorMesh;
+            if (editorMesh) this.restoreMeshHistory(editorMesh);
+            this.animationState = restoreAnimationStateSnapshot(snapshot, {
+                currentFrame,
+                fallbackPose: this.animationState.basePose || {},
+            });
+            if (activeCharacter) activeCharacter.animationState = this.animationState;
+            this._animationInitialized = true;
+            this.animationTimeline?.setState(this.animationState);
+            this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+        } finally {
+            this._restoringAnimationHistory = false;
+        }
     }
 
     undoAnimation() {
+        this._finishPoseGesture?.();
+        this.pendingAgeCameraFit = false;
+        this.commitAnimationHistory();
         const snapshot = this._animationUndoStack.pop();
         if (!snapshot) return;
         this._animationRedoStack.push(this._animationCommittedSnapshot);
@@ -5891,6 +6015,8 @@ class PoseStudioWidget {
 
         // Initialize viewer
         this.viewer = new PoseViewerCore(this.canvas, {
+            // Model/pose/camera restoration can finish after the initial pad draw.
+            onViewportRender: () => this.radarRedraw?.(),
             skinMode: 'naked',
             enableTextureSkinning: true,
             enableMultiPass: true,
@@ -5915,7 +6041,14 @@ class PoseStudioWidget {
                     { reveal: true },
                 );
             },
+            captureHistoryContext: () => ({
+                mesh: { ...this.meshParams }, transform: { ...this.getActiveCharacter()?.transform },
+                cameraParams: this.currentCameraParams(), prompt: this.getPosePrompt(),
+            }),
+            onHistoryRestore: pose => this.restoreImageHistory(pose),
             onPoseChange: (pose) => {
+                this.updateRotationSliders();
+                this.hideHandControlPopover();
                 // Return params request logic mapped into direct assignment beforehand 
                 this.viewer.setCameraParams({
                     ...this.currentCameraParams()
@@ -5928,7 +6061,7 @@ class PoseStudioWidget {
         this._viewerInitPromise = this.viewer.init();
         this.viewer.setUseHandControlPopover?.(this.exportParams.hand_controls_v2 !== false);
         if (this.lightParams) {
-            this.viewer.updateLights(this.lightParams);
+            this.viewer.updateLights(this.effectiveLights());
         }
 
         this._customSelectController = installCustomSelects(this.container, {
@@ -6257,12 +6390,12 @@ class PoseStudioWidget {
     async waitForMorphIdle(timeoutMs = 120000) {
         const deadline = Date.now() + timeoutMs;
         while (
-            (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadRequests?.size)
+            (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadTasks?.size)
             && Date.now() < deadline
         ) {
             await new Promise(resolve => setTimeout(resolve, 16));
         }
-        if (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadRequests?.size) {
+        if (this._morphSolveInFlight || this._pendingMorphSolve || this._morphLoadTasks?.size) {
             throw new Error("Pose Studio model morph is still in progress.");
         }
     }
@@ -6300,7 +6433,10 @@ class PoseStudioWidget {
                 && !this._morphSolveInFlight
                 && !this._pendingMorphSolve
                 && !this._animationCacheRestorePending
-            ) return true;
+            ) {
+                await this.awaitCurrentManagerPreviews(Math.max(1, deadline - Date.now()));
+                return true;
+            }
         }
         throw new Error("Pose Studio character scene is still loading.");
     }
@@ -6309,6 +6445,8 @@ class PoseStudioWidget {
         const target = this.characters.find(character => character.id === id);
         const previous = this.getActiveCharacter();
         if (!target || !previous || target.id === previous.id || this._switchingCharacter) return false;
+        this._finishPoseGesture?.();
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         const token = ++this._characterSwitchToken;
         const previousSuspendCharacterSync = this._suspendCharacterSync;
         this._switchingCharacter = true;
@@ -6646,14 +6784,17 @@ class PoseStudioWidget {
     persistActivePoseCameraParams() {
         const character = this.getActiveCharacter();
         if (!character) return;
-        const cameraParams = this.currentCameraParams();
         const previousTransform = { ...character.transform };
         const nextTransform = normalizeCharacterTransform({
             ...character.transform,
-            x: cameraParams.offset_x,
-            y: cameraParams.offset_y,
-            zoom: cameraParams.zoom,
+            x: this.exportParams.cam_offset_x,
+            y: this.exportParams.cam_offset_y,
+            zoom: this.exportParams.cam_zoom,
         });
+        this.exportParams.cam_offset_x = nextTransform.x;
+        this.exportParams.cam_offset_y = nextTransform.y;
+        this.exportParams.cam_zoom = nextTransform.zoom;
+        const cameraParams = this.currentCameraParams();
         character.transform = nextTransform;
         this.captureAnimationTransformEdits(previousTransform, nextTransform);
 
@@ -6684,6 +6825,8 @@ class PoseStudioWidget {
             color: character.color,
             transform: nextTransform,
         });
+        this.viewer?.setCameraParams?.(cameraParams);
+        this.syncCameraWidgets();
     }
 
     currentCameraParams() {
@@ -7160,10 +7303,45 @@ class PoseStudioWidget {
         );
     }
 
+    managerPreviewSignature() {
+        return JSON.stringify({
+            characters: (this.characters || []).map(character => ({
+                id: character.id, mesh: character.mesh, poses: character.poses,
+                transform: character.transform, color: character.color,
+            })),
+            poses: this.poses, lights: this.lightParams, prompts: this.posePrompts,
+            width: this.exportParams.view_width, height: this.exportParams.view_height,
+            background: this.exportParams.background_url, color: this.exportParams.bg_color,
+            skin: this.exportParams.skin_type, originalLighting: this.exportParams.keepOriginalLighting,
+            template: this.exportParams.prompt_template,
+        });
+    }
+
+    refreshManagerPreviewsIfNeeded() {
+        if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return 0;
+        if (this.managerPreviewSignature() !== this._managerPreviewSignature) {
+            this.scheduleAllManagerPreviewRefresh();
+        }
+        return this._managerPreviewRefreshGeneration || 0;
+    }
+
+    async awaitCurrentManagerPreviews(timeoutMs = 120000) {
+        const deadline = Date.now() + timeoutMs;
+        while (this.interfaceMode === "manager" || this.interfaceMode === "managerDetail") {
+            this.captureActiveCharacterRuntime();
+            const generation = this.refreshManagerPreviewsIfNeeded();
+            if (!generation) return;
+            await this.awaitManagerPreviewRefresh(generation, Math.max(1, deadline - Date.now()));
+            if (generation === this._managerPreviewRefreshGeneration) return;
+            if (Date.now() >= deadline) throw new Error("Pose Manager previews are still refreshing.");
+        }
+    }
+
     scheduleAllManagerPreviewRefresh() {
         if (this.interfaceMode !== "manager" && this.interfaceMode !== "managerDetail") return 0;
         if (!this.viewer?.isInitialized?.()) return 0;
         if (!this.poses?.length) return 0;
+        this._managerPreviewSignature = this.managerPreviewSignature();
         this._managerPreviewRefreshGeneration = (this._managerPreviewRefreshGeneration || 0) + 1;
         // A new model/camera generation invalidates every previously rendered
         // card. Resuming in the middle mixes old and new AGE/head-size results.
@@ -7257,7 +7435,7 @@ class PoseStudioWidget {
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                 } else {
-                    this.viewer.updateLights(this.lightParams);
+                    this.viewer.updateLights(this.effectiveLights());
                 }
 
                 const framing = this.computePoseManagerCaptureFraming(w, h, poseCamera);
@@ -7286,7 +7464,7 @@ class PoseStudioWidget {
         } finally {
             this.viewer.setPose(originalPose, true);
             this.updateCharacterScene({ poseIndex: this.activeTab });
-            this.viewer.updateLights(originalLights);
+            this.viewer.updateLights(this.effectiveLights(originalLights));
             // Per-card fitting temporarily moves the shared capture camera.
             // Restore its neutral scene framing so opening Studio or applying a
             // library pose cannot inherit the final manager card's offsets.
@@ -7445,7 +7623,7 @@ class PoseStudioWidget {
         for (const key of ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg']) {
             const widget = this.exportWidgets[key];
             if (widget) {
-                widget.value = this.exportParams[key];
+                if (!(widget.type === "number" && document.activeElement === widget)) widget.value = this.exportParams[key];
                 if (widget._vnccsValueSpan) {
                     widget._vnccsValueSpan.innerText = Number(this.exportParams[key] || 0).toFixed(2);
                 }
@@ -7530,36 +7708,12 @@ class PoseStudioWidget {
     }
 
     applyAgeCameraFit() {
-        if (!this.viewer?.computeModelFitZoom) return false;
+        if (!this.viewer?.computeModelFitFraming) return false;
         if (!this.viewer?.isInitialized?.()) return false;
 
         const activeCharacter = this.getActiveCharacter();
         if (activeCharacter) {
-            const zoom = this.viewer.computeModelFitZoom(
-                this.exportParams.view_width || 1024,
-                this.exportParams.view_height || 1024,
-                0,
-                0,
-                this.exportParams.cam_yaw_deg || 0,
-                this.exportParams.cam_pitch_deg || 0,
-                0.08,
-            );
-            if (!Number.isFinite(zoom)) return false;
-            const previousTransform = { ...activeCharacter.transform };
-            const currentZoom = Number(activeCharacter.transform?.zoom) || 1;
-            activeCharacter.transform = normalizeCharacterTransform({
-                ...activeCharacter.transform,
-                // computeModelFitZoom measures the currently transformed rig,
-                // so its result is a relative correction, not an absolute zoom.
-                zoom: currentZoom * zoom,
-            });
-            this.captureAnimationTransformEdits(previousTransform, activeCharacter.transform);
-            this.exportParams.cam_zoom = activeCharacter.transform.zoom;
-            this.persistActivePoseCameraParams();
-            this.viewer.setActiveCharacterAppearance({
-                color: activeCharacter.color,
-                transform: activeCharacter.transform,
-            });
+            this.fitActiveRestPoseToFrame({ resetAnimationBase: false });
             this.renderCharactersUI();
             return true;
         }
@@ -7613,6 +7767,48 @@ class PoseStudioWidget {
         return changed;
     }
 
+    trackPoseGesture(control, { recordPose = false } = {}) {
+        let active = false;
+        let pointer = false;
+        let key = false;
+        const begin = () => {
+            if (active) return;
+            this._finishPoseGesture?.();
+            this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+            if (this.pendingAgeCameraFit) {
+                this.pendingAgeCameraFit = false;
+                this.commitAnimationHistory();
+            }
+            active = true;
+            this._poseGestureActive = true;
+            this._finishPoseGesture = finish;
+            if (recordPose && !this.isAnimationMode()) this.viewer?.recordState?.();
+        };
+        const finish = () => {
+            if (!active) return;
+            active = pointer = key = false;
+            this._poseGestureActive = false;
+            this._finishPoseGesture = null;
+            this.syncToNode(false);
+        };
+        control.addEventListener("pointerdown", event => {
+            if (event.button !== 0) return;
+            begin(); pointer = true;
+        });
+        control.addEventListener("keydown", event => {
+            if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End", "PageUp", "PageDown"].includes(event.key)) {
+                begin(); key = true;
+            }
+        });
+        control.addEventListener("input", begin);
+        control.addEventListener("change", () => { if (!pointer && !key) finish(); });
+        control.addEventListener("pointerup", finish);
+        control.addEventListener("pointercancel", finish);
+        control.addEventListener("lostpointercapture", finish);
+        control.addEventListener("keyup", () => { if (key) finish(); });
+        control.addEventListener("blur", finish);
+    }
+
     createSliderField(label, key, min, max, step, defaultValue, target, isExport = false) {
         const field = document.createElement("div");
         field.className = "vnccs-ps-field";
@@ -7662,6 +7858,7 @@ class PoseStudioWidget {
         slider.step = step;
         slider.value = value;
         slider._vnccsValueSpan = valueSpan;
+        this.trackPoseGesture(slider, { recordPose: true });
         const isLiveMorphSlider = !isExport && this.isLiveMorphKey?.(key);
 
         // Reset logic
@@ -7681,6 +7878,7 @@ class PoseStudioWidget {
                 // Live preview for camera params - sync viewport too
                 const isCamParam = ['cam_zoom', 'cam_offset_x', 'cam_offset_y', 'cam_yaw_deg', 'cam_pitch_deg'].includes(key);
                 if (isCamParam) {
+                    this.pendingAgeCameraFit = false;
                     this.persistActivePoseCameraParams();
                 }
                 if (isCamParam && this.viewer) {
@@ -7754,17 +7952,15 @@ class PoseStudioWidget {
         input.value = this.exportParams[key];
 
         const isDimension = (key === 'view_width' || key === 'view_height');
-        const eventType = isDimension ? 'change' : 'input';
-
-        input.addEventListener(eventType, () => {
-            let val = parseFloat(input.value);
-            if (isNaN(val)) val = this.exportParams[key];
+        if (!isDimension) this.trackPoseGesture(input, { recordPose: true });
+        input.addEventListener("input", () => {
+            if (input.value === "" || !Number.isFinite(Number(input.value))) return;
+            let val = Number(input.value);
             val = Math.max(min, Math.min(max, val));
 
-            // For grid columns, integer only
-            if (key === 'grid_columns') val = Math.round(val);
+            // Pixel dimensions and grid columns are integers.
+            if (isDimension || key === 'grid_columns') val = Math.round(val);
 
-            input.value = val;
             this.exportParams[key] = val;
             if (isDimension) {
                 this._lastResizeW = 0;
@@ -7772,8 +7968,10 @@ class PoseStudioWidget {
                 this.resize();
                 this.updateCaptureCameraPreview();
             }
+            this.refreshPoseManagerControls();
             this.syncToNode(isDimension);
         });
+        input.addEventListener("change", () => { input.value = this.exportParams[key]; });
 
         this.exportWidgets[key] = input;
 
@@ -7909,8 +8107,6 @@ class PoseStudioWidget {
         // Interaction State
         let isDragging = false;
 
-        const range = 20.0; // Max offset range (+/- 20)
-
         const updateFromMouse = (e) => {
             const pointer = this.getCanvasPointerPoint(canvas, e);
             const mouseX = pointer.x;
@@ -7921,11 +8117,7 @@ class PoseStudioWidget {
             const viewH = this.exportParams.view_height || 1024;
             const ar = viewW / viewH;
 
-            // Dynamic Range calculation based on Zoom
-            const zoom = this.exportParams.cam_zoom || 1.0;
-            const baseRange = 12.05;
-            const rangeY = baseRange / zoom;
-            const rangeX = rangeY * ar;
+
 
             // Fit box in canvas (margin 10px) (Visual Scale 0.5 for 2x Range)
             const margin = 10;
@@ -7964,11 +8156,12 @@ class PoseStudioWidget {
             const normX = dx / halfW;
             const normY = dy / halfH;
 
-            // X: Dot Right -> Model Right
-            this.exportParams.cam_offset_x = normX * rangeX;
-
-            // Y: Dot Top (neg) -> Model Top
-            this.exportParams.cam_offset_y = -normY * rangeY;
+            const next = this.viewer?.characterTranslationForFramePoint(normX, -normY);
+            if (!next) return;
+            this.pendingAgeCameraFit = false;
+            this.getActiveCharacter().transform.z = next.z;
+            this.exportParams.cam_offset_x = next.x;
+            this.exportParams.cam_offset_y = next.y;
 
             // The existing camera positioning widget controls whichever
             // character is selected in Characters.
@@ -8010,11 +8203,7 @@ class PoseStudioWidget {
             const viewH = this.exportParams.view_height || 1024;
             const ar = viewW / viewH;
 
-            // Recalculate ranges for drawing
-            const zoom = this.exportParams.cam_zoom || 1.0;
-            const baseRange = 12.05;
-            const rangeY = baseRange / zoom;
-            const rangeX = rangeY * ar;
+
 
             // Fit box (Visual Scale 0.5)
             const margin = 10;
@@ -8051,8 +8240,10 @@ class PoseStudioWidget {
             ctx.stroke();
 
             // Draw Dot (Target)
-            const normX = (this.exportParams.cam_offset_x || 0) / rangeX;
-            const normY = -(this.exportParams.cam_offset_y || 0) / rangeY;
+            const center = this.viewer?.getCharacterFrameCenter();
+            if (!center) return;
+            const normX = center.x;
+            const normY = -center.y;
 
             const dotX = cx + normX * (drawW / 2);
             const dotY = cy + normY * (drawH / 2);
@@ -8091,11 +8282,16 @@ class PoseStudioWidget {
         recenterBtn.innerHTML = '<span class="vnccs-ps-btn-icon">⌖</span> Re-center';
         recenterBtn.onclick = () => {
             this.clearSAMCameraMode();
-            this.exportParams.cam_offset_x = 0;
-            this.exportParams.cam_offset_y = 0;
+            this.applyCameraToViewer(true);
+            const next = this.viewer?.characterTranslationForFramePoint(0, 0);
+            if (!next) return;
+            if (!this.isAnimationMode()) this.viewer?.recordState?.();
+            this.pendingAgeCameraFit = false;
+            this.getActiveCharacter().transform.z = next.z;
+            this.exportParams.cam_offset_x = next.x;
+            this.exportParams.cam_offset_y = next.y;
             this.persistActivePoseCameraParams();
             this.syncCameraWidgets();
-            this.applyCameraToViewer(true);
             this.syncToNode(false);
         };
 
@@ -8283,6 +8479,8 @@ class PoseStudioWidget {
             const g = parseInt(hex.slice(3, 5), 16);
             const b = parseInt(hex.slice(5, 7), 16);
             this.exportParams[key] = [r, g, b];
+            this.syncToNode(false, { skipCapture: true });
+            this.scheduleAllManagerPreviewRefresh();
         });
 
         input.addEventListener("change", () => {
@@ -8456,6 +8654,7 @@ class PoseStudioWidget {
             value.style.cssText = "font-size:10px;color:var(--ps-accent);text-align:right;font-family:var(--ps-font-mono);";
             value.textContent = "0.00";
 
+            this.trackPoseGesture(slider, { recordPose: true });
             slider.addEventListener("input", () => {
                 const numericValue = parseFloat(slider.value);
                 value.textContent = numericValue.toFixed(2);
@@ -8545,6 +8744,7 @@ class PoseStudioWidget {
     }
 
     _handleDocumentPointerUp(event) {
+        this._finishPoseGesture?.();
         const pending = this._pendingHandPopoverOutsideClick;
         this._pendingHandPopoverOutsideClick = null;
 
@@ -8564,6 +8764,7 @@ class PoseStudioWidget {
     }
 
     _handleDocumentPointerCancel() {
+        this._finishPoseGesture?.();
         this._pendingHandPopoverOutsideClick = null;
     }
 
@@ -8816,8 +9017,55 @@ class PoseStudioWidget {
         active.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
     }
 
+    restoreMeshHistory(mesh) {
+        const shapeChanged = Object.keys(mesh).some(key => this.isLiveMorphKey(key)
+            && mesh[key] !== this.meshParams[key]);
+        Object.assign(this.meshParams, mesh);
+        this.applyCurrentMeshProportions();
+        if (shapeChanged) {
+            // An older shape may finish while the restored shape is being solved.
+            this._lastAppliedMorphSeq = this._morphSeq;
+            this.onMeshParamsChanged(null);
+        }
+    }
+
+    restoreImageHistory(pose) {
+        this.pendingAgeCameraFit = false;
+        const context = pose.editorState;
+        const character = this.getActiveCharacter();
+        if (context?.mesh) {
+            this.restoreMeshHistory(context.mesh);
+            this.viewer.setPose(pose, true);
+        }
+        const camera = context?.cameraParams || pose.cameraParams;
+        if (camera) {
+            this.exportParams.cam_offset_x = camera.offset_x;
+            this.exportParams.cam_offset_y = camera.offset_y;
+            this.exportParams.cam_zoom = camera.zoom;
+            this.exportParams.cam_yaw_deg = camera.yaw_deg || 0;
+            this.exportParams.cam_pitch_deg = camera.pitch_deg || 0;
+            if (character && context?.transform) character.transform = { ...context.transform };
+            this.persistActivePoseCameraParams();
+            this.applyCameraToViewer(false);
+        }
+        if (context?.prompt !== undefined) this.setPosePrompt(this.activeTab, context.prompt);
+        this.syncCharacterEditorControls();
+        this.syncPromptFieldToActiveTab();
+    }
+
+    clearPoseHistory() {
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        this.pendingAgeCameraFit = false;
+        if (!this.viewer) return;
+        this.viewer.history = [];
+        this.viewer.future = [];
+        this.hideHandControlPopover();
+    }
+
     switchTab(index) {
         if (index === this.activeTab) return;
+        this._finishPoseGesture?.();
+        this.clearPoseHistory();
 
         // Save current pose & capture
         if (this.viewer && this.viewer.isInitialized()) {
@@ -8851,6 +9099,8 @@ class PoseStudioWidget {
     }
 
     addTab(options = {}) {
+        this._finishPoseGesture?.();
+        this.clearPoseHistory();
         // Save current & capture
         if (this.viewer && this.viewer.isInitialized()) {
             const savedPose = this.stripSceneCameraFromPose(this.viewer.getPose());
@@ -8894,6 +9144,8 @@ class PoseStudioWidget {
 
     deleteTab(targetIndex = -1) {
         if (this.poses.length <= 1) return;
+        this._finishPoseGesture?.();
+        this.clearPoseHistory();
         const idx = targetIndex === -1 ? this.activeTab : targetIndex;
 
         // Remove capture
@@ -8939,64 +9191,78 @@ class PoseStudioWidget {
 
 
 
-    fitActiveRestPoseToFrame() {
+    fitActiveRestPoseToFrame({ resetAnimationBase = true } = {}) {
         const active = this.getActiveCharacter();
         if (!active) throw new Error("Cannot fit rest pose without an active character.");
         if (!this.viewer?.isInitialized?.() || !this.viewer.sceneCameraTarget) {
             throw new Error("Cannot fit rest pose before the model camera target is ready.");
         }
 
+        const previousTransform = { ...active.transform };
         const neutralTransform = { x: 0, y: 0, z: 0, zoom: 1 };
-        this.viewer.setActiveCharacterAppearance({
-            color: active.color,
-            transform: neutralTransform,
-        });
-        const framing = this.viewer.computeModelFitFraming(
-            this.exportParams.view_width || 1024,
-            this.exportParams.view_height || 1024,
-            this.exportParams.cam_yaw_deg || 0,
-            this.exportParams.cam_pitch_deg || 0,
-            0.08,
-        );
-        if (!framing) throw new Error("Cannot measure rest-pose framing.");
+        try {
+            this.viewer.setActiveCharacterAppearance({
+                color: active.color,
+                transform: neutralTransform,
+            });
+            const framing = this.viewer.computeModelFitFraming(
+                this.exportParams.view_width || 1024,
+                this.exportParams.view_height || 1024,
+                this.exportParams.cam_yaw_deg || 0,
+                this.exportParams.cam_pitch_deg || 0,
+                0.08,
+            );
+            if (!framing) throw new Error("Cannot measure rest-pose framing.");
 
-        const transform = cameraFramingToCharacterTransform({
-            zoom: framing.zoom,
-            offset_x: framing.offsetX,
-            offset_y: framing.offsetY,
-        }, this.viewer.sceneCameraTarget);
-        active.transform = { ...transform };
-        if (active.animationState) {
-            active.animationState.baseTransform = { ...transform };
+            const transform = cameraFramingToCharacterTransform({
+                zoom: framing.zoom,
+                offset_x: framing.offsetX,
+                offset_y: framing.offsetY,
+            }, this.viewer.sceneCameraTarget);
+            active.transform = { ...transform };
+            if (resetAnimationBase && active.animationState) {
+                active.animationState.baseTransform = { ...transform };
+            }
+            this.exportParams.cam_offset_x = transform.x;
+            this.exportParams.cam_offset_y = transform.y;
+            this.exportParams.cam_zoom = transform.zoom;
+            this.viewer.setActiveCharacterAppearance({
+                color: active.color,
+                transform,
+            });
+            this.persistActivePoseCameraParams();
+            if (!resetAnimationBase) this.captureAnimationTransformEdits(previousTransform, transform);
+            this.applyCameraToViewer(true);
+            this.syncCameraWidgets();
+            return transform;
+        } catch (error) {
+            active.transform = previousTransform;
+            this.viewer.setActiveCharacterAppearance({ color: active.color, transform: previousTransform });
+            this.applyCameraToViewer(false);
+            throw error;
         }
-        this.exportParams.cam_offset_x = transform.x;
-        this.exportParams.cam_offset_y = transform.y;
-        this.exportParams.cam_zoom = transform.zoom;
-        this.viewer.setActiveCharacterAppearance({
-            color: active.color,
-            transform,
-        });
-        this.syncCameraWidgets();
-        return transform;
     }
 
     resetCurrentPose() {
-        this.resetMeshProportions();
+        this._finishPoseGesture?.();
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        this.pendingAgeCameraFit = false;
         if (this.isAnimationMode()) {
             this.resetCurrentAnimation();
             return;
         }
+        this.viewer?.recordState?.();
+        this.resetMeshProportions();
         this.clearSAMCameraMode();
         const active = this.getActiveCharacter();
         if (this.viewer) {
-            this.viewer.recordState(); // Undo support
             this.viewer.resetPose();
             this.fitActiveRestPoseToFrame();
             this.updateCharacterScene({ poseIndex: this.activeTab });
             this.updateRotationSliders();
             this.applyCameraToViewer(true);
         }
-        this.poses[this.activeTab] = {};
+        this.poses[this.activeTab] = { cameraParams: this.currentCameraParams() };
         if (active) active.poses = this.poses;
         this.setPosePrompt(this.activeTab, "");
         if (Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.length) {
@@ -9008,15 +9274,9 @@ class PoseStudioWidget {
         this.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
     }
 
-    resetMeshProportions() {
-        for (const key of LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS) {
-            delete this.meshParams[key];
-        }
-        Object.assign(this.meshParams, DEFAULT_POSE_STUDIO_MESH_PROPORTIONS);
-        const active = this.getActiveCharacter();
-        if (active) active.mesh = this.meshParams;
-
-        for (const [key, value] of Object.entries(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
+    applyCurrentMeshProportions() {
+        for (const key of Object.keys(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
+            const value = this.meshParams[key];
             const slider = this.sliders?.[key];
             if (slider) {
                 slider.slider.value = value;
@@ -9029,16 +9289,29 @@ class PoseStudioWidget {
 
         if (this.viewer) {
             this.applyMeshProportionsToViewer(this.meshParams);
-            this.viewer.updateHeadScale?.(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS.head_size);
-            this.viewer.updateArmScale?.(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS.arm_size);
-            this.viewer.updateHandScale?.(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS.hand_size);
-            this.viewer.updateFootScale?.(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS.foot_size);
-            for (const [key, value] of Object.entries(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
+            this.viewer.updateHeadScale?.(this.meshParams.head_size);
+            this.viewer.updateArmScale?.(this.meshParams.arm_size);
+            this.viewer.updateHandScale?.(this.meshParams.hand_size);
+            this.viewer.updateFootScale?.(this.meshParams.foot_size);
+            for (const key of Object.keys(DEFAULT_POSE_STUDIO_MESH_PROPORTIONS)) {
+                const value = this.meshParams[key];
                 if (key.endsWith("_length")) {
                     this.viewer.updateBoneLengthScale?.(key.replace("_length", ""), value);
                 }
             }
         }
+
+    }
+
+    resetMeshProportions() {
+        for (const key of LEGACY_POSE_STUDIO_MESH_PROPORTION_KEYS) {
+            delete this.meshParams[key];
+        }
+        Object.assign(this.meshParams, DEFAULT_POSE_STUDIO_MESH_PROPORTIONS);
+        const active = this.getActiveCharacter();
+        if (active) active.mesh = this.meshParams;
+
+        this.applyCurrentMeshProportions();
 
         // Proportions affect every pose preview for the active character.
         this.poseCaptures = [];
@@ -9053,6 +9326,7 @@ class PoseStudioWidget {
         // Capture any pending edit first. The following reset is then committed
         // once, so one Undo restores the complete pre-reset clip and all keys.
         this.commitAnimationHistory();
+        this.resetMeshProportions();
         const previous = this.animationState;
         const prompt = String(previous?.basePose?.prompt || this.getPosePrompt(this.activeTab) || "");
 
@@ -9121,6 +9395,7 @@ class PoseStudioWidget {
 
     pastePose() {
         if (!this._clipboard) return;
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         this.clearSAMCameraMode();
         if (this.isAnimationMode()) {
             if (this.viewer && this.viewer.isInitialized()) {
@@ -9136,12 +9411,15 @@ class PoseStudioWidget {
             this.syncToNode(false, { skipCapture: true });
             return;
         }
+        this.viewer?.recordState?.();
         this.poses[this.activeTab] = JSON.parse(JSON.stringify(this._clipboard));
         this.setPosePrompt(this.activeTab, this.poses[this.activeTab].prompt || "");
         this.restoreActivePoseCameraParams({ updateViewer: false });
         this.persistActivePoseCameraParams();
         if (this.viewer && this.viewer.isInitialized()) {
             this.viewer.setPose(this.poses[this.activeTab], true);
+            this.updateRotationSliders();
+            this.hideHandControlPopover();
             this.updateCharacterScene({ poseIndex: this.activeTab });
             this.applyCameraToViewer(true);
         }
@@ -9258,11 +9536,9 @@ class PoseStudioWidget {
             }
 
             data = {
+                ...this.poses[this.activeTab],
                 type: "single_pose",
                 version: "1.0",
-                bones: this.poses[this.activeTab].bones,
-                modelRotation: this.poses[this.activeTab].modelRotation,
-                cameraParams: this.poses[this.activeTab].cameraParams,
             };
             filename = `pose_${name}.json`;
         }
@@ -10278,8 +10554,8 @@ class PoseStudioWidget {
             const selectionVisible = rawOutPercent >= 0 && rawInPercent <= 100;
             selection.style.left = `${inPercent}%`;
             selection.style.width = `${selectionVisible ? Math.max(0, outPercent - inPercent) : 0}%`;
-            inInput.value = String(Number(inTime.toFixed(3)));
-            outInput.value = String(Number(outTime.toFixed(3)));
+            if (document.activeElement !== inInput) inInput.value = String(Number(inTime.toFixed(3)));
+            if (document.activeElement !== outInput) outInput.value = String(Number(outTime.toFixed(3)));
             const plan = currentPlan();
             const keyframeStep = Math.max(1, Math.floor(Number(keyframeStepInput.value) || 2));
             const keyedFrameCount = countVideoKeyedFrames(plan.sampleCount, keyframeStep);
@@ -10388,8 +10664,15 @@ class PoseStudioWidget {
             timeline.setPointerCapture?.(event.pointerId);
             scrubPlayhead(timeFromPointer(event));
         });
-        inInput.addEventListener("change", () => setBoundary("in", inInput.value));
-        outInput.addEventListener("change", () => setBoundary("out", outInput.value));
+        for (const [which, input] of [["in", inInput], ["out", outInput]]) {
+            input.addEventListener("input", () => {
+                if (input.value !== "" && Number.isFinite(Number(input.value))) setBoundary(which, input.value);
+            });
+            input.addEventListener("change", () => {
+                setBoundary(which, input.value);
+                input.value = String(Number((which === "in" ? inTime : outTime).toFixed(3)));
+            });
+        }
         fpsInput.addEventListener("input", () => {
             const maximum = sourceFrameRate ? clampVideoCaptureFps(60, sourceFrameRate) : 60;
             if (Number(fpsInput.value) > maximum) {
@@ -10635,8 +10918,12 @@ class PoseStudioWidget {
         }
 
         // JSON files
+        const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
         const reader = new FileReader();
         reader.onload = async (event) => {
+            if (token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
             try {
                 const data = JSON.parse(event.target.result);
 
@@ -10745,6 +11032,7 @@ class PoseStudioWidget {
                     this.loadPoseSetAsset(data);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
+                    if (!this.isAnimationMode()) this.viewer?.recordState?.();
                     this.clearSAMCameraMode();
                     const poseData = JSON.parse(JSON.stringify(data));
                     const savedCamera = poseData.cameraParams;
@@ -10788,15 +11076,16 @@ class PoseStudioWidget {
         const file = e.target.files[0];
         if (!file) return;
 
+        const token = this._referenceReadToken = (this._referenceReadToken || 0) + 1;
         const reader = new FileReader();
         reader.onload = (event) => {
+            if (token !== this._referenceReadToken) return;
             const dataUrl = event.target.result;
             if (this.viewer) {
                 this.viewer.loadReferenceImage(dataUrl);
                 this.exportParams.background_url = dataUrl;
+                this.updateCaptureCameraPreview();
                 this.syncToNode(false);
-
-                this.loadModel(false, false);
 
                 if (this.refBtn) {
                     this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
@@ -10804,6 +11093,11 @@ class PoseStudioWidget {
                 }
             }
             e.target.value = '';
+        };
+        reader.onerror = () => {
+            if (token !== this._referenceReadToken) return;
+            e.target.value = '';
+            this.showMessage("Failed to read background image.", true);
         };
         reader.readAsDataURL(file);
     }
@@ -11181,8 +11475,11 @@ class PoseStudioWidget {
     }
 
     async publishLocalPoseRepository(forceConfigure = false) {
+        this.showMessage("Remote publishing is disabled by the VNCCS security policy.", true);
+        return;
+
         const repo = this.localPoseRepository || {};
-        if (forceConfigure || !repo.publish_repo_id || !repo.has_hf_token) {
+        if (forceConfigure || !repo.publish_repo_id || !repo.publishing_enabled) {
             this.showPublishLocalRepositoryModal(forceConfigure);
             return;
         }
@@ -11220,10 +11517,7 @@ class PoseStudioWidget {
                         <input class="vnccs-ps-publish-private" type="checkbox"> Private repository
                     </label>
                 </label>
-                <label class="vnccs-ps-library-field">
-                    <span>HF token ${current.has_hf_token ? '(saved)' : ''}</span>
-                    <input class="vnccs-ps-input vnccs-ps-publish-token" type="password" placeholder="${current.has_hf_token ? 'Leave empty to use saved token' : 'hf_...'}">
-                </label>
+                <p class="vnccs-ps-library-field">Remote publishing is disabled by the VNCCS security policy.</p>
             </div>
             <button class="vnccs-ps-modal-btn primary" style="justify-content:center;">Publish</button>
             <button class="vnccs-ps-modal-btn cancel">Cancel</button>
@@ -11249,7 +11543,6 @@ class PoseStudioWidget {
 
         modal.querySelector('.vnccs-ps-modal-btn.primary').onclick = async () => {
             const repoId = modal.querySelector('.vnccs-ps-publish-repo').value.trim();
-            const token = modal.querySelector('.vnccs-ps-publish-token').value.trim();
             if (!repoId) {
                 const repoInput = modal.querySelector('.vnccs-ps-publish-repo');
                 repoInput.style.borderColor = "rgba(255,71,87,0.7)";
@@ -11260,7 +11553,6 @@ class PoseStudioWidget {
             overlay.remove();
             await this.runLocalPoseRepositoryPublish({
                 repo_id: repoId,
-                hf_token: token,
                 create: modeEl.value === "create",
                 private: modal.querySelector('.vnccs-ps-publish-private').checked,
             });
@@ -12566,12 +12858,17 @@ class PoseStudioWidget {
     }
 
     async loadFromLibrary(poseOrName) {
+        const token = this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        const characterId = this.activeCharacterId;
+        const tab = this.activeTab;
         const name = this.getLibraryPoseName(poseOrName);
         try {
             this.clearSAMCameraMode();
             const res = await fetch(`/vnccs/pose_library/get/${encodeURIComponent(name)}${this.getLibraryPoseQuery(poseOrName)}`);
             const data = await res.json();
+            if (token !== this._libraryLoadToken || characterId !== this.activeCharacterId || tab !== this.activeTab) return;
             if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+            if (!this.isAnimationMode()) this.viewer?.recordState?.();
 
             if (data.pose && this.viewer) {
                 const isPoseSet = data.pose?.type === "pose_set"
@@ -12639,6 +12936,7 @@ class PoseStudioWidget {
             }
         } catch (err) {
             console.error("Failed to load pose:", err);
+            this.showMessage(`Failed to load pose: ${err?.message || err}`, true);
         }
     }
 
@@ -12754,7 +13052,21 @@ class PoseStudioWidget {
             this.animationState.loop,
             checked => this.updateAnimationSettings({ loop: checked }),
         );
-        animationSettings.append(autoKeySetting.label, loopSetting.label);
+        const imageBatchSetting = makeAnimationCheck(
+            "Output as Image Batch",
+            "Return all animation frames as one ComfyUI IMAGE batch instead of VIDEO.",
+            this.exportParams.animation_image_batch === true,
+            checked => {
+                this.exportParams.animation_image_batch = checked;
+                this.applyEditorMode();
+                this.syncToNode(false, { skipCapture: true });
+            },
+        );
+        animationSettings.append(
+            autoKeySetting.label,
+            loopSetting.label,
+            imageBatchSetting.label,
+        );
         content.appendChild(animationSettings);
 
         const refreshEditorSettings = () => {
@@ -12762,12 +13074,13 @@ class PoseStudioWidget {
             imageModeBtn.classList.toggle("active", !animation);
             animationModeBtn.classList.toggle("active", animation);
             animationSettings.style.display = animation ? "block" : "none";
-            fpsSetting.input.value = String(Number(this.animationState.fps.toFixed(3)));
+            if (document.activeElement !== fpsSetting.input) fpsSetting.input.value = String(Number(this.animationState.fps.toFixed(3)));
             durationSetting.input.min = String(2 / this.animationState.fps);
             durationSetting.input.max = String(600 / this.animationState.fps);
-            durationSetting.input.value = String(Number(this.animationState.duration.toFixed(3)));
+            if (document.activeElement !== durationSetting.input) durationSetting.input.value = String(Number(this.animationState.duration.toFixed(3)));
             autoKeySetting.checkbox.checked = this.animationState.autoKey;
             loopSetting.checkbox.checked = this.animationState.loop;
+            imageBatchSetting.checkbox.checked = this.exportParams.animation_image_batch === true;
             fpsInfo.textContent = `${this.animationState.frameCount} frames will be generated · frames 0–${this.animationState.frameCount - 1}`;
         };
         imageModeBtn.onclick = () => {
@@ -12779,14 +13092,18 @@ class PoseStudioWidget {
             refreshEditorSettings();
             updateInterfaceUI?.();
         };
-        fpsSetting.input.addEventListener("change", () => {
-            this.updateAnimationSettings({ fps: fpsSetting.input.value });
-            refreshEditorSettings();
-        });
-        durationSetting.input.addEventListener("change", () => {
-            this.updateAnimationSettings({ duration: durationSetting.input.value });
-            refreshEditorSettings();
-        });
+        for (const [key, setting] of [["fps", fpsSetting], ["duration", durationSetting]]) {
+            this.trackPoseGesture(setting.input);
+            setting.input.addEventListener("input", () => {
+                if (setting.input.value === "" || !Number.isFinite(Number(setting.input.value))) return;
+                this.updateAnimationSettings({ [key]: setting.input.value });
+                refreshEditorSettings();
+            });
+            setting.input.addEventListener("change", () => {
+                setting.input.value = String(Number(this.animationState[key].toFixed(3)));
+                refreshEditorSettings();
+            });
+        }
         refreshEditorSettings();
 
         const interfaceHeader = document.createElement("div");
@@ -12837,6 +13154,26 @@ class PoseStudioWidget {
         interfaceToggle.appendChild(managerBtn);
         interfaceRow.appendChild(interfaceToggle);
         content.appendChild(interfaceRow);
+
+        const captureImageSizeRow = document.createElement("div");
+        captureImageSizeRow.className = "vnccs-ps-field";
+        captureImageSizeRow.style.marginBottom = "14px";
+
+        const captureImageSizeLabel = document.createElement("label");
+        captureImageSizeLabel.style.cssText = "display:flex;align-items:flex-start;gap:10px;cursor:pointer;user-select:none;";
+        const captureImageSizeCheckbox = document.createElement("input");
+        captureImageSizeCheckbox.type = "checkbox";
+        captureImageSizeCheckbox.checked = this.exportParams.capture_image_size === true;
+        captureImageSizeCheckbox.style.marginTop = "2px";
+        captureImageSizeCheckbox.addEventListener("change", () => {
+            this.exportParams.capture_image_size = captureImageSizeCheckbox.checked;
+            this.syncToNode(false, { skipCapture: true });
+        });
+        const captureImageSizeText = document.createElement("span");
+        captureImageSizeText.innerHTML = "<strong>Capture Image Size</strong><small style='display:block;color:#888;margin-top:3px;line-height:1.35'>When enabled, a connected pose-analysis image sets the canvas and exported capture to its exact width, height, and aspect ratio.</small>";
+        captureImageSizeLabel.append(captureImageSizeCheckbox, captureImageSizeText);
+        captureImageSizeRow.appendChild(captureImageSizeLabel);
+        content.appendChild(captureImageSizeRow);
 
         const handControlsRow = document.createElement("div");
         handControlsRow.className = "vnccs-ps-field";
@@ -13313,11 +13650,11 @@ class PoseStudioWidget {
         this._morphSeqCharacterIds.set(seq, this.activeCharacterId);
         return new Promise((resolve, reject) => {
             const timeout = setTimeout(() => {
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 reject(new Error("Timed out while loading the Pose Studio MakeHuman asset."));
             }, 120000);
-            this._morphLoadRequests.set(seq, { resolve, reject, timeout });
+            this._morphLoadTasks.set(seq, { resolve, reject, timeout });
             try {
                 worker.postMessage({
                     type: "solve",
@@ -13328,7 +13665,7 @@ class PoseStudioWidget {
                 });
             } catch (error) {
                 clearTimeout(timeout);
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 reject(error);
             }
@@ -13405,7 +13742,7 @@ class PoseStudioWidget {
                 this.updateAnimationTimelineBones();
 
                 // Apply lighting configuration
-                this.viewer.updateLights(this.lightParams);
+                this.viewer.updateLights(this.effectiveLights());
 
                 this.updateCaptureCameraPreview();
 
@@ -13500,12 +13837,12 @@ class PoseStudioWidget {
             this._morphSolveInFlight = false;
             this._pendingMorphSolve = null;
             const failedRequests = message.seq == null
-                ? [...this._morphLoadRequests.entries()]
-                : [[message.seq, this._morphLoadRequests.get(message.seq)]];
+                ? [...this._morphLoadTasks.entries()]
+                : [[message.seq, this._morphLoadTasks.get(message.seq)]];
             for (const [seq, request] of failedRequests) {
                 if (!request) continue;
                 clearTimeout(request.timeout);
-                this._morphLoadRequests.delete(seq);
+                this._morphLoadTasks.delete(seq);
                 this._morphSeqCharacterIds.delete(seq);
                 request.reject(new Error(message.message || "Pose Studio MakeHuman worker failed."));
             }
@@ -13514,10 +13851,10 @@ class PoseStudioWidget {
         if (message.type !== "result") return;
         const requestCharacterId = this._morphSeqCharacterIds.get(message.seq);
         this._morphSeqCharacterIds.delete(message.seq);
-        const loadRequest = this._morphLoadRequests.get(message.seq);
+        const loadRequest = this._morphLoadTasks.get(message.seq);
         if (loadRequest) {
             clearTimeout(loadRequest.timeout);
-            this._morphLoadRequests.delete(message.seq);
+            this._morphLoadTasks.delete(message.seq);
             this._lastAppliedMorphSeq = Math.max(this._lastAppliedMorphSeq, message.seq);
             loadRequest.resolve(message);
             this.flushPendingMorphSolve();
@@ -13528,7 +13865,9 @@ class PoseStudioWidget {
             this.flushPendingMorphSolve();
             return;
         }
-        const isLatest = message.seq >= this._morphSeq && message.seq >= this._lastAppliedMorphSeq;
+        const isLatest = message.seq > this._lastAppliedMorphSeq;
+        // Display completed intermediate work during continuous input. A queued
+        // request must not starve the viewport; older applied results never win.
         if (isLatest && this.viewer?.updateBodyVertices?.(
             message.vertices,
             message.bonePositions,
@@ -13540,7 +13879,7 @@ class PoseStudioWidget {
             let ageFitChanged = false;
             let suppressAgeFitSync = false;
             if (this.pendingAgeCameraFit) {
-                this.pendingAgeCameraFit = false;
+                this.pendingAgeCameraFit = message.seq < this._morphSeq;
                 suppressAgeFitSync = this._suppressNextAgeFitSync === true;
                 this._suppressNextAgeFitSync = false;
                 ageFitChanged = this.applyAgeCameraFit();
@@ -13707,8 +14046,7 @@ class PoseStudioWidget {
             colorInput.value = light.color || '#ffffff';
             colorInput.oninput = (e) => {
                 light.color = colorInput.value;
-                clearTimeout(this.colorTimeout);
-                this.colorTimeout = setTimeout(() => this.applyLighting(), 50);
+                this.applyLighting();
             };
             grid1.appendChild(colorInput);
             body.appendChild(grid1);
@@ -13851,6 +14189,12 @@ class PoseStudioWidget {
         this.lightListContainer.appendChild(addBtn);
     }
 
+    effectiveLights(lights = this.lightParams) {
+        return this.exportParams.keepOriginalLighting
+            ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+            : lights;
+    }
+
     applyLighting() {
         if (this.viewer && this.viewer.isInitialized()) {
             if (this.exportParams.keepOriginalLighting) {
@@ -13858,7 +14202,7 @@ class PoseStudioWidget {
                 this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
             } else {
                 // Manual/User lights
-                this.viewer.updateLights(this.lightParams);
+                this.viewer.updateLights(this.effectiveLights());
             }
         }
 
@@ -13923,7 +14267,7 @@ class PoseStudioWidget {
 
         const liveRequested = this.requestLiveMorph(changedKey);
         if (liveRequested) {
-            if (changedKey === "age" && (options.finalize === true || options.liveOnly !== true)) {
+            if (changedKey === "age") {
                 this.pendingAgeCameraFit = true;
             }
             if (!options.liveOnly) this.syncToNode(false, { skipCapture: true });
@@ -14495,6 +14839,11 @@ class PoseStudioWidget {
         if (!this.lightingPrompts) this.lightingPrompts = [];
         this.ensurePosePrompts();
 
+        const managerGeneration = this.refreshManagerPreviewsIfNeeded();
+        if (reusePoseManagerCaptures && managerGeneration
+            && (this._managerPreviewRefreshCompletedGeneration || 0) < managerGeneration) {
+            throw new Error("Pose Manager previews are still refreshing; wait for the updated cards.");
+        }
         if (options.executionCapture === true) {
             this._executionCaptureSnapshot = null;
             this._executionLightingPromptSnapshot = null;
@@ -14598,7 +14947,7 @@ class PoseStudioWidget {
                         if (isOriginalLighting) {
                             this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                         } else {
-                            this.viewer.updateLights(this.lightParams);
+                            this.viewer.updateLights(this.effectiveLights());
                         }
 
                         this.setPoseCapture(i, this.viewer.capture(
@@ -14656,7 +15005,7 @@ class PoseStudioWidget {
                 if (isOriginalLighting) {
                     this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
                 } else {
-                    this.viewer.updateLights(this.lightParams);
+                    this.viewer.updateLights(this.effectiveLights());
                 }
 
                 this.setPoseCapture(this.activeTab, this.viewer.capture(
@@ -14796,6 +15145,8 @@ class PoseStudioWidget {
     }
 
     loadFromNode() {
+        this.clearPoseHistory();
+        this._referenceReadToken = (this._referenceReadToken || 0) + 1;
         this.clearSAMCameraMode();
         // Load from pose_data widget
         const widget = this.getNodeWidget("pose_data");
@@ -14923,7 +15274,7 @@ class PoseStudioWidget {
             }
             this.viewer?.clearPassiveCharacters?.();
             this._pendingMorphSolve = null;
-            ++this._morphSeq;
+            this._lastAppliedMorphSeq = ++this._morphSeq;
             const normalizedScene = normalizePoseStudioCharacters(data, {
                 mesh: data.mesh || this.meshParams,
                 color: DEFAULT_CHARACTER_COLORS[0],
@@ -15014,7 +15365,7 @@ class PoseStudioWidget {
             }
 
             // Restore background image if present
-            const bgUrl = data.background_url || this.exportParams.background_url;
+            const bgUrl = data.background_url ?? data.export?.background_url ?? null;
             if (bgUrl && this.viewer) {
                 this.exportParams.background_url = bgUrl;
                 this.viewer.loadReferenceImage(bgUrl);
@@ -15022,13 +15373,20 @@ class PoseStudioWidget {
                     this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🗑️</span> Remove Background';
                     this.refBtn.classList.add('danger');
                 }
+            } else {
+                this.exportParams.background_url = null;
+                this.viewer?.removeReferenceImage?.();
+                if (this.refBtn) {
+                    this.refBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🖼️</span> Background';
+                    this.refBtn.classList.remove('danger');
+                }
             }
 
             if (data.lights && Array.isArray(data.lights)) {
                 this.lightParams = data.lights;
                 this.refreshLightUI();
                 if (this.viewer) {
-                    this.viewer.updateLights(this.lightParams);
+                    this.viewer.updateLights(this.effectiveLights());
                 }
             }
 
@@ -15285,6 +15643,7 @@ app.registerExtension({
                         );
                     }
                     await waitForPoseStudioSyncIdle(node.studioWidget);
+                    node.studioWidget.applyEditorMode();
                     node.studioWidget.syncToNode(true, {
                         cameraPrompt,
                         executionCapture: true,
@@ -15312,6 +15671,10 @@ app.registerExtension({
 
             try {
                 const widget = node.studioWidget;
+                widget.applyCapturedImageSize(
+                    Number(event.detail.image_width),
+                    Number(event.detail.image_height),
+                );
                 if (!widget.viewer || !widget.viewer.isInitialized()) {
                     await widget.loadModel();
                 }
@@ -15380,15 +15743,18 @@ app.registerExtension({
             return accepted.includes("*") || accepted.includes(valueType);
         };
 
-        const setAnimationOutputMode = (node, animation) => {
+        const setAnimationOutputMode = (node, animation, imageBatch = false) => {
             const output = node?.outputs?.[0];
             if (!output) return;
             if (!("_vnccsImageOutputShape" in node)) {
                 node._vnccsImageOutputShape = output.shape;
             }
 
-            const nextType = animation ? "VIDEO" : "IMAGE";
-            const nextName = animation ? "video" : "images";
+            const useVideo = animation && !imageBatch;
+            const nextType = useVideo ? "VIDEO" : "IMAGE";
+            const nextName = useVideo
+                ? "video"
+                : animation && imageBatch ? "IMAGE" : "images";
             const typeChanged = output.type !== nextType;
 
             if (typeChanged && Array.isArray(output.links)) {
@@ -15408,7 +15774,7 @@ app.registerExtension({
             output.name = nextName;
             output.label = nextName;
             const liteGraph = globalThis.LiteGraph;
-            const nextShape = animation
+            const nextShape = useVideo || (animation && imageBatch)
                 ? liteGraph?.CIRCLE_SHAPE
                 : node._vnccsImageOutputShape ?? liteGraph?.GRID_SHAPE;
             if (nextShape !== undefined) {
@@ -15484,13 +15850,29 @@ app.registerExtension({
             });
         };
 
-        const hidePoseDataWidget = (node) => {
-            const poseWidget = node?.widgets?.find(widget => widget.name === "pose_data");
-            if (!poseWidget) return;
-            poseWidget.type = "hidden";
-            poseWidget.computeSize = () => [0, -4];
-            poseWidget.hidden = true;
-            if (poseWidget.element) poseWidget.element.style.display = "none";
+        const hideInternalWidget = (node, name) => {
+            const widget = node?.widgets?.find(candidate => candidate.name === name);
+            if (!widget) return;
+            widget.type = "hidden";
+            widget.computeSize = () => [0, -4];
+            widget.hidden = true;
+            if (widget.element) widget.element.style.display = "none";
+        };
+
+        const ensureAnimationImageBatchWidget = (node) => {
+            let widget = node?.widgets?.find(candidate => candidate.name === "animation_image_batch");
+            if (!widget && typeof node?.addWidget === "function") {
+                widget = node.addWidget(
+                    "toggle",
+                    "animation_image_batch",
+                    false,
+                    value => {
+                        if (!node.studioWidget) return;
+                        node.studioWidget.exportParams.animation_image_batch = value === true;
+                    },
+                );
+            }
+            return widget;
         };
 
         const onCreated = nodeType.prototype.onNodeCreated;
@@ -15500,11 +15882,15 @@ app.registerExtension({
             // pose_data is internal state, never user-facing UI. Hide it before
             // constructing the DOM widget so a later initialization exception
             // cannot expand megabytes of JSON across the ComfyUI canvas.
-            hidePoseDataWidget(this);
+            hideInternalWidget(this, "pose_data");
+            ensureAnimationImageBatchWidget(this);
+            hideInternalWidget(this, "animation_image_batch");
             this.setSize([900, 740]);
 
             // Create widget
-            this._vnccsSetAnimationOutputMode = (animation) => setAnimationOutputMode(this, animation);
+            this._vnccsSetAnimationOutputMode = (animation, imageBatch = false) => (
+                setAnimationOutputMode(this, animation, imageBatch)
+            );
             this.studioWidget = new PoseStudioWidget(this);
             this._vnccsEnsurePoseImageInput = () => ensurePoseImageInput(this);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);
@@ -15598,6 +15984,8 @@ app.registerExtension({
                 this._vnccsPoseWidthFrame = null;
             }
             if (this.studioWidget) {
+                this.studioWidget._libraryLoadToken = (this.studioWidget._libraryLoadToken || 0) + 1;
+                this.studioWidget._referenceReadToken = (this.studioWidget._referenceReadToken || 0) + 1;
                 document.removeEventListener("pointerdown", this.studioWidget._boundHandleDocumentPointerDown);
                 document.removeEventListener("pointerup", this.studioWidget._boundHandleDocumentPointerUp);
                 document.removeEventListener("pointercancel", this.studioWidget._boundHandleDocumentPointerCancel);
@@ -15665,10 +16053,10 @@ app.registerExtension({
                 this.studioWidget._activeSaveLibraryClose?.(true);
                 this.studioWidget._pendingMorphSolve = null;
                 this.studioWidget._morphSolveInFlight = false;
-                for (const request of this.studioWidget._morphLoadRequests.values()) {
+                for (const request of this.studioWidget._morphLoadTasks.values()) {
                     clearTimeout(request.timeout);
                 }
-                this.studioWidget._morphLoadRequests.clear();
+                this.studioWidget._morphLoadTasks.clear();
                 this.studioWidget._morphSeqCharacterIds?.clear?.();
                 if (this.studioWidget._morphWorker) {
                     if (this.studioWidget._morphClientId) {

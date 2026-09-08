@@ -40,6 +40,75 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_animation_image_batch_is_one_batched_image_value(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        images = [Image.new("RGB", (2, 3)), Image.new("RGB", (2, 3))]
+        batch = object()
+        stack_calls = []
+        original_decode = POSE_STUDIO._decode_captured_images
+        original_from_numpy = getattr(POSE_STUDIO.torch, "from_numpy", None)
+        original_stack = getattr(POSE_STUDIO.torch, "stack", None)
+        original_create_video = POSE_STUDIO._create_comfy_video
+        POSE_STUDIO._decode_captured_images = lambda _captures: images
+        POSE_STUDIO.torch.from_numpy = lambda array: array
+        POSE_STUDIO.torch.stack = lambda tensors, dim=0: (
+            stack_calls.append((tensors, dim)) or batch
+        )
+        POSE_STUDIO._create_comfy_video = lambda *_args: self.fail(
+            "image-batch mode must not create a VIDEO"
+        )
+        try:
+            result = node.generate(json.dumps({
+                "export": {
+                    "editor_mode": "animation",
+                    "view_width": 2,
+                    "view_height": 3,
+                },
+                "captured_images": ["frame-1", "frame-2"],
+                "lighting_prompts": ["first", "second"],
+            }), animation_image_batch=True)
+        finally:
+            POSE_STUDIO._decode_captured_images = original_decode
+            if original_from_numpy is None:
+                del POSE_STUDIO.torch.from_numpy
+            else:
+                POSE_STUDIO.torch.from_numpy = original_from_numpy
+            if original_stack is None:
+                del POSE_STUDIO.torch.stack
+            else:
+                POSE_STUDIO.torch.stack = original_stack
+            POSE_STUDIO._create_comfy_video = original_create_video
+
+        self.assertEqual(len(stack_calls), 1)
+        self.assertEqual(stack_calls[0][1], 0)
+        self.assertEqual(len(stack_calls[0][0]), 2)
+        self.assertIs(result[0], batch)
+        self.assertEqual(result[1], ["first", "second"])
+        self.assertEqual(node.OUTPUT_IS_LIST, (False, True))
+
+    def test_pose_image_dimensions_use_comfyui_height_width_order(self):
+        image = types.SimpleNamespace(shape=(1, 768, 1344, 3))
+        self.assertEqual(POSE_STUDIO._pose_image_dimensions(image), (1344, 768))
+
+    def test_pose_image_dimensions_reject_unsupported_capture_size(self):
+        image = types.SimpleNamespace(shape=(1, 4097, 1, 3))
+        with self.assertRaisesRegex(ValueError, "up to 4096 x 4096"):
+            POSE_STUDIO._pose_image_dimensions(image)
+
+    def test_capture_image_size_is_forwarded_only_when_enabled(self):
+        image = types.SimpleNamespace(shape=(1, 768, 1344, 3))
+        calls = []
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        node._apply_pose_image_via_frontend = lambda *args: calls.append(args)
+
+        with self.assertRaisesRegex(RuntimeError, "did not receive images"):
+            node.generate(json.dumps({"export": {"capture_image_size": True}}), pose_image=image)
+        self.assertEqual(calls[-1][4], (1344, 768))
+
+        with self.assertRaisesRegex(RuntimeError, "did not receive images"):
+            node.generate(json.dumps({"export": {"capture_image_size": False}}), pose_image=image)
+        self.assertIsNone(calls[-1][4])
+
     def test_pose_image_analysis_mode_isolated_to_pose_manager(self):
         self.assertEqual(POSE_STUDIO._pose_image_analysis_mode({}), "pose")
         self.assertEqual(

@@ -1,0 +1,13 @@
+[
+  {"name":"zero strength", "path":"intensity", "input":"0", "expected":0},
+  {"name":"maximum strength", "path":"intensity", "input":"100000", "expected":100000},
+  {"name":"strength clamps high", "path":"intensity", "input":"200000", "expected":100000},
+  {"name":"strength clamps low", "path":"intensity", "input":"-1", "expected":0},
+  {"name":"fractional strength", "path":"intensity", "input":"2.375", "expected":2.375},
+  {"name":"unlimited range", "path":"distance", "input":"0", "expected":0},
+  {"name":"large range", "path":"distance", "input":"1e6", "expected":1000000},
+  {"name":"range clamps high", "path":"distance", "input":"2e6", "expected":1000000},
+  {"name":"negative X", "path":"position.0", "input":"-123.125", "expected":-123.125},
+  {"name":"high Y", "path":"position.1", "input":"10000", "expected":10000},
+  {"name":"low Z", "path":"position.2", "input":"-10000", "expected":-10000}
+]

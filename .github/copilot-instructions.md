@@ -68,6 +68,23 @@ JavaScript widgets in `web/` extend ComfyUI nodes:
 
 Frontend communicates via registered endpoints and ComfyUI's widget system (`app.registerExtension()`).
 
+### Mandatory Realtime Interaction Contract
+
+This contract applies to every existing and future VNCCS-Utils widget, including 3D Factory, Pose Studio, UniCanvas, Model Manager, Model Selector, and all visual controls.
+
+- Every continuous control must show its visible result while the user is manipulating it. Never wait for mouse, pointer, pen, or key release.
+- Handle sliders, numeric scrubbing, colors, angles, transforms, drag pads, gizmos, canvas handles, timelines, terrain, and camera controls from `input`, `pointermove`, or an equivalent continuous event.
+- Use `change`, `pointerup`, drag-end, or blur only to commit history, persistence, synchronization, or a final-quality pass. These events must not provide the first visible update.
+- Never debounce visible feedback until interaction ends. If updates require limiting, coalesce them with `requestAnimationFrame` or a bounded realtime cadence and always apply the latest value.
+- Update the affected runtime object directly instead of reloading an entire scene, widget, model, or preview for a local edit.
+- If a full-quality calculation is too expensive per frame, display an immediate lightweight preview during the gesture and perform the expensive final pass after it ends.
+- Preserve the last valid frame while new preview work is pending. Continuous interaction must not produce black, empty, stale, or loading-only output.
+- Cancel or discard stale asynchronous results so the newest input always wins.
+- Keep paired sliders and exact-value fields synchronized during manipulation.
+- Record one undo command per completed gesture while still updating the UI and viewport throughout the gesture.
+
+Treat any control whose result appears only after release as a frontend defect.
+
 ### Image Processing Patterns
 Images always use ComfyUI's tensor format: `torch.Tensor` shaped `[batch, height, width, channels]`
 - RGB: `[1, H, W, 3]` with values `0.0-1.0`

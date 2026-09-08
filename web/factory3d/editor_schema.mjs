@@ -1,4 +1,7 @@
-export const FACTORY_EDITOR_SCHEMA_VERSION = 17;
+import { terrainSettings } from "./geometry/terrain_heightfield.mjs";
+import { PRIMITIVE_KINDS } from "./geometry/parametric_parts.mjs";
+import { EDITOR_VERSION, normalizedWorkspace } from "./core/editor_migrations.mjs";
+export const FACTORY_EDITOR_SCHEMA_VERSION = EDITOR_VERSION;
 
 export const DEFAULT_BUILDING = Object.freeze({
     name: "Building 1",
@@ -39,6 +42,7 @@ export const DEFAULT_ROOM = Object.freeze({
 export const DEFAULT_EDITOR_VIEW = Object.freeze({
     view_mode: "3d",
     plan_tool: "select",
+    room_shape: "rectangle",
     opening_kind: "window",
     active_level_id: "",
     active_building_id: "",
@@ -95,6 +99,40 @@ export function finitePoint3(value, fallback = [0, 0, 0]) {
         finiteNumber(value?.[1], fallback[1]),
         finiteNumber(value?.[2], fallback[2]),
     ];
+}
+
+function normalizedMaterial(value = {}, index = 0) {
+    const source = value && typeof value === "object" ? value : {};
+    const output = {
+        ...source,
+        material_id: String(source.material_id || factoryId()),
+        name: String(source.name || `Material ${index + 1}`).slice(0, 80),
+        kind: source.kind === "glass" ? "glass" : "standard",
+        color: /^#[0-9a-f]{6}$/i.test(String(source.color || ""))
+            ? String(source.color).toLowerCase()
+            : "#d7d2ca",
+        roughness: finiteNumber(source.roughness, 0.78, 0, 1),
+        metalness: finiteNumber(source.metalness, 0, 0, 1),
+        opacity: finiteNumber(source.opacity, 1, 0, 1),
+        transmission: finiteNumber(source.transmission, source.kind === "glass" ? 1 : 0, 0, 1),
+        ior: finiteNumber(source.ior, 1.5, 1, 2.5),
+        uv_scale: [
+            finiteNumber(source.uv_scale?.[0], 1, 0.001, 1000),
+            finiteNumber(source.uv_scale?.[1], 1, 0.001, 1000),
+        ],
+        uv_offset: [
+            finiteNumber(source.uv_offset?.[0], 0, -10000, 10000),
+            finiteNumber(source.uv_offset?.[1], 0, -10000, 10000),
+        ],
+        uv_rotation: finiteNumber(source.uv_rotation, 0, -36000, 36000),
+        normal_strength: finiteNumber(source.normal_strength, 1, 0, 4),
+    };
+    for (const key of ["texture_id", "normal_texture_id", "roughness_texture_id"]) {
+        const textureId = String(source[key] || "");
+        if (textureId) output[key] = textureId;
+        else delete output[key];
+    }
+    return output;
 }
 
 export function isSimpleRoomPolygon(points = []) {
@@ -168,6 +206,7 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
         : null;
     return {
         view_mode: source.view_mode === "plan" ? "plan" : "3d",
+        room_shape: source.room_shape === "polygon" ? "polygon" : "rectangle",
         plan_tool: ["select", "wall", "room", "opening", "camera"].includes(source.plan_tool)
             ? source.plan_tool
             : "select",
@@ -176,14 +215,7 @@ export function normalizedEditorView(value = {}, activeLevelId = "") {
             : "window",
         active_level_id: String(source.active_level_id || activeLevelId || ""),
         active_building_id: String(source.active_building_id || ""),
-        workspace: {
-            left: ["generate", "cameras"].includes(workspace.left)
-                ? workspace.left
-                : "generate",
-            right: ["objects", "inspector", "export"].includes(workspace.right)
-                ? workspace.right
-                : "objects",
-        },
+        workspace: normalizedWorkspace(workspace),
         interior_cutaway: {
             // Plan has historically hidden ceilings. Preserve that behavior,
             // while keeping the 3D viewport opt-in for existing workflows.
@@ -227,7 +259,10 @@ export function normalizedObjectEditorProperties(value = {}) {
     const lightTransport = ["opaque", "cutout", "transmissive"].includes(value.light_transport)
         ? value.light_transport
         : "opaque";
-    return {
+    const emissionSource = value.emission && typeof value.emission === "object"
+        ? value.emission
+        : {};
+    const result = {
         building_id: String(value.building_id || ""),
         collision_proxy: normalizedCollisionProxy(value.collision_proxy),
         light_transport: lightTransport,
@@ -238,7 +273,46 @@ export function normalizedObjectEditorProperties(value = {}) {
             1,
         ),
         locked: value.locked === true,
+        emission: {
+            enabled: emissionSource.enabled === true,
+            intensity: finiteNumber(emissionSource.intensity, 4, 0, 1000),
+            quality: ["low", "medium", "high"].includes(emissionSource.quality)
+                ? emissionSource.quality
+                : "medium",
+            two_sided: emissionSource.two_sided !== false,
+        },
     };
+    if (value.primitive && typeof value.primitive === "object") {
+        const source = value.primitive;
+        const kind = PRIMITIVE_KINDS.includes(source.kind)
+            ? source.kind
+            : "plane";
+        const segments = Array.isArray(source.segments) ? source.segments : [1, 1];
+        result.primitive = {
+            kind,
+            width: finiteNumber(source.width, 2, 0.001, 100000),
+            height: finiteNumber(source.height, 2, 0.001, 100000),
+            depth: finiteNumber(source.depth, 2, 0.001, 100000),
+            extrusion: finiteNumber(source.extrusion, 0, 0, 100000),
+            segments: [0, 1].map(index => Math.trunc(finiteNumber(segments[index], 1, 1, 128))),
+            height_amplitude: terrainSettings(source).amplitude,
+            noise_frequency: terrainSettings(source).frequency,
+            noise_seed: terrainSettings(source).seed,
+            noise_octaves: terrainSettings(source).octaves,
+            steps: Math.trunc(finiteNumber(source.steps, 12, 1, 256)),
+            radial_segments: Math.trunc(finiteNumber(source.radial_segments, 32, 8, 128)),
+            texture_id: String(source.texture_id || ""),
+            color: /^#[0-9a-f]{6}$/i.test(String(source.color || ""))
+                ? String(source.color).toLowerCase()
+                : "#ffffff",
+            opacity: finiteNumber(source.opacity, 1, 0, 1),
+            double_sided: source.double_sided !== false,
+            uv_scale: finitePoint2(source.uv_scale, [1, 1]).map(item => Math.max(0.001, Math.min(1000, item))),
+            uv_offset: finitePoint2(source.uv_offset).map(item => Math.max(-1000, Math.min(1000, item))),
+            uv_rotation: finiteNumber(source.uv_rotation, 0, -36000, 36000),
+        };
+    }
+    return result;
 }
 
 export function normalizedArchitecture(value = {}, levels = []) {
@@ -385,7 +459,8 @@ export function normalizedArchitecture(value = {}, levels = []) {
     }
     return {
         units: "m",
-        materials: Array.isArray(source.materials) ? source.materials : [],
+        materials: (Array.isArray(source.materials) ? source.materials : [])
+            .map((material, index) => normalizedMaterial(material, index)),
         buildings,
         walls,
         rooms,

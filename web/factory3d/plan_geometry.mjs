@@ -9,7 +9,7 @@ const DEFAULT_SURFACE = Object.freeze({
     kind: "standard",
 });
 
-function materialFromData(value = {}, texture = null) {
+function materialFromData(value = {}, maps = {}) {
     const data = { ...DEFAULT_SURFACE, ...(value || {}) };
     const shared = {
         color: data.color,
@@ -18,13 +18,16 @@ function materialFromData(value = {}, texture = null) {
         opacity: Number(data.opacity),
         transparent: Number(data.opacity) < 1 || data.kind === "glass",
         side: THREE.DoubleSide,
-        // Architecture uses closed box/extruded geometry. Rendering it
-        // double-sided is useful while editing, but casting both sides into a
-        // shadow map makes the front and rear faces compete at shallow point-
-        // light angles. Back-face casting keeps the physical wall thickness
-        // as the occluder and avoids self-shadow blocks on the visible face.
+        // Closed architecture casts its rear faces so the visible surface does
+        // not self-shadow along every triangle. Glass remains two-sided.
         shadowSide: data.kind === "glass" ? THREE.DoubleSide : THREE.BackSide,
-        map: texture || null,
+        map: maps.color || null,
+        normalMap: maps.normal || null,
+        roughnessMap: maps.roughness || null,
+        normalScale: new THREE.Vector2(
+            Number(data.normal_strength) || 0,
+            Number(data.normal_strength) || 0,
+        ),
     };
     if (data.kind === "glass") {
         const transmission = Number(data.transmission);
@@ -71,28 +74,51 @@ export class FactoryMaterialRegistry {
         if (signature === this.signature) return;
         const token = ++this._setToken;
         this.disposeCustom();
-        for (const entry of materialEntries) {
-            let texture = null;
-            if (entry?.texture_id) {
-                try {
-                    texture = await this.resolveTexture(entry.texture_id);
-                    if (this.disposed || token !== this._setToken) {
-                        texture?.dispose?.();
-                        return;
-                    }
-                    if (texture) {
-                        texture.colorSpace = THREE.SRGBColorSpace;
-                        texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-                        texture.repeat.fromArray(entry.uv_scale || [1, 1]);
-                        texture.rotation = THREE.MathUtils.degToRad(Number(entry.uv_rotation) || 0);
-                        texture.center.set(0.5, 0.5);
-                        this.textures.set(entry.texture_id, texture);
-                    }
-                } catch (_) {
-                    texture = null;
-                }
+        const pendingTextures = new Map();
+        const textureFor = (entry, field, colorSpace) => {
+            const textureId = entry?.[field];
+            if (!textureId) return Promise.resolve(null);
+            const uvScale = entry.uv_scale || [1, 1];
+            const uvOffset = entry.uv_offset || [0, 0];
+            const key = JSON.stringify([
+                textureId,
+                colorSpace,
+                uvScale,
+                uvOffset,
+                Number(entry.uv_rotation) || 0,
+            ]);
+            if (!pendingTextures.has(key)) {
+                pendingTextures.set(key, this.resolveTexture(textureId).then(texture => {
+                    if (!texture) return null;
+                    texture.colorSpace = colorSpace;
+                    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+                    texture.repeat.fromArray(uvScale);
+                    texture.offset.fromArray(uvOffset);
+                    texture.rotation = THREE.MathUtils.degToRad(Number(entry.uv_rotation) || 0);
+                    texture.center.set(0.5, 0.5);
+                    return texture;
+                }).catch(() => null));
             }
-            this.materials.set(entry.material_id, materialFromData(entry, texture));
+            return pendingTextures.get(key);
+        };
+        const resolved = await Promise.all(materialEntries.map(async entry => {
+            const [color, normal, roughness] = await Promise.all([
+                textureFor(entry, "texture_id", THREE.SRGBColorSpace),
+                textureFor(entry, "normal_texture_id", THREE.NoColorSpace),
+                textureFor(entry, "roughness_texture_id", THREE.NoColorSpace),
+            ]);
+            return { entry, maps: { color, normal, roughness } };
+        }));
+        if (this.disposed || token !== this._setToken) {
+            const retired = new Set(resolved.flatMap(value => Object.values(value.maps)).filter(Boolean));
+            for (const texture of retired) texture.dispose?.();
+            return;
+        }
+        for (const { entry, maps } of resolved) {
+            for (const [kind, texture] of Object.entries(maps)) {
+                if (texture) this.textures.set(`${entry.material_id}:${kind}`, texture);
+            }
+            this.materials.set(entry.material_id, materialFromData(entry, maps));
         }
         if (!this.disposed && token === this._setToken) this.signature = signature;
     }
@@ -107,7 +133,7 @@ export class FactoryMaterialRegistry {
 
     disposeCustom() {
         for (const material of this.materials.values()) material.dispose?.();
-        for (const texture of this.textures.values()) texture.dispose?.();
+        for (const texture of new Set(this.textures.values())) texture.dispose?.();
         this.materials.clear();
         this.textures.clear();
         this.signature = "";
@@ -431,11 +457,25 @@ export class FactoryArchitectureRuntime {
     async set(sceneData = {}) {
         if (this.disposed) return;
         const token = ++this._setToken;
-        this.clear();
         this.sceneData = sceneData;
         const architecture = sceneData.architecture || {};
-        await this.materials.set(architecture.materials || []);
+        const usedMaterialIds = new Set();
+        for (const wall of architecture.walls || []) {
+            usedMaterialIds.add(wall.material_left);
+            usedMaterialIds.add(wall.material_right);
+            usedMaterialIds.add(wall.material_caps);
+        }
+        for (const room of architecture.rooms || []) {
+            usedMaterialIds.add(room.floor?.material_id);
+            usedMaterialIds.add(room.ceiling?.material_id);
+        }
+        for (const opening of architecture.openings || []) usedMaterialIds.add(opening.material_id);
+        usedMaterialIds.delete("");
+        await this.materials.set(
+            (architecture.materials || []).filter(material => usedMaterialIds.has(material.material_id)),
+        );
         if (this.disposed || token !== this._setToken) return;
+        this.clear();
         const levels = new Map((sceneData.levels || []).map(item => [item.level_id, item]));
         const buildings = Array.isArray(architecture.buildings) ? architecture.buildings : [];
         for (const building of buildings) {
@@ -475,6 +515,86 @@ export class FactoryArchitectureRuntime {
             const object = createRoomObject(room, level, this.materials);
             (this.buildingRoots.get(room.building_id) || this.root).add(object);
             this.items.set(`room:${room.room_id}`, object);
+        }
+    }
+
+    async reconcile(sceneData, previous) {
+        if (this.disposed) return;
+        const before = previous?.architecture || {};
+        const after = sceneData.architecture || {};
+        // A registry replacement invalidates shared materials. Ordinary edits
+        // reuse that registry and every unaffected mesh, including its GPU data.
+        const assignedMaterials = new Set([
+            ...(after.walls || []).flatMap(item => [item.material_left, item.material_right, item.material_caps]),
+            ...(after.rooms || []).flatMap(item => [item.floor?.material_id, item.ceiling?.material_id]),
+            ...(after.openings || []).map(item => item.material_id),
+        ].filter(Boolean));
+        const missingMaterial = (after.materials || []).some(item => assignedMaterials.has(item.material_id)
+            && !this.materials.materials.has(item.material_id));
+        if (missingMaterial || JSON.stringify(before.materials) !== JSON.stringify(after.materials)) {
+            await this.set(sceneData);
+            return;
+        }
+        this.sceneData = sceneData;
+        const oldLevels = new Map((previous?.levels || []).map(level => [level.level_id, level]));
+        const levels = new Map((sceneData.levels || []).map(level => [level.level_id, level]));
+        const oldJunctions = wallJunctionAssignments(previous);
+        const junctions = wallJunctionAssignments(sceneData);
+        const keep = new Set();
+        const disposeItem = object => {
+            object.traverse(child => {
+                child.geometry?.dispose?.();
+                for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+                    if (material?.userData?.factoryOwned) material.dispose?.();
+                }
+            });
+            object.removeFromParent();
+        };
+        for (const building of after.buildings || []) {
+            const key = `building:${building.building_id}`;
+            keep.add(key);
+            if (!this.buildingRoots.has(building.building_id)) {
+                const group = new THREE.Group();
+                group.userData = { factoryType: "building", factoryId: building.building_id };
+                this.buildingRoots.set(building.building_id, group);
+                this.items.set(key, group);
+                this.root.add(group);
+            }
+            this.buildingRoots.get(building.building_id).name = building.name || "Building";
+            this.updateBuilding(building);
+        }
+        for (const [type, list, idKey] of [["wall", "walls", "wall_id"], ["room", "rooms", "room_id"]]) {
+            const oldItems = new Map((before[list] || []).map(item => [item[idKey], item]));
+            for (const item of after[list] || []) {
+                const id = item[idKey], key = `${type}:${id}`;
+                const level = levels.get(item.level_id);
+                if (!level || level.visible === false || item.visible === false) continue;
+                keep.add(key);
+                const old = oldItems.get(id);
+                const openings = (after.openings || []).filter(value => value.wall_id === id && value.visible !== false);
+                const oldOpenings = (before.openings || []).filter(value => value.wall_id === id && value.visible !== false);
+                const changed = JSON.stringify([item, level, openings, junctions.get(id)])
+                    !== JSON.stringify([old, oldLevels.get(old?.level_id), oldOpenings, oldJunctions.get(id)]);
+                let object = this.items.get(key);
+                if (!object || changed) {
+                    const replacement = type === "wall"
+                        ? createWallObject(item, level, openings, this.materials, junctions.get(id))
+                        : createRoomObject(item, level, this.materials);
+                    if (object) disposeItem(object);
+                    object = replacement;
+                    this.items.set(key, object);
+                }
+                const parent = this.buildingRoots.get(item.building_id) || this.root;
+                if (object.parent !== parent) parent.add(object);
+            }
+        }
+        // Children are reconciled before obsolete buildings are removed.
+        const retired = [...this.items].sort(([left], [right]) => Number(left.startsWith("building:")) - Number(right.startsWith("building:")));
+        for (const [key, object] of retired) {
+            if (keep.has(key)) continue;
+            disposeItem(object);
+            this.items.delete(key);
+            if (key.startsWith("building:")) this.buildingRoots.delete(key.slice(9));
         }
     }
 

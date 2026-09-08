@@ -16,10 +16,16 @@ jobs:
           python-version: "3.11"
       - name: Install lightweight test dependencies
         run: python -m pip install numpy Pillow
+      - name: Run mandatory security scan
+        run: python scripts/security_scan.py
+      - name: Verify security scanner integrity
+        run: PYTHONPATH=. python tests/test_security_scan.py
       - name: Run Python tests
         run: |
           for test_file in tests/*.py; do
-            PYTHONPATH=. python "$test_file"
+            if [ "$test_file" != "tests/test_security_scan.py" ]; then
+              PYTHONPATH=. python "$test_file"
+            fi
           done
       - name: Set up Node.js
         uses: actions/setup-node@v4

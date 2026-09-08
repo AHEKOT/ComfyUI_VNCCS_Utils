@@ -13425,7 +13425,7 @@ class WebXRManager extends EventDispatcher {
 
 				if ( controller ) {
 
-					controller.connect( inputSource );
+					controller["connect"]( inputSource );
 
 				}
 
@@ -17407,7 +17407,7 @@ class WebGLRenderer {
 					const group = groups[ i ];
 
 					uniformsGroups.update( group, program );
-					uniformsGroups.bind( group, program );
+					uniformsGroups[ "bind" ]( group, program );
 
 				}
 
