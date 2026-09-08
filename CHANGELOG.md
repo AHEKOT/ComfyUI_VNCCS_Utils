@@ -1,3 +1,49 @@
+# Version 0.6.7
+## 3D Factory Mesh Workflows, Conditioning Outputs, and Pose Studio Reliability
+
+### 3D Factory — Generation and Assets
+
+* **Pixal3D and TRELLIS.2 generators**: Added textured GLB generation alongside TripoSplat Gaussian PLY, with generator-specific model setup, runtime availability checks, quality presets, sampling controls, and generation diagnostics.
+* **Unified Import 3D**: Added GLB/glTF, FBX, OBJ/MTL, and STL import alongside Gaussian PLY. Models can include companion materials, textures, binary resources, or a ZIP package. Imported meshes retain their hierarchy, materials, UVs, and skinning and are normalized for scene placement.
+* **Mesh-aware model library**: Object and scene packages preserve imported models, their resources, procedural recipes, and material assignments. Gaussian scene PLY export includes Gaussian objects; mesh objects remain available in scene packages and rendered images.
+* **Procedural shapes and terrain**: Added editable boxes, ellipsoids, cylinders, cones, ramps, stairs, gable-roof wedges, and seeded terrain with relief, resolution, and base-thickness controls. Surface placement uses primitive geometry beneath the selected object's footprint.
+
+### 3D Factory — Scene Editing
+
+* **Configurable workspace**: Added six layout presets, resizable docks, an Assets drawer, expanded editing, and a searchable command palette opened with Cmd/Ctrl+K. Objects, Inspector, and Export have separate panels with independent scroll positions.
+* **Live numeric editing**: Transform, light, camera, wall, and procedural-object controls support continuous slider feedback, numeric scrubbing, unit-aware values, relative edits, per-field reset, and gesture cancellation. Completed gestures produce one undo step; incomplete numeric input preserves the last valid result.
+* **Polygon rooms**: Plan mode supports concave room contours with point removal and explicit completion. Each valid contour creates linked walls, floor, and ceiling as one undoable operation.
+* **Openings in 3D**: Doors, windows, and empty openings can be placed directly on visible walls with live previews and width dragging. Placement respects rotated buildings, wall dimensions, existing openings, and locked structures.
+* **Room materials**: Walls, floors, and ceilings support independent material assignments, UV scale/offset/rotation, and optional normal and roughness maps. Shared textures are reused and unused maps are not loaded.
+* **Lighting and shadows**: Local lights continue illuminating when the shadow budget is exhausted. The object list and Inspector show which lights have active or deferred shadows. Shadow allocation respects visibility, floor/building state, and per-light settings; solid geometry and point/spot-light bias handling reduce self-shadow artifacts.
+* **Plan navigation and readability**: Plan Fit uses scene XZ extents without changing the export camera; panning accounts for ComfyUI node scaling. Inspector controls retain usable typography and sliders at narrow widths. Selection, property edits, and panel updates preserve scrolling.
+* **Scene persistence and undo**: Scene saves are serialized, renderable architecture-only scenes produce previews, and undo retains up to 200 commands within a 128 MiB history budget. Adding procedural content to an older scene creates a compatible scene copy while preserving the original.
+
+### 3D Factory — Rendering and Graph Outputs
+
+* **360° panorama export**: Saved cameras can render 2:1 equirectangular PNG images at 2048 × 1024 or 4096 × 2048.
+* **Factory Render node**: Added a `scene` output to 3D Factory and a connected renderer producing RGB, depth previews, view-space normals, foreground alpha, object-ID images, camera metadata, and a reusable capture handle. Output lists follow the current view and then saved-camera order; the existing `preview` output remains in slot 0.
+* **Factory Mask node**: Generate masks from selected entity IDs, with inversion, grow/erode, and feather controls. The editor can provide selection keys for the node.
+* **Persistent conditioning captures**: Captures retain metric depth, camera data, and source identity. Incomplete or stale jobs do not replace completed captures. Fresh captures require the matching open Factory widget in 3D view; exact cached captures can be reused without it. Gaussian conditioning requires explicitly selected coarse bounding-box geometry rather than native splat depth.
+
+### Pose Studio
+
+* **Animation image batches**: Animation can output a single ComfyUI IMAGE batch instead of VIDEO, with the output socket and execution contract following the selected mode.
+* **Capture Image Size**: Output dimensions can follow the connected reference image, with validation of the resulting browser captures.
+* **Consistent camera state**: Reset and Age update the visible model, zoom controls, and saved state together. Undo/Redo, pose switching, clipboard operations, and JSON import/export preserve the associated pose and character state.
+* **Position marker and Re-center**: The marker represents the visible model's center in the frame. Moving it and using Re-center share the same projection calculation, including deformed and posed geometry. The marker refreshes after the viewport renders, including after reload.
+* **Animation translations and history**: Bone/root translations are recorded and evaluated alongside rotations, including imported samples and manual keys. Continuous gestures commit one history operation, and undoing animation Reset restores body proportions as well as the clip.
+* **Continuous body previews**: Completed morph updates remain visible during ongoing input, while stale results cannot replace newer applied state. Delayed Age fitting respects subsequent manual camera edits.
+* **Pose Manager output consistency**: Changes invalidate affected preview cards, and execution waits for the current preview generation instead of returning outdated images.
+* **Lighting and reference images**: Keep Original Lighting survives scene restoration. Lighting colors and timeline numeric settings update during input. Reference-image changes update the existing scene, ignore superseded loads, and release replaced textures.
+
+### Downloads, Compatibility, and Packaging
+
+* Model Manager, library downloads, and UniCanvas preset assets use public Hugging Face repository files. Direct model/preset URLs, stored download credentials, and remote library publishing are disabled; manifests must identify repository assets with `hf_repo` and `hf_path`.
+* UniCanvas state and temporary assets use ComfyUI's temporary directory, with a project-local fallback when ComfyUI is unavailable.
+* Updated scene/editor migrations and bundled model loaders for the expanded 3D asset formats. Added regression coverage for geometry, state restoration, interactions, output contracts, and capture lifecycle.
+* Added a protected source-scanning CI gate and excluded development tests and scripts from the Comfy Registry runtime archive.
+
 # Version 0.6.6
 ## 3D Factory Interior Planning, Camera Paths, and Production Editing
 
