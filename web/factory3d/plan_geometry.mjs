@@ -457,7 +457,6 @@ export class FactoryArchitectureRuntime {
     async set(sceneData = {}) {
         if (this.disposed) return;
         const token = ++this._setToken;
-        this.clear();
         this.sceneData = sceneData;
         const architecture = sceneData.architecture || {};
         const usedMaterialIds = new Set();
@@ -476,6 +475,7 @@ export class FactoryArchitectureRuntime {
             (architecture.materials || []).filter(material => usedMaterialIds.has(material.material_id)),
         );
         if (this.disposed || token !== this._setToken) return;
+        this.clear();
         const levels = new Map((sceneData.levels || []).map(item => [item.level_id, item]));
         const buildings = Array.isArray(architecture.buildings) ? architecture.buildings : [];
         for (const building of buildings) {
@@ -515,6 +515,86 @@ export class FactoryArchitectureRuntime {
             const object = createRoomObject(room, level, this.materials);
             (this.buildingRoots.get(room.building_id) || this.root).add(object);
             this.items.set(`room:${room.room_id}`, object);
+        }
+    }
+
+    async reconcile(sceneData, previous) {
+        if (this.disposed) return;
+        const before = previous?.architecture || {};
+        const after = sceneData.architecture || {};
+        // A registry replacement invalidates shared materials. Ordinary edits
+        // reuse that registry and every unaffected mesh, including its GPU data.
+        const assignedMaterials = new Set([
+            ...(after.walls || []).flatMap(item => [item.material_left, item.material_right, item.material_caps]),
+            ...(after.rooms || []).flatMap(item => [item.floor?.material_id, item.ceiling?.material_id]),
+            ...(after.openings || []).map(item => item.material_id),
+        ].filter(Boolean));
+        const missingMaterial = (after.materials || []).some(item => assignedMaterials.has(item.material_id)
+            && !this.materials.materials.has(item.material_id));
+        if (missingMaterial || JSON.stringify(before.materials) !== JSON.stringify(after.materials)) {
+            await this.set(sceneData);
+            return;
+        }
+        this.sceneData = sceneData;
+        const oldLevels = new Map((previous?.levels || []).map(level => [level.level_id, level]));
+        const levels = new Map((sceneData.levels || []).map(level => [level.level_id, level]));
+        const oldJunctions = wallJunctionAssignments(previous);
+        const junctions = wallJunctionAssignments(sceneData);
+        const keep = new Set();
+        const disposeItem = object => {
+            object.traverse(child => {
+                child.geometry?.dispose?.();
+                for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+                    if (material?.userData?.factoryOwned) material.dispose?.();
+                }
+            });
+            object.removeFromParent();
+        };
+        for (const building of after.buildings || []) {
+            const key = `building:${building.building_id}`;
+            keep.add(key);
+            if (!this.buildingRoots.has(building.building_id)) {
+                const group = new THREE.Group();
+                group.userData = { factoryType: "building", factoryId: building.building_id };
+                this.buildingRoots.set(building.building_id, group);
+                this.items.set(key, group);
+                this.root.add(group);
+            }
+            this.buildingRoots.get(building.building_id).name = building.name || "Building";
+            this.updateBuilding(building);
+        }
+        for (const [type, list, idKey] of [["wall", "walls", "wall_id"], ["room", "rooms", "room_id"]]) {
+            const oldItems = new Map((before[list] || []).map(item => [item[idKey], item]));
+            for (const item of after[list] || []) {
+                const id = item[idKey], key = `${type}:${id}`;
+                const level = levels.get(item.level_id);
+                if (!level || level.visible === false || item.visible === false) continue;
+                keep.add(key);
+                const old = oldItems.get(id);
+                const openings = (after.openings || []).filter(value => value.wall_id === id && value.visible !== false);
+                const oldOpenings = (before.openings || []).filter(value => value.wall_id === id && value.visible !== false);
+                const changed = JSON.stringify([item, level, openings, junctions.get(id)])
+                    !== JSON.stringify([old, oldLevels.get(old?.level_id), oldOpenings, oldJunctions.get(id)]);
+                let object = this.items.get(key);
+                if (!object || changed) {
+                    const replacement = type === "wall"
+                        ? createWallObject(item, level, openings, this.materials, junctions.get(id))
+                        : createRoomObject(item, level, this.materials);
+                    if (object) disposeItem(object);
+                    object = replacement;
+                    this.items.set(key, object);
+                }
+                const parent = this.buildingRoots.get(item.building_id) || this.root;
+                if (object.parent !== parent) parent.add(object);
+            }
+        }
+        // Children are reconciled before obsolete buildings are removed.
+        const retired = [...this.items].sort(([left], [right]) => Number(left.startsWith("building:")) - Number(right.startsWith("building:")));
+        for (const [key, object] of retired) {
+            if (keep.has(key)) continue;
+            disposeItem(object);
+            this.items.delete(key);
+            if (key.startsWith("building:")) this.buildingRoots.delete(key.slice(9));
         }
     }
 

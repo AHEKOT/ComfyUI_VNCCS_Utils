@@ -3,11 +3,12 @@ const clone = value => globalThis.structuredClone
     : JSON.parse(JSON.stringify(value));
 
 export class FactoryCommandHistory {
-    constructor({ limit = 200, maxBytes = 128 * 1024 * 1024, onRestore = () => {}, onPatch = () => {}, onDiscard = () => {} } = {}) {
+    constructor({ limit = 200, maxBytes = 128 * 1024 * 1024, onRestore = () => {}, onPatch = () => {}, onDiscard = () => {}, onChange = () => {} } = {}) {
         this.limit = Math.max(1, Math.floor(Number(limit) || 200));
         this.onRestore = onRestore;
         this.onPatch = onPatch;
         this.onDiscard = onDiscard;
+        this.onChange = onChange;
         this.maxBytes = Math.max(1, Number(maxBytes) || 128 * 1024 * 1024);
         this.bytes = 0;
         this.undoStack = [];
@@ -48,6 +49,7 @@ export class FactoryCommandHistory {
             discarded += 1;
         }
         if (discarded) this.onDiscard(discarded);
+        this.onChange();
     }
 
     cancel() {
@@ -67,6 +69,7 @@ export class FactoryCommandHistory {
         const entry = this.undoStack.pop();
         if (!entry) return false;
         this.redoStack.push(entry);
+        this.onChange();
         if (entry.patches) this.onPatch(clone(entry.patches), { direction: "undo", label: entry.label });
         else this.onRestore(clone(entry.before), { direction: "undo", label: entry.label });
         return true;
@@ -76,6 +79,7 @@ export class FactoryCommandHistory {
         const entry = this.redoStack.pop();
         if (!entry) return false;
         this.undoStack.push(entry);
+        this.onChange();
         if (entry.patches) this.onPatch(clone(entry.patches), { direction: "redo", label: entry.label });
         else this.onRestore(clone(entry.after), { direction: "redo", label: entry.label });
         return true;
@@ -86,6 +90,7 @@ export class FactoryCommandHistory {
         this.undoStack.length = 0;
         this.redoStack.length = 0;
         this.bytes = 0;
+        this.onChange();
     }
 
     get canUndo() { return this.undoStack.length > 0; }

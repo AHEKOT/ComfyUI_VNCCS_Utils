@@ -59,7 +59,6 @@ function serializeFactoryState(widget) {
 function hideStateWidget(node) {
     const widget = node?.widgets?.find(item => item.name === "factory_data");
     if (!widget) return;
-    widget.type = "hidden";
     widget.hidden = true;
     widget.computeSize = () => [0, -4];
     widget.draw = () => {};
@@ -77,17 +76,17 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /selected_object_id/);
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
-    assert.match(studio, /FRONTEND_BUILD = "20260905\.5"/);
-    assert.match(studio, /vnccs_3d_factory\.css\?v=20260905\.5/);
+    assert.match(studio, /FRONTEND_BUILD = "20260908\.4"/);
+    assert.match(studio, /vnccs_3d_factory\.css\?v=20260908\.2/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
     assert.match(studio, /<option value="1048576">1\.05M · Extreme<\/option>/);
     assert.match(studio, /Experimental 2× density/);
     assert.match(studio, /Extreme 4× density/);
-    assert.match(studio, /widget\.type = "hidden"/);
+    assert.match(studio, /widget\.hidden = true/);
     assert.doesNotMatch(studio, /widget\.type = "converted-widget"/);
-    assert.match(studio, /widget\.callback\?\.\(value\)/);
+    assert.doesNotMatch(studio, /widget\.callback\?\.\(value\)/);
     assert.match(studio, /ensureScene\(safeObject\(state\.scene_snapshot\)\)/);
     assert.match(studio, /_scheduleStateSave\(options\.final \? 0 : 160\)/);
     assert.match(studio, /this\._isRestoring = true;/);
@@ -590,7 +589,7 @@ test("Camera block provides graphical FPV control, one Cameras group, and LIST c
     assert.match(cameraControls, /rotate\(\{ yaw: -deltaX \* 0\.18, pitch: -deltaY \* 0\.18 \}\)/);
     assert.doesNotMatch(cameraControls, /cameraRoll|roll\s*:/);
     assert.match(studio, /async addCamera\(\)/);
-    assert.match(studio, /_selectCamera\(cameraId\)/);
+    assert.match(studio, /_selectCamera\(cameraId, \{ fromViewer = false \} = \{\}\)/);
     assert.match(studio, /_exitCameraView\(\{ restore = true \}/);
     assert.match(studio, /this\._cameraReturnState = this\._normalizeCameraState/);
     assert.match(studio, /cameras: this\._normalizeSceneCameras/);
@@ -684,6 +683,16 @@ test("Factory keeps a responsive Sakura workspace with isolated side-panel tabs"
     assert.match(studio, /vnccs-i3s__side--left/);
     assert.match(studio, /vnccs-i3s__center/);
     assert.match(studio, /vnccs-i3s__side--right/);
+});
+
+test("Editor retains the centered floating toolbar and contextual wall tools", () => {
+    const workspace = fs.readFileSync(path.join(root, "web", "factory3d", "ui", "workspace.mjs"), "utf8");
+    assert.doesNotMatch(workspace, /workspace-bar|root\.prepend|button\("Panel mode"/);
+    assert.doesNotMatch(studio, /__edit-menu|__create-menu|data-create-action/);
+    assert.match(styles, /\.vnccs-i3s__toolbar \{ position: absolute; top: 10px; left: 50%; transform: translateX\(-50%\)/);
+    assert.match(studio, /this\.els\.planTools\.hidden = !plan/);
+    assert.match(studio, /this\._openingWallId = item\.wall_id/);
+    assert.match(studio, /data-wall-opening-cancel/);
 });
 
 test("Plan mode exposes distinct, previewed building workflows and explicit snap controls", () => {
@@ -999,9 +1008,10 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
 test("Factory state widget stays hidden without changing its serializable widget type", () => {
     const source = studio.match(/function hideFactoryDataWidget\(node\) \{[\s\S]*?\n\}/);
     assert.ok(source, "hideFactoryDataWidget not found");
-    const widget = { name: "factory_data", element: { style: {} }, inputEl: { style: {} } };
+    const widget = { name: "factory_data", type: "customtext", element: { style: {} }, inputEl: { style: {} } };
     hideStateWidget({ widgets: [widget] });
-    assert.equal(widget.type, "hidden");
+    assert.equal(widget.type, "customtext");
+    assert.doesNotMatch(source[0], /widget\.type\s*=/);
     assert.equal(widget.hidden, true);
     assert.deepEqual(widget.computeSize(), [0, -4]);
     assert.equal(widget.element.style.display, "none");
@@ -1153,6 +1163,111 @@ test("Architecture runtime casts opaque closed geometry from back faces only", a
     materials.dispose();
 });
 
+test("Snapshot Undo does not reload the viewer, reset its camera, or replace unchanged assets", () => {
+    const restore = studio.slice(studio.indexOf("    async _restoreEditorSnapshot("), studio.indexOf("    _setViewMode("));
+    assert.doesNotMatch(restore, /\.setScene\(|\.setViewMode\(|\.setPlanTool\(/);
+    assert.match(restore, /for \(const \[id, patch\] of objectUpdates\) this\.viewer\.updateObject\(id, patch\)/);
+    assert.match(restore, /if \(lightingChanged\) this\.viewer\.setLighting/);
+    const update = viewer.slice(viewer.indexOf("    updateObject("), viewer.indexOf("    select("));
+    assert.doesNotMatch(update, /\.setScene\(/);
+});
+
+test("Architecture Undo preserves unaffected meshes through opening, building and wall changes", async () => {
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const { FactoryArchitectureRuntime } = await import(pathToFileURL(path.join(root, "web", "factory3d", "plan_geometry.mjs")).href);
+    const scene = { levels: [{ level_id: "l", elevation: 0, height: 3, visible: true }], architecture: {
+        materials: [], buildings: [{ building_id: "b", position: [0, 0, 0], rotation_y: 0 }],
+        rooms: [], openings: [{ opening_id: "o", wall_id: "a", kind: "door", offset: 0.5, width: 1, height: 2, sill_height: 0 }],
+        walls: [0, 20].map((x, index) => ({ wall_id: index ? "z" : "a", level_id: "l", building_id: "b",
+            start: [x, 0], end: [x + 4, 0], thickness: 0.2, height: 3, visible: true })),
+    } };
+    scene.architecture.walls.push({ ...scene.architecture.walls[0], wall_id: "joined", start: [4, 0], end: [4, 4] });
+    const runtime = new FactoryArchitectureRuntime(new THREE.Scene());
+    await runtime.set(scene);
+    const unrelated = runtime.items.get("wall:z");
+    const joined = runtime.items.get("wall:joined");
+    const original = runtime.items.get("wall:a");
+    const removedOpening = structuredClone(scene);
+    removedOpening.architecture.openings = [];
+    await runtime.reconcile(removedOpening, scene);
+    assert.equal(runtime.items.get("wall:z"), unrelated);
+    assert.notEqual(runtime.items.get("wall:a"), original);
+    assert.equal(runtime.items.get("wall:joined"), joined);
+    const editedWall = runtime.items.get("wall:a");
+    const movedBuilding = structuredClone(removedOpening);
+    movedBuilding.architecture.buildings[0].position = [10, 0, 2];
+    await runtime.reconcile(movedBuilding, removedOpening);
+    assert.equal(runtime.items.get("wall:a"), editedWall);
+    assert.equal(runtime.items.get("wall:z"), unrelated);
+    assert.equal(editedWall.parent.position.x, 10);
+    const deletedWall = structuredClone(movedBuilding);
+    deletedWall.architecture.walls.shift();
+    await runtime.reconcile(deletedWall, movedBuilding);
+    assert.equal(runtime.items.has("wall:a"), false);
+    assert.notEqual(runtime.items.get("wall:joined"), joined);
+    assert.equal(runtime.items.get("wall:z"), unrelated);
+    await runtime.reconcile(movedBuilding, deletedWall);
+    assert.ok(runtime.items.has("wall:a"));
+    assert.equal(runtime.items.get("wall:z"), unrelated);
+    runtime.dispose();
+});
+
+test("3D opening placement projects onto a rotated wall and draws a vertical live preview", async () => {
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const view = Object.create(Factory3DViewer.prototype);
+    view.viewMode = "3d";
+    view.canvas = { getBoundingClientRect: () => ({ left: 100, top: 50, width: 400, height: 300 }) };
+    view.pointer = new THREE.Vector2();
+    view.raycaster = new THREE.Raycaster();
+    view.camera = new THREE.PerspectiveCamera(45, 4 / 3, 0.01, 1000);
+    const building = new THREE.Group();
+    building.position.set(4, 2, 7);
+    building.rotation.y = Math.PI / 4;
+    const wall = new THREE.Mesh(new THREE.BoxGeometry(6, 3, 0.2), new THREE.MeshBasicMaterial());
+    wall.userData = { factoryType: "wall", factoryId: "wall-1" };
+    building.add(wall);
+    building.updateMatrixWorld(true);
+    view.architecture = { root: building };
+    const center = wall.getWorldPosition(new THREE.Vector3());
+    view.camera.position.copy(center).add(new THREE.Vector3(0, 0, 8).applyQuaternion(building.quaternion));
+    view.camera.lookAt(center);
+    view.camera.updateMatrixWorld(true);
+    const hit = view._openingWallHit({ clientX: 300, clientY: 200 });
+    assert.equal(hit.wallId, "wall-1");
+    const drag = { ...hit };
+    const next = view._drawingPoint({ clientX: 340, clientY: 200 }, drag);
+    assert.ok(Math.hypot(next[0] - hit.point[0], next[1] - hit.point[1]) > 0.1);
+    assert.ok(Math.abs(hit.plane.distanceToPoint(new THREE.Vector3(next[0], center.y, next[1]))) < 1e-6);
+    building.visible = false;
+    assert.equal(view._openingWallHit({ clientX: 300, clientY: 200 }), null);
+    view.planDraftRoot = new THREE.Group();
+    view.openingDraftRoot = new THREE.Group();
+    view.invalidate = () => {};
+    view.setPlanDraft({ opening: { width: 1.2, height: 1.4, thickness: 0.2, base: 2,
+        sill_height: 0.9, center: [4, 7], start: [3.4, 7], end: [4.6, 7] } });
+    const ghost = view.openingDraftRoot.children[0];
+    assert.ok(Math.abs(ghost.position.y - 3.6) < 1e-10);
+    assert.equal(ghost.geometry.parameters.height, 1.4);
+    assert.equal(ghost.castShadow, false);
+    view.setPlanDraft(null);
+    assert.equal(view.openingDraftRoot.children.length, 0);
+    wall.geometry.dispose(); wall.material.dispose();
+});
+
+test("Plan framing fits XZ extents without moving the export camera", async () => {
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
+    const view = Object.create(Factory3DViewer.prototype);
+    view.viewMode = "plan";
+    view.host = { clientWidth: 600, clientHeight: 400 };
+    view.planCameraState = { target: [0, 0], zoom: 24 };
+    view._updatePlanProjection = view.invalidate = view._emitState = () => {};
+    assert.equal(view._frameBounds(new THREE.Box3(new THREE.Vector3(10, -30, 20), new THREE.Vector3(30, 50, 30))), true);
+    assert.deepEqual(view.planCameraState.target, [20, 25]);
+    assert.equal(view.planCameraState.zoom, 25);
+});
+
 test("Factory viewer and every vendored Three/Spark dependency can actually import", async () => {
     const module = await import(
         `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?test=${Date.now()}`
@@ -1178,7 +1293,7 @@ test("Factory viewer and every vendored Three/Spark dependency can actually impo
     assert.equal(typeof module.prepareSplatBuffer, "function");
     assert.equal(typeof module.prepareSplatBufferAsync, "function");
     assert.equal(typeof support.solveDropToSurface, "function");
-    assert.equal(module.FACTORY_VIEWER_BUILD, "20260905.5");
+    assert.equal(module.FACTORY_VIEWER_BUILD, "20260908.4");
     const visiblePickRoot = new THREE.Group();
     const visiblePickMesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
     visiblePickRoot.add(visiblePickMesh);

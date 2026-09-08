@@ -1,4 +1,4 @@
-import { normalizedWorkspace, WORKSPACE_LAYOUTS, fitWorkspaceDocks } from "../core/editor_migrations.mjs";
+import { normalizedWorkspace, fitWorkspaceDocks } from "../core/editor_migrations.mjs";
 
 /** A tab owns one panel, in both resizable and fixed-width layouts. */
 export function activateWorkspaceTab(buttons, panels, side, tab) {
@@ -32,26 +32,17 @@ export class FactoryWorkspace {
         this.cleanups = [];
         this.frame = 0;
         this.drag = null;
-        this.bar = document.createElement("nav");
-        this.bar.className = "vnccs-i3s__workspace-bar";
-        this.bar.setAttribute("aria-label", "Editor workspace");
         this.assets = button("Assets", () => this.change({ left_visible: !this.effectiveLeftVisible }));
         this.inspector = button("Scene tools", () => this.change({ right_visible: !this.state().right_visible }));
-        this.layout = document.createElement("select");
-        this.layout.className = "vnccs-i3s__select";
-        this.layout.setAttribute("aria-label", "Workspace layout");
-        for (const name of WORKSPACE_LAYOUTS) {
-            const option = document.createElement("option");
-            option.value = name; option.textContent = name[0].toUpperCase() + name.slice(1);
-            this.layout.append(option);
-        }
-        this.layout.addEventListener("change", () => this.applyLayout(this.layout.value));
-        this.commands = button("Commands", () => this.command("palette"));
         this.expand = button("Expand editor", () => this.toggleExpanded());
-        this.legacy = button("Panel mode", () => this.change({ docked: !this.state().docked, left_visible: true, right_visible: true }));
-        this.legacy.title = "Switch between resizable and fixed-width panels; tabs stay separate";
-        this.bar.append(this.assets, this.layout, this.inspector, this.commands, this.legacy, this.expand);
-        root.prepend(this.bar);
+        const paths = ["M8 4v16M4 4h16v16H4z", "M16 4v16M4 4h16v16H4z", "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"];
+        for (const [index, control] of [this.assets, this.inspector, this.expand].entries()) {
+            control.title = control.textContent;
+            control.setAttribute("aria-label", control.title);
+            control.className = "vnccs-i3s__tool vnccs-i3s__workspace-toggle";
+            control.innerHTML = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="${paths[index]}" /></svg>`;
+            root.querySelector(".vnccs-i3s__status-group").append(control);
+        }
         this.leftGrip = this.grip("left_width", "Resize Assets dock", "vertical");
         this.rightGrip = this.grip("right_width", "Resize Inspector dock", "vertical");
         root.querySelector(".vnccs-i3s__side--left").append(this.leftGrip);
@@ -105,10 +96,8 @@ export class FactoryWorkspace {
         const fitted = fitWorkspaceDocks(state, width);
         this.root.style.setProperty("--factory-left-width", `${fitted.left}px`);
         this.root.style.setProperty("--factory-right-width", `${fitted.right}px`);
-        this.layout.value = state.layout;
         this.assets.setAttribute("aria-pressed", String(this.effectiveLeftVisible));
         this.inspector.setAttribute("aria-pressed", String(state.right_visible));
-        this.legacy.setAttribute("aria-pressed", String(state.docked));
         for (const grip of [this.leftGrip, this.rightGrip]) {
             grip.setAttribute("aria-valuenow", String(state[grip.dataset.property]));
         }
@@ -175,13 +164,15 @@ export class FactoryWorkspace {
             document.body.append(this.overlay);
             this.overlay.append(this.root);
             this.root.classList.add("is-expanded-editor");
-            this.expand.textContent = "Close expanded editor";
+            this.expand.title = "Close expanded editor";
         } else {
             this.placeholder.replaceWith(this.root);
             this.overlay.remove(); this.overlay = null; this.placeholder = null;
             this.root.classList.remove("is-expanded-editor");
-            this.expand.textContent = "Expand editor";
+            this.expand.title = "Expand editor";
         }
+        this.expand.setAttribute("aria-label", this.expand.title);
+        this.expand.setAttribute("aria-pressed", String(enabled));
         this.resize(); this.refresh();
         for (const [node, top, left] of scroll) { node.scrollTop = top; node.scrollLeft = left; }
         const focus = !enabled && this.returnFocus?.isConnected ? this.returnFocus : this.expand;
@@ -194,6 +185,6 @@ export class FactoryWorkspace {
         this.observer.disconnect();
         if (this.frame) cancelAnimationFrame(this.frame);
         for (const cleanup of this.cleanups) cleanup();
-        for (const element of [this.bar, this.leftGrip, this.rightGrip]) element.remove();
+        for (const element of [this.assets, this.inspector, this.expand, this.leftGrip, this.rightGrip]) element.remove();
     }
 }

@@ -4,6 +4,7 @@
  * Extracted reusable 3D viewer logic.
  */
 
+
 // Determine the extension's base URL dynamically to support varied directory names
 const EXTENSION_URL = new URL(".", import.meta.url).toString();
 export const POSE_STUDIO_CAPTURE_FOV = 30;
@@ -1324,6 +1325,7 @@ export class PoseViewerCore {
 
     dispose() {
         this.initialized = false;
+        this._referenceGeneration = (this._referenceGeneration || 0) + 1;
         this._skinTextureLoadToken += 1;
         this._skinTextureReady = false;
 
@@ -1833,7 +1835,10 @@ export class PoseViewerCore {
 
         if (this._needsRender || dampingChanged) {
             this._needsRender = false;
-            if (this.renderer) this.renderer.render(this.scene, this.camera);
+            if (this.renderer) {
+                this.renderer.render(this.scene, this.camera);
+                this.options.onViewportRender?.();
+            }
         }
 
         if (dampingChanged) this.requestRender();
@@ -3695,7 +3700,8 @@ export class PoseViewerCore {
             const shapedRest = this.shapedBoneRestPositions?.[b.name];
             const initialRest = this.initialBoneStates?.[b.name]?.position;
             const restPosition = shapedRest || initialRest;
-            if (restPosition && b.position.distanceToSquared(restPosition) > 1e-10) {
+            if (restPosition && (b.position.distanceToSquared(restPosition) > 1e-10
+                || !b.userData.parentName || !this.bones[b.userData.parentName])) {
                 bonePositions[b.name] = [b.position.x, b.position.y, b.position.z];
             }
         }
@@ -3755,8 +3761,14 @@ export class PoseViewerCore {
         };
     }
 
+    getHistoryPose() {
+        const pose = this.getPose();
+        const editorState = this.options?.captureHistoryContext?.();
+        return editorState ? { ...pose, editorState } : pose;
+    }
+
     recordState() {
-        const state = this.getPose();
+        const state = this.getHistoryPose();
         // Avoid duplicate states if possible, but for drag start it's fine
         this.history.push(JSON.stringify(state));
         if (this.history.length > this.maxHistory) {
@@ -3768,27 +3780,31 @@ export class PoseViewerCore {
     undo() {
         if (this.history.length === 0) return;
 
-        const current = JSON.stringify(this.getPose());
+        const current = JSON.stringify(this.getHistoryPose());
         this.future.push(current);
 
         const prev = JSON.parse(this.history.pop());
         this.setPose(prev);
+        this.options?.onHistoryRestore?.(prev);
 
         // Sync after undo
         if (this.syncCallback) this.syncCallback();
+        else this.dispatchPoseChange();
     }
 
     redo() {
         if (this.future.length === 0) return;
 
-        const current = JSON.stringify(this.getPose());
+        const current = JSON.stringify(this.getHistoryPose());
         this.history.push(current);
 
         const next = JSON.parse(this.future.pop());
         this.setPose(next);
+        this.options?.onHistoryRestore?.(next);
 
         // Sync after redo
         if (this.syncCallback) this.syncCallback();
+        else this.dispatchPoseChange();
     }
 
     setPose(pose, preserveCamera = false) {
@@ -4548,6 +4564,7 @@ export class PoseViewerCore {
     }
 
     loadReferenceImage(url) {
+        const generation = this._referenceGeneration = (this._referenceGeneration || 0) + 1;
         if (!this.initialized || !this.captureCamera) {
             this.pendingBackgroundUrl = url;
             return;
@@ -4565,6 +4582,7 @@ export class PoseViewerCore {
                 depthWrite: false
             });
             this.refPlane = new THREE.Mesh(geo, mat);
+            this.refPlane.visible = false;
             // Render first (background)
             this.refPlane.renderOrder = -1;
             // Attach to camera so it moves with it
@@ -4577,11 +4595,16 @@ export class PoseViewerCore {
 
         // Load texture
         new THREE.TextureLoader().load(url, (tex) => {
+            if (generation !== this._referenceGeneration || !this.refPlane) {
+                tex.dispose();
+                return;
+            }
             // Ensure sRGB for real colors
             if (THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
             else if (THREE.sRGBEncoding) tex.encoding = THREE.sRGBEncoding;
 
             if (this.refPlane) {
+                this.refPlane.material.map?.dispose();
                 this.refPlane.material.map = tex;
                 this.refPlane.material.needsUpdate = true;
                 this.refPlane.visible = true;
@@ -4591,6 +4614,8 @@ export class PoseViewerCore {
     }
 
     removeReferenceImage() {
+        this._referenceGeneration = (this._referenceGeneration || 0) + 1;
+        this.pendingBackgroundUrl = null;
         if (!this.refPlane) return;
         this.captureCamera.remove(this.refPlane);
         if (this.refPlane.geometry) this.refPlane.geometry.dispose();
@@ -4742,6 +4767,72 @@ export class PoseViewerCore {
         const boundsH = Math.max(1e-5, maxY - minY);
         const target = Math.max(0.2, Math.min(0.98, 1 - Math.max(0, margin) * 2)) * 2;
         return Math.max(0.1, Math.min(7.0, Math.min(target / boundsW, target / boundsH)));
+    }
+
+    getCharacterFrameCenter(offsetX = 0, offsetY = 0, offsetZ = 0) {
+        const mesh = this.skinnedMesh;
+        const camera = this.captureCamera;
+        const positions = mesh?.geometry?.attributes?.position;
+        if (!this.THREE || !positions || !camera) return null;
+        mesh.updateMatrixWorld(true);
+        this.skeleton?.update();
+        camera.updateMatrixWorld(true);
+        const point = new this.THREE.Vector3();
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        // MakeHuman also stores unrendered helper vertices; only drawn triangles define the visible center.
+        const indices = mesh.geometry.index;
+        const start = Math.max(0, mesh.geometry.drawRange.start);
+        const end = Math.min(indices?.count ?? positions.count, start + mesh.geometry.drawRange.count);
+        const visited = new Set();
+        for (let element = start; element < end; element++) {
+            const index = indices ? indices.getX(element) : element;
+            if (visited.has(index)) continue;
+            visited.add(index);
+            point.fromBufferAttribute(positions, index);
+            if (typeof mesh.applyBoneTransform === "function") mesh.applyBoneTransform(index, point);
+            point.applyMatrix4(mesh.matrixWorld);
+            point.x += offsetX;
+            point.y += offsetY;
+            point.z += offsetZ;
+            point.project(camera);
+            if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.z >= 1) continue;
+            minX = Math.min(minX, point.x); maxX = Math.max(maxX, point.x);
+            minY = Math.min(minY, point.y); maxY = Math.max(maxY, point.y);
+        }
+        return Number.isFinite(minX) ? { x: (minX + maxX) / 2, y: (minY + maxY) / 2, height: maxY - minY } : null;
+    }
+
+    characterTranslationForFramePoint(x, y) {
+        // Solve against the projected geometry, including its current age, pose and scale.
+        if (!this.THREE || !this.captureCamera || !this.skinnedMesh) return null;
+        this.captureCamera.updateMatrixWorld(true);
+        const right = new this.THREE.Vector3().setFromMatrixColumn(this.captureCamera.matrixWorld, 0);
+        const up = new this.THREE.Vector3().setFromMatrixColumn(this.captureCamera.matrixWorld, 1);
+        const measure = (x, y) => this.getCharacterFrameCenter(
+            right.x * x + up.x * y, right.y * x + up.y * y, right.z * x + up.z * y,
+        );
+        let dx = 0, dy = 0;
+        const epsilon = 0.01;
+        for (let iteration = 0; iteration < 5; iteration++) {
+            const center = measure(dx, dy);
+            if (!center) return null;
+            const ex = x - center.x, ey = y - center.y;
+            if (Math.max(Math.abs(ex), Math.abs(ey)) < 1e-9) break;
+            const px = measure(dx + epsilon, dy);
+            const py = measure(dx, dy + epsilon);
+            if (!px || !py) return null;
+            const a = (px.x - center.x) / epsilon, b = (py.x - center.x) / epsilon;
+            const c = (px.y - center.y) / epsilon, d = (py.y - center.y) / epsilon;
+            const determinant = a * d - b * c;
+            if (Math.abs(determinant) < 1e-9) return null;
+            dx += (ex * d - ey * b) / determinant;
+            dy += (ey * a - ex * c) / determinant;
+        }
+        return {
+            x: this.skinnedMesh.position.x + right.x * dx + up.x * dy,
+            y: this.skinnedMesh.position.y + right.y * dx + up.y * dy,
+            z: this.skinnedMesh.position.z + right.z * dx + up.z * dy,
+        };
     }
 
     computeModelFitFraming(width = 1024, height = 1024, yawDeg = 0, pitchDeg = 0, margin = 0.08) {

@@ -1,4 +1,5 @@
 import { parametricMetrics, createParametricGeometry } from "./factory3d/geometry/parametric_parts.mjs";
+import { renderConditioningPixels, encodeConditioningPixels } from "./factory3d/conditioning.mjs?v=20260908.1";
 import * as THREE from "./vendor/spark/three.module.js";
 import { OrbitControls } from "./vendor/spark/OrbitControls.js";
 import { TransformControls } from "./vendor/spark/TransformControls.js";
@@ -7,7 +8,7 @@ import {
     SparkRenderer,
     SplatMesh,
 } from "./vendor/spark/spark.module.js";
-import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260829.2";
+import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260908.3";
 import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260905.4";
 import { allocateLocalLightShadows } from "./factory3d/lighting_policy.mjs?v=20260905.1";
 import {
@@ -30,7 +31,7 @@ const LIGHTING_BASE_RESPONSE = 0.65;
 const MAX_PLAN_GRID_LINES_PER_AXIS = 800;
 const CUTAWAY_MAX_VERTICAL_DOT = 0.7;
 const MIN_DIRECTIONAL_SHADOW_HALF_SPAN = 2;
-export const FACTORY_VIEWER_BUILD = "20260905.5";
+export const FACTORY_VIEWER_BUILD = "20260908.4";
 
 const MAX_OBJECT_AREA_LIGHTS = 32;
 const PLAN_BACKGROUND = "#0b0d14";
@@ -1441,6 +1442,8 @@ export class Factory3DViewer {
         this.planGridAxis = this._createPlanGridLines("#d7ccff", 0.72, 3);
         this.planGridRoot.add(this.planGridMinor, this.planGridMajor, this.planGridAxis);
         this.planDraftRoot = new THREE.Group();
+        this.openingDraftRoot = new THREE.Group();
+        this.scene.add(this.openingDraftRoot);
         this.cameraMarkerRoot = new THREE.Group();
         this.lightMarkerRoot = new THREE.Group();
         this.architectureHandleRoot = new THREE.Group();
@@ -1589,6 +1592,19 @@ export class Factory3DViewer {
             try { this.canvas.focus({ preventScroll: true }); }
             catch (_) { this.canvas.focus(); }
             this._pointerDown = [event.clientX, event.clientY];
+            if (this.viewMode === "3d" && this.planTool === "opening" && event.button === 0) {
+                const hit = this._openingWallHit(event);
+                this._planDraw = {
+                    pointerId: event.pointerId, tool: "opening", originX: event.clientX,
+                    originY: event.clientY, moved: false, wallId: hit?.wallId,
+                    plane: hit?.plane, point: hit?.point,
+                };
+                this.canvas.setPointerCapture?.(event.pointerId);
+                this.options.onPlanGesture({ phase: "start", tool: "opening", point: hit?.point,
+                    wallId: hit?.wallId, viewMode: "3d", event });
+                event.preventDefault();
+                return;
+            }
             if (
                 this.viewMode === "3d"
                 && event.button === 0
@@ -1789,8 +1805,12 @@ export class Factory3DViewer {
             }
         });
         this.canvas.addEventListener("pointermove", event => {
+            if (this.viewMode === "3d" && this.planTool === "opening" && !this._planDraw && !this._lookDrag && !event.buttons) {
+                const hit = this._openingWallHit(event);
+                this.options.onPlanHover("opening", hit?.point || null, event, hit?.wallId);
+            }
             const drawing = this._planDraw;
-            if (drawing && drawing.pointerId === event.pointerId && this.viewMode === "plan") {
+            if (drawing && drawing.pointerId === event.pointerId) {
                 const distance = Math.hypot(
                     event.clientX - drawing.originX,
                     event.clientY - drawing.originY,
@@ -1799,7 +1819,9 @@ export class Factory3DViewer {
                 this.options.onPlanGesture({
                     phase: "move",
                     tool: drawing.tool,
-                    point: this.screenToPlan(event),
+                    point: this._drawingPoint(event, drawing),
+                    wallId: drawing.wallId,
+                    viewMode: this.viewMode,
                     event,
                     moved: drawing.moved,
                     distance,
@@ -1987,15 +2009,19 @@ export class Factory3DViewer {
             }
             if (this.viewMode !== "plan" || !this._planPan) return;
             const zoom = Math.max(0.01, this.planCameraState.zoom);
+            const rect = this.canvas.getBoundingClientRect();
             this.planCameraState.target = [
-                this._planPan.target[0] - (event.clientX - this._planPan.x) / zoom,
-                this._planPan.target[1] - (event.clientY - this._planPan.y) / zoom,
+                this._planPan.target[0] - (event.clientX - this._planPan.x) * this.canvas.clientWidth / Math.max(1, rect.width) / zoom,
+                this._planPan.target[1] - (event.clientY - this._planPan.y) * this.canvas.clientHeight / Math.max(1, rect.height) / zoom,
             ];
             this._syncPlanCamera();
             this.invalidate();
             event.preventDefault();
         });
         this.canvas.addEventListener("pointerleave", event => {
+            if (this.viewMode === "3d" && this.planTool === "opening" && !this._planDraw) {
+                this.options.onPlanHover("opening", null, event);
+            }
             if (
                 this.viewMode === "plan"
                 && this.planTool !== "select"
@@ -2020,7 +2046,9 @@ export class Factory3DViewer {
                 this.options.onPlanGesture({
                     phase: "end",
                     tool: drawing.tool,
-                    point: this.screenToPlan(event),
+                    point: this._drawingPoint(event, drawing),
+                    wallId: drawing.wallId,
+                    viewMode: this.viewMode,
                     event,
                     moved: drawing.moved,
                     distance,
@@ -2289,6 +2317,7 @@ export class Factory3DViewer {
             const mode = { w: "translate", e: "rotate", r: "scale" }[event.key.toLowerCase()];
             if (mode) {
                 event.preventDefault();
+                if (this.planTool !== "select") this.options.onPlanGesture({ phase: "exit", tool: this.planTool });
                 this.setMode(mode);
                 return;
             }
@@ -3546,6 +3575,36 @@ export class Factory3DViewer {
         return [Number(point.x.toFixed(6)), Number(point.z.toFixed(6))];
     }
 
+    _openingWallHit(event) {
+        const rect = this.canvas.getBoundingClientRect();
+        this.pointer.set((event.clientX - rect.left) / Math.max(1, rect.width) * 2 - 1,
+            -(event.clientY - rect.top) / Math.max(1, rect.height) * 2 + 1);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        // Stop at the first visible surface: walls behind floors must not be editable through them.
+        const hit = this.raycaster.intersectObject(this.architecture.root, true)
+            .find(value => isObjectPickableInHierarchy(value.object));
+        if (hit?.object.userData.factoryType !== "wall") return null;
+        const objectHit = this.objects && boundedObjectHit(this.raycaster.ray, this.objects);
+        if (objectHit && objectHit.distance < hit.distance) return null;
+        const wallId = hit.object.userData.factoryId;
+        const normal = hit.face.normal.clone().transformDirection(hit.object.matrixWorld);
+        if (Math.abs(normal.y) > 0.5) return null;
+        return { wallId, point: [hit.point.x, hit.point.z],
+            plane: new THREE.Plane().setFromNormalAndCoplanarPoint(normal, hit.point) };
+    }
+
+    _drawingPoint(event, drawing) {
+        if (this.viewMode === "plan") return this.screenToPlan(event);
+        if (!drawing.plane) return null;
+        const rect = this.canvas.getBoundingClientRect();
+        this.pointer.set((event.clientX - rect.left) / Math.max(1, rect.width) * 2 - 1,
+            -(event.clientY - rect.top) / Math.max(1, rect.height) * 2 + 1);
+        this.raycaster.setFromCamera(this.pointer, this.camera);
+        const point = this.raycaster.ray.intersectPlane(drawing.plane, new THREE.Vector3());
+        if (point) drawing.point = [point.x, point.z];
+        return drawing.point;
+    }
+
     _updatePlanMarqueeElement() {
         const drag = this._planMarquee;
         if (!drag || !this.planMarqueeElement) return;
@@ -3913,7 +3972,7 @@ export class Factory3DViewer {
         // editor selection and keep this operation O(number of objects).
         const hit = boundedObjectHit(this.raycaster.ray, this.objects);
         if (architectureHit && (!hit || architectureHit.distance < hit.distance)) {
-            this.select("");
+            this.select("", { emit: false });
             this.options.onArchitectureSelection({
                 type: architectureHit.object.userData.factoryType,
                 id: architectureHit.object.userData.factoryId,
@@ -3923,6 +3982,7 @@ export class Factory3DViewer {
             return;
         }
         if (hit?.objectId) this.select(hit.objectId, { additive: event.shiftKey });
+        else if (!event.shiftKey) this.select("");
     }
 
     _applyTransform(mesh, value) {
@@ -4529,16 +4589,45 @@ export class Factory3DViewer {
         return { loaded: this.objects.size, failures };
     }
 
+    async _updatePrimitiveTexture(entry, textureId) {
+        if ((entry.requestedPrimitiveTextureId ?? entry.primitiveTextureId ?? "") === textureId) return;
+        entry.requestedPrimitiveTextureId = textureId;
+        const token = entry.primitiveTextureToken = (entry.primitiveTextureToken || 0) + 1;
+        if (textureId === entry.primitiveTextureId) return;
+        let texture = null;
+        try {
+            if (textureId) {
+                const url = this.options.resolveAssetURL(
+                    `/vnccs/3d-factory/scenes/${encodeURIComponent(this.sceneData.scene_id)}`
+                    + `/textures/${encodeURIComponent(textureId)}`,
+                );
+                texture = await new THREE.TextureLoader().loadAsync(url);
+            }
+            if (this._disposed || token !== entry.primitiveTextureToken || this.objects.get(entry.data.object_id) !== entry) {
+                texture?.dispose();
+                return;
+            }
+            const previous = entry.primitive.material.map;
+            entry.primitive.material.map = texture;
+            entry.primitiveTextureId = textureId;
+            applyFactoryPrimitiveTexture(texture, entry.data.primitive, factoryPrimitiveMetrics(entry.data.primitive));
+            entry.primitive.material.needsUpdate = true;
+            previous?.dispose();
+            this.invalidate();
+        } catch (error) {
+            texture?.dispose();
+            if (token === entry.primitiveTextureToken) entry.requestedPrimitiveTextureId = entry.primitiveTextureId;
+            console.error("[VNCCS 3D Factory] Primitive texture update failed", error);
+        }
+    }
+
     updateObject(objectId, value) {
         const entry = this.objects.get(objectId);
         if (!entry) return;
         entry.data = { ...entry.data, ...value };
         if ("primitive" in value && entry.data.asset_kind === "primitive") {
             const textureId = String(entry.data.primitive?.texture_id || "");
-            if (textureId !== String(entry.primitiveTextureId || "")) {
-                void this.setScene(this.sceneData, { incremental: true });
-                return;
-            }
+            void this._updatePrimitiveTexture(entry, textureId);
             const metrics = factoryPrimitiveMetrics(entry.data.primitive);
             const geometrySignature = primitiveGeometrySignature(entry.data.primitive);
             const geometryChanged = geometrySignature !== entry.primitiveGeometrySignature;
@@ -4874,8 +4963,25 @@ export class Factory3DViewer {
 
     setPlanTool(tool) {
         if (!["select", "wall", "room", "opening", "camera"].includes(tool)) return;
+        const drawing = this._planDraw;
+        this._planDraw = null;
+        if (drawing) {
+            this._pointerDown = null;
+            if (this.canvas.hasPointerCapture?.(drawing.pointerId)) this.canvas.releasePointerCapture(drawing.pointerId);
+        }
+        const wasPlacing = this.planTool === "opening";
         this.planTool = tool;
-        this.canvas.style.cursor = this.viewMode === "plan" && tool !== "select" ? "crosshair" : "default";
+        const placing = this.viewMode === "3d" && tool === "opening";
+        if (placing && !wasPlacing) {
+            this._openingTransformState = { enabled: this.transform.enabled, visible: this.transformHelper.visible };
+            this.transform.enabled = false;
+            this.transformHelper.visible = false;
+        } else if (!placing && this._openingTransformState) {
+            this.transform.enabled = this._openingTransformState.enabled && Boolean(this.transform.object);
+            this.transformHelper.visible = this._openingTransformState.visible && Boolean(this.transform.object);
+            this._openingTransformState = null;
+        }
+        this.canvas.style.cursor = (this.viewMode === "plan" && tool !== "select") || placing ? "crosshair" : "default";
         this._emitState();
     }
 
@@ -5096,11 +5202,28 @@ export class Factory3DViewer {
 
     setPlanDraft(draft) {
         this._clearPlanRoot(this.planDraftRoot);
+        this._clearPlanRoot(this.openingDraftRoot);
         const points = Array.isArray(draft?.points) ? draft.points : [];
         const cursor = Array.isArray(draft?.cursor) ? draft.cursor : null;
         const opening = draft?.opening && typeof draft.opening === "object"
             ? draft.opening
             : null;
+        if (this.viewMode === "3d") {
+            if (opening) {
+                const geometry = new THREE.BoxGeometry(opening.width, opening.height, opening.thickness + 0.025);
+                const ghost = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+                    color: "#ff8fa3", transparent: true, opacity: 0.42, depthWrite: false,
+                }));
+                ghost.position.set(opening.center[0], opening.base + opening.sill_height + opening.height / 2, opening.center[1]);
+                ghost.rotation.y = -Math.atan2(opening.end[1] - opening.start[1], opening.end[0] - opening.start[0]);
+                const outline = new THREE.LineSegments(new THREE.EdgesGeometry(geometry),
+                    new THREE.LineBasicMaterial({ color: "#ffc1cf" }));
+                ghost.add(outline);
+                this.openingDraftRoot.add(ghost);
+            }
+            this.invalidate();
+            return;
+        }
         if (!points.length && !cursor && !opening) {
             this.invalidate();
             return;
@@ -5503,9 +5626,10 @@ export class Factory3DViewer {
         return true;
     }
 
-    async refreshArchitecture(sceneData = this.sceneData) {
+    async refreshArchitecture(sceneData = this.sceneData, { previous = null } = {}) {
         this.sceneData = sceneData || this.sceneData;
-        await this.architecture.set(this.sceneData);
+        if (previous) await this.architecture.reconcile(this.sceneData, previous);
+        else await this.architecture.set(this.sceneData);
         this.architecture.setActiveLevel(this.activeLevelId, this.viewMode === "plan");
         this._cutawaySignature = "";
         this._syncViewportCutaway(true);
@@ -5684,6 +5808,18 @@ export class Factory3DViewer {
 
     _frameBounds(box, { direction = null, emit = true } = {}) {
         if (!box || box.isEmpty()) return false;
+        if (this.viewMode === "plan") {
+            const center = box.getCenter(new THREE.Vector3());
+            const size = box.getSize(new THREE.Vector3());
+            this.planCameraState.target = [center.x, center.z];
+            this.planCameraState.zoom = Math.max(0.01, Math.min(10000,
+                this.host.clientWidth / Math.max(0.1, size.x) / 1.2,
+                this.host.clientHeight / Math.max(0.1, size.z) / 1.2));
+            this._updatePlanProjection();
+            this.invalidate();
+            if (emit) this._emitState();
+            return true;
+        }
         const sphere = box.getBoundingSphere(new THREE.Sphere());
         const radius = Math.max(sphere.radius, 0.001);
         // Fit against the export camera, not the editor canvas. Portrait
@@ -6063,6 +6199,7 @@ export class Factory3DViewer {
         height = this.captureHeight,
         cameraState = null,
         waitForRenderable = true,
+        afterRender = null,
     } = {}) {
         if (this._disposed) throw new Error("3D viewport has been disposed");
         const targetWidth = Math.max(64, Math.min(4096, Math.round(Number(width) || 1024)));
@@ -6108,6 +6245,7 @@ export class Factory3DViewer {
             cameraHelpers: this.cameraHelperRoot.visible,
             lightHelpers: this.lightHelperRoot.visible,
             plan: this.planOverlay.visible,
+            opening: this.openingDraftRoot?.visible,
         };
         const previousCaptureState = this._capturing;
         this.grid.visible = false;
@@ -6117,6 +6255,7 @@ export class Factory3DViewer {
         this.cameraHelperRoot.visible = false;
         this.lightHelperRoot.visible = false;
         this.planOverlay.visible = false;
+        if (this.openingDraftRoot) this.openingDraftRoot.visible = false;
         this.architecture.setActiveLevel(this.activeLevelId, false, {
             hideCeilings: false,
             hiddenWallId: "",
@@ -6184,6 +6323,9 @@ export class Factory3DViewer {
             const context = target.getContext("2d", { alpha: false });
             if (!context) throw new Error("Could not create the 3D preview canvas");
             context.drawImage(this.canvas, 0, 0, targetWidth, targetHeight);
+            // Capture geometry synchronously from the exact RGB camera before
+            // restoring cutaway/visibility or yielding to another editor action.
+            afterRender?.(this.captureCamera);
         } finally {
             this.renderer.setPixelRatio(originalPixelRatio);
             this._currentPixelRatio = originalPixelRatio;
@@ -6201,6 +6343,7 @@ export class Factory3DViewer {
             this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
             this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
             this.planOverlay.visible = overlayVisibility.plan;
+            if (this.openingDraftRoot) this.openingDraftRoot.visible = overlayVisibility.opening;
             this._capturing = previousCaptureState;
             this._cutawaySignature = "";
             if (this._capturing) {
@@ -6222,6 +6365,20 @@ export class Factory3DViewer {
                     : reject(new Error("Could not encode the 3D scene preview")),
                 "image/png",
             );
+        });
+    }
+
+    async captureConditioningShot(job, shot) {
+        return await this._enqueueCapture(async () => {
+            let result;
+            const rgb = await this._capturePreviewNow({
+                width: job.settings.width, height: job.settings.height, cameraState: shot.camera,
+                afterRender: camera => { result = renderConditioningPixels(this, job, camera); },
+            });
+            const encoded = await encodeConditioningPixels(result, job.settings.width, job.settings.height);
+            encoded.parts.rgb = rgb;
+            encoded.metadata.shot_id = shot.shot_id;
+            return encoded;
         });
     }
 
@@ -6268,6 +6425,7 @@ export class Factory3DViewer {
             cameraHelpers: this.cameraHelperRoot.visible,
             lightHelpers: this.lightHelperRoot.visible,
             plan: this.planOverlay.visible,
+            opening: this.openingDraftRoot?.visible,
         };
         const renderTarget = new THREE.WebGLRenderTarget(targetWidth, targetHeight, {
             format: THREE.RGBAFormat,
@@ -6295,6 +6453,7 @@ export class Factory3DViewer {
             this.cameraHelperRoot.visible = false;
             this.lightHelperRoot.visible = false;
             this.planOverlay.visible = false;
+            if (this.openingDraftRoot) this.openingDraftRoot.visible = false;
             this.architecture.setActiveLevel(this.activeLevelId, false, {
                 hideCeilings: false,
                 hiddenWallId: "",
@@ -6335,6 +6494,7 @@ export class Factory3DViewer {
             this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
             this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
             this.planOverlay.visible = overlayVisibility.plan;
+            if (this.openingDraftRoot) this.openingDraftRoot.visible = overlayVisibility.opening;
             this._capturing = previousCaptureState;
             if (architectureStateChanged) {
                 this._cutawaySignature = "";
@@ -6428,6 +6588,7 @@ export class Factory3DViewer {
             cameraHelpers: this.cameraHelperRoot.visible,
             lightHelpers: this.lightHelperRoot.visible,
             plan: this.planOverlay.visible,
+            opening: this.openingDraftRoot?.visible,
         };
         const previousCaptureState = this._capturing;
         this.grid.visible = false;
@@ -6437,6 +6598,7 @@ export class Factory3DViewer {
         this.cameraHelperRoot.visible = false;
         this.lightHelperRoot.visible = false;
         this.planOverlay.visible = false;
+        if (this.openingDraftRoot) this.openingDraftRoot.visible = false;
         this.architecture.setActiveLevel(this.activeLevelId, false, {
             hideCeilings: false,
             hiddenWallId: "",
@@ -6504,6 +6666,7 @@ export class Factory3DViewer {
             this.cameraHelperRoot.visible = overlayVisibility.cameraHelpers;
             this.lightHelperRoot.visible = overlayVisibility.lightHelpers;
             this.planOverlay.visible = overlayVisibility.plan;
+            if (this.openingDraftRoot) this.openingDraftRoot.visible = overlayVisibility.opening;
             this._capturing = previousCaptureState;
             this._cutawaySignature = "";
             if (this._capturing) {
@@ -6842,6 +7005,7 @@ export class Factory3DViewer {
         this.architecture?.dispose?.();
         this._clearPlanRoot(this.planGridRoot);
         this._clearPlanRoot(this.planDraftRoot);
+        this._clearPlanRoot(this.openingDraftRoot);
         this._clearPlanRoot(this.cameraMarkerRoot);
         this._clearPlanRoot(this.lightMarkerRoot);
         this._clearPlanRoot(this.architectureHandleRoot);
@@ -6849,6 +7013,7 @@ export class Factory3DViewer {
         this._clearPlanRoot(this.cameraHelperRoot);
         this.scene.remove(this.lightHelperRoot, this.cameraHelperRoot);
         this.scene.remove(this.planOverlay);
+        this.scene.remove(this.openingDraftRoot);
         for (const entry of this.objects.values()) this._disposeEntry(entry);
         this.objects.clear();
         this.skydomeTexture?.dispose?.();

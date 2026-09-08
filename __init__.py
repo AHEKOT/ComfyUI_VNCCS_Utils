@@ -4,6 +4,7 @@ from .nodes.vnccs_model_manager import VNCCS_ModelManager, VNCCS_ModelSelector
 from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 from .nodes.factory3d import VNCCS_3DFactory
+from .nodes.factory3d_render import VNCCS_FactoryRender, VNCCS_FactoryMask
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_PositionControl": VNCCS_PositionControl,
@@ -15,6 +16,8 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
     "VNCCS_3DFactory": VNCCS_3DFactory,
+    "VNCCS_FactoryRender": VNCCS_FactoryRender,
+    "VNCCS_FactoryMask": VNCCS_FactoryMask,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -27,6 +30,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
     "VNCCS_3DFactory": "VNCCS 3D Factory",
+    "VNCCS_FactoryRender": "VNCCS Factory Render",
+    "VNCCS_FactoryMask": "VNCCS Factory Mask",
 }
 
 WEB_DIRECTORY = "./web"

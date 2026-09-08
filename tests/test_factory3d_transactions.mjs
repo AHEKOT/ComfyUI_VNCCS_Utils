@@ -130,6 +130,28 @@ class Control extends EventTarget {
     send(type, extra = {}) { const event = new Event(type); Object.assign(event, extra); this.dispatchEvent(event); }
 }
 
+test("Repeated slider drags commit separate undo steps while the same inspector stays open", () => {
+    const e = editor();
+    const range = new Control("range"), exact = new Control("number");
+    const historyStates = [];
+    e.history.onChange = () => historyStates.push([e.history.canUndo, e.history.canRedo]);
+    const cleanup = bindNumericPropertyInputs({ querySelectorAll: selector => selector === "[data-editor-path]" ? [range, exact] : [] }, {
+        descriptors: LIGHT_NUMERIC_PROPERTIES, ref, gesture: e.gesture, read: e.read, feedback: () => {},
+    });
+    for (const value of [2, 3, 4]) {
+        range.value = String(value);
+        range.send("input");
+        assert.equal(exact.value, String(value));
+        range.send("pointerup");
+        range.send("change");
+    }
+    assert.equal(e.history.undoStack.length, 3);
+    assert.equal(historyStates.length, 3);
+    assert.deepEqual(historyStates[2], [true, false]);
+    cleanup();
+    assert.equal(e.history.undoStack.length, 3);
+});
+
 test("Numeric binding updates peers during input, clamps visibly, cancels Escape and releases listeners", () => {
     const e = editor();
     const range = new Control("range"), exact = new Control("number");

@@ -660,12 +660,17 @@ def _has_renderable_scene(scene: dict[str, Any]) -> bool:
     )
 
 
+def _scene_handle(backend, scene, unique_id):
+    from ..api.factory3d_conditioning import create_scene_handle
+    return create_scene_handle(backend, scene, unique_id)
+
+
 class VNCCS_3DFactory:
     """Render a saved Factory scene into the ComfyUI graph."""
 
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("preview",)
-    OUTPUT_IS_LIST = (True,)
+    RETURN_TYPES = ("IMAGE", "VNCCS_FACTORY_SCENE")
+    RETURN_NAMES = ("preview", "scene")
+    OUTPUT_IS_LIST = (True, False)
     FUNCTION = "load_scene"
     CATEGORY = "VNCCS/3D"
     OUTPUT_NODE = True
@@ -715,7 +720,7 @@ class VNCCS_3DFactory:
         state = _parse_state(factory_data)
         scene_id = str(state.get("scene_id") or "")
         if not scene_id:
-            return ([_empty_image()],)
+            return ([_empty_image()], None)
 
         backend = _backend()
         try:
@@ -751,4 +756,5 @@ class VNCCS_3DFactory:
             previews = [_preview_tensor(path) for path in capture_paths]
         else:
             previews = [_empty_image()]
-        return (previews,)
+        handle = _scene_handle(backend, scene, unique_id)
+        return (previews, handle)

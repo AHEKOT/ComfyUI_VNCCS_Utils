@@ -2,7 +2,7 @@ import { PARAMETRIC_PARTS, PRIMITIVE_KINDS, primitiveLabel } from "./factory3d/g
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260905.5";
+import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260908.4";
 import { hasRenderableFactoryScene } from "./factory3d/scene_content.mjs?v=20260905.1";
 import {
     allocateLocalLightShadows,
@@ -23,13 +23,14 @@ import {
 import {
     FactoryCommandHistory,
     preserveScrollState,
-} from "./factory3d/editor_commands.mjs?v=20260905.2";
+} from "./factory3d/editor_commands.mjs?v=20260908.4";
 import { LIGHT_NUMERIC_PROPERTIES, PRIMITIVE_NUMERIC_PROPERTIES, MODEL_NUMERIC_PROPERTIES, TRANSFORM_NUMERIC_PROPERTIES, CAMERA_NUMERIC_PROPERTIES, WALL_NUMERIC_PROPERTIES, readNumericProperty, writeNumericProperty, readLightProperty, writeLightProperty } from "./factory3d/core/property_descriptors.mjs";
 import { FactoryPropertyGesture } from "./factory3d/core/property_gesture.mjs";
 import { bindNumericPropertyInputs } from "./factory3d/ui/numeric_property_binding.mjs";
 import { enqueueFactorySceneSave } from "./factory3d/core/save_queue.mjs";
 import { migrateEditorState } from "./factory3d/core/editor_migrations.mjs";
-import { FactoryWorkspace, activateWorkspaceTab } from "./factory3d/ui/workspace.mjs?v=20260905.5";
+import { FactoryWorkspace, activateWorkspaceTab } from "./factory3d/ui/workspace.mjs?v=20260908.2";
+import { ensureFactorySceneOutput } from "./factory3d/core/node_outputs.mjs?v=20260908.1";
 import { factoryCameraQuaternion, factoryCameraEuler } from "./factory3d/core/camera_rotation.mjs";
 import { findFactoryCommands } from "./factory3d/ui/command_registry.mjs";
 import {
@@ -82,7 +83,7 @@ const ENDPOINTS = Object.freeze({
 });
 const DEFAULT_NODE_SIZE = Object.freeze([1100, 760]);
 const STATE_VERSION = FACTORY_EDITOR_SCHEMA_VERSION;
-const FRONTEND_BUILD = "20260905.5";
+const FRONTEND_BUILD = "20260908.4";
 const MAX_IMAGE_BYTES = 32 * 1024 * 1024;
 const MAX_PLY_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MODEL_TOTAL_BYTES = 4 * 1024 * 1024 * 1024;
@@ -228,7 +229,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./vnccs_3d_factory.css?v=20260905.5", import.meta.url).href;
+    const href = new URL("./vnccs_3d_factory.css?v=20260908.2", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;
@@ -521,6 +522,7 @@ class Factory3DWidget {
         this._suppressViewerStatePersistence = false;
         this.history = new FactoryCommandHistory({
             limit: 200,
+            onChange: () => this._syncHistoryControls(),
             onDiscard: () => this.toast("Oldest undo steps were discarded to stay within the history budget.", "info"),
             onPatch: (patches, context) => {
                 const owner = this.scene;
@@ -570,17 +572,18 @@ class Factory3DWidget {
             }),
             onTransformChange: (id, transform, options) => this._onViewerTransform(id, transform, options),
             onArchitectureSelection: selection => this._selectArchitecture(selection, {
+                fromViewer: true,
                 additive: Boolean(selection?.additive),
             }),
             onArchitectureEdit: change => this._onArchitectureEdit(change),
-            onCameraSelection: cameraId => this._selectCamera(cameraId),
+            onCameraSelection: cameraId => this._selectCamera(cameraId, { fromViewer: true }),
             onCameraTransform: (cameraId, transform, options) => this._onViewerCameraTransform(
                 cameraId,
                 transform,
                 options,
             ),
             onCameraPreviewOpen: cameraId => this._enterCameraView(cameraId),
-            onLightSelection: lightId => this._selectLight(lightId),
+            onLightSelection: lightId => this._selectLight(lightId, { fromViewer: true }),
             onLightTransform: (lightId, position, options) => this._onViewerLightTransform(
                 lightId,
                 position,
@@ -593,7 +596,7 @@ class Factory3DWidget {
                 context?.origin || null,
             ),
             onPlanGesture: gesture => this._onPlanGesture(gesture),
-            onPlanHover: (tool, point, event) => this._queuePlanHover(tool, point, event),
+            onPlanHover: (tool, point, event, wallId) => this._queuePlanHover(tool, point, event, wallId),
             onStateChange: state => {
                 const previousState = this.viewerState;
                 const cameraChanged = !cameraStatesEqual(
@@ -913,7 +916,7 @@ class Factory3DWidget {
                         <button class="vnccs-i3s__tool vnccs-i3s__lighting-open" type="button" title="Scene lighting and point lights" aria-label="Open scene lighting and point light controls" aria-pressed="false">${ICONS.sun}</button>
                         <button class="vnccs-i3s__tool vnccs-i3s__grid" type="button" title="Grid" aria-label="Toggle 3D grid" aria-pressed="false">${ICONS.grid}</button>
                     </div>
-                    <div class="vnccs-i3s__plan-tools" role="toolbar" aria-label="Floor plan tools" hidden>
+                    <div class="vnccs-i3s__plan-tools" role="toolbar" aria-label="Scene creation tools" hidden>
                         <button type="button" data-plan-tool="select" aria-pressed="true" title="Select and edit architecture"><span>Select</span></button>
                         <button type="button" data-plan-tool="wall" aria-pressed="false" title="Press and drag to draw a wall"><span>Wall</span></button>
                         <button type="button" data-plan-tool="room" aria-pressed="false" title="Press and drag diagonally to draw a rectangular room"><span>Room</span></button>
@@ -1105,9 +1108,6 @@ class Factory3DWidget {
                     data-workspace-side="right" data-workspace-panel="objects">
                     <div class="vnccs-i3s__section-head">
                         <span>Scene hierarchy</span>
-                        <button class="vnccs-i3s__button vnccs-i3s__button--quiet vnccs-i3s__local-light-add" type="button" title="Add a point light to the scene">
-                            ${ICONS.sun}<span>Add light</span>
-                        </button>
                     </div>
                     <div class="vnccs-i3s__section-body">
                         <div class="vnccs-i3s__object-create-menu">
@@ -1120,6 +1120,7 @@ class Factory3DWidget {
                                 <button class="vnccs-i3s__button vnccs-i3s__image-import" type="button" title="Import an image as a proportionally sized plane">${ICONS.image}<span>Image</span></button>
                                 <button class="vnccs-i3s__button vnccs-i3s__primitive-add" type="button" title="Add a parametric solid">${ICONS.grid}<span>Shape</span></button>
                                 <button class="vnccs-i3s__button vnccs-i3s__terrain-add" type="button" title="Create an editable terrain surface">${ICONS.grid}<span>Terrain</span></button>
+                                <button class="vnccs-i3s__button vnccs-i3s__local-light-add" type="button" title="Add a point light to the scene">${ICONS.sun}<span>Light</span></button>
                                 <input class="vnccs-i3s__file-input vnccs-i3s__image-input" type="file" accept="image/png,image/jpeg,image/webp" tabindex="-1" />
                             </div>
                         </div>
@@ -1157,6 +1158,18 @@ class Factory3DWidget {
                     <div class="vnccs-i3s__section-head"><span>Output settings</span></div>
                     <div class="vnccs-i3s__section-body">
                         <div class="vnccs-i3s__hint vnccs-i3s__scene-summary">No objects in this scene.</div>
+                        <div class="vnccs-i3s__conditioning-output">
+                            <div class="vnccs-i3s__scene-frame-title">Generation maps</div>
+                            <p class="vnccs-i3s__hint">Connect this node's <b>scene</b> output to <b>Factory Render</b> for RGB, depth, normals, alpha and object IDs. Connect its <b>capture</b> output to <b>Factory Mask</b> for selected regions.</p>
+                            <p class="vnccs-i3s__hint">Set map dimensions and depth range in Factory Render. Gaussian objects require explicit coarse box approval there. Fresh captures use the 3D view.</p>
+                            <button class="vnccs-i3s__button vnccs-i3s__conditioning-selection" type="button">Get selection keys for Mask</button>
+                            <label class="vnccs-i3s__field">
+                                <span class="vnccs-i3s__label">Mask entity keys</span>
+                                <textarea class="vnccs-i3s__input vnccs-i3s__conditioning-keys" readonly rows="2" placeholder="Select geometry, then get its keys."></textarea>
+                            </label>
+                            <div class="vnccs-i3s__hint vnccs-i3s__conditioning-status" role="status" aria-live="polite">Ready for a Factory Render request.</div>
+                            <button class="vnccs-i3s__button vnccs-i3s__conditioning-cancel" type="button" hidden>Cancel capture</button>
+                        </div>
                         <div class="vnccs-i3s__scene-render-settings">
                             <label class="vnccs-i3s__field">
                                 <span class="vnccs-i3s__label">Aspect ratio</span>
@@ -1363,6 +1376,10 @@ class Factory3DWidget {
             inspector: $(".vnccs-i3s__inspector"),
             inspectorKind: $(".vnccs-i3s__inspector-kind"),
             sceneSummary: $(".vnccs-i3s__scene-summary"),
+            conditioningSelection: $(".vnccs-i3s__conditioning-selection"),
+            conditioningKeys: $(".vnccs-i3s__conditioning-keys"),
+            conditioningStatus: $(".vnccs-i3s__conditioning-status"),
+            conditioningCancel: $(".vnccs-i3s__conditioning-cancel"),
             sceneAspect: $(".vnccs-i3s__scene-aspect"),
             sceneWidth: $(".vnccs-i3s__scene-width"),
             sceneHeight: $(".vnccs-i3s__scene-height"),
@@ -1400,7 +1417,7 @@ class Factory3DWidget {
             wall: () => { this._setViewMode("plan"); this._setPlanTool("wall"); },
             room: () => { this._setViewMode("plan"); this._setPlanTool("room"); },
             polygon_room: () => { this.editorView.room_shape = "polygon"; this._setViewMode("plan"); this._setPlanTool("room"); },
-            opening: () => { this._setViewMode("plan"); this._setPlanTool("opening"); },
+            opening: () => this._setPlanTool("opening"),
             frame: () => this.viewer.frameSelection(), drop: () => this._dropSelectionToSurface(),
             undo: () => this.history.undo(), redo: () => this.history.redo(),
             output: () => { this.workspace.change({ right_visible: true }); this._setWorkspaceTab("right", "export"); },
@@ -1491,6 +1508,30 @@ class Factory3DWidget {
             const detail = safeObject(event?.detail);
             if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
             void this._captureExecutionPreview(detail);
+        });
+        this._listen(api, "vnccs_req_factory_conditioning", event => {
+            const detail = safeObject(event?.detail);
+            if (String(detail.node_id ?? "") !== String(this.node?.id ?? "")) return;
+            void this._captureConditioning(detail);
+        });
+        this._listen(this.els.conditioningSelection, "click", () => {
+            const keys = [...this.selectedObjectIds].map(id => `object:${id}`);
+            for (const ref of this._selectedArchitectureRefs()) {
+                const kind = ["floor", "ceiling"].includes(ref.type) ? "room" : ref.type;
+                if (["room", "wall", "opening"].includes(kind)) keys.push(`${kind}:${ref.id}`);
+            }
+            this.els.conditioningKeys.value = [...new Set(keys)].join(",\n");
+            this.els.conditioningKeys.focus({ preventScroll: true });
+            this.els.conditioningKeys.select();
+        });
+        this._listen(this.els.conditioningCancel, "click", () => {
+            this._conditioningCancelled = true;
+            this.els.conditioningCancel.disabled = true;
+            this.els.conditioningStatus.textContent = "Cancelling capture…";
+            if (this._conditioningJobURL) void this._fetchJSON(`${this._conditioningJobURL}/error`, {
+                method: "POST", headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ error: "Capture cancelled by the user" }),
+            }).catch(() => {});
         });
         const pick = () => !this.currentJobId && this.els.sourceInput.click();
         this._listen(this.els.sourceDrop, "click", event => {
@@ -1762,9 +1803,9 @@ class Factory3DWidget {
             if (control.type === "number") this._listen(control, "input", updatePlanSetting);
             this._listen(control, "change", updatePlanSetting);
         }
-        this._listen(this.els.modeMove, "click", () => this.viewer.setMode("translate"));
-        this._listen(this.els.modeRotate, "click", () => this.viewer.setMode("rotate"));
-        this._listen(this.els.modeScale, "click", () => this.viewer.setMode("scale"));
+        this._listen(this.els.modeMove, "click", () => { this._setPlanTool("select"); this.viewer.setMode("translate"); });
+        this._listen(this.els.modeRotate, "click", () => { this._setPlanTool("select"); this.viewer.setMode("rotate"); });
+        this._listen(this.els.modeScale, "click", () => { this._setPlanTool("select"); this.viewer.setMode("scale"); });
         this._listen(this.els.dropSurface, "click", event => this._dropSelectionToSurface(event.shiftKey));
         this._listen(this.els.skydomeOpen, "click", event => {
             event.stopPropagation();
@@ -1940,7 +1981,6 @@ class Factory3DWidget {
                 activeWithin
                 && !editing
                 && event.key === "Escape"
-                && this.editorView.view_mode === "plan"
                 && this.editorView.plan_tool !== "select"
             ) {
                 event.preventDefault();
@@ -1949,6 +1989,7 @@ class Factory3DWidget {
             }
             if (activeWithin && !editing && event.key.toLowerCase() === "v") {
                 event.preventDefault();
+                this._setPlanTool("select");
                 if (this.editorView.view_mode === "plan") this._setPlanTool("select");
                 else this.viewer.setMode("translate");
                 return;
@@ -2273,12 +2314,31 @@ class Factory3DWidget {
 
     async _restoreEditorSnapshot(snapshot) {
         if (!this.scene || !snapshot) return;
+        const owner = this.scene;
+        await this._architectureCommitSerial;
+        if (this.scene !== owner) return;
+        const previous = this._captureEditorSnapshot();
+        const differs = (left, right) => JSON.stringify(left) !== JSON.stringify(right);
+        const architectureChanged = differs(previous.architecture, snapshot.architecture)
+            || differs(previous.levels, snapshot.levels);
+        const camerasChanged = differs(previous.cameras, snapshot.cameras);
+        const lightingChanged = differs(previous.lighting, snapshot.lighting);
+        const skydomeChanged = differs(previous.skydome, snapshot.skydome);
+        const renderChanged = differs(previous.render, snapshot.render);
+        const objectUpdates = [];
         this.scene.levels = normalizedLevels(snapshot.levels);
         this.scene.architecture = normalizedArchitecture(snapshot.architecture, this.scene.levels);
         const byId = new Map((snapshot.objects || []).map(item => [item.object_id, item]));
         for (const item of this.scene.objects || []) {
             const restored = byId.get(item.object_id);
-            if (restored) Object.assign(item, restored);
+            if (restored) {
+                const patch = Object.fromEntries(Object.entries(restored)
+                    .filter(([key, value]) => key !== "object_id" && differs(item[key], value)));
+                if (Object.keys(patch).length) {
+                    Object.assign(item, patch);
+                    objectUpdates.push([item.object_id, patch]);
+                }
+            }
         }
         this.scene.cameras = this._normalizeSceneCameras(snapshot.cameras);
         this.scene.camera_tracks = Array.isArray(snapshot.camera_tracks)
@@ -2296,24 +2356,31 @@ class Factory3DWidget {
             ? JSON.parse(JSON.stringify(snapshot.skydome))
             : null;
         this.exportSettings = { ...this.exportSettings, ...safeObject(snapshot.render) };
-        await this.viewer.setScene(this.scene, { incremental: true });
-        this.viewer.setViewMode(this.editorView.view_mode);
-        this.viewer.setPlanTool(this.editorView.plan_tool);
-        this.viewer.setActiveLevel(this.editorView.active_level_id);
-        this.viewer.setArchitectureSelection(
-            this.selectedArchitecture,
-            this._selectedArchitectureRefs(),
-        );
+        this.viewer.sceneData = this.scene;
+        this.viewer.architecture.sceneData = this.scene;
+        if (architectureChanged) {
+            if (!this.scene.levels.some(level => level.level_id === this.editorView.active_level_id)) {
+                this.editorView.active_level_id = this.scene.levels[0]?.level_id || "";
+            }
+            this.viewer.activeLevelId = this.editorView.active_level_id;
+            await this.viewer.refreshArchitecture(this.scene, { previous });
+            if (this.scene !== owner) return;
+            this.viewer.setArchitectureSelection(this.selectedArchitecture, this._selectedArchitectureRefs());
+        }
+        for (const [id, patch] of objectUpdates) this.viewer.updateObject(id, patch);
         this.viewer.applySceneVisibility(this.scene);
-        this.viewer.setCameraMarkers(this.scene.cameras || []);
-        this.viewer.setLighting(this.lighting);
+        if (camerasChanged) this.viewer.setCameraMarkers(this.scene.cameras || []);
+        if (lightingChanged) this.viewer.setLighting(this.lighting);
+        if (skydomeChanged) await this.viewer.setSkydome(this.scene.skydome);
+        if (this.scene !== owner) return;
+        this.viewer.invalidate();
         this._renderObjects();
         this._renderCameras();
         this._renderCameraTracks();
         this._renderInspector();
-        this._syncLighting();
-        this._syncSkydome();
-        this._syncExportSettings();
+        if (lightingChanged) this._syncLighting();
+        if (skydomeChanged) this._syncSkydome();
+        if (renderChanged) this._syncExportSettings();
         this._syncToolbar();
         this._scheduleSceneSave(0);
         this._scheduleScenePreview(120);
@@ -2321,6 +2388,7 @@ class Factory3DWidget {
     }
 
     _setViewMode(mode) {
+        this._setPlanTool("select");
         this.editorView.view_mode = mode === "plan" ? "plan" : "3d";
         if (this.editorView.view_mode !== "plan") this._cancelPlanDraft();
         this.viewer.setViewMode(this.editorView.view_mode);
@@ -2346,6 +2414,7 @@ class Factory3DWidget {
 
     _setPlanTool(tool) {
         if (!["select", "wall", "room", "opening", "camera"].includes(tool)) return;
+        if (tool !== "opening") this._openingWallId = "";
         if (this.planDraft && this.planDraft.tool !== tool) this._cancelPlanDraft();
         this._clearPlanHover();
         this.editorView.plan_tool = tool;
@@ -2362,9 +2431,10 @@ class Factory3DWidget {
         this.planHover = null;
     }
 
-    _queuePlanHover(tool, rawPoint, event = {}) {
+    _queuePlanHover(tool, rawPoint, event = {}, wallId = "") {
         this._pendingPlanHover = {
             tool,
+            wallId,
             point: Array.isArray(rawPoint) ? [...rawPoint] : null,
             event: {
                 altKey: Boolean(event.altKey),
@@ -2376,7 +2446,8 @@ class Factory3DWidget {
             this._planHoverFrame = 0;
             const pending = this._pendingPlanHover;
             this._pendingPlanHover = null;
-            if (!pending || this.editorView.view_mode !== "plan" || pending.tool !== this.editorView.plan_tool) {
+            if (!pending || pending.tool !== this.editorView.plan_tool
+                || (this.editorView.view_mode !== "plan" && pending.tool !== "opening")) {
                 return;
             }
             if (!pending.point) {
@@ -2392,7 +2463,9 @@ class Factory3DWidget {
                 : this._snapPlanPoint(pending.point, pending.event, pending.tool === "room" && this.editorView.room_shape === "polygon" ? this.planDraft?.points?.at(-1) : null);
             if (pending.tool === "opening") this.planSnapHint = "Wall projection";
             const nearest = pending.tool === "opening"
-                ? this._nearestWallProjection(point)
+                ? this.editorView.view_mode === "3d"
+                    ? this._editableWallProjection(point, pending.wallId)
+                    : this._nearestWallProjection(point)
                 : null;
             const openingKind = this.editorView.opening_kind || "window";
             const openingPlacement = nearest
@@ -2800,6 +2873,14 @@ class Factory3DWidget {
         return placement;
     }
 
+    _editableWallProjection(point, wallId) {
+        if (this._openingWallId && this._openingWallId !== wallId) return null;
+        const wall = this.scene?.architecture.walls.find(value => value.wall_id === wallId);
+        if (!wall || wall.locked || this._buildingForItem(wall)?.locked
+            || this.scene.architecture.rooms.some(room => room.locked && room.wall_ids?.includes(wallId))) return null;
+        return this._wallProjection(point, wall);
+    }
+
     _createOpeningFromPlacement(placement, kind) {
         if (!placement) return false;
         if (this.scene.architecture.openings.length >= 4096) {
@@ -2815,8 +2896,8 @@ class Factory3DWidget {
                 kind,
                 offset: placement.offset,
                 width: placement.width,
-                height: kind === "door" ? 2 : 1.2,
-                sill_height: kind === "door" ? 0 : 0.9,
+                height: placement.height,
+                sill_height: placement.sill_height,
                 material_id: "",
                 visible: true,
                 locked: false,
@@ -2832,6 +2913,8 @@ class Factory3DWidget {
             );
             void this._commitArchitecture();
         });
+        this.workspace.change({ right_visible: true });
+        this._setWorkspaceTab("right", "inspector");
         return true;
     }
 
@@ -2842,12 +2925,18 @@ class Factory3DWidget {
         const rawPoint = Array.isArray(gesture.point) ? gesture.point : null;
         if (!this.scene || !["wall", "room", "opening", "camera"].includes(tool)) return;
 
+        if (phase === "exit") { this._setPlanTool("select"); return; }
+
         if (phase === "cancel") {
             this._cancelPlanDraft();
             this._syncToolbar();
             return;
         }
-        if (!rawPoint) return;
+        if (!rawPoint) {
+            this._cancelPlanDraft();
+            if (tool === "opening") this.els.planHint.textContent = "Point at a visible, unlocked wall to place an opening";
+            return;
+        }
         if (tool === "room" && this.editorView.room_shape === "polygon") {
             this._polygonRoomGesture(phase, rawPoint, event); return;
         }
@@ -2862,13 +2951,15 @@ class Factory3DWidget {
                 return;
             }
             if (tool === "opening") {
-                const projection = this._nearestWallProjection(rawPoint);
+                const projection = gesture.viewMode === "3d"
+                    ? this._editableWallProjection(rawPoint, gesture.wallId)
+                    : this._nearestWallProjection(rawPoint);
                 this.planDraft = {
                     tool,
                     points: projection ? [projection.point] : [],
                     openingStart: projection,
                 };
-                this.planHover = { tool, point: [...rawPoint], opening: null };
+                this.planHover = { tool, point: [...rawPoint], opening: this._openingPlacement(projection) };
                 this.els.planHint.textContent = projection
                     ? "Drag along the wall to set the opening width"
                     : "Start the drag on an editable wall";
@@ -2892,7 +2983,9 @@ class Factory3DWidget {
         let placement = null;
         if (tool === "opening") {
             const kind = this.editorView.opening_kind || "window";
-            placement = this._openingDragPlacement(draft.openingStart, rawPoint, kind);
+            placement = gesture.moved
+                ? this._openingDragPlacement(draft.openingStart, rawPoint, kind)
+                : this._openingPlacement(draft.openingStart);
             const projected = this._wallProjection(rawPoint, draft.openingStart?.wall);
             point = projected?.point || rawPoint;
             this.planHover = { tool, point, opening: placement };
@@ -2922,6 +3015,9 @@ class Factory3DWidget {
         if (!gesture.moved) {
             if (tool === "camera") {
                 this._createCameraFromDrag(start, this._defaultCameraPlanTarget(start));
+            } else if (tool === "opening" && placement) {
+                this._createOpeningFromPlacement(placement, this.editorView.opening_kind || "window");
+                this._setPlanTool("select");
             }
             this._cancelPlanDraft();
             this._syncToolbar();
@@ -2934,6 +3030,7 @@ class Factory3DWidget {
             this._createRectangularRoom(start, point);
         } else if (tool === "opening" && placement) {
             this._createOpeningFromPlacement(placement, this.editorView.opening_kind || "window");
+            this._setPlanTool("select");
         } else if (tool === "camera" && length >= 0.001) {
             this._createCameraFromDrag(start, point);
         }
@@ -3047,8 +3144,9 @@ class Factory3DWidget {
         return nearest?.distance <= tolerance ? nearest : null;
     }
 
-    _openingPlacement(nearest, requestedWidth = 1.2) {
+    _openingPlacement(nearest, requestedWidth = this.editorView.opening_kind === "door" ? 0.9 : 1.2) {
         const wall = nearest?.wall;
+        if (this._openingWallId && this._openingWallId !== wall?.wall_id) return null;
         const length = Number(nearest?.length) || 0;
         if (!wall || length < 0.05) return null;
         const fitted = this._fitOpeningOnWall(wall, nearest.offset, requestedWidth);
@@ -3063,8 +3161,16 @@ class Factory3DWidget {
             wallStart[0] + (wallEnd[0] - wallStart[0]) * offset,
             wallStart[1] + (wallEnd[1] - wallStart[1]) * offset,
         ];
+        const kind = this.editorView.opening_kind || "window";
+        const wallHeight = Math.max(0.05, Number(wall.height) || DEFAULT_WALL.height);
+        const sill = kind === "door" ? 0 : Math.min(0.9, Math.max(0, wallHeight - 0.05));
+        const level = this.scene.levels.find(value => value.level_id === wall.level_id);
         return {
             wall,
+            kind,
+            base: (Number(level?.elevation) || 0) + (Number(building?.position?.[1]) || 0),
+            height: Math.min(kind === "door" ? 2 : 1.2, wallHeight - sill),
+            sill_height: sill,
             offset,
             width,
             thickness: Number(wall.thickness) || DEFAULT_WALL.thickness,
@@ -3426,7 +3532,8 @@ class Factory3DWidget {
         );
     }
 
-    _selectArchitecture(selection, { additive = false } = {}) {
+    _selectArchitecture(selection, { additive = false, fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         if (selection?.type === "camera") {
             this._selectCamera(selection.id);
             return;
@@ -3471,7 +3578,7 @@ class Factory3DWidget {
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
-        if (this.selectedArchitecture) this._setWorkspaceTab("right", "inspector");
+        if (this.selectedArchitecture && fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave(0);
     }
 
@@ -5199,6 +5306,13 @@ class Factory3DWidget {
         } else if (type === "wall") {
             this.els.inspector.innerHTML = `
                 <div class="vnccs-i3s__inspector-title">${escapeHTML(item.name || "Wall")}</div>
+                <div class="vnccs-i3s__wall-openings" role="group" aria-label="Add wall opening">
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="door">Add door</button>
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="window">Add window</button>
+                    <button class="vnccs-i3s__button" type="button" data-wall-opening="empty">Add opening</button>
+                </div>
+                <div class="vnccs-i3s__hint" data-wall-opening-status hidden>Click this wall to place; drag to set width. Escape cancels.</div>
+                <button class="vnccs-i3s__button" type="button" data-wall-opening-cancel hidden>Cancel placement</button>
                 <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Name</span><input class="vnccs-i3s__input" data-architecture-property="name" value="${escapeHTML(item.name || "Wall")}" maxlength="80" /></label>
                 <label class="vnccs-i3s__field"><span class="vnccs-i3s__label">Floor level${linkedRoom ? " · inherited from room" : ""}</span><select class="vnccs-i3s__select" data-architecture-property="level_id"${linkedRoom ? " disabled" : ""}>
                     ${(this.scene?.levels || []).map(level => `<option value="${level.level_id}"${item.level_id === level.level_id ? " selected" : ""}>${escapeHTML(level.name)}</option>`).join("")}
@@ -5303,6 +5417,16 @@ class Factory3DWidget {
             if (roomMaterials) roomMaterials.disabled = true;
         }
         this._bindArchitectureInspector(item, type);
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening]")) {
+            control.disabled = Boolean(item.locked || ownerBuilding?.locked || linkedRoom?.locked);
+            control.addEventListener("click", () => {
+                this.editorView.opening_kind = control.dataset.wallOpening;
+                this._setPlanTool("select");
+                this._openingWallId = item.wall_id;
+                this._setPlanTool("opening");
+            });
+        }
+        this.els.inspector.querySelector("[data-wall-opening-cancel]")?.addEventListener("click", () => this._setPlanTool("select"));
     }
 
     _wallPropertyDescriptors(wall) {
@@ -5843,7 +5967,7 @@ class Factory3DWidget {
                 this.viewer.setArchitectureSelection(null);
                 this.selectedObjectId = "";
                 this.selectedObjectIds.clear();
-                this.viewer.select("");
+                this.viewer.select("", { emit: false });
                 this.viewer.setCameraState(legacyCameraFromPose(frame), { emit: false });
                 this.els.cameraTrackTime.value = String(frame.time);
                 this._renderCameraTracks();
@@ -6033,7 +6157,8 @@ class Factory3DWidget {
         this.toast(`${camera.name} added.`, "success");
     }
 
-    _selectCamera(cameraId) {
+    _selectCamera(cameraId, { fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const camera = this.scene?.cameras?.find(item => item.camera_id === cameraId);
         if (!camera) return;
         this.panoramaCameraId = cameraId;
@@ -6052,7 +6177,7 @@ class Factory3DWidget {
             this.selectedLightId = "";
             this.viewer.selectLightMarker("");
             this.viewer.setArchitectureSelection(null);
-            this.viewer.select("");
+            this.viewer.select("", { emit: false });
             this.selectedCameraId = cameraId;
             this.selectedCameraIds = new Set([cameraId]);
         } finally {
@@ -6064,7 +6189,7 @@ class Factory3DWidget {
         this._syncToolbar();
         this._syncPanoramaExportControls();
         this.viewer?.showCameraPreview?.(camera, { force: true });
-        this._setWorkspaceTab("right", "inspector");
+        if (fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave();
     }
 
@@ -6463,7 +6588,8 @@ class Factory3DWidget {
         }
     }
 
-    _selectLight(lightId) {
+    _selectLight(lightId, { fromViewer = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const light = this.lighting?.lights?.find(item => item.light_id === lightId);
         if (!light) return;
         this.selectedLightId = light.light_id;
@@ -6476,14 +6602,14 @@ class Factory3DWidget {
         this.selectedCameraId = "";
         this.selectedCameraIds.clear();
         this.selectedCameraKeyframeId = "";
-        this.viewer?.select?.("");
+        this.viewer?.select?.("", { emit: false });
         this.viewer?.setArchitectureSelection?.(null);
         this.viewer?.selectLightMarker?.(light.light_id);
         this._renderObjects();
         this._renderCameras();
         this._renderInspector();
         this._syncToolbar();
-        this._setWorkspaceTab("right", "inspector");
+        if (fromViewer) this._setWorkspaceTab("right", "inspector");
         this._scheduleStateSave(0);
     }
 
@@ -7264,7 +7390,7 @@ class Factory3DWidget {
             this.selectedObjectId = "";
             this.activeCameraTrackId = desiredKeyframeTrack.track_id;
             this.selectedCameraKeyframeId = desiredKeyframeId;
-            this.viewer.select("");
+            this.viewer.select("", { emit: false });
         } else {
             this.selectedSkydome = false;
             this.selectedGroupId = "";
@@ -7286,6 +7412,7 @@ class Factory3DWidget {
             this.selectedCameraId = Array.from(this.selectedCameraIds).at(-1) || "";
             this.viewer.select(this.selectedObjectId, {
                 additive: this.selectedObjectIds.size > 1,
+                emit: false,
             });
         }
         const selectionBuilding = this._activeBuilding();
@@ -7592,7 +7719,7 @@ class Factory3DWidget {
         this.selectedLightId = "";
         this.viewer.selectLightMarker("");
         this.viewer.setArchitectureSelection(null);
-        this.viewer.select("");
+        this.viewer.select("", { emit: false });
         this.selectedSkydome = true;
         this._syncSelectionPresentation();
         this._renderInspector();
@@ -7612,7 +7739,7 @@ class Factory3DWidget {
         this.selectedLightId = "";
         this.selectedCameraKeyframeId = "";
         this.viewer.setArchitectureSelection(null);
-        this.viewer.select("");
+        this.viewer.select("", { emit: false });
         this.viewer.selectLightMarker("");
         this._syncSelectionPresentation();
         this._renderCameras();
@@ -7623,10 +7750,11 @@ class Factory3DWidget {
     }
 
     _selectObject(objectId, { fromViewer = false, additive = false } = {}) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const valid = this.scene?.objects?.some(item => item.object_id === objectId)
             ? objectId
             : "";
-        if (fromViewer && !valid && !additive) return;
+        if (fromViewer && !valid && !additive) { this._clearSelection(); return; }
         this.selectedSkydome = false;
         this.selectedLightId = "";
         this.viewer.selectLightMarker("");
@@ -7650,7 +7778,7 @@ class Factory3DWidget {
         this.selectedObjectId = valid && this.selectedObjectIds.has(valid)
             ? valid
             : Array.from(this.selectedObjectIds).at(-1) || "";
-        if (!fromViewer) this.viewer.select(this.selectedObjectId, { additive });
+        if (!fromViewer) this.viewer.select(this.selectedObjectId, { additive, emit: false });
         this.viewer.setArchitectureSelection(
             this.selectedArchitecture,
             this._selectedArchitectureRefs(),
@@ -7663,6 +7791,7 @@ class Factory3DWidget {
     }
 
     _selectGroup(groupId) {
+        if (this.editorView.plan_tool !== "select") this._setPlanTool("select");
         const group = this._groupById(groupId);
         this.selectedSkydome = false;
         this.selectedArchitecture = null;
@@ -7682,7 +7811,7 @@ class Factory3DWidget {
         this.selectedObjectIds.clear();
         this.selectedObjectId = "";
         if (group) this.viewer.selectGroup(group.group_id, group.children);
-        else this.viewer.select("");
+        else this.viewer.select("", { emit: false });
         this._syncSelectionPresentation();
         this._renderInspector();
         this._syncToolbar();
@@ -8782,7 +8911,7 @@ class Factory3DWidget {
             this.viewer.applySceneVisibility(this.scene);
             this._scheduleScenePreview(120);
         }
-        this.viewer.select(this.selectedObjectId, { additive: true });
+        this.viewer.select(this.selectedObjectId, { additive: true, emit: false });
         this.history.push("Ungroup objects", before, this._captureEditorSnapshot());
         this._updateSceneSummary();
         this._renderObjects();
@@ -8878,6 +9007,7 @@ class Factory3DWidget {
     }
 
     _scheduleSceneSave(delay = 180) {
+        this._conditioningEditEpoch = (this._conditioningEditEpoch || 0) + 1;
         clearTimeout(this._sceneSaveTimer);
         this._sceneSaveTimer = setTimeout(
             () => {
@@ -9090,6 +9220,67 @@ class Factory3DWidget {
         });
         this._previewSaveSerial = operation.catch(() => null);
         return await operation;
+    }
+
+    async _captureConditioning(detail) {
+        const sceneId = String(detail.scene_id || ""), jobId = String(detail.job_id || "");
+        if (![sceneId, jobId].every(id => /^[a-f0-9]{32}$/.test(id))) return;
+        const url = `${API_BASE}/conditioning/${sceneId}/jobs/${jobId}`;
+        const operation = this._previewSaveSerial.then(async () => {
+            this._conditioningCancelled = false;
+            this._conditioningJobURL = url;
+            this.els.conditioningCancel.hidden = false;
+            this.els.conditioningCancel.disabled = false;
+            this.els.conditioningStatus.textContent = "Checking saved scene and capture settings…";
+            try {
+                await this._restoreSerial;
+                await this._sceneSaveSerial;
+                if (this.destroyed || this.sceneId !== sceneId) throw new Error("Open the requested scene in 3D Factory and execute again.");
+                if (this.viewer.viewMode !== "3d") throw new Error("Switch 3D Factory to the 3D view before conditioning capture.");
+                if (this._activeNumericGesture?.pending) throw new Error("Finish the active edit before conditioning capture.");
+                const baseline = JSON.stringify(this._scenePayload());
+                const epoch = this._conditioningEditEpoch || 0;
+                const check = () => {
+                    if (this._conditioningCancelled) throw new Error("Capture cancelled by the user.");
+                    if (this.destroyed || this.sceneId !== sceneId || (this._conditioningEditEpoch || 0) !== epoch
+                        || JSON.stringify(this._scenePayload()) !== baseline) {
+                        throw new Error("Scene changed during conditioning capture; execute again.");
+                    }
+                };
+                await this._saveSceneNow({ showError: false });
+                check();
+                const job = await this._fetchJSON(url);
+                check();
+                this.toast(`Capturing ${job.shots.length} conditioning view(s)…`, "info");
+                for (const [index, shot] of job.shots.entries()) {
+                    check();
+                    this.els.conditioningStatus.textContent = `Rendering view ${index + 1} of ${job.shots.length}: ${shot.camera.name || "Current view"}…`;
+                    const result = await this.viewer.captureConditioningShot(job, shot);
+                    check();
+                    this.els.conditioningStatus.textContent = `Saving view ${index + 1} of ${job.shots.length}…`;
+                    const form = new FormData();
+                    for (const [name, blob] of Object.entries(result.parts)) form.append(name, blob, `${name}.png`);
+                    form.append("metadata", JSON.stringify(result.metadata));
+                    await this._fetchJSON(`${url}/shots/${index}`, { method: "POST", body: form });
+                }
+                check();
+                this.els.conditioningCancel.disabled = true;
+                this.els.conditioningStatus.textContent = "Validating and publishing the complete capture…";
+                await this._fetchJSON(`${url}/publish`, { method: "POST" });
+                this.els.conditioningStatus.textContent = `${job.shots.length} view(s) saved at ${job.settings.width} × ${job.settings.height}. Geometry profile: ${job.settings.profile}.`;
+                this.toast("Conditioning capture saved.", "success");
+            } catch (error) {
+                this.els.conditioningStatus.textContent = errorText(error, "Conditioning capture failed");
+                this._showError("Conditioning capture failed", error);
+                await this._fetchJSON(`${url}/error`, { method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ error: errorText(error, "Conditioning capture failed") }) }).catch(() => {});
+            } finally {
+                this._conditioningJobURL = null;
+                this.els.conditioningCancel.hidden = true;
+            }
+        });
+        this._previewSaveSerial = operation.catch(() => null);
+        await operation;
     }
 
     async _reportExecutionPreviewFailure(sceneId, captureToken, error) {
@@ -11832,6 +12023,11 @@ class Factory3DWidget {
         this.els.density.closest(".vnccs-i3s__field")?.classList.toggle("is-extreme", extreme);
     }
 
+    _syncHistoryControls() {
+        if (this.els?.undo) this.els.undo.disabled = !this.history.canUndo;
+        if (this.els?.redo) this.els.redo.disabled = !this.history.canRedo;
+    }
+
     _syncToolbar() {
         this._syncLightStatuses();
         this._syncWorkspace();
@@ -11841,11 +12037,14 @@ class Factory3DWidget {
         this.els.modeScale.setAttribute("aria-pressed", String(mode === "scale"));
         this.els.grid.setAttribute("aria-pressed", String(Boolean(this.viewerState.grid)));
         const plan = this.editorView.view_mode === "plan";
-        this.els.fit.disabled = plan;
-        this.els.fit.title = plan ? "Available in 3D view" : "Frame complete 3D scene";
+        this.els.fit.disabled = false;
+        this.els.fit.title = plan ? "Frame complete plan" : "Frame complete 3D scene";
         this._syncCameraPanelControls();
         this.els.view3d.setAttribute("aria-pressed", String(!plan));
         this.els.viewPlan.setAttribute("aria-pressed", String(plan));
+        this.els.grid.hidden = plan;
+        this.els.modeRotate.hidden = plan;
+        this.els.modeScale.hidden = plan;
         const cutawayKey = plan ? "plan" : "three_d";
         const cutawayEnabled = Boolean(this.editorView.interior_cutaway?.[cutawayKey]);
         this.els.cutaway.setAttribute("aria-pressed", String(cutawayEnabled));
@@ -11854,7 +12053,14 @@ class Factory3DWidget {
             : "Interior cutaway (viewport only): hide ceilings and the nearest blocking wall";
         this.viewer?.setInteriorCutaway?.(cutawayEnabled);
         this.els.planTools.hidden = !plan;
-        this.els.openingKindShortcut.hidden = !plan || this.editorView.plan_tool !== "opening";
+        const placingOnWall = this.editorView.plan_tool === "opening" && Boolean(this._openingWallId);
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening-status], [data-wall-opening-cancel]")) control.hidden = !placingOnWall;
+        for (const control of this.els.inspector.querySelectorAll("[data-wall-opening]")) {
+            control.setAttribute("aria-pressed", String(placingOnWall && control.dataset.wallOpening === this.editorView.opening_kind));
+        }
+        this.els.planTools.classList.toggle("is-3d", !plan);
+        this.els.openingKindShortcut.hidden = this.editorView.plan_tool !== "opening";
+        for (const control of [this.els.planGridToggle, this.els.snapToggle, this.els.snapGrid.closest("label"), this.els.planSettingsPanel]) control.hidden = !plan;
         const roomTool = plan && this.editorView.plan_tool === "room";
         const polygonRoom = roomTool && this.editorView.room_shape === "polygon";
         this.els.roomMode.hidden = !roomTool;
@@ -11873,6 +12079,7 @@ class Factory3DWidget {
             camera: "Press and drag to place and aim a saved camera",
         };
         for (const control of this.els.planToolButtons) {
+            control.hidden = !plan && !["select", "opening"].includes(control.dataset.planTool);
             control.disabled = false;
             control.title = planToolTitles[control.dataset.planTool] || "";
             control.setAttribute(
@@ -11884,7 +12091,7 @@ class Factory3DWidget {
             select: "Click an object · Drag empty space for box selection",
             wall: "Press and drag to draw a wall",
             room: "Press and drag diagonally to draw a room",
-            opening: "Press on a wall and drag to set width",
+            opening: "Click a wall to place · Drag to set width · Esc: select",
             camera: "Press and drag to place and aim",
         };
         this.els.planHint.textContent = polygonRoom ? "Click corners · Enter: finish · Backspace: remove · Escape: cancel" : planHints[this.editorView.plan_tool] || planHints.select;
@@ -11893,7 +12100,7 @@ class Factory3DWidget {
             String(this.editorView.plan_grid.visible),
         );
         this.els.snapToggle.setAttribute("aria-pressed", String(this.editorView.snap.enabled));
-        this.els.snapGrid.value = String(this.editorView.plan_grid.step);
+        if (document.activeElement !== this.els.snapGrid) this.els.snapGrid.value = String(this.editorView.plan_grid.step);
         for (const control of this.els.planSettings) {
             const key = control.dataset.planSetting;
             const value = key === "major_every"
@@ -11904,7 +12111,7 @@ class Factory3DWidget {
                         ? this.editorView.opening_kind
                         : this.editorView.snap[key];
             if (control.type === "checkbox") control.checked = value !== false;
-            else control.value = String(value ?? 0);
+            else if (document.activeElement !== control) control.value = String(value ?? 0);
         }
         this.viewer?.setPlanGrid?.({
             visible: this.editorView.plan_grid.visible,
@@ -12028,7 +12235,8 @@ class Factory3DWidget {
         const value = JSON.stringify(this.serializeState());
         if (widget.value !== value) {
             widget.value = value;
-            widget.callback?.(value);
+            // This is serialized editor state, not an interactive host control.
+            // Host callbacks expect their original widget/event contract.
         }
     }
 
@@ -12185,7 +12393,7 @@ class Factory3DWidget {
         const height = this.container.clientHeight || DEFAULT_NODE_SIZE[1];
         this.container.classList.toggle("is-compact", width < 980);
         this.container.classList.toggle("is-narrow", width < 760);
-        const scale = clamp(Math.min(width / 1100, height / 720), 0.72, 1.08);
+        const scale = 1;
         const scaleValue = scale.toFixed(3);
         if (scaleValue !== this._uiScaleValue) {
             this._uiScaleValue = scaleValue;
@@ -12432,7 +12640,6 @@ function enableCanvasNavigationForwarding(root) {
 function hideFactoryDataWidget(node) {
     const widget = node?.widgets?.find(item => item.name === "factory_data");
     if (!widget) return;
-    widget.type = "hidden";
     widget.hidden = true;
     widget.computeSize = () => [0, -4];
     widget.draw = () => {};
@@ -12487,6 +12694,7 @@ app.registerExtension({
 
         nodeType.prototype.onNodeCreated = function () {
             originalCreated?.apply(this, arguments);
+            ensureFactorySceneOutput(this);
             if (this.vnccs3DFactory) return;
             this._vnccsFactoryConfigured = false;
             this.setSize?.([...DEFAULT_NODE_SIZE]);
@@ -12525,6 +12733,7 @@ app.registerExtension({
             clearTimeout(this._vnccsFactoryInit);
             this._vnccsFactoryInit = 0;
             originalConfigure?.apply(this, arguments);
+            ensureFactorySceneOutput(this);
             hideFactoryDataWidget(this);
             syncDOMWidgetWidth(this);
             clearTimeout(this._vnccsFactoryConfigure);

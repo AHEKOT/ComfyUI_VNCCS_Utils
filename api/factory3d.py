@@ -4109,6 +4109,8 @@ def register_routes(routes: Any) -> None:
     if _REGISTERED:
         return
     from aiohttp import web
+    from . import factory3d_conditioning
+    factory3d_conditioning.register_routes(routes, sys.modules[__name__])
 
     @routes.get(f"{API_BASE}/capabilities")
     async def factory_capabilities(_request: Any) -> Any:

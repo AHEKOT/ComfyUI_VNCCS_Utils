@@ -32,11 +32,16 @@ class FactoryNodeTests(unittest.TestCase):
     def setUpClass(cls):
         cls.module = load_node_module()
 
+    def setUp(self):
+        handle = mock.patch.object(self.module, "_scene_handle", return_value={"scene_id": "a" * 32, "manifest_hash": "c" * 64})
+        self.handle = handle.start()
+        self.addCleanup(handle.stop)
+
     def test_node_contract_exposes_current_and_saved_camera_renders_as_a_list(self):
         node = self.module.VNCCS_3DFactory
-        self.assertEqual(node.RETURN_TYPES, ("IMAGE",))
-        self.assertEqual(node.RETURN_NAMES, ("preview",))
-        self.assertEqual(node.OUTPUT_IS_LIST, (True,))
+        self.assertEqual(node.RETURN_TYPES, ("IMAGE", "VNCCS_FACTORY_SCENE"))
+        self.assertEqual(node.RETURN_NAMES, ("preview", "scene"))
+        self.assertEqual(node.OUTPUT_IS_LIST, (True, False))
         self.assertIn("factory_data", node.INPUT_TYPES()["required"])
         self.assertEqual(node.CATEGORY, "VNCCS/3D")
 
@@ -67,7 +72,8 @@ class FactoryNodeTests(unittest.TestCase):
                     result = self.module.VNCCS_3DFactory().load_scene(
                         json.dumps({"scene_id": scene_id}), unique_id="17",
                     )
-                self.assertEqual(result, (["architecture-render"],))
+                self.assertEqual(result, (["architecture-render"], self.handle.return_value))
+                self.handle.assert_called_with(backend, scene, "17")
                 request.assert_called_once()
                 self.assertEqual(request.call_args.args[:2], ("17", scene))
                 token = request.call_args.args[2]
