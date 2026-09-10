@@ -9,6 +9,7 @@ export const UNICANVAS_PRESET_MODEL_SETTING_KEYS = Object.freeze([
   "clip_name",
   "vae_name",
   "clip_type",
+  "krea2_edit_lora_name",
 ]);
 
 export function getUniCanvasPresetModelAsset(preset) {

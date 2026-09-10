@@ -367,10 +367,14 @@ class VNCCS_PoseStudio:
             synced = self._wait_for_frontend_sync(
                 unique_id,
                 start_time,
-                timeout=20.0,
+                # Manager fitting can refresh every card and the widget allows
+                # up to 120 seconds for scene readiness. Leave upload headroom.
+                timeout=150.0 if apply_mode == "manager_proportions" else 20.0,
                 sync_token=sync_token,
             )
             if synced:
+                if isinstance(synced, dict) and synced.get("sync_error"):
+                    return synced
                 if apply_mode == "manager_proportions":
                     print("[VNCCS Pose Studio] Applied pose_image body proportions to Pose Manager.")
                 else:
@@ -421,6 +425,8 @@ class VNCCS_PoseStudio:
                     image_size,
                 )
                 if isinstance(synced, dict):
+                    if synced.get("sync_error"):
+                        raise RuntimeError(f"Pose Studio frontend sync failed: {synced['sync_error']}")
                     data = _hydrate_cached_pose_animation(synced)
                     pose_image_synced = True
             

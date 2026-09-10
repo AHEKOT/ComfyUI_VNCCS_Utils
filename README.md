@@ -88,9 +88,11 @@ assets through the bundled SparkJS viewport.
 *   **Generation Anywhere**: Use a selected region as the generation target for new images, image edits, inpaint, outpaint, and full-area transformations.
 *   **Mask and Object Tools**: Paint masks, refine selections, and use SAM-powered object selection to isolate or remove parts of an image.
 *   **Preset and Custom Models**: Switch between built-in presets or use manual model selection for supported generation backends.
+*   **Krea2 Identity Edit**: Download Turbo or Raw FP8 and all required weights from the model card. Edit the bbox image with grounded Qwen3-VL and adjust **Likeness** in the upper-right control. See the [Krea2 Edit guide](docs/UNICANVAS_KREA2_EDIT.md).
 *   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
+*   **360° Panorama Editing**: Import an equirectangular panorama, look around from its center, and paint, mask, transform, or generate within a square perspective view. A compact sphere control rotates all three axes. Edits stay on the sphere; the standard PSD export and node output use the complete panorama. See the [panorama guide](docs/UNICANVAS_PANORAMA.md).
 
 ## VNCCS Pose Studio
 

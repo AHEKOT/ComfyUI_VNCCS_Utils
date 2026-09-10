@@ -1,0 +1,10 @@
+ComfyUI-Krea2Edit by lbouaraba and contributors
+https://github.com/lbouaraba/comfyui-krea2edit
+Source revision: 86f886dac23013d88996e3a2e99093ba44d322fb
+Licensed under the Apache License, Version 2.0 (see comfyui-krea2edit-LICENSE).
+
+VNCCS-Utils adapts the geometry, attention forward and grounded encoder in
+nodes/unicanvas_krea2_edit.py. The wrapper is limited to one source, encodes
+before sampling, validates the target size and requires image grounding.
+Public node registration, unused imports, socket metadata and logs are removed.
+Model weights are separate downloads and retain their publishers' licenses.

@@ -250,6 +250,124 @@
           "description": "4-step lightning LoRA for QIE2511."
         }
       }
+    },
+    {
+      "id": "krea2_edit",
+      "label": "Krea2 Edit",
+      "title": "Krea2 Identity Edit v1.2 · Turbo FP8",
+      "description": "Image editing with grounded Qwen3-VL, clean reference tokens and adjustable likeness. Includes the required Identity Edit LoRA. Use an image in the bbox; describe the change.",
+      "settings": {
+        "generation_mode": "krea2_edit",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "krea2_turbo_fp8_scaled.safetensors",
+        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+        "vae_name": "qwen_image_vae.safetensors",
+        "clip_type": "krea2",
+        "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
+        "krea2_likeness": 4.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 10,
+        "cfg": 1.0,
+        "denoise": 1.0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Krea2 Turbo FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+          "local_path": "models/diffusion_models/krea2_turbo_fp8_scaled.safetensors",
+          "description": "Krea2 Turbo FP8 for Krea2 Edit."
+        },
+        {
+          "role": "clip",
+          "name": "Krea2 Qwen3-VL 4B FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "description": "Krea2 Qwen3-VL 4B FP8 for Krea2 Edit."
+        },
+        {
+          "role": "vae",
+          "name": "Qwen Image VAE",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "vae/qwen_image_vae.safetensors",
+          "local_path": "models/vae/qwen_image_vae.safetensors",
+          "description": "Qwen Image VAE for Krea2 Edit."
+        },
+        {
+          "role": "lora",
+          "name": "Krea2 Identity Edit v1.2 (required)",
+          "hf_repo": "conradlocke/krea2-identity-edit",
+          "hf_revision": "89e9e7a09ee2e5c9331e952063d79b1b8a703280",
+          "hf_path": "krea2_identity_edit_v1_2.safetensors",
+          "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
+          "description": "Required edit adapter, always applied at strength 1."
+        }
+      ]
+    },
+    {
+      "id": "krea2_edit_raw",
+      "label": "Krea2 Edit Raw",
+      "title": "Krea2 Identity Edit v1.2 · Raw FP8",
+      "description": "Image editing with stronger guidance for object removal and larger changes. Includes the required Identity Edit LoRA, Qwen3-VL and VAE.",
+      "settings": {
+        "generation_mode": "krea2_edit",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "krea2_raw_fp8_scaled.safetensors",
+        "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+        "vae_name": "qwen_image_vae.safetensors",
+        "clip_type": "krea2",
+        "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
+        "krea2_likeness": 4.0,
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 20,
+        "cfg": 3.0,
+        "denoise": 1.0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Krea2 Raw FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "diffusion_models/krea2_raw_fp8_scaled.safetensors",
+          "local_path": "models/diffusion_models/krea2_raw_fp8_scaled.safetensors",
+          "description": "Krea2 Raw FP8 for guided instruction editing."
+        },
+        {
+          "role": "clip",
+          "name": "Krea2 Qwen3-VL 4B FP8",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_4b_fp8_scaled.safetensors",
+          "description": "Krea2 Qwen3-VL 4B FP8 for Krea2 Edit."
+        },
+        {
+          "role": "vae",
+          "name": "Qwen Image VAE",
+          "hf_repo": "Comfy-Org/Krea-2",
+          "hf_revision": "e5ea8b4dd7f38f348b138eb0fe29f92c0e367e96",
+          "hf_path": "vae/qwen_image_vae.safetensors",
+          "local_path": "models/vae/qwen_image_vae.safetensors",
+          "description": "Qwen Image VAE for Krea2 Edit."
+        },
+        {
+          "role": "lora",
+          "name": "Krea2 Identity Edit v1.2 (required)",
+          "hf_repo": "conradlocke/krea2-identity-edit",
+          "hf_revision": "89e9e7a09ee2e5c9331e952063d79b1b8a703280",
+          "hf_path": "krea2_identity_edit_v1_2.safetensors",
+          "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
+          "description": "Required edit adapter, always applied at strength 1."
+        }
+      ]
     }
   ]
 }

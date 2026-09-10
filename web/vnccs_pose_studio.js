@@ -15682,6 +15682,9 @@ app.registerExtension({
                 if (applyMode === "manager_proportions") {
                     await widget.applySAM3DProportionsToPoseManager(poseData);
                     widget.setSkydomeFromCameraPrompt(cameraPrompt, { force: true });
+                    // Committing fitted character state can invalidate the
+                    // first card refresh. Wait for the current scene's cards.
+                    await waitForPoseStudioSyncIdle(widget);
                     widget.syncToNode(true, {
                         cameraPrompt,
                         executionCapture: true,
