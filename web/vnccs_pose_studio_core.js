@@ -1324,6 +1324,7 @@ export class PoseViewerCore {
     }
 
     dispose() {
+        this._disposed = true;
         this.initialized = false;
         this._referenceGeneration = (this._referenceGeneration || 0) + 1;
         this._skinTextureLoadToken += 1;
@@ -1418,6 +1419,7 @@ export class PoseViewerCore {
     async init() {
         try {
             const modules = await ThreeModuleLoader.load();
+            if (this._disposed) return false;
             this.THREE = modules.THREE;
             this.OrbitControls = modules.OrbitControls;
             this.TransformControls = modules.TransformControls;
@@ -1462,8 +1464,13 @@ export class PoseViewerCore {
         this.renderer = new THREE.WebGLRenderer({
             canvas: this.canvas,
             antialias: true,
+            alpha: this.options.transparentBackground === true,
             preserveDrawingBuffer: true
         });
+        if (this.options.transparentBackground) {
+            this.scene.background = null;
+            this.renderer.setClearColor(0x000000, 0);
+        }
         this.renderer.setSize(this.width, this.height, false); // false = don't write canvas CSS style
         // resize() may have received the real DOM viewport while Three.js modules
         // were still loading. In that case this is already the stable editor buffer.
@@ -2672,6 +2679,7 @@ export class PoseViewerCore {
         // Force immediate render
         if (this.renderer && this.scene && this.camera) {
             this.renderer.render(this.scene, this.camera);
+            this.options.onViewportRender?.();
         }
     }
 
@@ -3006,6 +3014,7 @@ export class PoseViewerCore {
                 this.renderer.render(this.scene, this.camera);
             });
             this._needsRender = false;
+            this.options.onViewportRender?.();
         } else {
             this.requestRender();
         }
@@ -5581,15 +5590,32 @@ export class PoseViewerCore {
         }
     }
 
-    capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0) {
+    renderInteractionOverlay() {
+        if (!this.initialized || !this.renderer) return;
+        const hidden = [this.skinnedMesh, this.gridHelper, this.captureFrame, this.refPlane,
+            ...Array.from(this.passiveCharacters?.values?.() || [], entry => entry.mesh)];
+        const visibility = hidden.map(item => item?.visible);
+        const background = this.scene.background;
+        try {
+            hidden.forEach(item => { if (item) item.visible = false; });
+            this.scene.background = null;
+            this.renderer.render(this.scene, this.camera);
+        } finally {
+            hidden.forEach((item, index) => { if (item) item.visible = visibility[index]; });
+            this.scene.background = background;
+        }
+    }
+
+    capture(width, height, zoom, bgColor, offsetX = 0, offsetY = 0, yawDeg = 0, pitchDeg = 0, options = {}) {
         if (!this.initialized) return null;
 
         // Ensure camera is setup
-        this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
+        if (!options.viewport) this.updateCaptureCamera(width, height, zoom, offsetX, offsetY, yawDeg, pitchDeg);
 
         // Hide UI elements
         const markersVisible = this.jointMarkers[0]?.visible ?? true;
         const transformVisible = this.transform ? this.transform.visible : true;
+        const helperVisibility = [this.skeletonHelper, this.gridHelper, this.captureFrame, this.refPlane].map(item => item?.visible);
 
         // Hide Helpers
         const importedFigureVisibility = {
@@ -5634,7 +5660,9 @@ export class PoseViewerCore {
 
         // Background Override
         const oldBg = this.scene.background;
-        if (bgColor && Array.isArray(bgColor) && bgColor.length === 3) {
+        if (options.transparent) this.scene.background = null;
+        if (options.hideReference && this.refPlane) this.refPlane.visible = false;
+        if (!options.transparent && bgColor && Array.isArray(bgColor) && bgColor.length === 3) {
             this.scene.background = new this.THREE.Color(
                 bgColor[0] / 255, bgColor[1] / 255, bgColor[2] / 255
             );
@@ -5646,8 +5674,19 @@ export class PoseViewerCore {
 
         try {
             // Render with Fixed Camera
-            this.renderer.render(this.scene, this.captureCamera);
-            dataURL = this.canvas.toDataURL("image/png");
+            const camera = options.viewport ? this.camera : this.captureCamera;
+            this.renderer.render(this.scene, camera);
+            if (options.targetCanvas) {
+                const target = options.targetCanvas;
+                if (target.width !== width) target.width = width;
+                if (target.height !== height) target.height = height;
+                const ctx = target.getContext("2d");
+                ctx.clearRect(0, 0, width, height);
+                ctx.drawImage(this.canvas, 0, 0, width, height);
+                dataURL = target;
+            } else {
+                dataURL = this.canvas.toDataURL("image/png");
+            }
         } catch (e) {
             console.error("Capture failed:", e);
         } finally {
@@ -5656,9 +5695,9 @@ export class PoseViewerCore {
 
             this.jointMarkers.forEach(m => m.visible = markersVisible && this._shouldMarkerBeVisible(m));
             if (this.transform) this.transform.visible = transformVisible;
-            if (this.skeletonHelper) this.skeletonHelper.visible = true;
-            if (this.gridHelper) this.gridHelper.visible = true;
-            if (this.captureFrame) this.captureFrame.visible = true;
+            [this.skeletonHelper, this.gridHelper, this.captureFrame, this.refPlane].forEach((item, index) => {
+                if (item) item.visible = helperVisibility[index];
+            });
             if (this._kpFigureGroup) this._kpFigureGroup.visible = importedFigureVisibility.kp ?? this.importedFigureVisible;
             if (this._rtmwFigureGroup) this._rtmwFigureGroup.visible = importedFigureVisibility.rtmw ?? this.importedFigureVisible;
             if (this._hmr2FigureGroup) this._hmr2FigureGroup.visible = importedFigureVisibility.hmr2 ?? this.importedFigureVisible;

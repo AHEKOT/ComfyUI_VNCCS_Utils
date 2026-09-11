@@ -288,6 +288,7 @@ export class PanoramaDocument {
   }
 
   beginCamera() {
+    if (this.widget.tool === "pose") this.widget.setTool("move");
     if (!this.canRotate()) return false;
     this.commit();
     // SAM requests are tied to a view revision. Late responses are ignored.
@@ -343,7 +344,7 @@ export class PanoramaDocument {
     this.commit();
     const out = canvas(this.settings.width, this.settings.height), ctx = out.getContext("2d");
     for (const layer of [...this.widget.layers].reverse()) {
-      if (!layer.visible || layer.type !== type) continue;
+      if (!layer.visible || (type === "raster" ? !["raster", "pose"].includes(layer.type) : layer.type !== type)) continue;
       ctx.globalAlpha = layer.opacity;
       ctx.globalCompositeOperation = layer.blendMode || "source-over";
       ctx.drawImage(this.ensureLayer(layer), 0, 0);

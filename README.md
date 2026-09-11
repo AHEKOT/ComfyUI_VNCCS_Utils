@@ -92,6 +92,7 @@ assets through the bundled SparkJS viewport.
 *   **Turbo and LoRA Controls**: Use Turbo LoRA cards and a general LoRA Stack directly from the generation panel.
 *   **Canvas Editing Tools**: Move, transform, resize, snap, undo/redo, and manage generation results without leaving the node.
 *   **Progress and Result Handling**: Track generation progress and apply results back into the canvas as editable layers.
+*   **Live Pose Studio Layers**: Insert an editable mannequin from the vertical toolbar. The shared Pose Studio interface appears only while its tool is active. Choose a character from disk or a layer and generate with QiE2511 or Klein9b using the pose and background/character composite as two references. See the [pose layer guide](docs/UNICANVAS_POSE_LAYERS.md).
 *   **360° Panorama Editing**: Import an equirectangular panorama, look around from its center, and paint, mask, transform, or generate within a square perspective view. A compact sphere control rotates all three axes. Edits stay on the sphere; the standard PSD export and node output use the complete panorama. See the [panorama guide](docs/UNICANVAS_PANORAMA.md).
 
 ## VNCCS Pose Studio

@@ -10,7 +10,7 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./vnccs_pose_studio_core.js?v=20260908.14";
+} from "./vnccs_pose_studio_core.js?v=20260910.1";
 import {
     cameraPromptToSkydomeRotation,
 } from "./vnccs_camera_control_utils.mjs";
@@ -4087,7 +4087,8 @@ function enablePoseStudioCanvasNavigationForwarding(root) {
 
 // === 3D Viewer (from Debug3) ===
 class PoseStudioWidget {
-    constructor(node) {
+    constructor(node, host = {}) {
+        this.host = host;
         this.node = node;
         this.container = null;
         this.canvas = null;
@@ -4118,6 +4119,7 @@ class PoseStudioWidget {
         this._animationCacheRestoreToken = 0;
         this._animationCacheRestorePending = false;
         this._animationCacheRestorePromise = null;
+        this._deferredAnimationReference = null;
         this._animationCacheUploadTimer = null;
         this._animationCacheUploadPromise = null;
         this._lastUploadedAnimationCacheId = null;
@@ -4302,6 +4304,101 @@ class PoseStudioWidget {
         this.createUI();
         this.setSkydomeFromCameraPrompt("", { force: true });
         this.applyDirectionalSkydomeSetting();
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this.host = {};
+        this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
+        this._referenceReadToken = (this._referenceReadToken || 0) + 1;
+        document.removeEventListener("pointerdown", this._boundHandleDocumentPointerDown);
+        document.removeEventListener("pointerup", this._boundHandleDocumentPointerUp);
+        document.removeEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
+        clearTimeout(this._animationCacheUploadTimer);
+        this._animationCacheUploadTimer = null;
+        this._activeVideoImportClose?.();
+        void this.flushAnimationCacheUpload?.();
+        this.animationTimeline?.destroy?.();
+        this._customSelectController?.disconnect();
+        this._customSelectController = null;
+        if (this._containerResizeObserver) {
+            this._containerResizeObserver.disconnect();
+            this._containerResizeObserver = null;
+        }
+        if (this.managerResizeObserver) {
+            this.managerResizeObserver.disconnect();
+            this.managerResizeObserver = null;
+        }
+        if (this._tabResizeObserver) {
+            this._tabResizeObserver.disconnect();
+            this._tabResizeObserver = null;
+        }
+        if (this._tabScrollFrame) {
+            cancelAnimationFrame(this._tabScrollFrame);
+            this._tabScrollFrame = null;
+        }
+        if (this.libraryResizeObserver) {
+            this.libraryResizeObserver.disconnect();
+            this.libraryResizeObserver = null;
+        }
+        if (this._libraryRenderFrame) {
+            cancelAnimationFrame(this._libraryRenderFrame);
+            this._libraryRenderFrame = null;
+        }
+        if (this._libraryResizeFrame) {
+            cancelAnimationFrame(this._libraryResizeFrame);
+            this._libraryResizeFrame = null;
+        }
+        if (this._autoRepoRefreshTimer) {
+            clearInterval(this._autoRepoRefreshTimer);
+            this._autoRepoRefreshTimer = null;
+        }
+        if (this.managerLayoutFrame) {
+            cancelAnimationFrame(this.managerLayoutFrame);
+            this.managerLayoutFrame = null;
+        }
+        if (this._uiScaleCommitTimer) {
+            clearTimeout(this._uiScaleCommitTimer);
+            this._uiScaleCommitTimer = null;
+        }
+        if (this._handPopoverResizeFrame) {
+            cancelAnimationFrame(this._handPopoverResizeFrame);
+            this._handPopoverResizeFrame = null;
+        }
+        if (this._managerPreviewRefreshFrame) {
+            cancelAnimationFrame(this._managerPreviewRefreshFrame);
+            this._managerPreviewRefreshFrame = null;
+        }
+        clearTimeout(this.colorTimeout);
+        clearTimeout(this.lightingQuickSyncTimeout);
+        clearTimeout(this.lightingSyncTimeout);
+        clearTimeout(this._characterSyncTimer);
+        this._characterSyncTimer = null;
+        this._closeCharacterRemoveModal?.();
+        this._activeSaveLibraryClose?.(true);
+        this._pendingMorphSolve = null;
+        this._morphSolveInFlight = false;
+        for (const request of this._morphLoadTasks.values()) {
+            clearTimeout(request.timeout);
+            request.resolve?.(null);
+        }
+        this._morphLoadTasks.clear();
+        this._morphSeqCharacterIds?.clear?.();
+        if (this._morphWorker) {
+            if (this._morphClientId) {
+                VNCCS_SHARED_MORPH_CLIENTS.delete(this._morphClientId);
+            }
+            if (VNCCS_SHARED_MORPH_CLIENTS.size === 0 && VNCCS_SHARED_MORPH_WORKER) {
+                try { VNCCS_SHARED_MORPH_WORKER.terminate(); } catch (_) {}
+                VNCCS_SHARED_MORPH_WORKER = null;
+                VNCCS_SHARED_MORPH_WORKER_WARMED = false;
+            }
+            this._morphWorker = null;
+        }
+        if (this.viewer) {
+            this.viewer.dispose();
+        }
     }
 
     createUI() {
@@ -5244,6 +5341,13 @@ class PoseStudioWidget {
     }
 
     ensureAnimationInitialized() {
+        if (this._animationCacheRestorePending) return;
+        if (this._deferredAnimationReference) {
+            const reference = this._deferredAnimationReference;
+            this._deferredAnimationReference = null;
+            this._animationCacheRestorePromise = this.restoreAnimationFromCache(reference, this.poses[this.activeTab] || {});
+            return;
+        }
         if (this._animationInitialized) return;
         const pose = this.viewer?.isInitialized?.()
             ? this.viewer.getPose()
@@ -5633,9 +5737,10 @@ class PoseStudioWidget {
     flushAnimationCacheUpload() {
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
+        if (this._deferredAnimationReference) return Promise.resolve(!this.isAnimationMode());
         if (this._animationCacheRestorePending && this._animationCacheRestorePromise) {
             return this._animationCacheRestorePromise.then(restored => (
-                restored ? this.flushAnimationCacheUpload() : false
+                restored ? this.flushAnimationCacheUpload() : !this.isAnimationMode()
             ));
         }
         if (!this._animationInitialized || this._animationCacheRestorePending) {
@@ -5659,7 +5764,7 @@ class PoseStudioWidget {
             );
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const payload = await response.json();
-            if (token !== this._animationCacheRestoreToken) return false;
+            if (token !== this._animationCacheRestoreToken || this._disposed) return false;
             if (!payload?.animation || typeof payload.animation !== "object") {
                 throw new Error("Animation cache response is empty.");
             }
@@ -5731,9 +5836,12 @@ class PoseStudioWidget {
             }
             return true;
         } catch (error) {
-            if (token === this._animationCacheRestoreToken) {
+            if (token === this._animationCacheRestoreToken && !this._disposed) {
+                // Retain the source reference; never replace unavailable tracks with an empty timeline.
+                this._deferredAnimationReference = reference;
+                this._animationInitialized = false;
                 console.warn("[VNCCS PoseStudio] Animation cache restore failed:", error);
-                this.showMessage?.("Animation cache is missing. The workflow contains only the compact animation reference.", true);
+                if (this.isAnimationMode()) this.showMessage?.("Animation cache is missing. The workflow contains only the compact animation reference.", true);
             }
             return false;
         } finally {
@@ -6016,7 +6124,11 @@ class PoseStudioWidget {
         // Initialize viewer
         this.viewer = new PoseViewerCore(this.canvas, {
             // Model/pose/camera restoration can finish after the initial pad draw.
-            onViewportRender: () => this.radarRedraw?.(),
+            onViewportRender: () => {
+                this.radarRedraw?.();
+                this.host.onViewportRender?.();
+            },
+            transparentBackground: this.host.embedded === true,
             skinMode: 'naked',
             enableTextureSkinning: true,
             enableMultiPass: true,
@@ -6170,9 +6282,11 @@ class PoseStudioWidget {
         character.mesh = this.meshParams;
         character.poses = this.poses;
         character.animationState = this.animationState;
-        character.animation = this.animationState
-            ? JSON.parse(serializeAnimationStateSnapshot(this.animationState))
-            : null;
+        if (!this._deferredAnimationReference && !this._animationCacheRestorePending) {
+            character.animation = this._animationInitialized && this.animationState
+                ? JSON.parse(serializeAnimationStateSnapshot(this.animationState))
+                : null;
+        }
         // Character placement is authoritative here. Legacy camera fields are
         // still mirrored for old workflows, but SAM camera fitting may change
         // them temporarily and must never overwrite a character transform.
@@ -6403,6 +6517,7 @@ class PoseStudioWidget {
     async awaitReadyForCompositeCapture(timeoutMs = 120000) {
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
+            if (this._disposed) throw new Error("Pose Studio was disposed");
             const hydration = this._sceneModelHydrationPromise;
             if (hydration) {
                 await hydration;
@@ -12679,6 +12794,7 @@ class PoseStudioWidget {
         ++this._animationCacheRestoreToken;
         this._animationCacheRestorePending = false;
         this._animationCacheRestorePromise = null;
+        this._deferredAnimationReference = null;
         this._animationCacheId = null;
         this._animationCacheRevision = 0;
         this._animationCacheSnapshot = null;
@@ -12834,6 +12950,7 @@ class PoseStudioWidget {
         ++this._animationCacheRestoreToken;
         this._animationCacheRestorePending = false;
         this._animationCacheRestorePromise = null;
+        this._deferredAnimationReference = null;
         this._animationCacheId = null;
         this._animationCacheRevision = 0;
         this._animationCacheSnapshot = null;
@@ -13706,6 +13823,7 @@ class PoseStudioWidget {
     }
 
     loadModel(showOverlay = true, recenterViewport = true) {
+        if (this._disposed) return Promise.resolve(false);
         const {
             invalidatePosePositions = false,
             updateScene = true,
@@ -13732,6 +13850,7 @@ class PoseStudioWidget {
         }
 
         const promise = this.requestStaticMorphModel().then((message) => {
+            if (this._disposed) return false;
             const currentKey = `${String(this.activeCharacterId || "")}\u0000${JSON.stringify(this.meshParams || {})}`;
             if (currentKey !== requestKey) return false;
             const d = this.modelDataFromMorphMessage(message);
@@ -14306,7 +14425,7 @@ class PoseStudioWidget {
         width = this._observedContainerWidth,
         height = this._observedContainerHeight,
     } = {}) {
-        if (!this.container) return;
+        if (!this.container || this.host?.embedded) return;
         const resolvedWidth = Number(width) || Number(this.node?.size?.[0]) || 900;
         const resolvedHeight = Number(height) || Number(this.node?.size?.[1]) || 740;
         const scale = Math.max(0.35, Math.min(2.5, Math.min(
@@ -15043,8 +15162,8 @@ class PoseStudioWidget {
         const captureId = animationMode
             ? (hasCompleteCaptures ? `vnccs_capture_${this.node.id}_animation` : null)
             : `vnccs_capture_${this.node.id}`;
-        let animationToSave;
-        if (this._animationInitialized) {
+        let animationToSave = this._deferredAnimationReference || undefined;
+        if (this._animationInitialized && !this._deferredAnimationReference) {
             const animationCacheId = this.getAnimationCacheId();
             const animationSnapshot = this.sceneAnimationCacheSnapshot();
             const cacheNeedsUpload = (
@@ -15068,12 +15187,14 @@ class PoseStudioWidget {
 
         const serializedCharacters = (this.characters || []).map(character => {
             this.ensureCharacterRuntime(character);
-            const animationSnapshot = character.animationState
+            const animationSnapshot = this._animationInitialized && character.animationState
                 ? JSON.parse(serializeAnimationStateSnapshot(character.animationState))
                 : null;
             if (animationSnapshot?.basePose) this.stripSceneCameraFromPose(animationSnapshot.basePose);
             const serialized = serializePoseStudioCharacter(character, animationSnapshot);
-            if (animationToSave) {
+            if (this._deferredAnimationReference) {
+                serialized.animation = character.animation ? JSON.parse(JSON.stringify(character.animation)) : null;
+            } else if (animationToSave) {
                 serialized.animation = {
                     ...createAnimationCacheReference(character.animationState, {
                         cacheId: animationToSave.cacheId,
@@ -15117,7 +15238,7 @@ class PoseStudioWidget {
         // Upload captures only when image or prompt content changed. State-only
         // actions such as Reset must not retry a previously rejected large PNG
         // payload merely because the pose JSON changed.
-        if (options.skipCaptureUpload !== true) {
+        if (!this.host?.embedded && options.skipCaptureUpload !== true) {
             this.queueCaptureUpload(captureId);
         }
 
@@ -15137,6 +15258,7 @@ class PoseStudioWidget {
             }
         }
 
+        this.host?.onStateChange?.(data);
         if (this.interfaceMode === "manager") this.renderPoseManager();
         else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
         } finally {
@@ -15309,6 +15431,13 @@ class PoseStudioWidget {
             const restoredAnimationSource = Array.isArray(data.characters)
                 ? restoredActiveCharacter?.animation
                 : data.animation;
+            // A previous scene's asynchronous response must not change this scene or show its errors.
+            ++this._animationCacheRestoreToken;
+            this._animationCacheRestorePending = false;
+            this._animationCacheRestorePromise = null;
+            this._deferredAnimationReference = null;
+            clearTimeout(this._animationCacheUploadTimer);
+            this._animationCacheUploadTimer = null;
             this._animationCacheSnapshot = null;
             this._pendingAnimationCacheJSON = null;
             this._pendingAnimationCacheId = null;
@@ -15358,10 +15487,15 @@ class PoseStudioWidget {
             this.animationTimeline?.setState(this.animationState);
             this.resetAnimationHistory();
             if (cachedAnimationReference) {
-                this._animationCacheRestorePromise = this.restoreAnimationFromCache(
-                    cachedAnimationReference,
-                    this.poses[this.activeTab] || {},
-                );
+                if (this.isAnimationMode()) {
+                    this._animationCacheRestorePromise = this.restoreAnimationFromCache(
+                        cachedAnimationReference,
+                        this.poses[this.activeTab] || {},
+                    );
+                } else {
+                    this._deferredAnimationReference = cachedAnimationReference;
+                    this._animationInitialized = false;
+                }
             }
 
             // Restore background image if present
@@ -15987,94 +16121,7 @@ app.registerExtension({
                 this._vnccsPoseWidthFrame = null;
             }
             if (this.studioWidget) {
-                this.studioWidget._libraryLoadToken = (this.studioWidget._libraryLoadToken || 0) + 1;
-                this.studioWidget._referenceReadToken = (this.studioWidget._referenceReadToken || 0) + 1;
-                document.removeEventListener("pointerdown", this.studioWidget._boundHandleDocumentPointerDown);
-                document.removeEventListener("pointerup", this.studioWidget._boundHandleDocumentPointerUp);
-                document.removeEventListener("pointercancel", this.studioWidget._boundHandleDocumentPointerCancel);
-                clearTimeout(this.studioWidget._animationCacheUploadTimer);
-                this.studioWidget._animationCacheUploadTimer = null;
-                this.studioWidget._activeVideoImportClose?.();
-                void this.studioWidget.flushAnimationCacheUpload?.();
-                this.studioWidget.animationTimeline?.destroy?.();
-                this.studioWidget._customSelectController?.disconnect();
-                this.studioWidget._customSelectController = null;
-                if (this.studioWidget._containerResizeObserver) {
-                    this.studioWidget._containerResizeObserver.disconnect();
-                    this.studioWidget._containerResizeObserver = null;
-                }
-                if (this.studioWidget.managerResizeObserver) {
-                    this.studioWidget.managerResizeObserver.disconnect();
-                    this.studioWidget.managerResizeObserver = null;
-                }
-                if (this.studioWidget._tabResizeObserver) {
-                    this.studioWidget._tabResizeObserver.disconnect();
-                    this.studioWidget._tabResizeObserver = null;
-                }
-                if (this.studioWidget._tabScrollFrame) {
-                    cancelAnimationFrame(this.studioWidget._tabScrollFrame);
-                    this.studioWidget._tabScrollFrame = null;
-                }
-                if (this.studioWidget.libraryResizeObserver) {
-                    this.studioWidget.libraryResizeObserver.disconnect();
-                    this.studioWidget.libraryResizeObserver = null;
-                }
-                if (this.studioWidget._libraryRenderFrame) {
-                    cancelAnimationFrame(this.studioWidget._libraryRenderFrame);
-                    this.studioWidget._libraryRenderFrame = null;
-                }
-                if (this.studioWidget._libraryResizeFrame) {
-                    cancelAnimationFrame(this.studioWidget._libraryResizeFrame);
-                    this.studioWidget._libraryResizeFrame = null;
-                }
-                if (this.studioWidget._autoRepoRefreshTimer) {
-                    clearInterval(this.studioWidget._autoRepoRefreshTimer);
-                    this.studioWidget._autoRepoRefreshTimer = null;
-                }
-                if (this.studioWidget.managerLayoutFrame) {
-                    cancelAnimationFrame(this.studioWidget.managerLayoutFrame);
-                    this.studioWidget.managerLayoutFrame = null;
-                }
-                if (this.studioWidget._uiScaleCommitTimer) {
-                    clearTimeout(this.studioWidget._uiScaleCommitTimer);
-                    this.studioWidget._uiScaleCommitTimer = null;
-                }
-                if (this.studioWidget._handPopoverResizeFrame) {
-                    cancelAnimationFrame(this.studioWidget._handPopoverResizeFrame);
-                    this.studioWidget._handPopoverResizeFrame = null;
-                }
-                if (this.studioWidget._managerPreviewRefreshFrame) {
-                    cancelAnimationFrame(this.studioWidget._managerPreviewRefreshFrame);
-                    this.studioWidget._managerPreviewRefreshFrame = null;
-                }
-                clearTimeout(this.studioWidget.colorTimeout);
-                clearTimeout(this.studioWidget.lightingQuickSyncTimeout);
-                clearTimeout(this.studioWidget.lightingSyncTimeout);
-                clearTimeout(this.studioWidget._characterSyncTimer);
-                this.studioWidget._characterSyncTimer = null;
-                this.studioWidget._closeCharacterRemoveModal?.();
-                this.studioWidget._activeSaveLibraryClose?.(true);
-                this.studioWidget._pendingMorphSolve = null;
-                this.studioWidget._morphSolveInFlight = false;
-                for (const request of this.studioWidget._morphLoadTasks.values()) {
-                    clearTimeout(request.timeout);
-                }
-                this.studioWidget._morphLoadTasks.clear();
-                this.studioWidget._morphSeqCharacterIds?.clear?.();
-                if (this.studioWidget._morphWorker) {
-                    if (this.studioWidget._morphClientId) {
-                        VNCCS_SHARED_MORPH_CLIENTS.delete(this.studioWidget._morphClientId);
-                    }
-                    if (VNCCS_SHARED_MORPH_CLIENTS.size === 0 && VNCCS_SHARED_MORPH_WORKER) {
-                        try { VNCCS_SHARED_MORPH_WORKER.terminate(); } catch (_) {}
-                        VNCCS_SHARED_MORPH_WORKER = null;
-                        VNCCS_SHARED_MORPH_WORKER_WARMED = false;
-                    }
-                    this.studioWidget._morphWorker = null;
-                }
-                if (this.studioWidget.viewer) {
-                    this.studioWidget.viewer.dispose();
-                }
+                this.studioWidget.dispose();
             }
             if (onRemoved) onRemoved.apply(this, arguments);
         };
@@ -16096,3 +16143,6 @@ app.registerExtension({
         window.__vnccsPoseStudioCharacterCreatorSync?.scan();
     }
 });
+
+// Shared editor surface for hosts such as UniCanvas. Node registration stays unchanged.
+export { PoseStudioWidget };

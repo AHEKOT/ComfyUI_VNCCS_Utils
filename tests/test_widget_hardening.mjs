@@ -27,7 +27,7 @@ test("DOM widgets release global listeners and timers on removal", () => {
     assert.match(modelManagerSource, /removeEventListener\("vnccs-registry-updated"/);
     assert.match(uniCanvasSource, /this\._eventAbortController\?\.abort\(\)/);
     assert.match(uniCanvasSource, /this\.stopDrawProgressPolling\(\)/);
-    assert.match(poseStudioSource, /document\.removeEventListener\("pointerdown", this\.studioWidget\._boundHandleDocumentPointerDown\)/);
+    assert.match(poseStudioSource, /document\.removeEventListener\("pointerdown", this\._boundHandleDocumentPointerDown\)/);
 });
 
 
@@ -467,7 +467,7 @@ test("state-only sync can suppress capture-cache upload retries", () => {
     const syncMethod = poseStudioSource.slice(syncStart, syncEnd);
     assert.match(
         syncMethod,
-        /if \(options\.skipCaptureUpload !== true\) \{[\s\S]*this\.queueCaptureUpload\(captureId\);/,
+        /if \(!this\.host\?\.embedded && options\.skipCaptureUpload !== true\) \{[\s\S]*this\.queueCaptureUpload\(captureId\);/,
     );
 
     const uploadStart = poseStudioSource.indexOf("\n    queueCaptureUpload(captureId)");
@@ -702,5 +702,5 @@ test("repository Git fallback keeps clone diagnostics visible", () => {
 });
 
 test("Pose Studio redraws its position marker after viewport rendering", () => {
-    assert.match(poseStudioSource, /onViewportRender: \(\) => this\.radarRedraw\?\.\(\)/);
+    assert.match(poseStudioSource, /onViewportRender: \(\) => \{[\s\S]*?this\.radarRedraw\?\.\(\);[\s\S]*?this\.host\.onViewportRender\?\.\(\);/);
 });

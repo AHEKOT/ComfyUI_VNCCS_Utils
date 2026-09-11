@@ -737,7 +737,10 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             "vae": vae,
             "image_tensor": image_tensor,
         }
-        _run_pipeline_steps(self.pipeline.reference, context, draw_id)
+        references = gen_settings.get("_pose_edit_images") or [image_tensor]
+        for reference in references:
+            context["image_tensor"] = reference
+            _run_pipeline_steps(self.pipeline.reference, context, draw_id)
         _uc_log(
             draw_id,
             "Flux Klein reference conditioning prepared",
@@ -842,10 +845,12 @@ class QwenImageEditUniCanvasModule(UniCanvasModelModule):
         draw_id: str = "unknown",
     ) -> tuple[Any, Any]:
         reference = image_tensor
-        vl_references = [image_tensor]
+        vl_references = gen_settings.get("_pose_edit_images") or [image_tensor]
+        if gen_settings.get("_pose_edit_images"):
+            reference = vl_references[0]
         draw_mode = str(gen_settings.get("draw_mode") or "")
         mask = gen_settings.get("_qwen_edit_mask")
-        if draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
+        if not gen_settings.get("_pose_edit_images") and draw_mode in {"inpaint", "outpaint"} and torch.is_tensor(mask):
             pixel_mask = torch.nn.functional.interpolate(
                 mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])).float(),
                 size=(reference.shape[1], reference.shape[2]),
@@ -2121,7 +2126,7 @@ def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
     for layer in reversed(layers):
         if not isinstance(layer, dict):
             continue
-        if layer.get("type") != "raster" or layer.get("visible") is False:
+        if layer.get("type") not in {"raster", "pose"} or layer.get("visible") is False:
             continue
         crop = layer.get("crop")
         data_url = layer.get("dataURL")
@@ -3460,6 +3465,7 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
         "_z_image_fun_controlnet_patch_model",
         "_anima_lllite_image",
         "_anima_lllite_mask",
+        "_pose_edit_images",
         "_qwen_edit_reference_image",
         "_qwen_edit_mask",
         "_qwen_edit_latent",
@@ -3768,6 +3774,28 @@ def _get_unicanvas_assets() -> dict[str, Any]:
     }
 
 
+def _prepare_pose_edit_images(payload: dict[str, Any], model_key: str, size: tuple[int, int]) -> list[Image.Image] | None:
+    """Validate the explicit Pose Studio contract before loading model assets."""
+    pose_edit = payload.get("pose_edit")
+    if pose_edit is None:
+        return None
+    if model_key not in {"qwen_image_edit", "flux_klein"}:
+        raise ValueError("Pose layers require QiE2511 or Klein9b")
+    if payload.get("mode") != "img2img" or payload.get("source_empty"):
+        raise ValueError("Pose editing requires img2img with two reference images")
+    if not isinstance(pose_edit, dict) or set(pose_edit) != {"image1", "image2"}:
+        raise ValueError("Pose editing requires image1 (pose) and image2 (background and character)")
+    images = []
+    for key in ("image1", "image2"):
+        rgba = _decode_data_url(str(pose_edit[key] or ""), "RGBA")
+        if rgba.size != size:
+            raise ValueError(f"Pose {key} dimensions must match inference_size")
+        background = Image.new("RGBA", size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        images.append(background.convert("RGB"))
+    return images
+
+
 def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
     draw_id = str(payload.get("debug_id") or f"{int(time.time() * 1000)}")
     _set_draw_progress(draw_id, "queued", 0.01, 0, 0, "Queued")
@@ -3776,6 +3804,7 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("mode must be txt2img, img2img, inpaint or outpaint")
 
     settings = _normalize_gen_settings(payload.get("settings") or {})
+    settings.pop("_pose_edit_images", None)
     settings["draw_mode"] = mode
     seed = int(settings.get("seed", 0))
     batch_size = max(1, min(99, int(settings.get("batch_size", 1) or 1)))
@@ -3832,12 +3861,20 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
         },
     )
 
-    source_rgba = _decode_data_url(str(payload.get("image") or ""), "RGBA")
+    pose_payload = payload.get("pose_edit")
+    source_url = pose_payload.get("image2") if isinstance(pose_payload, dict) else payload.get("image")
+    source_rgba = _decode_data_url(str(source_url or ""), "RGBA")
     source = source_rgba.convert("RGB")
     reference_source = source
     source_for_composite = source
     width, height = source.size
     source_empty = bool(payload.get("source_empty"))
+    pose_images = _prepare_pose_edit_images(payload, model_module.key, (width, height))
+    if pose_images:
+        denoise = 1.0
+        settings["denoise"] = 1.0
+        source = reference_source = source_for_composite = pose_images[1]
+        settings["qwen_latent_image_index"] = 1
     if model_module.key == "krea2_edit" and (mode == "txt2img" or source_empty or source_rgba.getextrema()[3][1] == 0):
         raise ValueError("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.")
     inference_payload = payload.get("inference_size") or {}
@@ -3964,6 +4001,8 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             _uc_log(draw_id, "edit-model txt2img source replaced with black reference image", {"size": source.size})
         image_tensor = _pil_to_image_tensor(source)
         reference_image_tensor = _pil_to_image_tensor(reference_source)
+        if pose_images:
+            settings["_pose_edit_images"] = [_pil_to_image_tensor(image) for image in pose_images]
         _uc_log(
             draw_id,
             "source prepared",

@@ -2,6 +2,8 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs";
 import { app } from "../../scripts/app.js";
 import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs";
 import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs";
@@ -657,6 +659,7 @@ function makeDefaultUniCanvasSettings() {
 
 const MODEL_SELECTION_SETTINGS = new Set(["ckpt_name", "diffusion_model_name", "gguf_model_name", "clip_name", "vae_name"]);
 const TOOL_ICONS = {
+  pose: POSE_ICON,
   move: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M224.15,179.17l-46.83-46.82,37.93-13.51.76-.3a20,20,0,0,0-1.76-37.27L54.16,29A20,20,0,0,0,29,54.16L81.27,214.24A20,20,0,0,0,118.54,216c.11-.25.21-.5.3-.76l13.51-37.92,46.83,46.82a20,20,0,0,0,28.28,0l16.69-16.68A20,20,0,0,0,224.15,179.17Zm-30.83,25.17-48.48-48.48A20,20,0,0,0,130.7,150a20.66,20.66,0,0,0-3.74.35A20,20,0,0,0,112.35,162c-.11.25-.21.5-.3.76L100.4,195.5,54.29,54.29l141.21,46.1-32.71,11.66c-.26.09-.51.19-.76.3a20,20,0,0,0-6.17,32.48h0l48.49,48.48Z"/></svg>`,
   brush: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M236,32a12,12,0,0,0-12-12c-44.78,0-90,48.54-115.9,82a64,64,0,0,0-80,62c0,12-3.1,22.71-9.23,31.76A43,43,0,0,1,9.4,206.05a11.88,11.88,0,0,0-4.91,13.38A12.07,12.07,0,0,0,16.11,228h76A64,64,0,0,0,154,148C187.49,122.05,236,76.8,236,32ZM209.62,46.39c-4,12.92-13.15,27.49-26.92,42.91-3,3.39-6.16,6.7-9.35,9.89a104.31,104.31,0,0,0-16.5-16.51c3.19-3.19,6.49-6.32,9.88-9.35C182.15,59.55,196.71,50.43,209.62,46.39ZM92.07,204H42a80.17,80.17,0,0,0,10.14-40,40,40,0,1,1,40,40Zm38.18-91.32c3.12-3.93,6.55-8.09,10.23-12.35a80.52,80.52,0,0,1,15.23,15.24c-4.26,3.68-8.42,7.11-12.35,10.23A64.43,64.43,0,0,0,130.25,112.68Z"/></svg>`,
   eraser: `<svg viewBox="0 0 256 256" aria-hidden="true"><path class="fill" d="M216,204H141l86.84-86.84a28,28,0,0,0,0-39.6L186.43,36.19a28,28,0,0,0-39.6,0L28.19,154.82a28,28,0,0,0,0,39.6l30.06,30.07A12,12,0,0,0,66.74,228H216a12,12,0,0,0,0-24ZM163.8,53.16a4,4,0,0,1,5.66,0l41.38,41.38a4,4,0,0,1,0,5.65L160,151l-47-47ZM71.71,204,45.16,177.45a4,4,0,0,1,0-5.65L96,121l47,47-36,36Z"/></svg>`,
@@ -785,6 +788,7 @@ class UniCanvasWidget {
       if (this._disposed) return;
       this._isRestoring = false;
       this.fitInitialView();
+      this.syncPoseToolToActiveLayer();
       this.renderLayerList();
       this.render();
     });
@@ -1010,6 +1014,7 @@ class UniCanvasWidget {
     this.tools.className = "vnccs-uc-tools";
     [
       ["move", "Move layer"],
+      ["pose", "Pose Studio mannequin"],
       ["brush", "Brush"],
       ["eraser", "Eraser"],
       ["mask", "Mask brush"],
@@ -1100,6 +1105,7 @@ class UniCanvasWidget {
   }
 
   async importPanorama(img, name) {
+    this.poseEditor?.release();
     const next = new PanoramaDocument(this, { projection: "equirectangular", width: img.width, height: img.height });
     const previous = this.createHistorySnapshot();
     try {
@@ -1111,7 +1117,7 @@ class UniCanvasWidget {
       const views = this.layers.map(layer => {
         const out = document.createElement("canvas"); out.width = side; out.height = side;
         const ctx = out.getContext("2d");
-        if (layer.type === "raster") this.drawRasterLayerToWorldRect(ctx, layer, oldBbox, destination);
+        if (isImageLayer(layer)) this.drawRasterLayerToWorldRect(ctx, layer, oldBbox, destination);
         else ctx.drawImage(layer.canvas, oldBbox.x - this.origin.x, oldBbox.y - this.origin.y, oldBbox.width, oldBbox.height, destination.x, destination.y, destination.width, destination.height);
         return out;
       });
@@ -1120,6 +1126,13 @@ class UniCanvasWidget {
       this.panorama = next;
       for (let index = 0; index < this.layers.length; index++) {
         const layer = this.layers[index]; layer.canvas = views[index]; layer.hiresCanvas = null; layer.hiresRect = null;
+        if (layer.pose) {
+          const r = layer.pose.rect;
+          layer.pose.rect = { x: (r.x - oldBbox.x) * side / oldBbox.width, y: (r.y - oldBbox.y) * side / oldBbox.height,
+            width: r.width * side / oldBbox.width, height: r.height * side / oldBbox.height };
+          const { yaw, pitch, roll, fov } = next.settings;
+          layer.pose.panoramaCamera = { yaw, pitch, roll, fov };
+        }
         this.invalidateLayerCaches(layer); next.commitLayer(layer);
       }
       const base = this.addLayer("raster", name, false, true);
@@ -1409,6 +1422,7 @@ class UniCanvasWidget {
   }
 
   addLayer(type = "raster", name = null, recordHistory = true, deferRender = false) {
+    if (type !== "pose" && this.tool === "pose") this.setTool("move");
     const previousActiveLayerId = this.activeLayerId;
     const layer = {
       id: uid(),
@@ -1512,7 +1526,9 @@ class UniCanvasWidget {
   setTool(tool, force = false) {
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
+    if (previousTool === "pose" && tool !== "pose") { this.poseEditor?.commit(); this.poseEditor?.setVisible(false); }
     this.tool = tool;
+    if (tool === "pose") void this.activatePoseTool(!force);
     this.container.querySelectorAll("[data-tool]").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.tool === tool);
       btn.setAttribute("aria-pressed", String(btn.dataset.tool === tool));
@@ -1525,6 +1541,43 @@ class UniCanvasWidget {
     this.updateContextCursor();
     this.updateToolPreviewOverlay();
     if (force || this.toolNeedsCanvasRender(previousTool) || this.toolNeedsCanvasRender(tool)) this.requestRender();
+  }
+
+  async activatePoseTool(create = true) {
+    if (this._disposed || this._isRestoring) return;
+    let layer = this.activeLayer;
+    if (layer?.type !== "pose") {
+      if (!create) { this.poseEditor?.setVisible(false); return; }
+      if (!this.ensureWorldRectBounds(this.bbox, 0)) return;
+      layer = this.addLayer("pose", "Pose Studio", true, true);
+      layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
+        panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
+      this.renderLayerList();
+    }
+    if (layer.locked || !layer.visible) { this.poseEditor?.setVisible(false); return; }
+    this.poseEditor ||= new UniCanvasPoseEditor(this);
+    try {
+      if (this.panorama && layer.pose.panoramaCamera) {
+        this.panorama.commit();
+        const { yaw, pitch, roll, fov } = layer.pose.panoramaCamera;
+        this.panorama.setCamera({ yaw, pitch, roll, fov });
+        this.panorama.flushCamera();
+      }
+      const activation = this.poseEditor.activate(layer, { show: this.tool === "pose" });
+      if (this.tool === "pose" && poseCharacterIssue(this, layer)) this.poseEditor.setCharacterOpen(true);
+      await activation;
+    } catch (_) { /* The shared editor reports initialization errors. */ }
+  }
+
+  syncPoseToolToActiveLayer() {
+    if (this.activeLayer?.type === "pose") this.setTool("pose", true);
+    else if (this.tool === "pose") this.setTool("move");
+  }
+
+  async preparePoseForQueue() {
+    await this.poseEditor?.flush();
+    this.panorama?.commit();
+    if (await this.uploadStatePayload(this.buildSerializedState(true)) === false) throw new Error("Pose state could not be saved; queue stopped to protect the latest edits");
   }
 
   toolNeedsCanvasRender(tool) {
@@ -2665,6 +2718,11 @@ class UniCanvasWidget {
       }
       if (this.tool === "bbox") return;
     }
+    if (this.activeLayer?.type === "pose" && e.button === 0 && !["pose", "bbox", "pan", "move"].includes(this.tool)) {
+      this.setStatus("Use Pose Studio to edit this live layer, or select a raster layer for pixel tools.", true);
+      return;
+    }
+    if (this.tool === "pose" && e.button === 0) return;
     if (![0, 1].includes(e.button) && !(this.tool === "sam" && e.button === 2)) return;
     e.preventDefault();
     e.stopPropagation();
@@ -3257,18 +3315,21 @@ class UniCanvasWidget {
     const crop = this.getLayerAlphaBounds(layer);
     return {
       id: layer.id,
+      pose: serializePose(layer.pose),
       crop: crop ? { ...crop } : null,
       panoramaCanvas: this.panorama ? this.cloneCanvas(layer.panoramaCanvas) : null,
       origin: { ...this.origin },
       size: { ...this.size },
       canvas: crop ? this.cloneCanvasCrop(layer.canvas, crop) : null,
-      hiresCanvas: layer.hiresCanvas || null,
+      hiresCanvas: layer.type === "pose" && layer.hiresCanvas ? this.cloneCanvas(layer.hiresCanvas) : (layer.hiresCanvas || null),
       hiresRect: layer.hiresRect ? { ...layer.hiresRect } : null,
     };
   }
 
   restoreLayerPixelSnapshot(layer, snapshot) {
     if (!layer || !snapshot) return;
+    if (this.poseEditor?.layer === layer) this.poseEditor.release();
+    if (snapshot.pose) layer.pose = serializePose(snapshot.pose);
     if (this.panorama && snapshot.panoramaCanvas) {
       layer.panoramaCanvas = this.cloneCanvas(snapshot.panoramaCanvas);
       layer.hiresCanvas = null; layer.hiresRect = null;
@@ -3323,6 +3384,7 @@ class UniCanvasWidget {
       id: layer.id,
       name: layer.name,
       type: layer.type,
+      pose: serializePose(layer.pose),
       visible: layer.visible,
       locked: layer.locked,
       opacity: layer.opacity,
@@ -3376,6 +3438,7 @@ class UniCanvasWidget {
   restoreHistorySnapshot(snapshot) {
     if (!snapshot) return;
     this.cancelDeferredCanvasCommit();
+    this.poseEditor?.release();
     this.historyRestoring = true;
     this.panorama?.dispose();
     this.panorama = snapshot.panorama ? new PanoramaDocument(this, snapshot.panorama) : null;
@@ -3404,7 +3467,7 @@ class UniCanvasWidget {
     }
     this.activeStagingIndex = Math.max(-1, Math.min(snapshot.activeStagingIndex ?? -1, this.stagingItems.length - 1));
     this.historyRestoring = false;
-    this.setTool(this.tool, true);
+    this.setTool(this.activeLayer?.type === "pose" ? "pose" : this.tool === "pose" ? "move" : this.tool, true);
     this.updateSnapButton();
     this.syncPromptControls();
     this.syncActiveLayerControls();
@@ -3510,13 +3573,14 @@ class UniCanvasWidget {
       this.activeLayerId = layer?.id || this.activeLayerId;
     }
     this.historyRestoring = false;
+    this.syncPoseToolToActiveLayer();
     this.panorama?.project();
     if (this.panorama) this.panorama.settings.contentRevision++;
     this.syncActiveLayerControls();
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
-    if (this.panorama) this.scheduleFullSync();
+    if (this.panorama || entry.layer?.type === "pose" || this.layers.some(layer => layer.type === "pose")) this.scheduleFullSync();
   }
 
   updateHistoryButtons() {
@@ -4031,6 +4095,7 @@ class UniCanvasWidget {
         y: this.dragStart.hiresRect.y + dy,
       };
     }
+    if (layer.pose) { layer.pose.rect.x += dx; layer.pose.rect.y += dy; }
     this.invalidateLayerRenderCaches(layer);
     layer._boundsCache = crop ? this.clampCanvasBounds({
       x: Math.round(sourceOrigin.x + cropX - this.origin.x + dx),
@@ -4309,6 +4374,7 @@ class UniCanvasWidget {
   }
 
   render() {
+    this.poseEditor?.layout();
     const ctx = this.canvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     const w = this.canvas.width / dpr;
@@ -5021,7 +5087,7 @@ class UniCanvasWidget {
     this.maskLayerList.append(this.createLayerGroupHead("Masks", masks.length, "mask"));
     for (const layer of masks) this.maskLayerList.append(this.createLayerRow(layer));
     if (!masks.length) this.maskLayerList.append(this.createLayerGroupEmpty("No masks"));
-    this.rasterLayerList.append(this.createLayerGroupHead("Raster Layers", rasters.length, "raster"));
+    this.rasterLayerList.append(this.createLayerGroupHead("Image Layers", rasters.length, "raster"));
     for (const layer of rasters) this.rasterLayerList.append(this.createLayerRow(layer));
     if (!rasters.length) this.rasterLayerList.append(this.createLayerGroupEmpty("No raster layers"));
     this.attachLayerGroupDrop(this.maskLayerList, "mask");
@@ -5047,17 +5113,17 @@ class UniCanvasWidget {
   attachLayerGroupDrop(group, type) {
     group.ondragover = (e) => {
       const source = this.layers.find((layer) => layer.id === (this.dragLayerId || e.dataTransfer.getData("text/plain")));
-      if (!source || source.type !== type) return;
+      if (!source || (source.type === "mask") !== (type === "mask")) return;
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
     };
     group.ondrop = (e) => {
       const sourceId = this.dragLayerId || e.dataTransfer.getData("text/plain");
       const source = this.layers.find((layer) => layer.id === sourceId);
-      if (!source || source.type !== type) return;
+      if (!source || (source.type === "mask") !== (type === "mask")) return;
       if (e.target !== group && e.target.closest?.(".vnccs-uc-layer")) return;
       e.preventDefault();
-      const sameTypeLayers = this.layers.filter((layer) => layer.type === type);
+      const sameTypeLayers = this.layers.filter((layer) => (layer.type === "mask") === (type === "mask"));
       this.reorderLayer(sourceId, sameTypeLayers[sameTypeLayers.length - 1]?.id, "after");
     };
   }
@@ -5127,6 +5193,7 @@ class UniCanvasWidget {
         return;
       }
       layer.visible = !layer.visible;
+      if (this.tool === "pose" && layer.id === this.activeLayerId) void this.activatePoseTool(false);
       this.updateLayerRow(row, layer);
       this.requestRender();
       this.syncLightStateToWidget();
@@ -5139,6 +5206,8 @@ class UniCanvasWidget {
         return;
       }
       layer.locked = !layer.locked;
+      if (this.tool === "pose" && layer.id === this.activeLayerId) void this.activatePoseTool(false);
+      this.requestRender();
       this.updateLayerRow(row, layer);
       this.syncLightStateToWidget();
     });
@@ -5218,12 +5287,14 @@ class UniCanvasWidget {
   }
 
   setActiveLayer(layerId) {
-    if (!layerId || this.activeLayerId === layerId) return;
+    if (!layerId || !this.layers.some(layer => layer.id === layerId)) return;
     if (this.transformDraft && this.transformDraft.layerId !== layerId) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
+    this.poseEditor?.commit();
     this.activeLayerId = layerId;
+    this.syncPoseToolToActiveLayer();
     this.updateLayerListActiveState();
     this.syncActiveLayerControls();
     this.requestRender();
@@ -5262,7 +5333,7 @@ class UniCanvasWidget {
     const from = this.layers.findIndex((l) => l.id === sourceId);
     const target = this.layers.findIndex((l) => l.id === targetId);
     if (from < 0 || target < 0) return;
-    if (this.layers[from].type !== this.layers[target].type) {
+    if ((this.layers[from].type === "mask") !== (this.layers[target].type === "mask")) {
       this.setStatus("Masks and raster layers stay in separate sections", true);
       return;
     }
@@ -5271,6 +5342,7 @@ class UniCanvasWidget {
     if (placement === "after") to += 1;
     this.layers.splice(Math.max(0, Math.min(this.layers.length, to)), 0, layer);
     this.activeLayerId = layer.id;
+    this.syncPoseToolToActiveLayer();
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
@@ -5368,8 +5440,16 @@ class UniCanvasWidget {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
+    if (this.layers.find(layer => layer.id === id)?.type === "pose") {
+      this.poseEditor?.commit();
+      this.recordHistoryBefore();
+    }
+    if (this.poseEditor?.layer?.id === id) this.poseEditor.release();
     this.layers = this.layers.filter((l) => l.id !== id);
-    if (this.activeLayerId === id) this.activeLayerId = this.layers[0]?.id || null;
+    if (this.activeLayerId === id) {
+      this.activeLayerId = this.layers[0]?.id || null;
+      this.syncPoseToolToActiveLayer();
+    }
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
@@ -5385,10 +5465,12 @@ class UniCanvasWidget {
     if (!layer) return;
     this.panorama?.commitLayer(layer);
     const previousActiveLayerId = this.activeLayerId;
+    this.poseEditor?.commit();
     const copy = {
       id: uid(),
       name: `${layer.name} Copy`,
       type: layer.type,
+      pose: serializePose(layer.pose),
       visible: layer.visible,
       locked: false,
       opacity: layer.opacity,
@@ -5409,6 +5491,7 @@ class UniCanvasWidget {
     const index = this.layers.findIndex((l) => l.id === layer.id);
     this.layers.splice(Math.max(0, index), 0, copy);
     this.activeLayerId = copy.id;
+    this.syncPoseToolToActiveLayer();
     this.pushHistoryEntry({ kind: "addLayer", layer: copy, previousActiveLayerId });
     this.renderLayerList();
     this.requestRender();
@@ -5426,7 +5509,7 @@ class UniCanvasWidget {
     const layer = this.layers[index];
     const sameType = this.layers
       .map((item, itemIndex) => ({ item, itemIndex }))
-      .filter((entry) => entry.item.type === layer.type);
+      .filter((entry) => (entry.item.type === "mask") === (layer.type === "mask"));
     const localIndex = sameType.findIndex((entry) => entry.itemIndex === index);
     const nextLocalIndex = Math.max(0, Math.min(sameType.length - 1, localIndex + direction));
     const nextIndex = sameType[nextLocalIndex]?.itemIndex ?? index;
@@ -5457,6 +5540,7 @@ class UniCanvasWidget {
   }
 
   flattenLayersToMaster() {
+    this.poseEditor?.release();
     this.recordHistoryBefore();
     const panoramaComposite = this.panorama?.composite();
     const panoramaBase = this.panorama && this.layers.find(layer => layer.id === this.panorama.settings.baseLayerId);
@@ -5474,7 +5558,7 @@ class UniCanvasWidget {
     const worldRect = { x: this.origin.x, y: this.origin.y, width: this.size.width, height: this.size.height };
     const destRect = { x: 0, y: 0, width: this.size.width, height: this.size.height };
     for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible || layer.type !== "raster") continue;
+      if (!layer.visible || !isImageLayer(layer)) continue;
       ctx.save();
       ctx.globalAlpha = layer.opacity;
       ctx.globalCompositeOperation = layer.blendMode || "source-over";
@@ -5600,7 +5684,7 @@ class UniCanvasWidget {
     }
     for (const layer of [...this.layers].reverse()) {
       if (!layer.visible) continue;
-      if (type === "image" && layer.type !== "raster") continue;
+      if (type === "image" && !isImageLayer(layer)) continue;
       if (type === "mask" && layer.type !== "mask") continue;
       ctx.save();
       ctx.globalAlpha = type === "image" ? layer.opacity : 1;
@@ -5752,7 +5836,7 @@ class UniCanvasWidget {
     out.height = Math.max(64, Math.round(inferenceSize.height));
     const ctx = this.getReadbackContext(out);
     for (const layer of [...this.layers].reverse()) {
-      if (!layer.visible || layer.type !== "raster") continue;
+      if (!layer.visible || !isImageLayer(layer)) continue;
       ctx.save();
       ctx.globalAlpha = 1;
       ctx.globalCompositeOperation = "source-over";
@@ -5855,6 +5939,33 @@ class UniCanvasWidget {
   }
 
   async draw() {
+    if (this.drawInProgress) return;
+    const poseLayer = poseGenerationLayer(this);
+    let poseRequest = null;
+    if (poseLayer) {
+      const characterIssue = poseCharacterIssue(this, poseLayer);
+      if (characterIssue) {
+        this.setActiveLayer(poseLayer.id);
+        this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
+        return;
+      }
+      if (!["qwen_image_edit", "flux_klein"].includes(this.getModelBase())) {
+        this.setStatus("Pose layers require QiE2511 or Klein9b. Select a compatible model or hide the pose layer.", true);
+        return;
+      }
+      const preparationKey = () => JSON.stringify([this.bbox, this.getInferenceSize(), this.getModelBase(),
+        this.panorama && [this.panorama.settings.yaw, this.panorama.settings.pitch, this.panorama.settings.roll, this.panorama.settings.fov]]);
+      const beforePreparation = preparationKey();
+      const preparationDocument = this.panorama;
+      this.drawInProgress = true;
+      this.drawBtn.disabled = true;
+      try {
+        this.poseEditor ||= new UniCanvasPoseEditor(this);
+        poseRequest = await this.poseEditor.generation(poseLayer, this.getInferenceSize());
+        if (this._disposed || preparationDocument !== this.panorama || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
+      } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
+      finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
+    }
     this.panorama?.commit();
     const requestPanorama = this.panorama;
     const panoramaCamera = this.panorama ? { ...this.panorama.settings } : null;
@@ -5888,7 +5999,7 @@ class UniCanvasWidget {
       this.setStatus("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.", true);
       return;
     }
-    const mode = !hasRaster ? "txt2img" : rasterCoversBbox ? "inpaint" : "outpaint";
+    const mode = poseRequest ? "img2img" : !hasRaster ? "txt2img" : rasterCoversBbox ? "inpaint" : "outpaint";
     const imageCanvas = this.makeExportCanvas("image", inferenceSize, {
       fillBackground: mode === "img2img",
       forceOpaqueContentAlpha: mode === "outpaint",
@@ -5909,13 +6020,14 @@ class UniCanvasWidget {
         body: JSON.stringify({
           debug_id: debugId,
           mode,
-          image: imageCanvas.toDataURL("image/png"),
-          mask: maskCanvas.toDataURL("image/png"),
+          image: poseRequest ? undefined : imageCanvas.toDataURL("image/png"),
+          pose_edit: poseRequest?.pose_edit,
+          mask: poseRequest ? undefined : maskCanvas.toDataURL("image/png"),
           source_empty: mode === "txt2img",
           bbox: requestBbox,
           inference_size: inferenceSize,
           output_size: outputSize,
-          settings: this.makeSettingsPayload(),
+          settings: { ...this.makeSettingsPayload(), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1 } : {}) },
         }),
       });
       const data = await res.json();
@@ -6056,13 +6168,14 @@ class UniCanvasWidget {
 
   async exportPSD() {
     try {
+      await this.poseEditor?.flush();
       this.setStatus("Preparing PSD...");
       const { writePsd } = await this.loadAgPsd();
       if (typeof writePsd !== "function") throw new Error("ag-psd writePsd is not available");
       if (this.panorama) {
         this.panorama.commit();
         const { width, height } = this.panorama.settings;
-        const children = [...this.layers].reverse().filter(layer => layer.type === "raster" && layer.visible).map(layer => ({
+        const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && layer.visible).map(layer => ({
           name: layer.name, left: 0, top: 0, right: width, bottom: height,
           opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
           blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
@@ -6072,7 +6185,7 @@ class UniCanvasWidget {
         this.downloadBlob(new Blob([buffer], { type: "application/octet-stream" }), "unicanvas-panorama.psd");
         this.setStatus(`Panorama PSD exported: ${width} × ${height}`); return;
       }
-      const visibleLayers = this.layers.filter((layer) => layer.visible && layer.type === "raster" && this.getCanvasAlphaBounds(layer.canvas));
+      const visibleLayers = this.layers.filter((layer) => layer.visible && isImageLayer(layer) && this.getCanvasAlphaBounds(layer.canvas));
       if (!visibleLayers.length) {
         this.setStatus("No visible raster layers to export", true);
         return;
@@ -6319,6 +6432,7 @@ class UniCanvasWidget {
         id: layer.id,
         name: layer.name,
         type: layer.type,
+        pose: serializePose(layer.pose, false),
         visible: layer.visible,
         locked: layer.locked,
         opacity: layer.opacity,
@@ -6355,6 +6469,7 @@ class UniCanvasWidget {
   }
 
   buildSerializedState(includeLayerData) {
+    this.poseEditor?.commit();
     this.panorama?.commit();
     const stateId = this.getStateCacheId();
     return {
@@ -6477,7 +6592,7 @@ class UniCanvasWidget {
 
   async uploadStatePayload(state, keepalive = false) {
     // The first flat snapshot after exit must follow any pending spherical upload.
-    if (state.panorama || this.panoramaUploadPromise) {
+    if (state.panorama || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
       const run = () => this.performStateUpload(state, keepalive);
       const pending = (this.panoramaUploadPromise || Promise.resolve()).then(run, run);
       this.panoramaUploadPromise = pending;
@@ -6487,6 +6602,7 @@ class UniCanvasWidget {
   }
 
   async preparePanoramaForQueue() {
+    if (this.layers.some(layer => layer.type === "pose")) await this.preparePoseForQueue();
     if (!this.panorama) return;
     if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing the panorama");
     this.panorama.commit();
@@ -6525,6 +6641,7 @@ class UniCanvasWidget {
     if (this.panorama) {
       this.panorama.commitLayer(layer);
       return {
+        pose: serializePose(layer.pose, includeData),
         id: layer.id, name: layer.name, type: layer.type, visible: layer.visible, locked: layer.locked,
         opacity: layer.opacity, blendMode: layer.blendMode || "source-over",
         crop: { x: 0, y: 0, width: this.panorama.settings.width, height: this.panorama.settings.height },
@@ -6537,6 +6654,7 @@ class UniCanvasWidget {
       id: layer.id,
       name: layer.name,
       type: layer.type,
+      pose: serializePose(layer.pose, includeData),
       visible: layer.visible,
       locked: layer.locked,
       opacity: layer.opacity,
@@ -6616,6 +6734,7 @@ class UniCanvasWidget {
                 ...cachedById.get(layer.id), ...layer,
                 dataURL: layer.dataURL || cachedById.get(layer.id)?.dataURL,
                 crop: layer.crop || cachedById.get(layer.id)?.crop,
+                pose: mergePoseCache(layer.pose, cachedById.get(layer.id)?.pose),
               })) };
             } else state = cached.state;
             this.stateCacheId = state.state_id || this.stateCacheId;
@@ -6672,7 +6791,8 @@ class UniCanvasWidget {
         const layer = {
           id: item.id || uid(),
           name: item.name || "Layer",
-          type: item.type === "mask" ? "mask" : "raster",
+          type: item.type === "mask" ? "mask" : item.type === "pose" && item.pose ? "pose" : "raster",
+          pose: item.type === "pose" ? serializePose(item.pose) : undefined,
           visible: item.visible !== false,
           locked: item.locked === true,
           opacity: Number.isFinite(item.opacity) ? item.opacity : 1,
@@ -6706,6 +6826,7 @@ class UniCanvasWidget {
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = state.resizeTransformMode === "perspective" ? "perspective" : "scale";
@@ -6777,7 +6898,7 @@ class UniCanvasWidget {
     composite.height = height;
     const compositeCtx = this.getReadbackContext(composite);
     for (const layer of [...this.layers].reverse()) {
-      if (layer.type !== type || !layer.visible) continue;
+      if ((type === "raster" ? !isImageLayer(layer) : layer.type !== type) || !layer.visible) continue;
       compositeCtx.save();
       compositeCtx.globalAlpha = type === "raster" ? layer.opacity : 1;
       compositeCtx.globalCompositeOperation = type === "raster" ? (layer.blendMode || "source-over") : "source-over";
@@ -6818,6 +6939,7 @@ class UniCanvasWidget {
   }
 
   dispose() {
+    this.poseEditor?.dispose();
     if (this._disposed) return;
     try {
       void this.flushStateUpload(true);
@@ -6942,6 +7064,7 @@ app.registerExtension({
         this.uniCanvasWidget.renderLayerList();
         this.uniCanvasWidget.resize();
         this.uniCanvasWidget.fitInitialView();
+        this.uniCanvasWidget.syncPoseToolToActiveLayer();
         this.uniCanvasWidget.render();
       }, 100);
     };
