@@ -104,7 +104,7 @@ const STYLES = `
 .vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
 /* Same box as the batch field next to GENERATE, so both cards line up. */
 .vnccs-uc-denoise-control .vnccs-uc-input { width:46px; height:34px; box-sizing:border-box; padding:0 4px; text-align:center; font-weight:800; }
-.vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow-y:auto; overflow-x:hidden; }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-section-title { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-section-actions { flex:0 0 auto; display:flex; gap:4px; align-items:center; }
@@ -140,9 +140,12 @@ const STYLES = `
    left (undo/redo/Fit) and right (grid/gear/exit) flex clusters. */
 .vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }
 .vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
-.vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
+/* Tool settings are a docked sidebar section above Layers (no stage overlay anymore):
+   the section head carries the tool title, the body scrolls if a transform session
+   grows tall, and Layers keeps flex:1 so it shrinks while the dock is shown. */
+.vnccs-uc-tool-settings-section { flex:0 1 auto; min-height:0; display:flex; flex-direction:column; }
+.vnccs-uc-tool-settings { display:none; flex-direction:column; gap:10px; padding:10px 12px; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
 .vnccs-uc-tool-settings.visible { display:flex; }
-.vnccs-uc-tool-settings-title { color:var(--uc-accent); font-weight:800; font-size:14px; }
 .vnccs-uc-tool-setting { display:grid; grid-template-columns:72px minmax(0,1fr); align-items:center; gap:10px; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-tool-setting-label { color:var(--uc-muted); font-size:12px; line-height:1; white-space:nowrap; }
 .vnccs-uc-tool-setting:has(.vnccs-uc-tool-setting-value) { grid-template-columns:72px minmax(0,1fr) 38px; }
@@ -268,6 +271,11 @@ const STYLES = `
 .vnccs-uc-draw-footer { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; padding-top:2px; }
 .vnccs-uc-layers-footer { padding:6px; border-top:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
 .vnccs-uc-layers-footer .vnccs-uc-btn { width:100%; }
+/* PSD export/import share one grouped 50/50 row under the Flatten button. */
+.vnccs-uc-psd-row { display:grid; grid-template-columns:auto minmax(0,1fr) minmax(0,1fr); gap:6px; align-items:center; }
+.vnccs-uc-psd-label { color:var(--uc-muted); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-psd-row .vnccs-uc-btn { display:inline-flex; align-items:center; justify-content:center; gap:5px; padding:0 6px; min-width:0; }
+.vnccs-uc-psd-row .vnccs-uc-btn svg { width:14px; height:14px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2.2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-file { display:none; }
 .vnccs-uc-row { display:flex; gap:6px; align-items:center; }
 .vnccs-uc-staging-popover {
@@ -299,10 +307,11 @@ const STYLES = `
 .vnccs-uc-settings-section > summary { cursor:pointer; padding:7px 0; font-weight:700; color:var(--uc-accent, #ff8fa3); list-style-position:inside; }
 .vnccs-uc-settings-section-body { display:grid; gap:8px; padding:0 0 10px; }
 .vnccs-uc-settings-popover {
-  position:absolute; z-index:30; min-width:400px; max-width:min(520px, calc(100% - 8px));
-  max-height:70vh; overflow-y:auto; padding:12px; border-radius:10px;
+  position:absolute; z-index:30; width:440px;
+  height:min(560px, 72vh); overflow-y:auto; overscroll-behavior:contain; padding:12px; border-radius:10px;
   background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
   box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
+  box-sizing:border-box;
 }
 `;
 
@@ -1067,10 +1076,37 @@ class UniCanvasWidget {
     );
     this.flattenLayersFooter = document.createElement("div");
     this.flattenLayersFooter.className = "vnccs-uc-layers-footer";
+    // PSD export/import share one grouped row: a small "PSD" group label plus two
+    // equal buttons. Reviewer icon semantics: Export = upload (send layers out),
+    // Import = download (bring a PSD file in).
+    const PSD_ROW_EXPORT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4"/><path d="m7 9 5-5 5 5"/><path d="M4 20h16"/></svg>`;
+    const PSD_ROW_IMPORT_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v12"/><path d="m7 11 5 5 5-5"/><path d="M4 20h16"/></svg>`;
+    this.psdImportInput = document.createElement("input");
+    this.psdImportInput.className = "vnccs-uc-file";
+    this.psdImportInput.type = "file";
+    this.psdImportInput.accept = ".psd,application/octet-stream";
+    this.psdExportBtn = this._button(`${PSD_ROW_EXPORT_ICON}<span>Export</span>`, "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD");
+    this.psdImportBtn = this._button(`${PSD_ROW_IMPORT_ICON}<span>Import</span>`, "vnccs-uc-btn", () => this.psdImportInput.click(), "Import layers from a PSD file");
+    const psdRow = document.createElement("div");
+    psdRow.className = "vnccs-uc-psd-row";
+    const psdRowLabel = document.createElement("span");
+    psdRowLabel.className = "vnccs-uc-psd-label";
+    psdRowLabel.textContent = "PSD";
+    psdRow.append(psdRowLabel, this.psdExportBtn, this.psdImportBtn);
     this.flattenLayersFooter.append(
       this._button("Flatten layers", "vnccs-uc-btn danger", () => this.confirmFlattenLayers(), "Flatten all layers"),
-      this._button("Export Layers as PSD", "vnccs-uc-btn", () => this.exportPSD(), "Export visible raster layers to PSD")
+      psdRow,
+      this.psdImportInput
     );
+    // installUniCanvasLayerTools wires the PSD parse path through this explicit hook:
+    // this footer is the single owner of the row and its hidden file picker.
+    this.wirePsdImport = (onPickFile) => {
+      this.psdImportInput.addEventListener("change", () => {
+        const file = this.psdImportInput.files?.[0];
+        this.psdImportInput.value = "";
+        onPickFile?.(file);
+      });
+    };
     const layersBody = document.createElement("div");
     layersBody.className = "vnccs-uc-layers-section";
     layersBody.append(this.layerSubhead, this.layersTopActions, this.layerList, this.flattenLayersFooter);
@@ -1194,7 +1230,21 @@ class UniCanvasWidget {
     this.stageWrap.appendChild(this.tools);
     this.toolSettings = document.createElement("div");
     this.toolSettings.className = "vnccs-uc-tool-settings";
-    this.stageWrap.appendChild(this.toolSettings);
+    // Tool settings dock in the right sidebar as a section ABOVE Layers (item 6):
+    // the Layers section keeps flex:1 and shrinks while a tool is active. The
+    // section head carries the active tool's title ("Brush Settings", ...);
+    // renderToolSettings() fills the body and collapses the section when the
+    // active tool has no settings.
+    this.toolSettingsTitle = document.createElement("span");
+    this.toolSettingsTitle.className = "vnccs-uc-section-title";
+    this.toolSettingsHead = document.createElement("div");
+    this.toolSettingsHead.className = "vnccs-uc-section-head";
+    this.toolSettingsHead.append(this.toolSettingsTitle);
+    this.toolSettingsSection = document.createElement("div");
+    this.toolSettingsSection.className = "vnccs-uc-section vnccs-uc-tool-settings-section";
+    this.toolSettingsSection.hidden = true;
+    this.toolSettingsSection.append(this.toolSettingsHead, this.toolSettings);
+    this.side.insertBefore(this.toolSettingsSection, layersSection);
 
     this.settingsBar = document.createElement("div");
     this.settingsBar.className = "vnccs-uc-settings";
@@ -1924,11 +1974,13 @@ class UniCanvasWidget {
     if (!controls.length) {
       this.toolSettings.classList.remove("visible");
       this.toolSettings.innerHTML = "";
+      if (this.toolSettingsSection) this.toolSettingsSection.hidden = true;
       return;
     }
     const titleMap = { brush: "Brush", eraser: "Eraser", mask: "Mask Brush", rect: "Rectangle", lasso: "Lasso", resize: "Transform" };
     const title = titleMap[this.tool] || this.tool;
-    const html = [`<div class="vnccs-uc-tool-settings-title">${this._escape(title)} Settings</div>`];
+    if (this.toolSettingsTitle) this.toolSettingsTitle.textContent = `${title} Settings`;
+    const html = [];
     if (controls.includes("brushSize")) {
       html.push(`<label class="vnccs-uc-tool-setting"><span class="vnccs-uc-tool-setting-label">Size</span><input class="vnccs-uc-range" type="range" min="1" max="220" value="${this.brushSize}" data-control="brushSize"></label>`);
     }
@@ -1967,6 +2019,7 @@ class UniCanvasWidget {
     }
     this.toolSettings.innerHTML = html.join("");
     this.toolSettings.classList.add("visible");
+    if (this.toolSettingsSection) this.toolSettingsSection.hidden = false;
   }
 
   renderSamPanel() {
@@ -5912,11 +5965,16 @@ class UniCanvasWidget {
   }
 
   duplicateActiveLayer() {
+    return this.duplicateLayer(this.activeLayer);
+  }
+
+  // Duplicates any layer (context-menu target or the active one); still exactly
+  // ONE addLayer history entry per duplicated layer.
+  duplicateLayer(layer) {
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    const layer = this.activeLayer;
     if (!layer) return;
     this.panorama?.commitLayer(layer);
     const previousActiveLayerId = this.activeLayerId;
@@ -5955,13 +6013,22 @@ class UniCanvasWidget {
   }
 
   moveActiveLayer(direction) {
+    // Strict active-id lookup, exactly as before the refactor (no layers[0] fallback).
+    const layer = this.layers.find((l) => l.id === this.activeLayerId);
+    if (!layer) return;
+    return this.moveLayerOrder(layer, direction);
+  }
+
+  // Moves any layer within its same-type (raster vs mask) section; deliberately
+  // NO history entry, same as the header icon buttons always behaved.
+  moveLayerOrder(layer, direction) {
     if (this.transformDraft) {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    const index = this.layers.findIndex((l) => l.id === this.activeLayerId);
+    if (!layer) return;
+    const index = this.layers.findIndex((l) => l.id === layer.id);
     if (index < 0) return;
-    const layer = this.layers[index];
     const sameType = this.layers
       .map((item, itemIndex) => ({ item, itemIndex }))
       .filter((entry) => (entry.item.type === "mask") === (layer.type === "mask"));

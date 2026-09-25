@@ -1,11 +1,15 @@
 /**
  * VNCCS UniCanvas layer utilities (design spec sections 10.1-10.4).
  *
- *  - 10.1 Right-clicking a layer row opens a context menu: copy the layer PNG
- *    (with alpha) to the clipboard, save it via the save_output route, remove
- *    its background (QI2.1 or BiRefNet), color-match it to the composite below,
- *    plus the pose-layer entries Rasterize / Edit pose (pose layers only).
- *  - 10.2 "Import PSD" sits next to "Export Layers as PSD" and maps raster
+ *  - 10.1 Right-clicking a layer row opens the grouped context menu: Layer
+ *    (Duplicate / Move up / Move down, operating on the right-clicked layer),
+ *    Content (copy the layer PNG with alpha to the clipboard, save it via the
+ *    save_output route), Enhance (remove background via QI2.1 or BiRefNet, the
+ *    prompt variant, color-match to the composite below), Name (auto-name) and
+ *    the pose-layer entries Edit pose / Rasterize (pose layers only).
+ *  - 10.2 PSD export/import live in one grouped row built by the widget's
+ *    _buildDOM footer (label + Export + Import + hidden file input); this module
+ *    only wires the import parse path through uc.wirePsdImport() and maps raster
  *    layers (name, visibility, opacity, blend mode) from the vendored ag-psd
  *    bundle, preserving order; anything UniCanvas cannot represent is skipped
  *    and reported in the status line.
@@ -27,15 +31,34 @@ import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
 import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
 
+// Small inline stroke icons (14px in the menu): UI_ICONS lives inside
+// vnccs_unicanvas.js and is not exported, so the menu owns its own set.
+const MENU_ICONS = {
+  duplicate: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/></svg>`,
+  up: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>`,
+  down: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`,
+  clipboard: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>`,
+  image: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m5 18 5-5 3 3 3-3 3 3"/></svg>`,
+  person: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="7" r="3.4"/><path d="M5.5 20.5a6.5 6.5 0 0 1 13 0"/></svg>`,
+  personSparkle: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="7.5" r="3.2"/><path d="M3.5 20a6 6 0 0 1 12 0"/><path d="M18 3.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"/></svg>`,
+  droplet: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5s6 6.5 6 10a6 6 0 0 1-12 0c0-3.5 6-10 6-10z"/></svg>`,
+  tag: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 11V4.5a1 1 0 0 1 1-1H11l9.5 9.5a1 1 0 0 1 0 1.4l-6.6 6.6a1 1 0 0 1-1.4 0L3.5 11z"/><circle cx="8" cy="8" r="1.3"/></svg>`,
+  pose: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="2.2"/><path d="M12 7.2v6.3"/><path d="m12 9.2-4.5 2.3M12 9.2l4.5 2.3"/><path d="m12 13.5-3.2 6M12 13.5l3.2 6"/></svg>`,
+  raster: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 9.3h16M4 14.6h16M9.3 4v16M14.6 4v16"/></svg>`,
+};
+
 export const LAYER_MENU_ITEMS = Object.freeze([
-  { id: "copy-clipboard", label: "Copy layer as image to clipboard" },
-  { id: "save-image", label: "Save layer as image" },
-  { id: "remove-bg", label: "Remove background" },
-  { id: "remove-bg-prompt", label: "Remove background with prompt...", editOnly: true },
-  { id: "color-match", label: "Color match to below" },
-  { id: "auto-name", label: "Auto-name" },
-  { id: "rasterize", label: "Rasterize", poseOnly: true },
-  { id: "edit-pose", label: "Edit pose", poseOnly: true },
+  { id: "duplicate", label: "Duplicate layer", group: "Layer", icon: MENU_ICONS.duplicate },
+  { id: "move-up", label: "Move up", group: "Layer", icon: MENU_ICONS.up },
+  { id: "move-down", label: "Move down", group: "Layer", icon: MENU_ICONS.down },
+  { id: "copy-clipboard", label: "Copy to clipboard", group: "Content", icon: MENU_ICONS.clipboard },
+  { id: "save-image", label: "Save image", group: "Content", icon: MENU_ICONS.image },
+  { id: "remove-bg", label: "Remove background", group: "Enhance", icon: MENU_ICONS.person },
+  { id: "remove-bg-prompt", label: "Remove background (prompt)...", group: "Enhance", icon: MENU_ICONS.personSparkle, editOnly: true },
+  { id: "color-match", label: "Color match to below", group: "Enhance", icon: MENU_ICONS.droplet },
+  { id: "auto-name", label: "Auto-name", group: "Name", icon: MENU_ICONS.tag },
+  { id: "edit-pose", label: "Edit pose", group: "Pose", icon: MENU_ICONS.pose, poseOnly: true },
+  { id: "rasterize", label: "Rasterize", group: "Pose", icon: MENU_ICONS.raster, poseOnly: true },
 ]);
 
 export const PSD_SKIP_REASONS = Object.freeze({
@@ -627,15 +650,30 @@ function openLayerContextMenu(uc, layer, e) {
   closeColorMatchPreview(uc, true);
   const menu = document.createElement("div");
   menu.className = "vnccs-uc-layer-menu";
-  menu.style.cssText = `position:absolute; z-index:40; min-width:230px; padding:6px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:2px; font:11px sans-serif;`;
+  // Grouped and compact: ~12px rows, ~10px uppercase dim group labels, a 14px
+  // icon per item. The class name stays `.vnccs-uc-layer-menu` (shared styling
+  // elsewhere grants it user-select:text; this inline cssText must not override it).
+  menu.style.cssText = `position:absolute; z-index:40; min-width:180px; padding:5px; border-radius:10px; background:rgba(20,16,30,.97); border:1px solid rgba(255,255,255,.12); display:grid; gap:1px; font:11px sans-serif;`;
+  let group = null;
   for (const item of LAYER_MENU_ITEMS) {
     if (item.poseOnly && layer.type !== "pose") continue;
     // Only the Edit model backend reads a prompt.
     if (item.editOnly && resolveRemoveBgSelection(uc.settings).method !== "edit") continue;
+    if (item.group !== group) {
+      group = item.group;
+      const head = document.createElement("div");
+      head.className = "vnccs-uc-layer-menu-group";
+      head.textContent = group;
+      head.style.cssText = "padding:5px 7px 2px; color:rgba(232,232,240,.45); font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; user-select:none; pointer-events:none;";
+      menu.appendChild(head);
+    }
     const entry = document.createElement("button");
     entry.type = "button";
-    entry.textContent = item.label;
-    entry.style.cssText = "text-align:left; padding:6px 10px; border:0; border-radius:6px; background:transparent; color:#e8e8f0; cursor:pointer;";
+    entry.className = "vnccs-uc-layer-menu-item";
+    entry.innerHTML = `${item.icon}<span>${escapeText(item.label)}</span>`;
+    entry.style.cssText = "display:flex; align-items:center; gap:7px; text-align:left; padding:4px 7px; border:0; border-radius:6px; background:transparent; color:#e8e8f0; cursor:pointer; font:inherit; font-size:12px; line-height:1.2;";
+    const icon = entry.querySelector("svg");
+    if (icon) icon.style.cssText = "width:14px; height:14px; flex:0 0 auto; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round;";
     entry.addEventListener("pointerenter", () => { entry.style.background = "rgba(255,255,255,.08)"; });
     entry.addEventListener("pointerleave", () => { entry.style.background = "transparent"; });
     entry.addEventListener("click", () => {
@@ -650,6 +688,9 @@ function openLayerContextMenu(uc, layer, e) {
 }
 
 function runLayerMenuAction(uc, layer, item, point = null) {
+  if (item.id === "duplicate") return typeof uc.duplicateLayer === "function" ? uc.duplicateLayer(layer) : undefined;
+  if (item.id === "move-up") return typeof uc.moveLayerOrder === "function" ? uc.moveLayerOrder(layer, -1) : undefined;
+  if (item.id === "move-down") return typeof uc.moveLayerOrder === "function" ? uc.moveLayerOrder(layer, 1) : undefined;
   if (item.id === "copy-clipboard") return copyLayerToClipboard(uc, layer);
   if (item.id === "save-image") return saveLayerAsImage(uc, layer);
   if (item.id === "remove-bg") return removeLayerBackground(uc, layer);
@@ -673,22 +714,10 @@ export function installUniCanvasLayerTools(uc) {
   if (!uc || uc._vnccsLayerToolsInstalled) return uc;
   uc._vnccsLayerToolsInstalled = true;
 
-  const footer = uc.flattenLayersFooter;
-  if (footer) {
-    const psdInput = document.createElement("input");
-    psdInput.type = "file";
-    psdInput.accept = ".psd,application/octet-stream";
-    psdInput.style.display = "none";
-    psdInput.addEventListener("change", () => {
-      importPSDFile(uc, psdInput.files?.[0]);
-      psdInput.value = "";
-    });
-    uc.container.appendChild(psdInput);
-    const importButton = uc._button("Import PSD", "vnccs-uc-btn", () => psdInput.click(), "Import layers from a PSD file");
-    const exportButton = [...footer.querySelectorAll("button")].find((btn) => btn.textContent.trim() === "Export Layers as PSD") || null;
-    // "Import PSD" sits right next to the existing "Export Layers as PSD".
-    footer.insertBefore(importButton, exportButton || null);
-  }
+  // The PSD row (group label + Export + Import + hidden file input) is built by
+  // the widget's _buildDOM footer; this installer only wires the import parse
+  // path through the explicit hook — no text-search button placement anymore.
+  uc.wirePsdImport?.((file) => importPSDFile(uc, file));
 
   // The canvas right-click opens the same menu for the layer under the cursor.
   uc.openLayerContextMenu = (layer, e) => openLayerContextMenu(uc, layer, e);

@@ -10,14 +10,25 @@ const layerTools = await readFile(new URL("../web/vnccs_unicanvas_layer_tools.mj
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
 const MENU_LABELS = [
-  "Copy layer as image to clipboard",
-  "Save layer as image",
+  "Duplicate layer",
+  "Move up",
+  "Move down",
+  "Copy to clipboard",
+  "Save image",
   "Remove background",
-  "Remove background with prompt...",
+  "Remove background (prompt)...",
   "Color match to below",
   "Auto-name",
-  "Rasterize",
   "Edit pose",
+  "Rasterize",
+];
+
+const MENU_GROUPS = [
+  "Layer", "Layer", "Layer",
+  "Content", "Content",
+  "Enhance", "Enhance", "Enhance",
+  "Name",
+  "Pose", "Pose",
 ];
 
 test("widget source installs both tool packs", () => {
@@ -54,12 +65,17 @@ test("brushHardness is a brush-engine setting with radial-gradient stamps", () =
   assert.match(inputTools, /addEventListener\("input"/, "the hardness slider must update continuously from input events");
 });
 
-test("layer context menu defines all eight entries", () => {
+test("layer context menu groups eleven labeled entries", () => {
   for (const label of MENU_LABELS) {
     assert.ok(layerTools.includes(`"${label}"`), `missing menu entry: ${label}`);
   }
-  assert.equal(LAYER_MENU_ITEMS.length, 8, "the shipped menu must define exactly eight entries");
+  assert.equal(LAYER_MENU_ITEMS.length, 11, "the shipped menu must define exactly eleven entries");
   assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.label), MENU_LABELS, "shipped menu labels must match the spec strings in order");
+  assert.deepEqual(LAYER_MENU_ITEMS.map((item) => item.group), MENU_GROUPS, "every menu entry must carry its group label");
+  assert.deepEqual(LAYER_MENU_ITEMS.filter((item) => item.poseOnly).map((item) => item.id),
+    ["edit-pose", "rasterize"], "only the pose entries keep the poseOnly gate");
+  assert.match(layerTools, /vnccs-uc-layer-menu-group/, "group labels must render as their own small rows");
+  assert.match(layerTools, /vnccs-uc-layer-menu-item/, "menu entries must stay addressable rows");
 });
 
 test("remove background runs through the settings-chosen backend", () => {
@@ -75,10 +91,25 @@ test("pose entries guard the parallel-branch methods with a status fallback", ()
   assert.ok(layerTools.includes("[VNCCS UniCanvas] Pose tools are not available."));
 });
 
-test("Import PSD sits next to Export Layers as PSD", () => {
-  assert.ok(layerTools.includes('"Import PSD"'), "Import PSD button label must exist");
-  assert.ok(layerTools.includes('"Export Layers as PSD"'), "the export button must stay the placement anchor");
-  assert.match(layerTools, /insertBefore\(importButton, exportButton \|\| null\)/, "Import PSD must be inserted next to the export button");
+test("the PSD row is built once by the widget and wired through an explicit hook", () => {
+  assert.ok(widgetSource.includes("vnccs-uc-psd-row"), "the grouped PSD row must be built in the footer");
+  assert.ok(widgetSource.includes("vnccs-uc-psd-label"), "the row must carry the small PSD group label");
+  assert.ok(widgetSource.includes("<span>Export</span>"), "the export button keeps its Export label");
+  assert.ok(widgetSource.includes("<span>Import</span>"), "the import button keeps its Import label");
+  assert.match(widgetSource, /this\.psdImportInput\.accept = "\.psd,application\/octet-stream";/, "the hidden picker must accept PSD files");
+  assert.match(widgetSource, /this\.wirePsdImport = \(onPickFile\) =>/, "the widget must expose the import wiring hook");
+  assert.match(layerTools, /uc\.wirePsdImport\?\.\(\(file\) => importPSDFile\(uc, file\)\)/, "layer tools must wire only the import handler");
+  assert.ok(!layerTools.includes("insertBefore(importButton"), "the fragile text-search placement must be gone");
+});
+
+test("duplicate and move act on the right-clicked layer through thin delegates", () => {
+  assert.match(widgetSource, /duplicateActiveLayer\(\) \{\s*return this\.duplicateLayer\(this\.activeLayer\);/,
+    "duplicateActiveLayer must stay a thin delegate for the header icon");
+  assert.match(widgetSource, /moveActiveLayer\(direction\) \{[\s\S]{0,300}?return this\.moveLayerOrder\(layer, direction\);/,
+    "moveActiveLayer must stay a thin delegate for the header icon");
+  assert.ok(layerTools.includes('uc.duplicateLayer(layer)'), "the menu duplicate must target the right-clicked layer");
+  assert.ok(layerTools.includes("uc.moveLayerOrder(layer, -1)") && layerTools.includes("uc.moveLayerOrder(layer, 1)"),
+    "the menu move entries must target the right-clicked layer");
 });
 
 test("PSD import reports every skipped non-raster construct", () => {
