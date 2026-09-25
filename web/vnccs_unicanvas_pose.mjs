@@ -16,8 +16,10 @@ const styles = `
 /* Pose Studio's settings are re-parented into the UniCanvas sidebar and controls, outside the
    .vnccs-pose-studio root that defines its --ps-* theme variables. Without them the active toggle
    (e.g. Female) had no background and the slider thumbs no color. Map them onto the UniCanvas
-   palette so the panel matches the rest of the UI. */
-.vnccs-unicanvas .vnccs-uc-pose-side, .vnccs-unicanvas .vnccs-uc-pose-controls {
+   palette so the panel matches the rest of the UI. The embedded canvas wrap needs them too: the
+   hand control popover mounts there (the center panel that hosted it stays hidden). */
+.vnccs-unicanvas .vnccs-uc-pose-side, .vnccs-unicanvas .vnccs-uc-pose-controls,
+.vnccs-unicanvas .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap {
   --ps-bg: var(--uc-bg, #0a0a0f); --ps-panel: var(--uc-panel, rgba(20,16,30,.82)); --ps-elevated: #1a1a26;
   --ps-surface: var(--uc-surface, rgba(30,28,44,.9)); --ps-hover: var(--uc-hover, rgba(44,40,62,.95));
   --ps-border: var(--uc-border, rgba(255,255,255,.08)); --ps-border-hover: rgba(255,255,255,.14);
@@ -66,6 +68,9 @@ export class UniCanvasPoseEditor {
         this.token = 0;
         this.visible = false;
         this.ready = null;
+        this.inspecting = false;
+        this.commitTimer = null;
+        this.wheelInspectionTimer = null;
         this.abort = new AbortController();
         if (!document.getElementById("vnccs-uc-pose-style")) {
             const style = document.createElement("style");
@@ -90,7 +95,7 @@ export class UniCanvasPoseEditor {
             embedded: true,
             onStateChange: data => {
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
-                if (this.initialized) { this.applyDimensions(data.export); this.saveViewport(); }
+                if (this.initialized) this.applyDimensions(data.export);
                 const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
                 if (meshKey !== this.meshKey) { this.meshKey = meshKey; this.backdrop?.invalidate(); }
                 const key = JSON.stringify([data, layer.pose.viewport]);
@@ -99,6 +104,10 @@ export class UniCanvasPoseEditor {
                 this.stateKey = key;
                 this.host.syncLightStateToWidget();
                 this.host.scheduleFullSync();
+                // A real edit arrived (bone drag, hand slider, character change): bake the
+                // final-quality pixels once the gesture settles. Pure camera navigation
+                // never reaches this point - the viewer dispatches no state for it.
+                this.scheduleCommit();
             },
             onViewportRender: () => {
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
@@ -106,6 +115,14 @@ export class UniCanvasPoseEditor {
             },
         });
         const studio = this.studio;
+        // The Scene page's camera sliders are the capture-framing controls: applying them
+        // re-seeds the persisted framing (and snaps the inspection view onto it). Free
+        // navigation (orbit / pan / wheel) never runs through here.
+        const applyCameraToViewer = studio.applyCameraToViewer.bind(studio);
+        studio.applyCameraToViewer = (...args) => {
+            applyCameraToViewer(...args);
+            if (this.initialized) this.saveCaptureFraming();
+        };
         studio.container.classList.add("vnccs-uc-pose-root");
         this.host.container.appendChild(studio.container);
         this.buildDock();
@@ -126,18 +143,32 @@ export class UniCanvasPoseEditor {
             if (studio.viewer.captureFrame) studio.viewer.captureFrame.visible = false;
             // Mannequin only, over a flat backdrop of the layers below that it cannot sink behind.
             this.backdrop = new UniCanvasPoseBackdrop(this);
+            // layer.pose.viewport is the persisted CAPTURE framing: the camera the layer pixels
+            // are rendered with (pre-0.6.8 contract). It doubles as the migration source - a
+            // layer saved before the split stores exactly the framing of its baked pixels. The
+            // orbit/wheel camera is a session-only INSPECTION view that starts on this framing
+            // and is never persisted again.
             if (layer.pose.viewport) {
-                const camera = layer.pose.viewport;
-                studio.viewer.camera.position.fromArray(camera.position);
-                studio.viewer.orbit.target.fromArray(camera.target);
-                studio.viewer.camera.fov = camera.fov;
-                studio.viewer.camera.zoom = camera.zoom || 1;
-                studio.viewer.camera.updateProjectionMatrix();
-                studio.viewer.orbit.update();
-            } else studio.applyCameraToViewer(true);
-            studio.viewer.orbit.addEventListener("end", () => {
-                if (this.token === token) this.commit();
+                this.applyViewerCamera(layer.pose.viewport);
+            } else {
+                studio.applyCameraToViewer(true);
+                this.saveCaptureFraming();
+            }
+            // Inspection-only navigation: moving the camera must never bake pixels, persist a
+            // viewport or touch the mannequin, so orbit end no longer commits anything.
+            studio.viewer.orbit.addEventListener("start", () => {
+                if (this.token === token) this.inspecting = true;
             });
+            studio.viewer.orbit.addEventListener("end", () => {
+                if (this.token === token) this.inspecting = false;
+            });
+            // Wheel dollying bypasses OrbitControls events; keep captures out of its frames.
+            studio.canvas.addEventListener("wheel", () => {
+                if (this.token !== token) return;
+                this.inspecting = true;
+                clearTimeout(this.wheelInspectionTimer);
+                this.wheelInspectionTimer = setTimeout(() => { this.inspecting = false; }, 160);
+            }, { passive: true });
             this.initialized = true;
             this.layout();
             this.capturePreview(true);
@@ -172,6 +203,13 @@ export class UniCanvasPoseEditor {
         root.appendChild(studio.canvasContainer);
         // Keep shared scene state and action references alive without a second action toolbar.
         studio.centerPanel.hidden = true;
+        // centerPanel is hidden here, so Pose Studio's hand popover must live in the visible
+        // embedded viewport instead (see _handPopoverHost()); it was mounted into the
+        // centerPanel during the studio constructor, before this host chose its own.
+        studio.handPopoverHost = studio.canvasContainer;
+        if (studio._handPopover && studio._handPopover.parentElement !== studio.canvasContainer) {
+            studio.canvasContainer.appendChild(studio._handPopover);
+        }
         const pages = [
             ["Body", studio.leftPanel], ["Scene", studio.rightSidebar],
         ];
@@ -243,7 +281,7 @@ export class UniCanvasPoseEditor {
         const bar = document.createElement("div"); bar.className = "vnccs-uc-pose-editbar";
         const title = document.createElement("strong"); title.textContent = "Editing pose";
         const hint = document.createElement("span"); hint.className = "vnccs-uc-pose-hint";
-        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom";
+        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom - inspect only, the camera never changes the layer";
         const library = this.host._button("Pose Library", "vnccs-uc-btn", () => this.studio?.showLibraryModal?.(), "Load a pose from the Pose Library");
         const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
         const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
@@ -474,27 +512,65 @@ export class UniCanvasPoseEditor {
         this.refreshCharacterMenu();
     }
 
+    // The persisted capture framing (what the layer pixels show), as a plain camera object.
+    snapshotViewerCamera() {
+        const v = this.studio.viewer;
+        return { position: v.camera.position.toArray(), target: v.orbit.target.toArray(), fov: v.camera.fov, zoom: v.camera.zoom };
+    }
+
+    saveCaptureFraming() {
+        this.layer.pose.viewport = this.snapshotViewerCamera();
+    }
+
+    applyViewerCamera(camera) {
+        const v = this.studio.viewer;
+        v.camera.position.fromArray(camera.position);
+        v.orbit.target.fromArray(camera.target);
+        v.camera.fov = camera.fov;
+        v.camera.zoom = camera.zoom || 1;
+        v.camera.updateProjectionMatrix();
+        v.orbit.update();
+    }
+
     captureSurface(size, transparent = true) {
         if (!this.initialized) return null;
         const target = transparent
             ? (this.previewSurface ||= this.host._createCanvas(size.width, size.height))
             : this.host._createCanvas(size.width, size.height);
         const w = this.studio, v = w.viewer;
-        const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
-            w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
-            { targetCanvas: target, transparent, hideReference: true, viewport: true });
-        if (this.visible) v.renderInteractionOverlay();
-        return result;
+        // Old contract (pre-0.6.8): the capture renders the STORED framing with zeroed
+        // offsets, never the live inspection camera. Borrow the live camera for the render
+        // and put the inspection view back afterwards, so orbiting cannot bake a view.
+        const framing = this.layer.pose.viewport || this.snapshotViewerCamera();
+        const inspection = this.snapshotViewerCamera();
+        this.applyViewerCamera(framing);
+        // The temporary camera move must not let the backdrop depth clamp translate anyone.
+        if (this.backdrop) this.backdrop.suppressClamp = true;
+        try {
+            const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+                w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
+                { targetCanvas: target, transparent, hideReference: true, viewport: true });
+            return result;
+        } finally {
+            if (this.backdrop) this.backdrop.suppressClamp = false;
+            this.applyViewerCamera(inspection);
+            // capture() leaves the stored-framing image in the visible buffer (the capture
+            // batch repaints it); repaint the inspection view synchronously so navigation
+            // never flashes the capture framing.
+            if (this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
+        }
     }
 
     capturePreview(final = false) {
         if (this.capturing || !this.initialized || !this.host.layers.includes(this.layer)) return;
+        // Navigation frames are inspection-only: the pixels hold the stored framing already.
+        if (!final && this.inspecting) return;
         this.capturing = true;
         try {
             const rect = this.layer.pose.rect;
-            // The mannequin on screen IS this capture (the WebGL viewport only draws the gizmos),
-            // so the live preview must have at least the pixels the screen shows: a fixed low
-            // preview size looked rasterized and jumped to smooth on the final capture.
+            // The live preview must stay sharp while the inspection camera moves around it:
+            // the pixels re-capture on the stored framing, so a fixed low preview size looked
+            // rasterized and jumped to smooth on the final capture.
             const cap = 2048 / Math.max(rect.width, rect.height);
             const screen = (this.host.view?.scale || 1) * (window.devicePixelRatio || 1);
             const scale = Math.min(1, cap, final ? Math.max(screen, cap) : screen);
@@ -541,18 +617,34 @@ export class UniCanvasPoseEditor {
         })) };
     }
 
-    saveViewport() {
-        const v = this.studio.viewer;
-        this.layer.pose.viewport = { position: v.camera.position.toArray(), target: v.orbit.target.toArray(), fov: v.camera.fov, zoom: v.camera.zoom };
+    // While the editor is shown, its live viewport replaces the layer pixels on screen: the
+    // stage must skip the bitmap so navigation cannot ghost the baked framing underneath
+    // (the pre-0.6.8 editor did the same via layer._poseEditing). Mirrors the surface
+    // visibility rules in layout(), so both the viewport and the bitmap hide together.
+    hidesLayerPixels(layer) {
+        return this.visible && this.initialized && this.layer === layer
+            && this.layer.visible && !this.layer.locked && !this.host.hasOpenStagingPanel();
     }
 
     commit() {
         if (!this.initialized || !this.host.layers.includes(this.layer) || !poseAtPanoramaCamera(this.layer, this.host.panorama)) return;
         this.capturePreview(true);
         this.saveUI();
-        this.saveViewport();
         this.host.panorama?.commitLayer(this.layer);
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+    }
+
+    // One trailing full-quality bake per settled edit gesture (AGENTS.md realtime rule:
+    // frames stay live, the expensive final capture follows the gesture).
+    scheduleCommit() {
+        if (!this.initialized) return;
+        clearTimeout(this.commitTimer);
+        const token = this.token;
+        this.commitTimer = setTimeout(() => {
+            this.commitTimer = null;
+            if (token !== this.token || !this.studio) return;
+            this.commit();
+        }, 250);
     }
 
     // A depth clamp moved a character: persist it once per frame, like any other studio edit.
@@ -617,6 +709,9 @@ export class UniCanvasPoseEditor {
         this.commit();
         ++this.token;
         this.initialized = false;
+        this.inspecting = false;
+        clearTimeout(this.commitTimer); this.commitTimer = null;
+        clearTimeout(this.wheelInspectionTimer); this.wheelInspectionTimer = null;
         if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
         this.backdropSyncFrame = null;
         this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;

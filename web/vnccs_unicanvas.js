@@ -4894,6 +4894,9 @@ class UniCanvasWidget {
     const hideMaskOverlays = this.hasOpenStagingPanel();
     for (const layer of [...this.layers].reverse()) {
       if (!layer.visible) continue;
+      // While the pose editor is open, its live viewport draws the mannequin from the
+      // inspection camera; the baked capture-framing pixels must not ghost underneath.
+      if (this.poseEditor?.hidesLayerPixels(layer)) continue;
       if (hideMaskOverlays && layer.type === "mask") continue;
       ctx.save();
       if (layer.type === "mask") {

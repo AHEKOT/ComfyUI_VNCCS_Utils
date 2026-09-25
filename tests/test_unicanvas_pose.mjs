@@ -35,12 +35,18 @@ const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });
-    const context = { ...state, document, AbortController, console, JSON, Option: class extends Element {
+    const context = { ...state, document, AbortController, console, JSON, setTimeout, clearTimeout,
+        requestAnimationFrame: () => 0, cancelAnimationFrame: noop,
+        window: { devicePixelRatio: 1 },
+        // refreshCharacterMenu probes /vnccs/context_lists; tests stub the list directly.
+        fetch: () => Promise.resolve({ ok: false }),
+        Option: class extends Element {
         constructor(name, value) { super("option"); this.textContent = name; this.value = value; }
     }, PoseStudioWidget: studioClass, installCustomSelects: () => ({ disconnect: noop }),
     // The backdrop needs a real three.js viewer; tests/test_unicanvas_pose_backdrop.mjs covers it.
     UniCanvasPoseBackdrop: class { invalidate() {} dispose() {} } };
-    const Editor = vm.runInNewContext(source.replace(/^import .*;\n/gm, "").replace("export class", "class") + "\nUniCanvasPoseEditor", context);
+    // CRLF-tolerant: the strip must also match `import ...;\r\n` on Windows checkouts.
+    const Editor = vm.runInNewContext(source.replace(/^import .*?;\r?\n/gm, "").replace("export class", "class") + "\nUniCanvasPoseEditor", context);
     const layer = { id: "pose", type: "pose", visible: true, opacity: 1, blendMode: "source-over",
         canvas: new Element("canvas"), pose: { rect: { x: 10, y: 20, width: 400, height: 600 }, studio: {}, character: null } };
     const host = { node: { id: 5, size: [1400, 900] }, tool: "pose", layers: [layer], activeLayer: layer,
@@ -60,8 +66,10 @@ function fakeStudio() {
     const studio = { container: new Element(), leftPanel: new Element(), centerPanel: new Element(),
         rightSidebar: new Element(), canvasContainer: new Element(), animationTimeline: { stopPlayback: noop },
         hideHandControlPopover: noop, performViewerResize: noop,
+        canvas: new Element(), _handPopover: new Element("div"), applyCameraToViewer: noop,
     };
     studio.centerPanel.appendChild(studio.canvasContainer);
+    studio.centerPanel.appendChild(studio._handPopover);
     studio.container.append(studio.leftPanel, studio.centerPanel, studio.rightSidebar);
     return studio;
 }
@@ -188,6 +196,10 @@ test("the editor puts Body, Scene and the character reference in the right sideb
     const pages = editor.dock.children.slice(1);
     assert.equal(pages.length, 2);
     assert.equal(editor.studio.centerPanel.hidden, true);
+    // Hands stay editable in the embedded editor: the popover moves out of the hidden
+    // center panel into the visible viewport container, which becomes its positioning host.
+    assert.equal(editor.studio.handPopoverHost, editor.studio.canvasContainer);
+    assert.equal(editor.studio._handPopover.parentElement, editor.studio.canvasContainer);
     assert.equal(editor.characterMenu.parentElement, editor.sidePanel);
     assert.equal(editor.dock.parentElement, editor.sidePanel);
     assert.equal(editor.editBar.parentElement, editor.controls);
@@ -304,18 +316,68 @@ test("uploaded character is fitted into image2 and workflow metadata excludes it
 test("live viewport changes refresh layer pixels before a gesture commits without PNG encoding", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio();
     editor.initialized = true; editor.visible = true;
-    let captures = 0, overlays = 0, commits = 0;
-    editor.studio.viewer = { renderInteractionOverlay: () => overlays++, capture: (...args) => {
-        captures++; assert.equal(args[8].transparent, true); assert.equal(args[8].viewport, true);
-        return args[8].targetCanvas;
-    } };
+    layer.pose.viewport = { position: [0, 10, 45], target: [0, 0, 0], fov: 40, zoom: 1 };
+    let captures = 0, commits = 0;
+    let position = [5, 6, 7], target = [0, 0, 0];
+    editor.studio.viewer = {
+        camera: { position: { toArray: () => position.slice(), fromArray: v => { position = v.slice(); } }, fov: 40, zoom: 1, updateProjectionMatrix: noop },
+        orbit: { target: { toArray: () => target.slice(), fromArray: v => { target = v.slice(); } }, update: noop },
+        renderer: { render: noop },
+        capture: (...args) => {
+            captures++; assert.equal(args[8].transparent, true); assert.equal(args[8].viewport, true);
+            // The capture borrows the live camera: it must run on the stored framing...
+            assert.deepEqual(editor.studio.viewer.camera.position.toArray(), [0, 10, 45]);
+            return args[8].targetCanvas;
+        },
+    };
     editor.studio.exportParams = { bg_color: [255,255,255] };
     editor.studio.syncToNode = () => commits++;
     editor.capturePreview(); editor.capturePreview();
-    assert.equal(captures, 2); assert.equal(overlays, 2); assert.equal(commits, 0);
+    assert.equal(captures, 2); assert.equal(commits, 0);
+    assert.deepEqual(position, [5, 6, 7], "the inspection camera is put back after the capture");
     assert.equal(layer.canvas.ctx.calls.filter(call => call[0] === "draw").length, 2);
     assert.equal(layer.hiresRect.x, 10);
-    assert.doesNotMatch(source.slice(source.indexOf("    capturePreview("), source.indexOf("    saveViewport(")), /toDataURL/);
+    assert.doesNotMatch(source.slice(source.indexOf("    capturePreview("), source.indexOf("    hidesLayerPixels(")), /toDataURL/);
+});
+
+test("navigation only inspects: no capture, no persisted viewport, no commit on orbit end", async () => {
+    const controlled = controlledStudio();
+    const { editor, host, layer } = harness(controlled.Studio);
+    let layerCommits = 0; host.panorama = { commitLayer: () => layerCommits++ };
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    const framing = { ...layer.pose.viewport };
+    assert.ok(framing, "activation seeds the persisted capture framing");
+    const draws = () => layer.canvas.ctx.calls.filter(call => call[0] === "draw").length;
+    const drawsBeforeNavigation = draws();
+
+    // Orbit gesture: move the inspection camera and fire orbit start/end. Nothing may bake.
+    const orbit = studio.viewer.orbit;
+    orbit.fire("start");
+    studio.viewer.camera.position.fromArray([90, 80, 70]);
+    orbit.fire("end");
+    assert.equal(editor.inspecting, false, "orbit end ends the inspection gesture");
+    // JSON comparison: the vm harness creates objects in another realm.
+    const framingJSON = camera => JSON.stringify(camera);
+    assert.equal(framingJSON(layer.pose.viewport), framingJSON(framing), "orbiting never rewrites the capture framing");
+    assert.equal(layerCommits, 0, "orbit end no longer commits pixels");
+
+    // A wheel tick holds the inspection flag briefly: its render frames must not re-capture.
+    studio.canvas.fire("wheel", { deltaY: -100 });
+    assert.equal(editor.inspecting, true);
+    studio.host.onViewportRender();
+    assert.equal(draws(), drawsBeforeNavigation, "navigation frames never overwrite the stored-framing pixels");
+    assert.equal(framingJSON(layer.pose.viewport), framingJSON(framing));
+    assert.equal(layerCommits, 0, "navigation still has not committed");
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(editor.inspecting, false, "the wheel inspection window settles by itself");
+
+    // A real edit still bakes through the stored framing with one trailing commit.
+    studio.exportParams = { ...studio.exportParams, bg_color: [10, 20, 30] };
+    studio.syncToNode();
+    await new Promise(resolve => setTimeout(resolve, 350));
+    assert.ok(layerCommits >= 1, "an edit gesture commits once it settles");
+    editor.release();
 });
 
 test("shared capture returns transparent pixels and hides helpers while restoring renderer state", () => {
@@ -353,7 +415,37 @@ test("serialized pose, move history, node output and PSD use the same dedicated 
     assert.match(ucSource, /async exportPSD\(\) \{\s*try \{\s*await this.poseEditor\?\.flush\(\)/);
     assert.match(ucSource, /isImageLayer\(layer\) && layer.visible/);
     assert.match(ucSource, /pose_edit: poseRequest\?\.pose_edit/);
-    assert.match(ucSource, /positive: poseRequest.positive, denoise: 1/);
+    assert.match(ucSource, /positive: poseRequest\.positive, denoise: 1/);
+});
+
+test("captures run on the persisted framing; existing layers keep their saved framing", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    // Migration: a layer saved by the pre-split version stores the framing of its pixels;
+    // activation must keep it verbatim (the look of previously saved layers is preserved).
+    const saved = { position: [3, 9, 42], target: [0, 5, 0], fov: 33, zoom: 1.25 };
+    layer.pose.viewport = JSON.parse(JSON.stringify(saved));
+    await editor.activate(layer);
+    assert.deepEqual(layer.pose.viewport, saved, "an existing capture framing is never replaced");
+    assert.deepEqual(controlled.instances[0].viewer.camera.position.toArray(), saved.position,
+        "the inspection view starts on the persisted framing");
+    // Framing edits (Scene camera sliders) re-seed it through the wrapped applyCameraToViewer.
+    const studio = controlled.instances[0];
+    editor.initialized = true;
+    studio.viewer.camera.position.fromArray([7, 8, 9]);
+    editor.saveCaptureFraming();
+    assert.deepEqual(layer.pose.viewport.position, [7, 8, 9]);
+    editor.release();
+});
+
+test("the shared studio mounts the hand popover into an embedded host when one is set", async () => {
+    const psSource = fs.readFileSync(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
+    assert.match(psSource, /_handPopoverHost\(\) \{\s*return this\.handPopoverHost \|\| this\.centerPanel \|\| this\.canvasContainer;/,
+        "standalone keeps the center panel, an embedded host overrides it");
+    assert.match(psSource, /this\._handPopoverHost\(\)\.appendChild\(panel\)/);
+    const embedded = psSource.indexOf("const embeddedHost = host === this.canvasContainer;");
+    assert.ok(embedded > psSource.indexOf("positionHandControlPopover("),
+        "positioning clamps against the host box, with zero canvas offset in the embedded host");
 });
 
 function controlledStudio(load = async () => true) {
@@ -364,11 +456,18 @@ function controlledStudio(load = async () => true) {
             this.exportParams = { bg_color: [255,255,255], view_width: 400, view_height: 600 };
             this._viewerInitPromise = Promise.resolve();
             const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
+            const orbitEvents = {};
             this.viewer = { scene: { background: null }, camera: { position: vector([1,2,3]), fov: 40, zoom: 1, updateProjectionMatrix: noop },
-                orbit: { target: vector([0,0,0]), update: noop, addEventListener: noop },
+                orbit: {
+                    target: vector([0,0,0]), update: noop,
+                    addEventListener: (name, callback) => (orbitEvents[name] ||= []).push(callback),
+                    fire: name => orbitEvents[name]?.forEach(callback => callback()),
+                },
+                renderer: { render: noop },
                 capture: (...args) => args[8].targetCanvas, renderInteractionOverlay: noop };
+            this.applyCameraToViewer = noop;
             this.loadModel = load; this.awaitReadyForCompositeCapture = async () => true;
-            this.loadFromNode = noop; this.applyCameraToViewer = noop; this.refreshLibrary = async () => true;
+            this.loadFromNode = noop; this.refreshLibrary = async () => true;
             this.flushAnimationCacheUpload = async () => true;
             this.syncToNode = () => host.onStateChange({ export: { ...this.exportParams }, poses: [{}] });
             this.dispose = () => { this.disposed = true; };

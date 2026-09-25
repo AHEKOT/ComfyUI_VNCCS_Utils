@@ -9,8 +9,10 @@ A pose layer is edited only in an explicit session, so outside of it the layer b
 While editing:
 
 - the right sidebar (denoise, masks, layers) is replaced by the pose settings: the **Character reference** section, then the Pose Studio **Body** and **Scene** pages;
-- the view frames the pose rectangle, and a bar at the bottom of the canvas lists the viewport controls (left: joints, right-drag: orbit, middle: pan, wheel: zoom) with **Pose Library**, **Cancel** and **Save pose**;
+- the view frames the pose rectangle, and a bar at the bottom of the canvas lists the viewport controls (left: joints, right-drag: orbit, middle: pan, wheel: zoom - inspect only, the camera never changes the layer) with **Pose Library**, **Cancel** and **Save pose**;
 - UniCanvas undo/redo is paused (Pose Studio's own undo works inside the editor).
+
+The embedded camera is **inspection-only**: orbiting, panning and wheel zooming move the editing view so a hand or joint can be examined from any side, but they never alter the layer pixels, the persisted framing or the mannequin. The posed figure stays exactly where it is in the canvas.
 
 **Save pose** (also Enter or Esc outside a text field) keeps the pose and records the whole session as one undo step; **Cancel** restores the pose and pixels from before the session. Selecting another tool or layer saves as well.
 
@@ -18,7 +20,18 @@ While editing:
 
 The host imports `PoseStudioWidget` from `web/vnccs_pose_studio.js`. It mounts the actual Body and Scene controls in the right sidebar for the duration of the edit session. The standard UniCanvas model, prompt, settings and Generate panel stays visible and interactive. There are no Poses or Character tabs. No rig, morph, IK, hand, library, lighting or prompt implementation is copied into UniCanvas. The original Pose Library button is in Scene. The shared central action toolbar stays hidden. Pose Library dialogs rise above the UniCanvas toolbox and other controls.
 
-Only the active Pose tool shows its controls and viewport handles. The panels stay mounted when hidden, preserving expanded groups, drafts and scrolling. Body and hand changes, camera navigation and lighting update the layer during interaction. The layer can be moved, reordered, hidden, locked, duplicated and deleted. Pixel painting and destructive image transforms require a raster layer; use the shared Pose Studio controls to edit a live scene. Pose Studio output dimensions resize the live layer and, when still aligned, its bbox. Animation scenes retain their tracks; UniCanvas uses the currently selected frame for a still-image generation.
+Only the active Pose tool shows its controls and viewport handles. The panels stay mounted when hidden, preserving expanded groups, drafts and scrolling. Body and hand changes update the layer during interaction; camera navigation does not - it only moves the inspection view. The layer can be moved, reordered, hidden, locked, duplicated and deleted. Pixel painting and destructive image transforms require a raster layer; use the shared Pose Studio controls to edit a live scene. Pose Studio output dimensions resize the live layer and, when still aligned, its bbox. Animation scenes retain their tracks; UniCanvas uses the currently selected frame for a still-image generation.
+
+## Capture framing versus inspection view
+
+The pose layer separates two cameras:
+
+- The **capture framing** (`pose.viewport`, persisted) is the camera the layer pixels are rendered with. It is seeded when the layer is created from the Pose Studio export camera (and, for layers saved by older versions, from their stored viewport, which keeps their exact look). The **Scene** page's camera sliders (yaw, pitch, zoom, offsets) are the framing controls: moving them re-seeds the framing, and the framing is what Generate, PSD export and the composite always see - deterministic, independent of how the user last orbited.
+- The **inspection view** is session-only: it starts on the capture framing when the editor opens and follows right-drag orbit, middle-drag pan and wheel zoom freely. Leaving the session discards it; nothing navigated is ever persisted or baked.
+
+Bone and hand edits render live in the inspection view while the pixels re-capture on the stored framing; each settled gesture ends in one trailing full-quality bake, and the whole session is one UniCanvas undo step on **Save pose**.
+
+The hand control popover (spread/grasp/finger sliders and presets) mounts inside the embedded viewport - the hidden Pose Studio center panel does not host it there - so hands stay directly editable: click a hand to open its sliders, or drag the visible finger-joint markers when the popover mode is switched off in Pose Studio settings.
 
 The canvas displays a transparent rendering. A separate transparent WebGL overlay contains only interaction handles, so image layers above the pose still cover it correctly. Normal canvas composition, node output and **Export Layers as PSD** include the pose's rendered pixels. PSD carries the image layer; the editable 3D scene remains in the UniCanvas workflow/cache.
 
@@ -39,7 +52,7 @@ Pose generation uses full denoising. QiE2511 encodes both images as ordered visu
 
 ## Persistence and lifecycle
 
-Each `type: "pose"` layer includes a `pose` object containing the Pose Studio scene schema, viewport camera, world rectangle and character selection. Workflow metadata excludes uploaded character pixels; the existing UniCanvas state cache stores them with preview pixels. Existing animation cache references remain owned by Pose Studio. Static poses do not serialize the internal default timeline as an animation. In image mode, existing compact animation references are preserved without requesting the animation cache; switching to animation mode restores them on demand.
+Each `type: "pose"` layer includes a `pose` object containing the Pose Studio scene schema, the capture-framing camera (`viewport`), the world rectangle and the character selection. Workflow metadata excludes uploaded character pixels; the existing UniCanvas state cache stores them with preview pixels. Existing animation cache references remain owned by Pose Studio. Static poses do not serialize the internal default timeline as an animation. In image mode, existing compact animation references are preserved without requesting the animation cache; switching to animation mode restores them on demand.
 
 Queue execution waits for the active scene's model/morph work and state upload. Stale initialization or capture work cannot replace another layer. Removing the editor uses Pose Studio's shared `dispose()` method to release workers, renderer, observers, timers and listeners. Older raster/mask workflows keep their schema and behavior.
 
