@@ -51,6 +51,7 @@ export class UniCanvasPoseBackdrop {
     this.THREE = this.viewer.THREE;
     this.bounds = null;
     this.clamping = false;
+    this.suppressClamp = false;
     const THREE = this.THREE;
     this.plane = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -117,7 +118,11 @@ export class UniCanvasPoseBackdrop {
     // but keeping it out of foreign cameras avoids stray depth.
     this.plane.visible = renderCamera === camera;
     if (renderCamera !== camera || !viewer.orbit) return;
-    this.clampCharacters(this.updatePlane());
+    const distance = this.updatePlane();
+    // suppressClamp: the editor borrows the live camera for a stored-framing capture. That
+    // temporary camera move must never translate a character - only real character drags
+    // may be clamped (camera moves settle the plane behind the deepest character instead).
+    if (!this.suppressClamp) this.clampCharacters(distance);
   }
 
   // Places the plane for the current camera and returns its distance.

@@ -8832,10 +8832,17 @@ class PoseStudioWidget {
 
         this._handPopover = panel;
         this._handPopoverTitle = title;
-        (this.centerPanel || this.canvasContainer).appendChild(panel);
+        this._handPopoverHost().appendChild(panel);
         document.addEventListener("pointerdown", this._boundHandleDocumentPointerDown);
         document.addEventListener("pointerup", this._boundHandleDocumentPointerUp);
         document.addEventListener("pointercancel", this._boundHandleDocumentPointerCancel);
+    }
+
+    // Where the hand popover lives and what it positions/clamps against. Standalone keeps the
+    // centerPanel; an embedded host (UniCanvas pose editor) hides the centerPanel and sets
+    // `handPopoverHost` to its visible viewport, so hands stay editable there.
+    _handPopoverHost() {
+        return this.handPopoverHost || this.centerPanel || this.canvasContainer;
     }
 
     _handleDocumentPointerDown(event) {
@@ -8971,15 +8978,19 @@ class PoseStudioWidget {
     }
 
     positionHandControlPopover(side, useMeasuredBounds = false) {
-        if (!this.viewer || !this._handPopover || !this.canvasContainer || !this.centerPanel || !side) return;
+        const host = this._handPopoverHost();
+        if (!this.viewer || !this._handPopover || !this.canvasContainer || !host || !side) return;
         if (!this.viewer.camera || !this.viewer.THREE) return;
 
-        const centerWidth = this.centerPanel.clientWidth;
-        const centerHeight = this.centerPanel.clientHeight;
-        const canvasLeft = this.canvasContainer.offsetLeft;
-        const canvasTop = this.canvasContainer.offsetTop;
-        const canvasWidth = this.canvasContainer.clientWidth;
-        const canvasHeight = this.canvasContainer.clientHeight;
+        const centerWidth = host.clientWidth;
+        const centerHeight = host.clientHeight;
+        // Embedded host: the popover and the canvas share the same box, so the projection
+        // lands directly in host coordinates.
+        const embeddedHost = host === this.canvasContainer;
+        const canvasLeft = embeddedHost ? 0 : this.canvasContainer.offsetLeft;
+        const canvasTop = embeddedHost ? 0 : this.canvasContainer.offsetTop;
+        const canvasWidth = embeddedHost ? centerWidth : this.canvasContainer.clientWidth;
+        const canvasHeight = embeddedHost ? centerHeight : this.canvasContainer.clientHeight;
 
         const measuredRect = useMeasuredBounds ? this._handPopover.getBoundingClientRect() : null;
         const panelWidth = Math.min(centerWidth - 20, measuredRect?.width || this._handPopover.offsetWidth || 240);
