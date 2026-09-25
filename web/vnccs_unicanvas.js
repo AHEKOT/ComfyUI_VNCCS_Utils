@@ -8190,7 +8190,7 @@ app.registerExtension({
     },
   ],
   setup() {
-    // Optional standalone Unicanvas sidebar tab (no node, no workflow), off by default.
+    // Optional standalone Unicanvas sidebar tab (no node, no workflow), enabled by default.
     syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting());
     if (app._vnccsUniCanvasPanoramaQueueSync) return;
     const queuePrompt = app.queuePrompt;

@@ -37,7 +37,7 @@ if (phase === "compose") {
 
 const browser = await chromium.launch(launchOptions);
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
-// The standalone tab is opt-in; builds without the setting simply ignore it.
+// The setting is forced here so older builds without the default still show the tab.
 await page.request.post(`${baseURL}/api/settings/VNCCS.UniCanvas.StandaloneSidebar`, { data: true }).catch(() => {});
 await page.goto(baseURL, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => window.app?.graph && window.LiteGraph, null, { timeout: 60_000 });

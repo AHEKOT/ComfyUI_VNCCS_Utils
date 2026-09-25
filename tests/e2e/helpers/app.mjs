@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 
 export const LAYER_TYPES = { pose: "pose" };
 
-// The standalone sidebar tab is opt-in (ComfyUI setting, off by default).
+// The standalone sidebar tab is a ComfyUI setting, enabled by default.
 export const STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";
 const UNICANVAS_TAB =
   '[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon';
