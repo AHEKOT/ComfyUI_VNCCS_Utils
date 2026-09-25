@@ -67,14 +67,29 @@ test("edit model reference images upload next to Steps with per-family slot mark
 });
 
 test("settings popover carries the anchored class and size contract", () => {
-    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*min-width:\s*400px/,
-        "the settings popover must be at least 400px wide");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*width:\s*440px/,
+        "the settings popover must have the hard 440px width");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*height:\s*min\(560px,\s*72vh\)/,
+        "the settings popover must use the hard 560px/72vh height");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*overflow-y:\s*auto/,
+        "the settings popover content must scroll inside the hard size");
     assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*font-size:\s*13px/,
         "the settings popover must use the larger 13px type");
-    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*max-height:\s*70vh/,
-        "the settings popover must cap its height at 70vh");
     assert.match(source, /anchorPopoverTo\(panel,\s*this\.gearBtn,\s*this\.container\)/,
         "the settings popover must be anchored under the gear inside the widget");
+});
+
+test("tool settings dock above the Layers section in the right sidebar", () => {
+    assert.match(source, /this\.side\.insertBefore\(this\.toolSettingsSection, layersSection\)/,
+        "tool settings must dock as a sidebar section above Layers");
+    assert.match(source, /vnccs-uc-tool-settings-section/,
+        "the docked tool settings must be styled as a sidebar section");
+    assert.match(source, /if \(this\.toolSettingsSection\) this\.toolSettingsSection\.hidden = true;/,
+        "tools without settings (move/pan/sam/bbox) must collapse the whole section");
+    assert.match(source, /if \(this\.toolSettingsTitle\) this\.toolSettingsTitle\.textContent = `\$\{title\} Settings`;/,
+        "the section head must carry the active tool's title");
+    assert.ok(!/\.vnccs-uc-tool-settings \{ position:absolute/.test(source),
+        "the old stage-overlay positioning must be gone");
 });
 
 test("a linked VNCSS Config greys out every UniCanvas control it overrides", () => {

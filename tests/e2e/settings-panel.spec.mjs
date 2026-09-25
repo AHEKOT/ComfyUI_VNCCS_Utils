@@ -12,7 +12,9 @@ test("settings open as one larger panel anchored under the gear", async ({ page 
   const [gearBox, panelBox, leftBox] = [
     await gear.boundingBox(), await panel.boundingBox(), await left.boundingBox(),
   ];
-  expect(panelBox.width).toBeGreaterThanOrEqual(400);
+  expect(panelBox.width).toBe(440); // hard width (item 14), not min/max clamped anymore
+  expect(panelBox.height).toBeGreaterThan(0);
+  expect(panelBox.height).toBeLessThanOrEqual(560); // height:min(560px, 72vh), host clamp may shrink it further
   expect(panelBox.y).toBeGreaterThanOrEqual(gearBox.y + gearBox.height - 1); // below the gear
   const overlapsLeft = panelBox.x < leftBox.x + leftBox.width && panelBox.x + panelBox.width > leftBox.x;
   expect(overlapsLeft).toBe(false); // never over the left sidebar
