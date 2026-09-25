@@ -324,6 +324,30 @@ function scheduleSync(state) {
 }
 
 
+// Scroll the open menu so the highlighted row is fully visible. The menu element only:
+// scrolling the row itself could also scroll an ancestor, and any scroll event whose target
+// is not the menu self-closes the popup (state.onViewportChange). Rows are children of the
+// position:fixed menu, so their offsetParent chain resolves to the menu itself.
+function scrollRowIntoMenuView(menu, row) {
+    if (!menu || !row) return;
+    let top = 0;
+    let node = row;
+    let reachedMenu = false;
+    while (node) {
+        if (node === menu) {
+            reachedMenu = true;
+            break;
+        }
+        top += node.offsetTop;
+        node = node.offsetParent;
+    }
+    if (!reachedMenu) return;
+    const bottom = top + row.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+}
+
+
 function setHighlightedIndex(state, index, scroll = true) {
     const options = Array.from(state.select.options || []);
     if (index < 0 || index >= options.length || optionUnavailable(options[index])) return;
@@ -333,7 +357,7 @@ function setHighlightedIndex(state, index, scroll = true) {
         row.classList.toggle("is-highlighted", active);
         if (active) {
             state.select.setAttribute("aria-activedescendant", row.id);
-            if (scroll) row.scrollIntoView({ block: "nearest" });
+            if (scroll) scrollRowIntoMenuView(state.menu, row);
         }
     }
 }
@@ -350,6 +374,7 @@ function closeCustomSelect(state, { restoreFocus = false } = {}) {
     else state.select.setAttribute("aria-controls", state.originalAriaControls);
     state.select.removeAttribute("aria-activedescendant");
     doc.removeEventListener("pointerdown", state.onOutsidePointerDown, true);
+    doc.removeEventListener("keydown", state.onEscapeKeyDown, true);
     view?.removeEventListener("resize", state.onViewportChange, true);
     view?.removeEventListener("scroll", state.onViewportChange, true);
     if (ACTIVE_SELECT_BY_DOCUMENT.get(doc) === state) ACTIVE_SELECT_BY_DOCUMENT.delete(doc);
@@ -414,7 +439,9 @@ function openCustomSelect(state) {
         if (option.style?.color) label.style.color = option.style.color;
         row.append(check, label);
         row.addEventListener("pointerdown", event => {
-            event.preventDefault();
+            // stopPropagation keeps the press out of the outside-close handler; preventDefault
+            // would cancel the compatibility mouse sequence in Chromium and Firefox, so the
+            // row's click - which commits the choice - would never fire there.
             event.stopPropagation();
         });
         row.addEventListener("pointerenter", () => setHighlightedIndex(state, optionIndex, false));
@@ -441,6 +468,7 @@ function openCustomSelect(state) {
     positionMenu(state);
     setHighlightedIndex(state, state.highlightedIndex);
     doc.addEventListener("pointerdown", state.onOutsidePointerDown, true);
+    doc.addEventListener("keydown", state.onEscapeKeyDown, true);
     doc.defaultView?.addEventListener("resize", state.onViewportChange, true);
     doc.defaultView?.addEventListener("scroll", state.onViewportChange, true);
     } catch (err) {
@@ -543,6 +571,14 @@ export function enhanceCustomSelect(select, config = {}) {
     state.onViewportChange = event => {
         if (event?.target === state.menu) return;
         closeCustomSelect(state);
+    };
+    state.onEscapeKeyDown = event => {
+        if (event.key !== "Escape") return;
+        // Document capture: close the open menu before anything else and swallow the key so
+        // UniCanvas's own Escape chain (tool switch -> fullscreen exit) never observes it.
+        closeCustomSelect(state, { restoreFocus: true });
+        event.preventDefault();
+        event.stopImmediatePropagation();
     };
     state.onPointerDown = event => {
         if (event.button !== undefined && event.button !== 0) return;
