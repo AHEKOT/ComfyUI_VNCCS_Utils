@@ -135,7 +135,10 @@ const STYLES = `
 .vnccs-uc-thumb { width:34px; height:34px; border:1px solid var(--uc-border); border-radius:8px; background:rgba(255,255,255,.04); object-fit:cover; display:block; }
 .vnccs-uc-layer-name { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vnccs-uc-layer-type { color:var(--uc-muted); font-size:10px; }
-.vnccs-uc-bottom { grid-column:2; grid-row:1; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
+.vnccs-uc-bottom { grid-column:2; grid-row:1; position:relative; zoom:var(--vnccs-uc-ui-scale); display:flex; gap:8px; align-items:center; padding:8px; border-bottom:1px solid var(--uc-border); background:rgba(6,5,12,.75); box-sizing:border-box; min-width:0; }
+/* Standalone "New canvas" button: centered in the top bar without disturbing the
+   left (undo/redo/Fit) and right (grid/gear/exit) flex clusters. */
+.vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }
 .vnccs-uc-tools { position:absolute; z-index:6; left:16px; top:50%; zoom:var(--vnccs-uc-ui-scale); transform:translateY(-50%); display:flex; flex-direction:column; align-items:stretch; gap:9px; padding:12px; border:1px solid var(--uc-border); border-radius:18px; background:rgba(10,10,15,.84); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; max-height:calc((100% - 16px) / var(--vnccs-uc-ui-scale)); overflow-y:auto; overflow-x:hidden; }
 .vnccs-uc-tool-settings { position:absolute; z-index:6; left:16px; top:52px; zoom:var(--vnccs-uc-ui-scale); display:none; flex-direction:column; gap:10px; width:248px; padding:14px; border:1px solid var(--uc-border); border-radius:14px; background:rgba(10,10,15,.86); box-shadow:0 10px 28px rgba(0,0,0,.42); pointer-events:auto; }
 .vnccs-uc-tool-settings.visible { display:flex; }
@@ -1503,7 +1506,11 @@ class UniCanvasWidget {
       titleEl.textContent = title;
       const messageEl = document.createElement("div");
       messageEl.className = "vnccs-uc-modal-message";
-      messageEl.textContent = message;
+      // Callers pass our own literal copy (never user text), so innerHTML is
+      // safe here: the New canvas copy uses <b> emphasis plus a literal \n,
+      // which pre-line turns into a line break.
+      messageEl.innerHTML = message;
+      messageEl.style.whiteSpace = "pre-line";
       const actions = document.createElement("div");
       actions.className = "vnccs-uc-modal-actions";
       const cancel = this._button("Cancel", "vnccs-uc-btn", () => close(false), "Cancel");
@@ -8060,7 +8067,7 @@ app.registerExtension({
       name: "Show the standalone UniCanvas sidebar tab",
       tooltip: "Adds a UniCanvas workspace to the ComfyUI sidebar that works without a node or workflow.",
       type: "boolean",
-      defaultValue: false,
+      defaultValue: true,
       onChange(value) {
         // Before setup() the sidebar API may not exist yet; setup() applies the stored value.
         if (app.extensionManager?.registerSidebarTab) syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, value === true);

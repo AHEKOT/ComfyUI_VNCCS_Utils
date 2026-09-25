@@ -393,9 +393,11 @@ export function installUniCanvasInputTools(uc) {
     e.preventDefault();
     e.stopPropagation();
     uc.canvas.setPointerCapture?.(e.pointerId);
-    if (uc.tool !== "sam") {
+    if (BRUSH_FAMILY_TOOLS.has(uc.tool)) {
       // Right-button hold opens the radial HUD - the only right-button gesture
-      // (the former Alt brush-size drag was removed by request).
+      // (the former Alt brush-size drag was removed by request). Brush-family
+      // tools only: the HUD edits size/opacity/hardness/color, which only the
+      // brush family uses.
       openRadialHud(uc, e);
     }
     uc.updateToolPreviewOverlay();

@@ -29,7 +29,12 @@ test("widget source installs both tool packs", () => {
 
 test("the radial HUD is the only right-button gesture (no Alt drag)", () => {
   assert.ok(!inputTools.includes("startBrushSizeGesture"), "the Alt brush-size gesture must be gone");
-  assert.match(inputTools, /if \(uc\.tool !== "sam"\) \{[\s\S]*?openRadialHud\(uc, e\);/, "right-button hold opens the HUD regardless of Alt");
+  assert.ok(inputTools.includes('BRUSH_FAMILY_TOOLS = new Set(["brush", "eraser", "mask"])'),
+    "the brush family is exactly brush/eraser/mask");
+  assert.match(inputTools, /if \(BRUSH_FAMILY_TOOLS\.has\(uc\.tool\)\) \{[\s\S]*?openRadialHud\(uc, e\);/,
+    "right-button hold opens the HUD for brush-family tools only");
+  assert.ok(!/if \(uc\.tool !== "sam"\) \{[\s\S]*?openRadialHud/.test(inputTools),
+    "the old sam-only exclusion must be gone");
   assert.ok(inputTools.includes('kind: "hud"'), "the HUD gesture must exist");
   assert.ok(inputTools.includes("RADIAL_HUD_SIZE_SENSITIVITY = 0.5"), "HUD size sector sensitivity must stay at ~0.5 px radius per pointer px");
   assert.ok(inputTools.includes("uc.hoverPoint = uc.worldFromCanvasPoint(gesture.lastScreen)"), "the preview circle must track the cursor during the gesture");

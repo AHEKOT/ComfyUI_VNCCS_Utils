@@ -78,6 +78,34 @@ test("open widget modals keep their Enter/Escape keyboard contract in fullscreen
         "the modal check must precede the Esc fullscreen exit");
 });
 
+test("Esc leaves the active tool before it leaves fullscreen", () => {
+    const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
+    const toolExit = shortcuts.indexOf('key === "Escape" && widget.tool !== "move" && widget.tool !== "pan"');
+    const fullscreenExit = shortcuts.indexOf('key === "Escape" && widget._vnccsFullscreen');
+    const poseExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.tool === "pose"');
+    const draftExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.transformDraft');
+    assert.ok(toolExit >= 0, "the tool-exit Esc branch must exist");
+    assert.ok(poseExit >= 0 && poseExit < toolExit, "the pose-session branch must precede the tool exit");
+    assert.ok(draftExit >= 0 && draftExit < toolExit, "the transform-draft branch must precede the tool exit");
+    assert.ok(fullscreenExit > toolExit, "the tool exit must precede the fullscreen exit");
+    assert.ok(/widget\.setTool\("move"\)/.test(shortcuts), "the first Esc must return to Move layer");
+    assert.ok(shortcuts.indexOf("isUniCanvasModalOpen(widget)") < toolExit, "the modal guard must precede the tool exit");
+});
+
+test("history keys bypass the canvas-focus gate in fullscreen and standalone", () => {
+    const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
+    const historyBranch = shortcuts.indexOf('(lower === "z" || lower === "y")');
+    const focusGate = shortcuts.indexOf("if (!isUniCanvasCanvasFocused(widget, event)) return false;");
+    assert.ok(historyBranch >= 0 && focusGate > historyBranch,
+        "the history branch must run before the canvas-focus gate");
+    assert.ok(shortcuts.includes("const historyFocusBypass = Boolean(widget._vnccsFullscreen)"),
+        "fullscreen must bypass the focus requirement");
+    assert.ok(shortcuts.includes("(Boolean(widget.standalone) && Boolean(widget.container?.isConnected))"),
+        "the standalone tab must bypass the focus requirement while connected");
+    assert.ok(/modifier && !event\.altKey && \(lower === "z" \|\| lower === "y"\)/.test(shortcuts),
+        "history still requires Ctrl/Cmd without Alt");
+});
+
 test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
     assert.ok(modesSource.includes("registerSidebarTab.call(extensionManager, {"), "app.extensionManager.registerSidebarTab must be used");
     assert.ok(modesSource.includes("const extensionManager = app?.extensionManager;"), "extensionManager must be probed safely");
@@ -99,11 +127,11 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
         "vnccs_unicanvas.js must register the sidebar tab from the stored setting");
 });
 
-test("standalone sidebar tab is an opt-in ComfyUI setting, off by default", () => {
+test("standalone sidebar tab is a ComfyUI setting, on by default", () => {
     assert.ok(modesSource.includes('export const UNICANVAS_STANDALONE_SETTING_ID = "VNCCS.UniCanvas.StandaloneSidebar";'));
     const settings = region(widgetSource, "  settings: [", "  setup() {");
     assert.ok(settings.includes("id: UNICANVAS_STANDALONE_SETTING_ID"), "the setting is registered by the extension");
-    assert.ok(/type:\s*"boolean"/.test(settings) && /defaultValue:\s*false/.test(settings), "boolean, default off");
+    assert.ok(/type:\s*"boolean"/.test(settings) && /defaultValue:\s*true/.test(settings), "boolean, default on");
     assert.ok(settings.includes("syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, value === true)"),
         "toggling the setting adds or removes the tab without a reload");
     const sync = region(modesSource, "export function syncUniCanvasStandaloneSidebarTab", "export function registerUniCanvasStandaloneSidebarTab");
@@ -120,15 +148,34 @@ test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
         "state must be restored from that localStorage key");
 });
 
-test("New canvas asks Are you sure? and clears layers and images", () => {
+test("New canvas lives in the top bar, asks Are you sure? and clears layers and images", () => {
     const newDocument = region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions");
-    assert.ok(newDocument.includes('"Are you sure?"'), 'the confirm modal must ask "Are you sure?"');
+    assert.ok(newDocument.includes('"New canvas"'), 'the confirm modal must be titled "New canvas"');
+    assert.ok(newDocument.includes('"Are you sure?\\nConfirmation will delete <b>all layers</b> in canvas."'),
+        'the copy must warn that the confirmation deletes all layers');
     assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
     assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
     assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
     assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
-    assert.ok(modesSource.includes('widget._button("New", "vnccs-uc-btn"'), "standalone output actions must include New");
+    const outputActions = region(modesSource, "function installUniCanvasOutputActions", "export function installUniCanvasWidgetModes");
+    assert.ok(outputActions.includes('widget._button(\n    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"')
+        || outputActions.includes('"New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"'),
+        "New canvas must be a top-bar widget button with the centering class");
+    assert.ok(outputActions.includes("widget.settingsBar?.appendChild(newCanvasButton)"),
+        "New canvas must be appended to the top toolbar, not the left column");
+    assert.ok(!modesSource.includes("vnccs-uc2-output-actions"), "the old New row above GENERATE must be gone");
+    assert.ok(!modesSource.includes("_vnccsOutputActions"), "no dead output-actions handle may remain");
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
+    assert.ok(widgetSource.includes(".vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }"),
+        "the top bar CSS must center the New canvas button between the clusters");
+});
+
+test("confirmInWidget renders the message as pre-line HTML copy", () => {
+    const confirm = region(widgetSource, '  confirmInWidget(title, message, confirmLabel = "OK") {', "  _toolButton(tool, title) {");
+    assert.ok(confirm.includes("messageEl.innerHTML = message"),
+        "the message renders as HTML (callers pass our own literal copy only)");
+    assert.ok(confirm.includes('messageEl.style.whiteSpace = "pre-line"'),
+        "the literal newline in the New canvas copy must become a line break");
 });
 
 test("Save to output flattens through the shared helper and keeps the layer-menu call shape", () => {

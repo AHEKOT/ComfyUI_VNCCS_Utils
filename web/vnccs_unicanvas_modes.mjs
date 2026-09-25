@@ -47,7 +47,6 @@ const UNICANVAS_MODE_STYLES = `
 i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
 .vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
-.vnccs-uc2-config-hint { margin: 2px 8px 0; padding: 6px 8px; border: 1px dashed rgba(255, 143, 163, 0.35); border-radius: 8px; color: #f3c9d2; font-size: 12px; line-height: 1.3; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
@@ -66,8 +65,6 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-uc2-true-fullscreen svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .vnccs-uc2-true-fullscreen.active { border-color: rgba(255, 143, 163, 0.7); background: rgba(255, 143, 163, 0.18); color: #ffdce5; }
 .vnccs-uc2-true-fullscreen:hover { background: var(--uc-hover, rgba(255, 255, 255, 0.1)); }
-.vnccs-uc2-output-actions { display: flex; gap: 6px; padding: 8px 8px 0; }
-.vnccs-uc2-output-actions .vnccs-uc-btn { flex: 1 1 auto; }
 .vnccs-uc2-toasts { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 60; display: flex; flex-direction: column; gap: 6px; width: min(420px, calc(100% - 24px)); pointer-events: none; }
 .vnccs-uc2-toast { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px 9px 12px; border: 1px solid rgba(80, 200, 140, 0.55); border-left-width: 3px; border-radius: 10px; background: rgba(18, 15, 26, 0.96); color: #e8e8f0; font: 12px/1.35 inherit; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5); pointer-events: auto; }
 .vnccs-uc2-toast.error { border-color: rgba(229, 72, 77, 0.75); }
@@ -164,24 +161,38 @@ export function handleUniCanvasShortcut(widget, event) {
     else widget.undo();
     return true;
   }
+  // Esc leaves the active tool before it leaves fullscreen: brush/eraser/mask/...
+  // return to Move layer on the first Esc, and the next Esc (tool is move/pan
+  // then) reaches the fullscreen exit below. Move/pan pass straight through.
+  if (key === "Escape" && widget.tool !== "move" && widget.tool !== "pan") {
+    consumeUniCanvasShortcut(event);
+    widget.setTool("move");
+    return true;
+  }
   // Esc exits fullscreen from anywhere inside the fullscreen (chrome behavior).
   if (key === "Escape" && widget._vnccsFullscreen) {
     consumeUniCanvasShortcut(event);
     exitUniCanvasFullscreen(widget);
     return true;
   }
-  // The rest of the shortcut map is active only while the canvas has focus
-  // (spec 5), fullscreen or not.
-  if (!isUniCanvasCanvasFocused(widget, event)) return false;
   const lower = key.toLowerCase();
   const modifier = event.ctrlKey || event.metaKey;
-  // History: Ctrl+Z / Ctrl+Shift+Z.
+  // History: Ctrl+Z / Ctrl+Shift+Z. In fullscreen and in the standalone tab the
+  // keys count no matter which element inside the widget holds the focus (the
+  // fullscreen capture listener already routes them here; the focus may sit on
+  // a panel button); elsewhere the canvas still has to hold the focus.
+  const historyFocusBypass = Boolean(widget._vnccsFullscreen)
+    || (Boolean(widget.standalone) && Boolean(widget.container?.isConnected));
   if (modifier && !event.altKey && (lower === "z" || lower === "y")) {
+    if (!historyFocusBypass && !isUniCanvasCanvasFocused(widget, event)) return false;
     consumeUniCanvasShortcut(event);
     if (lower === "y" || event.shiftKey) widget.redo();
     else widget.undo();
     return true;
   }
+  // The rest of the shortcut map is active only while the canvas has focus
+  // (spec 5), fullscreen or not.
+  if (!isUniCanvasCanvasFocused(widget, event)) return false;
   if (modifier || event.altKey) return false;
   // Tools: B brush, V move, E eraser, M mask, L lasso, S rect.
   if (key.length === 1 && Object.prototype.hasOwnProperty.call(TOOL_SHORTCUTS, lower)) {
@@ -514,7 +525,11 @@ export async function saveUniCanvasOutput(widget, layerId = null) {
 }
 
 export async function newUniCanvasDocument(widget) {
-  const confirmed = await widget.confirmInWidget("New", "Are you sure?", "Confirm");
+  const confirmed = await widget.confirmInWidget(
+    "New canvas",
+    "Are you sure?\nConfirmation will delete <b>all layers</b> in canvas.",
+    "Confirm"
+  );
   if (!confirmed) return;
   // Clear every layer and image, then create one fresh base layer for new work.
   widget.stagingItems = [];
@@ -536,11 +551,13 @@ function installUniCanvasOutputActions(widget) {
   // Only the standalone tab needs these: on a node the composite already goes to the
   // node's image output, so Save to output would just duplicate it.
   if (!widget.standalone) return;
-  const row = document.createElement("div");
-  row.className = "vnccs-uc2-output-actions";
-  row.append(widget._button("New", "vnccs-uc-btn", () => void newUniCanvasDocument(widget), "New canvas"));
-  widget.left.insertBefore(row, widget.left.firstChild);
-  widget._vnccsOutputActions = row;
+  // New canvas sits centered in the top toolbar (between the undo/redo/Fit cluster and
+  // the grid/gear/exit cluster) instead of a row above GENERATE; the CSS centers it
+  // absolutely so the two clusters keep their layout.
+  const newCanvasButton = widget._button(
+    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas", () => void newUniCanvasDocument(widget), "New canvas"
+  );
+  widget.settingsBar?.appendChild(newCanvasButton);
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
@@ -556,7 +573,6 @@ export function installUniCanvasWidgetModes(widget) {
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
   if (widget.standalone) {
-    installStandaloneEngineNote(widget);
     installStandalonePersistence(widget);
   }
   return widget;
@@ -565,16 +581,6 @@ export function installUniCanvasWidgetModes(widget) {
 // ---------------------------------------------------------------------------
 // Standalone sidebar mode: "Unicanvas" tab, chrome hiding, local persistence
 // ---------------------------------------------------------------------------
-
-function installStandaloneEngineNote(widget) {
-  const note = document.createElement("div");
-  note.className = "vnccs-uc2-config-hint";
-  note.textContent = "External VNCSS Config is node-mode only.";
-  const modelTabs = widget.promptBox?.querySelector(".vnccs-uc-model-tabs");
-  if (modelTabs) modelTabs.insertAdjacentElement("afterend", note);
-  else widget.promptBox?.appendChild(note);
-  widget._vnccsStandaloneEngineNote = note;
-}
 
 function writeStandaloneState(widget, state) {
   // Mirrors saveLocalStateBackup's degradation: persistence stops (after one
