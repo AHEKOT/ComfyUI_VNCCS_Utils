@@ -301,6 +301,32 @@ const STYLES = `
   background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
   box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
 }
+/* Help "?" buttons (Parameters panel): the panel hugs the left screen edge and is a scroll
+   container, so the tooltip opens BELOW/RIGHT of the button (bottom/right overflow scrolls instead
+   of clipping). Scoped to .vnccs-uc-field-head so the Qwen21 panel's own .vnccs-uc-help tooltips
+   keep their centered-above placement, and bottom/right/transform are pinned because the qwen21
+   stylesheet (loaded later, same class) would otherwise leak its centered-above positioning in. */
+.vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; position:relative; }
+.vnccs-uc-field-head .vnccs-uc-help:hover::after {
+  content:attr(data-tip); position:absolute; top:calc(100% + 6px); bottom:auto; right:auto; left:0; transform:none;
+  width:240px; padding:6px 8px; border-radius:8px; background:#0a0a0f; border:1px solid var(--uc-border);
+  color:var(--uc-text); font-size:11px; line-height:1.4; text-align:left; white-space:normal; z-index:40;
+  text-transform:none; letter-spacing:normal; font-weight:400;
+}
+.vnccs-uc-field-head { display:flex; align-items:center; gap:5px; min-width:0; }
+/* Inference scale: Denoise-style slider row with a live W×H size preview (duplicates the HUD chip). */
+.vnccs-uc-infer-scale { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-infer-scale .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
+.vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+/* No text selection inside the widget; inputs/prompts, dialogs, help text, layer menu, toasts and
+   the status/debug line stay selectable (the `*` + exceptions form is deliberate: user-select
+   inheritance from a root rule is unreliable across browsers). */
+.vnccs-unicanvas, .vnccs-unicanvas * { user-select:none; -webkit-user-select:none; }
+.vnccs-unicanvas input, .vnccs-unicanvas textarea,
+.vnccs-unicanvas .vnccs-uc-modal, .vnccs-unicanvas .vnccs-uc-prompt-guide-body,
+.vnccs-unicanvas .vnccs-uc-help, .vnccs-unicanvas .vnccs-uc-layer-menu,
+.vnccs-unicanvas .vnccs-uc2-toast,
+.vnccs-unicanvas .vnccs-uc-progress-label { user-select:text; -webkit-user-select:text; }
 `;
 
 if (!document.getElementById("vnccs-unicanvas-styles")) {
@@ -1108,14 +1134,14 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="presets">
         <div data-preset-card-list data-config-override></div>
-        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
       </div>
       <div class="vnccs-uc-model-panel" data-model-panel="custom">
         <div class="vnccs-uc-mode-loader-row">
           <label class="vnccs-uc-field" data-mode-control>Mode<select class="vnccs-uc-select" data-setting="generation_mode">${modelModeOptions}</select></label>
           <label class="vnccs-uc-field" data-config-override>Loader<select class="vnccs-uc-select" data-setting="model_loader">${modelLoaderOptions}</select></label>
         </div>
-        <label class="vnccs-uc-field">Inference scale<input class="vnccs-uc-input" data-setting="inference_scale" type="number" lang="en-US" inputmode="decimal" min="0.125" step="0.125"></label>
+        <label class="vnccs-uc-infer-scale"><span>Inference scale</span><input class="vnccs-uc-range" data-setting="inference_scale" type="range" min="0.5" max="3" step="0.05" value="${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 3)}"><span class="vnccs-uc-infer-size" data-inference-size></span></label>
         ${loaderFields}
         <label class="vnccs-uc-field" data-family-field="krea2_edit" data-config-override title="Krea2 Identity Edit adapter: required for editing with this model">
           Edit LoRA<select class="vnccs-uc-select" data-setting="krea2_edit_lora_name"></select>
@@ -1123,12 +1149,10 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-turbo-section" data-turbo-panel data-config-override></div>
       <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
-        <div class="vnccs-uc-h3-hint">REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.</div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-tip="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;." title="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.">?</span></span><input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field">Steps<input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
-        <div class="vnccs-uc-h3-hint" data-edit-steps-hint></div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
@@ -2606,8 +2630,13 @@ class UniCanvasWidget {
     if (editStepsPanel) {
       const hint = editStepsHints[moduleKey] || "";
       editStepsPanel.style.display = hint ? "" : "none";
-      const hintEl = editStepsPanel.querySelector("[data-edit-steps-hint]");
-      if (hintEl) hintEl.textContent = hint;
+      // The hint text lives on the "?" button next to Steps (hover tooltip) instead of a static div.
+      const helpBtn = editStepsPanel.querySelector("[data-edit-steps-help]");
+      if (helpBtn) {
+        helpBtn.dataset.tip = hint;
+        helpBtn.title = hint;
+        helpBtn.hidden = !hint;
+      }
     }
     const genericSteps = this.container.querySelector("[data-generic-steps]");
     if (genericSteps) {
@@ -2853,6 +2882,8 @@ class UniCanvasWidget {
 
   normalizeGenerationSettings() {
     this.forceSelectedPresetModelSettings();
+    // The scale sliders span 0.5–3; anything else (restored or preset-driven) is pulled back in.
+    this.settings.inference_scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -2959,7 +2990,7 @@ class UniCanvasWidget {
       width: Math.max(64, Math.round(this.bbox.width)),
       height: Math.max(64, Math.round(this.bbox.height)),
     };
-    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     const targetSide = this.getOptimalDimension() * scale;
     const targetArea = targetSide * targetSide;
     const aspectRatio = originalSize.width / originalSize.height;
@@ -2972,10 +3003,22 @@ class UniCanvasWidget {
   }
 
   syncInferenceControls(source = null) {
-    const scaleInput = this.container.querySelector('[data-setting="inference_scale"]');
-    const scale = Math.max(0.125, Number(this.settings.inference_scale) || 1);
+    // Both panels (Presets and Custom) carry an inference scale slider; keep them in lockstep.
+    const scaleInputs = this.container.querySelectorAll('[data-setting="inference_scale"]');
+    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
     this.settings.inference_scale = scale;
-    if (scaleInput && scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+    scaleInputs.forEach((scaleInput) => {
+      if (scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+    });
+    this.updateInferenceSizeLabels();
+  }
+
+  // Live "W×H" preview(s) next to the inference scale sliders; duplicates the HUD `infer` chip.
+  updateInferenceSizeLabels(size = this.getInferenceSize()) {
+    const text = `${size.width}×${size.height}`;
+    this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
+      if (el.textContent !== text) el.textContent = text;
+    });
   }
 
   getDenoiseControlSetting() {
@@ -3128,6 +3171,7 @@ class UniCanvasWidget {
   updateHud() {
     if (!this.hud) return;
     const inferenceSize = this.getInferenceSize();
+    this.updateInferenceSizeLabels(inferenceSize);
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
     if (hudHTML !== this.lastHudHTML) {
@@ -4829,6 +4873,7 @@ class UniCanvasWidget {
     this.drawBbox(ctx);
     ctx.restore();
     const inferenceSize = this.getInferenceSize();
+    this.updateInferenceSizeLabels(inferenceSize);
     this.updateZoomResetButton();
     const hudHTML = `<span class="vnccs-uc-chip">${this.tool}</span><span class="vnccs-uc-chip">${Math.round(this.view.scale * 100)}%</span><span class="vnccs-uc-chip">${this.bbox.width}×${this.bbox.height}</span><span class="vnccs-uc-chip">infer ${inferenceSize.width}×${inferenceSize.height}</span>`;
     if (hudHTML !== this.lastHudHTML) {

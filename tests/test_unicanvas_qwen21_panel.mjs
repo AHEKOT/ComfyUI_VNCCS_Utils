@@ -117,7 +117,7 @@ test("QI2.1 panel matches the UniCanvas palette and ships help tooltips", () => 
 
 test("edit families show a full-width Steps field with a hint and hide the generic one", () => {
     assert.match(mainSource, /data-edit-steps-panel/, "an edit-steps panel must exist");
-    assert.match(mainSource, /data-edit-steps-hint/, "the panel needs a hint element");
+    assert.match(mainSource, /data-edit-steps-help/, "the panel needs a help button carrying the hint");
     assert.match(mainSource, /data-generic-steps/, "the generic Steps field must be toggleable");
     assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
 });
