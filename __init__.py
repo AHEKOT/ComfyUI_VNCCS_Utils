@@ -435,6 +435,39 @@ def _vnccs_read_unicanvas_state_cache_file(state_id):
         pass
     return entry
 
+def _vnccs_unicanvas_build_info():
+    # Debug identity for the UI: git commit (when the checkout has .git) plus the
+    # same newest-mtime version the frontend staleness gate compares against.
+    global _VNCCS_UNICANVAS_BUILD_COMMIT
+    if _VNCCS_UNICANVAS_BUILD_COMMIT is None:
+        _VNCCS_UNICANVAS_BUILD_COMMIT = ""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                _VNCCS_UNICANVAS_BUILD_COMMIT = result.stdout.strip()
+        except Exception:
+            pass
+    version = 0
+    try:
+        import re
+        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+        pattern = re.compile(r"^vnccs_(unicanvas|custom_select|pose_studio).*\.(js|mjs)$")
+        for name in os.listdir(web_dir):
+            if pattern.match(name):
+                version = max(version, int(os.stat(os.path.join(web_dir, name)).st_mtime * 1000))
+    except Exception:
+        pass
+    return {"commit": _VNCCS_UNICANVAS_BUILD_COMMIT or None, "version": str(version)}
+
+
+_VNCCS_UNICANVAS_BUILD_COMMIT = None
+
+
 def _vnccs_register_unicanvas_state_cache():
     try:
         from server import PromptServer
@@ -469,6 +502,10 @@ def _vnccs_register_unicanvas_state_cache():
             return web.json_response({"status": "ok", "state_id": state_id})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/build_info")
+    async def vnccs_unicanvas_build_info(request):
+        return web.json_response(_vnccs_unicanvas_build_info())
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas_state/{state_id}")
     async def vnccs_unicanvas_state_get(request):
