@@ -284,6 +284,7 @@ function installUniCanvasShortcuts(widget) {
 // native undo in every case.
 const uniCanvasModeWidgets = new Set();
 let standaloneHistoryWidget = null;
+let uniCanvasHistoryLastClaimAt = 0;
 
 // Hover tracking: in node mode the widget does not hold keyboard focus, so the
 // mouse being over the widget is what makes Ctrl+Z belong to it. pointerover
@@ -324,9 +325,15 @@ function uniCanvasOwnsFullKeyboard(widget) {
 function handleUniCanvasHistoryKeyDown(event) {
   const widget = uniCanvasHistoryOwner(event);
   if (!widget || widget._disposed) return;
+  uniCanvasHistoryLastClaimAt = Date.now();
   const fullKeyboard = uniCanvasOwnsFullKeyboard(widget);
   // Node mode only claims Ctrl+Z / Ctrl+Y; fullscreen/standalone claim everything.
   if (!fullKeyboard && !isUniCanvasHistoryCombo(event)) return;
+  // Visible trace so the user can see who took the key (status line of the widget).
+  if (isUniCanvasHistoryCombo(event)) {
+    const label = String(event.key).toLowerCase() === "y" ? "Redo" : "Undo";
+    widget.setStatus?.(`[VNCCS UniCanvas] ${label} key captured`);
+  }
   if (isUniCanvasTextTarget(event)) {
     // A focused text field keeps its native editing and undo; ComfyUI still
     // never sees the key.
@@ -384,23 +391,28 @@ function uniCanvasOwnsHistorySession() {
   for (const widget of uniCanvasModeWidgets) {
     if (widget._vnccsFullscreen) return true;
   }
-  return false;
+  // Node mode: a history key we just claimed also owns the session - the
+  // command executes synchronously right after the keydown capture, so a
+  // short claim window is enough to catch late dispatch paths.
+  return Date.now() - uniCanvasHistoryLastClaimAt < 1500;
 }
 
 function installUniCanvasGraphUndoGate() {
   if (uniCanvasUndoGateInstalled) return;
+  // ComfyUI's command store is a Pinia store exposing only `commands` and
+  // `execute` (no getCommand/commandsById), so the only reliable seam is the
+  // execute dispatcher itself: wrap it once and refuse Comfy.Undo / Comfy.Redo
+  // while a UniCanvas surface owns the history. This covers the Edit menu,
+  // the command palette and any keybind route - the graph can never revert.
   const commandStore = app?.extensionManager?.command;
-  if (!commandStore || typeof commandStore.getCommand !== "function") return;
-  for (const id of ["Comfy.Undo", "Comfy.Redo"]) {
-    const command = commandStore.getCommand(id);
-    if (!command || typeof command.function !== "function" || command._vnccsGate) continue;
-    const original = command.function;
-    command._vnccsGate = true;
-    command.function = async (...args) => {
-      if (uniCanvasOwnsHistorySession()) return;
-      return original.apply(command, args);
-    };
-  }
+  if (!commandStore || typeof commandStore.execute !== "function" || commandStore._vnccsGate) return;
+  const originalExecute = commandStore.execute;
+  commandStore._vnccsGate = true;
+  commandStore.execute = async function (commandId, ...rest) {
+    const id = String(commandId || "");
+    if ((id === "Comfy.Undo" || id === "Comfy.Redo") && uniCanvasOwnsHistorySession()) return;
+    return originalExecute.call(this, commandId, ...rest);
+  };
   uniCanvasUndoGateInstalled = true;
 }
 

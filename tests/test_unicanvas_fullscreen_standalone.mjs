@@ -333,10 +333,17 @@ test("history isolation binds live widgets, clears them, and gates Comfy.Undo/Re
     assert.ok(teardownFn.includes("standaloneHistoryWidget = null;"),
         "teardown must clear the standalone widget reference before disposal");
     const gate = region(modesSource, "function installUniCanvasGraphUndoGate", "function toggleUniCanvasTrueFullscreen");
+    assert.ok(gate.includes("commandStore.execute") && gate.includes("originalExecute"),
+        "the gate must wrap the command store's execute dispatcher");
     assert.ok(gate.includes('"Comfy.Undo"') && gate.includes('"Comfy.Redo"'),
-        "the gate must wrap Comfy.Undo and Comfy.Redo");
+        "the gate must refuse Comfy.Undo and Comfy.Redo while owned");
     assert.ok(gate.includes("uniCanvasOwnsHistorySession()"),
         "the gate must be conditional on a UniCanvas session owning the history");
+    const owner = region(modesSource, "function uniCanvasOwnsHistorySession", "function installUniCanvasGraphUndoGate");
+    assert.ok(/Date\.now\(\) - uniCanvasHistoryLastClaimAt < 1500/.test(owner),
+        "a just-claimed history key must own the session long enough for late dispatch paths");
+    assert.ok(/uniCanvasHistoryLastClaimAt = Date\.now\(\)/.test(modesSource),
+        "claiming a history key must be timestamped");
 });
 
 test("ComfyUI dialogs and their scrim open above the standalone shell and fullscreen portal", () => {
