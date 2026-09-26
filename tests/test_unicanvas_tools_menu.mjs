@@ -32,8 +32,8 @@ const MENU_GROUPS = [
 ];
 
 test("widget source installs both tool packs", () => {
-  assert.match(widgetSource, /import \{ installUniCanvasInputTools \} from "\.\/vnccs_unicanvas_input_tools\.mjs";/);
-  assert.match(widgetSource, /import \{ installUniCanvasLayerTools \} from "\.\/vnccs_unicanvas_layer_tools\.mjs";/);
+  assert.match(widgetSource, /import \{ installUniCanvasInputTools \} from "\.\/vnccs_unicanvas_input_tools\.mjs(\?v=\d+)?";/);
+  assert.match(widgetSource, /import \{ installUniCanvasLayerTools \} from "\.\/vnccs_unicanvas_layer_tools\.mjs(\?v=\d+)?";/);
   assert.match(widgetSource, /installUniCanvasInputTools\(this\);/);
   assert.match(widgetSource, /installUniCanvasLayerTools\(this\);/);
 });

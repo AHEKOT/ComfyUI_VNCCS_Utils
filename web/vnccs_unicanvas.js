@@ -2,19 +2,19 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs";
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790442416378";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790442416378";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs";
-import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs";
+import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790442416378";
+import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790442416378";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790442416378";
+import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790442416378";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790442416378";
+import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790442416378";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790442416378";
+import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790442416378";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790442416378";
 import {
   TRANSFORM_MODE_LABELS,
   applyHomography,
@@ -44,19 +44,19 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs";
+} from "./vnccs_unicanvas_transform.mjs?v=1790442416378";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs";
+} from "./vnccs_unicanvas_presets.mjs?v=1790442416378";
 import {
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs";
+} from "./vnccs_unicanvas_modes.mjs?v=1790442416378";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790442416378";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -69,7 +69,7 @@ import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unican
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790439334872";
+const VNCCS_UNICANVAS_VERSION = "1790442416378";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -95,7 +95,30 @@ const VNCCS_UNICANVAS_VERSION = "1790439334872";
   checkStaleness();
   setInterval(checkStaleness, 90000);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs";
+
+// Self-contained safety net for the history keys: while the fullscreen portal
+// or the standalone shell is open, Ctrl+Z / Ctrl+Y must never fall through to
+// ComfyUI's graph undo (which reverts the workflow and collapses fullscreen).
+// vnccs_unicanvas_modes.mjs owns the full keyboard contract; this shield only
+// exists so that even a stale cached modes module cannot leak the keys, and it
+// is deliberately dependency-free (no imports, hardcoded markers).
+(() => {
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  window.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = String(event.key || "").toLowerCase();
+    if (key !== "z" && key !== "y") return;
+    const target = event.target;
+    if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
+    const fullscreenOpen = Boolean(document.querySelector(".vnccs-uc2-fullscreen-portal"));
+    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode");
+    if (!fullscreenOpen && !standaloneOpen) return;
+    event.stopImmediatePropagation();
+    event.preventDefault();
+  }, true);
+})();
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790442416378";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -6037,10 +6060,10 @@ class UniCanvasWidget {
       this.setStatus("Apply or cancel the active transform first", true);
       return;
     }
-    if (this.layers.find(layer => layer.id === id)?.type === "pose") {
-      this.poseEditor?.commit();
-      this.recordHistoryBefore();
-    }
+    this.poseEditor?.commit();
+    // Every delete is undoable: the snapshot clones pixels, so undo restores
+    // the removed layer exactly (raster and mask layers included).
+    this.recordHistoryBefore();
     if (this.poseEditor?.layer?.id === id) this.poseEditor.release();
     this.layers = this.layers.filter((l) => l.id !== id);
     if (this.activeLayerId === id) {

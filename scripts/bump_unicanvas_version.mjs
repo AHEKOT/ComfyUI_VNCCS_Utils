@@ -41,5 +41,9 @@ if (current === version) {
   console.log("Version already up to date:", version);
   process.exit(0);
 }
-await writeFile(entryPath, source.replace(versionMarker, `const VNCCS_UNICANVAS_VERSION = "${version}";`), "utf8");
-console.log("Bumped VNCCS_UNICANVAS_VERSION:", current, "->", version);
+let next = source.replace(versionMarker, `const VNCCS_UNICANVAS_VERSION = "${version}";`);
+// Keep the cache-busting query on every local module import in sync with the
+// version constant, so a bumped entry always pulls fresh modules.
+next = next.replace(/(from "\.\/vnccs_[^"?]+)\?v=\d+/g, `$1?v=${version}`);
+await writeFile(entryPath, next, "utf8");
+console.log("Bumped VNCCS_UNICANVAS_VERSION:", current, "->", version, "(imports re-versioned)");
