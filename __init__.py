@@ -438,20 +438,20 @@ def _vnccs_read_unicanvas_state_cache_file(state_id):
 def _vnccs_unicanvas_build_info():
     # Debug identity for the UI: git commit (when the checkout has .git) plus the
     # same newest-mtime version the frontend staleness gate compares against.
-    global _VNCCS_UNICANVAS_BUILD_COMMIT
-    if _VNCCS_UNICANVAS_BUILD_COMMIT is None:
-        _VNCCS_UNICANVAS_BUILD_COMMIT = ""
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["git", "rev-parse", "--short", "HEAD"],
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                capture_output=True, text=True, timeout=3,
-            )
-            if result.returncode == 0:
-                _VNCCS_UNICANVAS_BUILD_COMMIT = result.stdout.strip()
-        except Exception:
-            pass
+    # The commit is read per call (cheap, once per popover open) so it can never
+    # go stale after new commits land without a server restart.
+    commit = ""
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            capture_output=True, text=True, timeout=3,
+        )
+        if result.returncode == 0:
+            commit = result.stdout.strip()
+    except Exception:
+        pass
     version = 0
     try:
         import re
@@ -462,10 +462,7 @@ def _vnccs_unicanvas_build_info():
                 version = max(version, int(os.stat(os.path.join(web_dir, name)).st_mtime * 1000))
     except Exception:
         pass
-    return {"commit": _VNCCS_UNICANVAS_BUILD_COMMIT or None, "version": str(version)}
-
-
-_VNCCS_UNICANVAS_BUILD_COMMIT = None
+    return {"commit": commit or None, "version": str(version)}
 
 
 def _vnccs_register_unicanvas_state_cache():
