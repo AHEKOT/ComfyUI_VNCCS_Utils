@@ -272,3 +272,80 @@ test("the standalone tab has no fullscreen toggle", () => {
     const install = region(modesSource, "function installUniCanvasFullscreenButton", "export function showUniCanvasToast");
     assert.ok(install.includes("if (widget.standalone) return;"), "standalone must skip the fullscreen button");
 });
+
+test("UniCanvas owns history keys (and the whole keyboard in fullscreen/standalone)", () => {
+    const isolation = region(modesSource,
+        "History isolation: Ctrl+Z / Ctrl+Y never reach ComfyUI's graph undo/redo",
+        "// Belt and braces for the non-keyboard paths");
+    // Registered at module import in capture phase: it runs before ComfyUI's
+    // bubble-phase keybind handler (useEventListener in GraphView.vue).
+    for (const [type, handler] of [["keydown", "handleUniCanvasHistoryKeyDown"], ["keyup", "handleUniCanvasHistoryKeyUp"], ["keypress", "handleUniCanvasHistoryKeyPress"]]) {
+        assert.ok(isolation.includes(`window.addEventListener("${type}", ${handler}, true)`),
+            `${type} must be captured on window`);
+    }
+    assert.ok(/typeof window !== "undefined"/.test(isolation),
+        "the registration must be guarded for non-browser environments");
+    // Ownership: standalone gate, then any fullscreen widget, then node-mode
+    // interaction (pointer inside the widget or canvas focused).
+    assert.ok(isolation.includes("classList.contains(UNICANVAS_STANDALONE_BODY_CLASS)"),
+        "the standalone gate must use the body class");
+    assert.ok(/for \(const widget of uniCanvasModeWidgets\) \{\s*if \(widget\._vnccsFullscreen\) return widget;/.test(isolation),
+        "a fullscreen widget must own the keys");
+    assert.ok(/widget\._vnccsPointerInside \|\| isUniCanvasCanvasFocused\(widget, event\)/.test(isolation),
+        "node mode must own the keys while the pointer or focus is inside the widget");
+    // Fullscreen/standalone swallow every key, not only the history combo.
+    assert.ok(/uniCanvasOwnsFullKeyboard\(widget\)/.test(isolation),
+        "fullscreen/standalone must claim the whole keyboard");
+    assert.ok(/_vnccsFullscreen[\s\S]{0,80}UNICANVAS_STANDALONE_BODY_CLASS/.test(isolation),
+        "full-keyboard ownership covers fullscreen and the standalone shell");
+    assert.ok(isolation.includes("isUniCanvasHistoryCombo(event)")
+        && /key === "z" \|\| key === "y"/.test(isolation)
+        && isolation.includes("event.altKey"),
+        "node mode claims only Ctrl/Cmd+Z/Y (no Alt)");
+    // A focused text field keeps native editing (no preventDefault) but is still stopped.
+    assert.ok(/isUniCanvasTextTarget\(event\)[\s\S]{0,200}?stopImmediatePropagation\(\);[\s\S]{0,60}?return;/.test(isolation),
+        "text targets must keep native editing and only stop propagation");
+    // The widget map runs first with a history bypass; the key is then swallowed
+    // even when the map declines, and unhandled Tab keeps focus traversal.
+    assert.ok(isolation.includes("handleUniCanvasShortcut(widget, event, { historyBypass: true })"),
+        "the widget shortcut map must run first with the history bypass");
+    assert.ok(/stopImmediatePropagation\(\);[\s\S]{0,60}event\.key !== "Tab"\) event\.preventDefault\(\)/.test(isolation),
+        "non-Tab keys must be preventDefault-ed; unhandled Tab keeps its default");
+    assert.ok(/!handled && event\.key !== "Tab"/.test(isolation),
+        "preventDefault must be skipped when the map handled the key or Tab moves focus");
+});
+
+test("history isolation binds live widgets, clears them, and gates Comfy.Undo/Redo", () => {
+    assert.ok(/const uniCanvasModeWidgets = new Set\(\);/.test(modesSource),
+        "the live widget registry must exist");
+    const install = region(modesSource, "export function installUniCanvasWidgetModes", "export function teardownUniCanvasWidgetModes");
+    assert.ok(install.includes("uniCanvasModeWidgets.add(widget)"), "install must register the widget");
+    assert.ok(install.includes("installUniCanvasGraphUndoGate()"), "install must arm the Comfy.Undo/Redo gate");
+    const teardown = region(modesSource, "export function teardownUniCanvasWidgetModes", "function readStandalonePersistedStateValue");
+    assert.ok(teardown.includes("uniCanvasModeWidgets.delete(widget)"), "teardown must unregister the widget");
+    const render = region(modesSource, "render(container) {", "globalThis.__VNCCS_UC_E2E__");
+    assert.ok(render.includes("standaloneHistoryWidget = widget;"),
+        "the isolation must bind the standalone widget when the tab renders");
+    const teardownFn = region(modesSource, "const teardown = () => {", "widget?.dispose?.();");
+    assert.ok(teardownFn.includes("standaloneHistoryWidget = null;"),
+        "teardown must clear the standalone widget reference before disposal");
+    const gate = region(modesSource, "function installUniCanvasGraphUndoGate", "function toggleUniCanvasTrueFullscreen");
+    assert.ok(gate.includes('"Comfy.Undo"') && gate.includes('"Comfy.Redo"'),
+        "the gate must wrap Comfy.Undo and Comfy.Redo");
+    assert.ok(gate.includes("uniCanvasOwnsHistorySession()"),
+        "the gate must be conditional on a UniCanvas session owning the history");
+});
+
+test("ComfyUI dialogs and their scrim open above the standalone shell and fullscreen portal", () => {
+    const styles = region(modesSource, "const UNICANVAS_MODE_STYLES = `", "ensureUniCanvasModeStyles");
+    for (const marker of [".vnccs-uc2-standalone-shell", ".vnccs-uc2-fullscreen-portal"]) {
+        assert.ok(styles.includes(`body:has(${marker}) .p-dialog-mask`),
+            `PrimeVue dialog masks must lift above ${marker}`);
+        assert.ok(styles.includes(`body:has(${marker}) [role="dialog"]`),
+            `generic dialogs must lift above ${marker}`);
+        assert.ok(styles.includes(`body:has(${marker}) .comfy-modal`),
+            `legacy modals must lift above ${marker}`);
+    }
+    assert.ok(/z-index:\s*2147484000 !important/.test(styles),
+        "the lifted z-index must beat the shell (2147481000) and portal (2147482000) with !important");
+});
