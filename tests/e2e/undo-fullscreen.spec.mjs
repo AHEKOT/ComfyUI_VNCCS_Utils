@@ -137,3 +137,28 @@ test("Ctrl+Z while a canvas text field is focused keeps native editing", async (
   expect(await page.evaluate(() => window.__ucUndoLeaks)).toEqual([]);
   expect(await graphFingerprint(page)).toEqual(graphBefore);
 });
+
+test("adding and deleting layers are undoable inside fullscreen", async ({ page }) => {
+  await bootGraphWithUniCanvas(page);
+  const graphBefore = await graphFingerprint(page);
+  await openFullscreen(page);
+
+  const addMask = page.locator('.vnccs-uc2-fullscreen-portal button[title="Add mask"]');
+  const before = await portalLayers(page).count();
+  await addMask.click();
+  await expect(portalLayers(page)).toHaveCount(before + 1);
+
+  // Delete the newly added mask through its row button, then undo the delete.
+  const deleteBtn = page
+    .locator(".vnccs-uc2-fullscreen-portal .vnccs-uc-layer", { hasText: "Mask" })
+    .last()
+    .locator('button[title="Delete layer"]');
+  await deleteBtn.click();
+  await expect(portalLayers(page)).toHaveCount(before);
+  await page.keyboard.press("Control+z");
+  await expect(portalLayers(page)).toHaveCount(before + 1, { timeout: 5_000 });
+
+  await expect(page.locator(".vnccs-uc2-fullscreen-portal")).toBeVisible();
+  expect(await page.evaluate(() => window.__ucUndoLeaks)).toEqual([]);
+  expect(await graphFingerprint(page)).toEqual(graphBefore);
+});
