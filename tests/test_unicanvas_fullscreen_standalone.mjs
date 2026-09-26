@@ -291,8 +291,11 @@ test("UniCanvas owns history keys (and the whole keyboard in fullscreen/standalo
         "the standalone gate must use the body class");
     assert.ok(/for \(const widget of uniCanvasModeWidgets\) \{\s*if \(widget\._vnccsFullscreen\) return widget;/.test(isolation),
         "a fullscreen widget must own the keys");
-    assert.ok(/widget\._vnccsPointerInside \|\| isUniCanvasCanvasFocused\(widget, event\)/.test(isolation),
-        "node mode must own the keys while the pointer or focus is inside the widget");
+    assert.ok(/widget\._vnccsPointerHover \|\| widget\._vnccsPointerInside \|\| isUniCanvasCanvasFocused\(widget, event\)/.test(isolation),
+        "node mode must own the keys while the pointer hovers, last clicked, or focus is inside the widget");
+    assert.ok(isolation.includes("trackUniCanvasPointerHover")
+        && isolation.includes('document.addEventListener("pointerover", trackUniCanvasPointerHover, true)'),
+        "hover ownership must be tracked via document pointerover");
     // Fullscreen/standalone swallow every key, not only the history combo.
     assert.ok(/uniCanvasOwnsFullKeyboard\(widget\)/.test(isolation),
         "fullscreen/standalone must claim the whole keyboard");

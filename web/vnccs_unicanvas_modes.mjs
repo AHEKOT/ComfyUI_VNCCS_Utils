@@ -285,6 +285,16 @@ function installUniCanvasShortcuts(widget) {
 const uniCanvasModeWidgets = new Set();
 let standaloneHistoryWidget = null;
 
+// Hover tracking: in node mode the widget does not hold keyboard focus, so the
+// mouse being over the widget is what makes Ctrl+Z belong to it. pointerover
+// targets only land inside the container while the widget actually receives
+// pointer events (ComfyUI toggles that as the mouse crosses the node).
+function trackUniCanvasPointerHover(event) {
+  for (const widget of uniCanvasModeWidgets) {
+    widget._vnccsPointerHover = Boolean(widget.container?.isConnected && widget.container.contains(event.target));
+  }
+}
+
 function uniCanvasHistoryOwner(event) {
   if (document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS) && standaloneHistoryWidget) {
     return standaloneHistoryWidget;
@@ -293,7 +303,7 @@ function uniCanvasHistoryOwner(event) {
     if (widget._vnccsFullscreen) return widget;
   }
   for (const widget of uniCanvasModeWidgets) {
-    if (widget._vnccsPointerInside || isUniCanvasCanvasFocused(widget, event)) return widget;
+    if (widget._vnccsPointerHover || widget._vnccsPointerInside || isUniCanvasCanvasFocused(widget, event)) return widget;
   }
   return null;
 }
@@ -324,13 +334,15 @@ function handleUniCanvasHistoryKeyDown(event) {
     return;
   }
   // Run the widget map first (undo/redo, tool shortcuts, modal and pose
-  // contracts); swallow the key even when the map declines, so nothing falls
-  // through to the graph. Tab keeps its default when the map did not take it,
-  // so focus traversal inside the panels keeps working.
+  // contracts); swallow the key even when the map declines or throws, so
+  // nothing ever falls through to the graph. Tab keeps its default when the
+  // map did not take it, so focus traversal inside the panels keeps working.
   widget._vnccsHistoryOwner = true;
   let handled;
   try {
     handled = handleUniCanvasShortcut(widget, event, { historyBypass: true });
+  } catch (err) {
+    console.error("[VNCCS UniCanvas] shortcut handling failed; key stays captured", err);
   } finally {
     delete widget._vnccsHistoryOwner;
   }
@@ -358,6 +370,7 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
   window.addEventListener("keydown", handleUniCanvasHistoryKeyDown, true);
   window.addEventListener("keyup", handleUniCanvasHistoryKeyUp, true);
   window.addEventListener("keypress", handleUniCanvasHistoryKeyPress, true);
+  document.addEventListener("pointerover", trackUniCanvasPointerHover, true);
 }
 
 // Belt and braces for the non-keyboard paths (Edit menu, command palette):
@@ -493,6 +506,10 @@ export function enterUniCanvasFullscreen(widget) {
   };
   installUniCanvasGraphUndoGate();
   syncUniCanvasFullscreenButton(widget);
+  // The graph canvas behind the portal may still hold keyboard focus (entering
+  // fullscreen is mouse-only); pull focus into the widget so keys are aimed at
+  // UniCanvas from the first press.
+  widget.canvas?.focus?.({ preventScroll: true });
   // The ResizeObserver re-lays out; the view fits the new size.
   widget.resize();
   widget.fitView();
