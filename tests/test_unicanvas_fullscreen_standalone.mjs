@@ -346,6 +346,26 @@ test("history isolation binds live widgets, clears them, and gates Comfy.Undo/Re
         "claiming a history key must be timestamped");
 });
 
+test("the ChangeTracker gate stops ComfyUI's own Ctrl+Z before it reloads the graph", () => {
+    const gate = region(modesSource, "function uniCanvasChangeTracker() {", "function toggleUniCanvasTrueFullscreen");
+    // ComfyUI's ChangeTracker.init() keydown listener runs before extensions and defers
+    // to requestAnimationFrame -> changeTracker.undoRedo(), which never touches the
+    // command store; patching the prototype is the only seam that covers it.
+    assert.ok(gate.includes("activeWorkflow?.changeTracker"), "the gate must resolve the live ChangeTracker");
+    assert.ok(gate.includes("Object.getPrototypeOf(tracker)"), "the gate must patch the prototype so new workflows stay covered");
+    assert.ok(/proto\.undoRedo = async function/.test(gate), "undoRedo (the rAF path) must be wrapped");
+    assert.ok(/proto\.undo = async function/.test(gate) && /proto\.redo = async function/.test(gate),
+        "direct undo/redo must be wrapped too");
+    assert.ok(/if \(uniCanvasOwnsHistorySession\(\)\) return true;/.test(gate),
+        "undoRedo must claim the key (true = handled) while UniCanvas owns history");
+    assert.ok(gate.includes("_vnccsTrackerGate"), "the patch must be installed once");
+    assert.ok(modesSource.includes("  installUniCanvasChangeTrackerGate();"),
+        "the gate must be installed from the widget/fullscreen installers");
+    const keydown = region(modesSource, "function handleUniCanvasHistoryKeyDown", "function handleUniCanvasHistoryKeyUp");
+    assert.ok(keydown.indexOf("installUniCanvasChangeTrackerGate();") < keydown.indexOf("const widget = uniCanvasHistoryOwner(event);"),
+        "the keydown handler must (re)install the gate before anything else runs");
+});
+
 test("ComfyUI dialogs and their scrim open above the standalone shell and fullscreen portal", () => {
     const styles = region(modesSource, "const UNICANVAS_MODE_STYLES = `", "ensureUniCanvasModeStyles");
     for (const marker of [".vnccs-uc2-standalone-shell", ".vnccs-uc2-fullscreen-portal"]) {

@@ -323,6 +323,8 @@ function uniCanvasOwnsFullKeyboard(widget) {
 }
 
 function handleUniCanvasHistoryKeyDown(event) {
+  // Belt and braces: the tracker gate must exist before its rAF callback runs.
+  installUniCanvasChangeTrackerGate();
   const widget = uniCanvasHistoryOwner(event);
   if (!widget || widget._disposed) return;
   uniCanvasHistoryLastClaimAt = Date.now();
@@ -414,6 +416,56 @@ function installUniCanvasGraphUndoGate() {
     return originalExecute.call(this, commandId, ...rest);
   };
   uniCanvasUndoGateInstalled = true;
+}
+
+// ComfyUI's ChangeTracker.init() registers its OWN window-capture keydown listener
+// before any extension loads, and defers the actual work to requestAnimationFrame
+// before calling changeTracker.undoRedo(event). That path never touches the command
+// store, and stopImmediatePropagation cannot cancel an already-scheduled rAF - so
+// the graph reloads (app.loadGraphData) and the node is torn down, which is what
+// collapsed fullscreen and "refreshed the workflow" for the user. The only seam
+// that covers it is the tracker itself: patch its prototype once so undo/redo
+// refuse to run while a UniCanvas surface owns the history keys.
+let uniCanvasChangeTrackerGateInstalled = false;
+
+function uniCanvasChangeTracker() {
+  try {
+    return app?.extensionManager?.workflow?.activeWorkflow?.changeTracker ?? null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+function installUniCanvasChangeTrackerGate() {
+  if (uniCanvasChangeTrackerGateInstalled) return;
+  const tracker = uniCanvasChangeTracker();
+  const proto = tracker ? Object.getPrototypeOf(tracker) : null;
+  if (!proto || typeof proto.undoRedo !== "function") return;
+  if (!proto._vnccsTrackerGate) {
+    const originalUndoRedo = proto.undoRedo;
+    const originalUndo = proto.undo;
+    const originalRedo = proto.redo;
+    proto._vnccsTrackerGate = true;
+    proto.undoRedo = async function (event) {
+      // Claim the key (true = handled) so the tracker's own listener stops here
+      // instead of falling through to captureCanvasState.
+      if (uniCanvasOwnsHistorySession()) return true;
+      return originalUndoRedo.call(this, event);
+    };
+    if (typeof originalUndo === "function") {
+      proto.undo = async function (...args) {
+        if (uniCanvasOwnsHistorySession()) return undefined;
+        return originalUndo.apply(this, args);
+      };
+    }
+    if (typeof originalRedo === "function") {
+      proto.redo = async function (...args) {
+        if (uniCanvasOwnsHistorySession()) return undefined;
+        return originalRedo.apply(this, args);
+      };
+    }
+  }
+  uniCanvasChangeTrackerGateInstalled = true;
 }
 
 function toggleUniCanvasTrueFullscreen(widget) {
@@ -517,6 +569,7 @@ export function enterUniCanvasFullscreen(widget) {
     onFullscreenChange,
   };
   installUniCanvasGraphUndoGate();
+  installUniCanvasChangeTrackerGate();
   syncUniCanvasFullscreenButton(widget);
   // The graph canvas behind the portal may still hold keyboard focus (entering
   // fullscreen is mouse-only); pull focus into the widget so keys are aimed at
@@ -745,6 +798,7 @@ export function installUniCanvasWidgetModes(widget) {
   installUniCanvasFullscreenButton(widget);
   installUniCanvasOutputActions(widget);
   installUniCanvasGraphUndoGate();
+  installUniCanvasChangeTrackerGate();
   if (widget.standalone) {
     installStandalonePersistence(widget);
   }

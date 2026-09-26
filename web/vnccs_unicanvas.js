@@ -2,19 +2,19 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790442416378";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790442416378";
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790452119165";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790452119165";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790442416378";
-import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790442416378";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790442416378";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790442416378";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790442416378";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790442416378";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790442416378";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790442416378";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790442416378";
+import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790452119165";
+import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790452119165";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790452119165";
+import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790452119165";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790452119165";
+import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790452119165";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790452119165";
+import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790452119165";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790452119165";
 import {
   TRANSFORM_MODE_LABELS,
   applyHomography,
@@ -44,19 +44,19 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs?v=1790442416378";
+} from "./vnccs_unicanvas_transform.mjs?v=1790452119165";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs?v=1790442416378";
+} from "./vnccs_unicanvas_presets.mjs?v=1790452119165";
 import {
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs?v=1790442416378";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790442416378";
+} from "./vnccs_unicanvas_modes.mjs?v=1790452119165";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790452119165";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -69,7 +69,7 @@ import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unican
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790442416378";
+const VNCCS_UNICANVAS_VERSION = "1790452119165";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -118,7 +118,7 @@ const VNCCS_UNICANVAS_VERSION = "1790442416378";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790442416378";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790452119165";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
