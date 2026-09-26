@@ -331,8 +331,9 @@ const STYLES = `
 .vnccs-uc-infer-scale .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
 .vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
 /* No text selection inside the widget; inputs/prompts, dialogs, help text, layer menu, toasts and
-   the status/debug line stay selectable (the `*` + exceptions form is deliberate: user-select
-   inheritance from a root rule is unreliable across browsers). */
+   the status/debug line stay selectable (the star-plus-exceptions form is deliberate: user-select
+   inheritance from a root rule is unreliable across browsers, and backticks are illegal inside a
+   template-literal stylesheet). */
 .vnccs-unicanvas, .vnccs-unicanvas * { user-select:none; -webkit-user-select:none; }
 .vnccs-unicanvas input, .vnccs-unicanvas textarea,
 .vnccs-unicanvas .vnccs-uc-modal, .vnccs-unicanvas .vnccs-uc-prompt-guide-body,
