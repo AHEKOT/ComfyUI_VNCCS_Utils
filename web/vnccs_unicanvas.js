@@ -2,19 +2,19 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790452128483";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790452128483";
+import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790494137676";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790494137676";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790452128483";
-import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790452128483";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790452128483";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790452128483";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790452128483";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790452128483";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790452128483";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790452128483";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790452128483";
+import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
+import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
+import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
+import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
+import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
+import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790494137676";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790494137676";
+import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790494137676";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790494137676";
 import {
   TRANSFORM_MODE_LABELS,
   applyHomography,
@@ -44,19 +44,20 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_transform.mjs?v=1790494137676";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_presets.mjs?v=1790494137676";
 import {
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs?v=1790452128483";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790452128483";
+} from "./vnccs_unicanvas_modes.mjs?v=1790494137676";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
+import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790494137676";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -69,7 +70,7 @@ import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unican
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790452128483";
+const VNCCS_UNICANVAS_VERSION = "1790494137676";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -118,7 +119,7 @@ const VNCCS_UNICANVAS_VERSION = "1790452128483";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790452128483";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790494137676";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -374,18 +375,10 @@ const STYLES = `
   box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
   box-sizing:border-box;
 }
-/* Help "?" buttons (Parameters panel): the panel hugs the left screen edge and is a scroll
-   container, so the tooltip opens BELOW/RIGHT of the button (bottom/right overflow scrolls instead
-   of clipping). Scoped to .vnccs-uc-field-head so the Qwen21 panel's own .vnccs-uc-help tooltips
-   keep their centered-above placement, and bottom/right/transform are pinned because the qwen21
-   stylesheet (loaded later, same class) would otherwise leak its centered-above positioning in. */
-.vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; position:relative; }
-.vnccs-uc-field-head .vnccs-uc-help:hover::after {
-  content:attr(data-tip); position:absolute; top:calc(100% + 6px); bottom:auto; right:auto; left:0; transform:none;
-  width:240px; padding:6px 8px; border-radius:8px; background:#0a0a0f; border:1px solid var(--uc-border);
-  color:var(--uc-text); font-size:11px; line-height:1.4; text-align:left; white-space:normal; z-index:40;
-  text-transform:none; letter-spacing:normal; font-weight:400;
-}
+/* Help "?" buttons. The tooltip text is rendered by the shared body-level layer
+   (see vnccs_unicanvas_help.mjs): a pseudo-element tooltip would be clipped by the
+   sidebars' scroll containers, so the icons only carry data-tip. */
+.vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; }
 .vnccs-uc-field-head { display:flex; align-items:center; gap:5px; min-width:0; }
 /* Inference scale: Denoise-style slider row with a live W×H size preview (duplicates the HUD chip). */
 .vnccs-uc-infer-scale { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
@@ -612,6 +605,8 @@ const RENDER_LOD_OVERSAMPLE = 2.25;
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
 const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength", "minimax_h3_steps", "krea2_likeness"]);
+// The Seed dice starts active: every fresh canvas draws a new seed per run.
+const DEFAULT_SEED_MODE = "randomize";
 const UNICANVAS_MODEL_MODULES = {
   sdxl: {
     key: "sdxl",
@@ -875,7 +870,7 @@ function makeDefaultUniCanvasSettings() {
     positive: "",
     negative: "",
     seed: 0,
-    seed_mode: "fixed",
+    seed_mode: DEFAULT_SEED_MODE,
     batch_size: 1,
     denoise: 0.65,
     grow_mask_by: 6,
@@ -1252,7 +1247,7 @@ class UniCanvasWidget {
       </div>
       <div class="vnccs-uc-turbo-section" data-turbo-panel data-config-override></div>
       <div class="vnccs-uc-h3-panel" data-h3-panel style="display:none">
-        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-tip="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;." title="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.">?</span></span><input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
+        <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-tip="REF2VA region edit — working area is &lt;Picture 1&gt;, Edit model references are &lt;Picture 2..5&gt;.">?</span></span><input class="vnccs-uc-input" data-setting="minimax_h3_steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
         <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
@@ -2242,7 +2237,10 @@ class UniCanvasWidget {
       if (!(btn instanceof HTMLElement)) return;
       if (btn.dataset.action === "seed-mode") {
         e.preventDefault();
-        this.settings.seed_mode = (this.settings.seed_mode || "fixed") === "randomize" ? "fixed" : "randomize";
+        this.settings.seed_mode = (this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize" ? "fixed" : "randomize";
+        // The dice is a deliberate choice: it survives restores even when the
+        // built-in default changes again.
+        this.settings.seed_mode_user_set = true;
         this.syncSeedModeControl();
         this.syncSettingsToWidget();
       } else if (btn.dataset.action === "edit-refs") {
@@ -2754,11 +2752,10 @@ class UniCanvasWidget {
     if (editStepsPanel) {
       const hint = editStepsHints[moduleKey] || "";
       editStepsPanel.style.display = hint ? "" : "none";
-      // The hint text lives on the "?" button next to Steps (hover tooltip) instead of a static div.
+      // The hint text lives on the "?" button next to Steps (shared hover tooltip) instead of a static div.
       const helpBtn = editStepsPanel.querySelector("[data-edit-steps-help]");
       if (helpBtn) {
         helpBtn.dataset.tip = hint;
-        helpBtn.title = hint;
         helpBtn.hidden = !hint;
       }
     }
@@ -6659,7 +6656,7 @@ class UniCanvasWidget {
       this.setStatus(validationError, true);
       return;
     }
-    if ((this.settings.seed_mode || "fixed") === "randomize") {
+    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
       this.settings.seed = this.generateRandomSeed();
       this.syncPromptControls();
       this.flushSettingsToWidget();
@@ -7288,10 +7285,18 @@ class UniCanvasWidget {
     this.container.querySelectorAll(".vnccs-uc-textarea").forEach((textarea) => this.resizeTextareaToContent(textarea));
   }
 
+  // Canvases saved before the random-by-default change carry the old "fixed"
+  // default although the dice was never clicked: only an explicit choice
+  // (seed_mode_user_set, written by the dice) pins the mode across restores.
+  applySeedModeDefault() {
+    if (this.settings.seed_mode_user_set === true) return;
+    this.settings.seed_mode = DEFAULT_SEED_MODE;
+  }
+
   syncSeedModeControl() {
     const btn = this.container.querySelector('[data-action="seed-mode"]');
     if (!btn) return;
-    const randomMode = (this.settings.seed_mode || "fixed") === "randomize";
+    const randomMode = (this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize";
     btn.classList.toggle("active", randomMode);
     btn.title = randomMode ? "Random seed" : "Fixed seed";
     btn.setAttribute("aria-pressed", randomMode ? "true" : "false");
@@ -7735,6 +7740,7 @@ class UniCanvasWidget {
   applySerializedSettings(settings) {
     if (!settings || typeof settings !== "object") return;
     this.settings = { ...this.settings, ...settings };
+    this.applySeedModeDefault();
     this.syncPromptControls();
   }
 
@@ -7806,6 +7812,7 @@ class UniCanvasWidget {
       this.snapToGrid = state.snapToGrid === true;
       this.resizeTransformMode = normalizeTransformMode(state.resizeTransformMode);
       this.settings = { ...this.settings, ...(state.settings || {}) };
+      this.applySeedModeDefault();
       if (layers.length) {
         this.layers = layers;
         this.normalizeLayerOrder();
@@ -8266,6 +8273,8 @@ app.registerExtension({
     },
   ],
   setup() {
+    // Help "?" tooltips render in a body-level layer so no sidebar clips them.
+    installUniCanvasHelpTooltips();
     // Optional standalone Unicanvas sidebar tab (no node, no workflow), enabled by default.
     fetch("/vnccs/unicanvas/build_info", { cache: "no-store" })
       .then((res) => res.json())

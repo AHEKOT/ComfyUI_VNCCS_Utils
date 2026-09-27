@@ -122,6 +122,22 @@ test("edit families show a full-width Steps field with a hint and hide the gener
     assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
 });
 
+test("QI2.1 settings fold into an accordion with the turbo switch in the header", () => {
+  const shell = panelSource.match(/function buildPanelShell\(\) \{([\s\S]*?)\n\}/);
+  assert.ok(shell, "buildPanelShell missing");
+  assert.match(shell[1], /qwenTitleText\.textContent = "QI2\.1"/, "the collapsed header must read QI2.1");
+  assert.match(shell[1], /qwenTitleText\.title = "Qwen-Image-2\.1 \(QI2\.1\) settings"/, "the header carries the family tooltip");
+  assert.match(shell[1], /dataset\.qwen21Expand/, "the header needs its expand markers");
+  assert.match(shell[1], /title\.append\([\s\S]*?turboLabel\)/, "the turbo switch must live in the header row");
+  assert.match(shell[1], /const qwenBody = document\.createElement\("div"\)/, "the foldable body container is missing");
+  assert.match(shell[1], /qwenBody\.hidden = true/, "the body must start folded");
+  assert.match(shell[1], /qwenBody\.appendChild\(spectrum\)/, "Spectrum must fold into the accordion body");
+  const click = panelSource.match(/panel\.addEventListener\("click", \(event\) => \{([\s\S]*?)\n  \}\);/);
+  assert.ok(click, "click listener body missing");
+  assert.match(click[1], /target\.dataset\.qwen21Expand !== undefined/, "the header must toggle the folded body");
+  assert.match(click[1], /closest\("\.vnccs-uc-help"\)/, "a help icon click must not toggle the control next to it");
+});
+
 test("QI2.1 Viggle turbo switch mirrors the other turbo switches", () => {
   assert.match(panelSource, /QWEN21_TURBO_LORA_NAME/, "the Viggle turbo LoRA name must be defined");
   assert.match(panelSource, /Viggle\/Qwen-Image-2\.1-viggle-turbo/, "the HuggingFace repo id must be referenced");
@@ -131,6 +147,20 @@ test("QI2.1 Viggle turbo switch mirrors the other turbo switches", () => {
   assert.match(panelSource, /QWEN21_TURBO_SETTINGS = \{ steps: 6, cfg: 1 \}/, "turbo must switch to the 6-step / no-CFG profile");
   assert.match(panelSource, /qwen21_turbo_previous_settings/, "the pre-turbo steps/cfg must be saved and restored");
   assert.match(panelSource, /qwen21_turbo_enabled/, "the switch state must persist in settings");
+});
+
+test("switching turbo off returns the base 45-step schedule", () => {
+  assert.match(panelSource, /QWEN21_BASE_SETTINGS = \{ steps: 45 \}/, "the base (non-turbo) profile must declare 45 steps");
+  const turbo = panelSource.match(/export function applyQwen21TurboProfile\(widget, enabled\) \{([\s\S]*?)\n\}/);
+  assert.ok(turbo, "applyQwen21TurboProfile missing");
+  assert.match(turbo[1], /settings\.steps = QWEN21_BASE_SETTINGS\.steps/, "a switch-off without a snapshot must fall back to the base steps");
+  assert.match(panelSource, /returns Steps to the 45-step base schedule/, "the turbo tooltip must explain the base schedule");
+  // The Steps field in the sidebar must show the swapped value immediately.
+  const change = panelSource.match(/panel\.addEventListener\("change", \(event\) => \{([\s\S]*?)\n  \}\);/);
+  assert.ok(change, "change listener body missing");
+  const turboBranch = change[1].match(/if \(target\.dataset\.qwen21TurboToggle !== undefined\) \{([\s\S]*?)\n    \}/);
+  assert.ok(turboBranch, "the turbo change branch missing");
+  assert.match(turboBranch[1], /widget\.syncPromptControls\(\)/, "the swap must refresh the visible Steps/CFG fields");
 });
 
 test("edit model reference images upload exists in the main widget", () => {

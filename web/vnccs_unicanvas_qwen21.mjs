@@ -169,12 +169,14 @@ const QWEN21_HELP_TEXTS = {
   aspect: "Forces one of the official 2K aspect presets; auto (match canvas) keeps the current canvas aspect ratio.",
   spectrum: "Training-free sampling acceleration (Spectrum, arXiv 2603.01623): selected steps are forecast with a Chebyshev fit instead of running the 32-block transformer. Fail-closed: any unsafe forecast degrades to a real forward.",
   preset: "Tunes the acceleration parameters: moderate (paper default), aggressive (more speedup), quality (safer forecasts).",
-  turbo: "Runs the Viggle v0.2.1 6-step DMD turbo LoRA (huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) over the base transformer and switches Steps to 6 / CFG to 1 (the distillation runs without classifier-free guidance). An installed copy anywhere under models/loras is used; otherwise it downloads into models/loras/viggle/ on first use.",
+  turbo: "Runs the Viggle v0.2.1 6-step DMD turbo LoRA (huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo) over the base transformer and switches Steps to 6 / CFG to 1 (the distillation runs without classifier-free guidance). Turning it off drops the LoRA and returns Steps to the 45-step base schedule. An installed copy anywhere under models/loras is used; otherwise it downloads into models/loras/viggle/ on first use.",
 };
 
 // Viggle turbo (v0.2.1, 6-step) constants + profile swap, mirroring the other turbo switches.
 export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors";
 export const QWEN21_TURBO_SETTINGS = { steps: 6, cfg: 1 };
+// Base (non-turbo) profile: without the distillation the family runs the full schedule.
+export const QWEN21_BASE_SETTINGS = { steps: 45 };
 export const QWEN21_TURBO_STATUS_ROUTE = "/vnccs/unicanvas/qwen21_turbo";
 
 export function applyQwen21TurboProfile(widget, enabled) {
@@ -205,6 +207,10 @@ export function applyQwen21TurboProfile(widget, enabled) {
     if (Number.isFinite(Number(previous.cfg))) settings.cfg = Number(previous.cfg);
     if (previous.sampler_name) settings.sampler_name = previous.sampler_name;
     if (previous.scheduler) settings.scheduler = previous.scheduler;
+  } else {
+    // Turbo is on out of the box, so a fresh switch-off has no snapshot to restore:
+    // fall back to the base 45-step schedule.
+    settings.steps = QWEN21_BASE_SETTINGS.steps;
   }
   settings.qwen21_turbo_previous_settings = null;
 }
@@ -241,6 +247,14 @@ function ensureQwen21PanelStyles(doc = document) {
   style.textContent = `
 .vnccs-uc-qwen21-panel { display:grid; gap:6px; padding:8px; background:var(--uc-panel, rgba(20,16,30,.82)); border:1px solid rgba(255,143,163,.2); border-radius:8px; color:var(--uc-text, #e8e8f0); font:11px var(--uc-font, sans-serif); }
 .vnccs-uc-qwen21-title { display:flex; align-items:center; gap:6px; color:var(--uc-accent, #ff8fa3); font-weight:800; font-size:12px; letter-spacing:.02em; }
+/* Accordion: the header line stays visible, the settings fold under it. */
+.vnccs-uc-qwen21-expand { width:18px; height:18px; padding:0; border:0; background:transparent; color:inherit; cursor:pointer; font-size:11px; transition:transform .12s; }
+.vnccs-uc-qwen21-expand[aria-expanded="true"] { transform:rotate(90deg); }
+.vnccs-uc-qwen21-name { cursor:pointer; }
+.vnccs-uc-qwen21-turbo { display:inline-flex; align-items:center; gap:4px; margin-left:auto; color:var(--uc-text, #e8e8f0); font-weight:500; letter-spacing:normal; }
+.vnccs-uc-qwen21-turbo input[type="checkbox"] { margin:0; }
+.vnccs-uc-qwen21-body { display:grid; gap:6px; }
+.vnccs-uc-qwen21-body[hidden] { display:none; }
 /* Never shrunk by the scrolling sidebar (it is a flex column): the panel keeps its full height. */
 .vnccs-uc-qwen21-panel { flex:0 0 auto; min-width:0; box-sizing:border-box; }
 .vnccs-uc-qwen21-panel .vnccs-uc-field { display:flex !important; flex-direction:row !important; flex-wrap:nowrap; align-items:center; justify-content:flex-start; gap:6px; text-align:left; min-width:0; }
@@ -265,19 +279,19 @@ function ensureQwen21PanelStyles(doc = document) {
 .vnccs-uc-spectrum-label { flex:1 1 96px; min-width:0; color:var(--uc-muted, #9898a8); font-size:10px; line-height:1.1; }
 .vnccs-uc-spectrum-param .vnccs-uc-range { flex:1 1 80px; accent-color:var(--uc-accent, #ff8fa3); }
 .vnccs-uc-spectrum-param .vnccs-uc-input { width:54px; }
-.vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-muted, #9898a8); font-size:10px; cursor:help; position:relative; }
-.vnccs-uc-help:hover::after { content: attr(data-tip); position:absolute; bottom:130%; left:50%; transform:translateX(-50%); width:230px; padding:6px 8px; border-radius:8px; background:#0a0a0f; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-text, #e8e8f0); font-size:11px; line-height:1.4; z-index:30; text-transform:none; letter-spacing:normal; }
+.vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-muted, #9898a8); font-size:10px; cursor:help; }
 `;
   doc.head.appendChild(style);
 }
 
-// Help "?" icon with a hover tooltip explaining what a control is for.
+// Help "?" icon with a hover tooltip explaining what a control is for. The tooltip
+// text is rendered by the shared body-level layer (vnccs_unicanvas_help.mjs), so the
+// icon carries data-tip only: a native title tooltip would double it up.
 function buildQwen21Help(key) {
   const help = document.createElement("span");
   help.className = "vnccs-uc-help";
   help.textContent = "?";
   help.dataset.tip = QWEN21_HELP_TEXTS[key] || "";
-  help.title = QWEN21_HELP_TEXTS[key] || "";
   return help;
 }
 
@@ -288,11 +302,38 @@ function buildPanelShell() {
   panel.dataset.qwen21Panel = "";
   panel.style.display = "none";
 
+  // Accordion header: arrow, "QI2.1" and its help, then the turbo switch on the
+  // right — the switch stays reachable while the settings stay folded.
   const title = document.createElement("div");
   title.className = "vnccs-uc-qwen21-title";
-  title.textContent = "Qwen-Image-2.1 ";
-  title.appendChild(buildQwen21Help("qwen21"));
+  const qwenExpand = document.createElement("button");
+  qwenExpand.type = "button";
+  qwenExpand.className = "vnccs-uc-qwen21-expand";
+  qwenExpand.dataset.qwen21Expand = "";
+  qwenExpand.textContent = "▸";
+  qwenExpand.title = "Show the Qwen-Image-2.1 settings";
+  qwenExpand.setAttribute("aria-expanded", "false");
+  const qwenTitleText = document.createElement("span");
+  qwenTitleText.className = "vnccs-uc-qwen21-name";
+  qwenTitleText.dataset.qwen21Expand = "";
+  qwenTitleText.textContent = "QI2.1";
+  qwenTitleText.title = "Qwen-Image-2.1 (QI2.1) settings";
+  const turboLabel = document.createElement("label");
+  turboLabel.className = "vnccs-uc-qwen21-turbo";
+  const turboToggle = document.createElement("input");
+  turboToggle.type = "checkbox";
+  turboToggle.dataset.qwen21TurboToggle = "";
+  turboToggle.title = "Enable the Viggle 6-step turbo LoRA";
+  turboLabel.append(document.createTextNode("turbo"), buildQwen21Help("turbo"), turboToggle);
+  title.append(qwenExpand, qwenTitleText, buildQwen21Help("qwen21"), turboLabel);
   panel.appendChild(title);
+
+  // Folded by default; the arrow (or the "QI2.1" name) unfolds it.
+  const qwenBody = document.createElement("div");
+  qwenBody.className = "vnccs-uc-qwen21-body";
+  qwenBody.dataset.qwen21Body = "";
+  qwenBody.hidden = true;
+  panel.appendChild(qwenBody);
 
   const opaqueLabel = document.createElement("label");
   opaqueLabel.className = "vnccs-uc-field";
@@ -302,7 +343,7 @@ function buildPanelShell() {
   opaqueInput.type = "checkbox";
   opaqueInput.dataset.qwen21Setting = "qwen21_opaque_output";
   opaqueLabel.appendChild(opaqueInput);
-  panel.appendChild(opaqueLabel);
+  qwenBody.appendChild(opaqueLabel);
 
   const aspectLabel = document.createElement("label");
   aspectLabel.className = "vnccs-uc-field";
@@ -322,19 +363,12 @@ function buildPanelShell() {
     aspectSelect.appendChild(option);
   }
   aspectLabel.appendChild(aspectSelect);
-  panel.appendChild(aspectLabel);
+  qwenBody.appendChild(aspectLabel);
 
+  // The turbo switch itself sits in the header; its LoRA assets stay in the body.
   const turboRow = document.createElement("div");
   turboRow.className = "vnccs-uc-spectrum-param";
   turboRow.dataset.qwen21TurboRow = "";
-  const turboLabel = document.createElement("span");
-  turboLabel.className = "vnccs-uc-spectrum-label";
-  turboLabel.textContent = "Viggle turbo (6-step) ";
-  turboLabel.appendChild(buildQwen21Help("turbo"));
-  const turboToggle = document.createElement("input");
-  turboToggle.type = "checkbox";
-  turboToggle.dataset.qwen21TurboToggle = "";
-  turboToggle.title = "Enable the Viggle 6-step turbo LoRA";
   const turboDownload = document.createElement("button");
   turboDownload.type = "button";
   turboDownload.className = "vnccs-uc-btn";
@@ -344,8 +378,8 @@ function buildPanelShell() {
   const turboStatus = document.createElement("span");
   turboStatus.className = "vnccs-uc-spectrum-label";
   turboStatus.dataset.qwen21TurboStatus = "";
-  turboRow.append(turboLabel, turboToggle, turboDownload, turboStatus);
-  panel.appendChild(turboRow);
+  turboRow.append(turboDownload, turboStatus);
+  qwenBody.appendChild(turboRow);
 
   const spectrum = document.createElement("div");
   spectrum.className = "vnccs-uc-spectrum-panel";
@@ -447,7 +481,7 @@ function buildPanelShell() {
     "forecast degrades to a real forward.";
   body.appendChild(hint);
 
-  panel.appendChild(spectrum);
+  qwenBody.appendChild(spectrum);
   return panel;
 }
 
@@ -555,12 +589,24 @@ function bindPanelEvents(widget, panel) {
   panel.addEventListener("click", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) return;
+    // A "?" icon only shows its tooltip: it must not toggle the switch it sits next to.
+    if (target.closest(".vnccs-uc-help")) {
+      event.preventDefault();
+      return;
+    }
     if (target.dataset.qwen21TurboDownload !== undefined) {
       void requestQwen21TurboDownload().then(() => refreshQwen21TurboStatus(panel));
     }
     if (target.dataset.spectrumExpand !== undefined) {
       const body = panel.querySelector("[data-spectrum-body]");
       const arrow = panel.querySelector("button[data-spectrum-expand]");
+      if (!body) return;
+      body.hidden = !body.hidden;
+      arrow?.setAttribute("aria-expanded", String(!body.hidden));
+    }
+    if (target.dataset.qwen21Expand !== undefined) {
+      const body = panel.querySelector("[data-qwen21-body]");
+      const arrow = panel.querySelector("button[data-qwen21-expand]");
       if (!body) return;
       body.hidden = !body.hidden;
       arrow?.setAttribute("aria-expanded", String(!body.hidden));
@@ -572,6 +618,9 @@ function bindPanelEvents(widget, panel) {
     if (target.dataset.qwen21TurboToggle !== undefined) {
       applyQwen21TurboProfile(widget, Boolean(target.checked));
       refreshPanel(widget, panel);
+      // The swap rewrites Steps (and CFG): push the fresh values into the
+      // visible parameter fields before persisting.
+      if (typeof widget.syncPromptControls === "function") widget.syncPromptControls();
       commitSettings(widget);
       return;
     }

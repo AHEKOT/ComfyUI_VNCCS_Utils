@@ -62,7 +62,7 @@ const context = {
   normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
-  uid: () => "new-layer", HISTORY_LIMIT: 20,
+  uid: () => "new-layer", HISTORY_LIMIT: 20, DEFAULT_SEED_MODE: "randomize",
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = (values = {}) => Object.assign(Object.create(prototype), {
@@ -183,8 +183,10 @@ test("generation retains its request camera when the user rotates while waiting"
   let release;
   context.fetch = () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ images: [{ filename: "result.png" }] }) }); });
   const doc = { settings: settings({ yaw: 10, pitch: 20 }), commit() {} };
+  // No seed_mode on purpose: the settings-level default is the random dice, and
+  // draw() must still reach the request through the fresh-seed branch.
   const w = widget({ panorama: doc, settings: { batch_size: 1, steps: 1 }, stagingItems: [], drawBtn: {},
-    flushSettingsToWidget() {}, normalizeGenerationSettings: () => ({ loader: {} }),
+    flushSettingsToWidget() {}, syncPromptControls() {}, normalizeGenerationSettings: () => ({ loader: {} }),
     getInferenceSize: () => ({ width: 1024, height: 1024 }),
     getRasterContentInBboxStats: () => ({ nonzeroAlphaPixels: 1024 * 1024 }),
     getMaskContentInBboxStats: () => ({ nonzeroAlphaPixels: 1 }),

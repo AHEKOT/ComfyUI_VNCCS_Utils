@@ -79,6 +79,31 @@ test("settings popover carries the anchored class and size contract", () => {
         "the settings popover must be anchored under the gear inside the widget");
 });
 
+test("the Seed dice starts active on a fresh canvas", () => {
+    assert.match(source, /const DEFAULT_SEED_MODE = "randomize"/,
+        "the random seed mode must be the declared default");
+    assert.match(source, /seed_mode: DEFAULT_SEED_MODE/,
+        "fresh settings must default to the random seed mode");
+    const sync = source.match(/syncSeedModeControl\(\) \{([\s\S]*?)\n  \}/);
+    assert.ok(sync, "syncSeedModeControl missing");
+    assert.match(sync[1], /DEFAULT_SEED_MODE/,
+        "the dice highlight must read the same default");
+    assert.match(source, /if \(\(this\.settings\.seed_mode \|\| DEFAULT_SEED_MODE\) === "randomize"\) \{/,
+        "GENERATE must draw a fresh seed while the random mode is on");
+    assert.match(source, /=== "randomize" \? "fixed" : "randomize"/,
+        "the dice must still toggle back to a fixed seed");
+    assert.match(source, /seed_mode_user_set = true/,
+        "clicking the dice must record the explicit choice");
+    const migrate = source.match(/applySeedModeDefault\(\) \{([\s\S]*?)\n  \}/);
+    assert.ok(migrate, "applySeedModeDefault missing");
+    assert.match(migrate[1], /seed_mode_user_set === true/,
+        "an explicit dice choice must survive restores");
+    assert.match(migrate[1], /= DEFAULT_SEED_MODE/,
+        "states saved with the old default adopt the random dice");
+    const restoreCalls = (source.match(/this\.applySeedModeDefault\(\);/g) || []).length;
+    assert.ok(restoreCalls >= 2, "both restore paths (state and workflow settings) must migrate");
+});
+
 test("tool settings dock above the Layers section in the right sidebar", () => {
     assert.match(source, /this\.side\.insertBefore\(this\.toolSettingsSection, layersSection\)/,
         "tool settings must dock as a sidebar section above Layers");
