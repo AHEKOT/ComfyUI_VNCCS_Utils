@@ -11,9 +11,10 @@
  */
 
 export const QUAD_KEYS = ["nw", "ne", "se", "sw"];
-export const TRANSFORM_MODES = ["free", "skew", "distort", "perspective", "warp"];
+export const TRANSFORM_MODES = ["free", "crop", "skew", "distort", "perspective", "warp"];
 export const TRANSFORM_MODE_LABELS = {
   free: "Free transform",
+  crop: "Crop",
   skew: "Skew",
   distort: "Distort",
   perspective: "Perspective",
@@ -382,6 +383,34 @@ export function scaleQuadFromHandle(quad, handle, point, { width, height, keepRa
   if (Math.abs(bottom - top) < minSpan * H) bottom = top + minSpan * H * (bottom >= top ? 1 : -1);
   const at = (x, y) => applyHomography(h, x / W, y / H);
   return { nw: at(left, top), ne: at(right, top), se: at(right, bottom), sw: at(left, bottom) };
+}
+
+export const EMPTY_CROP = Object.freeze({ left: 0, top: 0, right: 0, bottom: 0 });
+
+/**
+ * Crop: dragging an edge or corner handle trims that side of the image; dragging it back out
+ * restores the trimmed pixels (down to the full image). `crop` is the trim already applied, in
+ * pixels of the FULL image (`full` = its width/height); `quad` frames the currently visible part.
+ * Pixels keep their scale: only the frame edges move, along the frame's own axes.
+ * Returns { crop, quad }.
+ */
+export function cropQuadFromHandle(quad, handle, point, { full, crop = EMPTY_CROP }) {
+  const h = homographyFromUnitSquare(quad);
+  const inv = h && invertHomography(h);
+  if (!inv) return { crop: { ...crop }, quad: cloneQuad(quad) };
+  const W = Math.max(1, full.width - crop.left - crop.right);
+  const H = Math.max(1, full.height - crop.top - crop.bottom);
+  const uv = applyHomography(inv, point.x, point.y);
+  const px = uv.x * W, py = uv.y * H;
+  const next = { ...crop };
+  if (handle.includes("w")) next.left = Math.min(Math.max(0, crop.left + px), full.width - crop.right - 1);
+  if (handle.includes("e")) next.right = Math.min(Math.max(0, crop.right + (W - px)), full.width - crop.left - 1);
+  if (handle.includes("n")) next.top = Math.min(Math.max(0, crop.top + py), full.height - crop.bottom - 1);
+  if (handle.includes("s")) next.bottom = Math.min(Math.max(0, crop.bottom + (H - py)), full.height - crop.top - 1);
+  const left = next.left - crop.left, top = next.top - crop.top;
+  const right = W - (next.right - crop.right), bottom = H - (next.bottom - crop.bottom);
+  const at = (x, y) => applyHomography(h, x / W, y / H);
+  return { crop: next, quad: { nw: at(left, top), ne: at(right, top), se: at(right, bottom), sw: at(left, bottom) } };
 }
 
 /** Distort: the grabbed corner goes exactly where the pointer is. */

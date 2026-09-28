@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
+import * as THREE from "../web/three.module.js";
+import { POSE_HELP_CSS, buildPoseHelp } from "../web/vnccs_unicanvas_pose_help.mjs";
 import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
@@ -44,7 +46,9 @@ function harness(studioClass = class {}) {
         constructor(name, value) { super("option"); this.textContent = name; this.value = value; }
     }, PoseStudioWidget: studioClass, installCustomSelects: () => ({ disconnect: noop }),
     // The backdrop needs a real three.js viewer; tests/test_unicanvas_pose_backdrop.mjs covers it.
-    UniCanvasPoseBackdrop: class { invalidate() {} dispose() {} } };
+    POSE_HELP_CSS, buildPoseHelp,
+    applyTorsoFraming: noop, installBodyDrag: () => noop, UniCanvasPoseWall: class { constructor() { this.mesh = { visible: false }; } update() {} dispose() {} },
+    UniCanvasPoseBackdrop: class { invalidate() {} dispose() {} measure() { return null; } characterMeshes() { return []; } } };
     // CRLF-tolerant: the strip must also match `import ...;\r\n` on Windows checkouts.
     const Editor = vm.runInNewContext(source.replace(/^import .*?;\r?\n/gm, "").replace("export class", "class") + "\nUniCanvasPoseEditor", context);
     const layer = { id: "pose", type: "pose", visible: true, opacity: 1, blendMode: "source-over",
@@ -225,17 +229,14 @@ test("tool visibility, tab changes and keyboard navigation retain settings and b
     assert.equal(pages[1].hidden, false); assert.equal(tabs.children[1].focused, true);
 });
 
-test("bbox editor geometry follows pan and zoom and clips outside the canvas", () => {
+test("the editor surface always covers the whole stage, whatever the pan and zoom", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     for (const scale of [.25, .7, 1, 2.5]) {
         host.view = { x: -120, y: 50, scale };
         editor.layout();
         const style = editor.studio.canvasContainer.style;
-        assert.equal(parseFloat(style.left), 320-120+10*scale);
-        assert.equal(parseFloat(style.top), 40+50+20*scale);
-        assert.equal(parseFloat(style.width), 400*scale);
-        assert.equal(parseFloat(style.height), 600*scale);
-        assert.match(style.clipPath, /^inset\(/);
+        assert.deepEqual([style.left, style.top, style.width, style.height], ["320px", "40px", "1000px", "800px"]);
+        assert.equal(style.clipPath, undefined);
     }
     layer.locked = true; editor.layout(); assert.equal(editor.sidePanel.inert, true);
 });
@@ -320,7 +321,7 @@ test("live viewport changes refresh layer pixels before a gesture commits withou
     let captures = 0, commits = 0;
     let position = [5, 6, 7], target = [0, 0, 0];
     editor.studio.viewer = {
-        camera: { position: { toArray: () => position.slice(), fromArray: v => { position = v.slice(); } }, fov: 40, zoom: 1, updateProjectionMatrix: noop },
+        camera: { position: { toArray: () => position.slice(), fromArray: v => { position = v.slice(); } }, fov: 40, zoom: 1, aspect: 1, setViewOffset: noop, clearViewOffset: noop, updateProjectionMatrix: noop },
         orbit: { target: { toArray: () => target.slice(), fromArray: v => { target = v.slice(); } }, update: noop },
         renderer: { render: noop },
         capture: (...args) => {
@@ -340,7 +341,7 @@ test("live viewport changes refresh layer pixels before a gesture commits withou
     assert.doesNotMatch(source.slice(source.indexOf("    capturePreview("), source.indexOf("    hidesLayerPixels(")), /toDataURL/);
 });
 
-test("navigation only inspects: no capture, no persisted viewport, no commit on orbit end", async () => {
+test("navigation only inspects: no capture, no persisted viewport, the framing stays pinned", async () => {
     const controlled = controlledStudio();
     const { editor, host, layer } = harness(controlled.Studio);
     let layerCommits = 0; host.panorama = { commitLayer: () => layerCommits++ };
@@ -378,6 +379,178 @@ test("navigation only inspects: no capture, no persisted viewport, no commit on 
     await new Promise(resolve => setTimeout(resolve, 350));
     assert.ok(layerCommits >= 1, "an edit gesture commits once it settles");
     editor.release();
+});
+
+test("the session viewport spans the stage and the view offset lands the framing exactly on the pose rect", () => {
+    const { editor, host, layer } = harness();
+    let args = null;
+    const camera = { aspect: 2, setViewOffset: (...a) => { args = a; }, updateProjectionMatrix: noop };
+    editor.studio = { viewer: { camera }, canvasContainer: { clientWidth: 1000, clientHeight: 800 } };
+    editor.layer = layer; editor.initialized = true; editor.visible = true;
+    host.view = { x: 30, y: 50, scale: 0.5 };
+    editor.syncSessionViewOffset();
+    const [fullWidth, fullHeight, offsetX, offsetY, width, height] = args;
+    assert.deepEqual([width, height], [1000, 800], "the window is the whole stage");
+    // Screen rect of the layer: 400x600 at (10,20) -> x 35..235, y 60..360.
+    const rx = 35, ry = 60, rw = 200, rh = 300;
+    const frustumU = x => (x + offsetX) / fullWidth, frustumV = y => (y + offsetY) / fullHeight;
+    assert.equal(frustumV(ry), 0, "rect top is the frustum top");
+    assert.equal(frustumV(ry + rh), 1, "rect bottom is the frustum bottom");
+    const half = rw / rh / camera.aspect / 2; // framing width as a fraction of the camera frustum
+    assert.ok(Math.abs(frustumU(rx) - (0.5 - half)) < 1e-9 && Math.abs(frustumU(rx + rw) - (0.5 + half)) < 1e-9,
+        "rect left/right are the framing edges, centred");
+    assert.ok(source.includes("clipPath") === false, "the surface is no longer clipped to the generation box");
+});
+
+test("the baked pixels grow past the generation box to hold the whole mannequin", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer;
+    layer.pose.rect = { x: 0, y: 0, width: 400, height: 400 };
+    layer.pose.viewport = { position: [0, 0, 40], target: [0, 0, 0], fov: 40, zoom: 1 };
+    const body = new THREE.Mesh(new THREE.BoxGeometry(4, 40, 4), new THREE.MeshBasicMaterial());
+    editor.studio = { viewer: { THREE, camera: new THREE.PerspectiveCamera(40, 1, 0.1, 1000) } };
+    editor.backdrop = { characterMeshes: () => [{ mesh: body }] };
+    const region = editor.bakeRegion();
+    assert.ok(region.y < 0 && region.height > 400, "a figure taller than the framing is not cut at the box");
+    assert.ok(region.y >= -400 && region.y + region.height <= 800, "growth stays within one box size");
+    body.scale.set(0.1, 0.1, 0.1);
+    assert.equal(JSON.stringify(editor.bakeRegion()), JSON.stringify({ x: 0, y: 0, width: 400, height: 400 }), "a small figure keeps the box");
+});
+
+test("a capture leaves the session view offset and aspect exactly as they were", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.initialized = true; editor.visible = true;
+    layer.pose.viewport = { position: [0, 0, 40], target: [0, 0, 0], fov: 40, zoom: 1 };
+    const camera = new THREE.PerspectiveCamera(40, 1.7, 0.1, 1000);
+    camera.position.set(3, 2, 30); camera.lookAt(0, 0, 0);
+    const seen = [];
+    editor.studio = { exportParams: {}, canvasContainer: { clientWidth: 1000, clientHeight: 800 },
+        viewer: { THREE, camera, orbit: { target: new THREE.Vector3(), update() {} }, renderer: null,
+            capture: (...args) => { seen.push([camera.aspect, camera.view.fullWidth, camera.view.width]); return args[8].targetCanvas; } } };
+    host.view = { x: 30, y: 50, scale: 0.5 };
+    editor.syncSessionViewOffset();
+    const before = JSON.stringify([camera.aspect, camera.view]);
+    for (const scale of [0.5, 1, 0.25]) editor.captureSurface(scale, true);
+    assert.equal(JSON.stringify([camera.aspect, camera.view]), before, "no drift however many captures run at whatever scale");
+    assert.equal(seen[0][0], 400 / 600, "the capture uses the pose rect aspect");
+});
+
+test("Reset camera and leaving the session put the inspection camera back on the framing", () => {
+    const { editor, layer } = harness(); editor.layer = layer; editor.initialized = true;
+    layer.pose.viewport = { position: [0, 0, 40], target: [0, 1, 0], fov: 40, zoom: 1 };
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+    const orbit = { target: new THREE.Vector3(), update() {} };
+    editor.studio = { container: new Element(), viewer: { camera, orbit, requestRender: noop }, hideHandControlPopover: noop,
+        animationTimeline: { stopPlayback: noop }, performViewerResize: noop };
+    editor.sidePanel = null; editor.layout = noop;
+    camera.position.set(9, 9, 9);
+    editor.resetCamera();
+    assert.deepEqual(camera.position.toArray(), [0, 0, 40]);
+    assert.deepEqual(orbit.target.toArray(), [0, 1, 0]);
+    camera.position.set(5, 5, 5);
+    editor.setVisible(false);
+    assert.deepEqual(camera.position.toArray(), [0, 0, 40], "Save pose and Cancel both end on the framing view");
+});
+
+test("undo and redo revert the mannequin only, never the inspection view, framing or camera sliders", () => {
+    const { editor, layer } = harness(); editor.layer = layer; editor.initialized = true;
+    layer.pose.viewport = { position: [0, 0, 40], target: [0, 0, 0], fov: 40, zoom: 1 };
+    let position = [7, 8, 9], target = [1, 2, 3], undone = 0, redone = 0, persisted = 0;
+    const camera = { position: { toArray: () => position.slice(), fromArray: v => { position = v.slice(); } }, fov: 40, zoom: 1, updateProjectionMatrix: noop };
+    const viewer = { camera, cameraParams: { zoom: 1.5 }, requestRender: noop,
+        orbit: { target: { toArray: () => target.slice(), fromArray: v => { target = v.slice(); } }, update: noop },
+        // What a history snapshot does: put back the camera state recorded with it.
+        undo() { undone++; position = [0, 0, 5]; viewer.cameraParams = { zoom: 1, yaw_deg: 0 }; layer.pose.viewport = { position: [1, 1, 1], target: [0, 0, 0], fov: 40, zoom: 1 }; },
+        redo() { redone++; position = [0, 0, 6]; } };
+    editor.studio = { viewer, exportParams: { cam_zoom: 1.5, cam_yaw_deg: 10 }, isAnimationMode: () => false, persistActivePoseCameraParams: () => persisted++ };
+    const framing = JSON.stringify(layer.pose.viewport);
+    // The history restore re-applies the slider camera, which reseeds the framing unless kept.
+    viewer.undo = ((undo) => () => { undo(); editor.studio.exportParams.cam_zoom = 1; editor.studio.exportParams.cam_yaw_deg = 0; })(viewer.undo);
+    assert.equal(editor.undo(), true);
+    assert.equal(undone, 1);
+    assert.deepEqual(position, [7, 8, 9], "the inspection camera is where the user left it");
+    assert.equal(JSON.stringify(layer.pose.viewport), framing, "the capture framing (and so the wall) does not move");
+    assert.deepEqual(JSON.parse(JSON.stringify(editor.studio.exportParams)), { cam_zoom: 1, cam_yaw_deg: 10 }, "the mannequin's own zoom undoes, the view angle does not");
+    assert.equal(viewer.cameraParams.yaw_deg, 10);
+    editor.redo();
+    assert.equal(redone, 1); assert.deepEqual(position, [7, 8, 9]);
+    assert.equal(editor.keepingCamera, false);
+});
+
+test("the eye button hides the wall for good: a capture must not bring it back", () => {
+    const { editor, layer } = harness(); editor.layer = layer; editor.initialized = true;
+    layer.pose.viewport = { position: [0, 0, 40], target: [0, 0, 0], fov: 40, zoom: 1 };
+    const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 1000);
+    const wall = { mesh: { visible: true } };
+    editor.wall = wall;
+    editor.eyeButton = Object.assign(new Element("button"), { innerHTML: "eye" });
+    editor.studio = { exportParams: {}, viewer: { THREE, camera, orbit: { target: new THREE.Vector3(), update() {} },
+        capture: (...args) => { assert.equal(wall.mesh.visible, false, "the wall is never in a capture"); return args[8].targetCanvas; } } };
+    editor.toggleWall();
+    assert.equal(wall.mesh.visible, false);
+    assert.notEqual(editor.eyeButton.innerHTML, "eye");
+    const closedIcon = editor.eyeButton.innerHTML;
+    editor.captureSurface(1, true);
+    assert.equal(wall.mesh.visible, false, "still hidden after a capture");
+    editor.toggleWall();
+    assert.equal(wall.mesh.visible, true);
+    editor.captureSurface(1, true);
+    assert.equal(wall.mesh.visible, true);
+    assert.notEqual(editor.eyeButton.innerHTML, closedIcon, "the open eye is back");
+});
+
+test("the rotation gizmo shrinks with the character's zoom", () => {
+    const { editor } = harness();
+    const sizes = [];
+    const control = { size: 0.8, setSize(value) { this.size = value; sizes.push(value); } };
+    const viewer = { transform: control, skinnedMesh: { scale: { x: 1 } }, requestRender: noop };
+    editor.studio = { viewer };
+    editor.syncGizmoSize();
+    assert.deepEqual(sizes, [], "full size stays at Pose Studio's own size");
+    viewer.skinnedMesh.scale.x = 0.25; editor.syncGizmoSize();
+    assert.ok(Math.abs(control.size - 0.2) < 1e-9);
+    editor.syncGizmoSize();
+    assert.equal(sizes.length, 1, "no redundant updates");
+    viewer.skinnedMesh.scale.x = 0.01; editor.syncGizmoSize();
+    assert.ok(Math.abs(control.size - 0.12) < 1e-9, "never vanishes");
+});
+
+test("the ? button opens an illustrated help popup that Esc closes without leaving the editor", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
+    const bar = editor.editBar, labels = bar.children.map(child => child.textContent);
+    assert.deepEqual(labels.filter(Boolean), ["Editing pose", "?", "Reset camera", "Cancel", "Save pose"]);
+    assert.ok(!bar.children.some(child => /Pose Library/.test(child.textContent)), "Pose Library lives in Scene only");
+    const help = editor.help, question = bar.children.find(child => child.textContent === "?");
+    assert.equal(help.open, false);
+    question.fire("click");
+    assert.equal(help.open, true);
+    assert.equal(question.attrs["aria-expanded"], "true");
+    assert.ok(editor.controls.children.includes(help.overlay), "the popup lives in the stage overlay");
+    let leftEditor = 0; host.finishPoseEdit = () => leftEditor++;
+    help.overlay.fire("keydown", { key: "Escape" });
+    assert.equal(help.open, false);
+    assert.equal(question.attrs["aria-expanded"], "false");
+    assert.equal(leftEditor, 0);
+});
+
+test("the help popup illustrates every control it documents", () => {
+    const html = [];
+    const doc = { createElement: () => { const el = { children: [], attrs: {}, events: {}, style: {}, append(...c) { this.children.push(...c); },
+        setAttribute(k, v) { this.attrs[k] = v; }, addEventListener() {}, set innerHTML(v) { html.push(v); }, get innerHTML() { return ""; } }; return el; } };
+    buildPoseHelp(doc);
+    const text = html.join(" ");
+    for (const heading of ["Rotate a joint", "Move the body", "Move in depth (Z)", "Look around", "Camera mouse controls", "Buttons"]) assert.ok(text.includes(heading), heading);
+    assert.equal((text.match(/<svg/g) || []).length >= 8, true, "drawings for each control and for the mouse buttons");
+    for (const label of ["Reset camera", "Cancel", "Save pose", "Shift"]) assert.ok(text.includes(label), label);
+});
+
+test("the generation box outline is hidden exactly while the editing view is shown", () => {
+    const { editor, host, layer } = harness(); editor.layer = layer;
+    assert.equal(editor.hidesBbox(), false, "not initialized");
+    editor.initialized = true; editor.visible = true;
+    assert.equal(editor.hidesBbox(), true);
+    layer.locked = true; assert.equal(editor.hidesBbox(), false); layer.locked = false;
+    editor.visible = false; assert.equal(editor.hidesBbox(), false, "back on the normal canvas");
+    editor.visible = true; host.hasOpenStagingPanel = () => true; assert.equal(editor.hidesBbox(), false);
+    assert.match(ucSource, /if \(!this\.poseEditor\?\.hidesBbox\(\)\) this\.drawBbox\(ctx\)/);
 });
 
 test("shared capture returns transparent pixels and hides helpers while restoring renderer state", () => {
@@ -457,7 +630,7 @@ function controlledStudio(load = async () => true) {
             this._viewerInitPromise = Promise.resolve();
             const vector = values => ({ toArray: () => values.slice(), fromArray: v => { values = v.slice(); } });
             const orbitEvents = {};
-            this.viewer = { scene: { background: null }, camera: { position: vector([1,2,3]), fov: 40, zoom: 1, updateProjectionMatrix: noop },
+            this.viewer = { scene: { background: null }, camera: { position: vector([1,2,3]), fov: 40, zoom: 1, aspect: 1, setViewOffset: noop, clearViewOffset: noop, updateProjectionMatrix: noop },
                 orbit: {
                     target: vector([0,0,0]), update: noop,
                     addEventListener: (name, callback) => (orbitEvents[name] ||= []).push(callback),
@@ -526,7 +699,7 @@ test("panorama cache hydration restores only the matching uploaded character pix
     assert.equal(cached.character.dataURL, "pixels");
 });
 
-test("Pose Studio dimension inputs immediately resize the live bbox surface", () => {
+test("Pose Studio dimension inputs immediately resize the live pose rect", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     layer.pose.studio.export = { view_width: 400, view_height: 600 };
     let seen;
@@ -534,7 +707,7 @@ test("Pose Studio dimension inputs immediately resize the live bbox surface", ()
     editor.applyDimensions({ view_width: 640, view_height: 480 });
     assert.equal(layer.pose.rect.width, 640); assert.equal(host.bbox.height, 480);
     assert.deepEqual(seen, [640, 480]);
-    assert.equal(editor.studio.canvasContainer.style.width, "640px");
+    assert.equal(editor.studio.canvasContainer.style.width, "1000px", "the surface stays stage-sized");
 });
 
 test("generation reuses the Pose Studio prompt and leaves a rotated panorama camera untouched", async () => {

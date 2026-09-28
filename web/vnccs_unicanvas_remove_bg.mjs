@@ -22,7 +22,7 @@ export const REMOVE_BG_EDIT_MODES = [
 // The universal instruction sent for every Remove bg run (editable in the settings).
 export const REMOVE_BG_DEFAULT_PROMPT = "Remove the background, and output a PNG image";
 // Viggle v0.2.1 turbo: Remove bg runs it by default at 6 steps (about 9 s on a 4090).
-const REMOVE_BG_TURBO_LORA = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors";
+const REMOVE_BG_TURBO_LORA = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors";
 const REMOVE_BG_TURBO_STEPS = 6;
 const EDIT_LOADERS = [
   ["diffusion_model", "Diffusion Model"],

@@ -11,14 +11,18 @@ import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaH
 import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./vnccs_unicanvas_model_memory.mjs?v=1790494137676";
+import { installInferenceScaleEdit } from "./vnccs_unicanvas_scale_edit.mjs?v=1790494137676";
 import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790494137676";
 import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790494137676";
 import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790494137676";
 import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790494137676";
 import {
+  EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
   applyHomography,
   cloneQuad,
+  cropQuadFromHandle,
   distortQuadCorner,
   dragMeshSurface,
   flipMesh,
@@ -162,10 +166,10 @@ const STYLES = `
 .vnccs-uc-draw-control .vnccs-uc-batch-input { width:46px; height:34px; box-sizing:border-box; text-align:center; font-weight:800; align-self:stretch; }
 .vnccs-uc-donate-link { flex:0 0 auto; display:block; width:100%; padding:0 4px 4px; box-sizing:border-box; z-index:3; background:rgba(6,5,12,.92); box-shadow:0 -8px 18px rgba(6,5,12,.82); }
 .vnccs-uc-donate-link img { display:block; width:100%; height:auto; border-radius:10px; }
-.vnccs-uc-denoise-control { display:grid; grid-template-columns:auto minmax(0,1fr) 46px; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-denoise-control { display:grid; grid-template-columns:auto minmax(0,1fr) 58px; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-denoise-control .vnccs-uc-range { width:100%; }
-/* Same box as the batch field next to GENERATE, so both cards line up. */
-.vnccs-uc-denoise-control .vnccs-uc-input { width:46px; height:34px; box-sizing:border-box; padding:0 4px; text-align:center; font-weight:800; }
+/* Wide enough for "0.65" without clipping the last digit. */
+.vnccs-uc-denoise-control .vnccs-uc-input { width:58px; height:34px; box-sizing:border-box; padding:0 4px; text-align:center; font-weight:800; }
 .vnccs-uc-layers-section { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; overflow-y:auto; overflow-x:hidden; }
 .vnccs-uc-section-head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--uc-accent); font-weight:700; border-bottom:1px solid var(--uc-border); }
 .vnccs-uc-section-title { flex:0 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -272,17 +276,35 @@ const STYLES = `
 /* While a linked config supplies the model assets, the Mode list is the only family picker left, so
    its panel stays open in Presets mode collapsed to the Mode field (Loader + asset pickers stay in
    the Custom tab). Without a linked config the class is never applied. */
-.vnccs-uc-model-panel.vnccs-uc-mode-only > :not(.vnccs-uc-mode-loader-row) { display:none; }
-.vnccs-uc-model-panel.vnccs-uc-mode-only > .vnccs-uc-mode-loader-row { grid-template-columns:minmax(0,1fr); }
-.vnccs-uc-model-panel.vnccs-uc-mode-only > .vnccs-uc-mode-loader-row > :not([data-mode-control]) { display:none; }
+.vnccs-uc-model-panel.vnccs-uc-mode-only > :not(.vnccs-uc-infer-scale) { display:none; }
+/* Linked config: model, family, turbo, LoRAs and references all come from it, so their controls are gone.
+   Left: prompts, denoise, inference scale, steps, sampler, scheduler, CFG and seed. */
+.vnccs-uc-config-linked .vnccs-uc-model-tabs,
+.vnccs-uc-config-linked .vnccs-uc-turbo-section,
+.vnccs-uc-config-linked .vnccs-uc-lora-stack,
+.vnccs-uc-config-linked .vnccs-uc-refs-btn,
+.vnccs-uc-config-linked .vnccs-uc-qwen21-panel,
+.vnccs-uc-config-linked [data-family-field],
+.vnccs-uc-config-linked [data-mode-control] { display:none !important; }
 .vnccs-uc-model-card-list { display:flex; flex-direction:column; gap:7px; }
 .vnccs-uc-model-picker { display:flex; flex-direction:column; gap:8px; }
-.vnccs-uc-model-picker-menu { display:none; flex-direction:column; gap:9px; padding:8px; border:1px solid rgba(255,143,163,.18); border-radius:10px; background:rgba(8,8,12,.48); }
+.vnccs-uc-model-picker-menu { display:none; flex-direction:column; gap:8px; padding:6px; max-height:260px; overflow-y:auto; overscroll-behavior:contain; border:1px solid rgba(255,143,163,.28); border-radius:10px; background:rgba(12,10,20,.96); box-shadow:0 8px 22px rgba(0,0,0,.45); }
 .vnccs-uc-model-picker.open .vnccs-uc-model-picker-menu { display:flex; }
-.vnccs-uc-model-picker-group { display:flex; flex-direction:column; gap:7px; }
-.vnccs-uc-model-picker-group-title { color:#ffdce5; font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-model-picker-group { display:flex; flex-direction:column; gap:3px; }
+.vnccs-uc-model-picker-group-title { padding:2px 6px 0; color:var(--uc-muted); font-size:10px; font-weight:800; letter-spacing:.08em; text-transform:uppercase; }
+.vnccs-uc-model-card.row { display:grid; grid-template-columns:12px minmax(0,1fr) auto; grid-template-areas:"dot name status" "dot model status"; align-items:center; column-gap:8px; row-gap:0; padding:6px 8px; border-color:transparent; background:transparent; }
+.vnccs-uc-model-card.row .vnccs-uc-model-card-top { display:contents; }
+.vnccs-uc-model-card.row .vnccs-uc-model-card-badge { grid-area:dot; }
+.vnccs-uc-model-card.row .vnccs-uc-model-card-name { grid-area:name; font-size:12px; }
+.vnccs-uc-model-card.row .vnccs-uc-model-card-model { grid-area:model; color:var(--uc-muted); font-size:10px; font-weight:600; }
+.vnccs-uc-model-card.row .vnccs-uc-model-card-status { grid-area:status; font-size:9px; }
+.vnccs-uc-model-card.row:hover { background:rgba(255,143,163,.1); border-color:rgba(255,143,163,.25); }
+.vnccs-uc-model-card.row.selected { background:rgba(255,143,163,.16); border-color:rgba(255,143,163,.5); box-shadow:none; }
 .vnccs-uc-model-card { display:flex; flex-direction:column; gap:5px; padding:10px 11px 8px; border:1px solid rgba(0,214,143,.25); border-radius:10px; background:rgba(0,214,143,.05); cursor:pointer; min-width:0; }
-.vnccs-uc-model-card.head { min-height:58px; }
+.vnccs-uc-model-card.head { min-height:0; position:relative; gap:4px; padding:8px 10px; }
+.vnccs-uc-model-card-chevron { fill:none; stroke:currentColor; stroke-width:2.6; stroke-linecap:round; stroke-linejoin:round; flex:0 0 auto; width:16px; height:16px; margin-left:2px; padding:3px; box-sizing:border-box; border-radius:5px; background:rgba(255,143,163,.16); color:var(--uc-accent); transition:transform .15s ease; }
+.vnccs-uc-model-picker.open .vnccs-uc-model-card-chevron { transform:rotate(180deg); }
+.vnccs-uc-model-card.head:hover .vnccs-uc-model-card-chevron { background:rgba(255,143,163,.3); }
 .vnccs-uc-model-card.turbo { min-height:0; height:34px; padding:0 8px; justify-content:center; border-color:rgba(255,143,163,.76); background:rgba(255,143,163,.14); }
 .vnccs-uc-model-card:hover { border-color:rgba(0,214,143,.44); background:rgba(0,214,143,.08); }
 .vnccs-uc-model-card.turbo:hover { border-color:rgba(255,143,163,.82); background:rgba(255,143,163,.17); }
@@ -320,9 +342,16 @@ const STYLES = `
 .vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
 .vnccs-uc-toggle.active::after { left:23px; background:var(--uc-accent); }
 .vnccs-uc-lora-stack { display:flex; flex-direction:column; gap:7px; padding-top:4px; }
+.vnccs-uc-lora-stack-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.vnccs-uc-lora-stack-head .vnccs-uc-icon, .vnccs-uc-lora-item .vnccs-uc-icon { width:24px; height:24px; border-radius:7px; }
+.vnccs-uc-lora-stack-head .vnccs-uc-icon svg, .vnccs-uc-lora-item .vnccs-uc-icon svg { width:14px; height:14px; }
+.vnccs-uc-lora-stack-head .vnccs-uc-icon:disabled { opacity:.4; cursor:not-allowed; }
+/* Three rows stay in view; more scroll inside the list instead of growing the sidebar. */
+.vnccs-uc-lora-rows { display:flex; flex-direction:column; gap:7px; max-height:186px; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; padding-right:2px; }
 .vnccs-uc-lora-stack-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
-.vnccs-uc-lora-item { display:grid; grid-template-columns:minmax(0,2fr) minmax(64px,1fr); gap:7px; padding:8px; border:1px solid rgba(255,255,255,.07); border-radius:8px; background:rgba(255,255,255,.025); }
+.vnccs-uc-lora-item { flex:0 0 auto; align-items:center; display:grid; grid-template-columns:minmax(0,2fr) minmax(64px,1fr); gap:7px; padding:8px; border:1px solid rgba(255,255,255,.07); border-radius:8px; background:rgba(255,255,255,.025); }
 .vnccs-uc-lora-item.empty { opacity:.62; }
+.vnccs-uc-lora-item.removable { grid-template-columns:minmax(0,2fr) minmax(64px,1fr) 24px; }
 .vnccs-uc-lora-item .vnccs-uc-select,
 .vnccs-uc-lora-item .vnccs-uc-input { width:100%; box-sizing:border-box; }
 .vnccs-uc-seed-row { display:grid; grid-template-columns:minmax(0,1fr) 42px; gap:6px; align-items:stretch; }
@@ -365,14 +394,20 @@ const STYLES = `
 .vnccs-uc-modal-actions .vnccs-uc-btn { height:34px; padding:0 14px; font-size:14px; }
 .vnccs-uc-gear svg { width:21px; height:21px; }
 .vnccs-uc-zoom-reset[hidden] { display:none; }
-.vnccs-uc-settings-section { border:1px solid rgba(255,255,255,.1); border-radius:8px; padding:0 8px; }
-.vnccs-uc-settings-section > summary { cursor:pointer; padding:7px 0; font-weight:700; color:var(--uc-accent, #ff8fa3); list-style-position:inside; }
-.vnccs-uc-settings-section-body { display:grid; gap:8px; padding:0 0 10px; }
+/* Accordion sections: a header bar with a chevron (closed = pointing right), a body only when open. */
+.vnccs-uc-settings-section { border:1px solid rgba(255,255,255,.1); border-radius:8px; background:rgba(255,255,255,.03); overflow:hidden; }
+.vnccs-uc-settings-section > summary { display:flex; align-items:center; justify-content:space-between; gap:8px; cursor:pointer; padding:8px 10px; font-weight:700; color:var(--uc-accent, #ff8fa3); list-style:none; user-select:none; }
+.vnccs-uc-settings-section > summary::-webkit-details-marker { display:none; }
+.vnccs-uc-settings-section > summary::after { content:""; flex:0 0 auto; width:7px; height:7px; border-right:2px solid currentColor; border-bottom:2px solid currentColor; transform:rotate(-45deg); transition:transform .15s ease; opacity:.8; }
+.vnccs-uc-settings-section[open] > summary::after { transform:rotate(45deg); }
+.vnccs-uc-settings-section > summary:hover { background:rgba(255,143,163,.08); }
+.vnccs-uc-settings-section[open] > summary { border-bottom:1px solid rgba(255,255,255,.08); }
+.vnccs-uc-settings-section-body { display:grid; gap:9px; padding:10px; color:var(--uc-muted, #b8b3c8); font-size:12px; }
 .vnccs-uc-settings-popover {
   position:absolute; z-index:30; width:440px;
-  height:min(560px, 72vh); overflow-y:auto; overscroll-behavior:contain; padding:12px; border-radius:10px;
+  max-height:min(560px, 72vh); overflow-y:auto; overscroll-behavior:contain; padding:12px; border-radius:10px;
   background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
-  box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px;
+  box-shadow:0 12px 32px rgba(0,0,0,.55); color:#e8e8f0; font-family:sans-serif; font-size:13px; display:grid; gap:8px; align-content:start;
   box-sizing:border-box;
 }
 /* Help "?" buttons. The tooltip text is rendered by the shared body-level layer
@@ -383,7 +418,9 @@ const STYLES = `
 /* Inference scale: Denoise-style slider row with a live W×H size preview (duplicates the HUD chip). */
 .vnccs-uc-infer-scale { display:grid; grid-template-columns:auto minmax(0,1fr) auto; gap:7px; align-items:center; min-height:34px; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-infer-scale .vnccs-uc-range { width:100%; accent-color:var(--uc-accent); }
-.vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.vnccs-uc-infer-size { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; cursor:text; border-bottom:1px dotted rgba(255,255,255,.28); }
+.vnccs-uc-infer-size[hidden] { display:none; }
+.vnccs-uc-infer-scale-edit { width:64px; height:26px; box-sizing:border-box; padding:0 6px; text-align:center; font-weight:800; }
 /* No text selection inside the widget; inputs/prompts, dialogs, help text, layer menu, toasts and
    the status/debug line stay selectable (the star-plus-exceptions form is deliberate: user-select
    inheritance from a root rule is unreliable across browsers, and backticks are illegal inside a
@@ -604,6 +641,7 @@ const RENDER_LOD_OVERSAMPLE = 2.25;
 
 const UNICANVAS_LAYOUT_BASE_WIDTH = 320 / 0.2035;
 const UNICANVAS_LAYOUT_BASE_HEIGHT = 34 / 0.0311;
+const LORA_STACK_MAX = 10;
 const NUMERIC_SETTINGS = new Set(["inference_scale", "seed", "steps", "cfg", "denoise", "batch_size", "anima_lllite_strength", "fun_controlnet_strength", "minimax_h3_steps", "krea2_likeness"]);
 // The Seed dice starts active: every fresh canvas draws a new seed per run.
 const DEFAULT_SEED_MODE = "randomize";
@@ -907,6 +945,8 @@ const UI_ICONS = {
   snap: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14"/><path d="M5 12h14"/><path d="M5 19h14"/><path d="M5 5v14"/><path d="M12 5v14"/><path d="M19 5v14"/><path d="m14.5 9.5 3 3-3 3"/><path d="M8 12h9"/></svg>`,
   dice: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="3.5"/><circle cx="8.5" cy="8.5" r="1.4" class="fill"/><circle cx="15.5" cy="8.5" r="1.4" class="fill"/><circle cx="12" cy="12" r="1.4" class="fill"/><circle cx="8.5" cy="15.5" r="1.4" class="fill"/><circle cx="15.5" cy="15.5" r="1.4" class="fill"/></svg>`,
 };
+const PRESET_CHEVRON_ICON = `<svg class="vnccs-uc-model-card-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
+const MINUS_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`;
 // Node-mode local backups stay well under the shared localStorage quota (see pruneLocalStateBackups).
 const LOCAL_STATE_BACKUP_MAX_CHARS = 1_000_000;
 const STAGING_ICONS = {
@@ -1023,6 +1063,7 @@ class UniCanvasWidget {
     });
     installUniCanvasInputTools(this);
     installUniCanvasLayerTools(this);
+    this._removeScaleEdit = installInferenceScaleEdit(this);
     this._createInitialLayers();
     this._loadFromNode().finally(() => {
       if (this._disposed) return;
@@ -1334,7 +1375,7 @@ class UniCanvasWidget {
     this.undoBtn = this._button(UI_ICONS.undo, "vnccs-uc-icon", () => this.undo(), "Undo");
     this.redoBtn = this._button(UI_ICONS.redo, "vnccs-uc-icon", () => this.redo(), "Redo");
     this.fitBtn = this._button("Fit", "vnccs-uc-btn", () => this.fitView(), "Fit");
-    this.snapBtn = this._button(UI_ICONS.snap, "vnccs-uc-icon", () => this.toggleSnapToGrid(), "Snap to grid");
+    this.snapBtn = this._button(UI_ICONS.snap, "vnccs-uc-icon", () => this.toggleSnapToGrid(), "Snap to grid: off = the generation box moves freely, on = 64 px steps (Ctrl: 8 px)");
     this.zoomResetBtn = this._button("100%", "vnccs-uc-btn vnccs-uc-zoom-reset", () => this.resetZoom(), "Reset zoom to 100%");
     this.zoomResetBtn.hidden = true;
     this.gearBtn = this._button(UI_ICONS.gear, "vnccs-uc-icon vnccs-uc-gear", () => this.openUniCanvasSettings(), "UniCanvas settings");
@@ -2051,6 +2092,12 @@ class UniCanvasWidget {
     return [];
   }
 
+  transformHint() {
+    return this.resizeTransformMode === "crop"
+      ? "Crop: drag an edge or corner inward to trim the layer, outward to bring the trimmed part back. Drag inside: move · Reset restores everything · Enter apply · Esc cancel"
+      : "Drag inside: move · outside: rotate (Shift 15°) · corner: scale (Shift ratio, Alt center) · Ctrl+corner: distort · Ctrl+edge: skew · Ctrl+Alt+Shift+corner: perspective · Enter apply · Esc cancel";
+  }
+
   renderToolSettings() {
     if (!this.toolSettings) return;
     const controls = this.getToolSettingControls();
@@ -2098,7 +2145,7 @@ class UniCanvasWidget {
         button("rotate-180", "180°", "Rotate 180°"),
         button("reset", "Reset", "Reset the transform"),
       ].join("")}</div>`);
-      html.push(`<div class="vnccs-uc-transform-hint">Drag inside: move · outside: rotate (Shift 15°) · corner: scale (Shift ratio, Alt center) · Ctrl+corner: distort · Ctrl+edge: skew · Ctrl+Alt+Shift+corner: perspective · Enter apply · Esc cancel</div>`);
+      html.push(`<div class="vnccs-uc-transform-hint" data-transform-hint>${this._escape(this.transformHint())}</div>`);
     }
     this.toolSettings.innerHTML = html.join("");
     this.toolSettings.classList.add("visible");
@@ -2235,7 +2282,10 @@ class UniCanvasWidget {
     this.container.addEventListener("click", (e) => {
       const btn = e.target?.closest?.("[data-action], [data-model-selection-mode], [data-preset-picker-toggle], [data-preset-id], [data-preset-download], [data-turbo-download], [data-turbo-toggle]");
       if (!(btn instanceof HTMLElement)) return;
-      if (btn.dataset.action === "seed-mode") {
+      if (btn.dataset.action === "lora-add" || btn.dataset.action === "lora-remove") {
+        e.preventDefault();
+        this.changeLoraRows(btn.dataset.action === "lora-add" ? "add" : "remove", Number(btn.dataset.loraIndex));
+      } else if (btn.dataset.action === "seed-mode") {
         e.preventDefault();
         this.settings.seed_mode = (this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize" ? "fixed" : "randomize";
         // The dice is a deliberate choice: it survives restores even when the
@@ -2252,6 +2302,7 @@ class UniCanvasWidget {
       } else if (btn.dataset.modelSelectionMode) {
         e.preventDefault();
         this.settings.model_selection_mode = btn.dataset.modelSelectionMode === "custom" ? "custom" : "presets";
+        if (this.recallModelChoice()) this.syncPromptControls();
         this.renderModelSelectionControls();
         this.syncSettingsToWidget();
       } else if (btn.dataset.presetPickerToggle) {
@@ -2332,6 +2383,8 @@ class UniCanvasWidget {
       if (target instanceof HTMLSelectElement && target.dataset.control === "resizeMode") {
         this.resizeTransformMode = normalizeTransformMode(target.value);
         if (this.transformDraft) this.transformDraft.kind = this.resizeTransformMode;
+        const hint = this.toolSettings.querySelector("[data-transform-hint]");
+        if (hint) hint.textContent = this.transformHint();
         this.updateTransformControls();
         this.updateContextCursor();
         this.requestRender();
@@ -2366,6 +2419,7 @@ class UniCanvasWidget {
       const target = e.target;
       if (target?.dataset?.loraStackIndex !== undefined) {
         this.updateLoraStackFromControl(target);
+        this.rememberModelChoice();
         this.syncSettingsToWidget();
         return;
       }
@@ -2381,6 +2435,7 @@ class UniCanvasWidget {
         this.syncPromptControls();
       }
       if (key === "inference_scale") this.syncInferenceControls(target);
+      if (key in MODEL_MEMORY_ASSET_FIELDS || key === "clip_type" || key === "gguf_arch") this.rememberModelChoice();
       this.syncSettingsToWidget();
     });
     this.left.addEventListener("change", (e) => {
@@ -2408,6 +2463,7 @@ class UniCanvasWidget {
   }
 
   async _loadAssets() {
+    void sharedModelMemory().load();
     try {
       const res = await fetch("/vnccs/unicanvas/assets");
       const data = await res.json();
@@ -2434,6 +2490,8 @@ class UniCanvasWidget {
       this.fillSelect("scheduler", this.assets.schedulers || []);
       this.renderLoraStackControls();
       if (this.settings.model_selection_mode !== "presets") {
+        await sharedModelMemory().load();
+        this.recallModelChoice({ onlyEmpty: true });
         if (!this.settings.ckpt_name && this.checkpoints[0]) this.settings.ckpt_name = this.checkpoints[0];
         if (!this.settings.diffusion_model_name && this.assets.diffusion_models[0]) this.settings.diffusion_model_name = this.assets.diffusion_models[0];
         if (!this.settings.gguf_model_name && this.assets.gguf_models[0]) this.settings.gguf_model_name = this.assets.gguf_models[0];
@@ -2486,16 +2544,66 @@ class UniCanvasWidget {
     select.prepend(option);
   }
 
+  // One row to start with; the "+" button adds rows (up to LORA_STACK_MAX). Older saves padded the
+  // stack to five empty rows, so trailing empty rows are trimmed back to the last used one.
   normalizeLoraStack() {
-    if (!Array.isArray(this.settings.lora_stack)) this.settings.lora_stack = [];
-    while (this.settings.lora_stack.length < 5) {
-      this.settings.lora_stack.push({ name: "", strength: 1 });
-    }
-    this.settings.lora_stack = this.settings.lora_stack.slice(0, 5).map((item) => ({
+    const raw = Array.isArray(this.settings.lora_stack) ? this.settings.lora_stack : [];
+    const rows = raw.slice(0, LORA_STACK_MAX).map((item) => ({
       name: String(item?.name || item?.lora_name || ""),
       strength: Number.isFinite(Number(item?.strength)) ? Number(item.strength) : 1,
     }));
-    return this.settings.lora_stack;
+    const wanted = Math.max(1, Math.min(LORA_STACK_MAX, Number(this.settings.lora_rows) || 1));
+    let used = rows.length;
+    while (used > 1 && used > wanted && !rows[used - 1].name) used -= 1;
+    rows.length = used;
+    while (rows.length < 1) rows.push({ name: "", strength: 1 });
+    this.settings.lora_stack = rows;
+    this.settings.lora_rows = rows.length;
+    return rows;
+  }
+
+  // Custom tab only: the files picked here are remembered per loader + Mode in the user's ComfyUI
+  // user directory (server side), so every UniCanvas starts from them.
+  rememberModelChoice() {
+    if (this.settings.model_selection_mode !== "custom" || this._isRestoring) return;
+    sharedModelMemory().remember(this.settings);
+  }
+
+  // Applies the remembered picks of the current loader + Mode. onlyEmpty keeps anything already set
+  // (restoring a saved canvas); otherwise the last used files win (switching Mode / Loader / tab).
+  recallModelChoice({ onlyEmpty = false } = {}) {
+    if (this.settings.model_selection_mode !== "custom") return false;
+    const patch = sharedModelMemory().recall(this.settings, this.assets);
+    let changed = false;
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "lora_rows") continue;
+      if (onlyEmpty) {
+        const set = key === "lora_stack" ? (this.settings.lora_stack || []).some((item) => item?.name) : this.settings[key];
+        if (set) continue;
+      }
+      this.settings[key] = value;
+      if (key === "lora_stack") this.settings.lora_rows = value.length;
+      changed = true;
+    }
+    if (changed) this.renderLoraStackControls();
+    return changed;
+  }
+
+  changeLoraRows(action, index) {
+    const stack = this.normalizeLoraStack();
+    if (action === "add") {
+      if (stack.length >= LORA_STACK_MAX) return;
+      stack.push({ name: "", strength: 1 });
+    } else if (Number.isInteger(index) && index > 0 && index < stack.length) {
+      stack.splice(index, 1);
+    } else {
+      return;
+    }
+    this.settings.lora_rows = stack.length;
+    this.renderLoraStackControls();
+    this.rememberModelChoice();
+    if (action === "add") this.container.querySelector("[data-lora-rows]")?.lastElementChild?.scrollIntoView?.({ block: "nearest" });
+    this.syncSettingsToWidget();
   }
 
   filteredLoraStack() {
@@ -2520,25 +2628,27 @@ class UniCanvasWidget {
       const label = name || "None";
       return `<option value="${this._escape(name)}">${this._escape(label)}</option>`;
     }).join("");
-    container.innerHTML = `<div class="vnccs-uc-lora-stack-title">LoRA Stack</div>`;
+    container.innerHTML = `<div class="vnccs-uc-lora-stack-head"><span class="vnccs-uc-lora-stack-title">LoRA Stack</span><button class="vnccs-uc-icon" type="button" data-action="lora-add" title="Add a LoRA" aria-label="Add a LoRA"${stack.length >= LORA_STACK_MAX ? " disabled" : ""}>${UI_ICONS.plus}</button></div><div class="vnccs-uc-lora-rows" data-lora-rows></div>`;
+    const rows = container.querySelector("[data-lora-rows]");
     stack.forEach((item, index) => {
       const row = document.createElement("div");
-      row.className = `vnccs-uc-lora-item ${item.name ? "" : "empty"}`;
+      row.className = `vnccs-uc-lora-item ${item.name ? "" : "empty"} ${index > 0 ? "removable" : ""}`;
       row.innerHTML = `
         <select class="vnccs-uc-select" data-lora-stack-index="${index}" data-lora-stack-field="name">${optionHTML}</select>
-        <input class="vnccs-uc-input" data-lora-stack-index="${index}" data-lora-stack-field="strength" type="number" lang="en-US" inputmode="decimal" step="0.05">`;
+        <input class="vnccs-uc-input" data-lora-stack-index="${index}" data-lora-stack-field="strength" type="number" lang="en-US" inputmode="decimal" step="0.05">
+        ${index > 0 ? `<button class="vnccs-uc-icon" type="button" data-action="lora-remove" data-lora-index="${index}" title="Remove this LoRA" aria-label="Remove this LoRA">${MINUS_ICON}</button>` : ""}`;
       const select = row.querySelector("select");
       const strength = row.querySelector("input");
       if (select) select.value = item.name || "";
       if (strength) strength.value = this.formatSettingNumber(item.strength, 2);
-      container.appendChild(row);
+      rows.appendChild(row);
     });
   }
 
   updateLoraStackFromControl(target) {
     const index = Number(target?.dataset?.loraStackIndex);
     const field = target?.dataset?.loraStackField;
-    if (!Number.isInteger(index) || index < 0 || index >= 5 || !field) return;
+    if (!Number.isInteger(index) || index < 0 || index >= LORA_STACK_MAX || !field) return;
     const stack = this.normalizeLoraStack();
     if (field === "name") stack[index].name = target.value || "";
     if (field === "strength") stack[index].strength = this.parseNumericInput(target, stack[index].strength);
@@ -2618,11 +2728,15 @@ class UniCanvasWidget {
     const card = document.createElement("div");
     card.role = "button";
     card.tabIndex = 0;
-    card.className = `vnccs-uc-model-card ${turbo ? "turbo" : ""} ${head ? "head" : ""} ${selected ? "selected" : ""} ${status.progress ? "progress" : status.installed ? "installed" : "missing"}`;
+    const row = !turbo && !head;
+    card.className = `vnccs-uc-model-card ${turbo ? "turbo" : ""} ${head ? "head" : ""} ${row ? "row" : ""} ${selected ? "selected" : ""} ${status.progress ? "progress" : status.installed ? "installed" : "missing"}`;
     if (turbo) {
       card.dataset.turboToggle = preset.id;
     } else if (head) {
       card.dataset.presetPickerToggle = "1";
+      card.title = "Choose another preset";
+      card.setAttribute("aria-haspopup", "listbox");
+      card.setAttribute("aria-expanded", this.presetPickerOpen ? "true" : "false");
     } else {
       card.dataset.presetId = preset.id;
     }
@@ -2632,19 +2746,22 @@ class UniCanvasWidget {
     const desc = turbo ? preset.turbo?.asset?.description : preset.description;
     const modelName = turbo ? "" : getUniCanvasPresetModelName(preset);
     const downloadAttrs = turbo ? `data-turbo-download="${this._escape(preset.id)}"` : `data-preset-download="${this._escape(preset.id)}"`;
-    const downloadButton = turbo || status.installed || status.progress
+    // Menu rows stay one compact line (pick first, download from the header card); tooltips carry the description.
+    const downloadButton = turbo || row || status.installed || status.progress
       ? ""
       : `<div class="vnccs-uc-model-card-actions"><button type="button" class="vnccs-uc-model-card-download" ${downloadAttrs}>Download</button></div>`;
     const toggle = turbo ? `<span class="vnccs-uc-toggle ${selected ? "active" : ""}" aria-hidden="true"></span>` : "";
     const statusNode = `<span class="vnccs-uc-model-card-status ${statusClass}">${this._escape(statusText)}</span>`;
+    if (row && desc) card.title = desc;
     card.innerHTML = `
       <span class="vnccs-uc-model-card-top">
         <span class="vnccs-uc-model-card-badge ${statusClass}"></span>
         <span class="vnccs-uc-model-card-name">${this._escape(title || preset.label || preset.id)}</span>
         ${turbo ? `${statusNode}${toggle}` : statusNode}
+        ${head ? PRESET_CHEVRON_ICON : ""}
       </span>
-      ${modelName ? `<span class="vnccs-uc-model-card-model">Model: ${this._escape(modelName)}</span>` : ""}
-      ${turbo ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
+      ${modelName ? `<span class="vnccs-uc-model-card-model">${row ? "" : "Model: "}${this._escape(modelName)}</span>` : ""}
+      ${turbo || row ? "" : `<span class="vnccs-uc-model-card-desc">${this._escape(desc || "")}</span>`}
       ${downloadButton}`;
     return card;
   }
@@ -2687,9 +2804,9 @@ class UniCanvasWidget {
     const configLinked = this._isConfigLinked();
     this.container.querySelectorAll("[data-model-panel]").forEach((panel) => {
       const panelMode = panel.dataset.modelPanel;
-      const linkedModeOnly = configLinked && panelMode === "custom" && mode !== "custom";
-      panel.classList.toggle("vnccs-uc-mode-only", linkedModeOnly);
-      panel.style.display = panelMode === mode || linkedModeOnly ? "" : "none";
+      // Linked: only the Custom panel stays, cut down to the inference scale row.
+      panel.classList.toggle("vnccs-uc-mode-only", configLinked && panelMode === "custom");
+      panel.style.display = configLinked ? (panelMode === "custom" ? "" : "none") : (panelMode === mode ? "" : "none");
     });
     const presetPanel = this.container.querySelector("[data-preset-card-list]");
     if (presetPanel) {
@@ -2975,9 +3092,48 @@ class UniCanvasWidget {
 
   // A linked VNCSS Config overrides the node's model, CLIP, VAE, LoRAs and reference images
   // (nodes/unicanvas/draw.py ignores the node's own values on external draws), so those controls are
-  // greyed out and inert while the link exists. Mode (model family) and sampling stay editable.
+  // hidden while the link exists (see .vnccs-uc-config-linked). The family is detected from the config's model.
+  // The family a model FILE belongs to. Only the file name counts (a folder such as "qwen/" says
+  // nothing about the family) and the most specific pattern wins, so "Qwen-Image-2.1" is not
+  // taken for the generic "qwen" edit family.
+  detectModuleForModelName(name) {
+    const file = String(name || "").split(/[\\/]/).pop().toLowerCase();
+    if (!file) return null;
+    let best = null, bestLength = 0;
+    for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
+      for (const pattern of module.detect || []) {
+        if (pattern.length > bestLength && uniCanvasModelDetectMatches(file, pattern)) { best = module; bestLength = pattern.length; }
+      }
+    }
+    return best;
+  }
+
+  // A linked config decides the model, so the family (Mode) follows its model file instead of a picker.
+  syncConfigFamily() {
+    if (!this._isConfigLinked() || this._syncingConfigFamily) return false;
+    let resolved;
+    try { resolved = resolveConfigDrawSettings(this.node?.graph || app.graph, this.node); } catch (_) { return false; }
+    const config = resolved?.settings;
+    if (!config) return false;
+    const key = getUniCanvasModelLoader(config.model_loader).forcedMode
+      || this.detectModuleForModelName(config.ckpt_name || config.diffusion_model_name || config.gguf_model_name)?.key;
+    if (!key || key === this.settings.generation_mode) return false;
+    this._syncingConfigFamily = true;
+    try {
+      this.applyInferenceModuleDefaults(key, { preserveModelSelection: true });
+      this.syncInferenceControls();
+      this.syncPromptControls();
+      syncQwen21SpectrumPanel(this);
+      this.syncSettingsToWidget();
+    } finally {
+      this._syncingConfigFamily = false;
+    }
+    return true;
+  }
+
   syncConfigOverride() {
     const linked = this._isConfigLinked();
+    if (linked) this.syncConfigFamily();
     this.container.classList.toggle("vnccs-uc-config-linked", linked);
     this.container.querySelectorAll("[data-config-override]").forEach((el) => {
       el.inert = linked;
@@ -2991,7 +3147,7 @@ class UniCanvasWidget {
       const title = document.createElement("strong");
       title.textContent = "VNCSS Config linked";
       const body = document.createElement("span");
-      body.textContent = "Model, CLIP, VAE, LoRAs and reference images come from the config node. Mode and sampling settings below still apply.";
+      body.textContent = "Model, family, CLIP, VAE, LoRAs and reference images come from the config node. Prompt, steps, sampler, scheduler, CFG and seed still apply.";
       banner.append(title, body);
     }
   }
@@ -3047,6 +3203,7 @@ class UniCanvasWidget {
     const modelLoader = this.settings.model_loader;
     this.applyInferenceModuleDefaults(mode);
     if (modelLoader) this.settings.model_loader = modelLoader;
+    this.recallModelChoice();
     this.syncInferenceControls();
     this.syncPromptControls();
     // Re-gate the Qwen-Image-2.1 Spectrum panel for the new family.
@@ -3066,6 +3223,7 @@ class UniCanvasWidget {
     // pins its family (and then the Mode list is disabled). With a linked config the family
     // comes from the Mode list, not from the local loader.
     if (loader.forcedMode && !this._isConfigLinked()) this.applyInferenceModuleDefaults(loader.forcedMode);
+    this.recallModelChoice();
     this.syncPromptControls();
   }
 
@@ -3084,14 +3242,12 @@ class UniCanvasWidget {
       if (!this._isConfigLinked()) this.applyInferenceModuleDefaults(loader.forcedMode);
       return;
     }
-    const name = String(this.getSelectedModelNameForLoader() || "").toLowerCase();
-    if (!name) return;
-    for (const module of Object.values(UNICANVAS_MODEL_MODULES)) {
-      if ((module.detect || []).some((pattern) => uniCanvasModelDetectMatches(name, pattern))) {
-        this.applyInferenceModuleDefaults(module.key, { preserveModelSelection: true });
-        return;
-      }
-    }
+    const module = this.detectModuleForModelName(this.getSelectedModelNameForLoader());
+    if (!module || module.key === getUniCanvasModelModule(this.settings.generation_mode).key) return;
+    // A different family brings its own defaults, but the loader the user picked stays.
+    const modelLoader = this.settings.model_loader;
+    this.applyInferenceModuleDefaults(module.key, { preserveModelSelection: true });
+    if (modelLoader) this.settings.model_loader = modelLoader;
   }
 
   getModelBase() {
@@ -3517,7 +3673,7 @@ class UniCanvasWidget {
       this.setStageScale(this.zoomDragStart.scale * scaleFactor, this.zoomDragStart.center);
     } else if (this.pointerMode === "bbox-move") {
       if (this.isStagingActive()) return;
-      const grid = e.ctrlKey || e.metaKey ? 8 : 64;
+      const grid = this.bboxGridStep(e, true);
       this.bbox.x = this.roundToMultiple(this.dragStart.bbox.x + point.x - this.dragStart.point.x, grid);
       this.bbox.y = this.roundToMultiple(this.dragStart.bbox.y + point.y - this.dragStart.point.y, grid);
     } else if (this.pointerMode === "bbox-resize") {
@@ -4297,6 +4453,9 @@ class UniCanvasWidget {
       before: source.before,
       sourceCanvas: source.canvas,
       sourceBounds: { ...source.bounds },
+      // Crop mode trims sourceCanvas out of this untouched full image (crop = pixels cut per side).
+      full: { canvas: source.canvas, bounds: { ...source.bounds } },
+      crop: { ...EMPTY_CROP },
       quad: rectToQuad(source.bounds),
       mesh: null,
       sliders: null,
@@ -4339,6 +4498,7 @@ class UniCanvasWidget {
       point: { ...point },
       quad: cloneQuad(draft.quad),
       mesh: draft.mesh ? draft.mesh.map((p) => ({ ...p })) : null,
+      crop: { ...draft.crop },
       center,
       startAngle: Math.atan2(point.y - center.y, point.x - center.x),
     };
@@ -4381,6 +4541,12 @@ class UniCanvasWidget {
       return;
     }
     const handle = hit.handle;
+    if (mode === "crop") {
+      const result = cropQuadFromHandle(start.quad, handle, point, { full: draft.full.bounds, crop: start.crop });
+      this.setDraftCrop(draft, result.crop);
+      this.setTransformFrame(draft, result.quad, { mesh: null });
+      return;
+    }
     const corner = isCornerHandle(handle);
     let quad;
     if (corner && (mode === "distort" || (mode === "free" && modifier && !(alt && shift)))) {
@@ -4400,6 +4566,21 @@ class UniCanvasWidget {
       });
     }
     this.setTransformFrame(draft, quad, carry);
+  }
+
+  // Crop mode: the draft shows only the part of the full image left after trimming `crop`
+  // (world units of full.bounds); the pixels are cut out of the untouched full canvas each time.
+  setDraftCrop(draft, crop) {
+    const { canvas, bounds } = draft.full;
+    const kx = canvas.width / Math.max(1e-6, bounds.width), ky = canvas.height / Math.max(1e-6, bounds.height);
+    const width = Math.max(1, bounds.width - crop.left - crop.right), height = Math.max(1, bounds.height - crop.top - crop.bottom);
+    const cut = document.createElement("canvas");
+    cut.width = Math.max(1, Math.round(width * kx));
+    cut.height = Math.max(1, Math.round(height * ky));
+    cut.getContext("2d").drawImage(canvas, crop.left * kx, crop.top * ky, cut.width, cut.height, 0, 0, cut.width, cut.height);
+    draft.crop = { ...crop };
+    draft.sourceCanvas = cut;
+    draft.sourceBounds = { x: bounds.x + crop.left, y: bounds.y + crop.top, width, height };
   }
 
   // Numeric sliders (Rotate / 3D tilt): absolute values over the frame they started from, so the
@@ -4433,6 +4614,7 @@ class UniCanvasWidget {
       const angle = action === "rotate-180" ? Math.PI : (action === "rotate-cw" ? Math.PI / 2 : -Math.PI / 2);
       this.setTransformFrame(draft, rotateQuad(quad, quadCenter(quad), angle), { fromQuad: quad, fromMesh: mesh });
     } else if (action === "reset") {
+      this.setDraftCrop(draft, { ...EMPTY_CROP });
       this.setTransformFrame(draft, rectToQuad(draft.sourceBounds), { mesh: null });
     }
     this.renderToolSettings();
@@ -4690,10 +4872,17 @@ class UniCanvasWidget {
     return null;
   }
 
+  // "Snap to grid" on: the generation box steps by 64 (Ctrl/Cmd: 8). Off: a move follows the pointer
+  // pixel by pixel and a resize keeps the model's 8 px multiple, so nothing jumps.
+  bboxGridStep(event, moving) {
+    if (this.snapToGrid) return event?.ctrlKey || event?.metaKey ? this.getGridSize() : MOVE_SNAP_GRID_SIZE;
+    return moving ? 1 : this.getGridSize();
+  }
+
   resizeBbox(point, event) {
     const box = { ...this.dragStart.bbox };
     const handle = this.dragStart.bboxHandle || "";
-    const grid = event?.ctrlKey || event?.metaKey ? 8 : 64;
+    const grid = this.bboxGridStep(event, false);
     const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     let left = box.x;
     let right = box.x + box.width;
@@ -4994,7 +5183,8 @@ class UniCanvasWidget {
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
     if (this.panorama) ctx.restore();
-    this.drawBbox(ctx);
+    // The generation box is not drawn while a pose is being edited: the 3D view owns the stage.
+    if (!this.poseEditor?.hidesBbox()) this.drawBbox(ctx);
     ctx.restore();
     const inferenceSize = this.getInferenceSize();
     this.updateInferenceSizeLabels(inferenceSize);
@@ -6163,7 +6353,7 @@ class UniCanvasWidget {
     }
     const confirmed = await this.confirmInWidget(
       "Flatten Layers",
-      "All visible raster layers will be flattened into one master layer. All other layers will be deleted. This operation cannot be undone.",
+      "All visible raster layers will be flattened into one master layer. All other layers will be removed. Undo (Ctrl+Z) brings them back.",
       "Flatten"
     );
     if (!confirmed) return;
@@ -6639,6 +6829,7 @@ class UniCanvasWidget {
       if (resolved.unsupported) {
         this.setStatus(`VNCSS Config: ${resolved.unsupported} - queueing the workflow for this draw.`);
       } else {
+        this.syncConfigFamily();
         try {
           const refs = await loadConfigReferences(resolved.references);
           configOverrides = { ...resolved.settings, edit_reference_images: refs };
@@ -8227,6 +8418,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    this._removeScaleEdit?.();
     teardownUniCanvasWidgetModes(this);
     this._panoramaImportClose?.();
     this.panoramaOrbit?.dispose();
@@ -8383,6 +8575,7 @@ app.registerExtension({
       // waiting for an unrelated widget event.
       if (this.inputs?.[index]?.name !== "config") return;
       this.uniCanvasWidget?.syncPromptControls();
+      this.uniCanvasWidget?.renderModelSelectionControls();
     };
 
     const onSerialize = nodeType.prototype.onSerialize;

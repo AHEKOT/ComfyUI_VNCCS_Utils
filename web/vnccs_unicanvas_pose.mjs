@@ -2,11 +2,20 @@
 import { PoseStudioWidget } from "./vnccs_pose_studio.js";
 
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera } from "./vnccs_unicanvas_pose_state.mjs";
+import { composePoseReference, poseAtPanoramaCamera, poseLayerBelow } from "./vnccs_unicanvas_pose_state.mjs";
+import { applyTorsoFraming } from "./vnccs_unicanvas_pose_framing.mjs";
 import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
+import { POSE_HELP_CSS, buildPoseHelp } from "./vnccs_unicanvas_pose_help.mjs";
+import { installBodyDrag } from "./vnccs_unicanvas_pose_body_drag.mjs";
+import { UniCanvasPoseWall, poseWallPlacement } from "./vnccs_unicanvas_pose_wall.mjs";
+const EYE_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.1 10.1 0 0 1 12 19c-6.4 0-10-7-10-7a17.7 17.7 0 0 1 4.1-4.9M9.9 5.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a17.8 17.8 0 0 1-2.2 3.2M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M2 2l20 20"/></svg>';
+// Pose Studio's own rotation gizmo size (vnccs_pose_studio_core.js: transform.setSize).
+const GIZMO_SIZE = 0.8;
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 
 const styles = `
+${POSE_HELP_CSS}
 .vnccs-unicanvas .vnccs-uc-pose-root { position:absolute; inset:0; display:block; width:auto; height:auto; min-width:0; min-height:0; background:none; border:0; border-radius:0; pointer-events:none; z-index:5; --vnccs-ps-ui-scale:1; --vnccs-ps-relative-ui-scale:1; }
 .vnccs-unicanvas .vnccs-uc-pose-root:has(> .vnccs-ps-modal-overlay) { z-index:1000; }
 /* Pose Library inside UniCanvas: the modal is as large as the canvas, but its header, toolbar and
@@ -43,8 +52,12 @@ const styles = `
 .vnccs-uc-pose-page { min-height:0; overflow:auto; flex:1; overscroll-behavior:contain; }
 .vnccs-uc-pose-page > .vnccs-ps-left, .vnccs-uc-pose-page > .vnccs-ps-right-sidebar, .vnccs-uc-pose-page > .vnccs-ps-center { width:100%; flex:none; min-width:0; height:auto; max-height:none; overflow:visible; padding:0; border:0; background:transparent; zoom:1; }
 .vnccs-uc-pose-editbar { position:absolute; left:50%; bottom:12px; transform:translateX(-50%); display:flex; align-items:center; gap:8px; max-width:calc(100% - 24px); padding:6px 8px 6px 12px; box-sizing:border-box; border:1px solid var(--uc-border); border-radius:12px; background:rgba(14,11,20,.94); box-shadow:0 12px 32px rgba(0,0,0,.45); pointer-events:auto; zoom:var(--vnccs-uc-ui-scale); z-index:3; }
+.vnccs-uc-pose-editbar .vnccs-uc-pose-eye { width:30px; padding:0; display:inline-flex; align-items:center; justify-content:center; flex:none; }
 .vnccs-uc-pose-editbar strong { color:var(--uc-accent, #ff8fa3); font-size:12px; white-space:nowrap; }
-.vnccs-uc-pose-editbar .vnccs-uc-pose-hint { color:var(--uc-muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0; }
+.vnccs-uc-pose-editbar .vnccs-uc-pose-hint { color:var(--uc-muted); font-size:11px; line-height:1.3; white-space:normal; min-width:0; max-width:340px; }
+.vnccs-uc-pose-drag-hint { position:absolute; z-index:4; display:flex; align-items:center; gap:6px; padding:5px 9px 5px 6px; border-radius:10px; background:rgba(14,11,20,.9); border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-accent, #ff8fa3); font-size:11px; pointer-events:none; white-space:nowrap; }
+.vnccs-uc-pose-drag-hint.depth { color:var(--uc-accent-2, #b8a9e8); border-color:var(--uc-accent-2, #b8a9e8); }
+.vnccs-uc-pose-drag-hint[hidden] { display:none; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap { position:absolute; flex:none; min-width:0; min-height:0; margin:0; padding:0; background:transparent; border:0; border-radius:0; pointer-events:auto; overflow:hidden; }
 .vnccs-uc-pose-root > .vnccs-ps-canvas-wrap canvas { background:transparent; }
 .vnccs-uc-pose-root > [class*="modal"], .vnccs-uc-pose-root > .vnccs-ps-manager, .vnccs-uc-pose-root > .vnccs-ps-manager-detail-strip { pointer-events:auto; }
@@ -69,6 +82,7 @@ export class UniCanvasPoseEditor {
         this.visible = false;
         this.ready = null;
         this.inspecting = false;
+        this.viewOffsetKey = null;
         this.commitTimer = null;
         this.wheelInspectionTimer = null;
         this.abort = new AbortController();
@@ -97,7 +111,7 @@ export class UniCanvasPoseEditor {
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
                 if (this.initialized) this.applyDimensions(data.export);
                 const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
-                if (meshKey !== this.meshKey) { this.meshKey = meshKey; this.backdrop?.invalidate(); }
+                if (meshKey !== this.meshKey) { this.meshKey = meshKey; this.backdrop?.invalidate(); this.wallKey = null; }
                 const key = JSON.stringify([data, layer.pose.viewport]);
                 layer.pose.studio = clone(data);
                 if (key === this.stateKey) return;
@@ -111,6 +125,8 @@ export class UniCanvasPoseEditor {
             },
             onViewportRender: () => {
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
+                this.syncSessionViewOffset();
+                this.syncGizmoSize();
                 this.capturePreview();
             },
         });
@@ -118,10 +134,10 @@ export class UniCanvasPoseEditor {
         // The Scene page's camera sliders are the capture-framing controls: applying them
         // re-seeds the persisted framing (and snaps the inspection view onto it). Free
         // navigation (orbit / pan / wheel) never runs through here.
-        const applyCameraToViewer = studio.applyCameraToViewer.bind(studio);
+        const applyCameraToViewer = studio.applyCameraToViewer;
         studio.applyCameraToViewer = (...args) => {
-            applyCameraToViewer(...args);
-            if (this.initialized) this.saveCaptureFraming();
+            applyCameraToViewer.apply(studio, args);
+            if (this.initialized && !this.keepingCamera) this.saveCaptureFraming();
         };
         studio.container.classList.add("vnccs-uc-pose-root");
         this.host.container.appendChild(studio.container);
@@ -152,10 +168,16 @@ export class UniCanvasPoseEditor {
                 this.applyViewerCamera(layer.pose.viewport);
             } else {
                 studio.applyCameraToViewer(true);
+                applyTorsoFraming(studio.viewer);
                 this.saveCaptureFraming();
             }
-            // Inspection-only navigation: moving the camera must never bake pixels, persist a
-            // viewport or touch the mannequin, so orbit end no longer commits anything.
+            // The layers below stand as a wall in the scene, aligned with the capture framing.
+            this.wall = new UniCanvasPoseWall(studio.viewer.THREE, studio.viewer.scene);
+            this.backdrop.wall = this.wall;
+            this.refreshWall();
+            this.disposeBodyDrag = installBodyDrag(this);
+            // The camera is a free 3D inspection view: the capture framing stays pinned to the
+            // wall (the layers below), so orbiting can never move the mannequin in the image.
             studio.viewer.orbit.addEventListener("start", () => {
                 if (this.token === token) this.inspecting = true;
             });
@@ -243,7 +265,7 @@ export class UniCanvasPoseEditor {
             });
         };
         side.append(head, this.buildCharacterMenu(), dock);
-        controls.append(this.buildEditBar());
+        controls.append(this.buildEditBar(), this.help.overlay);
         root.appendChild(controls);
         this.sidePanel = side;
         this.dock = dock;
@@ -280,12 +302,19 @@ export class UniCanvasPoseEditor {
     buildEditBar() {
         const bar = document.createElement("div"); bar.className = "vnccs-uc-pose-editbar";
         const title = document.createElement("strong"); title.textContent = "Editing pose";
-        const hint = document.createElement("span"); hint.className = "vnccs-uc-pose-hint";
-        hint.textContent = "Left: joints · Right-drag: orbit · Middle: pan · Wheel: zoom - inspect only, the camera never changes the layer";
-        const library = this.host._button("Pose Library", "vnccs-uc-btn", () => this.studio?.showLibraryModal?.(), "Load a pose from the Pose Library");
+        const helpButton = this.host._button("?", "vnccs-uc-btn vnccs-uc-pose-eye", () => {
+            if (this.help.open) this.help.hide(); else { this.help.show(); helpButton.setAttribute("aria-expanded", "true"); }
+        }, "How editing a pose works");
+        helpButton.setAttribute("aria-label", "Editing pose help"); helpButton.setAttribute("aria-expanded", "false");
+        this.help = buildPoseHelp(document, { onClose: () => helpButton.setAttribute("aria-expanded", "false") });
+        const eye = this.host._button("", "vnccs-uc-btn vnccs-uc-pose-eye", () => this.toggleWall(), "Show or hide the layers below (the wall)");
+        eye.setAttribute("aria-label", "Toggle the layers below"); eye.setAttribute("aria-pressed", "true");
+        eye.innerHTML = EYE_ICON;
+        this.eyeButton = eye;
+        const reset = this.host._button("Reset camera", "vnccs-uc-btn", () => this.resetCamera(), "Return the editing camera to the capture framing");
         const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
         const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
-        bar.append(title, hint, library, cancel, save);
+        bar.append(title, helpButton, eye, reset, cancel, save);
         this.editBar = bar;
         return bar;
     }
@@ -449,11 +478,32 @@ export class UniCanvasPoseEditor {
         return { undo: viewer?.history?.length || 0, redo: viewer?.future?.length || 0 };
     }
 
+    // Pose Studio history snapshots carry the camera (view, framing sliders). Undo / redo must
+    // only revert the mannequin: the inspection view, the capture framing and the wall stay put.
+    keepingCameraDuring(action) {
+        const { layer, studio } = this, viewer = studio.viewer;
+        const framing = clone(layer.pose.viewport), inspection = this.snapshotViewerCamera();
+        // Offset and zoom are the mannequin's own placement and scale, so they do undo; the view angles do not.
+        const keys = ["cam_yaw_deg", "cam_pitch_deg"];
+        const params = Object.fromEntries(keys.map(key => [key, studio.exportParams[key]]));
+        this.keepingCamera = true;
+        try { action(); }
+        finally {
+            this.keepingCamera = false;
+            Object.assign(studio.exportParams, params);
+            if (viewer.cameraParams) viewer.cameraParams = { ...viewer.cameraParams, yaw_deg: params.cam_yaw_deg, pitch_deg: params.cam_pitch_deg };
+            layer.pose.viewport = framing;
+            this.applyViewerCamera(inspection);
+            studio.persistActivePoseCameraParams?.();
+            viewer.requestRender?.();
+        }
+    }
+
     undo() {
         const studio = this.studio;
         if (!studio) return false;
         if (studio.isAnimationMode?.()) studio.undoAnimation?.();
-        else studio.viewer?.undo?.();
+        else this.keepingCameraDuring(() => studio.viewer?.undo?.());
         return true;
     }
 
@@ -461,7 +511,7 @@ export class UniCanvasPoseEditor {
         const studio = this.studio;
         if (!studio) return false;
         if (studio.isAnimationMode?.()) studio.redoAnimation?.();
-        else studio.viewer?.redo?.();
+        else this.keepingCameraDuring(() => studio.viewer?.redo?.());
         return true;
     }
 
@@ -470,6 +520,7 @@ export class UniCanvasPoseEditor {
         if (!this.studio) return;
         this.studio.container.hidden = !visible;
         if (!visible && this.studio.viewer?.orbit) this.studio.viewer.orbit.enableDamping = false;
+        if (!visible) { this.resetCamera(); this.studio.viewer?.camera?.clearViewOffset?.(); this.viewOffsetKey = null; }
         this.host.container.classList.toggle("vnccs-uc-pose-active", visible);
         this.mountSidebar(visible);
         if (!visible) {
@@ -494,22 +545,109 @@ export class UniCanvasPoseEditor {
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         this.controls.inert = this.layer.locked || !this.layer.visible || this.host.hasOpenStagingPanel();
         this.sidePanel.inert = this.layer.locked || !this.layer.visible;
-        surface.style.left = `${stage.offsetLeft + view.x + rect.x * view.scale}px`;
-        surface.style.top = `${stage.offsetTop + view.y + rect.y * view.scale}px`;
-        surface.style.width = `${rect.width * view.scale}px`;
-        surface.style.height = `${rect.height * view.scale}px`;
+        // The session viewport covers the whole stage, not the generation box: the camera is
+        // free to look at (and edit) the mannequin anywhere, and the rect is only where the
+        // framing lands (see syncSessionViewOffset).
+        Object.assign(surface.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+            width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
-        // The bbox surface is clipped to the canvas region even when it crosses a sidebar.
-        const x = view.x + rect.x * view.scale, y = view.y + rect.y * view.scale;
-        const width = rect.width * view.scale, height = rect.height * view.scale;
-        surface.style.clipPath = `inset(${Math.max(0,-y)}px ${Math.max(0,x+width-stage.clientWidth)}px ${Math.max(0,y+height-stage.clientHeight)}px ${Math.max(0,-x)}px)`;
+        this.syncSessionViewOffset();
+        if (this.initialized) this.refreshWall();
         if (!this.visible && this.initialized) {
             const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
             this.studio.performViewerResize(Math.round(rect.width * scale), Math.round(rect.height * scale));
         }
         this.refreshCharacterMenu();
+    }
+
+    // The viewport camera renders a window of its frustum extended over the whole stage so the
+    // capture framing lands exactly on the pose rect, pixel for pixel: the framing has the rect's
+    // aspect and height rh px, the camera's own frustum (aspect A) is then A*rh px wide, centred
+    // on the rect. Orbit / pan / wheel move the camera only; the offset stays.
+    syncSessionViewOffset() {
+        const v = this.studio?.viewer, camera = v?.camera, surface = this.studio?.canvasContainer;
+        if (!this.initialized || !this.visible || !this.layer || typeof camera?.setViewOffset !== "function") return;
+        const { view } = this.host, rect = this.layer.pose.rect;
+        const cw = surface.clientWidth, ch = surface.clientHeight, aspect = camera.aspect;
+        const rx = view.x + rect.x * view.scale, ry = view.y + rect.y * view.scale;
+        const rw = rect.width * view.scale, rh = rect.height * view.scale;
+        if (!(cw > 0 && ch > 0 && rw > 0 && rh > 0 && aspect > 0)) return;
+        const key = [rx, ry, rw, rh, cw, ch, aspect].map(value => Math.round(value * 100) / 100).join(",");
+        if (key === this.viewOffsetKey) return;
+        this.viewOffsetKey = key;
+        const fullWidth = aspect * rh;
+        camera.setViewOffset(fullWidth, rh, fullWidth / 2 - (rx + rw / 2), -ry, cw, ch);
+        camera.updateProjectionMatrix();
+    }
+
+    // The lower layers, composited over the wall region (rect plus what the layers add, within one
+    // rect size around it), textured onto the wall. Rebuilt only when the inputs change.
+    refreshWall() {
+        if (!this.wall || !this.layer || !this.layer.pose.viewport) return;
+        const rect = this.layer.pose.rect, lower = poseLayerBelow(this.host.layers, this.layer);
+        const radius = (this.backdrop.bounds ||= this.backdrop.measure())?.radius;
+        const key = JSON.stringify([rect, this.layer.pose.viewport, radius, lower.map(item => [item.id, item.opacity, item.blendMode])]);
+        if (key === this.wallKey) return;
+        this.wallKey = key;
+        this.wallContent = lower.length > 0;
+        if (!lower.length) { this.wall.update(null); return; }
+        let x1 = rect.x, y1 = rect.y, x2 = rect.x + rect.width, y2 = rect.y + rect.height;
+        for (const item of lower) {
+            const b = this.host.getLayerWorldBounds(item);
+            if (!b) continue;
+            x1 = Math.min(x1, b.x); y1 = Math.min(y1, b.y); x2 = Math.max(x2, b.x + b.width); y2 = Math.max(y2, b.y + b.height);
+        }
+        x1 = Math.max(x1, rect.x - rect.width); y1 = Math.max(y1, rect.y - rect.height);
+        x2 = Math.min(x2, rect.x + 2 * rect.width); y2 = Math.min(y2, rect.y + 2 * rect.height);
+        const region = { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+        const scale = Math.min(1, 4096 / Math.max(region.width, region.height));
+        const canvas = this.host._createCanvas(Math.max(1, Math.round(region.width * scale)), Math.max(1, Math.round(region.height * scale)));
+        const ctx = canvas.getContext("2d");
+        for (const item of [...lower].reverse()) {
+            ctx.save();
+            ctx.globalAlpha = item.opacity;
+            ctx.globalCompositeOperation = item.blendMode || "source-over";
+            this.host.drawRasterLayerToWorldRect(ctx, item, region, { x: 0, y: 0, width: canvas.width, height: canvas.height });
+            ctx.restore();
+        }
+        const framing = this.layer.pose.viewport;
+        const mesh = this.studio.viewer.skinnedMesh;
+        this.wall.update(canvas, poseWallPlacement(this.studio.viewer.THREE,
+            { rect, region, framing, radius: (radius || 10) * Math.max(1e-3, mesh?.scale?.x || 1) }));
+        if (this.wallShown === false) this.wall.mesh.visible = false;
+        this.studio.viewer.requestRender?.();
+    }
+
+    // The rotation gizmo keeps a constant screen size, so a zoomed-out (scaled-down) character
+    // was dwarfed by it. Scale it with the character's zoom instead.
+    syncGizmoSize() {
+        const viewer = this.studio?.viewer, control = viewer?.transform;
+        if (!control?.setSize) return;
+        const size = GIZMO_SIZE * Math.max(0.15, Math.min(2, viewer.skinnedMesh?.scale?.x || 1));
+        if (Math.abs((control.size ?? 0) - size) < 1e-3) return;
+        control.setSize(size);
+        viewer.requestRender?.();
+    }
+
+    // Show or hide the layers-below wall; the pixels of the layer are never affected.
+    toggleWall() {
+        if (!this.wall) return;
+        this.wall.mesh.visible = !this.wall.mesh.visible;
+        this.wallShown = this.wall.mesh.visible;
+        this.eyeButton?.setAttribute("aria-pressed", String(this.wall.mesh.visible));
+        if (this.eyeButton) this.eyeButton.innerHTML = this.wall.mesh.visible ? EYE_ICON : EYE_OFF_ICON;
+        this.studio?.viewer?.requestRender?.();
+        this.host.requestRender();
+    }
+
+    // Put the inspection camera back on the capture framing (the mannequin is untouched).
+    resetCamera() {
+        const framing = this.layer?.pose.viewport;
+        if (!this.initialized || !framing) return;
+        this.applyViewerCamera(framing);
+        this.studio.viewer.requestRender?.();
     }
 
     // The persisted capture framing (what the layer pixels show), as a plain camera object.
@@ -532,32 +670,79 @@ export class UniCanvasPoseEditor {
         v.orbit.update();
     }
 
-    captureSurface(size, transparent = true) {
+    // World rect the layer pixels cover: the pose rect grown to hold the whole mannequin as seen
+    // by the capture framing (never clipped to the generation box), within one rect size around it.
+    bakeRegion() {
+        const rect = this.layer.pose.rect, v = this.studio.viewer, THREE = v.THREE;
+        const framing = this.layer.pose.viewport;
+        if (!framing || !THREE) return { ...rect };
+        const camera = v.camera.clone();
+        camera.position.fromArray(framing.position); camera.fov = framing.fov; camera.zoom = framing.zoom || 1;
+        camera.aspect = rect.width / rect.height; camera.up.set(0, 1, 0);
+        camera.lookAt(new THREE.Vector3().fromArray(framing.target));
+        camera.updateProjectionMatrix(); camera.updateMatrixWorld(true);
+        let x1 = rect.x, y1 = rect.y, x2 = rect.x + rect.width, y2 = rect.y + rect.height;
+        const box = new THREE.Box3(), corner = new THREE.Vector3();
+        for (const { mesh } of this.backdrop?.characterMeshes?.() || []) {
+            mesh.updateMatrixWorld(true);
+            box.setFromObject(mesh);
+            if (box.isEmpty()) continue;
+            for (let i = 0; i < 8; i += 1) {
+                corner.set(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).project(camera);
+                if (!Number.isFinite(corner.x + corner.y)) continue;
+                const px = rect.x + (corner.x + 1) / 2 * rect.width, py = rect.y + (1 - corner.y) / 2 * rect.height;
+                x1 = Math.min(x1, px); x2 = Math.max(x2, px); y1 = Math.min(y1, py); y2 = Math.max(y2, py);
+            }
+        }
+        // Pad only the sides the figure actually crosses; a figure inside the box keeps the box.
+        const pad = 0.04 * Math.max(rect.width, rect.height);
+        const left = x1 < rect.x ? Math.max(rect.x - rect.width, Math.floor(x1 - pad)) : rect.x;
+        const top = y1 < rect.y ? Math.max(rect.y - rect.height, Math.floor(y1 - pad)) : rect.y;
+        const right = x2 > rect.x + rect.width ? Math.min(rect.x + 2 * rect.width, Math.ceil(x2 + pad)) : rect.x + rect.width;
+        const bottom = y2 > rect.y + rect.height ? Math.min(rect.y + 2 * rect.height, Math.ceil(y2 + pad)) : rect.y + rect.height;
+        const region = { x: left, y: top, width: right - left, height: bottom - top };
+        return region.width > 0 && region.height > 0 && this.host.ensureWorldRectBounds(region, 0) ? region : { ...rect };
+    }
+
+    // `scale` is capture pixels per world pixel; the result covers `region` (default: the pose rect).
+    captureSurface(scale, transparent = true, region = this.layer.pose.rect) {
         if (!this.initialized) return null;
+        const width = Math.max(1, Math.round(region.width * scale)), height = Math.max(1, Math.round(region.height * scale));
         const target = transparent
-            ? (this.previewSurface ||= this.host._createCanvas(size.width, size.height))
-            : this.host._createCanvas(size.width, size.height);
-        const w = this.studio, v = w.viewer;
-        // Old contract (pre-0.6.8): the capture renders the STORED framing with zeroed
-        // offsets, never the live inspection camera. Borrow the live camera for the render
-        // and put the inspection view back afterwards, so orbiting cannot bake a view.
+            ? (this.previewSurface ||= this.host._createCanvas(width, height))
+            : this.host._createCanvas(width, height);
+        const w = this.studio, v = w.viewer, camera = v.camera, rect = this.layer.pose.rect;
+        // The capture renders the STORED framing with zeroed offsets, never the live inspection
+        // view: borrow the camera and put the inspection view back afterwards.
         const framing = this.layer.pose.viewport || this.snapshotViewerCamera();
         const inspection = this.snapshotViewerCamera();
+        // three mutates camera.view in place: keep a copy, restore through the API.
+        const savedView = camera.view ? { ...camera.view } : null, savedAspect = camera.aspect;
         this.applyViewerCamera(framing);
+        // The framing has the pose rect's aspect; a window of it covers the (larger) region.
+        camera.aspect = rect.width / rect.height;
+        camera.setViewOffset(rect.width * scale, rect.height * scale,
+            (region.x - rect.x) * scale, (region.y - rect.y) * scale, width, height);
+        camera.updateProjectionMatrix();
         // The temporary camera move must not let the backdrop depth clamp translate anyone.
         if (this.backdrop) this.backdrop.suppressClamp = true;
+        const wallWasVisible = this.wall?.mesh.visible;
+        if (this.wall) this.wall.mesh.visible = false;
         try {
-            const result = v.capture(size.width, size.height, 1, w.exportParams.bg_color, 0, 0,
+            return v.capture(width, height, 1, w.exportParams.bg_color, 0, 0,
                 w.exportParams.cam_yaw_deg || 0, w.exportParams.cam_pitch_deg || 0,
                 { targetCanvas: target, transparent, hideReference: true, viewport: true });
-            return result;
         } finally {
+            if (this.wall) this.wall.mesh.visible = wallWasVisible;
             if (this.backdrop) this.backdrop.suppressClamp = false;
+            camera.aspect = savedAspect;
+            if (savedView?.enabled) camera.setViewOffset(savedView.fullWidth, savedView.fullHeight,
+                savedView.offsetX, savedView.offsetY, savedView.width, savedView.height);
+            else camera.clearViewOffset();
             this.applyViewerCamera(inspection);
-            // capture() leaves the stored-framing image in the visible buffer (the capture
-            // batch repaints it); repaint the inspection view synchronously so navigation
-            // never flashes the capture framing.
-            if (this.visible && v.renderer) v.renderer.render(v.scene, v.camera);
+            // capture() leaves the stored-framing image in the visible buffer; repaint the
+            // inspection view synchronously so navigation never flashes the capture framing.
+            if (this.visible && v.renderer) v.renderer.render(v.scene, camera);
         }
     }
 
@@ -574,13 +759,14 @@ export class UniCanvasPoseEditor {
             const cap = 2048 / Math.max(rect.width, rect.height);
             const screen = (this.host.view?.scale || 1) * (window.devicePixelRatio || 1);
             const scale = Math.min(1, cap, final ? Math.max(screen, cap) : screen);
-            const surface = this.captureSurface({ width: Math.max(1, Math.round(rect.width * scale)), height: Math.max(1, Math.round(rect.height * scale)) });
+            const region = this.bakeRegion();
+            const surface = this.captureSurface(scale, true, region);
             if (!surface) return;
             const ctx = this.layer.canvas.getContext("2d");
             ctx.clearRect(0, 0, this.layer.canvas.width, this.layer.canvas.height);
-            ctx.drawImage(surface, rect.x - this.host.origin.x, rect.y - this.host.origin.y, rect.width, rect.height);
+            ctx.drawImage(surface, region.x - this.host.origin.x, region.y - this.host.origin.y, region.width, region.height);
             this.layer.hiresCanvas = surface;
-            this.layer.hiresRect = { ...rect };
+            this.layer.hiresRect = { ...region };
             this.host.markLayerPixelsChanged(this.layer);
             this.host.requestRender();
             if (final) this.host.refreshLayerRow?.(this.layer.id);
@@ -621,9 +807,16 @@ export class UniCanvasPoseEditor {
     // stage must skip the bitmap so navigation cannot ghost the baked framing underneath
     // (the pre-0.6.8 editor did the same via layer._poseEditing). Mirrors the surface
     // visibility rules in layout(), so both the viewport and the bitmap hide together.
+    // True while the editing view is shown: the stage skips the generation box outline.
+    hidesBbox() {
+        return Boolean(this.visible && this.initialized && this.layer?.visible && !this.layer.locked && !this.host.hasOpenStagingPanel());
+    }
+
     hidesLayerPixels(layer) {
-        return this.visible && this.initialized && this.layer === layer
-            && this.layer.visible && !this.layer.locked && !this.host.hasOpenStagingPanel();
+        const editing = this.visible && this.initialized && this.layer.visible && !this.layer.locked && !this.host.hasOpenStagingPanel();
+        if (!editing) return false;
+        // The layers below are drawn by the wall inside the 3D view while it is shown.
+        return this.layer === layer || (this.wallContent && poseLayerBelow(this.host.layers, this.layer).includes(layer));
     }
 
     commit() {
@@ -715,12 +908,14 @@ export class UniCanvasPoseEditor {
         if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
         this.backdropSyncFrame = null;
         this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;
+        this.disposeBodyDrag?.(); this.disposeBodyDrag = null;
+        this.wall?.dispose(); this.wall = null; this.wallKey = null; this.wallShown = true; this.wallContent = false;
         this.selectController?.disconnect();
         this.uiAbort?.abort(); this.uiAbort = null;
         this.selectController = null;
         this.studio?.dispose();
         this.studio?.container.remove();
-        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null;
+        this.studio = null; this.layer = null; this.ready = null; this.previewSurface = null; this.viewOffsetKey = null;
         this.characterSelect = null; this.characterMenuKey = null; this.stateKey = null; this.pages = null;
         this.sidePanel?.remove();
         this.controls = null; this.characterMenu = null; this.sidePanel = null; this.editBar = null;

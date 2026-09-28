@@ -194,11 +194,13 @@ test("Save to output flattens through the shared helper and keeps the layer-menu
     const save = region(modesSource, "export async function saveUniCanvasOutput", "export async function newUniCanvasDocument");
     assert.ok(save.includes('widget.setStatus("[VNCCS UniCanvas] Saving to output...")'),
         "the status message must carry the [VNCCS UniCanvas] prefix");
+    assert.ok(save.includes("widget.downloadBlob(blob, fileName)"),
+        "the composite save must download the file in the browser");
     assert.ok(save.includes("layer-context-menu call shape"),
         "the layerId argument must be documented as the layer-menu call shape");
     assert.ok(save.includes("widget.serializeLayer(layer, true)"),
         "a layer save must send only that layer's pixels");
-    assert.ok(save.includes('"/vnccs/unicanvas/save_output"'), "Save to output must call the save_output route");
+    assert.ok(save.includes('"/vnccs/unicanvas/save_output"'), "the layer-menu save must call the save_output route");
     assert.ok(!modesSource.includes("_vnccsStandalonePersist"),
         "no dead standalone persistence hooks may remain");
 });
@@ -262,8 +264,8 @@ test("Save to output saves the bbox crop and reports the result in a toast", () 
         "the saved image must have the generation bbox size");
     assert.ok(crop.includes("buildUniCanvasCompositeCanvas(widget)"), "the crop must start from the flattened composite");
     const save = region(modesSource, "export async function saveUniCanvasOutput", "export async function newUniCanvasDocument");
-    assert.ok(save.includes("buildUniCanvasBboxCompositeCanvas(widget).toDataURL"), "Save to output must send the bbox crop");
-    assert.ok(save.includes('showUniCanvasToast(widget, "Saved to output"'), "success must show a toast with the file name");
+    assert.ok(save.includes("canvasToPngBlob(buildUniCanvasBboxCompositeCanvas(widget))"), "Save to output must download the bbox crop");
+    assert.ok(save.includes('showUniCanvasToast(widget, "Image downloaded"'), "success must show a toast with the file name");
     assert.ok(save.includes('showUniCanvasToast(widget, "Save to output failed", message, "error")'),
         "failure must show an error toast with the message");
 });

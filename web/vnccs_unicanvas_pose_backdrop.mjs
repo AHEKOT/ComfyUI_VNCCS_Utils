@@ -116,8 +116,11 @@ export class UniCanvasPoseBackdrop {
     const camera = viewer.camera;
     // Captures of the layer pixels must hold only the mannequin; the plane writes no color anyway,
     // but keeping it out of foreign cameras avoids stray depth.
-    this.plane.visible = renderCamera === camera;
+    this.plane.visible = renderCamera === camera && !this.wall;
     if (renderCamera !== camera || !viewer.orbit) return;
+    // A fixed wall replaces the camera-facing depth plane: characters may only leave it behind
+    // them on real drags, never because the free camera moved.
+    if (this.wall) { if (!this.suppressClamp) this.clampAgainstWall(); return; }
     const distance = this.updatePlane();
     // suppressClamp: the editor borrows the live camera for a stored-framing capture. That
     // temporary camera move must never translate a character - only real character drags
@@ -164,8 +167,24 @@ export class UniCanvasPoseBackdrop {
       const center = entry.mesh.getWorldPosition(new THREE.Vector3());
       if (this.bounds) center.addScaledVector(this.bounds.offset, scale);
       const depth = center.sub(camera.position).dot(forward);
-      return { ...entry, depth, radius, farEdge: depth + radius, forward };
+      return { ...entry, depth, radius, farEdge: depth + radius, forward, center: center.clone().add(camera.position) };
     });
+  }
+
+  clampAgainstWall() {
+    if (this.clamping) return;
+    for (const { mesh, active, id, radius, center } of this.measureCharacters()) {
+      const excess = this.wall.overflow(center, radius);
+      if (!excess) continue;
+      const shift = this.wall.normal.clone().multiplyScalar(-excess);
+      this.clamping = true;
+      try {
+        if (active) this.moveActiveCharacter(shift);
+        else this.movePassiveCharacter(mesh, id, shift);
+      } finally {
+        this.clamping = false;
+      }
+    }
   }
 
   clampCharacters(distance) {
@@ -199,7 +218,24 @@ export class UniCanvasPoseBackdrop {
     transform.z = (Number(transform.z) || 0) + shift.z;
     // Applies the transform to the mesh directly; the render in progress already sees it.
     this.viewer.setActiveCharacterAppearance?.({ transform: { ...transform } });
+    this.mirrorTransformIntoStudio(studio, transform);
     this.editor.scheduleBackdropSync?.();
+  }
+
+  // Pose Studio keeps the character position twice: character.transform and the camera
+  // offset params its sliders and zoom edit. Both must agree, or the next slider edit puts the
+  // character back where the params still say it is.
+  mirrorTransformIntoStudio(studio, transform) {
+    const params = studio.exportParams;
+    if (!params) return;
+    params.cam_offset_x = transform.x;
+    params.cam_offset_y = transform.y;
+    studio.persistActivePoseCameraParams?.();
+    const settled = studio.getActiveCharacter?.()?.transform;
+    if (settled && (settled.x !== transform.x || settled.y !== transform.y || settled.z !== transform.z)) {
+      this.viewer.setActiveCharacterAppearance?.({ transform: { ...settled } });
+    }
+    studio.syncCameraWidgets?.();
   }
 
   movePassiveCharacter(mesh, id, shift) {

@@ -3,7 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  EMPTY_CROP,
+  TRANSFORM_MODE_LABELS,
   applyHomography,
+  cropQuadFromHandle,
   distortQuadCorner,
   dragMeshSurface,
   evaluateMesh,
@@ -149,4 +152,37 @@ test("inactive layers never render from a LOD copy smaller than the screen needs
   assert.equal(pickRenderLodScale(0.4), 0.5, "never below the target");
   assert.equal(pickRenderLodScale(0.2), 0.25);
   assert.equal(pickRenderLodScale(0.01), 0.0625);
+});
+
+test("crop trims a side, keeps the pixel scale and can be dragged back out", () => {
+  const full = { width: 200, height: 100 };
+  const quad = rectToQuad(RECT);
+  const trimmed = cropQuadFromHandle(quad, "w", { x: 150, y: 100 }, { full, crop: EMPTY_CROP });
+  near(trimmed.crop.left, 50);
+  nearPoint(trimmed.quad.nw, { x: 150, y: 50 });
+  nearPoint(trimmed.quad.se, quad.se);
+  // Grabbing the new edge and moving it back to the old one restores the full image.
+  const restored = cropQuadFromHandle(trimmed.quad, "w", { x: 100, y: 100 }, { full, crop: trimmed.crop });
+  near(restored.crop.left, 0);
+  nearPoint(restored.quad.nw, quad.nw);
+  // Dragging further out cannot exceed the image, and a crop never collapses the frame.
+  const outward = cropQuadFromHandle(trimmed.quad, "w", { x: 0, y: 100 }, { full, crop: trimmed.crop });
+  near(outward.crop.left, 0);
+  const collapsed = cropQuadFromHandle(quad, "e", { x: 0, y: 100 }, { full, crop: EMPTY_CROP });
+  assert.ok(collapsed.crop.right <= full.width - 1);
+});
+
+test("crop works along the frame's own axes and on corners", () => {
+  const full = { width: 100, height: 100 };
+  const rotated = rotateQuad(rectToQuad({ x: 0, y: 0, width: 100, height: 100 }), { x: 50, y: 50 }, Math.PI / 2);
+  // After a 90° turn the frame's "top" edge faces right; pulling it inward trims the image top.
+  const { crop } = cropQuadFromHandle(rotated, "n", { x: 70, y: 50 }, { full, crop: EMPTY_CROP });
+  assert.ok(crop.top > 0 && crop.left === 0 && crop.bottom === 0);
+  const corner = cropQuadFromHandle(rectToQuad({ x: 0, y: 0, width: 100, height: 100 }), "se", { x: 60, y: 80 }, { full, crop: EMPTY_CROP });
+  near(corner.crop.right, 40);
+  near(corner.crop.bottom, 20);
+});
+
+test("Crop is an offered transform mode", () => {
+  assert.equal(TRANSFORM_MODE_LABELS.crop, "Crop");
 });

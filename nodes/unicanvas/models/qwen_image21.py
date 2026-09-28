@@ -114,7 +114,7 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
 # transformer, following the same "turbo switch" pattern as the other families.
 QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
 QWEN21_TURBO_LORA_REVISION = "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
-QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors"
+QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
 QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
 QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME

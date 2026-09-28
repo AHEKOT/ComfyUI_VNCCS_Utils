@@ -69,8 +69,8 @@ test("edit model reference images upload next to Steps with per-family slot mark
 test("settings popover carries the anchored class and size contract", () => {
     assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*width:\s*440px/,
         "the settings popover must have the hard 440px width");
-    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*height:\s*min\(560px,\s*72vh\)/,
-        "the settings popover must use the hard 560px/72vh height");
+    assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*max-height:\s*min\(560px,\s*72vh\)/,
+        "the settings popover must grow with its content up to 560px/72vh");
     assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*overflow-y:\s*auto/,
         "the settings popover content must scroll inside the hard size");
     assert.match(source, /\.vnccs-uc-settings-popover\s*\{[^}]*font-size:\s*13px/,
@@ -132,6 +132,95 @@ test("a linked VNCSS Config greys out every UniCanvas control it overrides", () 
     assert.ok(sync.includes('classList.toggle("vnccs-uc-config-linked", linked)'));
     assert.ok(sync.includes("el.inert = linked"), "overridden controls must be inert, not just dimmed");
     assert.ok(sync.includes("VNCSS Config linked"), "a banner explains where the values come from");
-    assert.ok(!/data-mode-control[^>]*data-config-override/.test(source), "Mode (model family) stays editable");
+    assert.ok(!/data-mode-control[^>]*data-config-override/.test(source), "Mode is hidden by CSS, not by the override marker");
     assert.ok(source.includes("[data-config-override] { opacity:.38; filter:grayscale(1)"), "overridden controls read as greyed out");
+});
+
+test("sidebar polish: denoise field fits 0.65, preset picker shows a chevron, LoRA stack grows with +/-", async () => {
+    assert.match(source, /\.vnccs-uc-denoise-control\s*\{[^}]*grid-template-columns:auto minmax\(0,1fr\) 58px/, "the denoise number field must be wide enough for 0.65");
+    assert.match(source, /\.vnccs-uc-denoise-control \.vnccs-uc-input\s*\{[^}]*width:58px/);
+    assert.ok(source.includes("${head ? PRESET_CHEVRON_ICON : \"\"}"), "the selected preset card must carry a dropdown chevron");
+    assert.ok(source.includes('card.title = "Choose another preset"'), "the preset card explains that it opens a list");
+    assert.match(source, /const LORA_STACK_MAX = 10/);
+    assert.ok(source.includes('data-action="lora-add"') && source.includes('data-action="lora-remove"'), "the LoRA stack needs + and - buttons");
+    assert.match(source, /\.vnccs-uc-lora-rows\s*\{[^}]*max-height:186px[^}]*overflow-y:auto/, "more than three LoRA rows scroll inside the list");
+    const normalize = source.match(/normalizeLoraStack\(\) \{([\s\S]*?)\n  \}/)[1];
+    assert.ok(!normalize.includes("< 5"), "the stack must not be padded to five rows any more");
+    assert.ok(normalize.includes("Math.max(1,"), "the stack starts with a single row");
+    assert.ok(/index > 0 \? `<button[^`]*lora-remove/.test(source), "the first row cannot be removed");
+});
+
+test("the generation box moves freely unless Snap to grid is on", () => {
+    const step = source.match(/bboxGridStep\(event, moving\) \{([\s\S]*?)\n  \}/)[1];
+    assert.ok(step.includes("if (this.snapToGrid)") && step.includes("moving ? 1 :"), "snap off: pixel-exact moves, 8 px multiple for sizes");
+    assert.ok(source.includes("this.bboxGridStep(e, true)") && source.includes("this.bboxGridStep(event, false)"), "move and resize both use the step");
+    assert.ok(!/const grid = e\.ctrlKey \|\| e\.metaKey \? 8 : 64/.test(source), "no hard-coded 64 px snapping may remain");
+});
+
+test("the settings popover is an accordion that fits its content", () => {
+    assert.match(source, /\.vnccs-uc-settings-section > summary::after/, "each section header has a chevron");
+    assert.match(source, /\.vnccs-uc-settings-section > summary::-webkit-details-marker\s*\{\s*display:none/, "the raw disclosure marker is hidden");
+    assert.match(source, /\.vnccs-uc-settings-section\[open\] > summary::after/, "the chevron turns when the section is open");
+});
+
+test("the resize tool offers Crop and remembers Custom model picks", () => {
+    assert.ok(source.includes('mode === "crop"') && source.includes("cropQuadFromHandle("), "crop mode edits the frame through the crop math");
+    assert.ok(source.includes("setDraftCrop(draft, { ...EMPTY_CROP })"), "Reset restores the uncropped image");
+    assert.ok(source.includes("this.recallModelChoice({ onlyEmpty: true })"), "a restored canvas keeps its own picks");
+    assert.ok(source.includes("this.rememberModelChoice()"), "Custom picks are remembered");
+    assert.ok(source.includes("installInferenceScaleEdit(this)"), "the size label is editable by double click");
+});
+
+test("inside UniCanvas Pose Studio hides its camera/export sections and clones the active mannequin", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const pose = await readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
+    for (const name of ["camAngleSection", "exportSection"]) {
+        assert.ok(pose.includes(`this.hideSectionInUniCanvas(${name})`), `${name} must be hidden when embedded`);
+    }
+    assert.ok(pose.includes('if (this.host?.embedded === true && section?.el) section.el.style.display = "none"'));
+    const add = pose.slice(pose.indexOf("async addCharacter("), pose.indexOf("async deleteCharacter("));
+    assert.ok(add.includes("this.host?.embedded === true ? this.getActiveCharacter() : null"), "only the embedded editor clones");
+    assert.ok(add.includes("JSON.parse(JSON.stringify(this.poses[index]"), "the pose (bones, rotation) is copied");
+    assert.ok(add.includes("zoom: clone.transform?.zoom ?? 1"), "the zoom is inherited");
+});
+
+test("preset dropdown: compact header card, one-line menu rows, chevron drawn with a stroke", () => {
+    assert.match(source, /\.vnccs-uc-model-card-chevron\s*\{[^}]*stroke:currentColor/, "the chevron needs an explicit stroke to be visible");
+    assert.match(source, /\.vnccs-uc-model-picker-menu\s*\{[^}]*max-height:260px[^}]*overflow-y:auto/, "a long preset list scrolls inside the menu");
+    assert.ok(source.includes("const row = !turbo && !head;"), "menu entries use the compact row variant");
+    assert.ok(source.includes("turbo || row || status.installed"), "rows carry no inline Download button");
+});
+
+test("a linked VNCSS Config hides model, family, turbo and LoRA controls and drives the family", () => {
+    assert.match(source, /\.vnccs-uc-config-linked \[data-mode-control\][^}]*display:none !important/, "Mode is hidden");
+    for (const part of [".vnccs-uc-model-tabs", ".vnccs-uc-turbo-section", ".vnccs-uc-lora-stack", ".vnccs-uc-refs-btn", ".vnccs-uc-qwen21-panel"]) {
+        assert.ok(source.includes(`.vnccs-uc-config-linked ${part}`), `${part} must be hidden while linked`);
+    }
+    assert.ok(source.includes('panel.style.display = configLinked ? (panelMode === "custom" ? "" : "none")'), "only the cut-down Custom panel (inference scale) stays");
+    assert.match(source, /\.vnccs-uc-model-panel\.vnccs-uc-mode-only > :not\(\.vnccs-uc-infer-scale\)\s*\{ display:none; \}/);
+    const family = source.slice(source.indexOf("  syncConfigFamily() {"), source.indexOf("  syncConfigOverride() {"));
+    assert.ok(family.includes("resolveConfigDrawSettings(") && family.includes("detectModuleForModelName("), "the family follows the config's model file");
+    assert.ok(family.includes("forcedMode"), "a checkpoint config stays SDXL");
+    assert.match(source, /this\.syncConfigFamily\(\);\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE re-detects the family before drawing");
+});
+
+test("family detection reads the file name only, prefers the most specific pattern and keeps the loader", async () => {
+    const { runInNewContext } = await import("node:vm");
+    const matcher = source.slice(source.indexOf("function uniCanvasModelDetectMatches"), source.indexOf("function getUniCanvasModelModule"));
+    const method = source.slice(source.indexOf("  detectModuleForModelName(name) {"), source.indexOf("  // A linked config decides the model"));
+    const detect = runInNewContext(`${matcher}
+        const UNICANVAS_MODEL_MODULES = {
+            qwen_image_edit: { key: "qwen_image_edit", detect: ["qwen-image-edit", "qwen"] },
+            qwen_image21: { key: "qwen_image21", detect: ["qwen-image-2.1", "qwen_image_2.1"] },
+            sdxl: { key: "sdxl", detect: ["sdxl", "xl"] },
+        };
+        const holder = { ${method.trim().replace(/^detectModuleForModelName/, "detect")} };
+        (name) => holder.detect(name)?.key ?? null;`);
+    assert.equal(detect("qwen\Qwen-Image-2.1-int8.safetensors"), "qwen_image21", "a qwen/ folder must not select the edit family");
+    assert.equal(detect("qwen_image_2.1_int8.safetensors"), "qwen_image21");
+    assert.equal(detect("qwen/qwen-image-edit-2511.safetensors"), "qwen_image_edit");
+    assert.equal(detect("sdxl\\model.safetensors"), null, "the folder alone never picks a family");
+    const auto = source.slice(source.indexOf("  autoDetectGenerationModeFromModel() {"), source.indexOf("  getModelBase() {"));
+    assert.ok(auto.includes("if (modelLoader) this.settings.model_loader = modelLoader"), "picking a file never switches the loader");
+    assert.ok(auto.includes("module.key === getUniCanvasModelModule(this.settings.generation_mode).key"), "no switch when the family already matches");
 });
