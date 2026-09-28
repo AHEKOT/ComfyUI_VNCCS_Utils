@@ -16,6 +16,7 @@ import {
 } from "./vnccs_camera_control_utils.mjs";
 import { HAND_PRESETS } from "./vnccs_hand_presets.js";
 import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
+import { TextToMotionPanel } from "./vnccs_pose_text_to_motion.mjs";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
 import { installCustomSelects } from "./vnccs_custom_select.mjs";
 import {
@@ -5212,12 +5213,19 @@ class PoseStudioWidget {
         pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
 
+        const motionBtn = document.createElement("button");
+        motionBtn.className = "vnccs-ps-btn";
+        motionBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🏃</span> Motion';
+        motionBtn.title = "Text to Motion (Kimodo, HY-Motion): describe a motion, pick a frame, and apply it as the pose";
+        motionBtn.addEventListener("click", () => this.openTextToMotionPanel());
+
         actions.appendChild(undoBtn);
         actions.appendChild(redoBtn);
         actions.appendChild(resetBtn);
         actions.appendChild(snapBtn);
         actions.appendChild(copyBtn);
         actions.appendChild(pasteBtn);
+        actions.appendChild(motionBtn);
 
         // Footer
         const footer = document.createElement("div");
@@ -9188,8 +9196,25 @@ class PoseStudioWidget {
         this.hideHandControlPopover();
     }
 
+    openTextToMotionPanel() {
+        if (!this.textToMotionPanel) {
+            this.textToMotionPanel = new TextToMotionPanel(this, {
+                fetchApi: (route, options) => api.fetchApi(route, options),
+            });
+        }
+        if (this.textToMotionPanel.isOpen()) return;
+        try {
+            this.textToMotionPanel.open();
+        } catch (error) {
+            console.error("[VNCCS] Failed to open the text-to-motion panel:", error);
+            this.showMessage(`Failed to open Text to Motion: ${error?.message || error}`, true);
+        }
+    }
+
     switchTab(index) {
         if (index === this.activeTab) return;
+        // The motion preview belongs to the pose it was opened on.
+        if (this.textToMotionPanel?.isOpen()) this.textToMotionPanel.cancel();
         this._finishPoseGesture?.();
         this.clearPoseHistory();
 

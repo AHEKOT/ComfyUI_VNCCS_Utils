@@ -1,0 +1,68 @@
+{
+  "id": "kimodo-soma-rp-v1.1",
+  "name": "Kimodo SOMA RP v1.1",
+  "order": 10,
+  "backend": "kimodo",
+  "description": "NVIDIA Kimodo trained on Bones Rigplay. Starts exactly from the current pose.",
+  "homepage": "https://research.nvidia.com/labs/sil/projects/kimodo/",
+  "code": {
+    "url": "https://github.com/nv-tlabs/kimodo",
+    "install": "Install Kimodo into ComfyUI's Python environment: 'pip install git+https://github.com/nv-tlabs/kimodo', then restart ComfyUI. The text encoder uses the gated meta-llama/Meta-Llama-3-8B-Instruct model: request access on Hugging Face and run 'hf auth login' once. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "nvidia/Kimodo-SOMA-RP-v1.1",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "managed": false,
+      "gated": true
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "managed": false,
+      "gated": true
+    }
+  ],
+  "options": {
+    "model_name": "Kimodo-SOMA-RP-v1.1"
+  },
+  "capabilities": {
+    "start_pose_constraint": true,
+    "duration": {
+      "min": 1,
+      "max": 10,
+      "default": 4
+    },
+    "steps": {
+      "min": 10,
+      "max": 200,
+      "default": 100
+    }
+  },
+  "requirements": {
+    "vram_gb": 17,
+    "notes": "Most of the memory is the LLM2Vec text encoder. Set TEXT_ENCODER_DEVICE=cpu to keep it on the CPU; the motion model itself needs under 3 GB."
+  },
+  "license": {
+    "name": "NVIDIA Open Model License",
+    "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+    "commercial_use": true,
+    "restricted_territories": [],
+    "territory_notice": "",
+    "notice": ""
+  }
+}

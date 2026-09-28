@@ -322,27 +322,36 @@ function midpoint(a, b, THREE) {
 }
 
 export function buildMixamoWorldKeypoints(sourceBones, viewer) {
+    return buildWorldKeypointsFromSourcePoints((name) => getSourceBonePoint(sourceBones, name), viewer);
+}
+
+/**
+ * Build Pose Studio world landmarks from any skeletal source that can report
+ * world positions by Mixamo joint name (Mixamo FBX, Kimodo motion, ...).
+ * Directions come from the source; segment lengths come from the mannequin.
+ */
+export function buildWorldKeypointsFromSourcePoints(getSourcePoint, viewer) {
     if (!viewer?.THREE || !viewer?._getBoneWorldPositionForImport) return null;
 
     const THREE = viewer.THREE;
     const source = {
-        pelvis: getSourceBonePoint(sourceBones, 'Hips'),
-        neck: getSourceBonePoint(sourceBones, 'Neck'),
-        head: getSourceBonePoint(sourceBones, 'Head'),
-        leftShoulder: getSourceBonePoint(sourceBones, 'LeftArm'),
-        rightShoulder: getSourceBonePoint(sourceBones, 'RightArm'),
-        leftElbow: getSourceBonePoint(sourceBones, 'LeftForeArm'),
-        rightElbow: getSourceBonePoint(sourceBones, 'RightForeArm'),
-        leftWrist: getSourceBonePoint(sourceBones, 'LeftHand'),
-        rightWrist: getSourceBonePoint(sourceBones, 'RightHand'),
-        leftHip: getSourceBonePoint(sourceBones, 'LeftUpLeg'),
-        rightHip: getSourceBonePoint(sourceBones, 'RightUpLeg'),
-        leftKnee: getSourceBonePoint(sourceBones, 'LeftLeg'),
-        rightKnee: getSourceBonePoint(sourceBones, 'RightLeg'),
-        leftAnkle: getSourceBonePoint(sourceBones, 'LeftFoot'),
-        rightAnkle: getSourceBonePoint(sourceBones, 'RightFoot'),
-        leftToe: getSourceBonePoint(sourceBones, 'LeftToeBase'),
-        rightToe: getSourceBonePoint(sourceBones, 'RightToeBase'),
+        pelvis: getSourcePoint('Hips'),
+        neck: getSourcePoint('Neck'),
+        head: getSourcePoint('Head'),
+        leftShoulder: getSourcePoint('LeftArm'),
+        rightShoulder: getSourcePoint('RightArm'),
+        leftElbow: getSourcePoint('LeftForeArm'),
+        rightElbow: getSourcePoint('RightForeArm'),
+        leftWrist: getSourcePoint('LeftHand'),
+        rightWrist: getSourcePoint('RightHand'),
+        leftHip: getSourcePoint('LeftUpLeg'),
+        rightHip: getSourcePoint('RightUpLeg'),
+        leftKnee: getSourcePoint('LeftLeg'),
+        rightKnee: getSourcePoint('RightLeg'),
+        leftAnkle: getSourcePoint('LeftFoot'),
+        rightAnkle: getSourcePoint('RightFoot'),
+        leftToe: getSourcePoint('LeftToeBase'),
+        rightToe: getSourcePoint('RightToeBase'),
     };
 
     if (!source.pelvis) return null;
@@ -466,7 +475,7 @@ export function buildMixamoWorldKeypoints(sourceBones, viewer) {
             let previousRest = restWrist;
             let previousWorld = worldWrist;
             for (let index = 0; index < mixamoNames.length; index++) {
-                const sourcePoint = getSourceBonePoint(sourceBones, mixamoNames[index]);
+                const sourcePoint = getSourcePoint(mixamoNames[index]);
                 const targetName = `${finger}_0${index + 1}_${side}`;
                 const restPoint = viewer._getBoneWorldPositionForImport(targetName);
                 if (!sourcePoint || !restPoint) continue;
