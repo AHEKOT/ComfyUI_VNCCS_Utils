@@ -269,7 +269,7 @@ test("panel lists models, warns about license territories, generates and applies
     assert.equal(JSON.stringify(viewer.getPose()), chosen);
 });
 
-test("panel blocks generation for a model that is not installed and shows its install hint", async () => {
+test("panel blocks generation for a model that is not installed", async () => {
     const { w, viewer, document } = sceneWithRig();
     const { fetchApi, calls } = fakeApi([HY], (_body, json) => json({ error: "should not run" }, 500));
     const panel = new TextToMotionPanel(w, { fetchApi, document });
@@ -280,7 +280,6 @@ test("panel blocks generation for a model that is not installed and shows its in
     panel.settings.prompt = "run";
     panel.updateButtons();
     assert.equal(panel.controls.generate.disabled, true);
-    assert.match(panel.controls.hint.textContent, /git clone/);
     await panel.generate();
     assert.equal(calls.filter((call) => call.route.endsWith("/generate")).length, 0);
     panel.cancel();

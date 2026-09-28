@@ -402,9 +402,6 @@ const PANEL_STYLES = `
 }
 .vnccs-ps-t2m-license.is-visible { display: block; }
 .vnccs-ps-t2m-license a { color: inherit; text-decoration: underline; margin-left: 4px; }
-.vnccs-ps-t2m-hint { display: none; opacity: 0.75; line-height: 1.35; }
-.vnccs-ps-t2m-hint.is-visible { display: block; }
-.vnccs-ps-t2m-hint.is-error { color: #ff9a9a; opacity: 1; }
 .vnccs-ps-t2m button:disabled, .vnccs-ps-t2m input:disabled { opacity: 0.45; cursor: default; }
 `;
 
@@ -573,7 +570,6 @@ export class TextToMotionPanel {
         // Shown for models whose license excludes some countries or regions.
         const license = this.element("div", "vnccs-ps-t2m-license");
         license.setAttribute("role", "alert");
-        const hint = this.element("div", "vnccs-ps-t2m-hint");
 
         const prompt = this.element("textarea", "vnccs-ps-textarea");
         prompt.placeholder = "Describe the motion, e.g. \"A person jumps and lands on both feet.\"";
@@ -652,9 +648,9 @@ export class TextToMotionPanel {
         ok.addEventListener("click", () => this.accept());
         actions.append(this.element("span", "vnccs-ps-t2m-spacer"), cancel, ok);
 
-        root.append(title, license, hint, prompt, settingsRow, optionsRow, progress, status, timeline, actions);
+        root.append(title, license, prompt, settingsRow, optionsRow, progress, status, timeline, actions);
         this.controls = {
-            modelSelect, license, hint, prompt, duration, steps, stepsLabel, guidance, guidanceLabel, seed,
+            modelSelect, license, prompt, duration, steps, stepsLabel, guidance, guidanceLabel, seed,
             useStartPose: useStartPose.label, generate, progressFill, status, play, scrub, frameLabel, ok,
         };
         this.root = root;
@@ -666,7 +662,7 @@ export class TextToMotionPanel {
     /** Sync the controls with the selected model: limits, hints and the license warning. */
     applyModel() {
         if (!this.controls) return;
-        const { modelSelect, license, hint, duration, steps, stepsLabel, guidance, guidanceLabel, useStartPose } = this.controls;
+        const { modelSelect, license, duration, steps, stepsLabel, guidance, guidanceLabel, useStartPose } = this.controls;
         if (this.models.length) {
             modelSelect.replaceChildren(...this.models.map((model) => {
                 const option = this.option(model.id, model.available === false ? `${model.name} (not installed)` : model.name);
@@ -713,13 +709,6 @@ export class TextToMotionPanel {
             license.title = model.license?.territory_notice || "";
         }
 
-        const hintText = model?.available === false
-            ? `${model.unavailable_reason || `${model.name} is not installed.`} ${model.install_hint || ""}`.trim()
-            : [model?.requirements?.notes, model?.requirements?.vram_gb ? `About ${model.requirements.vram_gb} GB VRAM.` : ""]
-                .filter(Boolean).join(" ");
-        hint.textContent = hintText;
-        hint.classList.toggle("is-visible", !!hintText);
-        hint.classList.toggle("is-error", model?.available === false);
         this.updateButtons();
     }
 
