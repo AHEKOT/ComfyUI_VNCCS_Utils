@@ -224,3 +224,26 @@ test("family detection reads the file name only, prefers the most specific patte
     assert.ok(auto.includes("if (modelLoader) this.settings.model_loader = modelLoader"), "picking a file never switches the loader");
     assert.ok(auto.includes("module.key === getUniCanvasModelModule(this.settings.generation_mode).key"), "no switch when the family already matches");
 });
+
+test("cancelling a never-saved new pose layer removes it and its undo step", async () => {
+    const { runInNewContext } = await import("node:vm");
+    assert.ok(source.includes("this.newPoseLayerId = layer.id;"), "addPoseLayer marks the layer as new");
+    const finish = source.slice(source.indexOf("  finishPoseEdit(keep = true) {"), source.indexOf("  discardNewPoseLayer("));
+    assert.ok(finish.includes("session.isNew") && finish.includes("this.discardNewPoseLayer(layer, session)"), "Cancel discards a new layer");
+    assert.ok(finish.indexOf("session.isNew") < finish.indexOf("restoreLayerPixelSnapshot"), "the new-layer check comes before the normal restore");
+    const method = source.slice(source.indexOf("  discardNewPoseLayer("), source.indexOf("  // Topmost visible image layer with content under a world point"));
+    const holder = runInNewContext(`({ ${method.trim()} })`);
+    const keep = { id: "a" }, fresh = { id: "b" };
+    const calls = [];
+    const widget = {
+        layers: [keep, fresh], activeLayerId: "b", undoStack: [{ kind: "addLayer", layer: fresh, previousActiveLayerId: "a" }],
+        poseEditor: { release: () => calls.push("release") },
+        syncPoseToolToActiveLayer: () => calls.push("tool"), restorePoseEditView: () => calls.push("view"), renderLayerList() {},
+        updateHistoryButtons() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {}, setStatus: (text) => calls.push(text),
+    };
+    holder.discardNewPoseLayer.call(widget, fresh, {});
+    assert.deepEqual(widget.layers.map((layer) => layer.id), ["a"]);
+    assert.equal(widget.activeLayerId, "a", "the previously active layer is selected again");
+    assert.equal(widget.undoStack.length, 0, "no undo step is left for a layer that never existed");
+    assert.ok(calls.includes("release") && calls.includes("view"));
+});

@@ -6,8 +6,8 @@ import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790494137676"
 import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790494137676";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
-import { PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
+import { PanoramaOrbitControl, snapAxisAngles } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
+import { DEFAULT_PANORAMA_CAMERA, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
 import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
@@ -129,7 +129,9 @@ const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", impo
 
 const STYLES = `
 .vnccs-unicanvas [hidden] { display:none !important; }
-.vnccs-uc-panorama-controls { flex:0 0 auto; padding:0 !important; overflow:hidden; }
+.vnccs-uc-panorama-controls { position:relative; flex:0 0 auto; padding:0 !important; overflow:hidden; }
+.vnccs-uc-panorama-reset { position:absolute; top:6px; left:6px; height:24px; padding:0 9px; font-size:11px; opacity:.85; }
+.vnccs-uc-panorama-reset:hover { opacity:1; }
 .vnccs-uc-panorama-orbit { display:block; width:100%; height:144px; touch-action:none; cursor:grab; outline:none; }
 .vnccs-uc-panorama-orbit:focus-visible { box-shadow:inset 0 0 0 2px var(--uc-accent); border-radius:12px; }
 .vnccs-unicanvas {
@@ -1401,14 +1403,29 @@ class UniCanvasWidget {
     this.panoramaOrbit = new PanoramaOrbitControl(canvas);
     this.panoramaPanel = document.createElement("div");
     this.panoramaPanel.className = "vnccs-uc-side-control vnccs-uc-panorama-controls";
-    this.panoramaPanel.append(canvas);
+    this.panoramaResetBtn = this._button("Reset", "vnccs-uc-btn vnccs-uc-panorama-reset", () => this.resetPanoramaView(), "Reset the view: yaw 0, pitch 0, roll 0, field of view 90 (undoable)");
+    this.panoramaPanel.append(canvas, this.panoramaResetBtn);
     this.side.prepend(this.panoramaPanel);
     this.updatePanoramaControls();
   }
 
+  // Back to the straight-ahead view; one undo step like any other view change.
+  resetPanoramaView() {
+    const panorama = this.panorama;
+    if (!panorama || !panorama.beginCamera()) return;
+    panorama.setCamera({ ...DEFAULT_PANORAMA_CAMERA });
+    panorama.endCamera();
+    this.setStatus("Panorama view reset");
+  }
+
+  panoramaLayerActive(settings = this.panorama?.settings) {
+    return Boolean(settings) && this.activeLayerId === settings.baseLayerId;
+  }
+
   updatePanoramaControls(settings = this.panorama?.settings) {
     if (!this.panoramaPanel) return;
-    this.panoramaPanel.hidden = !settings;
+    // The rotation widget belongs to the panorama layer: any other selected layer hides it.
+    this.panoramaPanel.hidden = !settings || !this.panoramaLayerActive(settings);
     const bboxButton = this.tools.querySelector('[data-tool="bbox"]');
     if (bboxButton) bboxButton.hidden = Boolean(settings);
     this.panoramaOrbit?.update(this.panorama, settings);
@@ -1952,6 +1969,7 @@ class UniCanvasWidget {
     layer.pose = { version: 1, rect: { ...this.bbox }, studio: {}, character: null,
       panoramaCamera: this.panorama ? { ...this.panorama.settings } : null };
     this.renderLayerList();
+    this.newPoseLayerId = layer.id; // a Cancel before the first Save removes it again
     this.editPoseLayer(layer);
     return layer;
   }
@@ -1972,8 +1990,11 @@ class UniCanvasWidget {
   }
 
   beginPoseEditSession(layer) {
+    const isNew = this.newPoseLayerId === layer.id;
+    this.newPoseLayerId = null;
     this.poseEditSession = {
       layerId: layer.id,
+      isNew,
       before: this.createLayerPixelSnapshot(layer),
       view: { ...this.view },
       intendedScale: this.intendedScale,
@@ -2020,6 +2041,10 @@ class UniCanvasWidget {
     this.poseEditSession = null;
     this.setTool("move");
     const layer = this.layers.find((item) => item.id === session.layerId);
+    if (layer && session.isNew) {
+      this.discardNewPoseLayer(layer, session);
+      return;
+    }
     if (layer && session.before) {
       this.restoreLayerPixelSnapshot(layer, session.before);
       this.markLayerPixelsChanged(layer);
@@ -2029,6 +2054,25 @@ class UniCanvasWidget {
     this.renderLayerList();
     this.requestRender();
     this.setStatus("Pose edit canceled");
+  }
+
+  // Cancel on a pose layer that was never saved: the layer is not created at all (no leftover
+  // layer, no undo step for it).
+  discardNewPoseLayer(layer, session) {
+    const index = this.undoStack.findIndex((entry) => entry?.kind === "addLayer" && entry.layer === layer);
+    const previousActiveLayerId = index >= 0 ? this.undoStack[index].previousActiveLayerId : null;
+    if (index >= 0) this.undoStack.splice(index, 1);
+    this.poseEditor?.release();
+    this.layers = this.layers.filter((item) => item.id !== layer.id);
+    this.activeLayerId = this.layers.some((item) => item.id === previousActiveLayerId) ? previousActiveLayerId : (this.layers[0]?.id || null);
+    this.syncPoseToolToActiveLayer();
+    this.restorePoseEditView(session);
+    this.renderLayerList();
+    this.updateHistoryButtons();
+    this.requestRender();
+    this.syncLightStateToWidget();
+    this.scheduleFullSync();
+    this.setStatus("New pose layer canceled");
   }
 
   // Topmost visible image layer with content under a world point (pose layers: their rect).
@@ -3650,7 +3694,8 @@ class UniCanvasWidget {
       e.preventDefault(); e.stopPropagation();
       const point = this.canvasPointFromEvent(e), start = this.dragStart;
       const factor = start.camera.fov / (this.bbox.width * this.view.scale);
-      this.panorama.setCamera({ yaw: start.camera.yaw - (point.x - start.screen.x) * factor, pitch: start.camera.pitch + (point.y - start.screen.y) * factor });
+      const view = { yaw: start.camera.yaw - (point.x - start.screen.x) * factor, pitch: start.camera.pitch + (point.y - start.screen.y) * factor };
+      this.panorama.setCamera(e.altKey ? view : snapAxisAngles(view, ["yaw", "pitch"]));
       return;
     }
     const screen = this.canvasPointFromEvent(e);
@@ -4355,6 +4400,13 @@ class UniCanvasWidget {
         this.activeLayerId = entry.layer.id;
       }
       this.invalidateLayerCaches(entry.layer);
+    }
+    if (entry.kind === "panoramaCamera") {
+      if (this.panorama) {
+        Object.assign(this.panorama.settings, direction === "undo" ? entry.before : entry.after);
+        this.panorama.pendingCamera = null;
+        this.updatePanoramaControls();
+      }
     }
     if (entry.kind === "addLayer") {
       if (direction === "undo") {
@@ -6227,6 +6279,7 @@ class UniCanvasWidget {
   }
 
   syncActiveLayerControls() {
+    if (this.panorama) this.updatePanoramaControls();
     this.renderToolSettings();
     const layer = this.activeLayer;
     if (!this.layerSubhead || !layer) return;
