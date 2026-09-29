@@ -1,3 +1,28 @@
+# Version 0.6.8
+## UniCanvas Overhaul: Faster Editing, Pose Layers, and More Models
+
+### UniCanvas
+
+* **Live pose layers**: Pose Studio poses are now real layers on the canvas. Edit a pose in an embedded editor, save it, and move or edit it again at any time. The editor shows only the character, with the layers below acting as a flat backdrop.
+* **Faster and smoother**: Editing, dragging and posing no longer slow the canvas down, and the pose preview is no longer re-captured on every frame.
+* **More editing tools**: Free transform, several background removers, local color match, crop-and-stitch inpainting, PSD export/import, a panorama view, and a fullscreen or standalone tab with its own settings.
+* **Safer undo and keyboard**: Undo/Redo and keyboard shortcuts stay inside UniCanvas in fullscreen, so ComfyUI no longer reloads the workflow by accident. Deleting a layer can be undone.
+* **Prompt help and clearer settings**: A `?` button next to the prompt explains how to write prompts for the selected model and task. Other settings have short `?` tips, and Inference scale is a slider with a live size preview.
+* **Canvases survive a restart**: Canvas state is kept in the user folder, so it is still there after restarting ComfyUI.
+* **VNCSS Config**: The config node can override model settings, and the sidebar hides the controls it takes over.
+
+### UniCanvas Models
+
+* **Qwen-Image-2.1 (QI2.1)**: New preset with a 6-step Turbo LoRA (turn it off for the full-quality profile). Output is transparent by default; a single **Transparent output** switch under Steps turns it off. The separate 2K aspect preset was removed - use Inference scale for the size.
+* **MiniMax H3**: New still-image preset with a 3-step Turbo LoRA.
+* **Krea2 presets**: Clearer names and descriptions.
+* Removed the Spectrum acceleration option.
+
+### Under the Hood
+
+* The UniCanvas backend is split into small modules, and new models are added as self-contained families. See `docs/agents/ADDING_A_MODEL.md`.
+* Added a browser test suite and a Docker test platform.
+
 # Version 0.6.7
 ## 3D Factory Mesh Workflows, Conditioning Outputs, and Pose Studio Reliability
 
@@ -36,10 +61,6 @@
 * **Continuous body previews**: Completed morph updates remain visible during ongoing input, while stale results cannot replace newer applied state. Delayed Age fitting respects subsequent manual camera edits.
 * **Pose Manager output consistency**: Changes invalidate affected preview cards, and execution waits for the current preview generation instead of returning outdated images.
 * **Lighting and reference images**: Keep Original Lighting survives scene restoration. Lighting colors and timeline numeric settings update during input. Reference-image changes update the existing scene, ignore superseded loads, and release replaced textures.
-
-### UniCanvas
-
-* **Settings panel anchored under the gear**: The settings popover now opens as one larger panel anchored below the corner-bar gear instead of covering the widget's top-left corner. It never overlaps the left sidebar, including on narrow hosts, and closes on an outside click, on Close, or on a second click on the gear.
 
 ### Downloads, Compatibility, and Packaging
 

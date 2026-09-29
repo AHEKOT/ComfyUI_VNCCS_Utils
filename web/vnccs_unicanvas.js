@@ -3032,8 +3032,7 @@ class UniCanvasWidget {
     if (currentPreset?.id && currentPreset.id !== preset.id) this.snapshotPresetRuntimeSettings(currentPreset);
     this.applyPresetSettings(preset);
     this.presetPickerOpen = false;
-    const status = this.presetStatus(preset);
-    if (!status.installed && !status.progress) this.downloadPreset(preset.id, "assets");
+    // No auto-download: the header card shows the description and a Download button when missing.
     this.syncPromptControls();
     this.syncSettingsToWidget();
   }
@@ -6997,7 +6996,10 @@ class UniCanvasWidget {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
-      this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // Held outside settings: the composition carries MBs of base64 images and must never reach
+      // widget.value, which ComfyUI persists in the workflow draft (localStorage quota).
+      // stateWidget.serializeValue adds it to the queued prompt only.
+      this._queuedDraw = this._buildDrawPayload(drawContext);
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();
@@ -7276,7 +7278,7 @@ class UniCanvasWidget {
   }
 
   // The HTTP path consumes this payload as the POST body; the queued path stores it in
-  // settings.queued_draw, where the node forwards exactly the composition keys to _run_unicanvas_draw.
+  // settings.queued_draw of the queued prompt (see serializeStateForPrompt), where the node forwards exactly the composition keys to _run_unicanvas_draw.
   _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null }) {
     const payload = {
       mode,
@@ -7350,6 +7352,7 @@ class UniCanvasWidget {
   // the old draw_id. export_state falls back to the canvas render when it is absent.
   releaseQueuedDraw() {
     if (!this.settings) return;
+    this._queuedDraw = null;
     if (this.settings.queued_draw === undefined && !this.settings.draw_id) return;
     delete this.settings.queued_draw;
     this.settings.draw_id = "";
@@ -7621,6 +7624,19 @@ class UniCanvasWidget {
     widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas?.(true, true);
     this.scheduleStateUpload();
+  }
+
+  // Prompt-only view of the state widget: the widget value stays light (workflow draft), the
+  // one-shot queued draw composition is merged in only while a draw is queued.
+  serializeStateForPrompt(value) {
+    if (!this._queuedDraw) return value;
+    try {
+      const state = JSON.parse(value);
+      state.settings = { ...(state.settings || {}), queued_draw: this._queuedDraw };
+      return JSON.stringify(state);
+    } catch (_) {
+      return value;
+    }
   }
 
   syncSettingsToWidget() {
@@ -8648,6 +8664,7 @@ app.registerExtension({
         stateWidget.type = "hidden";
         stateWidget.hidden = true;
         stateWidget.computeSize = () => [0, -4];
+        stateWidget.serializeValue = async () => this.uniCanvasWidget.serializeStateForPrompt(stateWidget.value);
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
       this._vnccsUniCanvasInitTimer = setTimeout(() => {

@@ -27,17 +27,6 @@ from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
 
-# Native 2K aspect-ratio presets from the official Qwen-Image-2.1 table.
-QWEN_IMAGE21_ASPECT_PRESETS: tuple[tuple[int, int], ...] = (
-    (2048, 2048),
-    (2400, 1792),
-    (1792, 2400),
-    (2528, 1696),
-    (1696, 2528),
-    (2752, 1536),
-    (1536, 2752),
-)
-
 # Transparent-RGBA prompt convention from the official Qwen space (spec 9):
 # wrap the description and the model renders real transparency.
 QWEN_IMAGE21_RGBA_PROMPT_PREFIX = "This is an RGBA image with transparency."
@@ -77,7 +66,6 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "qwen_lora_name": "",  # filled below with the turbo LoRA name
     "qwen_lora_strength": 1.0,
     "qwen21_opaque_output": False,
-    "qwen21_aspect_preset": "",
     "lora_stack": [],
 }
 
@@ -184,7 +172,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """UniCanvas adapter for Qwen-Image-2.1 (RGBA by default).
 
     Sampling defaults are flow matching (cfg 1.0) with euler/simple and 40
-    steps at the native 2K aspect presets. All draw modes work: txt2img,
+    steps (size via the inference scale). All draw modes work: txt2img,
     img2img, inpaint and outpaint, where inpaint is img2img with mask
     paste-back (no InpaintModelConditioning context). Reference editing wires
     the working area to <image1> and the Edit model references to <image2..5>
@@ -261,12 +249,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         return bool((gen_settings or {}).get("qwen21_opaque_output", False))
 
     def resolve_generation_size(self, width: int, height: int, gen_settings: dict[str, Any] | None) -> tuple[int, int]:
-        preset = str((gen_settings or {}).get("qwen21_aspect_preset") or "").strip().lower()
-        if preset in {"", "auto"}:
-            return int(width), int(height)
-        for preset_width, preset_height in QWEN_IMAGE21_ASPECT_PRESETS:
-            if preset == f"{preset_width}x{preset_height}":
-                return preset_width, preset_height
+        # Size comes from the canvas box and the inference scale; no fixed aspect presets.
         return int(width), int(height)
 
     def reference_image_slots(self, image_tensor: Any, gen_settings: dict[str, Any] | None) -> dict[int, Any]:

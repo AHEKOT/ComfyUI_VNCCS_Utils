@@ -2,7 +2,6 @@ import pytest
 import torch
 
 from nodes.unicanvas.models.qwen_image21 import (
-    QWEN_IMAGE21_ASPECT_PRESETS,
     QWEN_IMAGE21_DEFAULTS,
     QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT,
     QwenImage21UniCanvasModule,
@@ -43,20 +42,9 @@ def test_defaults_follow_qi21_recipe():
     assert defaults["qwen21_opaque_output"] is False
 
 
-def test_native_2k_aspect_presets():
+def test_generation_size_follows_the_canvas():
     module = _get_unicanvas_model_module("qwen_image21")
-    assert QWEN_IMAGE21_ASPECT_PRESETS == (
-        (2048, 2048),
-        (2400, 1792),
-        (1792, 2400),
-        (2528, 1696),
-        (1696, 2528),
-        (2752, 1536),
-        (1536, 2752),
-    )
-    assert module.resolve_generation_size(1024, 768, {}) == (1024, 768)
-    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "auto"}) == (1024, 768)
-    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (2400, 1792)
+    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (1024, 768)
 
 
 def test_create_empty_latent_uses_64_channel_16x_compression():

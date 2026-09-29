@@ -222,7 +222,7 @@ test("fullscreen and standalone teardown run on disposal and tab destroy", () =>
     const teardown = region(modesSource, "  const teardown = () => {", "  registerSidebarTab.call(");
     assert.ok(teardown.includes("teardownUniCanvasWidgetModes(widget)"),
         "the tab destroy() must flush/clear the pending persistence timer");
-    assert.ok(modesSource.includes("localStateBackupDisabled") && modesSource.includes("4_000_000"),
+    assert.ok(modesSource.includes("localStateBackupDisabled") && modesSource.includes("1_500_000"),
         "standalone persistence must mirror the local backup degradation");
 });
 
