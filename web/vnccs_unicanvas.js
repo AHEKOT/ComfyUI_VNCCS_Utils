@@ -7,7 +7,7 @@ import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharac
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaOrbitControl, snapAxisAngles } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
-import { DEFAULT_PANORAMA_CAMERA, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
 import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
@@ -54,6 +54,7 @@ import {
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs?v=1790494137676";
 import {
+  buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
@@ -191,7 +192,7 @@ const STYLES = `
 .vnccs-uc-layer-group-empty { padding:7px 8px; border:1px dashed rgba(255,255,255,.10); border-radius:8px; color:var(--uc-muted); background:rgba(255,255,255,.025); }
 .vnccs-uc-layer-subhead { padding:8px; border-bottom:1px solid var(--uc-border); display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; align-items:center; }
 .vnccs-uc-layer-subhead .vnccs-uc-select { width:100%; }
-.vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(72px,1fr) 38px; gap:7px; align-items:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(0,1fr) 38px; gap:7px; min-width:0; align-items:center; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-layer-opacity .vnccs-uc-range { width:100%; }
 .vnccs-uc-layer-opacity-value { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; }
 .vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
@@ -995,6 +996,24 @@ const STAGING_ICONS = {
   accept: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
 };
 
+// Prompt enhance values live in the ComfyUI settings store (VNCCS > UniCanvas > Prompt enhance).
+bindEnhanceSettingsReader((id) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    return typeof store?.get === "function" ? store.get(id) : app?.ui?.settings?.getSettingValue?.(id);
+  } catch (_err) {
+    return undefined;
+  }
+}, (id, value) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    if (typeof store?.set === "function") void store.set(id, value);
+    else app?.ui?.settings?.setSettingValue?.(id, value);
+  } catch (_err) {
+    console.warn("[VNCCS UniCanvas] Could not save the prompt enhance system prompts", _err);
+  }
+});
+
 class UniCanvasWidget {
   constructor(node) {
     this.node = node;
@@ -1488,6 +1507,13 @@ class UniCanvasWidget {
       const title = document.createElement("div"); title.className = "vnccs-uc-modal-title"; title.textContent = "Import as panorama?";
       const message = document.createElement("div"); message.className = "vnccs-uc-modal-message";
       message.textContent = `${img.width} × ${img.height}. Is this a full 360 × 180° equirectangular panorama? The complete image will wrap onto a sphere. A typical panorama has a 2:1 aspect ratio; an ordinary wide photo does not contain a full spherical view.`;
+      if (this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+        // Every layer lives inside the panorama's square editing window, so existing content is resampled.
+        message.textContent += this.settings.panorama_native_layers === true
+          ? "\n\nYour existing layers will keep their native resolution: the editing window (and generation area) grows to fit the largest one, up to 4096 px."
+          : "\n\nYour existing layers will be scaled into the panorama's 1024 \u00d7 1024 editing window, which can lower their quality. Turn on \"Keep layers at their native resolution\" in UniCanvas settings > Panorama to avoid that.";
+        message.style.whiteSpace = "pre-line";
+      }
       const previousFocus = document.activeElement;
       const close = (value) => { overlay.remove(); this._panoramaImportClose = null; previousFocus?.focus?.(); resolve(value); };
       this._panoramaImportClose = () => close("cancel");
@@ -1519,8 +1545,14 @@ class UniCanvasWidget {
       const contentLayers = this.layers.filter(layer => this.getLayerAlphaBounds(layer));
       const content = contentLayers.length ? this.getLayersVisibleWorldRect(contentLayers) : this.bbox;
       const oldBbox = content.width > 0 && content.height > 0 ? content : { ...this.bbox };
-      const side = 1024;
-      const destination = this.getImageFitInRect(oldBbox, { x: 0, y: 0, width: side, height: side });
+      // Native mode keeps every layer at its own resolution: the editing window grows to the content
+      // (up to PANORAMA_MAX_VIEW) instead of shrinking the layers into 1024.
+      const native = this.settings.panorama_native_layers === true;
+      const side = native ? Math.max(1024, Math.min(PANORAMA_MAX_VIEW, Math.ceil(Math.max(oldBbox.width, oldBbox.height)))) : 1024;
+      next.settings.view = side;
+      const destination = native && Math.max(oldBbox.width, oldBbox.height) <= side
+        ? { x: Math.round((side - oldBbox.width) / 2), y: Math.round((side - oldBbox.height) / 2), width: oldBbox.width, height: oldBbox.height }
+        : this.getImageFitInRect(oldBbox, { x: 0, y: 0, width: side, height: side });
       const views = this.layers.map(layer => {
         const out = document.createElement("canvas"); out.width = side; out.height = side;
         const ctx = out.getContext("2d");
@@ -2737,6 +2769,7 @@ class UniCanvasWidget {
     settings.lora_stack = this.filteredLoraStack();
     // The enhance switches stay on the node; only the resolved automatic rewrite reaches a draw.
     stripEnhanceSettings(settings);
+    delete settings.panorama_native_layers;
     const enhance = promptEnhancePayload(this);
     if (enhance) settings.prompt_enhance = enhance;
     return settings;
@@ -7779,6 +7812,7 @@ class UniCanvasWidget {
     }
     state.version = this.panorama ? 3 : 2;
     state.panorama = this.panorama ? { ...this.panorama.settings } : null;
+    state.output_id = this.panorama ? this.getOutputCacheId() : null;
     state.storage = "server_cache";
     state.state_id = this.getStateCacheId();
     state.origin = this.origin;
@@ -7840,6 +7874,7 @@ class UniCanvasWidget {
     return {
       version: this.panorama ? 3 : 2,
       panorama: this.panorama ? { ...this.panorama.settings } : null,
+      output_id: this.panorama ? this.getOutputCacheId() : null,
       storage: "server_cache",
       state_id: stateId,
       origin: this.origin,
@@ -7994,7 +8029,39 @@ class UniCanvasWidget {
     this.panorama.commit();
     this.panorama.endCamera();
     this.syncToNode();
-    if (await this.flushStateUpload() === false) throw new Error("Panorama state could not be saved; queue stopped to protect the latest edits");
+    // The node output is the flattened, bbox-cropped view, so it never depends on the (huge)
+    // spherical layers reaching the server.
+    if (await this.uploadOutputSnapshot() === false) throw new Error("The panorama output could not be sent; queue stopped");
+    if (await this.flushStateUpload() === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
+  }
+
+  getOutputCacheId() {
+    return `${this.getStateCacheId()}_out`;
+  }
+
+  /** Uploads every visible layer flattened and cropped to the generation bbox as one small layer. */
+  async uploadOutputSnapshot() {
+    const canvas = buildUniCanvasBboxCompositeCanvas(this);
+    const layer = {
+      id: "output", name: "Output", type: "raster", visible: true, locked: false, opacity: 1, blendMode: "source-over",
+      crop: { x: 0, y: 0, width: canvas.width, height: canvas.height }, dataURL: canvas.toDataURL("image/png"),
+    };
+    const state = {
+      version: 2, storage: "server_cache", origin: { x: 0, y: 0 }, size: { width: canvas.width, height: canvas.height },
+      bbox: { x: 0, y: 0, width: canvas.width, height: canvas.height }, layers: [layer],
+    };
+    try {
+      const res = await fetch("/vnccs/unicanvas_state_upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state_id: this.getOutputCacheId(), state }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      return true;
+    } catch (err) {
+      this.setStatus(`Output upload failed: ${err.message || err}`, true);
+      return false;
+    }
   }
 
   async performStateUpload(state, keepalive = false) {
@@ -8199,8 +8266,9 @@ class UniCanvasWidget {
       const panoramaSettings = normalizePanorama(state.panorama);
       restoredPanorama = panoramaSettings ? new PanoramaDocument(this, panoramaSettings) : null;
       const nextOrigin = panoramaSettings ? { x: 0, y: 0 } : (state.origin || this.origin);
-      const nextSize = panoramaSettings ? { width: 1024, height: 1024 } : (state.size || this.size);
-      const nextBbox = panoramaSettings ? { x: 0, y: 0, width: 1024, height: 1024 } : (state.bbox || this.bbox);
+      const view = panoramaSettings?.view || 1024;
+      const nextSize = panoramaSettings ? { width: view, height: view } : (state.size || this.size);
+      const nextBbox = panoramaSettings ? { x: 0, y: 0, width: view, height: view } : (state.bbox || this.bbox);
       const layers = [];
       for (const item of state.layers) {
         if (restoredPanorama && !item.dataURL) throw new Error("Panorama layer pixels are missing from the saved document");
@@ -8624,6 +8692,10 @@ class UniCanvasWidget {
     });
 
     // Content-based layer names. "Auto-name" in the layer menu works either way.
+    section("panorama", "Panorama");
+    checkboxRow("Keep layers at their native resolution when importing a panorama", s.panorama_native_layers === true, (checked) => { s.panorama_native_layers = checked; commit(); },
+      "Off: existing layers are scaled into a 1024x1024 editing window. On: the window grows to the largest layer (up to 4096 px) and nothing is scaled, but the generation area grows with it. Applies to the next panorama import.");
+
     section("layer_names", "Layer names");
     const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
     namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
@@ -8724,24 +8796,6 @@ class UniCanvasWidget {
     this.resizeObserver = null;
   }
 }
-
-// Prompt enhance values live in the ComfyUI settings store (VNCCS > UniCanvas > Prompt enhance).
-bindEnhanceSettingsReader((id) => {
-  try {
-    const store = app?.extensionManager?.setting;
-    return typeof store?.get === "function" ? store.get(id) : app?.ui?.settings?.getSettingValue?.(id);
-  } catch (_err) {
-    return undefined;
-  }
-}, (id, value) => {
-  try {
-    const store = app?.extensionManager?.setting;
-    if (typeof store?.set === "function") void store.set(id, value);
-    else app?.ui?.settings?.setSettingValue?.(id, value);
-  } catch (_err) {
-    console.warn("[VNCCS UniCanvas] Could not save the prompt enhance system prompts", _err);
-  }
-});
 
 app.registerExtension({
   name: "VNCCS.UniCanvas",

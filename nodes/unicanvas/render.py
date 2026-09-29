@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Callable
 from typing import Any
@@ -12,7 +13,7 @@ from PIL import Image
 
 from .constants import _MAX_PANORAMA_PIXELS, _MAX_PIXELS
 from .imaging import _decode_data_url, _pil_rgba_to_image_tensor
-from .state import _load_unicanvas_state
+from .state import _load_unicanvas_state, _read_unicanvas_state_cache
 
 
 def _number(value: Any, default: float) -> float:
@@ -333,8 +334,23 @@ def _document_projection(state: dict[str, Any]) -> FlatDocument:
     return document_class(state)
 
 
+def _flat_output_state(unicanvas_state: str) -> dict[str, Any] | None:
+    """The flattened, bbox-cropped output the widget uploads for a panorama (``output_id``), if cached."""
+    try:
+        state = json.loads(unicanvas_state or "{}")
+    except Exception:
+        return None
+    if not isinstance(state, dict):
+        return None
+    # The widget names the upload (output_id); a panorama without it still finds the upload by convention.
+    output_id = state.get("output_id") or (f"{state['state_id']}_out" if state.get("panorama") and state.get("state_id") else None)
+    cached = _read_unicanvas_state_cache(str(output_id)) if output_id else None
+    return cached if isinstance(cached, dict) and isinstance(cached.get("layers"), list) else None
+
+
 def _render_unicanvas_state_to_rgba(unicanvas_state: str) -> Image.Image:
-    document = _document_projection(_load_unicanvas_state(unicanvas_state))
+    flat = _flat_output_state(unicanvas_state)
+    document = _document_projection(flat if flat is not None else _load_unicanvas_state(unicanvas_state))
     origin = document.origin()
     bbox = document.frame()
     width = max(1, int(round(bbox["width"])))

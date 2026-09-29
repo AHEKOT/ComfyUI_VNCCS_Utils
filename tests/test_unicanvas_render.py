@@ -55,6 +55,25 @@ class UniCanvasRenderTests(unittest.TestCase):
             actual = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
             self.assertEqual(actual.tobytes(), expected.tobytes())
 
+    def test_panorama_output_uses_the_flattened_bbox_crop_when_uploaded(self):
+        # The widget uploads one small flattened layer under output_id; the huge spherical layers are not needed.
+        flat = {"version": 2, "bbox": {"x": 0, "y": 0, "width": 2, "height": 2}, "origin": {"x": 0, "y": 0},
+                "layers": [{"id": "output", "type": "raster", "visible": True, "opacity": 1, "crop": {"x": 0, "y": 0, "width": 2, "height": 2},
+                            "dataURL": _data_url(Image.new("RGBA", (2, 2), (9, 8, 7, 255)))}]}
+        state = self.panorama_state()
+        state["output_id"] = "out"
+        for layer in state["layers"]:
+            layer["dataURL"] = None
+            layer["cached"] = True
+        original = UNICANVAS.render._read_unicanvas_state_cache
+        UNICANVAS.render._read_unicanvas_state_cache = lambda state_id: flat if state_id == "out" else None
+        try:
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        finally:
+            UNICANVAS.render._read_unicanvas_state_cache = original
+        self.assertEqual(result.size, (2, 2))
+        self.assertEqual(result.getpixel((0, 0)), (9, 8, 7, 255))
+
     def test_panorama_base_stays_below_edits_even_if_serialized_out_of_order(self):
         state = self.panorama_state()
         state["layers"].reverse()
