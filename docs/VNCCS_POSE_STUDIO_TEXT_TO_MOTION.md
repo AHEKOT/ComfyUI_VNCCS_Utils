@@ -14,13 +14,12 @@ models are installed and how to install the missing ones.
 
 ## Animation and UniCanvas
 
-In **Animation** mode the panel produces a clip that starts at the timeline frame you opened it
-on: the pose at that frame is the start pose, and **OK** writes the clip into the animation from
-there (keys inside the clip's span are replaced, the timeline grows if the clip runs past its
-end, everything else stays; one undo step). Tick **Replace whole animation** to replace the
-entire animation instead (the path the Mixamo FBX import uses). Clips are keyed at the animation's
-frame rate, sparsely for long clips, with linear interpolation in between. Edit them on the
-timeline and export as usual. **Cancel** leaves the animation untouched.
+In **Animation** mode, stand on a timeline frame and press **🏃 Motion**: the pose at that frame is
+the start pose. Generate and preview the clip; **OK** deletes everything from that frame onward
+(all tracks) and writes the clip there, so the animation ends where the clip ends and the frames
+before it stay untouched (one undo step). **Cancel** keeps the previous animation exactly as it
+was. Clips are keyed at the animation's frame rate, sparsely for long clips, with linear
+interpolation in between; edit them on the timeline and export as usual.
 
 **Several characters.** The motion goes to the selected character. Kimodo and HY-Motion are
 single-person models: they cannot generate interactions between characters (a handshake, a hug),

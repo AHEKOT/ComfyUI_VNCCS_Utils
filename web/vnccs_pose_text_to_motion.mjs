@@ -418,7 +418,7 @@ function newTaskId() {
  * a frame timeline for the generated motion, and OK / Cancel.
  */
 /**
- * Options for `replaceAnimationFromPoses`: one animation frame per motion frame at the model's
+ * Keyframe spacing for a generated clip: one animation frame per motion frame at the model's
  * frame rate, keyed sparsely (linear interpolation in between) so long clips stay editable.
  */
 export function motionAnimationOptions(frameCount, fps) {
@@ -432,10 +432,10 @@ export function motionAnimationOptions(frameCount, fps) {
 }
 
 /**
- * Write a generated motion into an existing animation starting at `startFrame`: keys of the
- * touched tracks inside the clip's span are replaced, the timeline grows when the clip runs past
- * its end, and everything outside the span is left alone. The motion's frame rate is converted
- * to the animation's. Returns the first and last timeline frame written.
+ * Replace the animation from `startFrame` onward with a generated motion: every key at or after
+ * that frame (all tracks) is deleted, the timeline ends where the clip ends, and frames before
+ * `startFrame` stay untouched. The motion's frame rate is converted to the animation's.
+ * Returns the first and last timeline frame written.
  */
 export function insertMotionIntoAnimation(state, poses, { startFrame = 0, motionFps = 30, keyframeStep = 1 } = {}) {
     if (!state || !Array.isArray(poses) || !poses.length) throw new Error("There is no motion to insert.");
@@ -443,17 +443,21 @@ export function insertMotionIntoAnimation(state, poses, { startFrame = 0, motion
     const rate = Number(motionFps) > 0 ? Number(motionFps) : 30;
     const start = Math.max(0, Math.min(state.frameCount - 1, Math.round(Number(startFrame)) || 0));
     const toFrame = (index) => start + Math.round((index * fps) / rate);
-    const wantedEnd = toFrame(poses.length - 1);
-    if (wantedEnd >= state.frameCount) retimeAnimationTiming(state, { duration: (wantedEnd + 1) / fps });
-    const end = Math.min(wantedEnd, state.frameCount - 1);
+
+    for (const [name, track] of Object.entries(state.tracks || {})) {
+        for (const key of [...(track.keys || [])]) {
+            if (key.frame >= start) deleteTrackKeyframe(state, name, key.frame);
+        }
+    }
+    retimeAnimationTiming(state, { duration: (toFrame(poses.length - 1) + 1) / fps });
+    const end = Math.min(toFrame(poses.length - 1), state.frameCount - 1);
 
     const step = Math.max(1, Math.round(Number(keyframeStep)) || 1);
     const indices = [];
     for (let index = 0; index < poses.length; index += step) {
         if (toFrame(index) <= end) indices.push(index);
     }
-    const lastIndex = indices.at(-1);
-    if (lastIndex !== poses.length - 1 && toFrame(poses.length - 1) <= end) indices.push(poses.length - 1);
+    if (indices.at(-1) !== poses.length - 1 && toFrame(poses.length - 1) <= end) indices.push(poses.length - 1);
 
     const tracks = new Set([MODEL_ROTATION_TRACK]);
     for (const pose of poses) {
@@ -461,8 +465,6 @@ export function insertMotionIntoAnimation(state, poses, { startFrame = 0, motion
         for (const name of Object.keys(pose?.bonePositions || {})) tracks.add(bonePositionTrackName(name));
     }
     for (const track of tracks) {
-        const inside = (state.tracks?.[track]?.keys || []).map((key) => key.frame).filter((frame) => frame >= start && frame <= end);
-        for (const frame of inside) deleteTrackKeyframe(state, track, frame);
         for (const index of indices) {
             setTrackKeyframeFromEuler(state, track, toFrame(index), getPoseTrackEuler(poses[index], track), state.defaultInterpolation);
         }
@@ -498,7 +500,6 @@ export class TextToMotionPanel {
             randomSeed: true,
             useStartPose: true,
             keepInPlace: true,
-            replaceAll: false,
         };
     }
 
@@ -687,20 +688,16 @@ export class TextToMotionPanel {
             this.settings.keepInPlace = keepInPlace.input.checked;
             if (this.motion && !this.busy) this.retarget();
         });
-        const replaceAll = this.checkbox("Replace whole animation", this.settings.replaceAll,
-            "Off: the clip is written from the frame the panel was opened on and the rest of the animation stays. On: it replaces the entire animation.");
-        replaceAll.input.addEventListener("change", () => { this.settings.replaceAll = replaceAll.input.checked; });
-        replaceAll.label.style.display = this.animation ? "" : "none";
         const generate = this.element("button", "vnccs-ps-btn primary", "Generate");
         generate.addEventListener("click", () => this.generate());
-        optionsRow.append(useStartPose.label, keepInPlace.label, replaceAll.label, this.element("span", "vnccs-ps-t2m-spacer"), generate);
+        optionsRow.append(useStartPose.label, keepInPlace.label, this.element("span", "vnccs-ps-t2m-spacer"), generate);
 
         const progress = this.element("div", "vnccs-ps-t2m-progress");
         const progressFill = this.element("div");
         progress.appendChild(progressFill);
         const status = this.element("div", "vnccs-ps-t2m-status",
             this.animation
-                ? "Describe a motion and generate it. OK writes it into the animation from the current frame."
+                ? "Describe a motion and generate it from the current frame. OK replaces the animation from that frame on; Cancel keeps it."
                 : "Describe a motion, generate it, pick a frame on the timeline and press OK.");
 
         const timeline = this.element("div", "vnccs-ps-t2m-timeline");
@@ -724,7 +721,7 @@ export class TextToMotionPanel {
         cancel.addEventListener("click", () => this.cancel());
         const ok = this.element("button", "vnccs-ps-btn primary", "OK");
         ok.title = this.animation
-            ? "Write this clip into the animation from the frame the panel was opened on"
+            ? "Replace the animation from the frame the panel was opened on with this clip"
             : "Use the selected frame as the pose";
         ok.addEventListener("click", () => this.accept());
         actions.append(this.element("span", "vnccs-ps-t2m-spacer"), cancel, ok);
@@ -903,7 +900,7 @@ export class TextToMotionPanel {
         const { scrub } = this.controls;
         scrub.max = String(Math.max(0, this.poses.length - 1));
         const frame = Math.min(this.frame, this.poses.length - 1);
-        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. ${this.animation ? "Preview it, then press OK to write it into the animation." : "Scrub to a frame and press OK."}`,
+        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. ${this.animation ? `Preview it, then OK replaces the animation from frame ${this.startFrame} on, Cancel keeps it.` : "Scrub to a frame and press OK."}`,
             { progress: 100 });
         this.updateButtons();
         this.showFrame(Math.max(0, frame));
@@ -976,17 +973,11 @@ export class TextToMotionPanel {
         if (!this.poses.length || this.busy) return;
         const poses = this.poses;
         const fps = Number(this.motion?.fps) || 30;
-        const replaceAll = this.settings.replaceAll === true;
         const startFrame = this.startFrame;
         this.stopPlay();
         this.close();
         const widget = this.widget;
-        if (replaceAll) {
-            widget.replaceAnimationFromPoses(poses, motionAnimationOptions(poses.length, fps));
-            widget.updateCaptureCameraPreview?.();
-            return;
-        }
-        // One undo step: the clip is written into the animation from the chosen frame.
+        // One undo step: everything from the chosen frame on is replaced by the clip.
         widget.commitAnimationHistory?.();
         const state = widget.animationState;
         const previousFrameCount = state.frameCount;
@@ -1006,7 +997,11 @@ export class TextToMotionPanel {
     cancel() {
         // A running request keeps going on the server; its result is ignored once closed.
         if (this.start && this.viewer) this.setViewerPose(this.start.pose);
+        const startFrame = this.startFrame;
+        const animation = this.animation;
         this.close();
+        // The animation itself was never touched; show the frame the panel was opened on again.
+        if (animation) this.widget.applyAnimationFrame?.(startFrame, { transient: true });
     }
 
     close() {

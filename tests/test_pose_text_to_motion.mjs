@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDefaultAnimationState, evaluateTrackValue } from "../web/vnccs_pose_animation.mjs";
+import { createDefaultAnimationState, setTrackKeyframeFromEuler } from "../web/vnccs_pose_animation.mjs";
 
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import {
@@ -295,15 +295,19 @@ test("animation options key long clips sparsely at the model frame rate", () => 
     assert.equal(motionAnimationOptions(5000, 30).frameCount, 600);
 });
 
-test("in animation mode OK hands the whole clip to the animation module", async () => {
+test("in animation mode OK replaces the animation from the frame the panel opened on", async () => {
     const { w, viewer, document } = sceneWithRig();
     const start = captureMotionStartPose(viewer);
     const { motion } = fabricateMotion(viewer, start);
     const { fetchApi } = fakeApi([KIMODO], (body, json) => json({ status: "success", motion: { ...motion, seed: 7, model: body.model } }));
-    let replaced = null;
     const guards = [];
+    const state = createDefaultAnimationState({ bones: {} }, { frameCount: 10, duration: 10 / 12, fps: 12 });
+    state.currentFrame = 4;
+    w.animationState = state;
     w.isAnimationMode = () => true;
-    w.replaceAnimationFromPoses = (poses, options) => { replaced = { poses, options }; };
+    w.retimeAllCharacterAnimations = () => {};
+    const applied = [];
+    w.applyAnimationFrame = (frame) => applied.push(frame);
     const setPose = viewer.setPose;
     viewer.setPose = (...args) => { guards.push(w._applyingAnimationPose === true); return setPose.apply(viewer, args); };
     const panel = new TextToMotionPanel(w, { fetchApi, document });
@@ -311,30 +315,55 @@ test("in animation mode OK hands the whole clip to the animation module", async 
     await settle();
     await settle();
     panel.settings.prompt = "walk";
-    panel.settings.replaceAll = true;
     panel.updateButtons();
     await panel.generate();
     assert.ok(guards.length > 0);
     assert.deepEqual(guards.filter((guarded) => !guarded), [], "previews must not become animation keyframes");
     assert.equal(w._applyingAnimationPose, false);
+    assert.equal(state.frameCount, 10, "nothing changes until OK");
     panel.accept();
     assert.equal(panel.isOpen(), false);
-    const frames = replaced.poses.length;
-    assert.equal(frames, 2);
-    assert.equal(replaced.options.frameCount, frames);
-    assert.ok(Math.abs(replaced.options.duration - frames / motion.fps) < 1e-9);
+    assert.deepEqual(applied, [4]);
+    const names = Object.keys(state.tracks);
+    assert.ok(names.length > 0);
+    for (const name of names) {
+        // Only the implicit baseline key may precede the chosen frame.
+        const frames = state.tracks[name].keys.map((key) => key.frame);
+        assert.ok(frames.filter((frame) => frame > 0 && frame < 4).length === 0, name);
+        assert.ok(frames.some((frame) => frame >= 4), name);
+    }
 });
 
-test("a motion segment is written from the chosen frame and leaves the rest alone", () => {
-    const state = createDefaultAnimationState({ bones: { head: [0, 0, 0] } }, { frameCount: 10, duration: 10 / 12, fps: 12 });
+test("cancel in animation mode leaves the animation untouched", async () => {
+    const { w, viewer, document } = sceneWithRig();
+    const state = createDefaultAnimationState({ bones: {} }, { frameCount: 10, duration: 10 / 12, fps: 12 });
+    state.currentFrame = 3;
+    const before = JSON.stringify(state);
+    w.animationState = state;
+    w.isAnimationMode = () => true;
+    const applied = [];
+    w.applyAnimationFrame = (frame) => applied.push(frame);
+    const { fetchApi } = fakeApi([KIMODO], (_body, json) => json({ error: "unused" }, 500));
+    const panel = new TextToMotionPanel(w, { fetchApi, document });
+    panel.open();
+    await settle();
+    panel.cancel();
+    assert.equal(JSON.stringify(state), before);
+    assert.deepEqual(applied, [3]);
+    assert.ok(viewer);
+});
+
+test("a motion replaces everything from the start frame and keeps the frames before it", () => {
+    const state = createDefaultAnimationState({ bones: { head: [0, 0, 0] } }, { frameCount: 20, duration: 20 / 12, fps: 12 });
     const pose = (y) => ({ bones: { head: [0, y, 0] }, modelRotation: [0, 0, 0] });
+    setTrackKeyframeFromEuler(state, "head", 2, [0, 5, 0]);
+    setTrackKeyframeFromEuler(state, "head", 8, [0, 50, 0]);
+    setTrackKeyframeFromEuler(state, "head", 15, [0, 90, 0]);
     const poses = [pose(0), pose(10), pose(20), pose(30), pose(40)];
     // 6 fps motion on a 12 fps timeline: two timeline frames per motion frame, starting at frame 6.
     const range = insertMotionIntoAnimation(state, poses, { startFrame: 6, motionFps: 6 });
     assert.deepEqual(range, { start: 6, end: 14 });
-    assert.equal(state.frameCount, 15, "the timeline grows to fit the clip");
-    const frames = state.tracks.head.keys.map((key) => key.frame);
-    assert.deepEqual(frames, [0, 6, 8, 10, 12, 14]);
-    assert.ok(evaluateTrackValue(state, "head", 4).every((value, index) => Math.abs(value - [0, 0, 0, 1][index]) < 1e-6),
-        "frames before the segment keep the baseline pose");
+    assert.equal(state.frameCount, 15, "the animation ends where the clip ends");
+    assert.deepEqual(state.tracks.head.keys.map((key) => key.frame), [0, 2, 6, 8, 10, 12, 14], "old keys from frame 6 on are gone");
+    assert.deepEqual(state.tracks.head.keys.slice(0, 2).map((key) => key.frame), [0, 2], "earlier keys survive");
 });
