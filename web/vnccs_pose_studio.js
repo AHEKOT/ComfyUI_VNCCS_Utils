@@ -5220,7 +5220,7 @@ class PoseStudioWidget {
         const motionBtn = document.createElement("button");
         motionBtn.className = "vnccs-ps-btn";
         motionBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🏃</span> Motion';
-        motionBtn.title = "Text to Motion (Kimodo, HY-Motion): describe a motion, pick a frame, and apply it as the pose";
+        motionBtn.title = "Text to Motion (Kimodo, HY-Motion): describe a motion. In Animation mode it becomes the animation; otherwise pick a frame and apply it as the pose";
         motionBtn.addEventListener("click", () => this.openTextToMotionPanel());
 
         actions.appendChild(undoBtn);

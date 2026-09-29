@@ -6,6 +6,9 @@
 // timeline only swaps precomputed poses. OK keeps the selected frame as the pose;
 // Cancel restores the pose the panel was opened with.
 
+const MOTION_ANIMATION_MAX_FRAMES = 600;
+const MOTION_ANIMATION_MAX_KEYS = 120;
+
 export const MOTION_API = "/vnccs/pose_studio/motion";
 
 // Fallback limits for a model whose description leaves them out.
@@ -402,6 +405,20 @@ function newTaskId() {
  * Floating panel over the Pose Studio viewport: prompt, generation settings,
  * a frame timeline for the generated motion, and OK / Cancel.
  */
+/**
+ * Options for `replaceAnimationFromPoses`: one animation frame per motion frame at the model's
+ * frame rate, keyed sparsely (linear interpolation in between) so long clips stay editable.
+ */
+export function motionAnimationOptions(frameCount, fps) {
+    const count = Math.max(2, Math.min(MOTION_ANIMATION_MAX_FRAMES, Math.round(Number(frameCount)) || 2));
+    const rate = Number(fps) > 0 ? Number(fps) : 30;
+    return {
+        frameCount: count,
+        duration: count / rate,
+        keyframeStep: Math.max(1, Math.ceil(count / MOTION_ANIMATION_MAX_KEYS)),
+    };
+}
+
 export class TextToMotionPanel {
     constructor(widget, { fetchApi, document: doc = globalThis.document } = {}) {
         this.widget = widget;
@@ -413,6 +430,7 @@ export class TextToMotionPanel {
         this.poses = [];
         this.frame = 0;
         this.busy = false;
+        this.animation = false;
         this.playing = false;
         this.playHandle = null;
         this.session = 0;
@@ -438,6 +456,19 @@ export class TextToMotionPanel {
 
     get model() {
         return this.models.find((model) => model.id === this.settings.model) || null;
+    }
+
+    /** Preview poses must not be captured as animation keyframes. */
+    setViewerPose(pose) {
+        const widget = this.widget;
+        const guard = this.animation && widget;
+        if (guard) widget._applyingAnimationPose = true;
+        try {
+            this.viewer.setPose(pose, true);
+        } finally {
+            if (guard) widget._applyingAnimationPose = false;
+        }
+        this.viewer.requestRender?.();
     }
 
     /** Models from config/motion_models, fetched once per page. */
@@ -468,7 +499,14 @@ export class TextToMotionPanel {
             this.widget?.showMessage?.("Pose viewer is not ready yet.", true);
             return;
         }
-        this.start = captureMotionStartPose(this.viewer);
+        // In animation mode the whole motion becomes the animation; otherwise one frame becomes the pose.
+        this.animation = this.widget?.isAnimationMode?.() === true;
+        if (this.animation) this.widget._applyingAnimationPose = true;
+        try {
+            this.start = captureMotionStartPose(this.viewer);
+        } finally {
+            if (this.animation) this.widget._applyingAnimationPose = false;
+        }
         this.session += 1;
         this.motion = null;
         this.poses = [];
@@ -603,7 +641,9 @@ export class TextToMotionPanel {
         const progressFill = this.element("div");
         progress.appendChild(progressFill);
         const status = this.element("div", "vnccs-ps-t2m-status",
-            "Describe a motion, generate it, pick a frame on the timeline and press OK.");
+            this.animation
+                ? "Describe a motion and generate it. OK replaces the animation with the generated clip."
+                : "Describe a motion, generate it, pick a frame on the timeline and press OK.");
 
         const timeline = this.element("div", "vnccs-ps-t2m-timeline");
         const play = this.element("button", "vnccs-ps-btn", "▶");
@@ -625,7 +665,9 @@ export class TextToMotionPanel {
         cancel.title = "Close and restore the pose you started from";
         cancel.addEventListener("click", () => this.cancel());
         const ok = this.element("button", "vnccs-ps-btn primary", "OK");
-        ok.title = "Use the selected frame as the pose";
+        ok.title = this.animation
+            ? "Replace the animation with this clip (export it as a movie clip as usual)"
+            : "Use the selected frame as the pose";
         ok.addEventListener("click", () => this.accept());
         actions.append(this.element("span", "vnccs-ps-t2m-spacer"), cancel, ok);
 
@@ -728,8 +770,7 @@ export class TextToMotionPanel {
         this.busy = true;
         this.updateButtons();
         // Regeneration always starts from the pose the panel was opened with.
-        this.viewer.setPose(this.start.pose, true);
-        this.viewer.requestRender?.();
+        this.setViewerPose(this.start.pose);
         this.setStatus(`Sending the pose to ${model.name}...`, { progress: 1 });
 
         const poll = setInterval(async () => {
@@ -782,19 +823,23 @@ export class TextToMotionPanel {
         this.busy = true;
         this.updateButtons();
         this.setStatus("Applying the motion to the mannequin...", { progress: 97 });
+        // Retargeting drives the mannequin frame by frame; none of that may become keyframes.
+        const guard = this.animation && this.widget;
+        if (guard) this.widget._applyingAnimationPose = true;
         try {
             const options = { keepInPlace: this.settings.keepInPlace };
             this.poses = await retargetMotion(this.viewer, this.motion, this.start, options, (fraction) => {
                 this.setStatus("Applying the motion to the mannequin...", { progress: 97 + 3 * fraction });
             });
         } finally {
+            if (guard) this.widget._applyingAnimationPose = false;
             this.busy = busyBefore;
         }
         if (!this.root) return;
         const { scrub } = this.controls;
         scrub.max = String(Math.max(0, this.poses.length - 1));
         const frame = Math.min(this.frame, this.poses.length - 1);
-        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. Scrub to a frame and press OK.`,
+        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. ${this.animation ? "Preview it, then press OK to use it as the animation." : "Scrub to a frame and press OK."}`,
             { progress: 100 });
         this.updateButtons();
         this.showFrame(Math.max(0, frame));
@@ -804,8 +849,7 @@ export class TextToMotionPanel {
         if (!this.poses.length || !this.controls) return;
         const index = Math.max(0, Math.min(this.poses.length - 1, Math.round(frame) || 0));
         this.frame = index;
-        this.viewer.setPose(this.poses[index], true);
-        this.viewer.requestRender?.();
+        this.setViewerPose(this.poses[index]);
         const fps = Number(this.motion?.fps) || 30;
         this.controls.scrub.value = String(index);
         this.controls.frameLabel.textContent = `${index + 1} / ${this.poses.length} · ${(index / fps).toFixed(2)} s`;
@@ -846,6 +890,10 @@ export class TextToMotionPanel {
     }
 
     accept() {
+        if (this.animation) {
+            this.acceptAnimation();
+            return;
+        }
         const pose = this.poses[this.frame];
         if (!pose || this.busy) return;
         const viewer = this.viewer;
@@ -859,10 +907,21 @@ export class TextToMotionPanel {
         viewer.requestRender?.();
     }
 
+    /** Replace the animation with the generated clip (the same path the Mixamo import uses). */
+    acceptAnimation() {
+        if (!this.poses.length || this.busy) return;
+        const poses = this.poses;
+        const fps = Number(this.motion?.fps) || 30;
+        const options = motionAnimationOptions(poses.length, fps);
+        this.stopPlay();
+        this.close();
+        this.widget.replaceAnimationFromPoses(poses, options);
+        this.widget.updateCaptureCameraPreview?.();
+    }
+
     cancel() {
         // A running request keeps going on the server; its result is ignored once closed.
-        if (this.start) this.viewer?.setPose(this.start.pose, true);
-        this.viewer?.requestRender?.();
+        if (this.start && this.viewer) this.setViewerPose(this.start.pose);
         this.close();
     }
 

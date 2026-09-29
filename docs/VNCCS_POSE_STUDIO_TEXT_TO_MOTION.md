@@ -12,6 +12,16 @@ press **OK**: the mannequin takes that pose. Supported models:
 Model code and weights are optional. Pose Studio works without them; the panel shows which
 models are installed and how to install the missing ones.
 
+## Animation and UniCanvas
+
+In **Animation** mode the panel produces a whole clip: **OK** replaces the animation with the
+generated motion (the same path the Mixamo FBX import uses), keyed at the model's frame rate
+and sparsely for long clips, with linear interpolation in between. Edit it on the timeline and
+export it as a movie clip or image batch as usual. **Cancel** leaves the animation untouched.
+UniCanvas' pose editor has the same **Motion** button and panel, because it embeds Pose Studio.
+
+Outside Animation mode the panel picks one frame as the pose (below).
+
 ## Using it
 
 1. In pose edit mode, press **🏃 Motion** in the action bar.

@@ -8,6 +8,7 @@ import {
     captureMotionStartPose,
     clampMotionSettings,
     motionLicenseWarning,
+    motionAnimationOptions,
     motionModelLimits,
     retargetMotion,
     retargetMotionFrame,
@@ -283,4 +284,40 @@ test("panel blocks generation for a model that is not installed", async () => {
     assert.equal(calls.filter((call) => call.route.endsWith("/generate")).length, 0);
     panel.cancel();
     assert.equal(JSON.stringify(viewer.getPose()), before);
+});
+
+test("animation options key long clips sparsely at the model frame rate", () => {
+    assert.deepEqual(motionAnimationOptions(120, 30), { frameCount: 120, duration: 4, keyframeStep: 1 });
+    assert.deepEqual(motionAnimationOptions(300, 30), { frameCount: 300, duration: 10, keyframeStep: 3 });
+    assert.equal(motionAnimationOptions(1, 30).frameCount, 2);
+    assert.equal(motionAnimationOptions(5000, 30).frameCount, 600);
+});
+
+test("in animation mode OK hands the whole clip to the animation module", async () => {
+    const { w, viewer, document } = sceneWithRig();
+    const start = captureMotionStartPose(viewer);
+    const { motion } = fabricateMotion(viewer, start);
+    const { fetchApi } = fakeApi([KIMODO], (body, json) => json({ status: "success", motion: { ...motion, seed: 7, model: body.model } }));
+    let replaced = null;
+    const guards = [];
+    w.isAnimationMode = () => true;
+    w.replaceAnimationFromPoses = (poses, options) => { replaced = { poses, options }; };
+    const setPose = viewer.setPose;
+    viewer.setPose = (...args) => { guards.push(w._applyingAnimationPose === true); return setPose.apply(viewer, args); };
+    const panel = new TextToMotionPanel(w, { fetchApi, document });
+    panel.open();
+    await settle();
+    await settle();
+    panel.settings.prompt = "walk";
+    panel.updateButtons();
+    await panel.generate();
+    assert.ok(guards.length > 0);
+    assert.deepEqual(guards.filter((guarded) => !guarded), [], "previews must not become animation keyframes");
+    assert.equal(w._applyingAnimationPose, false);
+    panel.accept();
+    assert.equal(panel.isOpen(), false);
+    const frames = replaced.poses.length;
+    assert.equal(frames, 2);
+    assert.equal(replaced.options.frameCount, frames);
+    assert.ok(Math.abs(replaced.options.duration - frames / motion.fps) < 1e-9);
 });
