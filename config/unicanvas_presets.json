@@ -322,13 +322,13 @@
       "label": "MiniMax H3",
       "group": "MiniMax H3",
       "title": "MiniMax H3 REF2VA · still image",
-      "description": "MiniMax H3 REF2VA image edit: <Picture 1> is the working area and Edit model references are <Picture 2..>. Uses the official INT8 ConvRot model, Qwen3-VL 32B text encoder and video VAE; the first frame is kept as the still. The TaoMate Turbo LoRA runs it in 3 steps. Large download.",
+      "description": "MiniMax H3 REF2VA image edit: <Picture 1> is the working area and Edit model references are <Picture 2..>. Uses the official INT8 ConvRot model, Qwen3-VL 32B text encoder and INT8 ConvRot video VAE; the first frame is kept as the still. The TaoMate Turbo LoRA runs it in 3 steps. Large download.",
       "settings": {
         "generation_mode": "minimax_h3",
         "model_loader": "diffusion_model",
         "diffusion_model_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
         "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
-        "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+        "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors",
         "clip_type": "minimax",
         "sampler_name": "res_multistep",
         "scheduler": "simple",
@@ -358,11 +358,11 @@
         },
         {
           "role": "vae",
-          "name": "MiniMax H3 Video VAE",
-          "hf_repo": "Comfy-Org/MiniMax-H3",
-          "hf_path": "vae/minimax_h3_video_vae_fp16.safetensors",
-          "local_path": "models/vae/minimax_h3_video_vae_fp16.safetensors",
-          "description": "MiniMax H3 video VAE."
+          "name": "MiniMax H3 Video VAE INT8 ConvRot",
+          "hf_repo": "Kijai/MiniMax-H3-experimental",
+          "hf_path": "minimax_h3_video_vae_int8_convrot.safetensors",
+          "local_path": "models/vae/minimax_h3_video_vae_int8_convrot.safetensors",
+          "description": "MiniMax H3 video VAE (INT8 ConvRot)."
         }
       ],
       "turbo": {
