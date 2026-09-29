@@ -278,6 +278,15 @@ def _get_unicanvas_model_loader(loader_type: str | None) -> UniCanvasModelLoader
     return loader
 
 
+def _peek_cached_generation_assets(gen_settings: dict[str, Any]):
+    """The (model, clip, vae) already loaded for these settings, or None; never loads anything."""
+    loader = _get_unicanvas_model_loader(str(gen_settings.get("model_loader") or "checkpoint").lower())
+    if loader.key == "external":
+        return None
+    with _MODEL_CACHE_LOCK:
+        return _MODEL_CACHE.get(loader.cache_key(gen_settings))
+
+
 def _load_generation_assets(gen_settings: dict[str, Any]):
     """(model, clip, vae) for the settings; the VAE runs chunked when "vae_chunking" is on."""
     model, clip, vae = _load_generation_assets_cached(gen_settings)

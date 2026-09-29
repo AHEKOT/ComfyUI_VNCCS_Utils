@@ -16,6 +16,7 @@ from .constants import _MAX_UPLOAD_BYTES
 from .debug import debug_enabled, debug_event, set_unicanvas_debug
 from .describe_layers import _run_unicanvas_describe_layers
 from .draw import _run_unicanvas_draw
+from .enhance import _run_unicanvas_enhance_prompt, load_default_prompts
 from .models.qwen_image21 import (
     _QWEN21_TURBO_LORA_DOWNLOAD,
     QWEN21_TURBO_LORA_NAME,
@@ -30,7 +31,7 @@ from .presets import (
     _unicanvas_load_preset_registry,
     _unicanvas_resolve_local_model_path,
 )
-from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress
+from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types, set_interrupt
 from .remove_bg import _run_unicanvas_remove_bg
 from .save_output import _run_unicanvas_save_output
 from .user_prefs import load_model_memory, remember_model_choice
@@ -38,6 +39,15 @@ from .segment import _run_unicanvas_segment
 
 
 _DRAW_LOCK = asyncio.Lock()
+_DRAWS_RUNNING = 0  # UniCanvas draws inside the draw lock (Stop only acts on those)
+
+
+def _run_draw_cancellable(payload: dict[str, Any]) -> dict[str, Any]:
+    """The draw in its worker thread; a Stop ends it as {"cancelled": true}, never as an exception."""
+    try:
+        return _run_unicanvas_draw(payload)
+    except interrupt_types():
+        return {"cancelled": True}
 _UNICANVAS_LAYER_ROUTES_REGISTERED = False
 
 
@@ -164,8 +174,13 @@ def register_unicanvas_routes() -> None:
         payload: dict[str, Any] = {}
         try:
             payload = await request.json()
+            global _DRAWS_RUNNING
             async with _DRAW_LOCK:
-                result = await asyncio.to_thread(_run_unicanvas_draw, payload)
+                _DRAWS_RUNNING += 1
+                try:
+                    result = await asyncio.to_thread(_run_draw_cancellable, payload)
+                finally:
+                    _DRAWS_RUNNING -= 1
             return web.json_response(result)
         except Exception as exc:
             import traceback
@@ -174,6 +189,15 @@ def register_unicanvas_routes() -> None:
             draw_id = str(payload.get("debug_id") or "unknown")
             _set_draw_progress(draw_id, "error", 1.0, 0, 0, str(exc))
             return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/interrupt")
+    async def vnccs_unicanvas_interrupt(_request):
+        # Same flag as ComfyUI's own /interrupt, but only while a UniCanvas draw is running, so a late
+        # click cannot leave a stale flag behind for the next prompt.
+        running = _DRAWS_RUNNING > 0
+        if running:
+            set_interrupt(True)
+        return web.json_response({"interrupted": running})
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/segment")
     async def vnccs_unicanvas_segment(request):
@@ -273,6 +297,24 @@ def register_unicanvas_layer_routes() -> None:
             return web.json_response(result)
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/prompt_enhance_defaults")
+    async def vnccs_unicanvas_prompt_enhance_defaults(_request):
+        return web.json_response({"entries": await asyncio.to_thread(load_default_prompts)})
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/enhance_prompt")
+    async def vnccs_unicanvas_enhance_prompt(request):
+        if not _content_length_ok(request, _MAX_UPLOAD_BYTES + 1024 * 1024):
+            return web.json_response({"error": "[VNCCS UniCanvas] Prompt enhance payload is too large."}, status=413)
+        try:
+            payload = await request.json()
+            result = await _run_logged("enhance_prompt", _run_unicanvas_enhance_prompt, payload)
+            return web.json_response(result)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            logging.error("[VNCCS UniCanvas] Prompt enhance failed: %s", traceback.format_exc())
+            return web.json_response({"error": str(exc) or type(exc).__name__}, status=500)
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/debug")
     async def vnccs_unicanvas_debug_status(_request):

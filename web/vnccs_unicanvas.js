@@ -124,6 +124,7 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
   }, true);
 })();
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790494137676";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./vnccs_unicanvas_prompt_enhance.mjs?v=1790494137676";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -165,6 +166,10 @@ const STYLES = `
 .vnccs-uc-side-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
 .vnccs-uc-draw-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:7px; align-items:stretch; }
 .vnccs-uc-draw-control .vnccs-uc-btn { width:100%; height:34px; font-weight:800; }
+.vnccs-uc-draw-control.generating { grid-template-columns:minmax(0,1fr) 74px 46px; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop { border:1px solid rgba(255,107,107,.7); background:rgba(255,107,107,.14); color:#ff9a9a; display:flex; align-items:center; justify-content:center; gap:5px; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop:hover:not(:disabled) { background:rgba(255,107,107,.28); color:#fff; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop svg { width:11px; height:11px; fill:currentColor; }
 .vnccs-uc-draw-control .vnccs-uc-batch-input { width:46px; height:34px; box-sizing:border-box; text-align:center; font-weight:800; align-self:stretch; }
 .vnccs-uc-donate-link { flex:0 0 auto; display:block; width:100%; padding:0 4px 4px; box-sizing:border-box; z-index:3; background:rgba(6,5,12,.92); box-shadow:0 -8px 18px rgba(6,5,12,.82); }
 .vnccs-uc-donate-link img { display:block; width:100%; height:auto; border-radius:10px; }
@@ -458,7 +463,7 @@ const STYLES = `
 if (!document.getElementById("vnccs-unicanvas-styles")) {
   const style = document.createElement("style");
   style.id = "vnccs-unicanvas-styles";
-  style.textContent = STYLES + PROMPT_GUIDE_CSS;
+  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS;
   document.head.appendChild(style);
 }
 
@@ -971,6 +976,16 @@ const PRESET_CHEVRON_ICON = `<svg class="vnccs-uc-model-card-chevron" viewBox="0
 const MINUS_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`;
 // Node-mode local backups stay well under the shared localStorage quota (see pruneLocalStateBackups).
 const LOCAL_STATE_BACKUP_MAX_CHARS = 1_000_000;
+// Settings holding base64 images live in the server state cache and the queued prompt only: in
+// the widget value they end up in every ComfyUI workflow draft, and a few MB there exceed the
+// localStorage quota ("Failed to save workflow draft").
+const WIDGET_HEAVY_SETTINGS = ["edit_reference_images"];
+
+function widgetSettings(settings) {
+  const light = { ...(settings || {}) };
+  for (const key of WIDGET_HEAVY_SETTINGS) delete light[key];
+  return light;
+}
 const STAGING_ICONS = {
   discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
   prev: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`,
@@ -1285,9 +1300,17 @@ class UniCanvasWidget {
     this.promptBox.innerHTML = `
       <div class="vnccs-uc-field">
         <div class="vnccs-uc-prompt-head"><span>Prompt</span><button class="vnccs-uc-prompt-help" type="button" data-action="prompt-help" data-prompt-help aria-expanded="false" aria-label="How to prompt this model" title="How to prompt this model">?</button></div>
-        <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
+        <div class="vnccs-uc-enhance-wrap">
+          <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
+          <button class="vnccs-uc-enhance-btn" type="button" data-enhance="positive" aria-label="Enhance prompt" hidden></button>
+        </div>
       </div>
-      <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
+      <div class="vnccs-uc-field">Negative
+        <div class="vnccs-uc-enhance-wrap">
+          <textarea class="vnccs-uc-textarea" data-setting="negative" aria-label="Negative prompt" placeholder="negative prompt"></textarea>
+          <button class="vnccs-uc-enhance-btn" type="button" data-enhance="negative" aria-label="Enhance negative prompt" hidden></button>
+        </div>
+      </div>
       <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
       <div class="vnccs-uc-model-tabs" data-config-override>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="presets">Presets</button>
@@ -1340,7 +1363,11 @@ class UniCanvasWidget {
     this.batchInput.title = "Images";
     this.drawControl = document.createElement("div");
     this.drawControl.className = "vnccs-uc-draw-control";
-    this.drawControl.append(this.drawBtn, this.batchInput);
+    this.stopBtn = this._button("", "vnccs-uc-btn stop", () => void this.stopDraw(), "Stop: interrupt the generation and free the VRAM it used");
+    this.stopBtn.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2"/></svg><span>STOP</span>';
+    this.stopBtn.hidden = true;
+    this.drawControl.append(this.drawBtn, this.stopBtn, this.batchInput);
+    installPromptEnhance(this);
     const promptSection = this._section("Parameters", this.promptBox);
     promptSection.classList.add("vnccs-uc-parameters-section");
     this.donateLink = document.createElement("a");
@@ -2708,7 +2735,19 @@ class UniCanvasWidget {
     this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
+    // The enhance switches stay on the node; only the resolved automatic rewrite reaches a draw.
+    stripEnhanceSettings(settings);
+    const enhance = promptEnhancePayload(this);
+    if (enhance) settings.prompt_enhance = enhance;
     return settings;
+  }
+
+  getModelKey() {
+    return getUniCanvasModelModule(this.settings.generation_mode).key;
+  }
+
+  modelUsesNegative() {
+    return resolvePromptGuide(this.modelDescriptors, this.settings.generation_mode)?.negativePrompt !== false;
   }
 
   renderLoraStackControls() {
@@ -3234,6 +3273,7 @@ class UniCanvasWidget {
     const linked = this._isConfigLinked();
     if (linked) this.syncConfigFamily();
     this.container.classList.toggle("vnccs-uc-config-linked", linked);
+    syncPromptEnhance(this);
     this.container.querySelectorAll("[data-config-override]").forEach((el) => {
       el.inert = linked;
       if (linked) el.setAttribute("aria-disabled", "true");
@@ -7027,6 +7067,10 @@ class UniCanvasWidget {
     }
     this.drawBtn.disabled = true;
     if (this.batchInput) this.batchInput.disabled = true;
+    this._stopRequested = false;
+    this._drawViaQueue = configLinked;
+    this._drawDebugId = configLinked ? this.settings.draw_id : debugId;
+    this.showStopButton(true);
     let performance = "";
     try {
       if (configLinked) {
@@ -7051,6 +7095,7 @@ class UniCanvasWidget {
           body: JSON.stringify(this._buildDrawPayload({ ...drawContext, includeDebugId: true, debugId, configOverrides })),
         });
         const data = await res.json();
+        if (data.cancelled) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
         performance = data.performance || "";
         await this._stageGeneratedImages(data, maskCanvas, mode, drawContext);
@@ -7059,9 +7104,15 @@ class UniCanvasWidget {
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
-      this.setStatus(`GENERATE failed: ${err.message || err}`, true);
-      this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
+      if (err?.cancelled || this._stopRequested) {
+        this.setStatus("Generation stopped - VRAM freed");
+        this.updateGenerationProgress({ progress: 1, message: "Stopped - VRAM freed", stage: "cancelled" }, true);
+      } else {
+        this.setStatus(`GENERATE failed: ${err.message || err}`, true);
+        this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
+      }
     } finally {
+      this.showStopButton(false);
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
@@ -7069,6 +7120,37 @@ class UniCanvasWidget {
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
+    }
+  }
+
+  showStopButton(visible) {
+    if (!this.stopBtn) return;
+    this.stopBtn.hidden = !visible;
+    this.stopBtn.disabled = false;
+    this.drawControl?.classList.toggle("generating", visible);
+  }
+
+  // Stop: ComfyUI's interrupt flag ends the draw at the next step; the backend then drops its tensors
+  // and unloads the models. A config-linked draw runs as a queued ComfyUI prompt, so it goes through
+  // ComfyUI's own /interrupt (and /free for the memory).
+  async stopDraw() {
+    if (!this.drawInProgress || this._stopRequested) return;
+    this._stopRequested = true;
+    this.stopBtn.disabled = true;
+    this.setStatus("Stopping...");
+    this.updateGenerationProgress({ message: "Stopping...", stage: "status" }, false);
+    const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    try {
+      if (this._drawViaQueue) {
+        await post("/interrupt");
+        await post("/free", { unload_models: true, free_memory: true });
+      } else {
+        await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      }
+    } catch (err) {
+      this.setStatus(`Stop failed: ${err.message || err}`, true);
+      this._stopRequested = false;
+      this.stopBtn.disabled = false;
     }
   }
 
@@ -7310,7 +7392,8 @@ class UniCanvasWidget {
     };
     if (includeDebugId) {
       payload.debug_id = debugId;
-      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1 } : {}) };
+      // A pose edit writes its own prompt, so automatic enhance stays out of it.
+      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
     }
     return payload;
   }
@@ -7596,6 +7679,7 @@ class UniCanvasWidget {
     const button = this.container.querySelector("[data-prompt-help]");
     if (button) button.title = guide ? `How to prompt ${guide.label}` : "How to prompt this model";
     if (this.promptGuidePanel && !this.promptGuidePanel.hidden) renderPromptGuide(this.promptGuideBody, guide);
+    syncPromptEnhance(this);
   }
 
   resizeTextareaToContent(textarea) {
@@ -7636,6 +7720,7 @@ class UniCanvasWidget {
     const state = this.buildSerializedState(false);
     const compactState = {
       ...state,
+      settings: widgetSettings(state.settings),
       layers: state.layers.map((layer) => ({ ...layer, cached: layer.crop !== null })),
     };
     widget.value = JSON.stringify(compactState);
@@ -7646,11 +7731,15 @@ class UniCanvasWidget {
 
   // Prompt-only view of the state widget: the widget value stays light (workflow draft), the
   // one-shot queued draw composition is merged in only while a draw is queued.
+  // Reference images are kept out of the widget value, so the prompt gets them back here.
   serializeStateForPrompt(value) {
-    if (!this._queuedDraw) return value;
+    const refs = this.editReferenceImages();
+    if (!this._queuedDraw && !refs.length) return value;
     try {
       const state = JSON.parse(value);
-      state.settings = { ...(state.settings || {}), queued_draw: this._queuedDraw };
+      state.settings = { ...(state.settings || {}) };
+      if (refs.length) state.settings.edit_reference_images = refs;
+      if (this._queuedDraw) state.settings.queued_draw = this._queuedDraw;
       return JSON.stringify(state);
     } catch (_) {
       return value;
@@ -7698,7 +7787,7 @@ class UniCanvasWidget {
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
     this.normalizeLoraStack();
-    state.settings = { ...this.settings };
+    state.settings = widgetSettings(this.settings);
     state.activeLayerId = this.activeLayerId;
     const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
     state.layers = this.layers.map((layer) => {
@@ -8291,6 +8380,8 @@ class UniCanvasWidget {
   setEditReferenceImages(list) {
     this.settings.edit_reference_images = list.slice(0, this.maxEditReferenceImages());
     this.syncSettingsToWidget();
+    // The images persist only through the server state cache (see WIDGET_HEAVY_SETTINGS).
+    this.scheduleStateUpload();
     this.updateEditRefsBadge();
   }
 
@@ -8516,6 +8607,19 @@ class UniCanvasWidget {
       familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
     });
 
+    // Magic wand: on/off, always-enhance on Generate, the wand's encoder; the system prompts open in a dialog.
+    section("prompt_enhance", "Prompt enhance");
+    buildPromptEnhanceSettings(s, {
+      body: target,
+      bind,
+      makeSelect,
+      installed: this.assets?.text_encoders || [],
+      checkboxRow,
+      commit,
+      families: Object.values(UNICANVAS_MODEL_MODULES).map((module) => ({ key: module.key, label: module.label })),
+      changed: () => syncPromptEnhance(this),
+    });
+
     // Content-based layer names. "Auto-name" in the layer menu works either way.
     section("layer_names", "Layer names");
     const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
@@ -8618,9 +8722,28 @@ class UniCanvasWidget {
   }
 }
 
+// Prompt enhance values live in the ComfyUI settings store (VNCCS > UniCanvas > Prompt enhance).
+bindEnhanceSettingsReader((id) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    return typeof store?.get === "function" ? store.get(id) : app?.ui?.settings?.getSettingValue?.(id);
+  } catch (_err) {
+    return undefined;
+  }
+}, (id, value) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    if (typeof store?.set === "function") void store.set(id, value);
+    else app?.ui?.settings?.setSettingValue?.(id, value);
+  } catch (_err) {
+    console.warn("[VNCCS UniCanvas] Could not save the prompt enhance system prompts", _err);
+  }
+});
+
 app.registerExtension({
   name: "VNCCS.UniCanvas",
   settings: [
+    ...promptEnhanceSettingDefs(() => Object.values(UNICANVAS_MODEL_MODULES).map((module) => ({ key: module.key, label: module.label }))),
     {
       id: UNICANVAS_STANDALONE_SETTING_ID,
       category: ["VNCCS", "UniCanvas", "Standalone sidebar"],

@@ -20,7 +20,7 @@ def _prune_draw_progress(now: float | None = None) -> None:
     for draw_id, state in _DRAW_PROGRESS.items():
         age = max(0.0, now - float(state.get("updated_at", now)))
         stage = state.get("stage")
-        if (stage in {"complete", "error"} and age > _DRAW_PROGRESS_TTL_SECONDS) or age > _DRAW_PROGRESS_RUNNING_TTL_SECONDS:
+        if (stage in {"complete", "error", "cancelled"} and age > _DRAW_PROGRESS_TTL_SECONDS) or age > _DRAW_PROGRESS_RUNNING_TTL_SECONDS:
             expired.append(draw_id)
     for draw_id in expired:
         _DRAW_PROGRESS.pop(draw_id, None)
@@ -59,7 +59,7 @@ def _console_progress(draw_id: str, stage: str, step: int, steps: int, message: 
             return speed
         timing[2] = line
         elapsed = now - started
-        if stage in {"complete", "error"}:
+        if stage in {"complete", "error", "cancelled"}:
             _DRAW_TIMING.pop(draw_id, None)
         if len(_DRAW_TIMING) > _DRAW_PROGRESS_MAX:
             _DRAW_TIMING.pop(next(iter(_DRAW_TIMING)), None)
@@ -67,7 +67,42 @@ def _console_progress(draw_id: str, stage: str, step: int, steps: int, message: 
     return speed
 
 
+_TERMINAL_STAGES = frozenset({"complete", "error", "cancelled"})
+
+
+def interrupt_types() -> tuple[type, ...]:
+    """ComfyUI's InterruptProcessingException (what an interrupt raises), or nothing without ComfyUI."""
+    try:
+        from comfy.model_management import InterruptProcessingException
+    except Exception:
+        return ()
+    return (InterruptProcessingException,)
+
+
+def set_interrupt(value: bool) -> None:
+    """Raise or clear ComfyUI's interrupt flag (the same one POST /interrupt sets)."""
+    try:
+        import comfy.model_management as model_management
+
+        model_management.interrupt_current_processing(value)
+    except Exception:
+        pass
+
+
+def _raise_if_interrupted() -> None:
+    try:
+        import comfy.model_management as model_management
+    except Exception:
+        return
+    check = getattr(model_management, "throw_exception_if_processing_interrupted", None)  # stubs and old ComfyUI lack it
+    if callable(check):
+        check()
+
+
 def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
+    # Every step and stage change is a checkpoint: a Stop (ComfyUI's interrupt flag) ends the draw here.
+    if stage not in _TERMINAL_STAGES:
+        _raise_if_interrupted()
     message = message or stage
     speed = _console_progress(draw_id, stage, int(step or 0), int(steps or 0), message)
     payload = {

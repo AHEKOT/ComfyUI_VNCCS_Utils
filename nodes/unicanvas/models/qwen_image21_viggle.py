@@ -14,7 +14,6 @@ import math
 from typing import Any
 
 import torch
-import torch.nn.functional as F
 
 
 VIGGLE_TURBO_NODES = (1.0, 0.9375, 0.875, 0.75, 0.5, 0.25)
@@ -38,6 +37,8 @@ def viggle_turbo_sigmas(latent: dict[str, Any], denoise: float = 1.0) -> torch.T
 
 
 def _lora_linear(tensor: torch.Tensor, pair) -> torch.Tensor:
+    import torch.nn.functional as F  # lazy: torch-free suites load the package with a stub torch
+
     down, up = pair
     return F.linear(F.linear(tensor, down.to(tensor.dtype)), up.to(tensor.dtype))
 
@@ -53,6 +54,8 @@ def _attach_fused_mlp_hooks(mlp, gate, up, down):
         return combined
 
     def mlp_hook(_module, _inputs, output):
+        import torch.nn.functional as F
+
         gate_value, up_value = intermediate.pop("gate_up").chunk(2, dim=-1)
         return output + _lora_linear(F.silu(gate_value) * up_value, down)
 
