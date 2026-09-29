@@ -77,7 +77,7 @@ def test_requirement_describe_is_json_safe():
 
 
 def test_requirements_apply_before_the_stack_and_dedupe(applied):
-    rules = (LoraRequirement(name_setting="edit", fixed_strength=1.0, clip_strength=0.0, dedupe_from_stack=True),)
+    rules = (LoraRequirement(name_setting="edit", fixed_strength=1.0, clip_strength=0.0),)
     model, clip, skip = _apply_lora_requirements("m", "c", rules, {"edit": "Edit.safetensors"})
     _apply_lora_stack(model, clip, [
         {"name": "edit.safetensors", "strength": 0.3},
@@ -155,3 +155,43 @@ def test_no_family_overrides_apply_loras():
 
     for module in {m.key: m for m in UNICANVAS_MODEL_MODULES.values()}.values():
         assert type(module).apply_loras is UniCanvasModelModule.apply_loras, module.key
+
+
+def test_a_lora_is_never_applied_twice(applied):
+    rules = (LoraRequirement(name_setting="turbo"), LoraRequirement(name_setting="again"))
+    # The linked config stack already carries the turbo file: the family rule skips it.
+    settings = {
+        "turbo": "viggle/Turbo.safetensors",
+        "again": "turbo.safetensors",
+        "_external": {"lora_stack": [{"name": "loras/turbo.safetensors", "strength": 1.0, "enabled": True}]},
+    }
+    model, clip, skip = _apply_lora_requirements("m", "c", rules, settings)
+    assert applied == []
+    # Disabled or zero-strength config entries do not count as applied.
+    settings["_external"]["lora_stack"][0]["enabled"] = False
+    _apply_lora_requirements("m", "c", rules, settings)
+    assert applied == [("viggle/Turbo.safetensors", 1.0, None)]
+    applied.clear()
+    # The user stack drops its own duplicates and files a rule already applied.
+    _apply_lora_stack("m", "c", [
+        {"name": "style.safetensors", "strength": 0.0},
+        {"name": "style.safetensors", "strength": 0.6},
+        {"name": "sub/style.safetensors", "strength": 0.9},
+        {"name": "Turbo.safetensors", "strength": 1.0},
+    ], ["viggle/turbo.safetensors"])
+    assert applied == [("style.safetensors", 0.0, None), ("style.safetensors", 0.6, None)]
+
+
+def test_vncss_config_applies_each_lora_once(monkeypatch):
+    from nodes import vncss_config
+
+    calls = []
+    monkeypatch.setattr(vncss_config, "_apply_lora_cached", lambda m, c, name, strength, clip_strength=None: calls.append(name) or (m, c))
+    stack = vncss_config.normalize_lora_stack([
+        {"name": "a.safetensors", "enabled": False},
+        {"name": "A.safetensors"},
+        {"name": "dir/a.safetensors"},
+        {"name": "b.safetensors"},
+    ])
+    vncss_config.apply_lora_stack("m", "c", stack)
+    assert calls == ["A.safetensors", "b.safetensors"]

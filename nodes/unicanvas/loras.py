@@ -29,6 +29,26 @@ def _lora_name_matches(value: Any, expected: str) -> bool:
     return normalized == expected_normalized or os.path.basename(normalized) == os.path.basename(expected_normalized)
 
 
+def _lora_name_in(value: Any, names: list[str] | tuple[str, ...]) -> bool:
+    return any(_lora_name_matches(value, name) for name in names)
+
+
+def _active_lora_names(lora_stack: Any) -> list[str]:
+    """Names a LoRA stack actually applies (enabled, non-zero strength)."""
+    names = []
+    for item in lora_stack if isinstance(lora_stack, list) else []:
+        if not isinstance(item, dict) or item.get("enabled") is False:
+            continue
+        name = str(item.get("name") or item.get("lora_name") or "")
+        try:
+            strength = float(item.get("strength", item.get("model_strength", 1.0)))
+        except (TypeError, ValueError):
+            continue
+        if name and strength != 0:
+            names.append(name)
+    return names
+
+
 def _get_lora_full_path(lora_name: str) -> str:
     import folder_paths
 
@@ -96,10 +116,12 @@ class LoraRequirement:
 
     ``required`` rules apply regardless of the node's own LoRA settings being
     overridden by a linked config; a missing file raises instead of being skipped.
-    ``fixed_strength`` pins the strength (the user cannot change it) and
-    ``dedupe_from_stack`` removes the same file from the user's stack so it is
-    never applied twice. ``resolver`` maps the name to a loadable file, e.g. a
+    ``fixed_strength`` pins the strength (the user cannot change it). A LoRA is never
+    applied twice: a rule whose file a linked VNCSS Config stack already carries is
+    skipped, and the user's stack skips files already applied. ``resolver`` maps the name to a loadable file, e.g. a
     lazy download: it runs when ``resolve_match`` is unset or matches the name.
+    ``apply(model, clip, name, strength) -> (model, clip)`` replaces the default merged
+    LoRA load, e.g. for adapters that must stay unmerged.
     """
 
     name_setting: str
@@ -113,9 +135,9 @@ class LoraRequirement:
     clip_strength: float | None = None
     draw_modes: frozenset[str] | None = None
     required: bool = False
-    dedupe_from_stack: bool = False
     resolver: Callable[[], str] | None = None
     resolve_match: str | None = None
+    apply: Callable[[Any, Any, str, float], tuple[Any, Any]] | None = None
     description: str = ""
 
     def resolve(self, settings: dict[str, Any]) -> tuple[str, float] | None:
@@ -160,30 +182,38 @@ def _apply_lora_requirements(
     requirements: tuple[LoraRequirement, ...],
     settings: dict[str, Any],
 ) -> tuple[Any, Any, list[str]]:
-    """Apply the family's own LoRAs; return the names the user stack must skip."""
-    deduped: list[str] = []
+    """Apply the family's own LoRAs; return every applied name so the user stack skips it."""
+    external = settings.get("_external")
+    applied = _active_lora_names(external.get("lora_stack") if isinstance(external, dict) else None)
     for requirement in requirements:
         resolved = requirement.resolve(settings)
         if resolved is None:
             continue
         name, strength = resolved
-        model, clip = _apply_lora_cached(model, clip, name, strength, clip_strength=requirement.clip_strength)
-        if requirement.dedupe_from_stack:
-            deduped.append(name)
-    return model, clip, deduped
+        if _lora_name_in(name, applied):
+            continue
+        if requirement.apply is not None:
+            model, clip = requirement.apply(model, clip, name, strength)
+        else:
+            model, clip = _apply_lora_cached(model, clip, name, strength, clip_strength=requirement.clip_strength)
+        applied.append(name)
+    return model, clip, applied
 
 
 def _apply_lora_stack(model: Any, clip: Any, lora_stack: Any, skip_names: list[str] | tuple[str, ...] = ()):
-    """Apply the user's LoRA stack (node widget or VNCSS Config), skipping deduped files."""
+    """Apply the user's LoRA stack (node widget or VNCSS Config); a file already applied is skipped."""
     if not isinstance(lora_stack, list):
         return model, clip
+    applied = list(skip_names)
     for item in lora_stack:
         if not isinstance(item, dict):
             continue
         lora_name = str(item.get("name") or item.get("lora_name") or "")
-        if any(_lora_name_matches(lora_name, skipped) for skipped in skip_names):
+        if _lora_name_in(lora_name, applied):
             continue
         strength = float(item.get("strength", item.get("model_strength", 1.0)))
+        if strength != 0:
+            applied.append(lora_name)
         clip_strength = item.get("clip_strength", None)
         model, clip = _apply_lora_cached(
             model,

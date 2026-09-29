@@ -334,11 +334,29 @@ const STYLES = `
 .vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
 .vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
 .vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
-.vnccs-uc-refs-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
-.vnccs-uc-refs-cell { position:relative; display:grid; gap:2px; justify-items:center; padding:4px; border:1px solid rgba(255,255,255,.12); border-radius:6px; }
-.vnccs-uc-refs-cell img { width:100%; max-height:84px; object-fit:contain; }
-.vnccs-uc-refs-label { font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--uc-accent); }
-.vnccs-uc-refs-cell .vnccs-uc-icon { position:absolute; top:2px; right:2px; }
+/* Edit model reference images popover (same surface as the settings popover). */
+.vnccs-uc-refs-popover {
+  position:absolute; z-index:30; width:300px; max-width:calc(100% - 8px); overflow-y:auto; overscroll-behavior:contain;
+  padding:12px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
+  box-shadow:0 12px 32px rgba(0,0,0,.55); color:var(--uc-text); font-family:sans-serif; font-size:12px;
+  display:grid; gap:10px; align-content:start; box-sizing:border-box;
+}
+.vnccs-uc-refs-head { display:flex; align-items:center; gap:8px; }
+.vnccs-uc-refs-title { flex:1 1 auto; min-width:0; font-size:13px; font-weight:700; }
+.vnccs-uc-refs-count { color:var(--uc-muted); font-variant-numeric:tabular-nums; }
+.vnccs-uc-refs-head .vnccs-uc-icon { width:26px; height:26px; padding:0; }
+.vnccs-uc-refs-hint { color:var(--uc-muted); line-height:1.45; }
+.vnccs-uc-refs-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
+.vnccs-uc-refs-cell, .vnccs-uc-refs-add { position:relative; aspect-ratio:1; border-radius:8px; overflow:hidden; box-sizing:border-box; }
+.vnccs-uc-refs-cell { border:1px solid var(--uc-border); background:repeating-conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+.vnccs-uc-refs-cell img { display:block; width:100%; height:100%; object-fit:contain; }
+.vnccs-uc-refs-label { position:absolute; left:4px; bottom:4px; padding:1px 5px; border-radius:999px; background:rgba(10,10,15,.8); font-size:9px; font-weight:800; letter-spacing:.04em; color:var(--uc-accent); }
+.vnccs-uc-refs-cell .vnccs-uc-icon { position:absolute; top:4px; right:4px; width:20px; height:20px; padding:0; border-radius:50%; background:rgba(10,10,15,.8); line-height:1; opacity:0; transition:opacity .12s; }
+.vnccs-uc-refs-cell:hover .vnccs-uc-icon, .vnccs-uc-refs-cell .vnccs-uc-icon:focus-visible { opacity:1; }
+.vnccs-uc-refs-add { display:grid; place-items:center; align-content:center; gap:2px; border:1px dashed rgba(255,255,255,.22); background:transparent; color:var(--uc-muted); font:inherit; cursor:pointer; }
+.vnccs-uc-refs-add:hover, .vnccs-uc-refs-add:focus-visible { border-color:var(--uc-accent); color:var(--uc-accent); background:rgba(255,143,163,.06); }
+.vnccs-uc-refs-add b { font-size:22px; font-weight:400; line-height:1; }
+@media (hover:none) { .vnccs-uc-refs-cell .vnccs-uc-icon { opacity:1; } }
 .vnccs-uc-turbo-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 .vnccs-uc-toggle { position:relative; flex:0 0 auto; width:42px; height:22px; border:1px solid rgba(255,143,163,.5); border-radius:999px; background:rgba(255,143,163,.16); }
 .vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
@@ -8276,99 +8294,113 @@ class UniCanvasWidget {
     this.updateEditRefsBadge();
   }
 
+  closeEditReferenceImages() {
+    this._vnccsRefsPopover?.remove();
+    this._vnccsRefsPopover = null;
+    if (this._vnccsRefsOutside) document.removeEventListener("pointerdown", this._vnccsRefsOutside, true);
+    this._vnccsRefsOutside = null;
+  }
+
   openEditReferenceImages() {
     if (this._vnccsRefsPopover) {
-      this._vnccsRefsPopover.remove();
-      this._vnccsRefsPopover = null;
+      this.closeEditReferenceImages();
       return;
     }
     const panel = document.createElement("div");
+    panel.className = "vnccs-uc-refs-popover";
     panel.dataset.editRefsPopover = "1";
-    panel.style.cssText = "position:absolute; z-index:30; min-width:250px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+    const head = document.createElement("div");
+    head.className = "vnccs-uc-refs-head";
     const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.textContent = "Edit model reference images";
+    title.className = "vnccs-uc-refs-title";
+    title.textContent = "Reference images";
+    const count = document.createElement("span");
+    count.className = "vnccs-uc-refs-count";
+    const closeBtn = this._button("×", "vnccs-uc-icon", () => this.closeEditReferenceImages(), "Close reference images");
+    head.append(title, count, closeBtn);
     const hint = document.createElement("div");
-    hint.style.color = "rgba(232,232,240,.6)";
+    hint.className = "vnccs-uc-refs-hint";
     // The prompt name of each reference follows the active family (Mode).
-    const maxRefs = this.maxEditReferenceImages();
     hint.textContent = this.getModelBase() === "krea2_edit"
-      ? "1 image: the character to put into the working area. Krea2 Edit reads two pictures - image 1 is the working area (background), image 2 is this reference; describe them in plain words (\"put the woman from image 2 into image 1\")."
-      : `Up to ${maxRefs} images. ` + referenceConventionHint(this.modelDescriptors, this.settings.generation_mode);
-    panel.append(title, hint);
+      ? "The character to put into the working area. Krea2 Edit reads image 1 as the working area and image 2 as this reference; describe them in plain words (\"put the woman from image 2 into image 1\")."
+      : referenceConventionHint(this.modelDescriptors, this.settings.generation_mode);
     const grid = document.createElement("div");
     grid.className = "vnccs-uc-refs-grid";
-    panel.appendChild(grid);
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+    fileInput.className = "vnccs-uc-file";
+    panel.append(head, hint, grid, fileInput);
     const render = () => {
       grid.innerHTML = "";
-      this.editReferenceImages().forEach((data, index) => {
+      const max = this.maxEditReferenceImages();
+      const list = this.editReferenceImages();
+      count.textContent = `${list.length} / ${max}`;
+      list.forEach((data, index) => {
         const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2).text;
         const cell = document.createElement("div");
         cell.className = "vnccs-uc-refs-cell";
+        cell.title = label;
         const marker = document.createElement("div");
         marker.className = "vnccs-uc-refs-label";
         marker.textContent = label;
         const img = document.createElement("img");
         img.src = data;
         img.alt = label;
-        const removeBtn = this._button("\u00d7", "vnccs-uc-icon", () => {
-          const list = this.editReferenceImages();
-          list.splice(index, 1);
-          this.setEditReferenceImages(list);
+        const removeBtn = this._button("×", "vnccs-uc-icon", () => {
+          const next = this.editReferenceImages();
+          next.splice(index, 1);
+          this.setEditReferenceImages(next);
           render();
         }, "Remove " + label);
-        cell.append(marker, img, removeBtn);
+        cell.append(img, marker, removeBtn);
         grid.appendChild(cell);
       });
+      if (list.length < max) {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "vnccs-uc-refs-add";
+        add.title = "Add reference images";
+        add.innerHTML = "<b>+</b><span>Add</span>";
+        add.addEventListener("click", () => fileInput.click());
+        grid.appendChild(add);
+      }
       this.updateEditRefsBadge();
     };
     render();
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = "image/*";
-    fileInput.multiple = true;
-    fileInput.className = "vnccs-uc-file";
     fileInput.addEventListener("change", () => {
       const files = [...(fileInput.files || [])];
       fileInput.value = "";
       const max = this.maxEditReferenceImages();
       const room = max - this.editReferenceImages().length;
-      if (room <= 0) {
-        this.setStatus(`[VNCCS UniCanvas] Reference images: the maximum for this model is ${max}.`, true);
-        return;
-      }
       if (files.length > room) this.setStatus(`[VNCCS UniCanvas] Reference images: the maximum for this model is ${max}.`, true);
-      files.slice(0, room).forEach((file) => {
+      files.slice(0, Math.max(0, room)).forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
           if (typeof reader.result !== "string") return;
-          const list = this.editReferenceImages();
-          if (list.length >= max) return;
-          list.push(reader.result);
-          this.setEditReferenceImages(list);
+          const next = this.editReferenceImages();
+          if (next.length >= max) return;
+          next.push(reader.result);
+          this.setEditReferenceImages(next);
           render();
         };
         reader.readAsDataURL(file);
       });
     });
-    const addBtn = this._button("Add image", "vnccs-uc-btn", () => fileInput.click(), "Add a reference image");
-    const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
-      panel.remove();
-      this._vnccsRefsPopover = null;
-    }, "Close reference images");
-    panel.append(fileInput, addBtn, closeBtn);
     this.container.appendChild(panel);
     const anchor = this.container.querySelector("[data-action='edit-refs']");
-    const rect = anchor ? anchor.getBoundingClientRect() : null;
-    const host = this.container.getBoundingClientRect();
-    if (rect) {
-      panel.style.left = Math.max(4, Math.min(rect.left - host.left - 180, Math.max(4, host.width - 260))) + "px";
-      panel.style.top = Math.max(4, rect.bottom - host.top + 6) + "px";
-    } else {
+    if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
+    else {
       panel.style.left = "24px";
       panel.style.top = "48px";
     }
     this._vnccsRefsPopover = panel;
+    this._vnccsRefsOutside = (event) => {
+      if (panel.contains(event.target) || anchor?.contains(event.target)) return;
+      this.closeEditReferenceImages();
+    };
+    document.addEventListener("pointerdown", this._vnccsRefsOutside, true);
   }
 
   // Anchor a popover below `anchorEl`, clamped inside `host` (spec 4.1-4.2).
@@ -8556,6 +8588,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     this._removeScaleEdit?.();
+    this.closeEditReferenceImages();
     teardownUniCanvasWidgetModes(this);
     this._panoramaImportClose?.();
     this.panoramaOrbit?.dispose();

@@ -76,6 +76,8 @@ class VNCCS_UniCanvas:
                 "vae": config.get("vae"),
                 "audio_vae": config.get("audio_vae"),
                 "references": config.get("references") or {},
+                # Already applied to the config model: family LoRAs skip these files.
+                "lora_stack": config.get("lora_stack") or [],
             },
             "return_tensor": True,
         }

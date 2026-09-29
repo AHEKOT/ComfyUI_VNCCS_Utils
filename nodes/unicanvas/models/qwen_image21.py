@@ -17,14 +17,19 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import torch
+from PIL import Image
 
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
-from ..loras import LoraRequirement
+from .. import loras
+from ..loras import LoraRequirement, _lora_name_matches
 from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
+from ..progress import _set_draw_progress
+from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
+from .qwen_image21_viggle import apply_viggle_turbo_lora, has_viggle_turbo, viggle_turbo_sigmas
 
 
 # Transparent-RGBA prompt convention from the official Qwen space (spec 9):
@@ -66,6 +71,8 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "qwen_lora_name": "",  # filled below with the turbo LoRA name
     "qwen_lora_strength": 1.0,
     "qwen21_opaque_output": False,
+    "qwen21_outpaint_lora_name": "",  # filled below with the outpaint LoRA name
+    "qwen21_outpaint_lora_strength": 1.0,
     "lora_stack": [],
 }
 
@@ -79,58 +86,82 @@ QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
 QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
+# AusBoss QI2.1 outpaint LoRA v2 (https://huggingface.co/ausboss/Qwen-Image-2.1-Outpaint-LoRA):
+# trained on canvases padded with flat gray #808080 and one fixed instruction, optionally
+# followed by "Scene: <description>". Applied automatically in outpaint mode.
+QWEN21_OUTPAINT_LORA_REPO_ID = "ausboss/Qwen-Image-2.1-Outpaint-LoRA"
+QWEN21_OUTPAINT_LORA_REVISION = "449336db42ff074aee970ba0facc0ac0feb77863"
+QWEN21_OUTPAINT_LORA_FILENAME = "qwen-image-2.1-outpaint-v2.safetensors"
+QWEN21_OUTPAINT_LORA_NAME = f"ausboss/{QWEN21_OUTPAINT_LORA_FILENAME}"
+QWEN21_OUTPAINT_FILL = (128, 128, 128)
+QWEN21_OUTPAINT_INSTRUCTION = (
+    "Outpaint the image: replace the solid gray areas with a seamless continuation of the scene, "
+    "keeping the existing picture unchanged."
+)
+QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
+
 _QWEN21_TURBO_LORA_LOCK = threading.Lock()
 _QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
+_QWEN21_OUTPAINT_LORA_LOCK = threading.Lock()
+_QWEN21_OUTPAINT_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
 
 
-def resolve_qwen21_turbo_lora() -> str:
-    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA.
+def _resolve_hf_lora(repo_id: str, revision: str, filename: str, lora_name: str, lock, status: dict[str, Any], label: str) -> str:
+    """Resolve a pinned Hugging Face LoRA, downloading it into models/loras/<dir of lora_name>/.
 
-    Returns the ComfyUI loras-relative name used by _apply_lora_cached. The
-    download lands in models/loras/viggle/ exactly like the preset turbo assets.
+    Returns the ComfyUI loras-relative name used by _apply_lora_cached. Any installed copy
+    with the same file name counts (e.g. loras/qwen/<file>).
     """
     import shutil
 
     import folder_paths
 
     def installed_name() -> str | None:
-        # Any installed copy counts (e.g. loras/qwen/<file>), not only loras/viggle/.
-        name = _resolve_model_filename(folder_paths, "loras", QWEN21_TURBO_LORA_NAME)
+        name = _resolve_model_filename(folder_paths, "loras", lora_name)
         path = _get_full_path_agnostic(folder_paths, "loras", name)
         return name if path and os.path.exists(path) else None
 
     found = installed_name()
     if found:
         return found
-    with _QWEN21_TURBO_LORA_LOCK:
+    with lock:
         found = installed_name()
         if found:
             return found
-        _QWEN21_TURBO_LORA_DOWNLOAD.update(
-            {"status": "downloading", "progress": 0.1, "message": "Downloading Viggle QI2.1 turbo LoRA"}
-        )
+        status.update({"status": "downloading", "progress": 0.1, "message": f"Downloading {label}"})
         try:
             from huggingface_hub import hf_hub_download
 
-            cached = hf_hub_download(
-                repo_id=QWEN21_TURBO_LORA_REPO_ID,
-                filename=QWEN21_TURBO_LORA_FILENAME,
-                revision=QWEN21_TURBO_LORA_REVISION,
-                token=False,
-            )
+            cached = hf_hub_download(repo_id=repo_id, filename=filename, revision=revision, token=False)
             lora_dirs = _safe_get_folder_paths(folder_paths, "loras")
             if not lora_dirs:
                 raise RuntimeError("no ComfyUI loras folder is configured")
-            target_dir = os.path.join(lora_dirs[0], "viggle")
+            target_dir = os.path.join(lora_dirs[0], os.path.dirname(lora_name))
             os.makedirs(target_dir, exist_ok=True)
-            target = os.path.join(target_dir, QWEN21_TURBO_LORA_FILENAME)
+            target = os.path.join(target_dir, filename)
             if os.path.abspath(cached) != os.path.abspath(target):
                 shutil.copyfile(cached, target)
-            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "success", "progress": 1.0, "message": "Installed"})
-            return QWEN21_TURBO_LORA_NAME
+            status.update({"status": "success", "progress": 1.0, "message": "Installed"})
+            return lora_name
         except Exception as exc:
-            _QWEN21_TURBO_LORA_DOWNLOAD.update({"status": "error", "progress": 0.0, "message": str(exc)})
-            raise RuntimeError(f"[VNCCS UniCanvas] Viggle QI2.1 turbo LoRA download failed: {exc}") from exc
+            status.update({"status": "error", "progress": 0.0, "message": str(exc)})
+            raise RuntimeError(f"[VNCCS UniCanvas] {label} download failed: {exc}") from exc
+
+
+def resolve_qwen21_turbo_lora() -> str:
+    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA into models/loras/viggle/."""
+    return _resolve_hf_lora(
+        QWEN21_TURBO_LORA_REPO_ID, QWEN21_TURBO_LORA_REVISION, QWEN21_TURBO_LORA_FILENAME, QWEN21_TURBO_LORA_NAME,
+        _QWEN21_TURBO_LORA_LOCK, _QWEN21_TURBO_LORA_DOWNLOAD, "Viggle QI2.1 turbo LoRA",
+    )
+
+
+def resolve_qwen21_outpaint_lora() -> str:
+    """Resolve (downloading when missing) the AusBoss QI2.1 outpaint LoRA into models/loras/ausboss/."""
+    return _resolve_hf_lora(
+        QWEN21_OUTPAINT_LORA_REPO_ID, QWEN21_OUTPAINT_LORA_REVISION, QWEN21_OUTPAINT_LORA_FILENAME,
+        QWEN21_OUTPAINT_LORA_NAME, _QWEN21_OUTPAINT_LORA_LOCK, _QWEN21_OUTPAINT_LORA_DOWNLOAD, "QI2.1 outpaint LoRA",
+    )
 
 
 def _qwen21_image_size(image: Any) -> tuple[int, int]:
@@ -233,10 +264,45 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             # Looked up at call time so the lazy download (and tests) can replace it.
             resolver=lambda: resolve_qwen21_turbo_lora(),
             resolve_match=QWEN21_TURBO_LORA_NAME,
-            dedupe_from_stack=True,
+            # Only the Viggle turbo runs unmerged (and then samples on its own schedule).
+            apply=lambda model, clip, name, strength: (
+                apply_viggle_turbo_lora(model, clip, name, strength)
+                if _lora_name_matches(name, QWEN21_TURBO_LORA_NAME)
+                else loras._apply_lora_cached(model, clip, name, strength, clip_strength=0.0)
+            ),
             description="Qwen-Image-2.1 LoRA (Viggle turbo downloads on first use)",
         ),
+        LoraRequirement(
+            name_setting="qwen21_outpaint_lora_name",
+            strength_setting="qwen21_outpaint_lora_strength",
+            draw_modes=frozenset({"outpaint"}),
+            require_positive_strength=True,
+            clip_strength=0.0,
+            resolver=lambda: resolve_qwen21_outpaint_lora(),
+            resolve_match=QWEN21_OUTPAINT_LORA_NAME,
+            description="Qwen-Image-2.1 outpaint LoRA (AusBoss v2, outpaint mode only, downloads on first use)",
+        ),
     )
+
+    def on_masked_mode_dropped(self, ctx) -> None:
+        # An empty outpaint mask turned the draw into img2img after the LoRAs were applied:
+        # rebuild the model so the outpaint LoRA does not leak into the img2img run.
+        if self.lora_requirements[1].resolve({**ctx.settings, "draw_mode": "outpaint"}) is None:
+            return
+        model, clip, _vae = _load_generation_assets(ctx.settings)
+        ctx.model, ctx.clip = self.apply_loras(*self.clone_assets(model, clip), ctx.settings)
+        self.bind_draw_assets(ctx)
+
+    def outpaint_prompt_suffix(self) -> str:
+        # Outpaint builds its own instruction (QWEN21_OUTPAINT_INSTRUCTION) in assemble_instruction.
+        return ""
+
+    def prepare_outpaint_reference_image(self, source_rgba: Image.Image, mask_image: Image.Image, draw_id: str) -> Image.Image:
+        # The outpaint LoRA was trained on canvases padded with flat gray #808080.
+        background = Image.new("RGBA", source_rgba.size, (*QWEN21_OUTPAINT_FILL, 255))
+        background.alpha_composite(source_rgba.convert("RGBA"))
+        _uc_log(draw_id, "QI2.1 outpaint reference flattened on gray", {"source_size": source_rgba.size})
+        return background.convert("RGB")
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         # Inpaint and outpaint are img2img runs with mask paste-back (spec 9).
@@ -260,10 +326,22 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         """
         return _reference_image_slots(image_tensor, gen_settings)
 
-    def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False) -> str:
+    def assemble_instruction(self, prompt: str, slots, opaque_output: bool = False, outpaint: bool = False) -> str:
         """Assemble the QI2.1 instruction: <image N> slot framing, the user
-        prompt, and (unless opaque output) the transparent-RGBA convention."""
+        prompt, and (unless opaque output) the transparent-RGBA convention.
+
+        Outpaint uses the outpaint LoRA's trained instruction verbatim, with the
+        user prompt as its optional "Scene:" description and no RGBA wrapping.
+        """
         body = str(prompt or "").strip()
+        if outpaint:
+            parts = [QWEN21_OUTPAINT_INSTRUCTION]
+            references = [f"<image{slot}>" for slot in sorted(slots) if slot != 1]
+            if references:
+                parts.append(f"Reference images: {', '.join(references)}.")
+            if body:
+                parts.append(f"Scene: {body}")
+            return " ".join(parts)
         parts = []
         if 1 in slots:
             parts.append("Working area: <image1>.")
@@ -319,7 +397,8 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             # Pure text-to-image has no working area; references keep fixed slots.
             slots.pop(1, None)
         opaque = self.output_is_opaque(gen_settings)
-        instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, opaque)
+        outpaint = str(gen_settings.get("draw_mode") or "") == "outpaint"
+        instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, opaque, outpaint=outpaint)
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
         image_h, image_w = _qwen21_image_size(image_tensor)
@@ -417,7 +496,15 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         gen_settings.update(settings or {})
         if "lora_stack" in (settings or {}):
             # Remove bg picks its (turbo) LoRA explicitly, "None" included: no family default.
-            gen_settings["qwen_lora_name"] = ""
+            # A picked Viggle turbo still goes through the family rule (unmerged + its schedule);
+            picked = next(
+                (item for item in gen_settings.get("lora_stack") or []
+                 if isinstance(item, dict) and _lora_name_matches(item.get("name"), QWEN21_TURBO_LORA_NAME)),
+                None,
+            )
+            gen_settings["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME if picked else ""
+            if picked:
+                gen_settings["qwen_lora_strength"] = float(picked.get("strength", 1.0))
         gen_settings["draw_mode"] = "img2img"
         gen_settings["_draw_id"] = draw_id
         gen_settings["qwen21_opaque_output"] = False
@@ -537,6 +624,67 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         if negative is None:
             negative = [(torch.zeros_like(cond[0]), cond[1]) for cond in positive]
         return positive, negative
+
+    def sample_latent(
+        self,
+        model: Any,
+        positive: Any,
+        negative: Any,
+        latent: Any,
+        seed: int,
+        steps: int,
+        cfg: float,
+        sampler_name: str,
+        scheduler: str,
+        denoise: float,
+        gen_settings: dict[str, Any],
+        draw_id: str = "unknown",
+        width: int | None = None,
+        height: int | None = None,
+    ):
+        external = (gen_settings or {}).get("_external")
+        config_loras = loras._active_lora_names(external.get("lora_stack") if isinstance(external, dict) else None)
+        # A turbo merged by a linked VNCSS Config still needs the student schedule.
+        if not (has_viggle_turbo(model) or loras._lora_name_in(QWEN21_TURBO_LORA_NAME, config_loras)):
+            return super().sample_latent(
+                model, positive, negative, latent, seed, steps, cfg, sampler_name, scheduler, denoise, gen_settings, draw_id
+            )
+        # The Viggle 6-step student is only clean on its own shifted timesteps: a
+        # steps/scheduler KSampler run lands between them and renders aberrations.
+        import comfy.sample as comfy_sample
+        import comfy.samplers as comfy_samplers
+
+        _ensure_direct_sampling_prompt_context()
+        latent_image = comfy_sample.fix_empty_latent_channels(model, latent["samples"], latent.get("downscale_ratio_spacial"))
+        sigmas = viggle_turbo_sigmas(latent, denoise)
+        total = len(sigmas) - 1
+        _uc_log(draw_id, "Viggle turbo sampling", {"sigmas": [round(float(s), 4) for s in sigmas], "cfg": cfg, "seed": seed})
+
+        def on_step(step: int, *_args: Any) -> None:
+            current = min(int(step) + 1, total)
+            _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * current / total, current, total, f"Sampling step {current}/{total}")
+
+        _set_draw_progress(draw_id, "sampling", 0.35, 0, total, f"Sampling 0/{total}")
+        with _suppress_direct_sampling_comfy_progress():
+            samples = comfy_sample.sample_custom(
+                model,
+                comfy_sample.prepare_noise(latent_image, seed, latent.get("batch_index")),
+                float(cfg),
+                comfy_samplers.sampler_object("euler"),
+                sigmas,
+                positive,
+                negative,
+                latent_image,
+                noise_mask=latent.get("noise_mask"),
+                callback=on_step,
+                disable_pbar=True,
+                seed=seed,
+            )
+        out = dict(latent)
+        out.pop("downscale_ratio_spacial", None)
+        out["samples"] = samples
+        _uc_log(draw_id, "Viggle turbo sampling output", _latent_debug(out))
+        return out
 
     # -- draw hooks -----------------------------------------------------------------------
 

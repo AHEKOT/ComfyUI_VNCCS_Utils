@@ -76,7 +76,6 @@ class Krea2EditUniCanvasModule(UniCanvasModelModule):
             fixed_strength=1.0,
             clip_strength=0.0,
             required=True,
-            dedupe_from_stack=True,
             description="Krea2 Identity Edit adapter (mandatory)",
         ),
     )

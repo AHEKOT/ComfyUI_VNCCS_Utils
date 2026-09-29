@@ -36,6 +36,9 @@ export const UNICANVAS_QWEN21_MODULE = {
       qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
       qwen_lora_strength: 1,
       qwen21_opaque_output: false,
+      // AusBoss outpaint LoRA v2: applied in outpaint mode only (gray-padded canvas + fixed instruction).
+      qwen21_outpaint_lora_name: "ausboss/qwen-image-2.1-outpaint-v2.safetensors",
+      qwen21_outpaint_lora_strength: 1,
     },
   },
 };
