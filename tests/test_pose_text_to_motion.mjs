@@ -203,8 +203,7 @@ test("a model without some joints keeps the start pose there", () => {
     for (const key of ["LeftToeBase", "RightToeBase", "Spine", "Spine1", "LeftShoulder", "RightShoulder"]) delete motion.joints[key];
     assert.ok(retargetMotionFrame(viewer, motion, 1, start));
 
-    // Absolute mode needs the full body; missing joints fall back to the relative path.
-    delete motion.joints.LeftHand;
+    // Without the start-pose constraint the motion is still applied on top of the pose.
     motion.use_start_pose = false;
     assert.ok(retargetMotionFrame(viewer, motion, 1, start));
 });

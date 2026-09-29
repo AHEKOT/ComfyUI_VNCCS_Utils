@@ -691,6 +691,45 @@ class HYMotionRunnerTests(RunnerTestCase):
         self.assertEqual(resolved["n"], 3)
 
 
+class WeightDownloadTests(RunnerTestCase):
+    def test_files_are_fetched_one_by_one_without_credentials(self):
+        calls = []
+
+        def fake_download(**kwargs):
+            calls.append(kwargs)
+            target = Path(kwargs["local_dir"]) / kwargs["filename"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if kwargs["filename"] == "model.safetensors.index.json":
+                target.write_text(json.dumps({"weight_map": {"a": "part-1.safetensors", "b": "part-2.safetensors"}}))
+            elif kwargs["filename"] == "preprocessor_config.json":
+                raise type("EntryNotFoundError", (Exception,), {})("missing")
+            else:
+                target.write_bytes(b"x")
+
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = fake_download
+        self.install({"huggingface_hub": hub})
+        spec = BASE.MotionModelSpec.from_dict({"id": "x", "backend": "hymotion", "weights": [
+            {"role": "text_encoder_llm", "repo_id": "org/repo", "local_dir": "enc",
+             "files": ["config.json"], "optional_files": ["preprocessor_config.json"],
+             "index_file": "model.safetensors.index.json"}]})
+        with tempfile.TemporaryDirectory() as folder:
+            backend = HYMOTION.HYMotionBackend(spec, Path(folder))
+            roles = backend.ensure_weights(lambda *_: None)
+            names = sorted(call["filename"] for call in calls)
+            self.assertEqual(roles, {"text_encoder_llm": Path(folder) / "enc"})
+            self.assertEqual(names, ["config.json", "model.safetensors.index.json", "part-1.safetensors",
+                                     "part-2.safetensors", "preprocessor_config.json"])
+            self.assertTrue(all(call["token"] is False for call in calls))
+            calls.clear()
+            backend.ensure_weights(lambda *_: None)
+            self.assertEqual([call["filename"] for call in calls], ["preprocessor_config.json"])
+
+    def test_managed_weights_must_list_their_files(self):
+        with self.assertRaisesRegex(ValueError, "list the files"):
+            BASE.WeightSource.from_dict({"role": "model", "repo_id": "org/repo", "local_dir": "m"})
+
+
 class SafePathTests(unittest.TestCase):
     def test_paths_stay_inside_the_models_folder(self):
         self.assertEqual(BASE.safe_relative_path("code/HY-Motion-1.0/", "x"), "code/HY-Motion-1.0")

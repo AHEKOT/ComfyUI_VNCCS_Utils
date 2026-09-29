@@ -6,8 +6,6 @@
 // timeline only swaps precomputed poses. OK keeps the selected frame as the pose;
 // Cancel restores the pose the panel was opened with.
 
-import { buildWorldKeypointsFromSourcePoints } from "./vnccs_mixamo_import.js";
-
 export const MOTION_API = "/vnccs/pose_studio/motion";
 
 // Fallback limits for a model whose description leaves them out.
@@ -272,34 +270,17 @@ export function buildMotionWorldKeypoints(THREE, motion, frame, start, { keepInP
 
 /**
  * Pose the mannequin like motion frame ``frame`` and return ``viewer.getPose()``.
- * Landmarks go through the shared world-keypoint importer (the Mixamo FBX and
- * SAM path); head, hands and feet turn by the motion's world rotation change since
- * frame 0.
+ * Landmarks go through the viewer's world-keypoint import; head, hands and feet
+ * turn by the motion's world rotation change since frame 0.
  */
 export function retargetMotionFrame(viewer, motion, frame, start, { keepInPlace = true } = {}) {
     const THREE = viewer.THREE;
     viewer.setPose(start.pose, true);
     viewer.skinnedMesh?.updateMatrixWorld?.(true);
 
-    let worldKps = null;
-    if (motion?.use_start_pose === false) {
-        // Without the start-pose constraint frame 0 is not the current pose, so
-        // take absolute directions onto the mannequin's segment lengths instead.
-        worldKps = buildWorldKeypointsFromSourcePoints((name) => motionPoint(motion, name, frame), viewer)?.worldKps || null;
-        const rootNow = motionPoint(motion, "Hips", frame);
-        const rootStart = motionPoint(motion, "Hips", 0);
-        if (worldKps && rootNow && rootStart) {
-            const shift = new THREE.Vector3(
-                keepInPlace ? 0 : rootNow[0] - rootStart[0],
-                rootNow[1] - rootStart[1],
-                keepInPlace ? 0 : rootNow[2] - rootStart[2],
-            );
-            for (const point of Object.values(worldKps)) point?.add?.(shift);
-        }
-    }
-    // Relative mode, and the fallback when a model lacks joints the absolute
-    // path needs: joints a model does not have keep the start pose.
-    if (!worldKps) worldKps = buildMotionWorldKeypoints(THREE, motion, frame, start, { keepInPlace });
+    // Every model is applied as its change since frame 0 on top of the start pose:
+    // frame 0 is always the pose being edited, and joints a model does not have keep it.
+    const worldKps = buildMotionWorldKeypoints(THREE, motion, frame, start, { keepInPlace });
     if (!worldKps) return null;
 
     const history = Array.isArray(viewer.history) ? viewer.history.slice() : null;
@@ -387,7 +368,7 @@ const PANEL_STYLES = `
 .vnccs-ps-t2m-timeline input[type="range"] { flex: 1; accent-color: var(--ps-accent, #ff8fa3); }
 .vnccs-ps-t2m-frame { min-width: 96px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.8; }
 .vnccs-ps-t2m-status { min-height: 14px; opacity: 0.8; }
-.vnccs-ps-t2m-status.is-error { color: #ff8080; opacity: 1; }
+.vnccs-ps-t2m-status.is-error { color: var(--ps-error, #ff4757); opacity: 1; }
 .vnccs-ps-t2m-progress { height: 3px; border-radius: 2px; background: rgba(255, 255, 255, 0.08); overflow: hidden; }
 .vnccs-ps-t2m-progress > div { height: 100%; width: 0; background: var(--ps-accent, #ff8fa3); transition: width 0.2s ease; }
 .vnccs-ps-t2m-title select { max-width: 60%; }
@@ -395,9 +376,9 @@ const PANEL_STYLES = `
     display: none;
     padding: 6px 8px;
     border-radius: 8px;
-    border: 1px solid rgba(255, 190, 90, 0.55);
-    background: rgba(255, 170, 60, 0.14);
-    color: #ffd79a;
+    border: 1px solid var(--ps-warning, #ffaa00);
+    background: rgba(255, 170, 0, 0.14);
+    color: var(--ps-warning, #ffaa00);
     line-height: 1.35;
 }
 .vnccs-ps-t2m-license.is-visible { display: block; }
@@ -691,7 +672,7 @@ export class TextToMotionPanel {
         guidanceLabel.style.display = limits.guidance ? "" : "none";
         if (limits.guidance) setRange(guidance, limits.guidance, "guidance");
         useStartPose.title = limits.startPoseConstraint
-            ? "The motion starts exactly from the pose you are editing."
+            ? "The motion starts exactly from the pose you are editing. Unchecked, the model generates freely and its movement is applied on top of your pose."
             : "This model cannot start from a given pose: its movement is applied on top of the pose you are editing.";
 
         const warning = motionLicenseWarning(model);
@@ -699,7 +680,7 @@ export class TextToMotionPanel {
         license.classList.toggle("is-visible", !!warning);
         if (warning) {
             license.append(this.element("span", "", `⚠ ${warning}`));
-            if (model.license?.url) {
+            if (/^https:\/\//i.test(model.license?.url || "")) {
                 const link = this.element("a", "", "Read the license");
                 link.href = model.license.url;
                 link.target = "_blank";

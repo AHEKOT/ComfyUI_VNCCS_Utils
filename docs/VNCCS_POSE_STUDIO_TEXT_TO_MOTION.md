@@ -30,7 +30,7 @@ Options:
 
 - **Start from current pose**: Kimodo constrains its first frame to your pose. HY-Motion cannot
   do that, so Pose Studio applies the motion's movement since its first frame on top of your
-  pose. Unchecked, the frames are taken as absolute body directions.
+  pose. Unchecked, Kimodo generates freely and its movement is applied on top of your pose too.
 - **Keep in place**: drops horizontal root travel so the character stays where it stands
   (vertical motion such as a jump or a crouch is kept).
 
@@ -61,8 +61,9 @@ ComfyUI's models folder and install its dependencies:
     pip install torchdiffeq transformers accelerate einops pyyaml omegaconf
 
 On the first generation Pose Studio downloads the checkpoint (`tencent/HY-Motion-1.0`, only the
-selected subfolder) and the text encoders (`Qwen/Qwen3-8B`, `openai/clip-vit-large-patch14`)
-into `<ComfyUI>/models/text_to_motion/`.
+selected subfolder's files) and the text encoders (`Qwen/Qwen3-8B`, `openai/clip-vit-large-patch14`)
+into `<ComfyUI>/models/text_to_motion/`, file by file with `hf_hub_download(token=False)`
+(public repositories only; Pose Studio never reads credentials). Revisions are `main` until pinned.
 
 **License territory.** The Tencent HY-Motion 1.0 Community License Agreement states: *"THIS
 LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA AND IS
@@ -90,9 +91,11 @@ needs only a new file; a new family also needs a backend class.
       "source": "huggingface",
       "repo_id": "org/repo",
       "revision": "main",
-      "allow_patterns": ["subfolder/*"],
+      "files": ["subfolder/config.yml"],  // exact files, fetched with hf_hub_download(token=False)
+      "optional_files": [],              // skipped when the repository lacks them
+      "index_file": "",                  // safetensors index: every shard it lists is fetched too
       "local_dir": "folder under models/text_to_motion",
-      "managed": true,                   // false: the model's own code downloads it
+      "managed": true,                   // false: the model's own code downloads it (no files needed)
       "gated": false
     }
   ],

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -35,14 +36,32 @@ def safe_relative_path(value, what: str) -> str:
     return "/".join(parts)
 
 
+_MAX_INDEX_BYTES = 8 * 1024 * 1024
+_MAX_SHARDS = 256
+
+
+def _file_list(data, key: str) -> tuple:
+    values = data.get(key) or []
+    if not isinstance(values, list):
+        raise ValueError(f"{key} must be a list of file names")
+    return tuple(safe_relative_path(value, key) for value in values)
+
+
 @dataclass(frozen=True)
 class WeightSource:
-    """One Hugging Face snapshot the model needs, stored under ``models/text_to_motion/<local_dir>``."""
+    """Files of one public Hugging Face repository, stored under ``models/text_to_motion/<local_dir>``.
+
+    Files are fetched one by one with ``hf_hub_download(..., token=False)``: ``files``
+    are required, ``optional_files`` are skipped when the repository lacks them, and
+    ``index_file`` (a safetensors index) adds every shard it lists.
+    """
 
     repo_id: str
     local_dir: str
     revision: str = "main"
-    allow_patterns: tuple = ()
+    files: tuple = ()
+    optional_files: tuple = ()
+    index_file: str = ""
     url: str = ""
     role: str = "model"
     # False: the model's own code downloads it (for example into the Hugging Face cache).
@@ -58,17 +77,21 @@ class WeightSource:
         repo_id = str(data.get("repo_id") or "")
         if not _REPO_ID_RE.match(repo_id):
             raise ValueError(f"invalid Hugging Face repo id: {repo_id!r}")
-        patterns = data.get("allow_patterns") or []
-        if not isinstance(patterns, list) or not all(isinstance(p, str) for p in patterns):
-            raise ValueError("allow_patterns must be a list of strings")
+        managed = bool(data.get("managed", True))
+        files = _file_list(data, "files")
+        index_file = safe_relative_path(data["index_file"], "index_file") if data.get("index_file") else ""
+        if managed and not (files or index_file):
+            raise ValueError(f"{repo_id}: list the files to download, or set managed to false")
         return cls(
             repo_id=repo_id,
             local_dir=safe_relative_path(data.get("local_dir") or repo_id, "local_dir"),
             revision=str(data.get("revision") or "main"),
-            allow_patterns=tuple(patterns),
+            files=files,
+            optional_files=_file_list(data, "optional_files"),
+            index_file=index_file,
             url=str(data.get("url") or f"https://huggingface.co/{repo_id}"),
             role=str(data.get("role") or "model"),
-            managed=bool(data.get("managed", True)),
+            managed=managed,
             gated=bool(data.get("gated", False)),
         )
 
@@ -134,6 +157,10 @@ class MotionModelSpec:
         for key in ("code", "options", "requirements"):
             if not isinstance(data.get(key) or {}, dict):
                 raise ValueError(f"{model_id}: {key} must be an object")
+        parsed_weights = tuple(WeightSource.from_dict(entry) for entry in weights)
+        roles = [source.role for source in parsed_weights if source.managed]
+        if len(roles) != len(set(roles)):
+            raise ValueError(f"{model_id}: managed weights need distinct roles")
         return cls(
             id=model_id,
             name=str(data.get("name") or model_id),
@@ -141,7 +168,7 @@ class MotionModelSpec:
             description=str(data.get("description") or ""),
             homepage=str(data.get("homepage") or ""),
             code=dict(data.get("code") or {}),
-            weights=tuple(WeightSource.from_dict(entry) for entry in weights),
+            weights=parsed_weights,
             options=dict(data.get("options") or {}),
             capabilities=capabilities,
             requirements=dict(data.get("requirements") or {}),
@@ -219,31 +246,65 @@ class MotionBackend(ABC):
         return self.models_dir / source.local_dir
 
     def ensure_weights(self, report: ProgressReport, sources=None) -> dict:
-        """Download missing snapshots; returns ``{repo_id: local folder}``."""
+        """Download missing files of the managed weights; returns ``{role: local folder}``."""
         folders = {}
         for source in self.spec.weights if sources is None else sources:
             if not source.managed:
                 continue
             target = self.weights_dir(source)
-            marker = target / ".vnccs_complete"
-            if not marker.exists():
-                report(f"Downloading {source.repo_id} (first run only)...", 4)
-                try:
-                    from huggingface_hub import snapshot_download
-                except ImportError as exc:
-                    raise BackendUnavailable("huggingface_hub is not installed.", "pip install huggingface_hub") from exc
-                target.mkdir(parents=True, exist_ok=True)
-                # Managed weights are public repositories; gated ones are left to the model's own code.
-                snapshot_download(
-                    repo_id=source.repo_id,
-                    revision=source.revision,
-                    allow_patterns=list(source.allow_patterns) or None,
-                    local_dir=str(target),
-                    token=False,
-                )
-                marker.write_text(source.revision, encoding="utf-8")
-            folders[source.repo_id] = target
+            self._download_source(source, target, report)
+            folders[source.role] = target
         return folders
+
+    def _download_source(self, source: WeightSource, target: Path, report: ProgressReport) -> None:
+        pending = [(name, False) for name in source.files] + [(name, True) for name in source.optional_files]
+        if source.index_file:
+            pending.insert(0, (source.index_file, False))
+        expanded = False
+        while pending:
+            name, optional = pending.pop(0)
+            path = target / name
+            if not (path.is_file() and path.stat().st_size > 0):
+                report(f"Downloading {source.repo_id}/{name} (first run only)...", 4)
+                if not self._download_file(source, name, target, optional):
+                    continue
+            if name == source.index_file and not expanded:
+                expanded = True
+                pending.extend((shard, False) for shard in self._index_shards(path))
+
+    @staticmethod
+    def _download_file(source: WeightSource, name: str, target: Path, optional: bool) -> bool:
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:
+            raise BackendUnavailable("huggingface_hub is not installed.", "pip install huggingface_hub") from exc
+        target.mkdir(parents=True, exist_ok=True)
+        try:
+            # Public repositories only: token=False keeps the library from finding credentials.
+            hf_hub_download(
+                repo_id=source.repo_id,
+                filename=name,
+                revision=source.revision,
+                local_dir=str(target),
+                token=False,
+            )
+        except Exception as exc:
+            if optional and type(exc).__name__ in {"EntryNotFoundError", "RemoteEntryNotFoundError"}:
+                return False
+            raise
+        return True
+
+    @staticmethod
+    def _index_shards(index_path: Path) -> list:
+        if index_path.stat().st_size > _MAX_INDEX_BYTES:
+            raise ValueError(f"{index_path.name} is too large")
+        weight_map = json.loads(index_path.read_text(encoding="utf-8")).get("weight_map")
+        if not isinstance(weight_map, dict):
+            raise ValueError(f"{index_path.name} has no weight_map")
+        shards = sorted({safe_relative_path(value, "shard") for value in weight_map.values()})
+        if not shards or len(shards) > _MAX_SHARDS:
+            raise ValueError(f"{index_path.name} lists an unexpected number of shards")
+        return shards
 
     @abstractmethod
     def load(self, report: ProgressReport) -> None:

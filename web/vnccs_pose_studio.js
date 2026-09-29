@@ -4319,6 +4319,8 @@ class PoseStudioWidget {
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
+        // The text-to-motion panel polls the backend and owns a playback loop.
+        this.textToMotionPanel?.cancel?.();
         void this.flushAnimationCacheUpload?.();
         this.animationTimeline?.destroy?.();
         this._customSelectController?.disconnect();

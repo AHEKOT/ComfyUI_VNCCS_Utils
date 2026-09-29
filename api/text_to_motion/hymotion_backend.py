@@ -61,9 +61,6 @@ class HYMotionBackend(MotionBackend):
 
     # --- loading -----------------------------------------------------------------
 
-    def _weights_by_role(self, folders) -> dict:
-        return {source.role: folders[source.repo_id] for source in self.spec.weights if source.repo_id in folders}
-
     @staticmethod
     def _absolute_paths(args: dict, root: Path) -> dict:
         """Config paths such as the motion statistics folder are relative to the checkout."""
@@ -94,7 +91,7 @@ class HYMotionBackend(MotionBackend):
         except ImportError as exc:
             raise BackendUnavailable(f"{self.spec.name} could not be imported: {exc}", self.install_hint()) from exc
 
-        roles = self._weights_by_role(self.ensure_weights(report))
+        roles = self.ensure_weights(report)
         if "model" not in roles:
             raise ValueError(f"{self.spec.id}: no weights with role 'model'")
         checkpoint = roles["model"] / safe_relative_path(self.spec.options.get("checkpoint_subdir") or ".", "options.checkpoint_subdir")

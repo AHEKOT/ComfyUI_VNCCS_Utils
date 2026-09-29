@@ -17,8 +17,9 @@
       "repo_id": "tencent/HY-Motion-1.0",
       "revision": "main",
       "local_dir": "HY-Motion-1.0",
-      "allow_patterns": [
-        "HY-Motion-1.0-Lite/*"
+      "files": [
+        "HY-Motion-1.0-Lite/config.yml",
+        "HY-Motion-1.0-Lite/latest.ckpt"
       ]
     },
     {
@@ -27,11 +28,15 @@
       "repo_id": "Qwen/Qwen3-8B",
       "revision": "main",
       "local_dir": "text_encoders/Qwen3-8B",
-      "allow_patterns": [
-        "*.json",
-        "*.safetensors",
-        "*.txt"
-      ]
+      "files": [
+        "config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt"
+      ],
+      "index_file": "model.safetensors.index.json"
     },
     {
       "role": "text_encoder_clip",
@@ -39,10 +44,17 @@
       "repo_id": "openai/clip-vit-large-patch14",
       "revision": "main",
       "local_dir": "text_encoders/clip-vit-large-patch14",
-      "allow_patterns": [
-        "*.json",
-        "*.safetensors",
-        "*.txt"
+      "files": [
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "model.safetensors"
+      ],
+      "optional_files": [
+        "preprocessor_config.json"
       ]
     }
   ],

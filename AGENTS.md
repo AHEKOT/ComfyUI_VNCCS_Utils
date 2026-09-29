@@ -55,7 +55,7 @@ Evidence for UI changes is an **After** capture only - no Before captures or Bef
 pairs. Run `node evidence.mjs --topic <topic> --phase after` (workdir `tests/e2e`); it writes
 `tests/e2e/evidence/<topic>/after.png` plus `after.geometry.json`. Host the capture on an
 `evidence/<topic>` branch when opening a PR; built-in scenarios are `settings-panel`,
-`pose-editor`, `config-override`, `icons`, and `text-to-motion`.
+`pose-editor`, `config-override`, and `icons`.
 
 After a code change or a container restart the browser keeps the OLD extension bundle: always
 hard-reload (Ctrl+Shift+R) before judging a fix on the live instance.

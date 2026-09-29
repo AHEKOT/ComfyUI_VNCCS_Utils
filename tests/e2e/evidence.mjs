@@ -38,8 +38,7 @@ if (phase === "compose") {
 const browser = await chromium.launch(launchOptions);
 const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
 // The setting is forced here so older builds without the default still show the tab.
-// Pose Studio scenarios turn it off: the standalone UniCanvas tab would cover the graph.
-await page.request.post(`${baseURL}/api/settings/VNCCS.UniCanvas.StandaloneSidebar`, { data: topic !== "text-to-motion" }).catch(() => {});
+await page.request.post(`${baseURL}/api/settings/VNCCS.UniCanvas.StandaloneSidebar`, { data: true }).catch(() => {});
 await page.goto(baseURL, { waitUntil: "domcontentloaded" });
 await page.waitForFunction(() => window.app?.graph && window.LiteGraph, null, { timeout: 60_000 });
 await page.waitForTimeout(2_000);
@@ -63,26 +62,6 @@ if (topic === "config-override") {
     app.graph.setDirtyCanvas(true, true);
   });
   await page.waitForTimeout(4_000);
-} else if (topic === "text-to-motion") {
-  // A Pose Studio node with the Text to Motion panel open on a model whose license
-  // excludes some territories, so the warning banner is visible.
-  await page.evaluate(() => {
-    const { app, LiteGraph } = window;
-    app.graph.clear();
-    const node = LiteGraph.createNode("VNCCS_PoseStudio");
-    node.pos = [20, 20];
-    node.size = [1400, 900];
-    app.graph.add(node);
-    app.canvas.ds.offset = [0, 0];
-    app.canvas.ds.scale = 1;
-    app.graph.setDirtyCanvas(true, true);
-  });
-  await page.waitForTimeout(20_000);
-  await page.locator(".vnccs-pose-studio button", { hasText: "Motion" }).first().click();
-  await page.waitForSelector(".vnccs-ps-t2m-title select option[value='hy-motion-1.0-lite']", { state: "attached" });
-  await page.locator(".vnccs-ps-t2m-title select").selectOption("hy-motion-1.0-lite");
-  await page.locator(".vnccs-ps-t2m textarea").fill("A person jumps and lands on both feet.");
-  await page.waitForTimeout(1_000);
 } else {
   await page
     .locator('[data-testid="vnccs-unicanvas-standalone-tab-button"], .vnccs-unicanvas-sidebar-icon, [data-label="Unicanvas"], button[title="Unicanvas"]')
@@ -112,7 +91,6 @@ const shots = {
   // phases, which keeps the before/after crops aligned.
   "settings-panel": ".vnccs-unicanvas",
   "pose-editor": ".vnccs-unicanvas",
-  "text-to-motion": ".vnccs-pose-studio",
   "config-override": "body",
   "icons": "body",
 };
@@ -140,7 +118,6 @@ const geometry = await target.evaluate((el, measureSelector) => {
   "settings-panel": ".vnccs-uc-settings-popover",
   "config-override": ".vnccs-config-ui",
   icons: ".vnccs-uc-tools",
-  "text-to-motion": ".vnccs-ps-t2m",
 }[topic] || null);
 await writeFile(resolve(outDir, `${phase}.geometry.json`), JSON.stringify(geometry, null, 2));
 await browser.close();
