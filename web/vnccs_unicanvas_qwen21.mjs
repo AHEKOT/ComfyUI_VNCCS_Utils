@@ -56,7 +56,7 @@ function ensureQwen21PanelStyles(doc = document) {
   const style = doc.createElement("style");
   style.id = QWEN21_PANEL_STYLE_ID;
   style.textContent = `
-.vnccs-uc-qwen21-panel { display:flex !important; flex-direction:row; align-items:center; gap:6px; flex:0 0 auto; min-width:0; }
+.vnccs-uc-qwen21-panel { flex-direction:row; align-items:center; gap:6px; flex:0 0 auto; min-width:0; }
 .vnccs-uc-qwen21-panel input[type="checkbox"] { margin-left:auto; accent-color:var(--uc-accent, #ff8fa3); }
 .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border, rgba(255,255,255,.14)); color:var(--uc-muted, #9898a8); font-size:10px; cursor:help; }
 `;
@@ -126,7 +126,7 @@ export function syncQwen21Panel(widget) {
   if (!panel) return null;
   // The switch is exposed only for the Qwen-Image-2.1 family.
   const active = isQwen21Mode(widget && widget.settings ? widget.settings.generation_mode : "");
-  panel.style.display = active ? "" : "none";
+  panel.style.display = active ? "flex" : "none";
   if (active) refreshPanel(widget, panel);
   return panel;
 }

@@ -21,7 +21,7 @@ test("QI2.1 panel is gated to the Qwen-Image-2.1 family", () => {
     const sync = panelSource.match(/export function syncQwen21Panel\(widget\)([\s\S]*?)\n\}/);
     assert.ok(sync, "syncQwen21Panel missing");
     assert.match(sync[1], /isQwen21Mode\(/, "gating must consult the QI2.1 family check");
-    assert.match(sync[1], /\.display = active \? "" : "none"/, "panel must hide outside the QI2.1 family");
+    assert.match(sync[1], /\.display = active \? "flex" : "none"/, "panel must hide outside the QI2.1 family");
     assert.match(mainSource, /syncQwen21Panel\(this\)/, "main widget must sync the QI2.1 panel");
     const renderHook = mainSource.match(/renderModelSelectionControls\(\) \{([\s\S]*?)\n  \}/);
     assert.match(renderHook[1], /syncQwen21Panel\(this\)/, "panel must gate in renderModelSelectionControls");
