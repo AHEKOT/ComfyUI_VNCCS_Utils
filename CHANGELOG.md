@@ -10,6 +10,13 @@
 * **Prompt help and clearer settings**: A `?` button next to the prompt explains how to write prompts for the selected model and task. Other settings have short `?` tips, and Inference scale is a slider with a live size preview.
 * **Canvases survive a restart**: Canvas state is kept in the user folder, so it is still there after restarting ComfyUI.
 * **VNCSS Config**: The config node can override model settings, and the sidebar hides the controls it takes over.
+* **Prompt enhance**: A magic wand in the Prompt and Negative boxes rewrites the prompt with a Qwen3-VL text encoder and a system prompt written for the selected model family. The system prompts are editable per family (UniCanvas settings or ComfyUI settings > VNCCS > UniCanvas > Prompt enhance). **Always enhance when I press Generate** rewrites both prompts in the background with the model family's own CLIP, so it needs no extra VRAM and the wand is hidden while it is on. The wand's tooltip simply reads "Enhance Prompt".
+* **One settings section at a time**: Opening a section in UniCanvas settings closes the one that was open.
+* **Panorama import**: Importing a panorama over existing layers now warns that they are scaled into the 1024 × 1024 editing window. The new **Keep layers at their native resolution** option (UniCanvas settings > Panorama) grows the window to the largest layer (up to 4096 px) instead of scaling anything down.
+* **Sharper panorama layers**: Layers no longer get dark fringes and soft edges when they pass through the spherical view.
+* **Panorama output**: Preview Image and other outputs receive one flattened image, every visible layer cropped to the generation box, instead of the huge spherical layers.
+* **Fixed "UniCanvas state cache is missing"**: The node now reads the canvas cache from the same folder the editor saves it to, so queueing no longer fails after a state sync.
+* **Opacity slider** in the Layers panel no longer runs over the panel border.
 
 ### UniCanvas Models
 
