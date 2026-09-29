@@ -139,8 +139,7 @@ UniCanvas generates with **Qwen-Image-2.1** through the `QwenImage21` family tab
 *   **Native 2K workflow**: built-in aspect presets and all standard draw modes are available for text-to-image, image-to-image, inpaint, and outpaint.
 *   **Transparent output by default**: generated layers keep real alpha; the **`opaque output`** switch is available when transparency is not wanted.
 *   **Reference editing**: with `VNCSS Config` and the `Edit model` switch, reference images are addressed predictably from the prompt and combined with the working area.
-*   **Viggle turbo**: an optional four-step mode for faster generation.
-*   **Spectrum acceleration**: optional quality/speed presets for supported runs, with safe fallback to ordinary sampling.
+*   **Viggle turbo**: an optional six-step mode for faster generation.
 *   **Edit-model background removal**: use the same family as a subject extractor and apply the result directly to the active layer.
 
 ## VNCCS Pose Studio

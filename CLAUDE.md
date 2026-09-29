@@ -33,7 +33,7 @@ is described in `AGENTS.md`.
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` - node classes. `nodes/unicanvas/` is a package (below); `pose_studio.py`,
   `factory3d*.py`, `vncss_config.py`, `vnccs_model_manager.py`, `vnccs_qwen_detailer.py`,
-  vendored `spectrum_qwen21/` and `anima_lllite_internal.py`.
+  and `anima_lllite_internal.py`.
 - `api/` - 3D Factory and Pose Studio backend services.
 - `web/` - frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large - add
   feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget).

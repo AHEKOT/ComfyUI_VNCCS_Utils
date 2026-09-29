@@ -6,8 +6,7 @@
   kernel; ``attention_backend()`` only reports which one for the debug log.
 - Step cache (``step_cache``, on by default): ComfyUI's native EasyCache node - skips diffusion
   steps whose output barely changes. Families opt out through
-  ``UniCanvasModelModule.supports_step_cache`` (e.g. Qwen-Image-2.1 with Spectrum, which already
-  forecasts steps).
+  ``UniCanvasModelModule.supports_step_cache``.
 - VAE chunking (``vae_chunking``, off by default): VAE encode/decode in tiles, so low RAM/VRAM
   machines can generate. Implemented as a proxy around the loaded VAE: every ``encode``/``decode``
   call of every family becomes ``encode_tiled``/``decode_tiled``; the cached VAE is untouched.

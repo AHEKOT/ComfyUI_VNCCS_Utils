@@ -2,8 +2,8 @@ import { test, expect } from "@playwright/test";
 import { openUnicanvas } from "./helpers/app.mjs";
 
 // Qwen-Image-2.1 settings live in a closed-by-default accordion: the header line shows
-// "QI2.1 (?)" and the turbo switch, the rows (opaque output, 2K aspect preset, LoRA
-// assets, Spectrum) stay folded. Turbo on = 6 steps, off = the 45-step base schedule,
+// "QI2.1 (?)", the rows (opaque output, 2K aspect preset) stay folded. The Turbo LoRA is
+// the shared "Turbo LoRA" card: on = 6 steps, off = the 25-step base preset profile,
 // both visible in the sidebar's Steps field. Help "?" tooltips render in a body-level
 // layer, so no sidebar scroll container can clip them.
 
@@ -24,7 +24,7 @@ async function selectFamily(page, mode) {
   await chooseSetting(page, "generation_mode", mode);
 }
 
-test("QI2.1 panel folds into a header with the turbo switch; 6/45 steps; tooltips are not clipped", async ({ page }) => {
+test("QI2.1 panel folds into a header; shared Turbo LoRA card 6/25 steps; tooltips are not clipped", async ({ page }) => {
   await openUnicanvas(page);
   const shell = page.locator(".vnccs-uc2-standalone-shell");
   await selectFamily(page, "qwen_image21");
@@ -41,19 +41,19 @@ test("QI2.1 panel folds into a header with the turbo switch; 6/45 steps; tooltip
   await expect(dice).toHaveAttribute("aria-pressed", "true");
   await expect(dice).toHaveClass(/active/);
 
-  // The turbo switch sits on the header line and is on out of the box.
-  const turbo = panel.locator("[data-qwen21-turbo-toggle]");
+  // The Turbo LoRA is the same card every other family uses; it is on out of the box.
+  const turbo = shell.locator('[data-turbo-panel] [data-turbo-toggle="qwen_image21"]');
   await expect(turbo).toBeVisible();
-  await expect(turbo).toBeChecked();
+  await expect(turbo).toHaveClass(/selected/);
   const steps = shell.locator('[data-edit-steps-panel] input[data-setting="steps"]').first();
   await expect(steps).toHaveValue("6");
 
-  // Turbo off -> the base 45-step schedule, immediately visible in the sidebar.
+  // Turbo off -> the base 25-step schedule, immediately visible in the sidebar.
   await turbo.click();
-  await expect(turbo).not.toBeChecked();
-  await expect(steps).toHaveValue("45");
+  await expect(turbo).not.toHaveClass(/selected/);
+  await expect(steps).toHaveValue("25");
   await turbo.click();
-  await expect(turbo).toBeChecked();
+  await expect(turbo).toHaveClass(/selected/);
   await expect(steps).toHaveValue("6");
 
   // The arrow unfolds the details.

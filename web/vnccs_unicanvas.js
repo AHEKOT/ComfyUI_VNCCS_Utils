@@ -60,7 +60,7 @@ import {
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
 } from "./vnccs_unicanvas_modes.mjs?v=1790494137676";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
 import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790494137676";
 
 // ---------------------------------------------------------------------------
@@ -2925,8 +2925,8 @@ class UniCanvasWidget {
       const ownsSteps = moduleKey === "minimax_h3" || Boolean(editStepsHints[moduleKey]);
       genericSteps.style.display = ownsSteps ? "none" : "";
     }
-    // Qwen-Image-2.1 family: mount and gate the Spectrum acceleration panel.
-    syncQwen21SpectrumPanel(this);
+    // Qwen-Image-2.1 family: mount and gate the QI2.1 settings panel.
+    syncQwen21Panel(this);
     this.updateEditRefsBadge();
   }
 
@@ -3052,7 +3052,9 @@ class UniCanvasWidget {
   restorePresetTurboParameterProfile(preset) {
     if (!preset?.turbo?.asset) return;
     const previousKey = this.getPresetTurboPreviousKey(preset);
-    const previous = this.settings[previousKey];
+    // Without a snapshot (turbo was on out of the box) fall back to the preset's base profile.
+    const saved = this.settings[previousKey];
+    const previous = saved && typeof saved === "object" ? saved : preset.settings;
     if (previous && typeof previous === "object") {
       if (Number.isFinite(Number(previous.steps))) this.settings.steps = Number(previous.steps);
       if (Number.isFinite(Number(previous.cfg))) this.settings.cfg = Number(previous.cfg);
@@ -3167,7 +3169,7 @@ class UniCanvasWidget {
       this.applyInferenceModuleDefaults(key, { preserveModelSelection: true });
       this.syncInferenceControls();
       this.syncPromptControls();
-      syncQwen21SpectrumPanel(this);
+      syncQwen21Panel(this);
       this.syncSettingsToWidget();
     } finally {
       this._syncingConfigFamily = false;
@@ -3250,8 +3252,8 @@ class UniCanvasWidget {
     this.recallModelChoice();
     this.syncInferenceControls();
     this.syncPromptControls();
-    // Re-gate the Qwen-Image-2.1 Spectrum panel for the new family.
-    syncQwen21SpectrumPanel(this);
+    // Re-gate the Qwen-Image-2.1 settings panel for the new family.
+    syncQwen21Panel(this);
   }
 
   applyModelLoaderDefaults(loaderType) {
@@ -8312,10 +8314,9 @@ class UniCanvasWidget {
   }
 
   // Global debug mode: the backend logs every request (POST /vnccs/unicanvas/debug) and the
-  // browser mirrors status lines to the console; Spectrum's own debug follows it.
+  // browser mirrors status lines to the console.
   applyDebugMode() {
     const enabled = Boolean(this.settings.debug_mode);
-    if (this.settings.spectrum && typeof this.settings.spectrum === "object") this.settings.spectrum.debug = enabled;
     void fetch("/vnccs/unicanvas/debug", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -8423,7 +8424,7 @@ class UniCanvasWidget {
       s.debug_mode = checked;
       this.applyDebugMode();
       commit();
-    }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors and Spectrum forecasts.");
+    }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors.");
 
     // Build identity for bug reports: git commit + web file version.
     const buildInfo = document.createElement("div");

@@ -2,14 +2,10 @@ import pytest
 import torch
 
 from nodes.unicanvas.models.qwen_image21 import (
-    QWEN21_SPECTRUM_PRESETS,
     QWEN_IMAGE21_ASPECT_PRESETS,
     QWEN_IMAGE21_DEFAULTS,
     QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT,
     QwenImage21UniCanvasModule,
-    _apply_qwen21_spectrum,
-    _qwen21_spectrum_config,
-    _qwen21_spectrum_settings,
 )
 from nodes.unicanvas.models.registry import _get_unicanvas_model_module
 
@@ -331,85 +327,7 @@ def test_remove_background_extraction_prompt():
     assert QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT == "Remove the background, and output a PNG image"
 
 
-def test_spectrum_settings_merge():
-    settings = _qwen21_spectrum_settings({"spectrum": {"warmup_steps": 9, "bogus_key": 1}})
-    assert settings["warmup_steps"] == 9
-    assert settings["enabled"] is False
-    assert "bogus_key" not in settings
-    assert settings["tail_actual_steps"] == 2
-
-
-def test_spectrum_presets():
-    assert set(QWEN21_SPECTRUM_PRESETS) == {"moderate", "aggressive", "quality"}
-    assert QWEN21_SPECTRUM_PRESETS["moderate"] == {
-        "warmup_steps": 5,
-        "tail_actual_steps": 2,
-        "window_size": 2.0,
-        "flex_window": 0.75,
-        "max_consecutive_forecasts": 8,
-        "history_points": 8,
-        "chebyshev_degree": 4,
-        "ridge_lambda": 0.1,
-        "blend_weight": 0.5,
-        "cache_device": "main_device",
-        "force_actual_on_control": True,
-        "debug": False,
-    }
-    assert QWEN21_SPECTRUM_PRESETS["aggressive"]["flex_window"] == 3.0
-    assert QWEN21_SPECTRUM_PRESETS["aggressive"]["tail_actual_steps"] == 1
-    assert QWEN21_SPECTRUM_PRESETS["quality"]["flex_window"] == 0.4
-    assert QWEN21_SPECTRUM_PRESETS["quality"]["tail_actual_steps"] == 4
-    assert QWEN21_SPECTRUM_PRESETS["quality"]["blend_weight"] == 1.0
-    assert QWEN_IMAGE21_DEFAULTS["spectrum"]["enabled"] is False
-
-
-def test_spectrum_config_maps_all_parameters():
-    config = _qwen21_spectrum_config({"spectrum": {**QWEN21_SPECTRUM_PRESETS["aggressive"], "enabled": True}})
-    assert config.warmup_steps == 5
-    assert config.tail_actual_steps == 1
-    assert config.window_size == 2.0
-    assert config.flex_window == 3.0
-    assert config.max_consecutive_forecasts == 8
-    assert config.history_points == 8
-    assert config.chebyshev_degree == 4
-    assert config.ridge_lambda == 0.1
-    assert config.blend_weight == 0.5
-    assert config.cache_device == "main_device"
-    assert config.force_actual_on_control is True
-    assert config.debug is False
-
-
-def test_apply_qwen21_spectrum_disabled_returns_model():
-    assert _apply_qwen21_spectrum("model", {"spectrum": {"enabled": False}}, "t") == "model"
-    assert _apply_qwen21_spectrum("model", {}, "t") == "model"
-
-
-def test_apply_qwen21_spectrum_calls_vendored_port(monkeypatch):
-    captured = {}
-
-    def fake_apply(model, config):
-        captured["model"] = model
-        captured["config"] = config
-        return "patched"
-
-    monkeypatch.setattr("nodes.spectrum_qwen21.apply_spectrum", fake_apply)
-    result = _apply_qwen21_spectrum(
-        "model",
-        {"spectrum": {**QWEN21_SPECTRUM_PRESETS["quality"], "enabled": True}},
-        "t",
-    )
-    assert result == "patched"
-    assert captured["model"] == "model"
-    assert captured["config"].flex_window == 0.4
-    assert captured["config"].blend_weight == 1.0
-
-
-def test_apply_qwen21_spectrum_rejects_invalid_settings_with_prefix():
-    # Cross-field constraints (chebyshev_degree + 1 > history_points) fail fast
-    # with the mandated [VNCCS UniCanvas] prefix before the draw reaches sampling.
-    with pytest.raises(ValueError, match="\\[VNCCS UniCanvas\\] Invalid Spectrum settings"):
-        _apply_qwen21_spectrum(
-            "model",
-            {"spectrum": {"enabled": True, "chebyshev_degree": 9, "history_points": 4}},
-            "t",
-        )
+def test_spectrum_is_removed():
+    assert "spectrum" not in QWEN_IMAGE21_DEFAULTS
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.supports_step_cache({"spectrum": {"enabled": True}}) is True
