@@ -22,6 +22,7 @@ function rig(withHost = false) {
         bones: { pelvis: bone(0, 0, 0), head: bone(0, 9, 0) } };
     const editor = { initialized: true, visible: true, studio: { canvas, viewer },
         layer: { pose: { viewport: { position: [0, 0, 40], target: [0, 0, 0] } } }, backdrop: { moveActiveCharacter: shift => moves.push(shift.clone()) } };
+    viewer.editor = editor;
     const dispose = installBodyDrag(editor);
     const event = (type, x, y, extra = {}) => {
         const e = { button: 0, pointerId: 1, clientX: x, clientY: y, shiftKey: false, stoppedNow: false,
@@ -97,4 +98,17 @@ test("joint markers and non-torso hits are left to Pose Studio", () => {
     assert.equal(event("pointerdown", 5, 5).stoppedNow, false, "a miss is not ours");
     event("pointermove", 100, 100);
     assert.equal(moves.length, 0);
+});
+
+test("the torso drag persists the character move when the gesture ends", () => {
+    const { viewer, event } = rig();
+    const editor = viewer.editor;
+    let flushed = 0;
+    editor.flushBackdropSync = () => { flushed += 1; };
+    event("pointerdown", 200, 200);
+    event("pointermove", 240, 200);
+    event("pointermove", 250, 210);
+    assert.equal(flushed, 0, "no persistence while dragging");
+    event("pointerup", 250, 210);
+    assert.equal(flushed, 1);
 });

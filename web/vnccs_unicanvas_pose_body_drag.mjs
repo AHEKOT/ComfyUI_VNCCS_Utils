@@ -110,6 +110,8 @@ export function installBodyDrag(editor) {
         indicator?.hide();
         if (viewer.orbit) viewer.orbit.enabled = true;
         canvas.releasePointerCapture?.(event.pointerId);
+        // The move persists once, when the gesture ends (see scheduleBackdropSync).
+        editor.flushBackdropSync?.();
     };
     // Holding or releasing Shift mid-drag switches the indicator without waiting for a move.
     let lastEvent = null;

@@ -3698,6 +3698,10 @@ class UniCanvasWidget {
       this.panorama.setCamera(e.altKey ? view : snapAxisAngles(view, ["yaw", "pitch"]));
       return;
     }
+    // Moves over the open pose editor (joint and torso drags, hover) belong to Pose Studio. The
+    // stage hover under it is irrelevant there, and this window listener would otherwise read the
+    // stage layout and clear the tool overlay on every drag event.
+    if (!this.isPointerDown && this.poseEditor?.visible && this.poseEditor.studio?.container?.contains?.(e.target)) return;
     const screen = this.canvasPointFromEvent(e);
     const point = this.worldFromCanvasPoint(screen);
     this.hoverPointerType = e.pointerType || "mouse";
@@ -7638,7 +7642,7 @@ class UniCanvasWidget {
       this.fullSyncTimer = null;
       const run = () => {
         if (this._disposed) return;
-        if (this.isPointerDown || this.drawInProgress) {
+        if (this.isPointerDown || this.drawInProgress || this.poseEditor?.isGestureActive?.()) {
           this.scheduleFullSync(delay);
           return;
         }
@@ -7786,7 +7790,7 @@ class UniCanvasWidget {
 
   async uploadStateSnapshot() {
     if (!this.pendingStateUpload) return;
-    if (this.isPointerDown || this.drawInProgress) {
+    if (this.isPointerDown || this.drawInProgress || this.poseEditor?.isGestureActive?.()) {
       this.scheduleStateUpload();
       return;
     }
