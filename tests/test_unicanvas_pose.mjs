@@ -741,3 +741,18 @@ test("switching between pose layers restores each sidebar tab and scroll positio
     assert.equal(editor.pages[0].page.scrollTop, 123);
     assert.equal(editor.pages[0].page.scrollLeft, 7);
 });
+
+test("viewport frames behind the live pose view defer the preview bake until they settle", async () => {
+    const controlled = controlledStudio();
+    const { editor, host, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    const draws = () => layer.canvas.ctx.calls.filter(call => call[0] === "draw").length;
+    assert.equal(editor.hidesLayerPixels(layer), true, "the editing view hides the baked pixels");
+    const before = draws();
+    for (let i = 0; i < 5; i += 1) studio.host.onViewportRender();
+    assert.equal(draws(), before, "no per-frame capture while the live viewport is shown");
+    await new Promise(resolve => setTimeout(resolve, 260));
+    const settled = draws() - before;
+    assert.ok(settled >= 1 && settled <= 2, "a trailing capture (plus at most the settle commit) once frames stop");
+});

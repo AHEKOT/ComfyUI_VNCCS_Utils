@@ -84,6 +84,7 @@ export class UniCanvasPoseEditor {
         this.inspecting = false;
         this.viewOffsetKey = null;
         this.commitTimer = null;
+        this.previewTimer = null;
         this.wheelInspectionTimer = null;
         this.abort = new AbortController();
         if (!document.getElementById("vnccs-uc-pose-style")) {
@@ -127,7 +128,11 @@ export class UniCanvasPoseEditor {
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
                 this.syncSessionViewOffset();
                 this.syncGizmoSize();
-                this.capturePreview();
+                // While the live viewport replaces the layer pixels on screen, a per-frame capture
+                // (a second full render plus a stage repaint) is invisible work that makes joint
+                // drags lag. Bake once the viewport settles instead.
+                if (this.hidesLayerPixels(layer)) this.scheduleSettledPreview();
+                else this.capturePreview();
             },
         });
         const studio = this.studio;
@@ -821,10 +826,24 @@ export class UniCanvasPoseEditor {
 
     commit() {
         if (!this.initialized || !this.host.layers.includes(this.layer) || !poseAtPanoramaCamera(this.layer, this.host.panorama)) return;
+        clearTimeout(this.previewTimer); this.previewTimer = null;
         this.capturePreview(true);
         this.saveUI();
         this.host.panorama?.commitLayer(this.layer);
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+    }
+
+    // Trailing preview bake for viewport frames whose pixels are hidden behind the live view.
+    // Every new frame pushes it back, so nothing is captured while frames keep arriving.
+    scheduleSettledPreview() {
+        if (!this.initialized) return;
+        clearTimeout(this.previewTimer);
+        const token = this.token;
+        this.previewTimer = setTimeout(() => {
+            this.previewTimer = null;
+            if (token !== this.token || !this.studio) return;
+            this.capturePreview();
+        }, 150);
     }
 
     // One trailing full-quality bake per settled edit gesture (AGENTS.md realtime rule:
@@ -904,6 +923,7 @@ export class UniCanvasPoseEditor {
         this.initialized = false;
         this.inspecting = false;
         clearTimeout(this.commitTimer); this.commitTimer = null;
+        clearTimeout(this.previewTimer); this.previewTimer = null;
         clearTimeout(this.wheelInspectionTimer); this.wheelInspectionTimer = null;
         if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
         this.backdropSyncFrame = null;
