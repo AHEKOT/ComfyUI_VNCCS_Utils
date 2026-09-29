@@ -8553,8 +8553,11 @@ class UniCanvasWidget {
       details.className = "vnccs-uc-settings-section";
       details.open = openSections.has(key);
       details.addEventListener("toggle", () => {
-        if (details.open) openSections.add(key);
-        else openSections.delete(key);
+        if (!details.open) return void openSections.delete(key);
+        // At most one section stays open: opening one closes the others.
+        openSections.clear();
+        openSections.add(key);
+        panel.querySelectorAll("details.vnccs-uc-settings-section[open]").forEach((other) => { if (other !== details) other.open = false; });
       });
       const summary = document.createElement("summary");
       summary.textContent = label;
