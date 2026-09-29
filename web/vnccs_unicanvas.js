@@ -1836,6 +1836,7 @@ class UniCanvasWidget {
     if (!layer) return;
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
+    layer._boundsHint = undefined;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;
@@ -1861,13 +1862,17 @@ class UniCanvasWidget {
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;
     if (!expandOnly) {
-      layer._boundsCache = undefined;
+      layer._boundsCache = this.boundsAfterLocalChange(layer, bounds);
       return;
     }
     if (!bounds || bounds.width <= 0 || bounds.height <= 0) return;
     const next = this.clampCanvasBounds(bounds, layer.canvas);
     if (!next) return;
-    if (layer._boundsCache === undefined) return;
+    // Unknown bounds with a search region pending (an earlier eraser stroke): grow the region.
+    if (layer._boundsCache === undefined) {
+      layer._boundsCache = this.boundsAfterLocalChange(layer, bounds);
+      return;
+    }
     if (layer._boundsCache === null) {
       layer._boundsCache = next;
       return;
@@ -1878,6 +1883,27 @@ class UniCanvasWidget {
     const x2 = Math.max(current.x + current.width, next.x + next.width);
     const y2 = Math.max(current.y + current.height, next.y + next.height);
     layer._boundsCache = { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+
+  // Pixels changed only inside `bounds` (an eraser stroke, a SAM cut): the new alpha bounds lie
+  // within the old ones plus `bounds`. Keep that area as the region the next measurement searches
+  // (see getLayerAlphaBounds) instead of reading back and scanning the whole layer canvas.
+  // Returns the new bounds cache value: undefined (measure later) or null (still empty).
+  boundsAfterLocalChange(layer, bounds) {
+    const known = layer._boundsCache !== undefined ? layer._boundsCache
+      : layer._boundsHint?.canvas === layer.canvas ? layer._boundsHint.rect : undefined;
+    layer._boundsHint = undefined;
+    if (known === undefined || !bounds) return undefined;
+    const changed = bounds.width > 0 && bounds.height > 0 ? this.clampCanvasBounds(bounds, layer.canvas) : null;
+    const rect = !known ? changed : !changed ? known : {
+      x: Math.min(known.x, changed.x), y: Math.min(known.y, changed.y),
+      width: Math.max(known.x + known.width, changed.x + changed.width) - Math.min(known.x, changed.x),
+      height: Math.max(known.y + known.height, changed.y + changed.height) - Math.min(known.y, changed.y),
+    };
+    // Empty before and nothing changed on the canvas: still empty.
+    if (!rect) return null;
+    layer._boundsHint = { canvas: layer.canvas, rect };
+    return undefined;
   }
 
   clampCanvasBounds(bounds, canvas) {
@@ -2200,7 +2226,9 @@ class UniCanvasWidget {
     if (!this.samPanel) return;
     const fgCount = this.sam.points.filter((point) => point.label > 0).length;
     const bgCount = this.sam.points.length - fgCount;
-    this.samPointsLabel.innerHTML = `<span class="vnccs-uc-sam-dot"></span>${fgCount} <span class="vnccs-uc-sam-dot bg"></span>${bgCount}`;
+    // Runs on every stage render while SAM is active: rebuild the counts only when they change.
+    const pointsHTML = `<span class="vnccs-uc-sam-dot"></span>${fgCount} <span class="vnccs-uc-sam-dot bg"></span>${bgCount}`;
+    if (this.samPointsLabel.innerHTML !== pointsHTML) this.samPointsLabel.innerHTML = pointsHTML;
     this.samModelSelect.value = this.sam.model;
     this.samUndoBtn.disabled = this.sam.busy || !this.sam.points.length;
     this.samRedoBtn.disabled = this.sam.busy || !this.sam.redoPoints.length;
@@ -5014,7 +5042,8 @@ class UniCanvasWidget {
     this.snapTimeout = window.setTimeout(() => {
       this.intendedScale = this.view.scale;
     }, 300);
-    this.render();
+    // Wheels and trackpads send several events per frame: draw the newest view once per frame.
+    this.requestRender();
   }
 
   constrainStageScale(scale) {
@@ -5096,9 +5125,19 @@ class UniCanvasWidget {
       this.setStatus(`Browser refused canvas expansion (${newW}×${newH})`, true);
       return false;
     }
+    // Growing the canvas only moves the pixels by (dx, dy): carry each layer's known alpha bounds
+    // (or search region) over instead of rescanning every layer afterwards.
+    const dx = this.origin.x - left, dy = this.origin.y - top;
+    const shift = (rect, canvas) => {
+      const x = Math.floor(rect.x + dx), y = Math.floor(rect.y + dy);
+      return this.clampCanvasBounds({ x, y, width: Math.ceil(rect.x + rect.width + dx) - x, height: Math.ceil(rect.y + rect.height + dy) - y }, canvas);
+    };
     for (const { layer, canvas } of nextCanvases) {
+      const previous = layer.canvas, bounds = layer._boundsCache, hint = layer._boundsHint;
       layer.canvas = canvas;
       this.invalidateLayerCaches(layer);
+      if (bounds !== undefined) layer._boundsCache = bounds && shift(bounds, canvas);
+      else if (hint?.canvas === previous) layer._boundsHint = { canvas, rect: shift(hint.rect, canvas) };
     }
     this.origin = { x: left, y: top };
     this.size = { width: newW, height: newH };
@@ -5260,8 +5299,11 @@ class UniCanvasWidget {
     ctx.lineWidth = 1;
     const ox = this.view.x % step;
     const oy = this.view.y % step;
-    for (let x = ox; x < w; x += step) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-    for (let y = oy; y < h; y += step) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+    // One path for the whole grid: zoomed out it has hundreds of lines, one stroke call each before.
+    ctx.beginPath();
+    for (let x = ox; x < w; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, h); }
+    for (let y = oy; y < h; y += step) { ctx.moveTo(0, y); ctx.lineTo(w, y); }
+    ctx.stroke();
   }
 
   drawMaskLayer(ctx, layer) {
@@ -5617,7 +5659,9 @@ class UniCanvasWidget {
     if (this.stagingToggleBtn) {
       const visible = staging.visible !== false;
       this.stagingToggleBtn.classList.toggle("active", visible);
-      this.stagingToggleBtn.innerHTML = visible ? STAGING_ICONS.show : STAGING_ICONS.hide;
+      // Runs on every stage render: rebuild the icon only when it changes.
+      const icon = visible ? STAGING_ICONS.show : STAGING_ICONS.hide;
+      if (this.stagingToggleIcon !== icon) { this.stagingToggleIcon = icon; this.stagingToggleBtn.innerHTML = icon; }
       this.stagingToggleBtn.title = visible ? "Hide result preview" : "Show result preview";
     }
     this.stagingControls.classList.add("visible");
@@ -7892,30 +7936,41 @@ class UniCanvasWidget {
       }, layer.canvas);
       return layer._boundsCache;
     }
-    layer._boundsCache = this.getCanvasAlphaBounds(layer.canvas);
+    const hint = layer._boundsHint?.canvas === layer.canvas ? layer._boundsHint.rect : undefined;
+    layer._boundsHint = undefined;
+    layer._boundsCache = hint === null ? null : this.getCanvasAlphaBounds(layer.canvas, hint);
     return layer._boundsCache;
   }
 
-  getCanvasAlphaBounds(canvas) {
-    const ctx = this.getReadbackContext(canvas, false);
-    const { width, height } = canvas;
-    const data = ctx.getImageData(0, 0, width, height).data;
-    let minX = width;
-    let minY = height;
-    let maxX = -1;
-    let maxY = -1;
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (data[(y * width + x) * 4 + 3] <= 0) continue;
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    }
-    if (maxX < minX || maxY < minY) return null;
-    return { x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1 };
+  // Alpha bounds of the canvas, searched only inside `region` (canvas pixels) when the content is
+  // known to lie there. Rows are scanned from the top and the bottom, and columns only between
+  // them, so the scan stops at the content instead of testing every pixel of a large layer.
+  getCanvasAlphaBounds(canvas, region = null) {
+    const area = region ? this.clampCanvasBounds(region, canvas) : { x: 0, y: 0, width: canvas.width, height: canvas.height };
+    if (!area || area.width <= 0 || area.height <= 0) return null;
+    const { width, height } = area;
+    const data = this.getReadbackContext(canvas, false).getImageData(area.x, area.y, width, height).data;
+    const stride = width * 4;
+    const rowHasAlpha = (y) => {
+      for (let i = y * stride + 3, end = i + stride; i < end; i += 4) if (data[i] > 0) return true;
+      return false;
+    };
+    let top = 0;
+    while (top < height && !rowHasAlpha(top)) top++;
+    if (top === height) return null;
+    let bottom = height - 1;
+    while (bottom > top && !rowHasAlpha(bottom)) bottom--;
+    const columnHasAlpha = (x) => {
+      for (let i = top * stride + x * 4 + 3, end = bottom * stride + x * 4 + 3; i <= end; i += stride) if (data[i] > 0) return true;
+      return false;
+    };
+    let left = 0;
+    while (!columnHasAlpha(left)) left++;
+    let right = width - 1;
+    while (right > left && !columnHasAlpha(right)) right--;
+    return { x: area.x + left, y: area.y + top, width: right - left + 1, height: bottom - top + 1 };
   }
+
 
   async _loadFromNode() {
     const loadRevision = this._stateLoadRevision = (this._stateLoadRevision || 0) + 1;
