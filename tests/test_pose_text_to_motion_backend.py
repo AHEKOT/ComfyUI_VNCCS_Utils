@@ -422,6 +422,22 @@ class ModelRegistryTests(unittest.TestCase):
                 BASE.MotionModelSpec.from_dict(data)
 
 
+class CharacterCountTests(unittest.TestCase):
+    def test_models_default_to_one_character(self):
+        for spec in REGISTRY.load_specs().values():
+            self.assertEqual(spec.public()["capabilities"]["max_characters"], 1)
+
+    def test_more_characters_than_the_model_supports_are_rejected(self):
+        payload = RequestTests.payload(RequestTests(), characters=2)
+        with self.assertRaisesRegex(ValueError, "one character at a time"):
+            SERVICE.parse_generation_request(payload)
+        self.assertEqual(SERVICE.parse_generation_request(RequestTests.payload(RequestTests()))[1].characters, 1)
+
+    def test_invalid_max_characters_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "max_characters"):
+            BASE.MotionModelSpec.from_dict({"id": "x", "backend": "kimodo", "capabilities": {"max_characters": 0}})
+
+
 class RequestTests(unittest.TestCase):
     def payload(self, **overrides):
         keypoints, _, _, _ = world_keypoints()

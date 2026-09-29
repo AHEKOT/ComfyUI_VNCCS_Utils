@@ -64,6 +64,7 @@
   },
   "capabilities": {
     "start_pose_constraint": false,
+    "max_characters": 1,
     "duration": {
       "min": 1,
       "max": 10,

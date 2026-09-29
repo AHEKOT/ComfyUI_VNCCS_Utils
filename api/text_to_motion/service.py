@@ -147,6 +147,14 @@ def parse_generation_request(data):
         if len(axes) == 2:
             head_axes = axes
 
+    characters = int(_number(data.get("characters"), 1, 1, 8, int))
+    if characters > caps["max_characters"]:
+        raise ValueError(
+            f"{spec.name} generates the motion of one character at a time"
+            if caps["max_characters"] == 1
+            else f"{spec.name} handles at most {caps['max_characters']} characters"
+        )
+
     duration = caps["duration"]
     steps = caps.get("steps")
     guidance = caps.get("guidance")
@@ -161,6 +169,7 @@ def parse_generation_request(data):
             data.get("guidance"), guidance["default"], guidance["min"], guidance["max"],
         )),
         use_start_pose=bool(data.get("use_start_pose", True)),
+        characters=characters,
         keypoints=keypoints,
         rest_keypoints=rest_keypoints,
         head_axes=head_axes,

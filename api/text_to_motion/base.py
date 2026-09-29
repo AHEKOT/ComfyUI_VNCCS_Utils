@@ -96,6 +96,16 @@ class WeightSource:
         )
 
 
+def _character_count(value, label: str) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{label} must be a whole number") from None
+    if not 1 <= count <= 8:
+        raise ValueError(f"{label} must be between 1 and 8")
+    return count
+
+
 def _range(data, key, default):
     value = data.get(key)
     if value is None:
@@ -141,6 +151,7 @@ class MotionModelSpec:
             raise ValueError(f"{model_id}: capabilities must be an object")
         capabilities = {
             "start_pose_constraint": bool(caps.get("start_pose_constraint", False)),
+            "max_characters": _character_count(caps.get("max_characters", 1), f"{model_id}: capabilities.max_characters"),
             "duration": _range(caps, "duration", (1.0, 10.0, 4.0)) or {"min": 1.0, "max": 10.0, "default": 4.0},
             "steps": _range(caps, "steps", (10, 200, 50)),
             "guidance": _range(caps, "guidance", (1.0, 10.0, 5.0)),
@@ -214,10 +225,17 @@ class MotionRequest:
     keypoints: dict = field(default_factory=dict)
     rest_keypoints: dict = field(default_factory=dict)
     head_axes: dict | None = None
+    #: Characters the motion is generated for; models with max_characters == 1 always get 1.
+    characters: int = 1
 
 
 class MotionBackend(ABC):
     """One text-to-motion model family.
+
+    Every backend so far generates one character. A model that handles interactions between
+    several characters (a handshake, a hug) declares ``capabilities.max_characters`` > 1 in its
+    JSON; the service then passes ``MotionRequest.characters`` and the backend is expected to
+    return one ``SourceMotion`` per character (a list) - that contract is not used yet.
 
     ``load`` prepares the model (downloading weights on first use) and
     ``generate`` returns the motion in the model's own skeleton. The service keeps

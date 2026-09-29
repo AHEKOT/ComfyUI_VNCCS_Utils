@@ -14,10 +14,20 @@ models are installed and how to install the missing ones.
 
 ## Animation and UniCanvas
 
-In **Animation** mode the panel produces a whole clip: **OK** replaces the animation with the
-generated motion (the same path the Mixamo FBX import uses), keyed at the model's frame rate
-and sparsely for long clips, with linear interpolation in between. Edit it on the timeline and
-export it as a movie clip or image batch as usual. **Cancel** leaves the animation untouched.
+In **Animation** mode the panel produces a clip that starts at the timeline frame you opened it
+on: the pose at that frame is the start pose, and **OK** writes the clip into the animation from
+there (keys inside the clip's span are replaced, the timeline grows if the clip runs past its
+end, everything else stays; one undo step). Tick **Replace whole animation** to replace the
+entire animation instead (the path the Mixamo FBX import uses). Clips are keyed at the animation's
+frame rate, sparsely for long clips, with linear interpolation in between. Edit them on the
+timeline and export as usual. **Cancel** leaves the animation untouched.
+
+**Several characters.** The motion goes to the selected character. Kimodo and HY-Motion are
+single-person models: they cannot generate interactions between characters (a handshake, a hug),
+and the panel says so when the scene has more than one character. A model that can declares
+`capabilities.max_characters` above 1 in its JSON (default 1; the service rejects requests for
+more characters than that). No backend implements that yet; see `MotionBackend` in
+`api/text_to_motion/base.py`.
 UniCanvas' pose editor has the same **Motion** button and panel, because it embeds Pose Studio.
 
 Outside Animation mode the panel picks one frame as the pose (below).
@@ -112,6 +122,7 @@ needs only a new file; a new family also needs a backend class.
   "options": {},                         // backend-specific settings
   "capabilities": {
     "start_pose_constraint": true,       // the model can start from a given pose
+    "max_characters": 1,                 // >1 only for models that generate interactions
     "duration": { "min": 1, "max": 10, "default": 4 },
     "steps": { "min": 10, "max": 200, "default": 100 },       // omit if not adjustable
     "guidance": { "min": 1, "max": 10, "default": 5 }         // omit if not adjustable
