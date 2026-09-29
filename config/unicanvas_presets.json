@@ -318,6 +318,71 @@
       }
     },
     {
+      "id": "minimax_h3",
+      "label": "MiniMax H3",
+      "group": "MiniMax H3",
+      "title": "MiniMax H3 REF2VA · still image",
+      "description": "MiniMax H3 REF2VA image edit: <Picture 1> is the working area and Edit model references are <Picture 2..>. Uses the official INT8 ConvRot model, Qwen3-VL 32B text encoder and video VAE; the first frame is kept as the still. The TaoMate Turbo LoRA runs it in 3 steps. Large download.",
+      "settings": {
+        "generation_mode": "minimax_h3",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "vae_name": "minimax_h3_video_vae_fp16.safetensors",
+        "clip_type": "minimax",
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "steps": 20,
+        "minimax_h3_steps": 20,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "minimax_h3_lora_name": "",
+        "minimax_h3_lora_strength": 0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "MiniMax H3 REF2VA INT8 ConvRot",
+          "hf_repo": "Comfy-Org/MiniMax-H3",
+          "hf_path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+          "local_path": "models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+          "description": "MiniMax H3 REF2VA diffusion model (INT8 ConvRot)."
+        },
+        {
+          "role": "clip",
+          "name": "MiniMax H3 Qwen3-VL 32B Text Encoder",
+          "hf_repo": "Comfy-Org/MiniMax-H3",
+          "hf_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "description": "Qwen3-VL 32B text encoder for MiniMax H3."
+        },
+        {
+          "role": "vae",
+          "name": "MiniMax H3 Video VAE",
+          "hf_repo": "Comfy-Org/MiniMax-H3",
+          "hf_path": "vae/minimax_h3_video_vae_fp16.safetensors",
+          "local_path": "models/vae/minimax_h3_video_vae_fp16.safetensors",
+          "description": "MiniMax H3 video VAE."
+        }
+      ],
+      "turbo": {
+        "setting": "minimax_h3_lora_name",
+        "strength_setting": "minimax_h3_lora_strength",
+        "turbo_settings": {
+          "steps": 3,
+          "minimax_h3_steps": 3,
+          "cfg": 1.0
+        },
+        "asset": {
+          "name": "TaoMate H3 3-Step Turbo",
+          "hf_repo": "Robert1212star/TaoMate-H3-3Step-ComfyUI",
+          "hf_path": "taomate_h3_3step_comfy.safetensors",
+          "local_path": "models/loras/H3/taomate_h3_3step_comfy.safetensors",
+          "description": "Three-step Turbo LoRA for MiniMax H3."
+        }
+      }
+    },
+    {
       "id": "krea2_edit",
       "label": "Krea2 Edit Turbo",
       "title": "Krea2 Edit Turbo · fast, 10 steps",

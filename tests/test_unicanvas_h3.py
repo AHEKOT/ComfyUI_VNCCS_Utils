@@ -587,3 +587,12 @@ def test_queued_draw_payload_reaches_the_real_draw_pipeline(monkeypatch):
     assert captured["generation_mode"] == "minimax_h3"
     assert captured["draw_mode"] == "img2img"
     assert captured["_external"]["model"] == "M"
+
+
+def test_turbo_lora_requirement_applies_only_with_positive_strength():
+    module = _get_unicanvas_model_module("minimax_h3")
+    (rule,) = module.lora_requirements
+    assert rule.name_setting == "minimax_h3_lora_name"
+    assert rule.resolve({"minimax_h3_lora_name": "H3/taomate_h3_3step_comfy.safetensors", "minimax_h3_lora_strength": 1.0}) is not None
+    assert rule.resolve({"minimax_h3_lora_name": "H3/taomate_h3_3step_comfy.safetensors", "minimax_h3_lora_strength": 0}) is None
+    assert rule.resolve({"minimax_h3_lora_name": "", "minimax_h3_lora_strength": 1.0}) is None

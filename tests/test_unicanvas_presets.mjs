@@ -57,3 +57,27 @@ test("selected UniCanvas preset forces model identity but preserves runtime sett
     assert.equal(settings.selected_preset_id, "sdxl");
     assert.equal(settings.steps, 31);
 });
+
+
+test("MiniMax H3 preset pins the family and ships its three model assets", async () => {
+  const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+  const h3 = presets.find((preset) => preset.id === "minimax_h3");
+  assert.ok(h3, "the minimax_h3 preset is missing");
+  assert.equal(h3.settings.generation_mode, "minimax_h3");
+  assert.equal(h3.settings.clip_type, "minimax");
+  assert.equal(h3.settings.minimax_h3_steps, h3.settings.steps);
+  assert.deepEqual(h3.assets.map((asset) => asset.role), ["diffusion_model", "clip", "vae"]);
+  for (const asset of h3.assets) assert.match(asset.local_path, /^models\/[a-z_]+\/[^/]+\.safetensors$/);
+});
+
+
+test("MiniMax H3 preset ships the 3-step TaoMate Turbo LoRA on the shared turbo card", async () => {
+  const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+  const { turbo } = presets.find((preset) => preset.id === "minimax_h3");
+  assert.equal(turbo.setting, "minimax_h3_lora_name");
+  assert.equal(turbo.strength_setting, "minimax_h3_lora_strength");
+  assert.equal(turbo.turbo_settings.steps, 3);
+  assert.equal(turbo.turbo_settings.minimax_h3_steps, 3);
+  assert.equal(turbo.asset.hf_repo, "Robert1212star/TaoMate-H3-3Step-ComfyUI");
+  assert.equal(turbo.asset.hf_path, "taomate_h3_3step_comfy.safetensors");
+});

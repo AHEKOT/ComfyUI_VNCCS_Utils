@@ -793,6 +793,8 @@ const UNICANVAS_MODEL_MODULES = {
       sampler_name: "res_multistep",
       scheduler: "simple",
       steps: 20,
+      minimax_h3_lora_name: "",
+      minimax_h3_lora_strength: 0,
       cfg: 1,
       denoise: 1,
     },
@@ -2944,6 +2946,9 @@ class UniCanvasWidget {
       "dmd_lora_strength",
       "qwen_lora_name",
       "qwen_lora_strength",
+      "minimax_h3_steps",
+      "minimax_h3_lora_name",
+      "minimax_h3_lora_strength",
     ];
     const previousKey = this.getPresetTurboPreviousKey(preset);
     if (previousKey) keys.push(previousKey);
@@ -3038,12 +3043,14 @@ class UniCanvasWidget {
     if (!this.settings[previousKey]) {
       this.settings[previousKey] = {
         steps: this.settings.steps,
+        minimax_h3_steps: this.settings.minimax_h3_steps,
         cfg: this.settings.cfg,
         sampler_name: this.settings.sampler_name,
         scheduler: this.settings.scheduler,
       };
     }
     if (Number.isFinite(Number(turboSettings.steps))) this.settings.steps = Number(turboSettings.steps);
+    if (Number.isFinite(Number(turboSettings.minimax_h3_steps))) this.settings.minimax_h3_steps = Number(turboSettings.minimax_h3_steps);
     if (Number.isFinite(Number(turboSettings.cfg))) this.settings.cfg = Number(turboSettings.cfg);
     if (turboSettings.sampler_name) this.settings.sampler_name = turboSettings.sampler_name;
     if (turboSettings.scheduler) this.settings.scheduler = turboSettings.scheduler;
@@ -3057,6 +3064,7 @@ class UniCanvasWidget {
     const previous = saved && typeof saved === "object" ? saved : preset.settings;
     if (previous && typeof previous === "object") {
       if (Number.isFinite(Number(previous.steps))) this.settings.steps = Number(previous.steps);
+      if (Number.isFinite(Number(previous.minimax_h3_steps))) this.settings.minimax_h3_steps = Number(previous.minimax_h3_steps);
       if (Number.isFinite(Number(previous.cfg))) this.settings.cfg = Number(previous.cfg);
       if (previous.sampler_name) this.settings.sampler_name = previous.sampler_name;
       if (previous.scheduler) this.settings.scheduler = previous.scheduler;
