@@ -30,8 +30,8 @@ is described in `AGENTS.md`.
 - `__init__.py` — extension entry point: node mappings, `WEB_DIRECTORY`, Pose Studio and
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` — node classes: `pose_studio.py`, `factory3d*.py`, `vncss_config.py`,
-  `vnccs_model_manager.py`, `vnccs_qwen_detailer.py`, vendored `spectrum_qwen21/` and
-  `anima_lllite_internal.py`; `nodes/unicanvas/` is the UniCanvas package (below).
+  `vnccs_model_manager.py`, `vnccs_qwen_detailer.py` and `anima_lllite_internal.py`;
+  `nodes/unicanvas/` is the UniCanvas package (below).
 - `api/` — 3D Factory and Pose Studio backend services.
 - `web/` — frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large — add
   feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget);

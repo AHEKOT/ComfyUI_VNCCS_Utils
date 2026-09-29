@@ -17,85 +17,21 @@ test("engine picker exposes the QwenImage21 family tab", () => {
 });
 
 
-test("Spectrum panel declares every parameter", () => {
-    const params = [
-        "warmup_steps",
-        "tail_actual_steps",
-        "window_size",
-        "flex_window",
-        "max_consecutive_forecasts",
-        "history_points",
-        "chebyshev_degree",
-        "ridge_lambda",
-        "blend_weight",
-        "cache_device",
-        "force_actual_on_control",
-    ];
-    assert.doesNotMatch(panelSource, /name:\s*"debug"/, "Spectrum debug follows the global UniCanvas debug mode");
-    for (const name of params) {
-        assert.match(panelSource, new RegExp('name:\\s*"' + name + '"'), "missing Spectrum parameter: " + name);
-    }
-    assert.match(panelSource, /data-spectrum-toggle/, "Spectrum enable toggle missing");
-    assert.match(panelSource, /"Spectrum acceleration"/, "Spectrum panel title (tooltip) missing");
-});
-
-
-test("Spectrum presets are moderate, aggressive and quality", () => {
-    assert.match(panelSource, /QWEN21_SPECTRUM_PRESETS\s*=\s*\{/, "Spectrum preset table missing");
-    assert.match(panelSource, /moderate:\s*\{/, "moderate preset missing");
-    assert.match(panelSource, /aggressive:\s*\{/, "aggressive preset missing");
-    assert.match(panelSource, /quality:\s*\{/, "quality preset missing");
-    assert.match(panelSource, /QWEN21_SPECTRUM_PRESET_NAMES\s*=\s*\["moderate", "aggressive", "quality"\]/, "preset selector list mismatch");
-    // moderate = paper default; the tunings follow the vendored upstream guide.
-    const moderate = panelSource.match(/moderate:\s*\{([\s\S]*?)\n\s*\},/);
-    assert.ok(moderate, "moderate preset block not found");
-    assert.match(moderate[1], /warmup_steps:\s*5/);
-    assert.match(moderate[1], /flex_window:\s*0\.75/);
-    assert.match(moderate[1], /chebyshev_degree:\s*4/);
-    const aggressive = panelSource.match(/aggressive:\s*\{([\s\S]*?)\n\s*\},/);
-    assert.match(aggressive[1], /flex_window:\s*3\.0/);
-    assert.match(aggressive[1], /tail_actual_steps:\s*1/);
-    const quality = panelSource.match(/quality:\s*\{([\s\S]*?)\n\s*\},/);
-    assert.match(quality[1], /flex_window:\s*0\.4/);
-    assert.match(quality[1], /blend_weight:\s*1\.0/);
-});
-
-
-test("Spectrum panel is gated to the Qwen-Image-2.1 family", () => {
-    const sync = panelSource.match(/export function syncQwen21SpectrumPanel\(widget\)([\s\S]*?)\n\}/);
-    assert.ok(sync, "syncQwen21SpectrumPanel missing");
+test("QI2.1 panel is gated to the Qwen-Image-2.1 family", () => {
+    const sync = panelSource.match(/export function syncQwen21Panel\(widget\)([\s\S]*?)\n\}/);
+    assert.ok(sync, "syncQwen21Panel missing");
     assert.match(sync[1], /isQwen21Mode\(/, "gating must consult the QI2.1 family check");
     assert.match(sync[1], /\.display = active \? "" : "none"/, "panel must hide outside the QI2.1 family");
-    // The shared picker re-gates on render and on every family switch.
-    assert.match(mainSource, /syncQwen21SpectrumPanel\(this\)/, "main widget must sync the Spectrum panel");
+    assert.match(mainSource, /syncQwen21Panel\(this\)/, "main widget must sync the QI2.1 panel");
     const renderHook = mainSource.match(/renderModelSelectionControls\(\) \{([\s\S]*?)\n  \}/);
-    assert.match(renderHook[1], /syncQwen21SpectrumPanel\(this\)/, "panel must gate in renderModelSelectionControls");
+    assert.match(renderHook[1], /syncQwen21Panel\(this\)/, "panel must gate in renderModelSelectionControls");
     const modeHook = mainSource.match(/applyGenerationModeDefaults\(mode\) \{([\s\S]*?)\n  \}/);
-    assert.match(modeHook[1], /syncQwen21SpectrumPanel\(this\)/, "panel must re-gate when the family changes");
+    assert.match(modeHook[1], /syncQwen21Panel\(this\)/, "panel must re-gate when the family changes");
 });
 
-
-test("Spectrum controls update visible state continuously from input events", () => {
-    assert.match(panelSource, /panel\.addEventListener\("input"/, "continuous input listener missing");
-    assert.match(panelSource, /panel\.addEventListener\("change"/, "commit change listener missing");
-    // "input" streams the newest value into settings and mirrors it into the
-    // paired slider/number controls before any "change" commit happens.
-    const input = panelSource.match(/panel\.addEventListener\("input", \(event\) => \{([\s\S]*?)\n  \}\);/);
-    assert.ok(input, "input listener body missing");
-    assert.match(input[1], /applyControlValue\(widget, panel, target\)/, "input events must apply the control value");
-    const change = panelSource.match(/panel\.addEventListener\("change", \(event\) => \{([\s\S]*?)\n  \}\);/);
-    assert.ok(change, "change listener body missing");
-    assert.match(change[1], /commitSettings\(widget\)/, "change events must commit persistence");
-    assert.match(panelSource, /syncSettingsToWidget/, "commit must persist through syncSettingsToWidget");
-});
-
-
-test("Spectrum panel clamps the chebyshev/history pair", () => {
-    assert.match(panelSource, /export function clampSpectrumPair\(/, "pair clamp helper missing");
-    assert.match(panelSource, /history < degree \+ 1/, "cross-field constraint missing");
-    const apply = panelSource.match(/function applyControlValue\(widget, panel, target\) \{([\s\S]*?)\n\}/);
-    assert.ok(apply, "applyControlValue missing");
-    assert.match(apply[1], /clampSpectrumPair\(spectrum, name\)/, "value updates must clamp the pair");
+test("Spectrum acceleration is gone from the frontend", () => {
+    assert.doesNotMatch(panelSource, /spectrum/i);
+    assert.doesNotMatch(mainSource, /spectrum/i);
 });
 
 
@@ -112,7 +48,6 @@ test("QI2.1 panel matches the UniCanvas palette and ships help tooltips", () => 
     assert.ok(panelSource.includes("vnccs-uc-qwen21-styles"), "the panel must inject its UniCanvas-palette styles");
     assert.ok(panelSource.includes("buildQwen21Help"), "help tooltips must be attached");
     assert.ok(panelSource.includes("data-tip"), "tooltips must carry explanation text");
-    assert.match(panelSource, /range\.className = "vnccs-uc-range"/, "spectrum sliders must use the shared range styling");
 });
 
 test("edit families show a full-width Steps field with a hint and hide the generic one", () => {
@@ -122,45 +57,32 @@ test("edit families show a full-width Steps field with a hint and hide the gener
     assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
 });
 
-test("QI2.1 settings fold into an accordion with the turbo switch in the header", () => {
+test("QI2.1 settings fold into an accordion header", () => {
   const shell = panelSource.match(/function buildPanelShell\(\) \{([\s\S]*?)\n\}/);
   assert.ok(shell, "buildPanelShell missing");
   assert.match(shell[1], /qwenTitleText\.textContent = "QI2\.1"/, "the collapsed header must read QI2.1");
   assert.match(shell[1], /qwenTitleText\.title = "Qwen-Image-2\.1 \(QI2\.1\) settings"/, "the header carries the family tooltip");
   assert.match(shell[1], /dataset\.qwen21Expand/, "the header needs its expand markers");
-  assert.match(shell[1], /title\.append\([\s\S]*?turboLabel\)/, "the turbo switch must live in the header row");
   assert.match(shell[1], /const qwenBody = document\.createElement\("div"\)/, "the foldable body container is missing");
   assert.match(shell[1], /qwenBody\.hidden = true/, "the body must start folded");
-  assert.match(shell[1], /qwenBody\.appendChild\(spectrum\)/, "Spectrum must fold into the accordion body");
   const click = panelSource.match(/panel\.addEventListener\("click", \(event\) => \{([\s\S]*?)\n  \}\);/);
   assert.ok(click, "click listener body missing");
   assert.match(click[1], /target\.dataset\.qwen21Expand !== undefined/, "the header must toggle the folded body");
   assert.match(click[1], /closest\("\.vnccs-uc-help"\)/, "a help icon click must not toggle the control next to it");
 });
 
-test("QI2.1 Viggle turbo switch mirrors the other turbo switches", () => {
-  assert.match(panelSource, /QWEN21_TURBO_LORA_NAME/, "the Viggle turbo LoRA name must be defined");
-  assert.match(panelSource, /Viggle\/Qwen-Image-2\.1-viggle-turbo/, "the HuggingFace repo id must be referenced");
-  assert.match(panelSource, /applyQwen21TurboProfile/, "the turbo profile swap helper must exist");
-  assert.match(panelSource, /dataset\.qwen21TurboToggle/, "the turbo enable switch must exist");
-  assert.match(panelSource, /dataset\.qwen21TurboDownload/, "the LoRA download button must exist");
-  assert.match(panelSource, /QWEN21_TURBO_SETTINGS = \{ steps: 6, cfg: 1 \}/, "turbo must switch to the 6-step / no-CFG profile");
-  assert.match(panelSource, /qwen21_turbo_previous_settings/, "the pre-turbo steps/cfg must be saved and restored");
-  assert.match(panelSource, /qwen21_turbo_enabled/, "the switch state must persist in settings");
-});
-
-test("switching turbo off returns the base 45-step schedule", () => {
-  assert.match(panelSource, /QWEN21_BASE_SETTINGS = \{ steps: 45 \}/, "the base (non-turbo) profile must declare 45 steps");
-  const turbo = panelSource.match(/export function applyQwen21TurboProfile\(widget, enabled\) \{([\s\S]*?)\n\}/);
-  assert.ok(turbo, "applyQwen21TurboProfile missing");
-  assert.match(turbo[1], /settings\.steps = QWEN21_BASE_SETTINGS\.steps/, "a switch-off without a snapshot must fall back to the base steps");
-  assert.match(panelSource, /returns Steps to the 45-step base schedule/, "the turbo tooltip must explain the base schedule");
-  // The Steps field in the sidebar must show the swapped value immediately.
-  const change = panelSource.match(/panel\.addEventListener\("change", \(event\) => \{([\s\S]*?)\n  \}\);/);
-  assert.ok(change, "change listener body missing");
-  const turboBranch = change[1].match(/if \(target\.dataset\.qwen21TurboToggle !== undefined\) \{([\s\S]*?)\n    \}/);
-  assert.ok(turboBranch, "the turbo change branch missing");
-  assert.match(turboBranch[1], /widget\.syncPromptControls\(\)/, "the swap must refresh the visible Steps/CFG fields");
+test("QI2.1 Turbo LoRA uses the shared preset turbo card, not a bespoke switch", async () => {
+  assert.doesNotMatch(panelSource, /qwen21TurboToggle|qwen21TurboDownload/, "the panel must not render its own turbo controls");
+  const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+  const qi = presets.find((preset) => preset.id === "qwen_image21");
+  assert.ok(qi, "the qwen_image21 preset is missing");
+  assert.equal(qi.settings.generation_mode, "qwen_image21");
+  assert.equal(qi.turbo.setting, "qwen_lora_name");
+  assert.equal(qi.turbo.strength_setting, "qwen_lora_strength");
+  assert.equal(qi.turbo.enable_setting, "qwen21_turbo_enabled");
+  assert.deepEqual(qi.turbo.turbo_settings, { steps: 6, cfg: 1 });
+  assert.equal(qi.turbo.asset.local_path, "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors");
+  assert.match(qi.turbo.asset.hf_revision, /^[0-9a-f]{40}$/);
 });
 
 test("edit model reference images upload exists in the main widget", () => {

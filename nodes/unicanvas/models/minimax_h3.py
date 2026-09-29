@@ -10,6 +10,7 @@ import torch
 
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _uc_log
+from ..loras import LoraRequirement
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import CANVAS_TASKS, STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
@@ -72,8 +73,19 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
         "denoise": 1.0,
         "frame_count": 5,
         "ref_image_size": "match",
+        "minimax_h3_lora_name": "",
+        "minimax_h3_lora_strength": 0.0,
     })
     is_edit_model: bool = True
+    lora_requirements: tuple[LoraRequirement, ...] = (
+        LoraRequirement(
+            name_setting="minimax_h3_lora_name",
+            strength_setting="minimax_h3_lora_strength",
+            default_strength=0.0,
+            require_positive_strength=True,
+            description="MiniMax H3 turbo LoRA (TaoMate 3-step)",
+        ),
+    )
 
     def uses_edit_masked_latents(self, mode: str) -> bool:
         return False

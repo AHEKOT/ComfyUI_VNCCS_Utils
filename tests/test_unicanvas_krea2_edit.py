@@ -103,6 +103,12 @@ class EditContractTests(unittest.TestCase):
         self.assertEqual(normalized["diffusion_model_name"], "krea2_raw_fp8_scaled.safetensors")
         self.assertEqual(normalized["cfg"], 3)
         self.assertEqual(normalized["steps"], 20)
+        # Users must tell the two Krea2 presets apart from the picker row alone.
+        self.assertEqual(raw["group"], turbo["group"])
+        self.assertIn("Turbo", turbo["title"])
+        self.assertIn("Raw", raw["title"])
+        self.assertNotEqual(raw["title"], turbo["title"])
+        self.assertNotEqual(raw["description"], turbo["description"])
 
     def test_card_download_passes_pinned_revision_without_credentials(self):
         asset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")["assets"][3]

@@ -60,7 +60,7 @@ import {
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
 } from "./vnccs_unicanvas_modes.mjs?v=1790494137676";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21SpectrumPanel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
 import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790494137676";
 
 // ---------------------------------------------------------------------------
@@ -793,6 +793,8 @@ const UNICANVAS_MODEL_MODULES = {
       sampler_name: "res_multistep",
       scheduler: "simple",
       steps: 20,
+      minimax_h3_lora_name: "",
+      minimax_h3_lora_strength: 0,
       cfg: 1,
       denoise: 1,
     },
@@ -2925,8 +2927,8 @@ class UniCanvasWidget {
       const ownsSteps = moduleKey === "minimax_h3" || Boolean(editStepsHints[moduleKey]);
       genericSteps.style.display = ownsSteps ? "none" : "";
     }
-    // Qwen-Image-2.1 family: mount and gate the Spectrum acceleration panel.
-    syncQwen21SpectrumPanel(this);
+    // Qwen-Image-2.1 family: mount and gate the QI2.1 settings panel.
+    syncQwen21Panel(this);
     this.updateEditRefsBadge();
   }
 
@@ -2944,6 +2946,9 @@ class UniCanvasWidget {
       "dmd_lora_strength",
       "qwen_lora_name",
       "qwen_lora_strength",
+      "minimax_h3_steps",
+      "minimax_h3_lora_name",
+      "minimax_h3_lora_strength",
     ];
     const previousKey = this.getPresetTurboPreviousKey(preset);
     if (previousKey) keys.push(previousKey);
@@ -3038,12 +3043,14 @@ class UniCanvasWidget {
     if (!this.settings[previousKey]) {
       this.settings[previousKey] = {
         steps: this.settings.steps,
+        minimax_h3_steps: this.settings.minimax_h3_steps,
         cfg: this.settings.cfg,
         sampler_name: this.settings.sampler_name,
         scheduler: this.settings.scheduler,
       };
     }
     if (Number.isFinite(Number(turboSettings.steps))) this.settings.steps = Number(turboSettings.steps);
+    if (Number.isFinite(Number(turboSettings.minimax_h3_steps))) this.settings.minimax_h3_steps = Number(turboSettings.minimax_h3_steps);
     if (Number.isFinite(Number(turboSettings.cfg))) this.settings.cfg = Number(turboSettings.cfg);
     if (turboSettings.sampler_name) this.settings.sampler_name = turboSettings.sampler_name;
     if (turboSettings.scheduler) this.settings.scheduler = turboSettings.scheduler;
@@ -3052,9 +3059,12 @@ class UniCanvasWidget {
   restorePresetTurboParameterProfile(preset) {
     if (!preset?.turbo?.asset) return;
     const previousKey = this.getPresetTurboPreviousKey(preset);
-    const previous = this.settings[previousKey];
+    // Without a snapshot (turbo was on out of the box) fall back to the preset's base profile.
+    const saved = this.settings[previousKey];
+    const previous = saved && typeof saved === "object" ? saved : preset.settings;
     if (previous && typeof previous === "object") {
       if (Number.isFinite(Number(previous.steps))) this.settings.steps = Number(previous.steps);
+      if (Number.isFinite(Number(previous.minimax_h3_steps))) this.settings.minimax_h3_steps = Number(previous.minimax_h3_steps);
       if (Number.isFinite(Number(previous.cfg))) this.settings.cfg = Number(previous.cfg);
       if (previous.sampler_name) this.settings.sampler_name = previous.sampler_name;
       if (previous.scheduler) this.settings.scheduler = previous.scheduler;
@@ -3167,7 +3177,7 @@ class UniCanvasWidget {
       this.applyInferenceModuleDefaults(key, { preserveModelSelection: true });
       this.syncInferenceControls();
       this.syncPromptControls();
-      syncQwen21SpectrumPanel(this);
+      syncQwen21Panel(this);
       this.syncSettingsToWidget();
     } finally {
       this._syncingConfigFamily = false;
@@ -3250,8 +3260,8 @@ class UniCanvasWidget {
     this.recallModelChoice();
     this.syncInferenceControls();
     this.syncPromptControls();
-    // Re-gate the Qwen-Image-2.1 Spectrum panel for the new family.
-    syncQwen21SpectrumPanel(this);
+    // Re-gate the Qwen-Image-2.1 settings panel for the new family.
+    syncQwen21Panel(this);
   }
 
   applyModelLoaderDefaults(loaderType) {
@@ -8316,10 +8326,9 @@ class UniCanvasWidget {
   }
 
   // Global debug mode: the backend logs every request (POST /vnccs/unicanvas/debug) and the
-  // browser mirrors status lines to the console; Spectrum's own debug follows it.
+  // browser mirrors status lines to the console.
   applyDebugMode() {
     const enabled = Boolean(this.settings.debug_mode);
-    if (this.settings.spectrum && typeof this.settings.spectrum === "object") this.settings.spectrum.debug = enabled;
     void fetch("/vnccs/unicanvas/debug", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -8427,7 +8436,7 @@ class UniCanvasWidget {
       s.debug_mode = checked;
       this.applyDebugMode();
       commit();
-    }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors and Spectrum forecasts.");
+    }, "Logs every UniCanvas request (draw, remove bg, SAM, naming, color match) with sizes and timings, plus draw tensors.");
 
     // Build identity for bug reports: git commit + web file version.
     const buildInfo = document.createElement("div");

@@ -252,10 +252,141 @@
       }
     },
     {
+      "id": "qwen_image21",
+      "label": "QI2.1",
+      "group": "QI2.1",
+      "title": "Qwen Image 2.1 INT8 ConvRot",
+      "description": "Qwen Image 2.1 INT8 ConvRot with the Qwen3-VL 8B text encoder and the Qwen Image 2.1 VAE. Runs 25 steps at CFG 3; the Turbo LoRA switches to 6 steps at CFG 1.",
+      "settings": {
+        "generation_mode": "qwen_image21",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
+        "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
+        "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
+        "clip_type": "qwen_image",
+        "sampler_name": "euler",
+        "scheduler": "simple",
+        "steps": 25,
+        "cfg": 3.0,
+        "denoise": 1.0,
+        "qwen21_turbo_enabled": false,
+        "qwen_lora_name": "",
+        "qwen_lora_strength": 0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "Qwen Image 2.1 INT8 ConvRot",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+          "local_path": "models/diffusion_models/qwen_image_2.1_int8_convrot.safetensors",
+          "description": "Qwen Image 2.1 INT8 ConvRot diffusion model."
+        },
+        {
+          "role": "clip",
+          "name": "QI2 Qwen3-VL 8B Text Encoder",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_8b_int8_convrot.safetensors",
+          "description": "Qwen3-VL 8B text encoder for Qwen Image 2.1."
+        },
+        {
+          "role": "vae",
+          "name": "QI2 VAE",
+          "hf_repo": "Comfy-Org/Qwen-Image-2.1",
+          "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
+          "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
+          "description": "Qwen Image 2.1 VAE."
+        }
+      ],
+      "turbo": {
+        "setting": "qwen_lora_name",
+        "strength_setting": "qwen_lora_strength",
+        "enable_setting": "qwen21_turbo_enabled",
+        "turbo_settings": {
+          "steps": 6,
+          "cfg": 1.0
+        },
+        "asset": {
+          "name": "Qwen Image 2.1 Viggle Turbo",
+          "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
+          "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+          "local_path": "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+          "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1.",
+          "hf_revision": "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
+        }
+      }
+    },
+    {
+      "id": "minimax_h3",
+      "label": "MiniMax H3",
+      "group": "MiniMax H3",
+      "title": "MiniMax H3 REF2VA · still image",
+      "description": "MiniMax H3 REF2VA image edit: <Picture 1> is the working area and Edit model references are <Picture 2..>. Uses the official INT8 ConvRot model, Qwen3-VL 32B text encoder and INT8 ConvRot video VAE; the first frame is kept as the still. The TaoMate Turbo LoRA runs it in 3 steps. Large download.",
+      "settings": {
+        "generation_mode": "minimax_h3",
+        "model_loader": "diffusion_model",
+        "diffusion_model_name": "minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+        "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+        "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors",
+        "clip_type": "minimax",
+        "sampler_name": "res_multistep",
+        "scheduler": "simple",
+        "steps": 20,
+        "minimax_h3_steps": 20,
+        "cfg": 1.0,
+        "denoise": 1.0,
+        "minimax_h3_lora_name": "",
+        "minimax_h3_lora_strength": 0
+      },
+      "assets": [
+        {
+          "role": "diffusion_model",
+          "name": "MiniMax H3 REF2VA INT8 ConvRot",
+          "hf_repo": "Comfy-Org/MiniMax-H3",
+          "hf_path": "diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+          "local_path": "models/diffusion_models/minimax_h3_ref2va_pruned_int8_convrot.safetensors",
+          "description": "MiniMax H3 REF2VA diffusion model (INT8 ConvRot)."
+        },
+        {
+          "role": "clip",
+          "name": "MiniMax H3 Qwen3-VL 32B Text Encoder",
+          "hf_repo": "Comfy-Org/MiniMax-H3",
+          "hf_path": "text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "local_path": "models/text_encoders/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+          "description": "Qwen3-VL 32B text encoder for MiniMax H3."
+        },
+        {
+          "role": "vae",
+          "name": "MiniMax H3 Video VAE INT8 ConvRot",
+          "hf_repo": "Kijai/MiniMax-H3-experimental",
+          "hf_path": "minimax_h3_video_vae_int8_convrot.safetensors",
+          "local_path": "models/vae/minimax_h3_video_vae_int8_convrot.safetensors",
+          "description": "MiniMax H3 video VAE (INT8 ConvRot)."
+        }
+      ],
+      "turbo": {
+        "setting": "minimax_h3_lora_name",
+        "strength_setting": "minimax_h3_lora_strength",
+        "turbo_settings": {
+          "steps": 3,
+          "minimax_h3_steps": 3,
+          "cfg": 1.0
+        },
+        "asset": {
+          "name": "TaoMate H3 3-Step Turbo",
+          "hf_repo": "Robert1212star/TaoMate-H3-3Step-ComfyUI",
+          "hf_path": "taomate_h3_3step_comfy.safetensors",
+          "local_path": "models/loras/H3/taomate_h3_3step_comfy.safetensors",
+          "description": "Three-step Turbo LoRA for MiniMax H3."
+        }
+      }
+    },
+    {
       "id": "krea2_edit",
-      "label": "Krea2 Edit",
-      "title": "Krea2 Identity Edit v1.2 · Turbo FP8",
-      "description": "Image editing with grounded Qwen3-VL, clean reference tokens and adjustable likeness. Includes the required Identity Edit LoRA. Use an image in the bbox; describe the change.",
+      "label": "Krea2 Edit Turbo",
+      "title": "Krea2 Edit Turbo · fast, 10 steps",
+      "description": "Fast Krea2 identity edit at 10 steps and CFG 1. Best default for swapping a character into a scene. Includes the required Identity Edit LoRA.",
       "settings": {
         "generation_mode": "krea2_edit",
         "model_loader": "diffusion_model",
@@ -308,13 +439,14 @@
           "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
           "description": "Required edit adapter, always applied at strength 1."
         }
-      ]
+      ],
+      "group": "Krea2"
     },
     {
       "id": "krea2_edit_raw",
       "label": "Krea2 Edit Raw",
-      "title": "Krea2 Identity Edit v1.2 · Raw FP8",
-      "description": "Image editing with stronger guidance for object removal and larger changes. Includes the required Identity Edit LoRA, Qwen3-VL and VAE.",
+      "title": "Krea2 Edit Raw · guided, 20 steps",
+      "description": "Slower Krea2 identity edit at 20 steps and CFG 3 with stronger prompt guidance. Pick it for object removal and larger changes. Includes the required Identity Edit LoRA.",
       "settings": {
         "generation_mode": "krea2_edit",
         "model_loader": "diffusion_model",
@@ -367,7 +499,8 @@
           "local_path": "models/loras/Krea2/krea2_identity_edit_v1_2.safetensors",
           "description": "Required edit adapter, always applied at strength 1."
         }
-      ]
+      ],
+      "group": "Krea2"
     }
   ]
 }

@@ -1,4 +1,4 @@
-"""Qwen-Image-2.1 model family, Viggle turbo LoRA and Spectrum acceleration (spec section 9).
+"""Qwen-Image-2.1 model family, Viggle turbo LoRA (spec section 9).
 
 Model stack (official Qwen-Image-2.1 architecture, ComfyUI-native weights from
 Comfy-Org/Qwen-Image-2.1): 7B / 32-layer single-stream DiT diffusion model,
@@ -19,7 +19,7 @@ from typing import Any, ClassVar
 import torch
 
 from ..comfy_bridge import _call_comfy_node
-from ..debug import _conditioning_debug, _latent_debug, _uc_log, debug_enabled
+from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..loaders import _load_generation_assets
 from ..loras import LoraRequirement
 from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
@@ -47,33 +47,6 @@ QWEN_IMAGE21_RGBA_PROMPT_SUFFIX = "The image has alpha channel and the backgroun
 # template image_qwen_image_2_1_background_removal.json) used by
 # QwenImage21UniCanvasModule.remove_background().
 QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT = "Remove the background, and output a PNG image"
-
-# Spectrum acceleration parameter presets. "moderate" is the paper default
-# (arXiv 2603.01623: W=5, N=2, alpha=0.75, M=4, lambda=0.1, blend 0.5);
-# "aggressive" and "quality" follow the vendored upstream README tuning guide
-# (for speed raise flex_window to 3.0 and drop tail_actual_steps to 1; for
-# quality lower flex_window to 0.4, raise tail_actual_steps to 4 and set
-# blend_weight to 1.0 for the paper-exact Chebyshev fit).
-QWEN21_SPECTRUM_MODERATE: dict[str, Any] = {
-    "warmup_steps": 5,
-    "tail_actual_steps": 2,
-    "window_size": 2.0,
-    "flex_window": 0.75,
-    "max_consecutive_forecasts": 8,
-    "history_points": 8,
-    "chebyshev_degree": 4,
-    "ridge_lambda": 0.1,
-    "blend_weight": 0.5,
-    "cache_device": "main_device",
-    "force_actual_on_control": True,
-    "debug": False,
-}
-QWEN21_SPECTRUM_PRESETS: dict[str, dict[str, Any]] = {
-    "moderate": dict(QWEN21_SPECTRUM_MODERATE),
-    "aggressive": {**QWEN21_SPECTRUM_MODERATE, "tail_actual_steps": 1, "flex_window": 3.0},
-    "quality": {**QWEN21_SPECTRUM_MODERATE, "tail_actual_steps": 4, "flex_window": 0.4, "blend_weight": 1.0},
-}
-QWEN21_SPECTRUM_DEFAULTS: dict[str, Any] = {"enabled": False, **QWEN21_SPECTRUM_MODERATE}
 
 def _qwen21_encoder_resolution(width: int, height: int) -> int:
     """TextEncodeQwenImage21's ``resolution``: the side of a square with the generation's area.
@@ -106,7 +79,6 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "qwen21_opaque_output": False,
     "qwen21_aspect_preset": "",
     "lora_stack": [],
-    "spectrum": dict(QWEN21_SPECTRUM_DEFAULTS),
 }
 
 # Viggle QI2.1 turbo (v0.2.1, 6-step DMD distillation, https://huggingface.co/Viggle/
@@ -181,85 +153,6 @@ def _qwen21_image_size(image: Any) -> tuple[int, int]:
     if len(shape) == 3:
         return shape[0], shape[1]
     return 0, 0
-
-
-def _qwen21_spectrum_settings(gen_settings: dict[str, Any] | None) -> dict[str, Any]:
-    merged = dict(QWEN21_SPECTRUM_DEFAULTS)
-    raw = (gen_settings or {}).get("spectrum")
-    if isinstance(raw, dict):
-        merged.update({key: value for key, value in raw.items() if key in QWEN21_SPECTRUM_DEFAULTS})
-    return merged
-
-
-def _qwen21_spectrum_config(gen_settings: dict[str, Any] | None):
-    """Build the vendored SpectrumConfig from draw settings.
-
-    Value validation stays with the vendored port (SpectrumConfig.validate).
-    """
-    try:
-        from ...spectrum_qwen21 import SpectrumConfig
-    except ImportError:
-        from spectrum_qwen21 import SpectrumConfig
-
-    settings = _qwen21_spectrum_settings(gen_settings)
-    return SpectrumConfig(
-        warmup_steps=int(settings["warmup_steps"]),
-        tail_actual_steps=int(settings["tail_actual_steps"]),
-        window_size=float(settings["window_size"]),
-        flex_window=float(settings["flex_window"]),
-        max_consecutive_forecasts=int(settings["max_consecutive_forecasts"]),
-        history_points=int(settings["history_points"]),
-        chebyshev_degree=int(settings["chebyshev_degree"]),
-        ridge_lambda=float(settings["ridge_lambda"]),
-        blend_weight=float(settings["blend_weight"]),
-        cache_device=str(settings["cache_device"]),
-        force_actual_on_control=bool(settings["force_actual_on_control"]),
-        debug=bool(settings["debug"]) or debug_enabled(),
-    )
-
-
-def _apply_qwen21_spectrum(model: Any, gen_settings: dict[str, Any], draw_id: str = "unknown") -> Any:
-    """Apply Spectrum acceleration to the Qwen-Image-2.1 model.
-
-    Runs after every model mutation (the VNCSS_CONFIG LoRA stack included) and
-    before sampling. The vendored port is fail-closed exactly like upstream:
-    any forecast that cannot be proven safe, or any exception inside one,
-    degrades that step to a real forward.
-    """
-    if not _qwen21_spectrum_settings(gen_settings).get("enabled"):
-        return model
-    try:
-        from ...spectrum_qwen21 import apply_spectrum
-    except ImportError:
-        from spectrum_qwen21 import apply_spectrum
-
-    config = _qwen21_spectrum_config(gen_settings)
-    try:
-        config.validate()
-    except ValueError as exc:
-        # Spec 11: fail fast with an actionable, prefixed message before the
-        # draw reaches sampling (covers e.g. chebyshev_degree + 1 > history_points).
-        raise ValueError(f"[VNCCS UniCanvas] Invalid Spectrum settings: {exc}") from exc
-    patched = apply_spectrum(model, config)
-    _uc_log(
-        draw_id,
-        "Spectrum acceleration applied",
-        {
-            "warmup_steps": config.warmup_steps,
-            "tail_actual_steps": config.tail_actual_steps,
-            "window_size": config.window_size,
-            "flex_window": config.flex_window,
-            "max_consecutive_forecasts": config.max_consecutive_forecasts,
-            "history_points": config.history_points,
-            "chebyshev_degree": config.chebyshev_degree,
-            "ridge_lambda": config.ridge_lambda,
-            "blend_weight": config.blend_weight,
-            "cache_device": config.cache_device,
-            "force_actual_on_control": config.force_actual_on_control,
-            "debug": config.debug,
-        },
-    )
-    return patched
 
 
 # Editing prompts are short imperatives with a preserve clause (Qwen-Image-2.1 prompt guide,
@@ -673,11 +566,3 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             latent = self.create_empty_latent(ctx.width, ctx.height, ctx.settings, draw_id=ctx.draw_id)
         _uc_log(ctx.draw_id, "Qwen-Image-2.1 latent prepared", {"mode": ctx.mode, "latent": _latent_debug(latent)})
         return latent
-
-    def supports_step_cache(self, settings) -> bool:
-        # Spectrum already forecasts steps; stacking EasyCache on it compounds the error.
-        return not _qwen21_spectrum_settings(settings).get("enabled")
-
-    def prepare_model_for_sampling(self, ctx) -> Any:
-        # Spectrum acceleration runs after every model mutation (the LoRA stack included).
-        return _apply_qwen21_spectrum(ctx.model, ctx.settings, ctx.draw_id)
