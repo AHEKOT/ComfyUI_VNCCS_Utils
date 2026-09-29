@@ -742,17 +742,124 @@ test("switching between pose layers restores each sidebar tab and scroll positio
     assert.equal(editor.pages[0].page.scrollLeft, 7);
 });
 
-test("viewport frames behind the live pose view defer the preview bake until they settle", async () => {
+test("viewport frames behind the live pose view never capture; edits bake once when they settle", async () => {
     const controlled = controlledStudio();
     const { editor, host, layer } = harness(controlled.Studio);
     await editor.activate(layer);
     const studio = controlled.instances[0];
-    const draws = () => layer.canvas.ctx.calls.filter(call => call[0] === "draw").length;
+    let captures = 0;
+    const capture = studio.viewer.capture;
+    studio.viewer.capture = (...args) => { captures += 1; return capture(...args); };
     assert.equal(editor.hidesLayerPixels(layer), true, "the editing view hides the baked pixels");
-    const before = draws();
     for (let i = 0; i < 5; i += 1) studio.host.onViewportRender();
-    assert.equal(draws(), before, "no per-frame capture while the live viewport is shown");
-    await new Promise(resolve => setTimeout(resolve, 260));
-    const settled = draws() - before;
-    assert.ok(settled >= 1 && settled <= 2, "a trailing capture (plus at most the settle commit) once frames stop");
+    assert.equal(captures, 0, "no per-frame capture (buffer resize, extra renders, stage repaint) during a drag");
+    assert.equal(editor.previewStale, true);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    assert.equal(captures, 0, "frames alone (hover, orbit) bake nothing once they stop");
+    studio.syncToNode();
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(captures, 1, "the finished edit bakes once through the settle commit");
+    assert.equal(editor.previewStale, false);
+    editor.release();
+});
+
+test("stale pose pixels are re-captured through one viewport frame when they become visible", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    let renders = 0;
+    studio.viewer.requestRender = () => { renders += 1; };
+    studio.host.onViewportRender();
+    editor.layout();
+    assert.equal(renders, 0, "hidden pixels request nothing");
+    layer.locked = true;
+    editor.layout();
+    assert.equal(renders, 1, "the pixels are shown again: one frame refreshes them");
+    const draws = layer.canvas.ctx.calls.filter(call => call[0] === "draw").length;
+    studio.host.onViewportRender();
+    assert.equal(layer.canvas.ctx.calls.filter(call => call[0] === "draw").length, draws + 1);
+    assert.equal(editor.previewStale, false);
+    editor.layout();
+    assert.equal(renders, 1);
+    editor.release();
+});
+
+test("torso moves persist once after the movement instead of on every drag frame", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer } = harness(controlled.Studio);
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    let syncs = 0;
+    const sync = studio.syncToNode;
+    studio.syncToNode = (...args) => { syncs += 1; return sync(...args); };
+    for (let i = 0; i < 10; i += 1) editor.scheduleBackdropSync();
+    assert.equal(syncs, 0, "no serialization while the character keeps moving");
+    editor.flushBackdropSync();
+    assert.equal(syncs, 1, "the drag end persists the move at once");
+    editor.flushBackdropSync();
+    assert.equal(syncs, 1, "nothing pending, nothing to persist");
+    editor.scheduleBackdropSync(); editor.scheduleBackdropSync();
+    await new Promise(resolve => setTimeout(resolve, 160));
+    assert.equal(syncs, 2, "a clamp without a drag end persists after the movement");
+    editor.scheduleBackdropSync();
+    editor.release();
+    const released = syncs;
+    await new Promise(resolve => setTimeout(resolve, 160));
+    assert.equal(syncs, released, "a released editor has no pending sync");
+});
+
+test("UniCanvas skips its stage hover work for pointer moves over the open pose editor", () => {
+    const { host } = selectionHarness();
+    const surface = new Element("canvas");
+    host.poseEditor = { visible: true, studio: { container: { contains: target => target === surface } } };
+    let reads = 0;
+    host.canvasPointFromEvent = () => { reads += 1; return { x: 0, y: 0 }; };
+    host.isPointerDown = false;
+    host.onPointerMove({ target: surface, clientX: 1, clientY: 1 });
+    assert.equal(reads, 0, "a pose drag must not read the stage layout per event");
+    host.onPointerMove({ target: new Element("canvas"), clientX: 1, clientY: 1 });
+    assert.equal(reads, 1, "moves elsewhere keep the stage hover");
+    host.poseEditor.visible = false;
+    host.onPointerMove({ target: surface, clientX: 1, clientY: 1 });
+    assert.equal(reads, 2);
+});
+
+test("a held pointer in the pose editor is a gesture until any pointer is released", async () => {
+    const controlled = controlledStudio();
+    const { editor, layer, context } = harness(controlled.Studio);
+    const windowEvents = {};
+    context.addEventListener = (type, callback, options) => {
+        (windowEvents[type] ||= []).push(callback);
+        options?.signal?.addEventListener?.("abort", () => { windowEvents[type] = windowEvents[type].filter(item => item !== callback); });
+    };
+    await editor.activate(layer);
+    const studio = controlled.instances[0];
+    assert.equal(editor.isGestureActive(), false);
+    studio.canvasContainer.fire("pointerdown");
+    assert.equal(editor.isGestureActive(), true, "a joint, gizmo or torso drag is under way");
+    windowEvents.pointerup.forEach(callback => callback({}));
+    assert.equal(editor.isGestureActive(), false);
+    editor.sidePanel.fire("pointerdown");
+    assert.equal(editor.isGestureActive(), true, "sidebar sliders count too");
+    editor.setVisible(false);
+    assert.equal(editor.isGestureActive(), false, "a hidden editor never holds UniCanvas syncs");
+    editor.release();
+    assert.equal(windowEvents.pointerup.length, 0, "window listeners are removed with the editor");
+});
+
+test("UniCanvas defers its state upload while a pose gesture is in progress", async () => {
+    const { host } = selectionHarness();
+    let rescheduled = 0, built = 0;
+    host.scheduleStateUpload = () => { rescheduled += 1; };
+    host.buildSerializedState = () => { built += 1; return { layers: [] }; };
+    host.uploadStatePayload = async () => true;
+    host.pendingStateUpload = true;
+    host.poseEditor.isGestureActive = () => true;
+    await host.uploadStateSnapshot();
+    assert.equal(built, 0, "no capture or PNG encoding in the middle of a drag");
+    assert.equal(rescheduled, 1);
+    host.poseEditor.isGestureActive = () => false;
+    await host.uploadStateSnapshot();
+    assert.equal(built, 1);
 });

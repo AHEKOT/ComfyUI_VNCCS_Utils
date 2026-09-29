@@ -84,7 +84,9 @@ export class UniCanvasPoseEditor {
         this.inspecting = false;
         this.viewOffsetKey = null;
         this.commitTimer = null;
-        this.previewTimer = null;
+        this.previewStale = false;
+        this.pointerHeld = false;
+        this.backdropSyncTimer = null;
         this.wheelInspectionTimer = null;
         this.abort = new AbortController();
         if (!document.getElementById("vnccs-uc-pose-style")) {
@@ -128,10 +130,12 @@ export class UniCanvasPoseEditor {
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
                 this.syncSessionViewOffset();
                 this.syncGizmoSize();
-                // While the live viewport replaces the layer pixels on screen, a per-frame capture
-                // (a second full render plus a stage repaint) is invisible work that makes joint
-                // drags lag. Bake once the viewport settles instead.
-                if (this.hidesLayerPixels(layer)) this.scheduleSettledPreview();
+                // While the live viewport replaces the layer pixels on screen, a per-frame capture is
+                // invisible work that made every joint drag lag: it resizes the WebGL drawing buffer
+                // to the capture size and back, renders the scene twice more, copies it into the
+                // layer and repaints the stage. Edits bake once through scheduleCommit(); the pixels
+                // are only marked stale here and re-captured when they are shown again (layout()).
+                if (this.hidesLayerPixels(layer)) this.previewStale = true;
                 else this.capturePreview();
             },
         });
@@ -289,8 +293,12 @@ export class UniCanvasPoseEditor {
         });
         select(Math.max(0, Math.min(panels.length - 1, savedUI?.tab || 0)));
         this.uiAbort?.abort(); this.uiAbort = new AbortController();
+        const signal = this.uiAbort.signal;
         // Keep all shared settings mounted; only visibility changes, so drafts and scroll survive.
         for (const element of [controls, side, studio.canvasContainer]) {
+            // A held pointer (joint, gizmo, torso, orbit, slider) is a gesture in progress; see
+            // isGestureActive(). Capture phase: the torso drag stops its own pointerdown.
+            element.addEventListener("pointerdown", () => { this.pointerHeld = true; }, { capture: true, signal });
             element.addEventListener("keydown", event => {
                 // Enter/Escape leave the editor from anywhere but a text field or a Pose Studio dialog.
                 if ((event.key === "Escape" || event.key === "Enter") && !event.target.closest?.("input, textarea, select, [contenteditable], [role=dialog], [class*=modal]")) {
@@ -302,6 +310,18 @@ export class UniCanvasPoseEditor {
             element.addEventListener("pointerdown", event => event.stopPropagation());
             element.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
         }
+        const endGesture = () => { this.pointerHeld = false; };
+        globalThis.addEventListener?.("pointerup", endGesture, { capture: true, signal });
+        globalThis.addEventListener?.("pointercancel", endGesture, { capture: true, signal });
+        // The window losing focus only: a captured blur would also fire for any element that loses
+        // focus when the drag starts.
+        globalThis.addEventListener?.("blur", endGesture, { signal });
+    }
+
+    // UniCanvas defers its full state sync and upload (another capture plus a PNG encode of every
+    // layer) while this is true, so they never stall a drag that starts soon after the last edit.
+    isGestureActive() {
+        return Boolean(this.pointerHeld && this.visible && this.initialized);
     }
 
     buildEditBar() {
@@ -522,6 +542,7 @@ export class UniCanvasPoseEditor {
 
     setVisible(visible) {
         this.visible = visible;
+        if (!visible) this.pointerHeld = false;
         if (!this.studio) return;
         this.studio.container.hidden = !visible;
         if (!visible && this.studio.viewer?.orbit) this.studio.viewer.orbit.enableDamping = false;
@@ -560,6 +581,11 @@ export class UniCanvasPoseEditor {
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
         this.syncSessionViewOffset();
         if (this.initialized) this.refreshWall();
+        // The baked pixels became visible (layer locked or hidden, staging panel opened) after frames
+        // that skipped their capture: one viewport frame re-captures them through onViewportRender.
+        if (this.previewStale && this.visible && this.initialized && !this.hidesLayerPixels(this.layer)) {
+            this.studio.viewer?.requestRender?.();
+        }
         if (!this.visible && this.initialized) {
             const scale = Math.min(1, 1024 / Math.max(rect.width, rect.height));
             this.studio.performViewerResize(Math.round(rect.width * scale), Math.round(rect.height * scale));
@@ -770,6 +796,7 @@ export class UniCanvasPoseEditor {
             const ctx = this.layer.canvas.getContext("2d");
             ctx.clearRect(0, 0, this.layer.canvas.width, this.layer.canvas.height);
             ctx.drawImage(surface, region.x - this.host.origin.x, region.y - this.host.origin.y, region.width, region.height);
+            this.previewStale = false;
             this.layer.hiresCanvas = surface;
             this.layer.hiresRect = { ...region };
             this.host.markLayerPixelsChanged(this.layer);
@@ -826,24 +853,10 @@ export class UniCanvasPoseEditor {
 
     commit() {
         if (!this.initialized || !this.host.layers.includes(this.layer) || !poseAtPanoramaCamera(this.layer, this.host.panorama)) return;
-        clearTimeout(this.previewTimer); this.previewTimer = null;
         this.capturePreview(true);
         this.saveUI();
         this.host.panorama?.commitLayer(this.layer);
         this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
-    }
-
-    // Trailing preview bake for viewport frames whose pixels are hidden behind the live view.
-    // Every new frame pushes it back, so nothing is captured while frames keep arriving.
-    scheduleSettledPreview() {
-        if (!this.initialized) return;
-        clearTimeout(this.previewTimer);
-        const token = this.token;
-        this.previewTimer = setTimeout(() => {
-            this.previewTimer = null;
-            if (token !== this.token || !this.studio) return;
-            this.capturePreview();
-        }, 150);
     }
 
     // One trailing full-quality bake per settled edit gesture (AGENTS.md realtime rule:
@@ -859,15 +872,20 @@ export class UniCanvasPoseEditor {
         }, 250);
     }
 
-    // A depth clamp moved a character: persist it once per frame, like any other studio edit.
+    // A torso drag or a depth clamp moved a character. The mesh and the camera sliders already
+    // show it; persisting runs the whole Pose Studio serialization (and dirties the ComfyUI graph),
+    // so it follows the movement once instead of running on every drag frame.
     scheduleBackdropSync() {
-        if (this.backdropSyncFrame) return;
-        const token = this.token;
-        this.backdropSyncFrame = requestAnimationFrame(() => {
-            this.backdropSyncFrame = null;
-            if (token !== this.token || !this.studio) return;
-            this.studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
-        });
+        clearTimeout(this.backdropSyncTimer);
+        this.backdropSyncTimer = setTimeout(() => this.flushBackdropSync(), 120);
+    }
+
+    // Persist a pending character move now (called when the torso drag ends).
+    flushBackdropSync() {
+        if (!this.backdropSyncTimer) return;
+        clearTimeout(this.backdropSyncTimer);
+        this.backdropSyncTimer = null;
+        this.studio?.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
     }
 
     async flush() {
@@ -923,10 +941,9 @@ export class UniCanvasPoseEditor {
         this.initialized = false;
         this.inspecting = false;
         clearTimeout(this.commitTimer); this.commitTimer = null;
-        clearTimeout(this.previewTimer); this.previewTimer = null;
         clearTimeout(this.wheelInspectionTimer); this.wheelInspectionTimer = null;
-        if (this.backdropSyncFrame) cancelAnimationFrame(this.backdropSyncFrame);
-        this.backdropSyncFrame = null;
+        clearTimeout(this.backdropSyncTimer); this.backdropSyncTimer = null;
+        this.previewStale = false; this.pointerHeld = false;
         this.backdrop?.dispose(); this.backdrop = null; this.meshKey = null;
         this.disposeBodyDrag?.(); this.disposeBodyDrag = null;
         this.wall?.dispose(); this.wall = null; this.wallKey = null; this.wallShown = true; this.wallContent = false;
