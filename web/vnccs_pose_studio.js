@@ -5051,6 +5051,7 @@ class PoseStudioWidget {
         camAngleSection.content.appendChild(this.createSliderField("Yaw", "cam_yaw_deg", -180, 180, 1, 0, this.exportParams, true));
         camAngleSection.content.appendChild(this.createSliderField("Pitch", "cam_pitch_deg", -89, 89, 1, 0, this.exportParams, true));
         leftPanel.appendChild(camAngleSection.el);
+        this.hideSectionInUniCanvas(camAngleSection);
 
         // --- EXPORT SETTINGS SECTION ---
         const exportSection = this.createSection("Export Settings", true);
@@ -5111,6 +5112,7 @@ class PoseStudioWidget {
         exportSection.content.appendChild(colorField);
 
         leftPanel.appendChild(exportSection.el);
+        this.hideSectionInUniCanvas(exportSection);
     }
 
     _createCenterPanel() {
@@ -6194,6 +6196,13 @@ class PoseStudioWidget {
 
     // === UI Helper Methods ===
 
+    // UniCanvas owns the output and the capture angle, so the Pose Studio angle and export sections
+    // would only get in the way there (the Camera section stays: it holds the zoom). The widgets stay
+    // built (other code reads them); they are just not shown.
+    hideSectionInUniCanvas(section) {
+        if (this.host?.embedded === true && section?.el) section.el.style.display = "none";
+    }
+
     createSection(title, expanded = true) {
         const section = document.createElement("div");
         section.className = "vnccs-ps-section" + (expanded ? "" : " collapsed");
@@ -6445,10 +6454,16 @@ class PoseStudioWidget {
         if (slot < 0) return false;
         const id = nextCharacterId(this.characters);
         const spread = [0, 3, -3, 6][slot] ?? slot * 3;
-        const initialTransform = { x: spread, y: 0, z: 0, zoom: 1 };
+        // Inside UniCanvas the new mannequin starts as a copy of the active one (pose, height, depth,
+        // zoom) standing beside it, so both fit together and only need a small adjustment.
+        const clone = this.host?.embedded === true ? this.getActiveCharacter() : null;
+        const initialTransform = clone
+            ? { x: spread, y: clone.transform?.y ?? 0, z: clone.transform?.z ?? 0, zoom: clone.transform?.zoom ?? 1 }
+            : { x: spread, y: 0, z: 0, zoom: 1 };
         const poses = Array.from({ length: Math.max(1, this.poses.length) }, (_, index) => {
             const sceneCamera = this.cameraParamsForPose(this.poses[index]);
             return {
+                ...(clone ? JSON.parse(JSON.stringify(this.poses[index] || {})) : {}),
                 cameraParams: {
                     offset_x: initialTransform.x,
                     offset_y: initialTransform.y,
@@ -13068,7 +13083,10 @@ class PoseStudioWidget {
                     };
                     const pose = this.stripSceneCameraFromPose(poseSource);
                     this.viewer.setPose(pose, true);
-                    if (activeSceneTransform) {
+                    if (this.host?.embedded === true) {
+                        // Embedded in UniCanvas the mannequin is already placed in the image:
+                        // a library pose changes the pose only, never position, zoom or view angles.
+                    } else if (activeSceneTransform) {
                         // v3 scene poses already store the final character-space
                         // placement. Re-running it through the legacy camera-pivot
                         // conversion shifts and rescales the character on every load.
@@ -13076,7 +13094,7 @@ class PoseStudioWidget {
                     } else if (savedFraming) {
                         this.applyLibraryPoseFraming(savedFraming);
                     }
-                    if (savedSAMProjection) {
+                    if (savedSAMProjection && this.host?.embedded !== true) {
                         this.applyLibrarySAMProjection(savedSAMProjection);
                     }
                     if (this.isAnimationMode()) {

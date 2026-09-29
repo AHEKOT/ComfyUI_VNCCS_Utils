@@ -18,6 +18,20 @@ export function orbitPoint([x, y, z], camera) {
     z: Math.sin(pitch) * y + Math.cos(pitch) * cz };
 }
 
+// Angles stick to the main axes (0, +-90, 180) when they get close, so a straight or quarter-turn
+// view is easy to hit. Holding Alt while dragging turns the snapping off.
+export const AXIS_SNAP_STEP = 90;
+export const AXIS_SNAP_RANGE = 5;
+export function snapAxisAngle(value, range = AXIS_SNAP_RANGE) {
+  const nearest = Math.round(value / AXIS_SNAP_STEP) * AXIS_SNAP_STEP;
+  return Math.abs(value - nearest) <= range ? nearest + 0 : value; // + 0 turns -0 into 0
+}
+export function snapAxisAngles(values, keys = ["yaw", "pitch", "roll"]) {
+  const out = { ...values };
+  for (const key of keys) if (key in out) out[key] = snapAxisAngle(out[key]);
+  return out;
+}
+
 export function orbitDrag(camera, dx, dy) {
   const roll = (camera.roll || 0) * RAD;
   return { yaw: camera.yaw - (dx * Math.cos(roll) - dy * Math.sin(roll)) * 140,
@@ -171,9 +185,11 @@ export class PanoramaOrbitControl {
       const angle = Math.atan2(p.y, p.x);
       gesture.angle += Math.atan2(Math.sin(angle - gesture.lastAngle), Math.cos(angle - gesture.lastAngle));
       gesture.lastAngle = angle;
-      this.change({ roll: gesture.camera.roll + gesture.angle / RAD });
+      const value = { roll: gesture.camera.roll + gesture.angle / RAD };
+      this.change(event.altKey ? value : snapAxisAngles(value));
     } else {
-      this.change(orbitDrag(gesture.camera, p.x - gesture.start.x, p.y - gesture.start.y));
+      const value = orbitDrag(gesture.camera, p.x - gesture.start.x, p.y - gesture.start.y);
+      this.change(event.altKey ? value : snapAxisAngles(value));
     }
   }
 

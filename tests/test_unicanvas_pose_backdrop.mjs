@@ -125,3 +125,15 @@ test("orbiting the camera repositions the backdrop and never moves a character",
     assert.ok(Math.abs(clamped.characters[0].farEdge - clamped.distance) < 1e-6);
     assert.ok(mesh.position.x < 60);
 });
+
+test("a character move is mirrored into Pose Studio's camera offset params so slider edits keep it", () => {
+    const { character, backdrop } = rig();
+    const calls = [];
+    const studio = backdrop.editor.studio;
+    studio.exportParams = { cam_offset_x: 0, cam_offset_y: 0 };
+    studio.persistActivePoseCameraParams = () => { calls.push(["persist", studio.exportParams.cam_offset_x, studio.exportParams.cam_offset_y]); };
+    studio.syncCameraWidgets = () => calls.push(["widgets"]);
+    backdrop.moveActiveCharacter(new THREE.Vector3(3, -2, 5));
+    assert.deepEqual([character.transform.x, character.transform.y, character.transform.z], [3, -2, 5]);
+    assert.deepEqual(calls, [["persist", 3, -2], ["widgets"]]);
+});

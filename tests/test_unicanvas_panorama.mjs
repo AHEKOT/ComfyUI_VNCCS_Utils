@@ -3,7 +3,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory } from "../web/vnccs_unicanvas_panorama.mjs";
+import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory, DEFAULT_PANORAMA_CAMERA } from "../web/vnccs_unicanvas_panorama.mjs";
+import { snapAxisAngles } from "../web/vnccs_unicanvas_panorama_orbit.mjs";
 import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
@@ -59,7 +60,7 @@ class Element {
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
   isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
-  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode,
+  normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, snapAxisAngles, DEFAULT_PANORAMA_CAMERA,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,
   uid: () => "new-layer", HISTORY_LIMIT: 20, DEFAULT_SEED_MODE: "randomize",
@@ -70,21 +71,23 @@ const widget = (values = {}) => Object.assign(Object.create(prototype), {
   setStatus() {}, requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {}, ...values,
 });
 
-test("panorama panel contains only the orbit widget, with no extra buttons or text", () => {
+test("panorama panel holds the orbit widget and one Reset button", () => {
   let received;
   context.PanoramaOrbitControl = class {
     constructor(canvas) { this.canvas = canvas; }
     update(doc, camera) { received = { doc, camera }; }
   };
-  const doc = { settings: settings({ roll: 30 }) };
-  const w = widget({ panorama: doc, side: new Element(), tools: new Element() });
+  const doc = { settings: settings({ roll: 30, baseLayerId: "base" }) };
+  const w = widget({ panorama: doc, side: new Element(), tools: new Element(), activeLayerId: "base" });
   w.buildPanoramaControls();
-  assert.equal(w.panoramaPanel.children.length, 1);
+  assert.equal(w.panoramaPanel.children.length, 2);
   assert.equal(w.panoramaPanel.children[0], w.panoramaOrbit.canvas);
+  assert.equal(w.panoramaPanel.children[1], w.panoramaResetBtn);
   assert.equal(w.panoramaPanel.hidden, false);
   assert.equal(received.doc, doc); assert.equal(received.camera.roll, 30);
   const panelSource = source.slice(source.indexOf("  buildPanoramaControls()"), source.indexOf("  choosePanoramaImport("));
-  assert.doesNotMatch(panelSource, /_button|_section|createElement\("(?:button|input|label)"\)|textContent/);
+  assert.equal((panelSource.match(/_button\(/g) || []).length, 1, "the Reset button is the only extra control");
+  assert.doesNotMatch(panelSource, /_section|createElement\("(?:button|input|label)"\)|textContent/);
   assert.doesNotMatch(source, /Export panorama PNG|Rotate panorama|Square = editing view/);
   w.panorama = null; w.updatePanoramaControls();
   assert.equal(w.panoramaPanel.hidden, true); assert.equal(received.doc, null);
@@ -461,4 +464,68 @@ test("standard PSD export keeps all spherical pixels regardless of roll or viewp
     assert.deepEqual(Array.from(result.children, layer => layer.canvas.pixels), ["complete base", "complete edit"]);
     assert.equal(downloaded, "unicanvas-panorama.psd");
   } finally { context.Blob = previousBlob; }
+});
+
+test("panorama angles snap to the main axes within 5 degrees, unless Alt is held", () => {
+  assert.deepEqual(snapAxisAngles({ yaw: 88, pitch: -3, roll: 177 }), { yaw: 90, pitch: 0, roll: 180 });
+  assert.deepEqual(snapAxisAngles({ yaw: 84, pitch: 6 }), { yaw: 84, pitch: 6 });
+  const turns = [];
+  const drag = altKey => {
+    const w = widget({ panorama: { setCamera: value => turns.push(value) }, isPointerDown: true, pointerMode: "panorama",
+      dragStart: { screen: { x: 100, y: 100 }, camera: { yaw: 0, pitch: 0, fov: 90 } }, view: { scale: 1 },
+      canvasPointFromEvent: () => ({ x: 100 - 89 / (90 / 1024), y: 100 }) });
+    w.onPointerMove({ preventDefault() {}, stopPropagation() {}, altKey });
+  };
+  drag(false); drag(true);
+  assert.equal(turns[0].yaw, 90, "near 90 degrees the view locks onto the axis");
+  assert.ok(Math.abs(turns[1].yaw - 89) < 1e-6, "Alt keeps the exact angle");
+});
+
+test("every finished panorama view change is one undo step and undo restores the view", () => {
+  const history = [], controls = [];
+  const doc = Object.create(PanoramaDocument.prototype);
+  Object.assign(doc, { settings: settings({ yaw: 10 }), widget: { pushHistoryEntry: entry => history.push(entry), requestRender() {}, syncLightStateToWidget() {}, scheduleFullSync() {} }, frame: null, pendingCamera: null, project() {} });
+  doc.cameraStart = { yaw: 10, pitch: 0, roll: 0, fov: 90 };
+  doc.settings = settings({ yaw: 55, roll: 90 });
+  doc.endCamera();
+  assert.equal(history.length, 1);
+  assert.equal(history[0].kind, "panoramaCamera");
+  assert.deepEqual(history[0].before, { yaw: 10, pitch: 0, roll: 0, fov: 90 });
+  assert.deepEqual(history[0].after, { yaw: 55, pitch: 0, roll: 90, fov: 90 });
+  doc.cameraStart = { yaw: 55, pitch: 0, roll: 90, fov: 90 };
+  doc.endCamera();
+  assert.equal(history.length, 1, "an unchanged view leaves no history entry");
+
+  const w = widget({ panorama: { settings: settings({ yaw: 55, roll: 90 }), project() {} }, cancelDeferredCanvasCommit() {},
+    syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {}, renderLayerList() {}, updatePanoramaControls: () => controls.push("ui"), layers: [] });
+  w.applyHistoryEntry(history[0], "undo");
+  assert.equal(w.panorama.settings.yaw, 10); assert.equal(w.panorama.settings.roll, 0);
+  w.applyHistoryEntry(history[0], "redo");
+  assert.equal(w.panorama.settings.yaw, 55); assert.equal(w.panorama.settings.roll, 90);
+  assert.equal(controls.length, 2, "the orbit widget follows undo and redo");
+});
+
+test("Reset returns the panorama view to straight ahead through the camera pipeline", () => {
+  const calls = [];
+  const w = widget({ panorama: { beginCamera: () => { calls.push("begin"); return true; }, setCamera: value => calls.push(value), endCamera: () => calls.push("end") } });
+  w.resetPanoramaView();
+  assert.deepEqual(calls.map(call => (typeof call === "string" ? call : JSON.stringify(call))), ["begin", JSON.stringify({ yaw: 0, pitch: 0, roll: 0, fov: 90 }), "end"]);
+  const refused = widget({ panorama: { beginCamera: () => false, setCamera: () => assert.fail("no change while an edit is running") } });
+  refused.resetPanoramaView();
+});
+
+test("the rotation widget is visible only while the panorama layer is selected", () => {
+  const doc = { settings: settings({ baseLayerId: "base" }) };
+  const w = widget({ panorama: doc, side: new Element(), tools: new Element(), activeLayerId: "base" });
+  w.buildPanoramaControls();
+  assert.equal(w.panoramaPanel.hidden, false);
+  w.activeLayerId = "edit"; w.updatePanoramaControls();
+  assert.equal(w.panoramaPanel.hidden, true, "another layer hides the panorama interface");
+  w.activeLayerId = "base"; w.updatePanoramaControls();
+  assert.equal(w.panoramaPanel.hidden, false);
+  const sync = source.slice(source.indexOf("  syncActiveLayerControls() {"), source.indexOf("    this.renderToolSettings();", source.indexOf("  syncActiveLayerControls() {")));
+  assert.ok(sync.includes("this.updatePanoramaControls()"), "selecting a layer refreshes the panel");
+  const plain = widget({ panorama: null, side: new Element(), tools: new Element() });
+  plain.buildPanoramaControls();
+  assert.equal(plain.panoramaPanel.hidden, true, "no panorama, no panel");
 });

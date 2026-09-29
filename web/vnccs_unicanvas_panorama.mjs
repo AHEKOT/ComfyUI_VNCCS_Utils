@@ -210,6 +210,9 @@ export class PanoramaRenderer {
   }
 }
 
+export const cameraOf = ({ yaw, pitch, roll, fov }) => ({ yaw, pitch, roll, fov });
+export const DEFAULT_PANORAMA_CAMERA = Object.freeze({ yaw: 0, pitch: 0, roll: 0, fov: 90 });
+
 export class PanoramaDocument {
   constructor(widget, settings) {
     this.widget = widget;
@@ -291,6 +294,7 @@ export class PanoramaDocument {
     if (this.widget.tool === "pose") this.widget.setTool("move");
     if (!this.canRotate()) return false;
     this.commit();
+    this.cameraStart = cameraOf(this.settings);
     // SAM requests are tied to a view revision. Late responses are ignored.
     this.revision++;
     this.widget.clearSamPrompt();
@@ -325,6 +329,10 @@ export class PanoramaDocument {
 
   endCamera() {
     this.flushCamera();
+    // Every finished view / rotation change is one undo step.
+    const before = this.cameraStart, after = cameraOf(this.settings);
+    this.cameraStart = null;
+    if (before && JSON.stringify(before) !== JSON.stringify(after)) this.widget.pushHistoryEntry?.({ kind: "panoramaCamera", before, after });
     this.project();
     this.widget.requestRender();
     this.widget.syncLightStateToWidget();

@@ -71,7 +71,24 @@ _POSE_ANIMATION_DISK_CACHE_MAX_FILES = 256
 _POSE_ANIMATION_DISK_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_MAX = 10
 _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
-_UNICANVAS_STATE_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_unicanvas_state_cache")
+def _vnccs_user_data_root():
+    # ComfyUI wipes its temp directory on every start, so anything that must survive a restart
+    # lives in the user directory instead.
+    try:
+        import folder_paths
+
+        root = folder_paths.get_user_directory()
+    except Exception:
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime_cache", "user")
+    root = os.path.join(root, "vnccs")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+# Canvas pixels behind a workflow's "state cache": persistent, so a restart keeps every canvas.
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(_vnccs_user_data_root(), "unicanvas_state_cache")
+# Older versions kept the cache in the temp directory (emptied at startup); still read as a fallback.
+_UNICANVAS_LEGACY_STATE_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_unicanvas_state_cache")
 _UNICANVAS_STATE_DISK_CACHE_MAX_FILES = 64
 _UNICANVAS_STATE_DISK_CACHE_MAX_BYTES = 1024 * 1024 * 1024
 _DISK_CACHE_TTL_SECONDS = 180 * 24 * 60 * 60
@@ -426,7 +443,10 @@ def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
 def _vnccs_read_unicanvas_state_cache_file(state_id):
     path = _vnccs_unicanvas_state_cache_path(state_id)
     if not os.path.exists(path):
-        return None
+        legacy = os.path.join(_UNICANVAS_LEGACY_STATE_CACHE_DIR, os.path.basename(path))
+        if not os.path.exists(legacy):
+            return None
+        path = legacy
     with open(path, "r", encoding="utf-8") as handle:
         entry = json.load(handle)
     try:

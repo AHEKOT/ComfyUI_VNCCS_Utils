@@ -716,19 +716,28 @@ export function buildUniCanvasCompositeCanvas(widget) {
   return out;
 }
 
+const canvasToPngBlob = (canvas) => new Promise((resolve, reject) => {
+  canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("The canvas could not be encoded as PNG."))), "image/png");
+});
+
 export async function saveUniCanvasOutput(widget, layerId = null) {
   // layerId is the layer-context-menu call shape ("Save layer as image" in the
-  // layer context menu of a parallel branch): it saves only that layer's PNG.
+  // layer context menu of a parallel branch): it saves only that layer's PNG on the server.
+  // Without it (the standalone "Save to output" button) the bbox crop is downloaded, like Export PSD.
   try {
-    widget.setStatus("[VNCCS UniCanvas] Saving to output...");
-    let payload;
-    if (layerId) {
-      const layer = widget.layers.find((item) => item.id === String(layerId));
-      if (!layer) throw new Error(`[VNCCS UniCanvas] Layer '${layerId}' was not found.`);
-      payload = { state: { version: 2, layers: [widget.serializeLayer(layer, true)] }, layer_id: String(layerId) };
-    } else {
-      payload = { image: buildUniCanvasBboxCompositeCanvas(widget).toDataURL("image/png") };
+    if (!layerId) {
+      widget.setStatus("[VNCCS UniCanvas] Preparing download...");
+      const blob = await canvasToPngBlob(buildUniCanvasBboxCompositeCanvas(widget));
+      const fileName = `unicanvas-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.png`;
+      widget.downloadBlob(blob, fileName);
+      widget.setStatus(`[VNCCS UniCanvas] Downloaded ${fileName}`);
+      showUniCanvasToast(widget, "Image downloaded", fileName);
+      return;
     }
+    widget.setStatus("[VNCCS UniCanvas] Saving to output...");
+    const layer = widget.layers.find((item) => item.id === String(layerId));
+    if (!layer) throw new Error(`[VNCCS UniCanvas] Layer '${layerId}' was not found.`);
+    const payload = { state: { version: 2, layers: [widget.serializeLayer(layer, true)] }, layer_id: String(layerId) };
     const res = await fetch("/vnccs/unicanvas/save_output", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -784,7 +793,7 @@ function installUniCanvasOutputActions(widget) {
   widget.settingsBar?.appendChild(newCanvasButton);
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
-  saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Save the flattened composite to the ComfyUI output directory"));
+  saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Download the flattened generation box as a PNG file"));
   widget.side.insertBefore(saveRow, widget.side.firstChild);
   widget._vnccsSaveActions = saveRow;
 }

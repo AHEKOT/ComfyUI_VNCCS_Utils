@@ -33,6 +33,7 @@ from .presets import (
 from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress
 from .remove_bg import _run_unicanvas_remove_bg
 from .save_output import _run_unicanvas_save_output
+from .user_prefs import load_model_memory, remember_model_choice
 from .segment import _run_unicanvas_segment
 
 
@@ -195,6 +196,23 @@ def register_unicanvas_routes() -> None:
     @PromptServer.instance.routes.get("/vnccs/unicanvas/result/{draw_id}")
     async def vnccs_unicanvas_result(request):
         return web.json_response(_get_draw_result(str(request.match_info.get("draw_id") or "")))
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/model_memory")
+    async def vnccs_unicanvas_model_memory_get(_request):
+        return web.json_response(await asyncio.to_thread(load_model_memory))
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/model_memory")
+    async def vnccs_unicanvas_model_memory_set(request):
+        if not _content_length_ok(request, 64 * 1024):
+            return web.json_response({"error": "[VNCCS UniCanvas] model memory payload is too large"}, status=413)
+        try:
+            body = await request.json()
+            body = body if isinstance(body, dict) else {}
+            return web.json_response(await asyncio.to_thread(remember_model_choice, body.get("key"), body.get("entry")))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/save_output")
     async def vnccs_unicanvas_save_output(request):

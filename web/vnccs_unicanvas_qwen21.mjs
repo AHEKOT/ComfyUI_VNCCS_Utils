@@ -117,7 +117,7 @@ export const UNICANVAS_QWEN21_MODULE = {
       cfg: 1,
       denoise: 1,
       qwen21_turbo_enabled: true,
-      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors",
+      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
       qwen_lora_strength: 1,
       qwen21_opaque_output: false,
       qwen21_aspect_preset: "",
@@ -173,7 +173,7 @@ const QWEN21_HELP_TEXTS = {
 };
 
 // Viggle turbo (v0.2.1, 6-step) constants + profile swap, mirroring the other turbo switches.
-export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r256.safetensors";
+export const QWEN21_TURBO_LORA_NAME = "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors";
 export const QWEN21_TURBO_SETTINGS = { steps: 6, cfg: 1 };
 // Base (non-turbo) profile: without the distillation the family runs the full schedule.
 export const QWEN21_BASE_SETTINGS = { steps: 45 };
