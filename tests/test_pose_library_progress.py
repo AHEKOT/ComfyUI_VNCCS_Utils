@@ -427,6 +427,40 @@ class PoseLibraryProgressTests(unittest.TestCase):
 
             self.assertEqual(walked_files, {str(Path("artist__poses/General/Standing.json"))})
 
+class PoseLibraryCleanupTests(unittest.TestCase):
+    def _run_cleanup(self, library_root, expected_json, expected_preview=()):
+        with mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)):
+            return POSE_LIBRARY.cleanup_local_repository_cache(
+                "artist/poses", expected_json, expected_preview,
+            )
+
+    def test_cleanup_keeps_expected_files_and_removes_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pose_dir = root / POSE_LIBRARY.repository_to_dir("artist/poses") / "Kneeling"
+            pose_dir.mkdir(parents=True)
+            kept = pose_dir / "A.json"
+            stale = pose_dir / "B.json"
+            kept.write_text("{}", encoding="utf-8")
+            stale.write_text("{}", encoding="utf-8")
+            removed = self._run_cleanup(root, {str(kept)})
+            self.assertTrue(kept.exists())
+            self.assertFalse(stale.exists())
+            self.assertEqual(len(removed), 1)
+
+    def test_cleanup_compares_paths_with_platform_case_rules(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            pose_dir = root / POSE_LIBRARY.repository_to_dir("artist/poses") / "Kneeling"
+            pose_dir.mkdir(parents=True)
+            target = pose_dir / "A.json"
+            target.write_text("{}", encoding="utf-8")
+            # Emulate a case-insensitive filesystem where the manifest category
+            # casing differs from the directory that already exists.
+            with mock.patch.object(POSE_LIBRARY.os.path, "normcase", side_effect=lambda p: p.lower()):
+                self._run_cleanup(root, {str(pose_dir.parent / "kneeling" / "A.json")})
+            self.assertTrue(target.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
