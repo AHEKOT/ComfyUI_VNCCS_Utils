@@ -455,23 +455,47 @@ def _vnccs_read_unicanvas_state_cache_file(state_id):
         pass
     return entry
 
+def _vnccs_read_git_short_commit(repo_dir):
+    # Resolve HEAD by reading .git files directly (no process execution).
+    try:
+        git_dir = os.path.join(repo_dir, ".git")
+        if os.path.isfile(git_dir):
+            with open(git_dir, "r", encoding="utf-8") as handle:
+                pointer = handle.read().strip()
+            if not pointer.startswith("gitdir:"):
+                return ""
+            git_dir = os.path.normpath(os.path.join(repo_dir, pointer[len("gitdir:"):].strip()))
+        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as handle:
+            head = handle.read().strip()
+        sha = head
+        if head.startswith("ref:"):
+            ref = head[len("ref:"):].strip()
+            sha = ""
+            ref_path = os.path.normpath(os.path.join(git_dir, ref))
+            if ref_path.startswith(os.path.normpath(git_dir) + os.sep) and os.path.isfile(ref_path):
+                with open(ref_path, "r", encoding="utf-8") as handle:
+                    sha = handle.read().strip()
+            else:
+                packed = os.path.join(git_dir, "packed-refs")
+                if os.path.isfile(packed):
+                    with open(packed, "r", encoding="utf-8") as handle:
+                        for line in handle:
+                            parts = line.strip().split(" ", 1)
+                            if len(parts) == 2 and parts[1] == ref:
+                                sha = parts[0]
+                                break
+        if len(sha) >= 7 and all(c in "0123456789abcdef" for c in sha.lower()):
+            return sha[:7]
+    except Exception:
+        pass
+    return ""
+
 def _vnccs_unicanvas_build_info():
     # Debug identity for the UI: git commit (when the checkout has .git) plus the
     # same newest-mtime version the frontend staleness gate compares against.
     # The commit is read per call (cheap, once per popover open) so it can never
     # go stale after new commits land without a server restart.
-    commit = ""
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-            capture_output=True, text=True, timeout=3,
-        )
-        if result.returncode == 0:
-            commit = result.stdout.strip()
-    except Exception:
-        pass
+    commit = _vnccs_read_git_short_commit(os.path.dirname(os.path.abspath(__file__)))
     version = 0
     try:
         import re
