@@ -1,3 +1,13 @@
+# Version 0.6.9
+## Registry Compliance Fix
+
+### Fixes
+
+* **Comfy Registry flag**: Version 0.6.8 was flagged for network-request patterns in the vendored Draco decoder. The unused `XMLHttpRequest` readers were removed from `draco_wasm_wrapper.js`, and the asm.js fallback `draco_decoder.js` was dropped. 3D Factory now always uses the WASM Draco decoder, and glTF/GLB loading is otherwise unchanged.
+* **Security gate**: The security scan now rejects `XMLHttpRequest` in shipped JavaScript, including vendored code.
+* **Pose library sync**: Syncing a pose repository no longer re-downloads and deletes the same asset on every run on Windows, where the manifest category casing differs from the existing folder. A failed preview download also no longer deletes files that are already present locally.
+* **Pose Studio image import**: Importing a pose from an image now refreshes the pose capture, so the node outputs the imported pose instead of the previous one.
+
 # Version 0.6.8
 ## UniCanvas Overhaul: Faster Editing, Pose Layers, and More Models
 

@@ -5933,6 +5933,12 @@ class PoseStudioWidget {
         }
         pose.cameraParams = this.currentCameraParams();
         this.poses[this.activeTab] = pose;
+        // The committed pose replaces whatever this tab was captured with.
+        // Pose Manager cards are refreshed by their own signature check.
+        const inManager = this.interfaceMode === "manager" || this.interfaceMode === "managerDetail";
+        if (!inManager && Array.isArray(this.poseCaptures) && this.activeTab < this.poseCaptures.length) {
+            this.poseCaptures[this.activeTab] = null;
+        }
         this.syncToNode(fullCapture, syncOptions);
     }
 
@@ -9843,7 +9849,9 @@ class PoseStudioWidget {
             this.syncMeshProportionSlidersFromViewer();
             this.applySAM3DFrameCameraParams(poseForImport, fitData?.meshData || null);
             this.updateRotationSliders();
-            this.commitViewerPoseToCurrentEditor({ fullCapture: true });
+            // Refresh the preview capture too: without it the previous pose's
+            // capture (and its server-side cache copy) would still be output.
+            this.commitViewerPoseToCurrentEditor({ fullCapture: true, syncOptions: { skipCapture: false } });
             progress.setProgress(100);
             progress.setText("Step 6/6: Pose applied to Pose Studio.");
             this.showMessage("SAM 3D Body image imported successfully.");

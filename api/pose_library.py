@@ -740,20 +740,24 @@ def local_file_matches(path, expected_sha):
     except Exception:
         return False
 
+def normalize_local_path(path):
+    """Absolute path compared case-insensitively on case-insensitive filesystems (Windows)."""
+    return os.path.normcase(os.path.abspath(path))
+
 def cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=None):
     repo_root = os.path.join(get_library_path(), repository_to_dir(repo_id))
     if not os.path.exists(repo_root):
         return []
 
-    expected_json_paths = {os.path.abspath(path) for path in expected_json_paths}
-    expected_preview_paths = {os.path.abspath(path) for path in expected_preview_paths if path}
+    expected_json_paths = {normalize_local_path(path) for path in expected_json_paths}
+    expected_preview_paths = {normalize_local_path(path) for path in expected_preview_paths if path}
     removed = []
     preview_exts = {".webm", ".mp4", ".webp", ".jpg", ".jpeg", ".png"}
 
     for root, _dirs, files in os.walk(repo_root):
         for filename in files:
             path = os.path.join(root, filename)
-            abs_path = os.path.abspath(path)
+            abs_path = normalize_local_path(path)
             ext = os.path.splitext(filename)[1].lower()
             should_remove = False
             if ext == ".json" and filename not in RESERVED_LIBRARY_JSON:
@@ -833,10 +837,11 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
         target_json = os.path.join(pose_dir, f"{name}.json")
         pose_states[hub_json_path] = {"changed": False, "error": False}
 
+        # Planned targets are always kept by cleanup so a failed download never
+        # deletes a local file that is already present.
+        expected_json_paths.add(target_json)
         try:
-            if local_file_matches(target_json, pose.get("json_sha256") or ""):
-                expected_json_paths.add(target_json)
-            else:
+            if not local_file_matches(target_json, pose.get("json_sha256") or ""):
                 download_jobs.append({
                     "pose_key": hub_json_path,
                     "hub_path": hub_json_path,
@@ -851,9 +856,8 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
                 try:
                     ext = os.path.splitext(hub_preview_path)[1].lower() or ".webp"
                     target_preview = os.path.join(pose_dir, f"{name}{ext}")
-                    if local_file_matches(target_preview, pose.get("preview_sha256") or ""):
-                        expected_preview_paths.add(target_preview)
-                    else:
+                    expected_preview_paths.add(target_preview)
+                    if not local_file_matches(target_preview, pose.get("preview_sha256") or ""):
                         download_jobs.append({
                             "pose_key": hub_json_path,
                             "hub_path": hub_preview_path,

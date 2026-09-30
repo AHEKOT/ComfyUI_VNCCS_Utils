@@ -19,7 +19,7 @@ from scripts.security_scan import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCANNER = PROJECT_ROOT / "scripts" / "security_scan.py"
-EXPECTED_SCANNER_SHA256 = "166e20b06e126b6c5dcf0923f2de2a00137e4c97bdd108bd2525cab75a182b20"
+EXPECTED_SCANNER_SHA256 = "8f0d956985c559aea07c1312e997c3d11316775e5d15e93cbafb65028fa29e4b"
 EXPECTED_RULE_IDS = {
     "BLACKLISTED_URL",
     "CREDENTIAL_URL",
@@ -31,6 +31,7 @@ EXPECTED_RULE_IDS = {
     "JS_DYNAMIC_EXECUTION",
     "JS_EXTERNAL_NETWORK",
     "JS_REQUESTS_SCANNER_TRIGGER",
+    "JS_XHR_SCANNER_TRIGGER",
     "PY_COMMAND_EXECUTION",
     "PY_DYNAMIC_EXECUTION",
     "PY_DYNAMIC_IMPORT",
@@ -128,6 +129,7 @@ hf_hub_download(repo_id="example/project", filename="model.bin")
 const callback = handler.bind(context);
 transport.connect(target);
 Requests.get(sequence);
+const request = new XMLHttpRequest();
 eval("1 + 1");
 const generated = new Function("return 1");
 fetch("https://example.invalid/data");
