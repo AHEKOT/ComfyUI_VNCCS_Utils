@@ -13,6 +13,7 @@ registry), so family modules may subclass the pipeline without import cycles.
 from __future__ import annotations
 
 import contextlib
+import gc
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -34,7 +35,8 @@ from .loaders import _load_generation_assets
 from .locks import _COMFY_MODEL_OP_LOCK
 from .masking import _combine_mask_with_source_alpha, _make_gradient_denoise_mask, _make_gradient_paste_mask
 from .performance import apply_step_cache, performance_label, step_cache_skip_reason
-from .progress import _set_draw_progress
+from .progress import _set_draw_progress, interrupt_types, set_interrupt
+from .prompt_enhance import _release_generation_state, apply_auto_enhance
 from .sampling import _apply_differential_diffusion, _ensure_direct_sampling_prompt_context, _release_generation_sampling_refs
 
 
@@ -145,6 +147,37 @@ class ImageDrawPipeline:
     # -- template ---------------------------------------------------------------------
 
     def run(self) -> dict[str, Any]:
+        try:
+            return self._run()
+        except interrupt_types():
+            self.free_after_interrupt()
+            raise
+
+    def free_after_interrupt(self) -> None:
+        """Stop pressed: drop every tensor the draw held and unload the models it put on the GPU."""
+        ctx = self.ctx
+        ctx.model = ctx.clip = ctx.vae = ctx.positive = ctx.negative = ctx.latent = ctx.decoded = None
+        ctx.image_tensor = ctx.reference_image_tensor = ctx.mask = None
+        ctx.result_images = []
+        with contextlib.suppress(Exception):
+            _release_generation_sampling_refs(ctx.settings, ctx.draw_id, COMMON_SCRATCH_KEYS + tuple(self.module.sampling_scratch_keys))
+        set_interrupt(False)
+        with _COMFY_MODEL_OP_LOCK, contextlib.suppress(Exception):
+            _release_generation_state()
+            import comfy.model_management as model_management
+
+            model_management.unload_all_models()
+            model_management.cleanup_models()
+        gc.collect()
+        with contextlib.suppress(Exception):
+            import comfy.model_management as model_management
+
+            model_management.soft_empty_cache(True)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        _set_draw_progress(ctx.draw_id, "cancelled", 1.0, 0, 0, "Stopped - VRAM freed")
+
+    def _run(self) -> dict[str, Any]:
         self.prepare_source()
         self.check_sizes()
         self.crop_to_mask()
@@ -153,6 +186,7 @@ class ImageDrawPipeline:
             model_session.enter_context(torch.inference_mode())
             self.load_models()
             self.apply_loras()
+            self.enhance_prompts()
             self.encode_prompts()
             self.prepare_mask()
             self.prepare_inputs()
@@ -232,6 +266,12 @@ class ImageDrawPipeline:
         _set_draw_progress(ctx.draw_id, "loras", 0.14, 0, self.request.steps, "Applying LoRAs")
         ctx.model, ctx.clip = self.module.apply_loras(ctx.model, ctx.clip, ctx.settings)
         self.module.bind_draw_assets(ctx)
+
+    def enhance_prompts(self) -> None:
+        """Auto prompt enhance (settings.prompt_enhance, sent only when enabled and no config is linked)."""
+        ctx = self.ctx
+        edit_source = None if ctx.mode == "txt2img" or ctx.source_empty else ctx.source
+        apply_auto_enhance(self.request, ctx.clip, edit_source)
 
     def encode_prompts(self) -> None:
         ctx = self.ctx

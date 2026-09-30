@@ -11,7 +11,11 @@ from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _uc_log
 from ..pipeline import UniCanvasNodeStep, UniCanvasPipeline, _run_pipeline_steps
 from ..progress import _set_draw_progress
-from ..sampling import _ensure_direct_sampling_prompt_context, _suppress_direct_sampling_comfy_progress
+from ..sampling import (
+    _ensure_direct_sampling_prompt_context,
+    _report_comfy_sampling_progress,
+    _suppress_direct_sampling_comfy_progress,
+)
 from .base import UniCanvasModelModule
 from .capabilities import ModelCapabilities, PromptGuide
 
@@ -247,7 +251,7 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             "width": width,
             "height": height,
         }
-        with _suppress_direct_sampling_comfy_progress():
+        with _suppress_direct_sampling_comfy_progress(), _report_comfy_sampling_progress(draw_id, int(steps)):
             _run_pipeline_steps(self.pipeline.sample, context, draw_id)
         _set_draw_progress(draw_id, "sampling", 0.85, steps, steps, f"Sampling {steps}/{steps}")
         _uc_log(draw_id, "SamplerCustomAdvanced output", _latent_debug(context.get("latent")))

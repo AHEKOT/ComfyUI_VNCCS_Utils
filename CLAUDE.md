@@ -19,8 +19,7 @@ same guidance for GitHub Copilot.
 python scripts/security_scan.py                     # mandatory, CI fails on any finding
 python -m pytest tests -q -p no:cacheprovider       # Python unit tests (needs torch locally)
 node --test tests/*.mjs                             # JS unit tests (Node 20+)
-# CI style: every Python test file as a script, only numpy + Pillow installed
-for f in tests/*.py; do [ "$f" != tests/test_security_scan.py ] && PYTHONPATH=. python "$f"; done
+# CI style: PYTHONPATH=. python -m pytest tests -q --ignore=tests/test_security_scan.py --ignore=tests/e2e
 ```
 
 Single test: `python -m pytest tests/test_unicanvas_h3.py -q -k external` or
@@ -103,8 +102,7 @@ Conventions:
   `tests/helpers/unicanvas_package.py::load_unicanvas_package(<private name>, torch_module=stub)`
   and reach submodules as attributes (`pkg.render`, `pkg.models.registry`). Keep module-level
   code free of real torch calls (annotations are lazy via `from __future__ import annotations`).
-- CI installs only numpy + Pillow and runs each `tests/*.py` as a script; torch-dependent
-  files fail there by design, but do not make a currently passing file depend on torch.
+- CI installs numpy, Pillow, pytest and CPU torch and runs the suite with pytest.
 - `scripts/security_scan.py` scans all `.py/.js/.mjs/.json/.toml` (tests included) and forbids
   e.g. `importlib.import_module`, exec/eval, `subprocess`, `os.environ`/`getenv`,
   `tempfile.gettempdir()`, network clients (`requests`, `urllib.request`, `http.client`,

@@ -83,13 +83,14 @@ lora_requirements = (
         default_name="Vendor/edit_adapter.safetensors",
         fixed_strength=1.0,                  # the user cannot change it
         required=True,                       # applied even when a config owns the stack
-        dedupe_from_stack=True,              # never applied twice
     ),
 )
 ```
 
-Other options: `require_positive_strength`, `draw_modes` (only for some modes)
-and `resolver` / `resolve_match` (e.g. a lazy download on first use).
+Other options: `require_positive_strength`, `draw_modes` (only for some modes),
+`resolver` / `resolve_match` (e.g. a lazy download on first use) and `apply` (a custom
+loader, e.g. an unmerged adapter). A file is never applied twice: rules skip files the
+linked VNCSS Config stack carries, and the user stack skips files already applied.
 
 ## Layer Tool Registries
 

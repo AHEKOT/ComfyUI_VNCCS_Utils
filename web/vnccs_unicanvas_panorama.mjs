@@ -1,5 +1,6 @@
 // Equirectangular document storage and a perspective editing window.
 export const PANORAMA_MAX_PIXELS = 8192 * 4096;
+export const PANORAMA_MAX_VIEW = 4096;
 export const isPanoramaCandidate = (width, height) => height > 0 && width / height >= 1.9;
 
 export function normalizePanorama(value) {
@@ -17,6 +18,8 @@ export function normalizePanorama(value) {
     pitch: Math.max(-90, Math.min(90, finite(value.pitch, 0))),
     roll: ((finite(value.roll, 0) + 180) % 360 + 360) % 360 - 180,
     fov: Math.max(25, Math.min(120, finite(value.fov, 90))),
+    // Side of the square editing window (the bbox). Older saves have none: 1024.
+    view: Math.max(256, Math.min(PANORAMA_MAX_VIEW, Math.round(finite(value.view, 1024)))),
   };
 }
 
@@ -122,7 +125,7 @@ void main() {
 export class PanoramaRenderer {
   constructor() {
     this.canvas = canvas(1, 1);
-    const gl = this.gl = this.canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true, antialias: false });
+    const gl = this.gl = this.canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, preserveDrawingBuffer: true, antialias: false });
     if (!gl) throw new Error("Panorama mode requires WebGL 2");
     this.textures = new Map();
     const shaders = [];
@@ -165,7 +168,7 @@ export class PanoramaRenderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     if (entry.dirty) {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
       if (gl.getError() !== gl.NO_ERROR) throw new Error("The GPU could not allocate the panorama texture");
       entry.dirty = false;

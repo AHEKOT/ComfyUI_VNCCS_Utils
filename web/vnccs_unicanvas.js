@@ -7,7 +7,7 @@ import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharac
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { PanoramaOrbitControl, snapAxisAngles } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
-import { DEFAULT_PANORAMA_CAMERA, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
 import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
 import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
 import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
@@ -54,6 +54,7 @@ import {
   getUniCanvasPresetModelName,
 } from "./vnccs_unicanvas_presets.mjs?v=1790494137676";
 import {
+  buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
   readUniCanvasStandaloneSetting,
   syncUniCanvasStandaloneSidebarTab,
@@ -124,6 +125,7 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
   }, true);
 })();
 import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790494137676";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./vnccs_unicanvas_prompt_enhance.mjs?v=1790494137676";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -165,6 +167,10 @@ const STYLES = `
 .vnccs-uc-side-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); }
 .vnccs-uc-draw-control { background:var(--uc-panel); border:1px solid rgba(255,143,163,.2); border-radius:12px; padding:8px; box-shadow:0 4px 16px rgba(0,0,0,.35); display:grid; grid-template-columns:minmax(0,1fr) 46px; gap:7px; align-items:stretch; }
 .vnccs-uc-draw-control .vnccs-uc-btn { width:100%; height:34px; font-weight:800; }
+.vnccs-uc-draw-control.generating { grid-template-columns:minmax(0,1fr) 74px 46px; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop { border:1px solid rgba(255,107,107,.7); background:rgba(255,107,107,.14); color:#ff9a9a; display:flex; align-items:center; justify-content:center; gap:5px; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop:hover:not(:disabled) { background:rgba(255,107,107,.28); color:#fff; }
+.vnccs-uc-draw-control .vnccs-uc-btn.stop svg { width:11px; height:11px; fill:currentColor; }
 .vnccs-uc-draw-control .vnccs-uc-batch-input { width:46px; height:34px; box-sizing:border-box; text-align:center; font-weight:800; align-self:stretch; }
 .vnccs-uc-donate-link { flex:0 0 auto; display:block; width:100%; padding:0 4px 4px; box-sizing:border-box; z-index:3; background:rgba(6,5,12,.92); box-shadow:0 -8px 18px rgba(6,5,12,.82); }
 .vnccs-uc-donate-link img { display:block; width:100%; height:auto; border-radius:10px; }
@@ -186,7 +192,7 @@ const STYLES = `
 .vnccs-uc-layer-group-empty { padding:7px 8px; border:1px dashed rgba(255,255,255,.10); border-radius:8px; color:var(--uc-muted); background:rgba(255,255,255,.025); }
 .vnccs-uc-layer-subhead { padding:8px; border-bottom:1px solid var(--uc-border); display:grid; grid-template-columns:92px minmax(0,1fr); gap:8px; align-items:center; }
 .vnccs-uc-layer-subhead .vnccs-uc-select { width:100%; }
-.vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(72px,1fr) 38px; gap:7px; align-items:center; color:var(--uc-muted); font-weight:700; }
+.vnccs-uc-layer-opacity { display:grid; grid-template-columns:auto minmax(0,1fr) 38px; gap:7px; min-width:0; align-items:center; color:var(--uc-muted); font-weight:700; }
 .vnccs-uc-layer-opacity .vnccs-uc-range { width:100%; }
 .vnccs-uc-layer-opacity-value { color:var(--uc-muted); text-align:right; font-variant-numeric:tabular-nums; }
 .vnccs-uc-layers-top-actions { padding:6px; border-bottom:1px solid var(--uc-border); display:flex; flex-direction:column; gap:6px; }
@@ -334,11 +340,29 @@ const STYLES = `
 .vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
 .vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
 .vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
-.vnccs-uc-refs-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:6px; }
-.vnccs-uc-refs-cell { position:relative; display:grid; gap:2px; justify-items:center; padding:4px; border:1px solid rgba(255,255,255,.12); border-radius:6px; }
-.vnccs-uc-refs-cell img { width:100%; max-height:84px; object-fit:contain; }
-.vnccs-uc-refs-label { font-size:9px; font-weight:800; letter-spacing:.04em; text-transform:uppercase; color:var(--uc-accent); }
-.vnccs-uc-refs-cell .vnccs-uc-icon { position:absolute; top:2px; right:2px; }
+/* Edit model reference images popover (same surface as the settings popover). */
+.vnccs-uc-refs-popover {
+  position:absolute; z-index:30; width:300px; max-width:calc(100% - 8px); overflow-y:auto; overscroll-behavior:contain;
+  padding:12px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.18);
+  box-shadow:0 12px 32px rgba(0,0,0,.55); color:var(--uc-text); font-family:sans-serif; font-size:12px;
+  display:grid; gap:10px; align-content:start; box-sizing:border-box;
+}
+.vnccs-uc-refs-head { display:flex; align-items:center; gap:8px; }
+.vnccs-uc-refs-title { flex:1 1 auto; min-width:0; font-size:13px; font-weight:700; }
+.vnccs-uc-refs-count { color:var(--uc-muted); font-variant-numeric:tabular-nums; }
+.vnccs-uc-refs-head .vnccs-uc-icon { width:26px; height:26px; padding:0; }
+.vnccs-uc-refs-hint { color:var(--uc-muted); line-height:1.45; }
+.vnccs-uc-refs-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:8px; }
+.vnccs-uc-refs-cell, .vnccs-uc-refs-add { position:relative; aspect-ratio:1; border-radius:8px; overflow:hidden; box-sizing:border-box; }
+.vnccs-uc-refs-cell { border:1px solid var(--uc-border); background:repeating-conic-gradient(rgba(255,255,255,.06) 0 25%, transparent 0 50%) 0 0 / 12px 12px; }
+.vnccs-uc-refs-cell img { display:block; width:100%; height:100%; object-fit:contain; }
+.vnccs-uc-refs-label { position:absolute; left:4px; bottom:4px; padding:1px 5px; border-radius:999px; background:rgba(10,10,15,.8); font-size:9px; font-weight:800; letter-spacing:.04em; color:var(--uc-accent); }
+.vnccs-uc-refs-cell .vnccs-uc-icon { position:absolute; top:4px; right:4px; width:20px; height:20px; padding:0; border-radius:50%; background:rgba(10,10,15,.8); line-height:1; opacity:0; transition:opacity .12s; }
+.vnccs-uc-refs-cell:hover .vnccs-uc-icon, .vnccs-uc-refs-cell .vnccs-uc-icon:focus-visible { opacity:1; }
+.vnccs-uc-refs-add { display:grid; place-items:center; align-content:center; gap:2px; border:1px dashed rgba(255,255,255,.22); background:transparent; color:var(--uc-muted); font:inherit; cursor:pointer; }
+.vnccs-uc-refs-add:hover, .vnccs-uc-refs-add:focus-visible { border-color:var(--uc-accent); color:var(--uc-accent); background:rgba(255,143,163,.06); }
+.vnccs-uc-refs-add b { font-size:22px; font-weight:400; line-height:1; }
+@media (hover:none) { .vnccs-uc-refs-cell .vnccs-uc-icon { opacity:1; } }
 .vnccs-uc-turbo-title { color:var(--uc-accent); font-size:10px; font-weight:900; letter-spacing:.08em; text-transform:uppercase; }
 .vnccs-uc-toggle { position:relative; flex:0 0 auto; width:42px; height:22px; border:1px solid rgba(255,143,163,.5); border-radius:999px; background:rgba(255,143,163,.16); }
 .vnccs-uc-toggle::after { content:""; position:absolute; top:3px; left:3px; width:14px; height:14px; border-radius:50%; background:var(--uc-muted); transition:left .14s ease, background .14s ease; }
@@ -440,7 +464,7 @@ const STYLES = `
 if (!document.getElementById("vnccs-unicanvas-styles")) {
   const style = document.createElement("style");
   style.id = "vnccs-unicanvas-styles";
-  style.textContent = STYLES + PROMPT_GUIDE_CSS;
+  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS;
   document.head.appendChild(style);
 }
 
@@ -953,6 +977,16 @@ const PRESET_CHEVRON_ICON = `<svg class="vnccs-uc-model-card-chevron" viewBox="0
 const MINUS_ICON = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/></svg>`;
 // Node-mode local backups stay well under the shared localStorage quota (see pruneLocalStateBackups).
 const LOCAL_STATE_BACKUP_MAX_CHARS = 1_000_000;
+// Settings holding base64 images live in the server state cache and the queued prompt only: in
+// the widget value they end up in every ComfyUI workflow draft, and a few MB there exceed the
+// localStorage quota ("Failed to save workflow draft").
+const WIDGET_HEAVY_SETTINGS = ["edit_reference_images"];
+
+function widgetSettings(settings) {
+  const light = { ...(settings || {}) };
+  for (const key of WIDGET_HEAVY_SETTINGS) delete light[key];
+  return light;
+}
 const STAGING_ICONS = {
   discard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12"/><path d="M18 6 6 18"/></svg>`,
   prev: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 6-6 6 6 6"/></svg>`,
@@ -961,6 +995,24 @@ const STAGING_ICONS = {
   hide: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3l18 18"/><path d="M10.6 10.6A3 3 0 0 0 13.4 13.4"/><path d="M9.9 5.2A9.8 9.8 0 0 1 12 5c6 0 9.5 7 9.5 7a17.4 17.4 0 0 1-2.4 3.2"/><path d="M6.1 6.7C3.8 8.3 2.5 12 2.5 12s3.5 7 9.5 7a9.7 9.7 0 0 0 4-.8"/></svg>`,
   accept: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>`,
 };
+
+// Prompt enhance values live in the ComfyUI settings store (VNCCS > UniCanvas > Prompt enhance).
+bindEnhanceSettingsReader((id) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    return typeof store?.get === "function" ? store.get(id) : app?.ui?.settings?.getSettingValue?.(id);
+  } catch (_err) {
+    return undefined;
+  }
+}, (id, value) => {
+  try {
+    const store = app?.extensionManager?.setting;
+    if (typeof store?.set === "function") void store.set(id, value);
+    else app?.ui?.settings?.setSettingValue?.(id, value);
+  } catch (_err) {
+    console.warn("[VNCCS UniCanvas] Could not save the prompt enhance system prompts", _err);
+  }
+});
 
 class UniCanvasWidget {
   constructor(node) {
@@ -1267,9 +1319,17 @@ class UniCanvasWidget {
     this.promptBox.innerHTML = `
       <div class="vnccs-uc-field">
         <div class="vnccs-uc-prompt-head"><span>Prompt</span><button class="vnccs-uc-prompt-help" type="button" data-action="prompt-help" data-prompt-help aria-expanded="false" aria-label="How to prompt this model" title="How to prompt this model">?</button></div>
-        <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
+        <div class="vnccs-uc-enhance-wrap">
+          <textarea class="vnccs-uc-textarea" data-setting="positive" aria-label="Prompt" placeholder="positive prompt"></textarea>
+          <button class="vnccs-uc-enhance-btn" type="button" data-enhance="positive" aria-label="Enhance prompt" hidden></button>
+        </div>
       </div>
-      <label class="vnccs-uc-field">Negative<textarea class="vnccs-uc-textarea" data-setting="negative" placeholder="negative prompt"></textarea></label>
+      <div class="vnccs-uc-field">Negative
+        <div class="vnccs-uc-enhance-wrap">
+          <textarea class="vnccs-uc-textarea" data-setting="negative" aria-label="Negative prompt" placeholder="negative prompt"></textarea>
+          <button class="vnccs-uc-enhance-btn" type="button" data-enhance="negative" aria-label="Enhance negative prompt" hidden></button>
+        </div>
+      </div>
       <div class="vnccs-uc-config-banner" data-config-banner hidden></div>
       <div class="vnccs-uc-model-tabs" data-config-override>
         <button class="vnccs-uc-model-tab" type="button" data-model-selection-mode="presets">Presets</button>
@@ -1322,7 +1382,11 @@ class UniCanvasWidget {
     this.batchInput.title = "Images";
     this.drawControl = document.createElement("div");
     this.drawControl.className = "vnccs-uc-draw-control";
-    this.drawControl.append(this.drawBtn, this.batchInput);
+    this.stopBtn = this._button("", "vnccs-uc-btn stop", () => void this.stopDraw(), "Stop: interrupt the generation and free the VRAM it used");
+    this.stopBtn.innerHTML = '<svg viewBox="0 0 12 12" aria-hidden="true"><rect x="1" y="1" width="10" height="10" rx="2"/></svg><span>STOP</span>';
+    this.stopBtn.hidden = true;
+    this.drawControl.append(this.drawBtn, this.stopBtn, this.batchInput);
+    installPromptEnhance(this);
     const promptSection = this._section("Parameters", this.promptBox);
     promptSection.classList.add("vnccs-uc-parameters-section");
     this.donateLink = document.createElement("a");
@@ -1443,6 +1507,13 @@ class UniCanvasWidget {
       const title = document.createElement("div"); title.className = "vnccs-uc-modal-title"; title.textContent = "Import as panorama?";
       const message = document.createElement("div"); message.className = "vnccs-uc-modal-message";
       message.textContent = `${img.width} × ${img.height}. Is this a full 360 × 180° equirectangular panorama? The complete image will wrap onto a sphere. A typical panorama has a 2:1 aspect ratio; an ordinary wide photo does not contain a full spherical view.`;
+      if (this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+        // Every layer lives inside the panorama's square editing window, so existing content is resampled.
+        message.textContent += this.settings.panorama_native_layers === true
+          ? "\n\nYour existing layers will keep their native resolution: the editing window (and generation area) grows to fit the largest one, up to 4096 px."
+          : "\n\nYour existing layers will be scaled into the panorama's 1024 \u00d7 1024 editing window, which can lower their quality. Turn on \"Keep layers at their native resolution\" in UniCanvas settings > Panorama to avoid that.";
+        message.style.whiteSpace = "pre-line";
+      }
       const previousFocus = document.activeElement;
       const close = (value) => { overlay.remove(); this._panoramaImportClose = null; previousFocus?.focus?.(); resolve(value); };
       this._panoramaImportClose = () => close("cancel");
@@ -1474,8 +1545,14 @@ class UniCanvasWidget {
       const contentLayers = this.layers.filter(layer => this.getLayerAlphaBounds(layer));
       const content = contentLayers.length ? this.getLayersVisibleWorldRect(contentLayers) : this.bbox;
       const oldBbox = content.width > 0 && content.height > 0 ? content : { ...this.bbox };
-      const side = 1024;
-      const destination = this.getImageFitInRect(oldBbox, { x: 0, y: 0, width: side, height: side });
+      // Native mode keeps every layer at its own resolution: the editing window grows to the content
+      // (up to PANORAMA_MAX_VIEW) instead of shrinking the layers into 1024.
+      const native = this.settings.panorama_native_layers === true;
+      const side = native ? Math.max(1024, Math.min(PANORAMA_MAX_VIEW, Math.ceil(Math.max(oldBbox.width, oldBbox.height)))) : 1024;
+      next.settings.view = side;
+      const destination = native && Math.max(oldBbox.width, oldBbox.height) <= side
+        ? { x: Math.round((side - oldBbox.width) / 2), y: Math.round((side - oldBbox.height) / 2), width: oldBbox.width, height: oldBbox.height }
+        : this.getImageFitInRect(oldBbox, { x: 0, y: 0, width: side, height: side });
       const views = this.layers.map(layer => {
         const out = document.createElement("canvas"); out.width = side; out.height = side;
         const ctx = out.getContext("2d");
@@ -2690,7 +2767,20 @@ class UniCanvasWidget {
     this.forceSelectedPresetModelSettings();
     const settings = JSON.parse(JSON.stringify(this.settings));
     settings.lora_stack = this.filteredLoraStack();
+    // The enhance switches stay on the node; only the resolved automatic rewrite reaches a draw.
+    stripEnhanceSettings(settings);
+    delete settings.panorama_native_layers;
+    const enhance = promptEnhancePayload(this);
+    if (enhance) settings.prompt_enhance = enhance;
     return settings;
+  }
+
+  getModelKey() {
+    return getUniCanvasModelModule(this.settings.generation_mode).key;
+  }
+
+  modelUsesNegative() {
+    return resolvePromptGuide(this.modelDescriptors, this.settings.generation_mode)?.negativePrompt !== false;
   }
 
   renderLoraStackControls() {
@@ -3032,8 +3122,7 @@ class UniCanvasWidget {
     if (currentPreset?.id && currentPreset.id !== preset.id) this.snapshotPresetRuntimeSettings(currentPreset);
     this.applyPresetSettings(preset);
     this.presetPickerOpen = false;
-    const status = this.presetStatus(preset);
-    if (!status.installed && !status.progress) this.downloadPreset(preset.id, "assets");
+    // No auto-download: the header card shows the description and a Download button when missing.
     this.syncPromptControls();
     this.syncSettingsToWidget();
   }
@@ -3217,6 +3306,7 @@ class UniCanvasWidget {
     const linked = this._isConfigLinked();
     if (linked) this.syncConfigFamily();
     this.container.classList.toggle("vnccs-uc-config-linked", linked);
+    syncPromptEnhance(this);
     this.container.querySelectorAll("[data-config-override]").forEach((el) => {
       el.inert = linked;
       if (linked) el.setAttribute("aria-disabled", "true");
@@ -6997,7 +7087,10 @@ class UniCanvasWidget {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
       this.settings.draw_id = `uc_${Date.now().toString(36)}`;
-      this.settings.queued_draw = this._buildDrawPayload(drawContext);
+      // Held outside settings: the composition carries MBs of base64 images and must never reach
+      // widget.value, which ComfyUI persists in the workflow draft (localStorage quota).
+      // stateWidget.serializeValue adds it to the queued prompt only.
+      this._queuedDraw = this._buildDrawPayload(drawContext);
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();
@@ -7007,6 +7100,10 @@ class UniCanvasWidget {
     }
     this.drawBtn.disabled = true;
     if (this.batchInput) this.batchInput.disabled = true;
+    this._stopRequested = false;
+    this._drawViaQueue = configLinked;
+    this._drawDebugId = configLinked ? this.settings.draw_id : debugId;
+    this.showStopButton(true);
     let performance = "";
     try {
       if (configLinked) {
@@ -7031,6 +7128,7 @@ class UniCanvasWidget {
           body: JSON.stringify(this._buildDrawPayload({ ...drawContext, includeDebugId: true, debugId, configOverrides })),
         });
         const data = await res.json();
+        if (data.cancelled) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
         performance = data.performance || "";
         await this._stageGeneratedImages(data, maskCanvas, mode, drawContext);
@@ -7039,9 +7137,15 @@ class UniCanvasWidget {
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
       this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
     } catch (err) {
-      this.setStatus(`GENERATE failed: ${err.message || err}`, true);
-      this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
+      if (err?.cancelled || this._stopRequested) {
+        this.setStatus("Generation stopped - VRAM freed");
+        this.updateGenerationProgress({ progress: 1, message: "Stopped - VRAM freed", stage: "cancelled" }, true);
+      } else {
+        this.setStatus(`GENERATE failed: ${err.message || err}`, true);
+        this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
+      }
     } finally {
+      this.showStopButton(false);
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
@@ -7049,6 +7153,37 @@ class UniCanvasWidget {
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
+    }
+  }
+
+  showStopButton(visible) {
+    if (!this.stopBtn) return;
+    this.stopBtn.hidden = !visible;
+    this.stopBtn.disabled = false;
+    this.drawControl?.classList.toggle("generating", visible);
+  }
+
+  // Stop: ComfyUI's interrupt flag ends the draw at the next step; the backend then drops its tensors
+  // and unloads the models. A config-linked draw runs as a queued ComfyUI prompt, so it goes through
+  // ComfyUI's own /interrupt (and /free for the memory).
+  async stopDraw() {
+    if (!this.drawInProgress || this._stopRequested) return;
+    this._stopRequested = true;
+    this.stopBtn.disabled = true;
+    this.setStatus("Stopping...");
+    this.updateGenerationProgress({ message: "Stopping...", stage: "status" }, false);
+    const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    try {
+      if (this._drawViaQueue) {
+        await post("/interrupt");
+        await post("/free", { unload_models: true, free_memory: true });
+      } else {
+        await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      }
+    } catch (err) {
+      this.setStatus(`Stop failed: ${err.message || err}`, true);
+      this._stopRequested = false;
+      this.stopBtn.disabled = false;
     }
   }
 
@@ -7276,7 +7411,7 @@ class UniCanvasWidget {
   }
 
   // The HTTP path consumes this payload as the POST body; the queued path stores it in
-  // settings.queued_draw, where the node forwards exactly the composition keys to _run_unicanvas_draw.
+  // settings.queued_draw of the queued prompt (see serializeStateForPrompt), where the node forwards exactly the composition keys to _run_unicanvas_draw.
   _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null }) {
     const payload = {
       mode,
@@ -7290,7 +7425,8 @@ class UniCanvasWidget {
     };
     if (includeDebugId) {
       payload.debug_id = debugId;
-      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1 } : {}) };
+      // A pose edit writes its own prompt, so automatic enhance stays out of it.
+      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
     }
     return payload;
   }
@@ -7350,6 +7486,7 @@ class UniCanvasWidget {
   // the old draw_id. export_state falls back to the canvas render when it is absent.
   releaseQueuedDraw() {
     if (!this.settings) return;
+    this._queuedDraw = null;
     if (this.settings.queued_draw === undefined && !this.settings.draw_id) return;
     delete this.settings.queued_draw;
     this.settings.draw_id = "";
@@ -7575,6 +7712,7 @@ class UniCanvasWidget {
     const button = this.container.querySelector("[data-prompt-help]");
     if (button) button.title = guide ? `How to prompt ${guide.label}` : "How to prompt this model";
     if (this.promptGuidePanel && !this.promptGuidePanel.hidden) renderPromptGuide(this.promptGuideBody, guide);
+    syncPromptEnhance(this);
   }
 
   resizeTextareaToContent(textarea) {
@@ -7615,12 +7753,30 @@ class UniCanvasWidget {
     const state = this.buildSerializedState(false);
     const compactState = {
       ...state,
+      settings: widgetSettings(state.settings),
       layers: state.layers.map((layer) => ({ ...layer, cached: layer.crop !== null })),
     };
     widget.value = JSON.stringify(compactState);
     widget.callback?.(widget.value);
     app.graph?.setDirtyCanvas?.(true, true);
     this.scheduleStateUpload();
+  }
+
+  // Prompt-only view of the state widget: the widget value stays light (workflow draft), the
+  // one-shot queued draw composition is merged in only while a draw is queued.
+  // Reference images are kept out of the widget value, so the prompt gets them back here.
+  serializeStateForPrompt(value) {
+    const refs = this.editReferenceImages();
+    if (!this._queuedDraw && !refs.length) return value;
+    try {
+      const state = JSON.parse(value);
+      state.settings = { ...(state.settings || {}) };
+      if (refs.length) state.settings.edit_reference_images = refs;
+      if (this._queuedDraw) state.settings.queued_draw = this._queuedDraw;
+      return JSON.stringify(state);
+    } catch (_) {
+      return value;
+    }
   }
 
   syncSettingsToWidget() {
@@ -7656,6 +7812,7 @@ class UniCanvasWidget {
     }
     state.version = this.panorama ? 3 : 2;
     state.panorama = this.panorama ? { ...this.panorama.settings } : null;
+    state.output_id = this.panorama ? this.getOutputCacheId() : null;
     state.storage = "server_cache";
     state.state_id = this.getStateCacheId();
     state.origin = this.origin;
@@ -7664,7 +7821,7 @@ class UniCanvasWidget {
     state.snapToGrid = this.snapToGrid;
     state.resizeTransformMode = this.resizeTransformMode;
     this.normalizeLoraStack();
-    state.settings = { ...this.settings };
+    state.settings = widgetSettings(this.settings);
     state.activeLayerId = this.activeLayerId;
     const previousById = new Map((Array.isArray(state.layers) ? state.layers : []).map((layer) => [layer?.id, layer]));
     state.layers = this.layers.map((layer) => {
@@ -7717,6 +7874,7 @@ class UniCanvasWidget {
     return {
       version: this.panorama ? 3 : 2,
       panorama: this.panorama ? { ...this.panorama.settings } : null,
+      output_id: this.panorama ? this.getOutputCacheId() : null,
       storage: "server_cache",
       state_id: stateId,
       origin: this.origin,
@@ -7871,7 +8029,39 @@ class UniCanvasWidget {
     this.panorama.commit();
     this.panorama.endCamera();
     this.syncToNode();
-    if (await this.flushStateUpload() === false) throw new Error("Panorama state could not be saved; queue stopped to protect the latest edits");
+    // The node output is the flattened, bbox-cropped view, so it never depends on the (huge)
+    // spherical layers reaching the server.
+    if (await this.uploadOutputSnapshot() === false) throw new Error("The panorama output could not be sent; queue stopped");
+    if (await this.flushStateUpload() === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
+  }
+
+  getOutputCacheId() {
+    return `${this.getStateCacheId()}_out`;
+  }
+
+  /** Uploads every visible layer flattened and cropped to the generation bbox as one small layer. */
+  async uploadOutputSnapshot() {
+    const canvas = buildUniCanvasBboxCompositeCanvas(this);
+    const layer = {
+      id: "output", name: "Output", type: "raster", visible: true, locked: false, opacity: 1, blendMode: "source-over",
+      crop: { x: 0, y: 0, width: canvas.width, height: canvas.height }, dataURL: canvas.toDataURL("image/png"),
+    };
+    const state = {
+      version: 2, storage: "server_cache", origin: { x: 0, y: 0 }, size: { width: canvas.width, height: canvas.height },
+      bbox: { x: 0, y: 0, width: canvas.width, height: canvas.height }, layers: [layer],
+    };
+    try {
+      const res = await fetch("/vnccs/unicanvas_state_upload", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ state_id: this.getOutputCacheId(), state }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      return true;
+    } catch (err) {
+      this.setStatus(`Output upload failed: ${err.message || err}`, true);
+      return false;
+    }
   }
 
   async performStateUpload(state, keepalive = false) {
@@ -8076,8 +8266,9 @@ class UniCanvasWidget {
       const panoramaSettings = normalizePanorama(state.panorama);
       restoredPanorama = panoramaSettings ? new PanoramaDocument(this, panoramaSettings) : null;
       const nextOrigin = panoramaSettings ? { x: 0, y: 0 } : (state.origin || this.origin);
-      const nextSize = panoramaSettings ? { width: 1024, height: 1024 } : (state.size || this.size);
-      const nextBbox = panoramaSettings ? { x: 0, y: 0, width: 1024, height: 1024 } : (state.bbox || this.bbox);
+      const view = panoramaSettings?.view || 1024;
+      const nextSize = panoramaSettings ? { width: view, height: view } : (state.size || this.size);
+      const nextBbox = panoramaSettings ? { x: 0, y: 0, width: view, height: view } : (state.bbox || this.bbox);
       const layers = [];
       for (const item of state.layers) {
         if (restoredPanorama && !item.dataURL) throw new Error("Panorama layer pixels are missing from the saved document");
@@ -8257,102 +8448,118 @@ class UniCanvasWidget {
   setEditReferenceImages(list) {
     this.settings.edit_reference_images = list.slice(0, this.maxEditReferenceImages());
     this.syncSettingsToWidget();
+    // The images persist only through the server state cache (see WIDGET_HEAVY_SETTINGS).
+    this.scheduleStateUpload();
     this.updateEditRefsBadge();
+  }
+
+  closeEditReferenceImages() {
+    this._vnccsRefsPopover?.remove();
+    this._vnccsRefsPopover = null;
+    if (this._vnccsRefsOutside) document.removeEventListener("pointerdown", this._vnccsRefsOutside, true);
+    this._vnccsRefsOutside = null;
   }
 
   openEditReferenceImages() {
     if (this._vnccsRefsPopover) {
-      this._vnccsRefsPopover.remove();
-      this._vnccsRefsPopover = null;
+      this.closeEditReferenceImages();
       return;
     }
     const panel = document.createElement("div");
+    panel.className = "vnccs-uc-refs-popover";
     panel.dataset.editRefsPopover = "1";
-    panel.style.cssText = "position:absolute; z-index:30; min-width:250px; padding:10px; border-radius:10px; background:rgba(20,16,30,.96); border:1px solid rgba(255,255,255,.12); color:#e8e8f0; font:11px sans-serif; display:grid; gap:8px;";
+    const head = document.createElement("div");
+    head.className = "vnccs-uc-refs-head";
     const title = document.createElement("div");
-    title.style.fontWeight = "600";
-    title.textContent = "Edit model reference images";
+    title.className = "vnccs-uc-refs-title";
+    title.textContent = "Reference images";
+    const count = document.createElement("span");
+    count.className = "vnccs-uc-refs-count";
+    const closeBtn = this._button("×", "vnccs-uc-icon", () => this.closeEditReferenceImages(), "Close reference images");
+    head.append(title, count, closeBtn);
     const hint = document.createElement("div");
-    hint.style.color = "rgba(232,232,240,.6)";
+    hint.className = "vnccs-uc-refs-hint";
     // The prompt name of each reference follows the active family (Mode).
-    const maxRefs = this.maxEditReferenceImages();
     hint.textContent = this.getModelBase() === "krea2_edit"
-      ? "1 image: the character to put into the working area. Krea2 Edit reads two pictures - image 1 is the working area (background), image 2 is this reference; describe them in plain words (\"put the woman from image 2 into image 1\")."
-      : `Up to ${maxRefs} images. ` + referenceConventionHint(this.modelDescriptors, this.settings.generation_mode);
-    panel.append(title, hint);
+      ? "The character to put into the working area. Krea2 Edit reads image 1 as the working area and image 2 as this reference; describe them in plain words (\"put the woman from image 2 into image 1\")."
+      : referenceConventionHint(this.modelDescriptors, this.settings.generation_mode);
     const grid = document.createElement("div");
     grid.className = "vnccs-uc-refs-grid";
-    panel.appendChild(grid);
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/*";
+    fileInput.multiple = true;
+    fileInput.className = "vnccs-uc-file";
+    panel.append(head, hint, grid, fileInput);
     const render = () => {
       grid.innerHTML = "";
-      this.editReferenceImages().forEach((data, index) => {
+      const max = this.maxEditReferenceImages();
+      const list = this.editReferenceImages();
+      count.textContent = `${list.length} / ${max}`;
+      list.forEach((data, index) => {
         const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2).text;
         const cell = document.createElement("div");
         cell.className = "vnccs-uc-refs-cell";
+        cell.title = label;
         const marker = document.createElement("div");
         marker.className = "vnccs-uc-refs-label";
         marker.textContent = label;
         const img = document.createElement("img");
         img.src = data;
         img.alt = label;
-        const removeBtn = this._button("\u00d7", "vnccs-uc-icon", () => {
-          const list = this.editReferenceImages();
-          list.splice(index, 1);
-          this.setEditReferenceImages(list);
+        const removeBtn = this._button("×", "vnccs-uc-icon", () => {
+          const next = this.editReferenceImages();
+          next.splice(index, 1);
+          this.setEditReferenceImages(next);
           render();
         }, "Remove " + label);
-        cell.append(marker, img, removeBtn);
+        cell.append(img, marker, removeBtn);
         grid.appendChild(cell);
       });
+      if (list.length < max) {
+        const add = document.createElement("button");
+        add.type = "button";
+        add.className = "vnccs-uc-refs-add";
+        add.title = "Add reference images";
+        add.innerHTML = "<b>+</b><span>Add</span>";
+        add.addEventListener("click", () => fileInput.click());
+        grid.appendChild(add);
+      }
       this.updateEditRefsBadge();
     };
     render();
-    const fileInput = document.createElement("input");
-    fileInput.type = "file";
-    fileInput.accept = "image/*";
-    fileInput.multiple = true;
-    fileInput.className = "vnccs-uc-file";
     fileInput.addEventListener("change", () => {
       const files = [...(fileInput.files || [])];
       fileInput.value = "";
       const max = this.maxEditReferenceImages();
       const room = max - this.editReferenceImages().length;
-      if (room <= 0) {
-        this.setStatus(`[VNCCS UniCanvas] Reference images: the maximum for this model is ${max}.`, true);
-        return;
-      }
       if (files.length > room) this.setStatus(`[VNCCS UniCanvas] Reference images: the maximum for this model is ${max}.`, true);
-      files.slice(0, room).forEach((file) => {
+      files.slice(0, Math.max(0, room)).forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
           if (typeof reader.result !== "string") return;
-          const list = this.editReferenceImages();
-          if (list.length >= max) return;
-          list.push(reader.result);
-          this.setEditReferenceImages(list);
+          const next = this.editReferenceImages();
+          if (next.length >= max) return;
+          next.push(reader.result);
+          this.setEditReferenceImages(next);
           render();
         };
         reader.readAsDataURL(file);
       });
     });
-    const addBtn = this._button("Add image", "vnccs-uc-btn", () => fileInput.click(), "Add a reference image");
-    const closeBtn = this._button("Close", "vnccs-uc-btn", () => {
-      panel.remove();
-      this._vnccsRefsPopover = null;
-    }, "Close reference images");
-    panel.append(fileInput, addBtn, closeBtn);
     this.container.appendChild(panel);
     const anchor = this.container.querySelector("[data-action='edit-refs']");
-    const rect = anchor ? anchor.getBoundingClientRect() : null;
-    const host = this.container.getBoundingClientRect();
-    if (rect) {
-      panel.style.left = Math.max(4, Math.min(rect.left - host.left - 180, Math.max(4, host.width - 260))) + "px";
-      panel.style.top = Math.max(4, rect.bottom - host.top + 6) + "px";
-    } else {
+    if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
+    else {
       panel.style.left = "24px";
       panel.style.top = "48px";
     }
     this._vnccsRefsPopover = panel;
+    this._vnccsRefsOutside = (event) => {
+      if (panel.contains(event.target) || anchor?.contains(event.target)) return;
+      this.closeEditReferenceImages();
+    };
+    document.addEventListener("pointerdown", this._vnccsRefsOutside, true);
   }
 
   // Anchor a popover below `anchorEl`, clamped inside `host` (spec 4.1-4.2).
@@ -8414,8 +8621,11 @@ class UniCanvasWidget {
       details.className = "vnccs-uc-settings-section";
       details.open = openSections.has(key);
       details.addEventListener("toggle", () => {
-        if (details.open) openSections.add(key);
-        else openSections.delete(key);
+        if (!details.open) return void openSections.delete(key);
+        // At most one section stays open: opening one closes the others.
+        openSections.clear();
+        openSections.add(key);
+        panel.querySelectorAll("details.vnccs-uc-settings-section[open]").forEach((other) => { if (other !== details) other.open = false; });
       });
       const summary = document.createElement("summary");
       summary.textContent = label;
@@ -8468,7 +8678,24 @@ class UniCanvasWidget {
       familyDefaults: (mode) => getUniCanvasModelModule(mode).defaults,
     });
 
+    // Magic wand: on/off, always-enhance on Generate, the wand's encoder; the system prompts open in a dialog.
+    section("prompt_enhance", "Prompt enhance");
+    buildPromptEnhanceSettings(s, {
+      body: target,
+      bind,
+      makeSelect,
+      installed: this.assets?.text_encoders || [],
+      checkboxRow,
+      commit,
+      families: Object.values(UNICANVAS_MODEL_MODULES).map((module) => ({ key: module.key, label: module.label })),
+      changed: () => syncPromptEnhance(this),
+    });
+
     // Content-based layer names. "Auto-name" in the layer menu works either way.
+    section("panorama", "Panorama");
+    checkboxRow("Keep layers at their native resolution when importing a panorama", s.panorama_native_layers === true, (checked) => { s.panorama_native_layers = checked; commit(); },
+      "Off: existing layers are scaled into a 1024x1024 editing window. On: the window grows to the largest layer (up to 4096 px) and nothing is scaled, but the generation area grows with it. Applies to the next panorama import.");
+
     section("layer_names", "Layer names");
     const namingModel = makeSelect(AUTO_NAME_MODELS, resolveAutoNameModel(s));
     namingModel.addEventListener("input", () => { s[AUTO_NAME_MODEL_SETTING] = namingModel.value; commit(); });
@@ -8540,6 +8767,7 @@ class UniCanvasWidget {
     }
     this._disposed = true;
     this._removeScaleEdit?.();
+    this.closeEditReferenceImages();
     teardownUniCanvasWidgetModes(this);
     this._panoramaImportClose?.();
     this.panoramaOrbit?.dispose();
@@ -8572,6 +8800,7 @@ class UniCanvasWidget {
 app.registerExtension({
   name: "VNCCS.UniCanvas",
   settings: [
+    ...promptEnhanceSettingDefs(() => Object.values(UNICANVAS_MODEL_MODULES).map((module) => ({ key: module.key, label: module.label }))),
     {
       id: UNICANVAS_STANDALONE_SETTING_ID,
       category: ["VNCCS", "UniCanvas", "Standalone sidebar"],
@@ -8648,6 +8877,7 @@ app.registerExtension({
         stateWidget.type = "hidden";
         stateWidget.hidden = true;
         stateWidget.computeSize = () => [0, -4];
+        stateWidget.serializeValue = async () => this.uniCanvasWidget.serializeStateForPrompt(stateWidget.value);
         if (stateWidget.element) stateWidget.element.style.display = "none";
       }
       this._vnccsUniCanvasInitTimer = setTimeout(() => {

@@ -297,6 +297,15 @@
           "hf_path": "vae/qwen_image_2.1_vae_bf16.safetensors",
           "local_path": "models/vae/qwen_image_2.1_vae_bf16.safetensors",
           "description": "Qwen Image 2.1 VAE."
+        },
+        {
+          "role": "lora",
+          "name": "QI2.1 Outpaint LoRA v2",
+          "hf_repo": "ausboss/Qwen-Image-2.1-Outpaint-LoRA",
+          "hf_revision": "449336db42ff074aee970ba0facc0ac0feb77863",
+          "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
+          "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
+          "description": "Outpaint LoRA for Qwen Image 2.1, applied in outpaint mode only."
         }
       ],
       "turbo": {

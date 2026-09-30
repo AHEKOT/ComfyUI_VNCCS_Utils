@@ -21,7 +21,7 @@ test("QI2.1 panel is gated to the Qwen-Image-2.1 family", () => {
     const sync = panelSource.match(/export function syncQwen21Panel\(widget\)([\s\S]*?)\n\}/);
     assert.ok(sync, "syncQwen21Panel missing");
     assert.match(sync[1], /isQwen21Mode\(/, "gating must consult the QI2.1 family check");
-    assert.match(sync[1], /\.display = active \? "" : "none"/, "panel must hide outside the QI2.1 family");
+    assert.match(sync[1], /\.display = active \? "flex" : "none"/, "panel must hide outside the QI2.1 family");
     assert.match(mainSource, /syncQwen21Panel\(this\)/, "main widget must sync the QI2.1 panel");
     const renderHook = mainSource.match(/renderModelSelectionControls\(\) \{([\s\S]*?)\n  \}/);
     assert.match(renderHook[1], /syncQwen21Panel\(this\)/, "panel must gate in renderModelSelectionControls");
@@ -35,19 +35,13 @@ test("Spectrum acceleration is gone from the frontend", () => {
 });
 
 
-test("Qwen-Image-2.1 output switch and native 2K presets are exposed", () => {
-    assert.match(panelSource, /qwen21_opaque_output/, "'opaque output' switch setting missing");
-    assert.match(panelSource, /qwen21_aspect_preset/, "native 2K aspect preset setting missing");
-    for (const preset of ["2048x2048", "2400x1792", "1792x2400", "2528x1696", "1696x2528", "2752x1536", "1536x2752"]) {
-        assert.ok(panelSource.includes(preset), "missing native 2K aspect preset: " + preset);
-    }
-    assert.match(panelSource, /data-qwen21-panel/, "Qwen-Image-2.1 panel root marker missing");
-});
-
-test("QI2.1 panel matches the UniCanvas palette and ships help tooltips", () => {
-    assert.ok(panelSource.includes("vnccs-uc-qwen21-styles"), "the panel must inject its UniCanvas-palette styles");
-    assert.ok(panelSource.includes("buildQwen21Help"), "help tooltips must be attached");
-    assert.ok(panelSource.includes("data-tip"), "tooltips must carry explanation text");
+test("Qwen-Image-2.1 exposes one transparent-output switch below Steps and no aspect preset", () => {
+    assert.match(panelSource, /qwen21_opaque_output/, "output switch setting missing");
+    assert.ok(panelSource.includes("transparent output"), "switch must be labelled 'transparent output'");
+    assert.ok(panelSource.includes("data-edit-steps-panel"), "switch must mount right below the Steps panel");
+    assert.doesNotMatch(panelSource, /aspect_preset|2048x2048/, "the redundant 2K aspect preset is gone");
+    assert.ok(panelSource.includes("data-qwen21-panel"), "panel root marker missing");
+    assert.ok(panelSource.includes("buildQwen21Help") && panelSource.includes("data-tip"), "help tooltip must be attached");
 });
 
 test("edit families show a full-width Steps field with a hint and hide the generic one", () => {
@@ -55,20 +49,6 @@ test("edit families show a full-width Steps field with a hint and hide the gener
     assert.match(mainSource, /data-edit-steps-help/, "the panel needs a help button carrying the hint");
     assert.match(mainSource, /data-generic-steps/, "the generic Steps field must be toggleable");
     assert.ok(mainSource.includes("<image1>"), "the QI2.1 hint must name the image1 convention");
-});
-
-test("QI2.1 settings fold into an accordion header", () => {
-  const shell = panelSource.match(/function buildPanelShell\(\) \{([\s\S]*?)\n\}/);
-  assert.ok(shell, "buildPanelShell missing");
-  assert.match(shell[1], /qwenTitleText\.textContent = "QI2\.1"/, "the collapsed header must read QI2.1");
-  assert.match(shell[1], /qwenTitleText\.title = "Qwen-Image-2\.1 \(QI2\.1\) settings"/, "the header carries the family tooltip");
-  assert.match(shell[1], /dataset\.qwen21Expand/, "the header needs its expand markers");
-  assert.match(shell[1], /const qwenBody = document\.createElement\("div"\)/, "the foldable body container is missing");
-  assert.match(shell[1], /qwenBody\.hidden = true/, "the body must start folded");
-  const click = panelSource.match(/panel\.addEventListener\("click", \(event\) => \{([\s\S]*?)\n  \}\);/);
-  assert.ok(click, "click listener body missing");
-  assert.match(click[1], /target\.dataset\.qwen21Expand !== undefined/, "the header must toggle the folded body");
-  assert.match(click[1], /closest\("\.vnccs-uc-help"\)/, "a help icon click must not toggle the control next to it");
 });
 
 test("QI2.1 Turbo LoRA uses the shared preset turbo card, not a bespoke switch", async () => {

@@ -1,8 +1,7 @@
 import { test, expect } from "@playwright/test";
 import { openUnicanvas } from "./helpers/app.mjs";
 
-// Qwen-Image-2.1 settings live in a closed-by-default accordion: the header line shows
-// "QI2.1 (?)", the rows (opaque output, 2K aspect preset) stay folded. The Turbo LoRA is
+// Qwen-Image-2.1 adds one "transparent output" switch (on by default) below Steps. The Turbo LoRA is
 // the shared "Turbo LoRA" card: on = 6 steps, off = the 25-step base preset profile,
 // both visible in the sidebar's Steps field. Help "?" tooltips render in a body-level
 // layer, so no sidebar scroll container can clip them.
@@ -24,16 +23,15 @@ async function selectFamily(page, mode) {
   await chooseSetting(page, "generation_mode", mode);
 }
 
-test("QI2.1 panel folds into a header; shared Turbo LoRA card 6/25 steps; tooltips are not clipped", async ({ page }) => {
+test("QI2.1 transparent-output switch; shared Turbo LoRA card 6/25 steps; tooltips are not clipped", async ({ page }) => {
   await openUnicanvas(page);
   const shell = page.locator(".vnccs-uc2-standalone-shell");
   await selectFamily(page, "qwen_image21");
 
   const panel = shell.locator("[data-qwen21-panel]").first();
   await expect(panel).toBeVisible({ timeout: 15_000 });
-  const body = panel.locator("[data-qwen21-body]");
-  await expect(body).toBeHidden(); // closed by default
-  await expect(panel.locator(".vnccs-uc-qwen21-name")).toHaveText("QI2.1");
+  await expect(panel).toContainText("transparent output");
+  await expect(panel.locator("input[data-qwen21-setting]")).toBeChecked(); // on by default
 
   // The Seed dice starts active: random draws out of the box, and a canvas saved
   // with the old "fixed" default adopts it too.
@@ -56,17 +54,11 @@ test("QI2.1 panel folds into a header; shared Turbo LoRA card 6/25 steps; toolti
   await expect(turbo).toHaveClass(/selected/);
   await expect(steps).toHaveValue("6");
 
-  // The arrow unfolds the details.
-  await panel.locator("button[data-qwen21-expand]").click();
-  await expect(body).toBeVisible();
-  await expect(panel.locator('[data-qwen21-setting="qwen21_opaque_output"]')).toBeVisible();
-  await expect(panel.locator('[data-qwen21-setting="qwen21_aspect_preset"]')).toBeVisible();
-
   // Help tooltips live in the body-level layer and stay inside the viewport.
   await panel.locator(".vnccs-uc-help").first().hover();
   const tip = page.locator("#vnccs-uc-help-tooltip");
   await expect(tip).toBeVisible();
-  await expect(tip).toContainText("Qwen-Image-2.1");
+  await expect(tip).toContainText("RGBA");
   const box = await tip.boundingBox();
   const viewport = page.viewportSize();
   expect(box.x).toBeGreaterThanOrEqual(0);

@@ -10,6 +10,14 @@ import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);
 
+test("the editing window (view) defaults to 1024 for old saves and is bounded", () => {
+  const base = { projection: "equirectangular", width: 2048, height: 1024 };
+  assert.equal(normalizePanorama(base).view, 1024);
+  assert.equal(normalizePanorama({ ...base, view: 2000 }).view, 2000);
+  assert.equal(normalizePanorama({ ...base, view: 99999 }).view, 4096);
+  assert.equal(normalizePanorama({ ...base, view: 1 }).view, 256);
+});
+
 test("panorama detection only suggests wide images; settings are bounded", () => {
   assert.equal(isPanoramaCandidate(2048, 1024), true);
   assert.equal(isPanoramaCandidate(1920, 1080), false);
@@ -161,9 +169,13 @@ test("queue synchronization commits pixels before projecting and awaits successf
   const order = [];
   const w = widget({ panorama: { commit: () => order.push("commit"), endCamera: () => order.push("view") },
     syncToNode: () => order.push("metadata"), flushStateUpload: async () => { order.push("upload"); return true; },
+    uploadOutputSnapshot: async () => { order.push("output"); return true; },
   });
-  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "metadata", "upload"]);
+  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "metadata", "output", "upload"]);
+  // The flattened output is what the node needs: without it the queue stops, a failed full-state save only warns.
   w.flushStateUpload = async () => false;
+  await w.preparePanoramaForQueue();
+  w.uploadOutputSnapshot = async () => false;
   await assert.rejects(w.preparePanoramaForQueue(), /queue stopped/);
   w.isPointerDown = true;
   await assert.rejects(w.preparePanoramaForQueue(), /Finish/);

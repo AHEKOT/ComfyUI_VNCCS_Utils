@@ -11,6 +11,7 @@ import torch
 from ..comfy_bridge import _call_comfy_node
 from ..debug import _uc_log
 from ..loras import LoraRequirement
+from ..sampling import _report_comfy_sampling_progress
 from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import CANVAS_TASKS, STANDARD_TASKS, ModelCapabilities, PromptGuide, ReferenceInputs
 
@@ -169,14 +170,15 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
             steps=int(steps),
             denoise=float(denoise),
         )[0]
-        sampled = _call_comfy_node(
-            "SamplerCustomAdvanced",
-            noise=noise,
-            guider=guider,
-            sampler=sampler_object,
-            sigmas=sigmas,
-            latent_image=latent_h3,
-        )[0]
+        with _report_comfy_sampling_progress(draw_id, int(steps)):
+            sampled = _call_comfy_node(
+                "SamplerCustomAdvanced",
+                noise=noise,
+                guider=guider,
+                sampler=sampler_object,
+                sigmas=sigmas,
+                latent_image=latent_h3,
+            )[0]
         _uc_log(draw_id, "MiniMax H3 region edit sampled", {
             "width": target_w, "height": target_h, "steps": steps,
             "refs": sorted(refs), "seed": seed,

@@ -247,3 +247,12 @@ test("cancelling a never-saved new pose layer removes it and its undo step", asy
     assert.equal(widget.undoStack.length, 0, "no undo step is left for a layer that never existed");
     assert.ok(calls.includes("release") && calls.includes("view"));
 });
+
+test("reference images stay out of the widget value (workflow draft) but reach the prompt", () => {
+    assert.match(source, /const WIDGET_HEAVY_SETTINGS = \["edit_reference_images"\]/);
+    assert.ok(source.includes("settings: widgetSettings(state.settings)"), "syncToNode must strip heavy settings");
+    assert.ok(source.includes("state.settings = widgetSettings(this.settings)"), "the light widget write must strip heavy settings");
+    assert.ok(source.includes("state.settings.edit_reference_images = refs"), "the queued prompt must carry the reference images");
+    const setter = source.match(/setEditReferenceImages\(list\) \{[\s\S]*?\n  \}/);
+    assert.ok(setter && setter[0].includes("this.scheduleStateUpload()"), "reference changes must persist through the server state cache");
+});

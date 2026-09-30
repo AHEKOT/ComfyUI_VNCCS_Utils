@@ -1,8 +1,8 @@
+import math
 import pytest
 import torch
 
 from nodes.unicanvas.models.qwen_image21 import (
-    QWEN_IMAGE21_ASPECT_PRESETS,
     QWEN_IMAGE21_DEFAULTS,
     QWEN_IMAGE21_SUBJECT_EXTRACTION_PROMPT,
     QwenImage21UniCanvasModule,
@@ -43,20 +43,9 @@ def test_defaults_follow_qi21_recipe():
     assert defaults["qwen21_opaque_output"] is False
 
 
-def test_native_2k_aspect_presets():
+def test_generation_size_follows_the_canvas():
     module = _get_unicanvas_model_module("qwen_image21")
-    assert QWEN_IMAGE21_ASPECT_PRESETS == (
-        (2048, 2048),
-        (2400, 1792),
-        (1792, 2400),
-        (2528, 1696),
-        (1696, 2528),
-        (2752, 1536),
-        (1536, 2752),
-    )
-    assert module.resolve_generation_size(1024, 768, {}) == (1024, 768)
-    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "auto"}) == (1024, 768)
-    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (2400, 1792)
+    assert module.resolve_generation_size(1024, 768, {"qwen21_aspect_preset": "2400x1792"}) == (1024, 768)
 
 
 def test_create_empty_latent_uses_64_channel_16x_compression():
@@ -247,6 +236,7 @@ def test_remove_background_runs_over_the_real_image_geometry(monkeypatch):
     # The default turbo LoRA resolves (no download) and applies to the fake model as a no-op.
     monkeypatch.setattr("nodes.unicanvas.models.qwen_image21.resolve_qwen21_turbo_lora", lambda: "viggle/turbo.safetensors")
     monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda model, clip, *args, **kwargs: (model, clip))
+    monkeypatch.setattr("nodes.unicanvas.models.qwen_image21.apply_viggle_turbo_lora", lambda model, clip, *args: (model, clip))
 
     class FakeVae:
         def encode(self, pixels):
@@ -331,3 +321,112 @@ def test_spectrum_is_removed():
     assert "spectrum" not in QWEN_IMAGE21_DEFAULTS
     module = _get_unicanvas_model_module("qwen_image21")
     assert module.supports_step_cache({"spectrum": {"enabled": True}}) is True
+
+
+# --- Viggle turbo: student schedule + unmerged adapter ---------------------------------
+
+
+def test_viggle_turbo_sigmas_follow_the_student_nodes():
+    from nodes.unicanvas.models.qwen_image21_viggle import viggle_turbo_sigmas
+
+    latent = {"samples": torch.zeros(1, 64, 64, 64)}  # 1024x1024 -> 4096 tokens, shift ~0.69
+    sigmas = viggle_turbo_sigmas(latent)
+    assert len(sigmas) == 7 and float(sigmas[0]) == pytest.approx(1.0) and float(sigmas[-1]) == 0.0
+    assert all(float(a) > float(b) for a, b in zip(sigmas, sigmas[1:]))
+    shift = 0.5 + 0.4 * (4096 - 256) / (8192 - 256)
+    assert float(sigmas[4]) == pytest.approx(math.exp(shift) / (math.exp(shift) + 1.0), abs=1e-5)  # raw node 0.5
+    # img2img keeps only the student nodes at or below the denoise.
+    assert torch.allclose(viggle_turbo_sigmas(latent, 0.6), sigmas[4:])
+
+
+def test_viggle_lora_weights_fold_alpha_rank_and_strength():
+    from nodes.unicanvas.models.qwen_image21_viggle import viggle_lora_weights
+
+    sd = {
+        "transformer.transformer_blocks.0.attn.to_q.lora_A.weight": torch.ones(2, 4),
+        "transformer.transformer_blocks.0.attn.to_q.lora_B.weight": torch.ones(4, 2),
+    }
+    weights = viggle_lora_weights(sd, {"lora_adapter_metadata": '{"transformer.lora_alpha": 64, "transformer.r": 128}'}, 0.5)
+    down, up = weights["transformer_blocks.0.attn.to_q"]
+    assert torch.equal(down, torch.ones(2, 4)) and torch.allclose(up, torch.full((4, 2), 0.25))
+    with pytest.raises(ValueError):
+        viggle_lora_weights({}, None, 1.0)
+
+
+def test_turbo_lora_runs_unmerged_and_other_loras_merge(monkeypatch):
+    from nodes.unicanvas.models import qwen_image21
+
+    calls = []
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_turbo_lora", lambda: qwen_image21.QWEN21_TURBO_LORA_NAME)
+    monkeypatch.setattr(qwen_image21, "apply_viggle_turbo_lora", lambda m, c, name, strength: calls.append(("viggle", name, strength)) or (m, c))
+    monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None: calls.append(("merged", name, strength)) or (m, c))
+    module = _get_unicanvas_model_module("qwen_image21")
+    module.apply_loras("m", "c", {"qwen_lora_name": qwen_image21.QWEN21_TURBO_LORA_NAME, "qwen_lora_strength": 1.0})
+    module.apply_loras("m", "c", {"qwen_lora_name": "style.safetensors", "qwen_lora_strength": 0.7})
+    assert calls == [("viggle", qwen_image21.QWEN21_TURBO_LORA_NAME, 1.0), ("merged", "style.safetensors", 0.7)]
+
+
+def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
+    import comfy.sample as comfy_sample
+    import comfy.samplers as comfy_samplers
+    from nodes.unicanvas.models.qwen_image21_viggle import VIGGLE_TURBO_MARKER, viggle_turbo_sigmas
+
+    captured = {}
+
+    def fake_sample_custom(model, noise, cfg, sampler, sigmas, positive, negative, latent_image, **kwargs):
+        captured.update(cfg=cfg, sampler=sampler, sigmas=sigmas)
+        return latent_image + 1
+
+    monkeypatch.setattr(comfy_sample, "fix_empty_latent_channels", lambda model, samples, *a: samples, raising=False)
+    monkeypatch.setattr(comfy_sample, "prepare_noise", lambda samples, seed, inds=None: torch.zeros_like(samples), raising=False)
+    monkeypatch.setattr(comfy_sample, "sample_custom", fake_sample_custom, raising=False)
+    monkeypatch.setattr(comfy_samplers, "sampler_object", lambda name: f"sampler:{name}", raising=False)
+    monkeypatch.setattr("nodes.unicanvas.models.base._sample_generation_latent_default", lambda **kw: pytest.fail("KSampler path used for turbo"))
+
+    class TurboModel:
+        model_options = {"transformer_options": {VIGGLE_TURBO_MARKER: True}}
+
+    latent = {"samples": torch.zeros(1, 64, 48, 64)}
+    module = _get_unicanvas_model_module("qwen_image21")
+    out = module.sample_latent(TurboModel(), "POS", "NEG", latent, 7, 6, 1.0, "euler", "simple", 1.0, {}, "t")
+    assert captured["sampler"] == "sampler:euler" and captured["cfg"] == 1.0
+    assert torch.equal(captured["sigmas"], viggle_turbo_sigmas(latent))
+    assert torch.equal(out["samples"], torch.ones(1, 64, 48, 64))
+
+
+# --- AusBoss outpaint LoRA -----------------------------------------------------------
+
+
+def test_outpaint_lora_applies_only_in_outpaint(monkeypatch):
+    from nodes.unicanvas.models import qwen_image21
+
+    calls = []
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_outpaint_lora", lambda: qwen_image21.QWEN21_OUTPAINT_LORA_NAME)
+    monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None: calls.append(name) or (m, c))
+    module = _get_unicanvas_model_module("qwen_image21")
+    base = {"qwen_lora_name": "", **{k: v for k, v in module.defaults.items() if k.startswith("qwen21_outpaint")}}
+    for mode in ("txt2img", "img2img", "inpaint"):
+        module.apply_loras("m", "c", {**base, "draw_mode": mode})
+    assert calls == []
+    module.apply_loras("m", "c", {**base, "draw_mode": "outpaint", "lora_stack": [{"name": "qwen-image-2.1-outpaint-v2.safetensors", "strength": 1.0}]})
+    assert calls == [qwen_image21.QWEN21_OUTPAINT_LORA_NAME]  # the user's copy is not applied twice
+    calls.clear()
+    # Wired by hand into the user's stack, it applies in any mode.
+    module.apply_loras("m", "c", {**base, "draw_mode": "img2img", "lora_stack": [{"name": "ausboss/qwen-image-2.1-outpaint-v2.safetensors", "strength": 0.8}]})
+    assert calls == ["ausboss/qwen-image-2.1-outpaint-v2.safetensors"]
+
+
+def test_outpaint_uses_gray_canvas_and_trained_instruction():
+    from PIL import Image
+
+    from nodes.unicanvas.models.qwen_image21 import QWEN21_OUTPAINT_INSTRUCTION
+
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.outpaint_prompt_suffix() == ""
+    source = Image.new("RGBA", (4, 4), (0, 0, 0, 0))
+    source.putpixel((0, 0), (255, 0, 0, 255))
+    padded = module.prepare_outpaint_reference_image(source, None, "t")
+    assert padded.mode == "RGB" and padded.getpixel((3, 3)) == (128, 128, 128) and padded.getpixel((0, 0)) == (255, 0, 0)
+    text = module.assemble_instruction("a forest at dusk", {1: object()}, opaque_output=False, outpaint=True)
+    assert text == f"{QWEN21_OUTPAINT_INSTRUCTION} Scene: a forest at dusk"
+    assert module.assemble_instruction("", {1: object()}, outpaint=True) == QWEN21_OUTPAINT_INSTRUCTION

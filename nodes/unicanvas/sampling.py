@@ -254,3 +254,34 @@ def _release_generation_sampling_refs(gen_settings: dict[str, Any], draw_id: str
             torch.cuda.empty_cache()
     if released_keys:
         _uc_log(draw_id, "released sampling-only references before VAE decode", {"keys": released_keys})
+
+
+@contextlib.contextmanager
+def _report_comfy_sampling_progress(draw_id: str, steps: int):
+    """Forward ComfyUI's per-step ProgressBar updates of this thread to the draw progress.
+
+    For families that sample through SamplerCustomAdvanced (no step callback of their own).
+    """
+    try:
+        import comfy.utils as comfy_utils
+    except Exception:
+        yield
+        return
+    original = getattr(comfy_utils, "PROGRESS_BAR_HOOK", None)
+    owner = threading.get_ident()
+
+    def hook(*args: Any, **kwargs: Any):
+        if threading.get_ident() == owner and len(args) >= 2:
+            total = int(args[1] or steps or 1)
+            current = min(max(int(args[0]), 0), total)
+            _set_draw_progress(draw_id, "sampling", 0.35 + 0.5 * (current / total), current, total, f"Sampling step {current}/{total}")
+        if callable(original):
+            return original(*args, **kwargs)
+        return None
+
+    _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
+    comfy_utils.PROGRESS_BAR_HOOK = hook
+    try:
+        yield
+    finally:
+        comfy_utils.PROGRESS_BAR_HOOK = original

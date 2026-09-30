@@ -14,19 +14,16 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install lightweight test dependencies
-        run: python -m pip install numpy Pillow
+      - name: Install test dependencies
+        run: |
+          python -m pip install numpy Pillow pytest
+          python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
       - name: Run mandatory security scan
         run: python scripts/security_scan.py
       - name: Verify security scanner integrity
         run: PYTHONPATH=. python tests/test_security_scan.py
       - name: Run Python tests
-        run: |
-          for test_file in tests/*.py; do
-            if [ "$test_file" != "tests/test_security_scan.py" ]; then
-              PYTHONPATH=. python "$test_file"
-            fi
-          done
+        run: PYTHONPATH=. python -m pytest tests -q -p no:cacheprovider --ignore=tests/test_security_scan.py --ignore=tests/e2e
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:

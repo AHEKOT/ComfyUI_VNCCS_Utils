@@ -7,10 +7,12 @@ import os
 import re
 from typing import Any
 
-from .paths import _unicanvas_runtime_temp_root
+from .paths import _unicanvas_runtime_temp_root, _unicanvas_state_cache_dir
 
 
-_UNICANVAS_STATE_CACHE_DIR = os.path.join(_unicanvas_runtime_temp_root(), "vnccs_unicanvas_state_cache")
+# The upload route (__init__.py) writes to the user directory; the temp directory is the pre-restart-safe location.
+_UNICANVAS_STATE_CACHE_DIR = _unicanvas_state_cache_dir()
+_UNICANVAS_LEGACY_STATE_CACHE_DIR = os.path.join(_unicanvas_runtime_temp_root(), "vnccs_unicanvas_state_cache")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
 
 
@@ -20,8 +22,9 @@ def _safe_unicanvas_state_id(value: Any) -> str:
 
 
 def _read_unicanvas_state_cache(state_id: str) -> dict[str, Any] | None:
-    path = os.path.join(_UNICANVAS_STATE_CACHE_DIR, f"{_safe_unicanvas_state_id(state_id)}.json")
-    if not os.path.exists(path):
+    name = f"{_safe_unicanvas_state_id(state_id)}.json"
+    path = next((p for p in (os.path.join(directory, name) for directory in (_UNICANVAS_STATE_CACHE_DIR, _UNICANVAS_LEGACY_STATE_CACHE_DIR)) if os.path.exists(p)), None)
+    if path is None:
         return None
     with open(path, "r", encoding="utf-8") as handle:
         entry = json.load(handle)

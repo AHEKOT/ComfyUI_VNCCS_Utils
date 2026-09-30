@@ -22,6 +22,17 @@ def _unicanvas_runtime_temp_root() -> str:
     return os.path.abspath(root)
 
 
+def _unicanvas_state_cache_dir() -> str:
+    """Where the server writes UniCanvas state caches (ComfyUI user dir, so they survive a restart)."""
+    try:
+        import folder_paths
+
+        root = folder_paths.get_user_directory()
+    except Exception:
+        root = os.path.join(_EXTENSION_ROOT, ".runtime_cache", "user")
+    return os.path.join(root, "vnccs", "unicanvas_state_cache")
+
+
 def _normalize_path(value: str) -> str:
     return str(value or "").strip().replace("\\", os.sep).replace("/", os.sep)
 

@@ -825,7 +825,9 @@ function writeStandaloneState(widget, state) {
   try {
     state.storage = "local";
     const payload = JSON.stringify({ saved_at: Date.now(), state });
-    if (payload.length > 4_000_000) {
+    // Kept well under the ~5 MB origin quota: ComfyUI's own workflow drafts share it, and a
+    // near-full quota makes every draft save fail ("Failed to save workflow draft").
+    if (payload.length > 1_500_000) {
       widget.localStateBackupDisabled = true;
       if (!widget.localStateBackupWarned) {
         widget.localStateBackupWarned = true;
