@@ -23,6 +23,7 @@ SCANNER_RULE_IDS = frozenset({
     "JS_DYNAMIC_EXECUTION",
     "JS_EXTERNAL_NETWORK",
     "JS_REQUESTS_SCANNER_TRIGGER",
+    "JS_XHR_SCANNER_TRIGGER",
     "PY_COMMAND_EXECUTION",
     "PY_DYNAMIC_EXECUTION",
     "PY_DYNAMIC_IMPORT",
@@ -265,6 +266,11 @@ def _javascript_findings(relative: str, text: str) -> list[Finding]:
         ("JS_CONNECT_SCANNER_TRIGGER", re.compile(r"\.connect\s*\("), "connect() triggers the Comfy network rule"),
         ("JS_DYNAMIC_EXECUTION", re.compile(r"(?<![.\w])eval\s*\(|\bnew\s+Function\s*\("), "Dynamic JavaScript execution is forbidden"),
         ("JS_EXTERNAL_NETWORK", re.compile(r"\bfetch\s*\(\s*[`\"']https?://", re.IGNORECASE), "Direct external fetch() is forbidden"),
+        (
+            "JS_XHR_SCANNER_TRIGGER",
+            re.compile(r"\bnew\s+XMLHttpRequest\b"),
+            "XMLHttpRequest triggers the Comfy network rule (also in vendored code)",
+        ),
         (
             "JS_REQUESTS_SCANNER_TRIGGER",
             re.compile(r"\bRequests\.(?:get|delete)\s*\(", re.IGNORECASE),

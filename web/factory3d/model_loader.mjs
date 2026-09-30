@@ -148,6 +148,8 @@ export async function loadFactoryModel(
         const resourcesReady = waitForResources();
         const draco = new DRACOLoader(manager);
         draco.setDecoderPath(new URL("../vendor/spark/libs/draco/gltf/", import.meta.url).href);
+        // Only the WASM decoder is vendored; the asm.js fallback was removed.
+        draco.setDecoderConfig({ type: "wasm" });
         try {
             const loader = new GLTFLoader(manager)
                 .setDRACOLoader(draco)
