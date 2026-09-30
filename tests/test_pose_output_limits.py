@@ -1,9 +1,12 @@
 import importlib.util
+import contextlib
+import io
 import json
 import sys
 import types
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -40,6 +43,36 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_sam_sync_error_is_reported_without_claiming_proportions_were_applied(self):
+        node = POSE_STUDIO.VNCCS_PoseStudio()
+        failure = {"sync_error": "Pose Manager previews are still refreshing."}
+        waits = []
+        node._wait_for_frontend_sync = lambda *args, **kwargs: (waits.append(kwargs) or failure)
+        server = types.SimpleNamespace(PromptServer=types.SimpleNamespace(
+            instance=types.SimpleNamespace(send_sync=lambda *_args: None),
+        ))
+        sam = types.SimpleNamespace(
+            process_image_to_pose_json=lambda _image: '{"bones": {}}',
+            progress=types.SimpleNamespace(
+                start_task=lambda *_args: None,
+                task_context=lambda *_args: contextlib.nullcontext(),
+                update=lambda *_args: None,
+            ),
+        )
+        output = io.StringIO()
+        with patch.dict(sys.modules, {
+            "server": server,
+            "vnccs_pose_limit_testpkg.vnccs_sam3d": sam,
+        }), contextlib.redirect_stdout(output):
+            with self.assertRaisesRegex(RuntimeError, "frontend sync failed: Pose Manager previews"):
+                node.generate(
+                    json.dumps({"export": {"interface_mode": "manager"}}),
+                    pose_image=[object()], unique_id="703",
+                )
+        self.assertNotIn("Applied pose_image", output.getvalue())
+        self.assertEqual(len(waits), 1, "a rejected SAM capture must not trigger a second sync")
+        self.assertGreater(waits[0]["timeout"], 120, "allow the manager's preview readiness budget")
+
     def test_animation_image_batch_is_one_batched_image_value(self):
         node = POSE_STUDIO.VNCCS_PoseStudio()
         images = [Image.new("RGB", (2, 3)), Image.new("RGB", (2, 3))]

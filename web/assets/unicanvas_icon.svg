@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="UniCanvas">
+  <title>UniCanvas</title>
+  <defs>
+    <linearGradient id="uc-sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5b3fd1"/>
+      <stop offset="0.55" stop-color="#d86fb4"/>
+      <stop offset="1" stop-color="#ffb99a"/>
+    </linearGradient>
+    <linearGradient id="uc-edge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff9fc0"/>
+      <stop offset="1" stop-color="#a88bff"/>
+    </linearGradient>
+  </defs>
+  <!-- Layer stack: two translucent layers behind the active one. -->
+  <rect x="12.5" y="3" width="16.5" height="18.5" rx="2.6" fill="#8a6cff" fill-opacity="0.16" stroke="#b9a3ff" stroke-opacity="0.55" stroke-width="1.2"/>
+  <rect x="9" y="5.5" width="16.5" height="18.5" rx="2.6" fill="#9f7dff" fill-opacity="0.24" stroke="#cdb8ff" stroke-opacity="0.8" stroke-width="1.2"/>
+  <!-- Active layer: a small sunset scene. -->
+  <rect x="4.5" y="8.5" width="17" height="19" rx="2.6" fill="url(#uc-sky)" stroke="url(#uc-edge)" stroke-width="1.2"/>
+  <circle cx="14.6" cy="16.2" r="2.3" fill="#fff4e8"/>
+  <path d="M4.5 23.2 9.2 18.6l2.9 2.8 3.3-3.6 6.1 5.7v1.9a2.6 2.6 0 0 1-2.6 2.6H7.1a2.6 2.6 0 0 1-2.6-2.6z" fill="#2c1f55"/>
+  <!-- Selection: dashed marquee with corner handles around the active layer. -->
+  <rect x="2.6" y="6.6" width="20.8" height="22.8" rx="1" fill="none" stroke="#ffffff" stroke-width="1" stroke-dasharray="2.2 1.6"/>
+  <g fill="#ffffff">
+    <rect x="1.6" y="5.6" width="2.2" height="2.2" rx="0.4"/>
+    <rect x="22.2" y="5.6" width="2.2" height="2.2" rx="0.4"/>
+    <rect x="1.6" y="28.2" width="2.2" height="2.2" rx="0.4"/>
+    <rect x="22.2" y="28.2" width="2.2" height="2.2" rx="0.4"/>
+  </g>
+</svg>

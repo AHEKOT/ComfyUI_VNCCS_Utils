@@ -38,7 +38,7 @@ function installStyles(doc) {
     style.textContent = `
 .vnccs-custom-select-menu {
     position: fixed;
-    z-index: 1000000;
+    z-index: 2147483600;
     display: flex;
     flex-direction: column;
     gap: 2px;
@@ -245,6 +245,21 @@ function measureLongestOptionWidth(doc, options, selectStyle) {
 }
 
 
+// Vertical placement of the popup: it opens below the control unless that side is short and
+// the other one is roomier, and its max height is the space on the side it actually opens to,
+// so the list never runs past the viewport edge (e.g. a LoRA list in fullscreen UniCanvas).
+export function computeMenuVerticalPlacement(rectTop, rectBottom, viewportHeight, viewportGap = 8, offset = 4) {
+    const below = Math.max(0, viewportHeight - rectBottom - offset - viewportGap);
+    const above = Math.max(0, rectTop - offset - viewportGap);
+    // Below is kept while it has room for a useful list (180px); otherwise the roomier side wins.
+    const openAbove = below < 180 && above > below;
+    const maxHeight = Math.min(520, openAbove ? above : below);
+    return openAbove
+        ? { top: null, bottom: viewportHeight - rectTop + offset, maxHeight }
+        : { top: rectBottom + offset, bottom: null, maxHeight };
+}
+
+
 function positionMenu(state) {
     const { menu, select } = state;
     if (!menu?.isConnected || !select?.isConnected) return;
@@ -259,23 +274,25 @@ function positionMenu(state) {
     const desiredWidth = Math.max(rect.width, Math.min(560, longestTextWidth + 74));
     const width = Math.max(80, Math.min(desiredWidth, view.innerWidth - viewportGap * 2));
     const left = Math.min(Math.max(viewportGap, rect.left), view.innerWidth - viewportGap - width);
-    const below = view.innerHeight - rect.bottom - viewportGap;
-    const above = rect.top - viewportGap;
-    const maxHeight = Math.max(100, Math.min(520, Math.max(below, above)));
+    const placement = computeMenuVerticalPlacement(rect.top, rect.bottom, view.innerHeight, viewportGap);
 
     menu.style.left = `${Math.round(left)}px`;
     menu.style.width = `${Math.round(width)}px`;
-    menu.style.maxHeight = `${Math.round(maxHeight)}px`;
+    menu.style.maxHeight = `${Math.floor(placement.maxHeight)}px`;
     menu.style.fontFamily = selectStyle.fontFamily;
     menu.style.fontSize = selectStyle.fontSize;
     menu.style.fontWeight = selectStyle.fontWeight;
-    if (below < Math.min(180, maxHeight) && above > below) {
-        menu.style.top = "";
-        menu.style.bottom = `${Math.round(view.innerHeight - rect.top + 4)}px`;
-    } else {
-        menu.style.bottom = "";
-        menu.style.top = `${Math.round(rect.bottom + 4)}px`;
-    }
+    menu.style.top = placement.top === null ? "" : `${Math.round(placement.top)}px`;
+    menu.style.bottom = placement.bottom === null ? "" : `${Math.round(placement.bottom)}px`;
+}
+
+
+// The popup is mounted where it can be seen: inside the browser-fullscreen element when the
+// control lives there (the rest of the document is hidden behind the fullscreen top layer).
+function menuHost(select) {
+    const doc = select.ownerDocument;
+    const fullscreen = doc.fullscreenElement;
+    return fullscreen && fullscreen.contains(select) ? fullscreen : doc.body;
 }
 
 
@@ -307,6 +324,30 @@ function scheduleSync(state) {
 }
 
 
+// Scroll the open menu so the highlighted row is fully visible. The menu element only:
+// scrolling the row itself could also scroll an ancestor, and any scroll event whose target
+// is not the menu self-closes the popup (state.onViewportChange). Rows are children of the
+// position:fixed menu, so their offsetParent chain resolves to the menu itself.
+function scrollRowIntoMenuView(menu, row) {
+    if (!menu || !row) return;
+    let top = 0;
+    let node = row;
+    let reachedMenu = false;
+    while (node) {
+        if (node === menu) {
+            reachedMenu = true;
+            break;
+        }
+        top += node.offsetTop;
+        node = node.offsetParent;
+    }
+    if (!reachedMenu) return;
+    const bottom = top + row.offsetHeight;
+    if (top < menu.scrollTop) menu.scrollTop = top;
+    else if (bottom > menu.scrollTop + menu.clientHeight) menu.scrollTop = bottom - menu.clientHeight;
+}
+
+
 function setHighlightedIndex(state, index, scroll = true) {
     const options = Array.from(state.select.options || []);
     if (index < 0 || index >= options.length || optionUnavailable(options[index])) return;
@@ -316,7 +357,7 @@ function setHighlightedIndex(state, index, scroll = true) {
         row.classList.toggle("is-highlighted", active);
         if (active) {
             state.select.setAttribute("aria-activedescendant", row.id);
-            if (scroll) row.scrollIntoView({ block: "nearest" });
+            if (scroll) scrollRowIntoMenuView(state.menu, row);
         }
     }
 }
@@ -333,6 +374,7 @@ function closeCustomSelect(state, { restoreFocus = false } = {}) {
     else state.select.setAttribute("aria-controls", state.originalAriaControls);
     state.select.removeAttribute("aria-activedescendant");
     doc.removeEventListener("pointerdown", state.onOutsidePointerDown, true);
+    doc.removeEventListener("keydown", state.onEscapeKeyDown, true);
     view?.removeEventListener("resize", state.onViewportChange, true);
     view?.removeEventListener("scroll", state.onViewportChange, true);
     if (ACTIVE_SELECT_BY_DOCUMENT.get(doc) === state) ACTIVE_SELECT_BY_DOCUMENT.delete(doc);
@@ -354,10 +396,14 @@ function chooseOption(state, optionIndex) {
 
 
 function openCustomSelect(state) {
+    // Self-heal: a menu detached from the document (panel re-render or a failed
+    // open) must never block future opens.
+    if (state.menu && !state.menu.isConnected) state.menu = null;
     if (state.destroyed || state.menu || state.select.disabled || !state.select.isConnected) return;
     const doc = state.select.ownerDocument;
     const current = ACTIVE_SELECT_BY_DOCUMENT.get(doc);
     if (current && current !== state) closeCustomSelect(current);
+    try {
 
     const menu = doc.createElement("div");
     menu.className = `vnccs-custom-select-menu vnccs-custom-select-menu--${state.config.theme}`;
@@ -393,7 +439,9 @@ function openCustomSelect(state) {
         if (option.style?.color) label.style.color = option.style.color;
         row.append(check, label);
         row.addEventListener("pointerdown", event => {
-            event.preventDefault();
+            // stopPropagation keeps the press out of the outside-close handler; preventDefault
+            // would cancel the compatibility mouse sequence in Chromium and Firefox, so the
+            // row's click - which commits the choice - would never fire there.
             event.stopPropagation();
         });
         row.addEventListener("pointerenter", () => setHighlightedIndex(state, optionIndex, false));
@@ -408,7 +456,7 @@ function openCustomSelect(state) {
     menu.addEventListener("pointerdown", event => event.stopPropagation());
     menu.addEventListener("click", event => event.stopPropagation());
     menu.addEventListener("wheel", event => event.stopPropagation(), { passive: true });
-    doc.body.appendChild(menu);
+    menuHost(state.select).appendChild(menu);
     state.menu = menu;
     state.highlightedIndex = state.select.selectedIndex >= 0
         ? state.select.selectedIndex
@@ -420,8 +468,14 @@ function openCustomSelect(state) {
     positionMenu(state);
     setHighlightedIndex(state, state.highlightedIndex);
     doc.addEventListener("pointerdown", state.onOutsidePointerDown, true);
+    doc.addEventListener("keydown", state.onEscapeKeyDown, true);
     doc.defaultView?.addEventListener("resize", state.onViewportChange, true);
     doc.defaultView?.addEventListener("scroll", state.onViewportChange, true);
+    } catch (err) {
+        closeCustomSelect(state);
+        state.menu = null;
+        console.error("[VNCCS Custom Select] open failed", err);
+    }
 }
 
 
@@ -517,6 +571,14 @@ export function enhanceCustomSelect(select, config = {}) {
     state.onViewportChange = event => {
         if (event?.target === state.menu) return;
         closeCustomSelect(state);
+    };
+    state.onEscapeKeyDown = event => {
+        if (event.key !== "Escape") return;
+        // Document capture: close the open menu before anything else and swallow the key so
+        // UniCanvas's own Escape chain (tool switch -> fullscreen exit) never observes it.
+        closeCustomSelect(state, { restoreFocus: true });
+        event.preventDefault();
+        event.stopImmediatePropagation();
     };
     state.onPointerDown = event => {
         if (event.button !== undefined && event.button !== 0) return;

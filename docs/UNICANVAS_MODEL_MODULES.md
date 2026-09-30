@@ -11,17 +11,123 @@ This split keeps model files independent from the inference graph. For example,
 `Diffusion Model` can load both Anima and Flux Klein, while `Checkpoint` always
 forces SDXL.
 
+AI agents asked to add a model: follow `docs/agents/ADDING_A_MODEL.md`, which lists
+the questions to ask the user before writing any code.
+
+## Extension Points At A Glance
+
+A family is extended in three ways, from the lightest to the heaviest:
+
+1. **Data** - `defaults`, `capabilities` (tasks, accepted inputs, reference slots,
+   requirements, prompt guide) and `lora_requirements`.
+2. **Hooks** - methods on `UniCanvasModelModule` that the default draw pipeline
+   calls with the shared `DrawContext` (`validate_request`, `validate_source`,
+   `prepare_pose_edit`, `prepare_draw_assets`, `preload_vae` / `release_vae`,
+   `bind_draw_assets`, `encode_draw_prompts`, `on_mask_prepared`,
+   `on_masked_mode_dropped`, `prepare_masked_inputs`, `prepare_generation_latent`,
+   `prepare_masked_latent`, `after_latent_prepared`, `prepare_model_for_sampling`,
+   `normalize_settings`), plus the model primitives (`encode_prompt`,
+   `prepare_reference_conditioning`, `create_empty_latent`, `sample_latent`,
+   `decode_samples`, ...). Every hook has a generic default.
+3. **A whole draw path** - `draw_pipeline_class` names a subclass of
+   `draw_pipeline.ImageDrawPipeline` (or a class with the same `run()` contract).
+   Video, 3D or panorama-view families replace entire stages there.
+
+Shared draw code never names a family: `tests/test_unicanvas_draw_pipeline.py`
+fails if `draw.py`, `draw_request.py`, `draw_pipeline.py`, `generation.py`,
+`latents.py`, `sampling.py` or `loras.py` mention a family key or compare
+`.key`. Add a hook with a generic default instead.
+
+## Capabilities, Tasks And Prompt Help
+
+`models/capabilities.py` describes a family as data:
+
+- `GenerationTask` - one thing a family can generate (`text_to_image`,
+  `image_to_image`, `inpaint`, `outpaint`, `text_to_video`, `image_to_video`,
+  `reference_to_video`, `video_to_video`, `text_to_3d`, `image_to_3d`,
+  `panorama_view`, or your own). `canvas_mode` links it to the canvas draw mode;
+  `.planned()` declares a capability without a pipeline yet (rejected cleanly,
+  shown as "coming later"); `.with_prompt_guide(...)` gives the task its own
+  prompt help (e.g. MiniMax H3 image edits vs reference-to-video).
+- `MediaKind` - text, image, video, audio, mesh, panorama.
+- `ReferenceInputs` - how many reference pictures an edit family reads and how
+  the prompt names slot `n` (`Picture {n}`, `<image{n}>`, `<Picture {n}>`).
+- `PromptGuide` - `hint` (prompt placeholder), `guide` (paragraphs separated by
+  blank lines), `examples`, `negative_prompt` (is the negative used?) and
+  `sources` (links the advice is based on - required).
+- `ModelCapabilities` - label, tasks, references, prompt guide, requirements
+  (`requires_source_image`, `requires_external_config` with their messages),
+  `supports_pose_edit`, `default_loader`.
+
+A draw names its task with `task` in the payload, or implicitly through the
+canvas `mode`. `UniCanvasModelModule.describe()` is served by
+`/vnccs/unicanvas/assets` (`model_modules`); the widget's prompt `?` renders the
+guide for the active family from it, so prompt help needs no frontend change.
+
+## LoRA Rules
+
+Families never override `apply_loras`; they declare `LoraRequirement`s
+(`loras.py`), applied before the user's LoRA stack:
+
+```python
+lora_requirements = (
+    LoraRequirement(
+        name_setting="my_turbo_lora_name",   # settings key holding the file name
+        match=MY_TURBO_LORA_NAME,            # only this canonical file
+        enabled_setting="turbo_enabled",     # only with the Turbo switch on
+        strength_setting="my_turbo_lora_strength",
+        clip_strength=0.0,
+    ),
+    LoraRequirement(
+        name_setting="my_edit_adapter_name",
+        default_name="Vendor/edit_adapter.safetensors",
+        fixed_strength=1.0,                  # the user cannot change it
+        required=True,                       # applied even when a config owns the stack
+    ),
+)
+```
+
+Other options: `require_positive_strength`, `draw_modes` (only for some modes),
+`resolver` / `resolve_match` (e.g. a lazy download on first use) and `apply` (a custom
+loader, e.g. an unmerged adapter). A file is never applied twice: rules skip files the
+linked VNCSS Config stack carries, and the user stack skips files already applied.
+
+## Layer Tool Registries
+
+Blend modes (`render.BLEND_MODES`, `register_blend_mode`), panorama projections
+(`render.PANORAMA_PROJECTIONS`, `register_panorama_projection`), background
+removers (`remove_bg.BACKGROUND_REMOVERS`, `register_background_remover`; any
+family implementing `remove_background()` is offered as an edit-model backend)
+and color transfers (`color_match.COLOR_TRANSFERS`, `register_color_transfer`)
+are registries as well.
+
+## Where The Code Lives
+
+The backend is the `nodes/unicanvas/` package:
+
+- `loaders.py`: `UniCanvasModelLoader` subclasses and their registry.
+- `models/base.py`: `UniCanvasModelModule`, the base class of every family.
+- `models/<family>.py`: one module per model family (defaults, turbo LoRA names,
+  family-specific downloads and the adapter class).
+- `models/__init__.py`: registers every family, in one place.
+- `pipeline.py`: `UniCanvasNodeStep` / `UniCanvasPipeline`.
+- `models/capabilities.py`: tasks, media kinds, reference slots, prompt guides.
+- `draw.py` (entry), `draw_request.py` (payload -> `DrawRequest`),
+  `draw_pipeline.py` (`ImageDrawPipeline`, `DrawContext`), `latents.py`,
+  `sampling.py`, `generation.py`, `loras.py` (`LoraRequirement`): the shared draw
+  path.
+
 ## Adding A Loader
 
-Add a `UniCanvasModelLoader` subclass in `nodes/unicanvas.py` when a model file
-format needs a different Comfy loader node.
+Add a `UniCanvasModelLoader` subclass in `nodes/unicanvas/loaders.py` when a
+model file format needs a different Comfy loader node.
 
 Required methods:
 
 - `cache_key(settings)`: include every setting that changes loaded assets.
 - `load_assets(settings)`: return `(model, clip, vae)`.
 
-Register it with:
+Register it next to the built-in loaders at the bottom of the registry section:
 
 ```python
 _register_unicanvas_model_loader(MyLoader("my_loader", ("alias",), forced_mode=None))
@@ -33,10 +139,13 @@ loading as SDXL-only.
 
 ## Adding An Inference Module
 
-Add a `UniCanvasModelModule` subclass when the model needs different prompt,
-latent, sampler, reference, or decode behavior.
+Create `nodes/unicanvas/models/my_model.py` with the family defaults and, when
+the model needs different prompt, latent, sampler, reference, or decode
+behavior, a `UniCanvasModelModule` subclass. Then register it in
+`nodes/unicanvas/models/__init__.py`.
 
-Simple modules usually override only defaults:
+Simple modules usually only declare defaults and capabilities (register instances
+in `models/__init__.py`):
 
 ```python
 MY_DEFAULTS = {

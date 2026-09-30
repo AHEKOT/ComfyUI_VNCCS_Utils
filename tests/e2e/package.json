@@ -1,0 +1,12 @@
+{
+  "name": "vnccs-unicanvas-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test",
+    "evidence": "node evidence.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0"
+  }
+}

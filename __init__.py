@@ -3,6 +3,7 @@ from .nodes.vnccs_qwen_detailer import VNCCS_QWEN_Detailer, VNCCS_BBox_Extractor
 from .nodes.vnccs_model_manager import VNCCS_ModelManager, VNCCS_ModelSelector
 from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
+from .nodes.vncss_config import VNCCS_Config
 from .nodes.factory3d import VNCCS_3DFactory
 from .nodes.factory3d_render import VNCCS_FactoryRender, VNCCS_FactoryMask
 
@@ -15,6 +16,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_ModelSelector": VNCCS_ModelSelector,
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
+    "VNCCS_Config": VNCCS_Config,
     "VNCCS_3DFactory": VNCCS_3DFactory,
     "VNCCS_FactoryRender": VNCCS_FactoryRender,
     "VNCCS_FactoryMask": VNCCS_FactoryMask,
@@ -29,6 +31,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_ModelSelector": "VNCCS Model Selector",
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
+    "VNCCS_Config": "VNCSS Config",
     "VNCCS_3DFactory": "VNCCS 3D Factory",
     "VNCCS_FactoryRender": "VNCCS Factory Render",
     "VNCCS_FactoryMask": "VNCCS Factory Mask",
@@ -68,7 +71,24 @@ _POSE_ANIMATION_DISK_CACHE_MAX_FILES = 256
 _POSE_ANIMATION_DISK_CACHE_MAX_BYTES = 512 * 1024 * 1024
 _UNICANVAS_STATE_CACHE_MAX = 10
 _UNICANVAS_STATE_CACHE_MAX_TOTAL_CHARS = 96 * 1024 * 1024
-_UNICANVAS_STATE_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_unicanvas_state_cache")
+def _vnccs_user_data_root():
+    # ComfyUI wipes its temp directory on every start, so anything that must survive a restart
+    # lives in the user directory instead.
+    try:
+        import folder_paths
+
+        root = folder_paths.get_user_directory()
+    except Exception:
+        root = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".runtime_cache", "user")
+    root = os.path.join(root, "vnccs")
+    os.makedirs(root, exist_ok=True)
+    return root
+
+
+# Canvas pixels behind a workflow's "state cache": persistent, so a restart keeps every canvas.
+_UNICANVAS_STATE_CACHE_DIR = os.path.join(_vnccs_user_data_root(), "unicanvas_state_cache")
+# Older versions kept the cache in the temp directory (emptied at startup); still read as a fallback.
+_UNICANVAS_LEGACY_STATE_CACHE_DIR = os.path.join(_vnccs_runtime_temp_root(), "vnccs_unicanvas_state_cache")
 _UNICANVAS_STATE_DISK_CACHE_MAX_FILES = 64
 _UNICANVAS_STATE_DISK_CACHE_MAX_BYTES = 1024 * 1024 * 1024
 _DISK_CACHE_TTL_SECONDS = 180 * 24 * 60 * 60
@@ -423,7 +443,10 @@ def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
 def _vnccs_read_unicanvas_state_cache_file(state_id):
     path = _vnccs_unicanvas_state_cache_path(state_id)
     if not os.path.exists(path):
-        return None
+        legacy = os.path.join(_UNICANVAS_LEGACY_STATE_CACHE_DIR, os.path.basename(path))
+        if not os.path.exists(legacy):
+            return None
+        path = legacy
     with open(path, "r", encoding="utf-8") as handle:
         entry = json.load(handle)
     try:
@@ -431,6 +454,60 @@ def _vnccs_read_unicanvas_state_cache_file(state_id):
     except OSError:
         pass
     return entry
+
+def _vnccs_read_git_short_commit(repo_dir):
+    # Resolve HEAD by reading .git files directly (no process execution).
+    try:
+        git_dir = os.path.join(repo_dir, ".git")
+        if os.path.isfile(git_dir):
+            with open(git_dir, "r", encoding="utf-8") as handle:
+                pointer = handle.read().strip()
+            if not pointer.startswith("gitdir:"):
+                return ""
+            git_dir = os.path.normpath(os.path.join(repo_dir, pointer[len("gitdir:"):].strip()))
+        with open(os.path.join(git_dir, "HEAD"), "r", encoding="utf-8") as handle:
+            head = handle.read().strip()
+        sha = head
+        if head.startswith("ref:"):
+            ref = head[len("ref:"):].strip()
+            sha = ""
+            ref_path = os.path.normpath(os.path.join(git_dir, ref))
+            if ref_path.startswith(os.path.normpath(git_dir) + os.sep) and os.path.isfile(ref_path):
+                with open(ref_path, "r", encoding="utf-8") as handle:
+                    sha = handle.read().strip()
+            else:
+                packed = os.path.join(git_dir, "packed-refs")
+                if os.path.isfile(packed):
+                    with open(packed, "r", encoding="utf-8") as handle:
+                        for line in handle:
+                            parts = line.strip().split(" ", 1)
+                            if len(parts) == 2 and parts[1] == ref:
+                                sha = parts[0]
+                                break
+        if len(sha) >= 7 and all(c in "0123456789abcdef" for c in sha.lower()):
+            return sha[:7]
+    except Exception:
+        pass
+    return ""
+
+def _vnccs_unicanvas_build_info():
+    # Debug identity for the UI: git commit (when the checkout has .git) plus the
+    # same newest-mtime version the frontend staleness gate compares against.
+    # The commit is read per call (cheap, once per popover open) so it can never
+    # go stale after new commits land without a server restart.
+    commit = _vnccs_read_git_short_commit(os.path.dirname(os.path.abspath(__file__)))
+    version = 0
+    try:
+        import re
+        web_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+        pattern = re.compile(r"^vnccs_(unicanvas|custom_select|pose_studio).*\.(js|mjs)$")
+        for name in os.listdir(web_dir):
+            if pattern.match(name):
+                version = max(version, int(os.stat(os.path.join(web_dir, name)).st_mtime * 1000))
+    except Exception:
+        pass
+    return {"commit": commit or None, "version": str(version)}
+
 
 def _vnccs_register_unicanvas_state_cache():
     try:
@@ -466,6 +543,10 @@ def _vnccs_register_unicanvas_state_cache():
             return web.json_response({"status": "ok", "state_id": state_id})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/build_info")
+    async def vnccs_unicanvas_build_info(request):
+        return web.json_response(_vnccs_unicanvas_build_info())
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas_state/{state_id}")
     async def vnccs_unicanvas_state_get(request):

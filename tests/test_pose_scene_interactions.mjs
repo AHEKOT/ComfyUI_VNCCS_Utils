@@ -143,6 +143,24 @@ test("library results are ignored after changing tabs, including a round trip", 
     coherent(scene); assert.deepEqual(scene.projection(), before);
 });
 
+test("a library pose keeps the mannequin's placement, zoom and view angles when embedded in UniCanvas", async () => {
+    const libraryPose = { bones: {}, cameraParams: { zoom: 3, offset_x: 12, offset_y: -8, yaw_deg: 40, pitch_deg: 10 } };
+    const load = async embedded => {
+        const scene = createScene(); zoom(scene, 2);
+        scene.w.exportParams.cam_offset_x = 5; scene.w.exportParams.cam_offset_y = 6;
+        scene.w.exportParams.cam_yaw_deg = 15; scene.w.exportParams.cam_pitch_deg = -5;
+        scene.w.persistActivePoseCameraParams();
+        scene.w.host = { ...(scene.w.host || {}), embedded };
+        scene.context.fetch = async () => ({ ok: true, json: async () => ({ pose: JSON.parse(JSON.stringify(libraryPose)) }) });
+        await scene.w.loadFromLibrary("test");
+        return scene.w.getActiveCharacter().transform;
+    };
+    const kept = await load(true);
+    assert.deepEqual([kept.x, kept.y, kept.zoom], [5, 6, 2], "embedded: the placement is untouched");
+    const reset = await load(false);
+    assert.notEqual(reset.zoom, 2, "standalone Pose Studio still applies the pose's own framing");
+});
+
 test("Age fit remains centered after camera yaw and pitch changes", () => {
     const scene = createScene();
     for (const [yaw, pitch] of [[30, 20], [-45, -20], [90, 0], [180, 0]]) {

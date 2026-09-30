@@ -1,0 +1,25 @@
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        VNCSS_UTILS_REPO: ${VNCSS_UTILS_REPO:-https://github.com/M4cd1r/ComfyUI_VNCCS_Utils}
+        VNCSS_UTILS_REF: ${VNCSS_UTILS_REF:-unicanvas-next}
+    # Cached local image name reused by later worktrees instead of rebuilding.
+    image: vnccs-comfyui-test:latest
+    ports:
+      # PORT lets parallel worktrees each run their own platform instance.
+      - "${PORT:-8188}:8188"
+    ipc: host
+    volumes:
+      # Code under test comes from the working tree - no image rebuild for WIP code.
+      - ../../..:/opt/ComfyUI/custom_nodes/ComfyUI_VNCCS_Utils
+      - comfyui-models:/opt/ComfyUI/models
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8188/system_stats"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+volumes:
+  comfyui-models:

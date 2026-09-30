@@ -1,7 +1,7 @@
 [project]
 name = "vnccs-utils"
 description = "VNCCS utility nodes: Pose Studio, UniCanvas, and 3D Factory."
-version = "0.6.7"
+version = "0.6.8"
 license = {file = "LICENSE"} 
 
 dependencies = [
@@ -52,5 +52,6 @@ NodeIds = [
     "VNCCS_ModelSelector",
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
-    "VNCCS_3DFactory"
+    "VNCCS_3DFactory",
+    "VNCCS_Config"
 ]
