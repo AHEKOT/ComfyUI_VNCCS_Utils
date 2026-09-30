@@ -1,3 +1,11 @@
+# Version 0.6.9
+## Registry Compliance Fix
+
+### Fixes
+
+* **Comfy Registry flag**: Version 0.6.8 was flagged for network-request patterns in the vendored Draco decoder. The unused `XMLHttpRequest` readers were removed from `draco_wasm_wrapper.js`, and the asm.js fallback `draco_decoder.js` was dropped. 3D Factory now always uses the WASM Draco decoder, and glTF/GLB loading is otherwise unchanged.
+* **Security gate**: The security scan now rejects `XMLHttpRequest` in shipped JavaScript, including vendored code.
+
 # Version 0.6.8
 ## UniCanvas Overhaul: Faster Editing, Pose Layers, and More Models
 
