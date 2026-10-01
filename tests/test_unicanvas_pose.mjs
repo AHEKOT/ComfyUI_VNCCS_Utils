@@ -516,7 +516,7 @@ test("the rotation gizmo shrinks with the character's zoom", () => {
 test("the ? button opens an illustrated help popup that Esc closes without leaving the editor", () => {
     const { editor, host, layer } = harness(); editor.layer = layer; editor.studio = fakeStudio(); editor.buildDock();
     const bar = editor.editBar, labels = bar.children.map(child => child.textContent);
-    assert.deepEqual(labels.filter(Boolean), ["Editing pose", "?", "Reset camera", "Cancel", "Save pose"]);
+    assert.deepEqual(labels.filter(Boolean), ["Editing pose", "?", "Motion", "Reset camera", "Cancel", "Save pose"]);
     assert.ok(!bar.children.some(child => /Pose Library/.test(child.textContent)), "Pose Library lives in Scene only");
     const help = editor.help, question = bar.children.find(child => child.textContent === "?");
     assert.equal(help.open, false);

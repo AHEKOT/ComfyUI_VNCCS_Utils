@@ -1,3 +1,25 @@
+# Version 0.6.10
+## Pose Studio Text to Motion
+
+### Pose Studio
+
+* **Text to Motion**: The new **🏃 Motion** button in the action bar generates a motion from a text prompt with NVIDIA Kimodo or Tencent HY-Motion 1.0 (Lite and full). Pick a model, write a prompt, set the length, steps and seed, and press Generate. The result is retargeted onto the mannequin once, so scrubbing and playing the preview stay live.
+* **Animation mode**: Stand on a timeline frame and press Motion: the pose at that frame is the start pose. **OK** deletes everything from that frame on and writes the generated clip there (one undo step); frames before it stay untouched. **Cancel** keeps the previous animation exactly as it was.
+* **Single poses**: Outside Animation mode, scrub to a frame and press OK to use it as the pose. Regenerating always starts again from the pose the panel was opened with, and Cancel or Esc restores it.
+* **Start pose and joints**: Kimodo can start exactly from your pose; HY-Motion cannot, so its movement is applied on top of your pose. Joints a model does not produce (fingers, extra spine joints) keep the start pose. **Keep in place** drops horizontal root travel.
+* **License warning**: A model whose license excludes some territories shows a warning naming them. HY-Motion 1.0 is not licensed in the European Union, the United Kingdom and South Korea.
+* **One character at a time**: Kimodo and HY-Motion generate a single character. In a scene with several characters the motion goes to the selected character and the panel says so.
+
+### UniCanvas
+
+* **Motion in the pose editor**: The Edit pose bar has the same **Motion** button and panel.
+
+### Under the Hood
+
+* Every motion model is one JSON file in `config/motion_models/` (download source, files, capabilities, license and territories) behind a shared `MotionBackend` interface, so more models can be added without touching Pose Studio. See `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
+* Model files are downloaded lazily, one file at a time, from public Hugging Face repositories without a token. Kimodo's text encoder is the gated Llama 3 model and needs a one-time `hf auth login`.
+* New routes under `/vnccs/pose_studio/motion/`: `models`, `generate`, `status/{id}` and `unload`.
+
 # Version 0.6.9
 ## Registry Compliance Fix
 
