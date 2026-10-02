@@ -8,6 +8,7 @@
 * **Single poses**: Outside Animation mode, scrub to a frame and press OK to use it as the pose. Regenerating always starts again from the pose the panel was opened with, and Cancel or Esc restores it.
 * **Start pose and joints**: Kimodo can start exactly from your pose; HY-Motion cannot, so its movement is applied on top of your pose. Joints a model does not produce (fingers, extra spine joints) keep the start pose. **Keep in place** drops horizontal root travel.
 * **License warning**: A model whose license excludes some territories shows a warning naming them. HY-Motion 1.0 is not licensed in the European Union, the United Kingdom and South Korea.
+* **UniMate (preview)**: [UniMate](https://linzhanmou.com/unimate/) is available as a third model family, driven on a Mixamo humanoid skeleton (text-only, up to 2 s). It needs a manual checkout, checkpoint and skeleton features; see `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
 * **One character at a time**: Kimodo and HY-Motion generate a single character. In a scene with several characters the motion goes to the selected character and the panel says so.
 
 ### UniCanvas

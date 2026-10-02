@@ -29,7 +29,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "smplh", "base", "registry", "service", "kimodo_backend", "hymotion_backend"):
+    for name in ("transform", "soma", "smplh", "base", "registry", "service", "kimodo_backend", "hymotion_backend", "unimate_backend"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -46,6 +46,7 @@ BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
 HYMOTION = _MODULES["hymotion_backend"]
+UNIMATE = _MODULES["unimate_backend"]
 
 # Kimodo SOMA 77-joint skeleton (name, parent, rest position in meters), copied from
 # kimodo/assets/skeletons/somaskel77 of https://github.com/nv-tlabs/kimodo (Apache-2.0).
@@ -363,6 +364,49 @@ class SmplhMotionTests(unittest.TestCase):
         self.assertIn("LeftFoot", motion["joints"])
         self.assertEqual(motion["rotations"], {})
 
+    def test_unimate_mixamo_output_lands_on_the_mannequin(self):
+        keypoints, _, _, _ = world_keypoints(heading_degrees=90.0)
+        rest = smplh_rest()[:22]
+        # SMPL body joints renamed to their Mixamo counterparts, as UniMate's Mixamo features name them.
+        to_mixamo = {smpl: key for key, smpl in SMPLH.MOTION_JOINTS.items()}
+        names = [f"mixamorig:{to_mixamo.get(name, name)}" for name in SMPLH.BODY_JOINTS]
+        source = UNIMATE.unimate_motion(np.stack([rest, rest]), names, fps=30)
+        self.assertEqual(source.root, "Hips")
+        self.assertEqual(source.hips, ("RightUpLeg", "LeftUpLeg"))
+        motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, keypoints))
+        np.testing.assert_allclose(motion["joints"]["Hips"][0], keypoints["pelvis"], atol=1e-6)
+        self.assertIn("LeftHand", motion["joints"])
+        self.assertEqual(motion["rotations"], {})
+
+    def test_unimate_rejects_non_humanoid_skeletons(self):
+        with self.assertRaises(ValueError):
+            UNIMATE.unimate_motion(np.zeros((2, 3, 3)), ["Root", "Tail1", "Tail2"])
+
+    def test_unimate_joint_names_are_cleaned(self):
+        self.assertEqual(UNIMATE.clean_joint_name("mixamorig:LeftArm"), "LeftArm")
+        self.assertEqual(UNIMATE.clean_joint_name("mixamorig1_LeftArm"), "LeftArm")
+        self.assertEqual(UNIMATE.clean_joint_name("Armature|Hips"), "Hips")
+
+    def test_unimate_needs_its_code_checkpoint_and_features(self):
+        spec = REGISTRY.load_specs()["unimate-preview"]
+        with tempfile.TemporaryDirectory() as folder:
+            backend = UNIMATE.UniMateBackend(spec, Path(folder))
+            backend.requires = ()
+            with self.assertRaises(BASE.BackendUnavailable):
+                backend.check_available()
+            (backend.code_dir() / "unimate" / "inference").mkdir(parents=True)
+            (backend.code_dir() / "unimate" / "inference" / "sample.py").write_text("")
+            (backend.checkpoint_dir() / "checkpoints").mkdir(parents=True)
+            (backend.checkpoint_dir() / "config.json").write_text("{}")
+            for step in (100, 2500, 900):
+                (backend.checkpoint_dir() / "checkpoints" / f"checkpoint_step_{step}.pt").write_text("x")
+            self.assertEqual(UNIMATE.latest_checkpoint(backend.checkpoint_dir()).name, "checkpoint_step_2500.pt")
+            with self.assertRaises(BASE.BackendUnavailable):
+                backend.check_available()
+            (backend.features_dir() / "mixamo").mkdir(parents=True)
+            (backend.features_dir() / "mixamo" / "cond.npy").write_bytes(b"x")
+            backend.check_available()
+
     def test_global_rotations_compose_parents_first(self):
         local = np.stack([axis_angle([0, 1, 0], 30), axis_angle([1, 0, 0], 40), axis_angle([0, 0, 1], 50)])[None]
         world = TRANSFORM.global_rotations_from_local(local, [-1, 0, 1])
@@ -373,6 +417,7 @@ class ModelRegistryTests(unittest.TestCase):
     def test_bundled_model_files_load(self):
         specs = REGISTRY.load_specs()
         self.assertEqual(list(specs)[:3], ["kimodo-soma-rp-v1.1", "hy-motion-1.0-lite", "hy-motion-1.0"])
+        self.assertEqual(specs["unimate-preview"].backend, "unimate")
         for spec in specs.values():
             self.assertIn(spec.backend, REGISTRY.BACKENDS)
             self.assertTrue(spec.code.get("url", "").startswith("https://"))
@@ -383,7 +428,7 @@ class ModelRegistryTests(unittest.TestCase):
             self.assertTrue(spec.license.get("name") and spec.license.get("url"))
             public = spec.public()
             json.dumps(public)
-            self.assertEqual(public["capabilities"]["duration"]["max"], 10.0)
+            self.assertTrue(0 < public["capabilities"]["duration"]["max"] <= 10.0)
 
     def test_hymotion_license_names_the_excluded_territories(self):
         for model_id in ("hy-motion-1.0-lite", "hy-motion-1.0"):

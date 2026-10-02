@@ -1,4 +1,4 @@
-// Pose Studio text-to-motion (Kimodo, HY-Motion, and any model in config/motion_models).
+// Pose Studio text-to-motion (Kimodo, HY-Motion, UniMate, and any model in config/motion_models).
 //
 // The panel sends the mannequin's current pose and a prompt to the backend
 // (api/text_to_motion), which generates a motion with the selected model.

@@ -1,0 +1,60 @@
+{
+  "id": "unimate-preview",
+  "name": "UniMate (preview)",
+  "order": 40,
+  "backend": "unimate",
+  "description": "UniMate (SIGGRAPH Asia 2026): one model that animates diverse skeletons from text. Driven here on a Mixamo humanoid skeleton.",
+  "homepage": "https://linzhanmou.com/unimate/",
+  "code": {
+    "url": "https://github.com/Friedrich-M/UniMate",
+    "local_dir": "code/UniMate",
+    "install": "Clone 'https://github.com/Friedrich-M/UniMate' into <ComfyUI>/models/text_to_motion/code/UniMate, install its inference dependencies into ComfyUI's Python ('pip install torchdiffeq einops transformers sentencepiece tyro accelerate loguru'), download the checkpoint folder with 'hf download Linzhan/UniMate --local-dir <ComfyUI>/models/text_to_motion/UniMate', and put the Mixamo skeleton features (dataset/features/mixamo, made by UniMate's data_process pipeline) into <ComfyUI>/models/text_to_motion/UniMate/features/mixamo. Restart ComfyUI. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "Linzhan/UniMate",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "google/flan-t5-base",
+      "managed": false
+    }
+  ],
+  "options": {
+    "checkpoint_dir": "UniMate",
+    "features_dir": "UniMate/features",
+    "dataset": "mixamo",
+    "object_type": "",
+    "fps": 30
+  },
+  "capabilities": {
+    "start_pose_constraint": false,
+    "max_characters": 1,
+    "duration": {
+      "min": 0.5,
+      "max": 2,
+      "default": 2
+    },
+    "guidance": {
+      "min": 1,
+      "max": 10,
+      "default": 2.5
+    }
+  },
+  "requirements": {
+    "vram_gb": 6,
+    "notes": "Preview checkpoints. Text-only and limited to one 60-frame (2 s) window at 30 fps; Pose Studio applies the movement on top of the current pose. Only joint positions are generated, so hands, feet and head keep their start orientation. Set options.object_type to choose which Mixamo skeleton is used (default: the first one in the features)."
+  },
+  "license": {
+    "name": "MIT License (code); dataset sources keep their own licenses",
+    "url": "https://github.com/Friedrich-M/UniMate/blob/main/LICENSE",
+    "commercial_use": true,
+    "restricted_territories": [],
+    "territory_notice": "",
+    "notice": "UniMate code: Copyright (c) 2026 Linzhan Mou, MIT License. Training data includes Adobe Mixamo, Objaverse-XL and Truebones assets under their own terms."
+  }
+}

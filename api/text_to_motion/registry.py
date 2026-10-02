@@ -25,10 +25,17 @@ def _hymotion():
     return HYMotionBackend
 
 
+def _unimate():
+    from .unimate_backend import UniMateBackend
+
+    return UniMateBackend
+
+
 # Backend name used in the model JSON -> loader of its MotionBackend class.
 BACKENDS = {
     "kimodo": _kimodo,
     "hymotion": _hymotion,
+    "unimate": _unimate,
 }
 
 MODELS_CONFIG_DIR = Path(__file__).resolve().parents[2] / "config" / "motion_models"

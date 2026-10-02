@@ -8,6 +8,7 @@ press **OK**: the mannequin takes that pose. Supported models:
 | [NVIDIA Kimodo](https://research.nvidia.com/labs/sil/projects/kimodo/) SOMA RP v1.1 | Yes (frame-0 keyframe) | ~17 GB, under 3 GB with `TEXT_ENCODER_DEVICE=cpu` | NVIDIA Open Model License |
 | [Tencent HY-Motion 1.0](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) Lite | No (motion is applied on top of your pose) | 24 GB | Tencent HY-Motion 1.0 Community License, **not valid in the EU, UK and South Korea** |
 | Tencent HY-Motion 1.0 | No (motion is applied on top of your pose) | 26 GB | Same as above |
+| [UniMate](https://linzhanmou.com/unimate/) (preview) | No (motion is applied on top of your pose), max 2 s | ~6 GB | MIT (code); training data keeps its own licenses |
 
 Model code and weights are optional. Pose Studio works without them; the panel shows which
 models are installed and how to install the missing ones.
@@ -89,6 +90,27 @@ LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH
 EXPRESSLY LIMITED TO THE TERRITORY"* and *"You must not use, reproduce, modify, distribute, or
 display the Tencent HY-MOTION 1.0 Works, Output or results of the Tencent HY-MOTION 1.0 Works
 outside the Territory."* Do not use HY-Motion, or poses made with it, in those territories.
+
+## Installing UniMate (preview)
+
+[UniMate](https://github.com/Friedrich-M/UniMate) (SIGGRAPH Asia 2026) animates arbitrary
+skeletons with one model. Pose Studio drives it on a Mixamo humanoid, whose bone names match the
+mannequin. It generates one 60-frame window at 30 fps (2 s), joint positions only (hands, feet
+and head keep their start orientation), and cannot start from your pose. Nothing is downloaded
+automatically; set it up once:
+
+    git clone https://github.com/Friedrich-M/UniMate <ComfyUI>/models/text_to_motion/code/UniMate
+    pip install torchdiffeq einops transformers sentencepiece tyro accelerate loguru
+    hf download Linzhan/UniMate --local-dir <ComfyUI>/models/text_to_motion/UniMate
+
+The checkpoint folder must contain `config.json`, `dataset_stats.npy` and
+`checkpoints/checkpoint_step_*.pt` (the highest step is used; if the Hugging Face repository holds
+several experiments, point `options.checkpoint_dir` at one of them). UniMate takes its skeleton
+from the canonicalized features, so also copy `dataset/features/mixamo` (made by UniMate's
+`data_process` pipeline from the public Mixamo dataset) to
+`<ComfyUI>/models/text_to_motion/UniMate/features/mixamo`. `options.object_type` in
+`config/motion_models/unimate-preview.json` picks the Mixamo character (default: the first one).
+The `google/flan-t5-base` text encoder is fetched by UniMate on first use.
 
 ## Adding another model
 
