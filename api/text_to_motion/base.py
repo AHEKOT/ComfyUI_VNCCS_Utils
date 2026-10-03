@@ -36,6 +36,78 @@ def safe_relative_path(value, what: str) -> str:
     return "/".join(parts)
 
 
+# Setup steps a model lists in its JSON. "pip" packages are installed through ComfyUI-Manager from
+# the browser, "download" by Pose Studio itself, "auto" happens on the first generation and
+# "manual" explains what the user has to do (with a command to copy). Code checkouts are manual on
+# purpose: ComfyUI-Manager's git install also runs the repository's requirements.txt, and the
+# model repositories pin torch / transformers / numpy versions that would break ComfyUI.
+SETUP_KINDS = ("pip", "download", "auto", "manual")
+_STEP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+_MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]{0,63}$")
+# One pip requirement: a name with an optional version pin, or a git+https GitHub URL.
+_PIP_PACKAGE_RE = re.compile(
+    r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,99}(?:\[[A-Za-z0-9_,.-]+\])?(?:(?:==|>=|<=|~=|<|>)[A-Za-z0-9.*+!-]{1,40})?"
+    r"|git\+https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?(?:@[A-Za-z0-9_./-]+)?)$"
+)
+_GUIDE_TEXT_KEYS = ("summary", "best_for", "speed", "setup_effort")
+
+
+def _text(value, limit: int = 600) -> str:
+    return str(value or "").strip()[:limit]
+
+
+def parse_guide(data, model_id: str) -> dict:
+    """The model card shown in the panel: plain text that helps the user pick a model."""
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise ValueError(f"{model_id}: guide must be an object")
+    guide = {key: _text(data.get(key)) for key in _GUIDE_TEXT_KEYS if data.get(key)}
+    if data.get("download_gb") is not None:
+        guide["download_gb"] = float(data["download_gb"])
+    return guide
+
+
+def parse_setup(data, model_id: str) -> tuple:
+    if data is None:
+        return ()
+    if not isinstance(data, list):
+        raise ValueError(f"{model_id}: setup must be a list of steps")
+    steps, seen = [], set()
+    for entry in data:
+        if not isinstance(entry, dict):
+            raise ValueError(f"{model_id}: setup steps must be objects")
+        step_id, kind = str(entry.get("id") or ""), str(entry.get("kind") or "")
+        if not _STEP_ID_RE.match(step_id) or step_id in seen:
+            raise ValueError(f"{model_id}: setup step ids must be unique lowercase names: {step_id!r}")
+        if kind not in SETUP_KINDS:
+            raise ValueError(f"{model_id}: unknown setup step kind {kind!r}")
+        seen.add(step_id)
+        step = {"id": step_id, "kind": kind, "label": _text(entry.get("label"), 120) or step_id,
+                "detail": _text(entry.get("detail"))}
+        if kind == "pip":
+            packages = entry.get("packages") or []
+            if not isinstance(packages, list) or not packages or not all(
+                isinstance(p, str) and _PIP_PACKAGE_RE.match(p) for p in packages
+            ):
+                raise ValueError(f"{model_id}: setup step {step_id!r} needs valid pip packages")
+            modules = entry.get("modules") or []
+            if not isinstance(modules, list) or not modules or not all(isinstance(m, str) and _MODULE_RE.match(m) for m in modules):
+                raise ValueError(f"{model_id}: setup step {step_id!r} needs the Python modules it provides")
+            step.update(packages=list(packages), modules=list(modules))
+        if entry.get("command"):
+            step["command"] = _text(entry.get("command"), 600)
+        if entry.get("check") is not None:
+            step["check"] = _text(entry.get("check"), 40)
+        link = str(entry.get("link") or "")
+        if link:
+            if not link.startswith("https://"):
+                raise ValueError(f"{model_id}: setup step {step_id!r} link must be https")
+            step["link"] = link
+        steps.append(step)
+    return tuple(steps)
+
+
 _MAX_INDEX_BYTES = 8 * 1024 * 1024
 _MAX_SHARDS = 256
 
@@ -135,6 +207,8 @@ class MotionModelSpec:
     requirements: dict = field(default_factory=dict)
     license: dict = field(default_factory=dict)
     order: int = 100
+    guide: dict = field(default_factory=dict)
+    setup: tuple = ()
 
     @classmethod
     def from_dict(cls, data) -> "MotionModelSpec":
@@ -185,6 +259,8 @@ class MotionModelSpec:
             requirements=dict(data.get("requirements") or {}),
             license={**license_info, "restricted_territories": list(territories)},
             order=int(data.get("order", 100)),
+            guide=parse_guide(data.get("guide"), model_id),
+            setup=parse_setup(data.get("setup"), model_id),
         )
 
     def public(self) -> dict:
@@ -205,6 +281,7 @@ class MotionModelSpec:
                 "territory_notice": str(self.license.get("territory_notice") or ""),
                 "notice": str(self.license.get("notice") or ""),
             },
+            "guide": dict(self.guide),
             "code_url": str(self.code.get("url") or ""),
             "weights": [
                 {"repo_id": w.repo_id, "url": w.url, "role": w.role, "gated": w.gated} for w in self.weights
@@ -259,6 +336,46 @@ class MotionBackend(ABC):
                 f"{self.spec.name} needs Python packages that are not installed: {', '.join(missing)}.",
                 self.install_hint(),
             )
+
+    # --- setup ------------------------------------------------------------------------
+
+    def find_code_dir(self, default_local_dir: str) -> Path:
+        """The model's code checkout under the models folder."""
+        return self.models_dir / safe_relative_path(self.spec.code.get("local_dir") or default_local_dir, "code.local_dir")
+
+    def check_part(self, name: str):
+        """Whether a named part of the install is in place (True/False), or None when unknown."""
+        return None
+
+    def step_done(self, step: dict):
+        if step["kind"] == "pip":
+            return all(not module_missing(name) for name in step["modules"])
+        if step.get("check"):
+            try:
+                return self.check_part(step["check"])
+            except Exception:
+                return False
+        return None
+
+    def setup_status(self) -> list:
+        return [{**step, "done": self.step_done(step)} for step in self.spec.setup]
+
+    def run_download(self, step: dict, report: ProgressReport) -> None:
+        """Run a ``download`` setup step (the backend that lists one implements it)."""
+        raise ValueError(f"{self.spec.name} has no download step {step['id']!r}")
+
+    def weights_ready(self) -> bool:
+        """True when every required file of the managed weights is already downloaded."""
+        for source in self.spec.weights:
+            if not source.managed:
+                continue
+            target = self.weights_dir(source)
+            names = list(source.files) + ([source.index_file] if source.index_file else [])
+            if not all((target / name).is_file() for name in names):
+                return False
+            if source.index_file and not all((target / shard).is_file() for shard in self._index_shards(target / source.index_file)):
+                return False
+        return True
 
     def weights_dir(self, source: WeightSource) -> Path:
         return self.models_dir / source.local_dir

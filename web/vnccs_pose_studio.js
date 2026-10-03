@@ -5220,7 +5220,7 @@ class PoseStudioWidget {
         const motionBtn = document.createElement("button");
         motionBtn.className = "vnccs-ps-btn";
         motionBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🏃</span> Motion';
-        motionBtn.title = "Text to Motion (Kimodo, HY-Motion, UniMate): describe a motion. In Animation mode it becomes the animation; otherwise pick a frame and apply it as the pose";
+        motionBtn.title = "Text to Motion: describe a movement and get an animation (switches to Animation mode)";
         motionBtn.addEventListener("click", () => this.openTextToMotionPanel());
 
         actions.appendChild(undoBtn);
@@ -9219,15 +9219,23 @@ class PoseStudioWidget {
         this.hideHandControlPopover();
     }
 
-    openTextToMotionPanel() {
+    /**
+     * A generated motion is an animation: outside Animation mode the button switches to it first.
+     * `poseOnly` hosts (the UniCanvas pose editor) keep their single pose and use one frame instead.
+     */
+    openTextToMotionPanel({ poseOnly = false } = {}) {
+        if (this.textToMotionPanel?.isOpen()) return;
+        if (!poseOnly && !this.isAnimationMode()) {
+            this.setEditorMode("animation");
+            this.showMessage?.("Switched to Animation mode: the generated motion becomes the animation.");
+        }
         if (!this.textToMotionPanel) {
             this.textToMotionPanel = new TextToMotionPanel(this, {
                 fetchApi: (route, options) => api.fetchApi(route, options),
             });
         }
-        if (this.textToMotionPanel.isOpen()) return;
         try {
-            this.textToMotionPanel.open();
+            this.textToMotionPanel.open({ poseOnly });
         } catch (error) {
             console.error("[VNCCS] Failed to open the text-to-motion panel:", error);
             this.showMessage(`Failed to open Text to Motion: ${error?.message || error}`, true);

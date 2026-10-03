@@ -1,7 +1,7 @@
 # Pose Studio: Text to Motion
 
-Describe a motion in words, let a motion model generate it, scrub to the frame you like and
-press **OK**: the mannequin takes that pose. Supported models:
+Describe a motion in words and a motion model turns it into an animation on the Pose Studio
+timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported models:
 
 | Model | Starts from your pose | VRAM (approx.) | License |
 | --- | --- | --- | --- |
@@ -10,13 +10,30 @@ press **OK**: the mannequin takes that pose. Supported models:
 | Tencent HY-Motion 1.0 | No (motion is applied on top of your pose) | 26 GB | Same as above |
 | [UniMate](https://linzhanmou.com/unimate/) (preview) | No (motion is applied on top of your pose), max 2 s | ~6 GB | MIT (code); training data keeps its own licenses |
 
-Model code and weights are optional. Pose Studio works without them; the panel shows which
-models are installed and how to install the missing ones.
+Model code and weights are optional. Pose Studio works without them. The model list marks each
+model **ready** or **needs setup**, and the card under it says what the model is good at (start
+pose, maximum length, memory, download size) and, until it is ready, lists its setup steps:
+
+- **Python packages** have an **Install** button. It queues `pip install` through
+  ComfyUI-Manager (the same server API the VNCCS Control Center uses); **Restart ComfyUI** then
+  restarts through Manager, which installs the packages on startup, and the card refreshes.
+  Current Manager versions only allow this when `allow_pip_install = true` is set under
+  `[default]` in Manager's `config.ini` and ComfyUI listens on 127.0.0.1. Pose Studio never
+  changes that file; when Manager refuses, the card names the file and the line to add (stop
+  ComfyUI, edit, start again) and shows the equivalent `python -m pip install ...` command.
+- **Code checkouts** and **gated logins** are manual steps with a **Copy** button for the
+  command and a link. They are not installed through Manager on purpose: Manager's git install
+  also runs the repository's `requirements.txt`, and these repositories pin torch, numpy and
+  transformers versions that would break ComfyUI.
+- **Downloads** Pose Studio can do itself have a **Download** button (UniMate's checkpoint);
+  model weights listed as automatic are fetched on the first generation.
+- **Check again** looks for the installed parts after you did a manual step.
 
 ## Animation and UniCanvas
 
-In **Animation** mode, stand on a timeline frame and press **🏃 Motion**: the pose at that frame is
-the start pose. Generate and preview the clip; **OK** deletes everything from that frame onward
+**🏃 Motion** always works on the animation: pressed in Image mode it switches Pose Studio to
+Animation mode first. Stand on a timeline frame and press it: the pose at that frame is the start
+pose. Generate and preview the clip; **Use as animation** deletes everything from that frame onward
 (all tracks) and writes the clip there, so the animation ends where the clip ends and the frames
 before it stay untouched (one undo step). **Cancel** keeps the previous animation exactly as it
 was. Clips are keyed at the animation's frame rate, sparsely for long clips, with linear
@@ -29,28 +46,31 @@ and the panel says so when the scene has more than one character. A model that c
 more characters than that). No backend implements that yet; see `MotionBackend` in
 `api/text_to_motion/base.py`.
 UniCanvas' pose editor has the same **Motion** button and panel, because it embeds Pose Studio.
-
-Outside Animation mode the panel picks one frame as the pose (below).
+It edits a single pose, so there the panel keeps that pose mode: drag the slider to the frame you
+like and press **Use this frame**.
 
 ## Using it
 
-1. In pose edit mode, press **🏃 Motion** in the action bar.
-2. Pick a model at the top of the panel. A model whose license excludes some territories shows
-   an orange warning naming them, with a link to the license.
+1. Press **🏃 Motion** in the action bar (Pose Studio switches to Animation mode).
+2. Pick a model at the top of the panel; the card under it helps you choose and set it up. A
+   model whose license excludes some territories shows an orange warning naming them, with a
+   link to the license.
 3. Write a prompt (for example *"A person jumps and lands on both feet."*), set the length in
    seconds, the steps (and guidance for HY-Motion) and a seed, then press **Generate**.
 4. The generated motion appears on the timeline. Drag the scrubber (the pose updates live) or
    press ▶ to play it.
-5. **OK** applies the selected frame as the pose (one undo step). **Cancel** or **Esc** restores
-   the pose you started from.
+5. **Use as animation** writes the clip to the timeline (one undo step); in UniCanvas, **Use this
+   frame** applies the selected frame as the pose. **Cancel** or **Esc** restores what you
+   started from.
 6. To try again, change the prompt or seed and press **Regenerate**. Every generation starts
    from the pose the panel was opened with.
 
 Options:
 
-- **Start from current pose**: Kimodo constrains its first frame to your pose. HY-Motion cannot
-  do that, so Pose Studio applies the motion's movement since its first frame on top of your
-  pose. Unchecked, Kimodo generates freely and its movement is applied on top of your pose too.
+- **Start from current pose** (only for models that support it, Kimodo today): the first frame is
+  constrained to your pose. Other models cannot do that, so Pose Studio applies the motion's
+  movement since its first frame on top of your pose. Unchecked, Kimodo generates freely and its
+  movement is applied on top of your pose too.
 - **Keep in place**: drops horizontal root travel so the character stays where it stands
   (vertical motion such as a jump or a crouch is kept).
 
@@ -154,9 +174,26 @@ needs only a new file; a new family also needs a backend class.
     "restricted_territories": ["..."],   // non-empty -> warning in the panel
     "territory_notice": "exact license wording",
     "notice": "attribution notice required by the license"
-  }
+  },
+  "guide": {                             // the card that helps users pick a model
+    "summary": "one or two sentences: what it is, its main strength or limit",
+    "best_for": "kinds of motion it suits",
+    "setup_effort": "how hard the setup is",
+    "download_gb": 17
+  },
+  "setup": [                             // shown with a status mark until the model is ready
+    // pip: Install button via ComfyUI-Manager; done when every module imports
+    { "id": "package", "kind": "pip", "label": "...", "packages": ["einops>=0.7"], "modules": ["einops"] },
+    // manual: explanation, optional command (Copy button) and https link; "check" asks the backend
+    { "id": "code", "kind": "manual", "check": "code", "label": "...", "command": "git clone ...", "link": "https://..." },
+    // download: Download button, runs backend.run_download(step); auto: happens on first generation
+    { "id": "weights", "kind": "auto", "check": "weights", "label": "..." }
+  ]
 }
 ```
+
+`pip` packages must be plain requirement names (optionally pinned) or `git+https://github.com/...`
+URLs. There is no `git` kind: install code checkouts as `manual` steps (see above).
 
 A new family implements `MotionBackend` (`api/text_to_motion/base.py`):
 
@@ -168,6 +205,8 @@ A new family implements `MotionBackend` (`api/text_to_motion/base.py`):
   (`MOTION_ROTATION_BONES`) to the model's joint names. Leave out joints the skeleton lacks.
   `soma.py` (Kimodo) and `smplh.py` (SMPL-H, HY-Motion) are ready-made skeleton descriptions.
 - `unload()`: free the model.
+- `check_part(name)`: answer the `check` names your setup steps use (`True`/`False`), and
+  `run_download(step, report)` for a `download` step.
 
 Then add the loader to `BACKENDS` in `registry.py`. The service places the motion on the
 mannequin (heading, leg-length scale, pelvis anchor) and the browser retargets it, so nothing
@@ -177,7 +216,9 @@ else changes.
 
 | Route | Purpose |
 | --- | --- |
-| `GET /vnccs/pose_studio/motion/models` | Models with capabilities, license, availability and install hint |
+| `GET /vnccs/pose_studio/motion/models` | Models with capabilities, license, availability install hint, guide and setup step status |
+| `GET /vnccs/pose_studio/motion/setup/policy` | ComfyUI-Manager's install policy (read-only: config path, `allow_pip_install`, listener) |
+| `POST /vnccs/pose_studio/motion/setup/download` | Run a model's `download` setup step (same-origin requests with `X-VNCCS-CSRF: 1`) |
 | `POST /vnccs/pose_studio/motion/generate` | `{model, prompt, duration, steps, guidance, seed, use_start_pose, keypoints, rest_keypoints, head_axes, task_id}` → `{motion}` |
 | `GET /vnccs/pose_studio/motion/status/{task_id}` | Progress of a running generation |
 | `POST /vnccs/pose_studio/motion/unload` | Free the loaded model |

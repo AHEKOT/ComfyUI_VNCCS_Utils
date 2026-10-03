@@ -25,6 +25,7 @@ from .smplh import smplh_motion
 
 
 _LFS_POINTER_PREFIX = b"version https://git-lfs"
+_CODE_MARKER = "hymotion/pipeline/motion_diffusion.py"
 
 
 class HYMotionBackend(MotionBackend):
@@ -37,23 +38,36 @@ class HYMotionBackend(MotionBackend):
     # --- code checkout -----------------------------------------------------------
 
     def code_dir(self) -> Path:
-        return self.models_dir / safe_relative_path(self.spec.code.get("local_dir") or "code/HY-Motion-1.0", "code.local_dir")
+        return self.find_code_dir("code/HY-Motion-1.0")
 
     def body_model_dir(self) -> Path:
         relative = self.spec.options.get("body_model_dir") or "scripts/gradio/static/assets/dump_wooden"
         return self.code_dir() / safe_relative_path(relative, "options.body_model_dir")
 
-    def check_available(self) -> None:
-        super().check_available()
-        code = self.code_dir()
-        if not (code / "hymotion" / "pipeline" / "motion_diffusion.py").is_file():
-            raise BackendUnavailable(f"The {self.spec.name} code was not found in {code}.", self.install_hint())
+    def _body_model_pulled(self) -> bool:
         kintree = self.body_model_dir() / "kintree.bin"
         try:
             head = kintree.read_bytes()[: len(_LFS_POINTER_PREFIX)]
         except OSError:
             head = b""
-        if not head or head == _LFS_POINTER_PREFIX:
+        return bool(head) and head != _LFS_POINTER_PREFIX
+
+    def check_part(self, name: str):
+        if name == "code":
+            return (self.code_dir() / _CODE_MARKER).is_file()
+        if name == "body_model":
+            return self._body_model_pulled()
+        if name == "weights":
+            return self.weights_ready()
+        return None
+
+    def check_available(self) -> None:
+        super().check_available()
+        code = self.code_dir()
+        if not (code / _CODE_MARKER).is_file():
+            raise BackendUnavailable(f"The {self.spec.name} code was not found in {code}.", self.install_hint())
+        kintree = self.body_model_dir() / "kintree.bin"
+        if not self._body_model_pulled():
             raise BackendUnavailable(
                 f"The {self.spec.name} body model files in {kintree.parent} are missing or not pulled with git-lfs.",
                 self.install_hint(),

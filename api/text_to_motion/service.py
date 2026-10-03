@@ -8,6 +8,8 @@ Routes (registered by ``register_routes``):
     POST /vnccs/pose_studio/motion/generate      prompt + start pose -> motion frames
     GET  /vnccs/pose_studio/motion/status/{id}  progress of a running generation
     POST /vnccs/pose_studio/motion/unload        free the loaded model
+    GET  /vnccs/pose_studio/motion/setup/policy  ComfyUI-Manager pip/git install policy (read-only)
+    POST /vnccs/pose_studio/motion/setup/download run a model's "download" setup step
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ import sys
 import threading
 import time
 
-from . import registry
+from . import manager_policy, registry
 from .base import BackendUnavailable, MotionRequest
 from .transform import align_to_start_pose, motion_to_pose_studio, parse_keypoints
 
@@ -90,8 +92,13 @@ def list_models() -> list:
     models = []
     for spec in specs().values():
         entry = spec.public()
+        backend = make_backend(spec)
         try:
-            make_backend(spec).check_available()
+            entry["setup"] = backend.setup_status()
+        except Exception:
+            entry["setup"] = [{**step, "done": None} for step in spec.setup]
+        try:
+            backend.check_available()
             entry.update(available=True, unavailable_reason="", install_hint="")
         except BackendUnavailable as exc:
             entry.update(available=False, unavailable_reason=str(exc), install_hint=exc.hint)
@@ -310,8 +317,72 @@ async def handle_unload(request):
     return web.json_response({"status": "success", "unloaded": await asyncio.to_thread(unload)})
 
 
+def _same_origin_request(request) -> bool:
+    """State-changing setup calls must come from this ComfyUI page (our marker header, not cross-site)."""
+    if request.headers.get("X-VNCCS-CSRF") != "1":
+        return False
+    if (request.headers.get("Sec-Fetch-Site") or "").lower() == "cross-site":
+        return False
+    origin = request.headers.get("Origin")
+    if origin:
+        host = (request.headers.get("Host") or "").lower()
+        netloc = origin.split("://", 1)[-1].split("/", 1)[0].lower()
+        if host and netloc != host:
+            return False
+    return True
+
+
+async def handle_setup_policy(request):
+    from aiohttp import web
+
+    try:
+        return web.json_response(await asyncio.to_thread(manager_policy.install_policy))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+def run_setup_download(spec, step_id: str, task_id: str) -> None:
+    step = next((s for s in spec.setup if s["id"] == step_id and s["kind"] == "download"), None)
+    if step is None:
+        raise ValueError(f"{spec.name} has no download step {step_id!r}")
+    with _model_operation_lock():
+        make_backend(spec).run_download(step, lambda message, progress: set_task(task_id, "running", message, progress))
+
+
+async def handle_setup_download(request):
+    from aiohttp import web
+
+    if not _same_origin_request(request):
+        return web.json_response({"error": "request rejected"}, status=403)
+    if not _content_length_ok(request, 4096):
+        return web.json_response({"error": "request is too large"}, status=413)
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"error": "request body must be valid JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"error": "request body must be a JSON object"}, status=400)
+    spec = specs().get(str(data.get("model") or ""))
+    if spec is None:
+        return web.json_response({"error": "unknown model"}, status=400)
+    task_id = _task_id(data.get("task_id"))
+    set_task(task_id, "running", "Starting the download...", 1)
+    try:
+        await asyncio.to_thread(run_setup_download, spec, str(data.get("step") or ""), task_id)
+    except ValueError as exc:
+        set_task(task_id, "error", str(exc), 100)
+        return web.json_response({"error": str(exc)}, status=400)
+    except Exception as exc:
+        set_task(task_id, "error", str(exc), 100)
+        return web.json_response({"error": f"Download failed: {exc}"}, status=500)
+    set_task(task_id, "done", "Downloaded.", 100)
+    return web.json_response({"status": "success"})
+
+
 def register_routes(routes) -> None:
     routes.get(f"{ROUTE_PREFIX}/models")(handle_models)
     routes.post(f"{ROUTE_PREFIX}/generate")(handle_generate)
     routes.get(f"{ROUTE_PREFIX}/status/{{task_id}}")(handle_status)
     routes.post(f"{ROUTE_PREFIX}/unload")(handle_unload)
+    routes.get(f"{ROUTE_PREFIX}/setup/policy")(handle_setup_policy)
+    routes.post(f"{ROUTE_PREFIX}/setup/download")(handle_setup_download)

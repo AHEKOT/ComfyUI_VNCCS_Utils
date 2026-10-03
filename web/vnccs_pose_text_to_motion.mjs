@@ -3,8 +3,11 @@
 // The panel sends the mannequin's current pose and a prompt to the backend
 // (api/text_to_motion), which generates a motion with the selected model.
 // Every generated frame is retargeted onto the mannequin once, so scrubbing the
-// timeline only swaps precomputed poses. OK keeps the selected frame as the pose;
-// Cancel restores the pose the panel was opened with.
+// timeline only swaps precomputed poses. In Pose Studio the clip becomes the
+// animation (OK replaces it from the current frame on); in a pose-only host such as
+// the UniCanvas pose editor OK keeps the selected frame as the pose. Cancel restores
+// what the panel was opened with. Models that are not installed show a card with
+// their setup steps (vnccs_pose_motion_setup.mjs).
 
 import {
     MODEL_ROTATION_TRACK,
@@ -15,6 +18,16 @@ import {
     retimeAnimationTiming,
     setTrackKeyframeFromEuler,
 } from "./vnccs_pose_animation.mjs";
+import {
+    MOTION_SETUP_API,
+    SETUP_STYLES,
+    describeManagerDenial,
+    installPipPackages,
+    modelOptionLabel,
+    renderModelCard,
+    restartComfyUI,
+    waitForServer,
+} from "./vnccs_pose_motion_setup.mjs";
 
 const MOTION_ANIMATION_MAX_FRAMES = 600;
 const MOTION_ANIMATION_MAX_KEYS = 120;
@@ -405,7 +418,7 @@ function ensurePanelStyles(doc) {
     if (!doc?.head || doc.getElementById?.("vnccs-ps-t2m-styles")) return;
     const style = doc.createElement("style");
     style.id = "vnccs-ps-t2m-styles";
-    style.textContent = PANEL_STYLES;
+    style.textContent = PANEL_STYLES + SETUP_STYLES;
     doc.head.appendChild(style);
 }
 
@@ -490,6 +503,8 @@ export class TextToMotionPanel {
         this.models = [];
         this.modelsPromise = null;
         this.modelApplied = false;
+        this.poseOnly = false;
+        this.setup = { message: "", error: false, restartPending: false, busy: false };
         this.settings = {
             model: "",
             prompt: "",
@@ -532,7 +547,11 @@ export class TextToMotionPanel {
                 const result = await response.json().catch(() => ({}));
                 if (!response.ok || !Array.isArray(result?.models)) throw new Error(result?.error || `HTTP ${response.status}`);
                 this.models = result.models.filter((model) => model && typeof model.id === "string");
-                if (!this.model) this.settings.model = result.default || this.models[0]?.id || "";
+                // Start on a model that is ready to use, so a fresh install is not greeted by a setup card.
+                if (!this.model) {
+                    const ready = this.models.find((model) => model.available !== false);
+                    this.settings.model = ready?.id || result.default || this.models[0]?.id || "";
+                }
                 return this.models;
             })().catch((error) => {
                 this.modelsPromise = null;
@@ -542,18 +561,29 @@ export class TextToMotionPanel {
         return this.modelsPromise;
     }
 
+    /** Fetch the model list again (after installing something). */
+    async reloadModels() {
+        this.modelsPromise = null;
+        await this.loadModels();
+        if (this.root) this.applyModel();
+    }
+
     isOpen() {
         return !!this.root;
     }
 
-    open() {
+    /**
+     * `poseOnly`: the host edits a single pose (UniCanvas), so OK uses one frame of the clip.
+     * Otherwise the clip becomes the animation, which needs the host in Animation mode.
+     */
+    open({ poseOnly = false } = {}) {
         if (this.root) return;
         if (!this.viewer?.isInitialized?.()) {
             this.widget?.showMessage?.("Pose viewer is not ready yet.", true);
             return;
         }
-        // In animation mode the whole motion becomes the animation; otherwise one frame becomes the pose.
-        this.animation = this.widget?.isAnimationMode?.() === true;
+        this.poseOnly = poseOnly;
+        this.animation = !poseOnly && this.widget?.isAnimationMode?.() === true;
         this.startFrame = this.animation ? Math.max(0, Math.round(Number(this.widget.animationState?.currentFrame)) || 0) : 0;
         if (this.animation) this.widget._applyingAnimationPose = true;
         try {
@@ -638,7 +668,9 @@ export class TextToMotionPanel {
             this.settings.guidance = "";
             this.applyModel();
         });
+        modelSelect.title = "Motion model: the card below says what each one is good at and what it needs";
         title.append(this.element("span", "", "Text to Motion"), modelSelect);
+        const card = this.element("div");
 
         // Shown for models whose license excludes some countries or regions.
         const license = this.element("div", "vnccs-ps-t2m-license");
@@ -695,10 +727,7 @@ export class TextToMotionPanel {
         const progress = this.element("div", "vnccs-ps-t2m-progress");
         const progressFill = this.element("div");
         progress.appendChild(progressFill);
-        const status = this.element("div", "vnccs-ps-t2m-status",
-            this.animation
-                ? "Describe a motion and generate it from the current frame. OK replaces the animation from that frame on; Cancel keeps it."
-                : "Describe a motion, generate it, pick a frame on the timeline and press OK.");
+        const status = this.element("div", "vnccs-ps-t2m-status", this.introText());
 
         const timeline = this.element("div", "vnccs-ps-t2m-timeline");
         const play = this.element("button", "vnccs-ps-btn", "▶");
@@ -719,16 +748,16 @@ export class TextToMotionPanel {
         const cancel = this.element("button", "vnccs-ps-btn", "Cancel");
         cancel.title = "Close and restore the pose you started from";
         cancel.addEventListener("click", () => this.cancel());
-        const ok = this.element("button", "vnccs-ps-btn primary", "OK");
+        const ok = this.element("button", "vnccs-ps-btn primary", this.animation ? "Use as animation" : "Use this frame");
         ok.title = this.animation
             ? "Replace the animation from the frame the panel was opened on with this clip"
-            : "Use the selected frame as the pose";
+            : "Use the frame shown on the slider as the pose";
         ok.addEventListener("click", () => this.accept());
         actions.append(this.element("span", "vnccs-ps-t2m-spacer"), cancel, ok);
 
-        root.append(title, license, note, prompt, settingsRow, optionsRow, progress, status, timeline, actions);
+        root.append(title, card, license, note, prompt, settingsRow, optionsRow, progress, status, timeline, actions);
         this.controls = {
-            modelSelect, license, note, prompt, duration, steps, stepsLabel, guidance, guidanceLabel, seed,
+            modelSelect, card, license, note, prompt, duration, steps, stepsLabel, guidance, guidanceLabel, seed,
             useStartPose: useStartPose.label, generate, progressFill, status, play, scrub, frameLabel, ok,
         };
         this.root = root;
@@ -743,8 +772,8 @@ export class TextToMotionPanel {
         const { modelSelect, license, duration, steps, stepsLabel, guidance, guidanceLabel, useStartPose } = this.controls;
         if (this.models.length) {
             modelSelect.replaceChildren(...this.models.map((model) => {
-                const option = this.option(model.id, model.available === false ? `${model.name} (not installed)` : model.name);
-                option.title = model.description || "";
+                const option = this.option(model.id, modelOptionLabel(model));
+                option.title = model.guide?.summary || model.description || "";
                 return option;
             }));
             modelSelect.disabled = false;
@@ -768,6 +797,8 @@ export class TextToMotionPanel {
         if (limits.steps) setRange(steps, limits.steps, "steps");
         guidanceLabel.style.display = limits.guidance ? "" : "none";
         if (limits.guidance) setRange(guidance, limits.guidance, "guidance");
+        // Only a model that can start from a given pose has the choice; the card says what the others do.
+        useStartPose.style.display = limits.startPoseConstraint ? "" : "none";
         useStartPose.title = limits.startPoseConstraint
             ? "The motion starts exactly from the pose you are editing. Unchecked, the model generates freely and its movement is applied on top of your pose."
             : "This model cannot start from a given pose: its movement is applied on top of the pose you are editing.";
@@ -793,7 +824,134 @@ export class TextToMotionPanel {
             license.title = model.license?.territory_notice || "";
         }
 
+        this.renderCard();
         this.updateButtons();
+    }
+
+    introText() {
+        return this.animation
+            ? "Describe a motion and press Generate. It plays here first; \"Use as animation\" puts it on the timeline from the current frame, Cancel keeps your animation."
+            : "Describe a motion and press Generate, then drag the slider to the frame you like and press \"Use this frame\".";
+    }
+
+    renderCard() {
+        if (!this.controls) return;
+        const actions = {
+            installPip: (step, button) => this.installPackages([step], button),
+            installAll: (steps, button) => this.installPackages(steps, button),
+            download: (step, button) => this.runDownload(step, button),
+            copy: (text, button) => this.copyText(text, button),
+            restart: (button) => this.restartServer(button),
+            recheck: (button) => this.recheck(button),
+        };
+        const card = renderModelCard(this.document, this.model, actions, this.setup);
+        this.controls.card.replaceChildren(card);
+    }
+
+    setSetupMessage(message, error = false) {
+        this.setup.message = message;
+        this.setup.error = error;
+        this.renderCard();
+    }
+
+    async managerPolicy() {
+        try {
+            const response = await this.fetchApi(`${MOTION_SETUP_API}/policy`);
+            return response.ok ? await response.json() : null;
+        } catch {
+            return null;
+        }
+    }
+
+    async installPackages(steps, button) {
+        if (this.setup.busy) return;
+        this.setup.busy = true;
+        if (button) { button.disabled = true; button.textContent = "Installing..."; }
+        const packages = [...new Set(steps.flatMap((step) => step.packages || []))];
+        try {
+            const result = await installPipPackages(this.fetchApi, packages);
+            if (result.ok) {
+                this.setup.restartPending = true;
+                this.setSetupMessage("ComfyUI-Manager will install the packages when ComfyUI restarts. Press \"Restart ComfyUI\".");
+            } else {
+                this.setSetupMessage(describeManagerDenial(result, await this.managerPolicy(), packages), true);
+            }
+        } catch (error) {
+            this.setSetupMessage(`Could not reach ComfyUI-Manager: ${error?.message || error}`, true);
+        } finally {
+            this.setup.busy = false;
+        }
+    }
+
+    async runDownload(step, button) {
+        if (this.setup.busy || !this.model) return;
+        this.setup.busy = true;
+        if (button) { button.disabled = true; button.textContent = "Downloading..."; }
+        const taskId = newTaskId();
+        const poll = setInterval(async () => {
+            try {
+                const response = await this.fetchApi(`${MOTION_API}/status/${encodeURIComponent(taskId)}`);
+                const status = response.ok ? await response.json() : null;
+                if (status?.status === "running") this.setStatus(status.message || "Downloading...", { progress: status.progress });
+            } catch (_error) {
+                // Best-effort progress; the POST result below decides.
+            }
+        }, 1000);
+        try {
+            const response = await this.fetchApi(`${MOTION_SETUP_API}/download`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
+                body: JSON.stringify({ model: this.model.id, step: step.id, task_id: taskId }),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+            this.setStatus("Download finished.", { progress: 100 });
+            this.setup.message = "";
+            await this.reloadModels();
+        } catch (error) {
+            this.setSetupMessage(`Download failed: ${error?.message || error}`, true);
+        } finally {
+            clearInterval(poll);
+            this.setup.busy = false;
+            this.renderCard();
+        }
+    }
+
+    async copyText(text, button) {
+        try {
+            await globalThis.navigator?.clipboard?.writeText?.(text);
+            if (button) button.textContent = "Copied";
+        } catch {
+            this.setSetupMessage(`Copy this command: ${text}`);
+        }
+    }
+
+    async restartServer(button) {
+        if (button) { button.disabled = true; button.textContent = "Restarting..."; }
+        const accepted = await restartComfyUI(this.fetchApi);
+        if (!accepted) {
+            this.setSetupMessage("ComfyUI-Manager could not restart ComfyUI. Restart it yourself, then press \"Check again\".", true);
+            return;
+        }
+        this.setSetupMessage("Restarting ComfyUI and installing... this can take a few minutes.");
+        const back = await waitForServer(async () => (await this.fetchApi(`${MOTION_API}/models`)).ok);
+        this.setup.restartPending = false;
+        if (!back) {
+            this.setSetupMessage("ComfyUI did not come back yet. When it is running again, press \"Check again\".", true);
+            return;
+        }
+        this.setup.message = "";
+        await this.reloadModels().catch((error) => this.setSetupMessage(`Could not list motion models: ${error?.message || error}`, true));
+    }
+
+    async recheck(button) {
+        if (button) { button.disabled = true; button.textContent = "Checking..."; }
+        this.setup.message = "";
+        try {
+            await this.reloadModels();
+        } catch (error) {
+            this.setSetupMessage(`Could not list motion models: ${error?.message || error}`, true);
+        }
     }
 
     setStatus(text, { error = false, progress = null } = {}) {
@@ -810,6 +968,7 @@ export class TextToMotionPanel {
         const model = this.model;
         generate.textContent = hasMotion ? "Regenerate" : "Generate";
         generate.disabled = this.busy || !model || model.available === false || !clampMotionSettings(this.settings, model).prompt;
+        generate.title = model?.available === false ? "Finish this model's setup first, or pick a model marked ready" : "";
         prompt.disabled = this.busy;
         modelSelect.disabled = this.busy || !this.models.length;
         play.disabled = this.busy || this.poses.length < 2;
@@ -900,7 +1059,7 @@ export class TextToMotionPanel {
         const { scrub } = this.controls;
         scrub.max = String(Math.max(0, this.poses.length - 1));
         const frame = Math.min(this.frame, this.poses.length - 1);
-        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. ${this.animation ? `Preview it, then OK replaces the animation from frame ${this.startFrame} on, Cancel keeps it.` : "Scrub to a frame and press OK."}`,
+        this.setStatus(`Seed ${this.motion.seed} · ${this.poses.length} frames at ${this.motion.fps} FPS. ${this.animation ? `Press "Use as animation" to put it on the timeline from frame ${this.startFrame}.` : "Drag the slider to a frame and press \"Use this frame\"."}`,
             { progress: 100 });
         this.updateButtons();
         this.showFrame(Math.max(0, frame));

@@ -96,5 +96,60 @@
     ],
     "territory_notice": "THIS LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA AND IS EXPRESSLY LIMITED TO THE TERRITORY, AS DEFINED BELOW. You must not use, reproduce, modify, distribute, or display the Tencent HY-MOTION 1.0 Works, Output or results of the Tencent HY-MOTION 1.0 Works outside the Territory. Any such use outside the Territory is unlicensed and unauthorized under this Agreement.",
     "notice": "Tencent HY-MOTION 1.0 is licensed under the Tencent HY-MOTION 1.0 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent HY” are owned by Tencent or its affiliate."
-  }
+  },
+  "guide": {
+    "summary": "Tencent's text-only model. Lite: 0.46B, the faster of the two. Cannot start from your pose; its movement is applied on top of it.",
+    "best_for": "Expressive full-body actions from a description, when the exact start pose does not matter",
+    "speed": "Slow first load (8B text encoder)",
+    "setup_effort": "Advanced: needs a manual code checkout with git-lfs. Not licensed in the EU, UK and South Korea",
+    "download_gb": 20
+  },
+  "setup": [
+    {
+      "id": "packages",
+      "kind": "pip",
+      "label": "Python packages",
+      "packages": [
+        "torchdiffeq",
+        "transformers",
+        "accelerate",
+        "einops",
+        "pyyaml",
+        "omegaconf"
+      ],
+      "modules": [
+        "torchdiffeq",
+        "transformers",
+        "accelerate",
+        "einops",
+        "yaml",
+        "omegaconf"
+      ],
+      "detail": "Installed with ComfyUI-Manager (latest versions, not the repository's pinned ones)."
+    },
+    {
+      "id": "code",
+      "kind": "manual",
+      "check": "code",
+      "label": "HY-Motion code",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. Its requirements.txt is NOT needed and would replace ComfyUI's torch.",
+      "command": "git lfs install && git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-Motion-1.0 models/text_to_motion/code/HY-Motion-1.0",
+      "link": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0"
+    },
+    {
+      "id": "body-model",
+      "kind": "manual",
+      "check": "body_model",
+      "label": "Body model files (git-lfs)",
+      "detail": "Pulled by git-lfs together with the code. If this stays unchecked, run the command inside the cloned folder.",
+      "command": "git lfs pull"
+    },
+    {
+      "id": "weights",
+      "kind": "auto",
+      "check": "weights",
+      "label": "Checkpoint and text encoders (~20 GB)",
+      "detail": "Downloaded by Pose Studio on the first generation."
+    }
+  ]
 }

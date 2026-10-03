@@ -29,7 +29,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "smplh", "base", "registry", "service", "kimodo_backend", "hymotion_backend", "unimate_backend"):
+    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "hymotion_backend", "unimate_backend"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -47,6 +47,7 @@ REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
 HYMOTION = _MODULES["hymotion_backend"]
 UNIMATE = _MODULES["unimate_backend"]
+MANAGER_POLICY = _MODULES["manager_policy"]
 
 # Kimodo SOMA 77-joint skeleton (name, parent, rest position in meters), copied from
 # kimodo/assets/skeletons/somaskel77 of https://github.com/nv-tlabs/kimodo (Apache-2.0).
@@ -465,6 +466,134 @@ class ModelRegistryTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ValueError, message):
                 BASE.MotionModelSpec.from_dict(data)
+
+
+class SetupStepTests(unittest.TestCase):
+    def spec(self, setup, **extra):
+        return BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "setup": setup, **extra})
+
+    def test_bundled_models_have_a_guide_and_setup(self):
+        for spec in REGISTRY.load_specs().values():
+            self.assertTrue(spec.guide.get("summary"), spec.id)
+            self.assertTrue(spec.setup, spec.id)
+            public = spec.public()
+            self.assertEqual(public["guide"], spec.guide)
+            # Code checkouts are never installed through ComfyUI-Manager's git route.
+            self.assertTrue(all(step["kind"] in BASE.SETUP_KINDS for step in spec.setup), spec.id)
+
+    def test_pip_steps_need_safe_packages_and_modules(self):
+        spec = self.spec([{"id": "pkgs", "kind": "pip", "packages": ["einops>=0.7", "git+https://github.com/nv-tlabs/kimodo"], "modules": ["einops"]}])
+        self.assertEqual(spec.setup[0]["packages"][1], "git+https://github.com/nv-tlabs/kimodo")
+        for bad in (["einops; rm -rf /"], ["--index-url=https://evil.invalid"], ["git+https://evil.invalid/x/y"], [], "einops"):
+            with self.assertRaises(ValueError, msg=bad):
+                self.spec([{"id": "pkgs", "kind": "pip", "packages": bad, "modules": ["einops"]}])
+        with self.assertRaises(ValueError):
+            self.spec([{"id": "pkgs", "kind": "pip", "packages": ["einops"]}])
+
+    def test_steps_reject_unknown_kinds_duplicates_and_plain_links(self):
+        with self.assertRaises(ValueError):
+            self.spec([{"id": "code", "kind": "git"}])
+        with self.assertRaises(ValueError):
+            self.spec([{"id": "a", "kind": "auto"}, {"id": "a", "kind": "manual"}])
+        with self.assertRaises(ValueError):
+            self.spec([{"id": "a", "kind": "manual", "link": "http://example.invalid"}])
+
+    def test_setup_status_checks_modules_and_backend_parts(self):
+        spec = REGISTRY.load_specs()["unimate-preview"]
+        with tempfile.TemporaryDirectory() as folder:
+            backend = UNIMATE.UniMateBackend(spec, Path(folder))
+            status = {step["id"]: step["done"] for step in backend.setup_status()}
+            self.assertEqual(status["code"], False)
+            self.assertEqual(status["checkpoint"], False)
+            self.assertEqual(status["features"], False)
+            (backend.features_dir() / "mixamo").mkdir(parents=True)
+            (backend.features_dir() / "mixamo" / "cond.npy").write_bytes(b"x")
+            self.assertTrue({step["id"]: step["done"] for step in backend.setup_status()}["features"])
+        with mock.patch.object(BASE, "module_missing", side_effect=lambda name: name == "tyro"):
+            pip = next(step for step in backend.setup_status() if step["kind"] == "pip")
+            self.assertFalse(pip["done"])
+
+    def test_hymotion_weights_step_reports_downloaded_files(self):
+        spec = REGISTRY.load_specs()["hy-motion-1.0-lite"]
+        with tempfile.TemporaryDirectory() as folder:
+            backend = HYMOTION.HYMotionBackend(spec, Path(folder))
+            self.assertFalse(backend.check_part("weights"))
+            for source in spec.weights:
+                for name in list(source.files) + ([source.index_file] if source.index_file else []):
+                    path = backend.weights_dir(source) / name
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_text(json.dumps({"weight_map": {"a": "shard-1.safetensors"}}) if name == source.index_file else "x")
+                if source.index_file:
+                    (backend.weights_dir(source) / "shard-1.safetensors").write_text("x")
+            self.assertTrue(backend.check_part("weights"))
+
+    def test_unimate_checkpoint_pick_takes_the_newest_step(self):
+        names = [
+            "README.md", "a/config.json", "a/dataset_stats.npy",
+            "a/checkpoints/checkpoint_step_900.pt", "a/checkpoints/checkpoint_step_12000.pt",
+            "b/config.json", "b/checkpoints/checkpoint_step_5.pt",
+        ]
+        picked = UNIMATE.pick_checkpoint_files(names)
+        self.assertEqual(picked, {"prefix": "a/", "files": ["a/config.json", "a/dataset_stats.npy", "a/checkpoints/checkpoint_step_12000.pt"]})
+        self.assertEqual(UNIMATE.pick_checkpoint_files(names, "b")["files"], ["b/config.json", "b/checkpoints/checkpoint_step_5.pt"])
+        with self.assertRaises(ValueError):
+            UNIMATE.pick_checkpoint_files(["README.md"])
+
+    def test_list_models_includes_setup_status(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
+            models = {model["id"]: model for model in SERVICE.list_models()}
+        self.assertIn("setup", models["unimate-preview"])
+        self.assertTrue(all("done" in step for step in models["unimate-preview"]["setup"]))
+
+
+class SetupRouteGuardTests(unittest.TestCase):
+    def request(self, **headers):
+        return types.SimpleNamespace(headers=headers)
+
+    def test_download_route_requires_the_page_marker_and_same_origin(self):
+        self.assertTrue(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Host": "localhost:8188", "Origin": "http://localhost:8188"})))
+        self.assertFalse(SERVICE._same_origin_request(self.request(Host="localhost:8188")))
+        self.assertFalse(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Sec-Fetch-Site": "cross-site"})))
+        self.assertFalse(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Host": "localhost:8188", "Origin": "https://evil.invalid"})))
+
+    def test_only_listed_download_steps_run(self):
+        spec = REGISTRY.load_specs()["unimate-preview"]
+        with self.assertRaises(ValueError):
+            SERVICE.run_setup_download(spec, "code", "t1")
+        with self.assertRaises(ValueError):
+            SERVICE.run_setup_download(spec, "nope", "t1")
+
+
+class ManagerPolicyTests(unittest.TestCase):
+    def test_defaults_without_a_config(self):
+        policy = MANAGER_POLICY.parse_policy("")
+        self.assertEqual(policy, {"security_level": "normal", "allow_pip_install": False, "allow_git_url_install": False})
+
+    def test_reads_flags_from_the_default_section(self):
+        text = "[default]\nsecurity_level = Normal-\nallow_pip_install = True\n[other]\nallow_git_url_install = true\n"
+        policy = MANAGER_POLICY.parse_policy(text)
+        self.assertEqual(policy["security_level"], "normal-")
+        self.assertTrue(policy["allow_pip_install"])
+        self.assertFalse(policy["allow_git_url_install"])
+
+    def test_install_policy_reports_the_listener(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / "config.ini")
+            Path(path).write_text("[default]\nallow_pip_install = true\nallow_git_url_install = true\n")
+            local = MANAGER_POLICY.install_policy(path, listen="127.0.0.1")
+            self.assertTrue(local["flags_enabled"])
+            self.assertTrue(local["listener_is_loopback"])
+            self.assertFalse(MANAGER_POLICY.install_policy(path, listen="0.0.0.0")["listener_is_loopback"])
+            self.assertFalse(MANAGER_POLICY.install_policy(path, listen="127.0.0.1,0.0.0.0")["listener_is_loopback"])
+
+    def test_policy_reading_never_writes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.ini"
+            path.write_text("[default]\nsecurity_level = normal\n")
+            before = path.read_text()
+            MANAGER_POLICY.install_policy(str(path), listen="127.0.0.1")
+            self.assertEqual(path.read_text(), before)
+            self.assertEqual(sorted(p.name for p in Path(folder).iterdir()), ["config.ini"])
 
 
 class CharacterCountTests(unittest.TestCase):

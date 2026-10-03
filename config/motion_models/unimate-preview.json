@@ -56,5 +56,62 @@
     "restricted_territories": [],
     "territory_notice": "",
     "notice": "UniMate code: Copyright (c) 2026 Linzhan Mou, MIT License. Training data includes Adobe Mixamo, Objaverse-XL and Truebones assets under their own terms."
-  }
+  },
+  "guide": {
+    "summary": "Research preview (SIGGRAPH Asia 2026). Short clips of at most 2 s, joint positions only; cannot start from your pose.",
+    "best_for": "Trying the newest research model on short actions",
+    "speed": "Fast, small model",
+    "setup_effort": "Expert: needs a code checkout and skeleton features built with UniMate's data pipeline",
+    "download_gb": 2
+  },
+  "setup": [
+    {
+      "id": "packages",
+      "kind": "pip",
+      "label": "Python packages",
+      "packages": [
+        "torchdiffeq",
+        "einops",
+        "transformers",
+        "sentencepiece",
+        "tyro",
+        "accelerate",
+        "loguru"
+      ],
+      "modules": [
+        "torchdiffeq",
+        "einops",
+        "transformers",
+        "sentencepiece",
+        "tyro",
+        "accelerate",
+        "loguru"
+      ],
+      "detail": "Installed with ComfyUI-Manager."
+    },
+    {
+      "id": "code",
+      "kind": "manual",
+      "check": "code",
+      "label": "UniMate code",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. Do not install its requirements.txt: it pins torch, Blender and other packages that would break ComfyUI.",
+      "command": "git clone --depth 1 https://github.com/Friedrich-M/UniMate models/text_to_motion/code/UniMate",
+      "link": "https://github.com/Friedrich-M/UniMate"
+    },
+    {
+      "id": "checkpoint",
+      "kind": "download",
+      "check": "checkpoint",
+      "label": "Checkpoint (Linzhan/UniMate)",
+      "detail": "Downloads config.json, dataset_stats.npy and the newest checkpoint from Hugging Face into models/text_to_motion/UniMate."
+    },
+    {
+      "id": "features",
+      "kind": "manual",
+      "check": "features",
+      "label": "Mixamo skeleton features",
+      "detail": "UniMate takes its skeleton from preprocessed features. Build dataset/features/mixamo with UniMate's data_process pipeline and copy that folder to models/text_to_motion/UniMate/features/mixamo.",
+      "link": "https://github.com/Friedrich-M/UniMate/blob/main/data_process/README.md"
+    }
+  ]
 }

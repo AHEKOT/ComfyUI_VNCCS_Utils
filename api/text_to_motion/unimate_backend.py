@@ -33,6 +33,7 @@ from .transform import SourceMotion
 
 
 _CHECKPOINT_RE = re.compile(r"checkpoint_step_(\d+)\.pt$")
+_CODE_MARKER = "unimate/inference/sample.py"
 
 # Mixamo bone names (prefix stripped) are the Pose Studio motion keys.
 _MIXAMO_KEYS = ["Hips", "Spine", "Spine1", "Spine2", "Neck", "Head"]
@@ -84,6 +85,29 @@ def latest_checkpoint(folder: Path) -> Path | None:
     return Path(max(candidates, key=step)) if candidates else None
 
 
+def pick_checkpoint_files(names, subdir: str = "") -> dict:
+    """From a Hub file listing pick one experiment folder's config.json, dataset_stats.npy and its
+    newest checkpoint. ``subdir`` chooses the folder; otherwise the first one that has a config."""
+    names = [str(name) for name in names]
+    configs = sorted(name for name in names if name.rsplit("/", 1)[-1] == "config.json")
+    if subdir:
+        prefix = subdir.strip("/") + "/"
+        configs = [name for name in configs if name == prefix + "config.json"]
+    if not configs:
+        raise ValueError("the repository has no config.json" + (f" in {subdir!r}" if subdir else ""))
+    for config in configs:
+        prefix = config[: -len("config.json")]
+        checkpoints = [n for n in names if n.startswith(prefix + "checkpoints/") and _CHECKPOINT_RE.search(n)]
+        if not checkpoints:
+            continue
+        newest = max(checkpoints, key=lambda n: int(_CHECKPOINT_RE.search(n).group(1)))
+        files = [config, newest]
+        if prefix + "dataset_stats.npy" in names:
+            files.insert(1, prefix + "dataset_stats.npy")
+        return {"prefix": prefix, "files": files}
+    raise ValueError("the repository has no checkpoints/checkpoint_step_*.pt next to a config.json")
+
+
 class UniMateBackend(MotionBackend):
     requires = ("torch", "transformers", "torchdiffeq", "einops")
 
@@ -103,7 +127,7 @@ class UniMateBackend(MotionBackend):
         return self.models_dir / safe_relative_path(self.spec.options.get(key) or default, f"options.{key}")
 
     def code_dir(self) -> Path:
-        return self.models_dir / safe_relative_path(self.spec.code.get("local_dir") or "code/UniMate", "code.local_dir")
+        return self.find_code_dir("code/UniMate")
 
     def checkpoint_dir(self) -> Path:
         return self._folder("checkpoint_dir", "UniMate")
@@ -119,9 +143,47 @@ class UniMateBackend(MotionBackend):
     def object_type(self) -> str:
         return str(self.spec.options.get("object_type") or "")
 
+    def check_part(self, name: str):
+        if name == "code":
+            return (self.code_dir() / _CODE_MARKER).is_file()
+        if name == "checkpoint":
+            checkpoint = self.checkpoint_dir()
+            return (checkpoint / "config.json").is_file() and latest_checkpoint(checkpoint) is not None
+        if name == "features":
+            return (self.features_dir() / self.dataset_name / "cond.npy").is_file()
+        return None
+
+    def run_download(self, step: dict, report) -> None:
+        """Download the checkpoint: config.json, dataset_stats.npy and the newest checkpoint file."""
+        if step.get("check") != "checkpoint":
+            super().run_download(step, report)
+        try:
+            from huggingface_hub import HfApi, hf_hub_download
+        except ImportError as exc:
+            raise BackendUnavailable("huggingface_hub is not installed.", "pip install huggingface_hub") from exc
+        source = next((w for w in self.spec.weights if w.role == "model"), None)
+        if source is None:
+            raise ValueError(f"{self.spec.id}: no weights with role 'model'")
+        report(f"Listing {source.repo_id}...", 2)
+        names = HfApi(token=False).list_repo_files(source.repo_id, revision=source.revision)
+        wanted = pick_checkpoint_files(names, self.spec.options.get("checkpoint_subdir") or "")
+        target = self.checkpoint_dir()
+        prefix = wanted["prefix"]
+        for index, name in enumerate(wanted["files"]):
+            report(f"Downloading {name} ({index + 1}/{len(wanted['files'])})...", 5 + 90 * index / len(wanted["files"]))
+            local = target / safe_relative_path(name[len(prefix):], "checkpoint file")
+            if local.is_file() and local.stat().st_size > 0:
+                continue
+            path = hf_hub_download(
+                repo_id=source.repo_id, filename=name, revision=source.revision,
+                local_dir=str(target / "_download"), token=False,
+            )
+            local.parent.mkdir(parents=True, exist_ok=True)
+            Path(path).replace(local)
+
     def check_available(self) -> None:
         super().check_available()
-        if not (self.code_dir() / "unimate" / "inference" / "sample.py").is_file():
+        if not (self.code_dir() / _CODE_MARKER).is_file():
             raise BackendUnavailable(f"The {self.spec.name} code was not found in {self.code_dir()}.", self.install_hint())
         checkpoint = self.checkpoint_dir()
         if not (checkpoint / "config.json").is_file() or latest_checkpoint(checkpoint) is None:
