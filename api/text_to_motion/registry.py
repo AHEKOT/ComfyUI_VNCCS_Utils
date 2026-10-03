@@ -19,6 +19,12 @@ def _kimodo():
     return KimodoBackend
 
 
+def _ardy():
+    from .ardy_backend import ArdyBackend
+
+    return ArdyBackend
+
+
 def _hymotion():
     from .hymotion_backend import HYMotionBackend
 
@@ -34,6 +40,7 @@ def _unimate():
 # Backend name used in the model JSON -> loader of its MotionBackend class.
 BACKENDS = {
     "kimodo": _kimodo,
+    "ardy": _ardy,
     "hymotion": _hymotion,
     "unimate": _unimate,
 }

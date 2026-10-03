@@ -1,0 +1,98 @@
+{
+  "id": "ardy-core-rp-20fps-h40",
+  "name": "ARDY Core RP 20FPS",
+  "order": 5,
+  "backend": "ardy",
+  "description": "NVIDIA ARDY, the real-time autoregressive successor to Kimodo. Starts exactly from the current pose.",
+  "homepage": "https://research.nvidia.com/labs/sil/projects/ardy/",
+  "code": {
+    "url": "https://github.com/nv-tlabs/ardy",
+    "install": "Install ARDY into ComfyUI's Python environment: 'pip install git+https://github.com/nv-tlabs/ardy' (needs CMake and a C++ compiler for its motion-correction extension), then restart ComfyUI. The text encoder uses the gated meta-llama/Meta-Llama-3-8B-Instruct model: request access on Hugging Face and run 'hf auth login' once. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "nvidia/ARDY-Core-RP-20FPS-Horizon40",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "managed": false,
+      "gated": true
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "managed": false,
+      "gated": true
+    }
+  ],
+  "options": {
+    "model_name": "ARDY-Core-RP-20FPS-Horizon40"
+  },
+  "capabilities": {
+    "start_pose_constraint": true,
+    "max_characters": 1,
+    "duration": {
+      "min": 1,
+      "max": 10,
+      "default": 4
+    },
+    "guidance": {
+      "min": 1,
+      "max": 5,
+      "default": 2
+    }
+  },
+  "requirements": {
+    "vram_gb": 16,
+    "notes": "Most of the memory is the LLM2Vec text encoder (~14 GB in bfloat16); the motion model itself is small and generates in real time."
+  },
+  "license": {
+    "name": "NVIDIA Open Model License (weights), Apache 2.0 (code)",
+    "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-agreement/",
+    "commercial_use": true,
+    "restricted_territories": [],
+    "territory_notice": "",
+    "notice": ""
+  },
+  "guide": {
+    "summary": "Recommended. NVIDIA's newest model: generates in real time and starts exactly from the pose you made, up to 10 s.",
+    "best_for": "Continuing your pose; walking, gestures, everyday actions; quick iterations",
+    "speed": "Fastest (real-time model)",
+    "setup_effort": "Easy-medium: one Install button (needs CMake and a C++ compiler) plus a one-time Hugging Face access request",
+    "download_gb": 17
+  },
+  "setup": [
+    {
+      "id": "package",
+      "kind": "pip",
+      "label": "ARDY Python package",
+      "packages": [
+        "git+https://github.com/nv-tlabs/ardy"
+      ],
+      "modules": [
+        "ardy"
+      ],
+      "detail": "Installed with ComfyUI-Manager. Building it needs CMake and a C++ compiler. ARDY requires transformers 5.8.1 and numpy below 2, which replace the versions in ComfyUI's Python (and conflict with Kimodo's transformers 5.1.0)."
+    },
+    {
+      "id": "llama-access",
+      "kind": "manual",
+      "label": "Access to Meta Llama 3 8B Instruct (gated)",
+      "detail": "ARDY's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once from ComfyUI's Python environment.",
+      "link": "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
+      "command": "hf auth login"
+    },
+    {
+      "id": "weights",
+      "kind": "auto",
+      "label": "Model and text encoder (~17 GB)",
+      "detail": "Downloaded by ARDY itself on the first generation, so the first run takes a while."
+    }
+  ]
+}

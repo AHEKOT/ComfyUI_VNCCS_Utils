@@ -67,9 +67,9 @@
     "notice": ""
   },
   "guide": {
-    "summary": "Recommended. Starts exactly from the pose you made, so the clip continues it naturally. Realistic human motion, up to 10 s.",
+    "summary": "Starts exactly from the pose you made, with finger and spine detail (SOMA skeleton). Slower than ARDY, up to 10 s.",
     "best_for": "Continuing your pose; walking, gestures, sports, everyday actions",
-    "speed": "Fast once loaded",
+    "speed": "Fast once loaded, slower than ARDY",
     "setup_effort": "Easy: one Install button plus a one-time Hugging Face access request",
     "download_gb": 17
   },

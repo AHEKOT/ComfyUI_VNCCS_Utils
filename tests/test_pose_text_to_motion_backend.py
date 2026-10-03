@@ -5,6 +5,7 @@ Runs without torch, Kimodo or HY-Motion; they are replaced by small stubs where 
 """
 
 import asyncio
+import contextlib
 import importlib.util
 import json
 import math
@@ -29,7 +30,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "hymotion_backend", "unimate_backend"):
+    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "hymotion_backend", "unimate_backend"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -46,6 +47,7 @@ BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
 HYMOTION = _MODULES["hymotion_backend"]
+ARDY = _MODULES["ardy_backend"]
 UNIMATE = _MODULES["unimate_backend"]
 MANAGER_POLICY = _MODULES["manager_policy"]
 
@@ -417,7 +419,7 @@ class SmplhMotionTests(unittest.TestCase):
 class ModelRegistryTests(unittest.TestCase):
     def test_bundled_model_files_load(self):
         specs = REGISTRY.load_specs()
-        self.assertEqual(list(specs)[:3], ["kimodo-soma-rp-v1.1", "hy-motion-1.0-lite", "hy-motion-1.0"])
+        self.assertEqual(list(specs)[:4], ["ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1", "hy-motion-1.0-lite", "hy-motion-1.0"])
         self.assertEqual(specs["unimate-preview"].backend, "unimate")
         for spec in specs.values():
             self.assertIn(spec.backend, REGISTRY.BACKENDS)
@@ -621,7 +623,7 @@ class RequestTests(unittest.TestCase):
 
     def test_valid_request_is_clamped_to_the_model(self):
         spec, request, task_id = SERVICE.parse_generation_request(
-            self.payload(duration=99, seed=7, steps=3, task_id="a b/c"),
+            self.payload(model="kimodo-soma-rp-v1.1", duration=99, seed=7, steps=3, task_id="a b/c"),
         )
         self.assertEqual(spec.id, "kimodo-soma-rp-v1.1")
         self.assertEqual(request.prompt, "a person jumps")
@@ -692,6 +694,8 @@ def _stub_torch():
     torch.tensor = lambda value, dtype=None, device=None: np.asarray(value)
     torch.as_tensor = lambda value: np.asarray(value)
     torch.device = lambda name: name
+    torch.zeros = lambda *shape, device=None: np.zeros(shape)
+    torch.no_grad = contextlib.nullcontext
     torch.cuda = types.SimpleNamespace(is_available=lambda: False, empty_cache=lambda: None)
     return torch
 
@@ -732,7 +736,7 @@ class KimodoRunnerTests(RunnerTestCase):
     def test_generation_constrains_frame_zero_and_returns_pose_studio_motion(self):
         model = FakeModel()
         self.install(_stub_kimodo(model))
-        spec, request, task_id = self.request(duration=2, seed=11, task_id="job1")
+        spec, request, task_id = self.request(model="kimodo-soma-rp-v1.1", duration=2, seed=11, task_id="job1")
 
         motion = SERVICE.generate_motion(spec, request, task_id)
 
@@ -750,7 +754,7 @@ class KimodoRunnerTests(RunnerTestCase):
         self.assertEqual(len(motion["rotations"]["hand_l"]), 60)
         self.assertEqual(SERVICE.get_task("job1")["progress"], 97)
 
-        spec, request, _ = self.request(use_start_pose=False)
+        spec, request, _ = self.request(model="kimodo-soma-rp-v1.1", use_start_pose=False)
         motion = SERVICE.generate_motion(spec, request)
         self.assertEqual(model.calls[1][2]["constraint_lst"], [])
         self.assertFalse(motion["start_pose_constraint"])
@@ -759,7 +763,7 @@ class KimodoRunnerTests(RunnerTestCase):
 
     def test_missing_kimodo_reports_install_hint(self):
         self.install({"kimodo": None})
-        spec, request, _ = self.request()
+        spec, request, _ = self.request(model="kimodo-soma-rp-v1.1")
         with self.assertRaises(BASE.BackendUnavailable) as caught:
             SERVICE.generate_motion(spec, request)
         self.assertIn("pip install", caught.exception.hint)
@@ -773,7 +777,7 @@ class KimodoRunnerTests(RunnerTestCase):
         self.assertEqual(len(models["hy-motion-1.0"]["license"]["restricted_territories"]), 3)
 
     def test_generate_route_reports_a_missing_model_as_503(self):
-        self.install({"kimodo": None})
+        self.install({"kimodo": None, "ardy": None})
         web = types.ModuleType("aiohttp.web")
         web.json_response = lambda data, status=200: types.SimpleNamespace(data=data, status=status)
         aiohttp = types.ModuleType("aiohttp")
@@ -793,6 +797,141 @@ class KimodoRunnerTests(RunnerTestCase):
         self.assertTrue(response.data["model_missing"])
         self.assertIn("pip install", response.data["install_hint"])
         self.assertEqual(SERVICE.get_task("job2")["status"], "error")
+
+
+# ARDY Core 27 skeleton built from the SOMA rest pose (same body proportions).
+CORE_JOINTS = [
+    ("Hips", None, "Hips"), ("Spine", "Hips", "Spine1"), ("Spine1", "Spine", "Spine2"), ("Spine2", "Spine1", None),
+    ("Spine3", "Spine2", "Chest"), ("Neck", "Spine3", "Neck1"), ("Head", "Neck", "Head"),
+]
+for _side in ("Right", "Left"):
+    CORE_JOINTS += [
+        (f"{_side}Shoulder", "Spine3", f"{_side}Shoulder"), (f"{_side}Arm", f"{_side}Shoulder", f"{_side}Arm"),
+        (f"{_side}ForeArm", f"{_side}Arm", f"{_side}ForeArm"), (f"{_side}Hand", f"{_side}ForeArm", f"{_side}Hand"),
+        (f"{_side}HandEnd", f"{_side}Hand", f"{_side}HandMiddle2"), (f"{_side}HandThumb1", f"{_side}Hand", f"{_side}HandThumb1"),
+    ]
+for _side in ("Right", "Left"):
+    CORE_JOINTS += [
+        (f"{_side}UpLeg", "Hips", f"{_side}Leg"), (f"{_side}Leg", f"{_side}UpLeg", f"{_side}Shin"),
+        (f"{_side}Foot", f"{_side}Leg", f"{_side}Foot"), (f"{_side}ToeBase", f"{_side}Foot", f"{_side}ToeBase"),
+    ]
+CORE_NAMES = [name for name, _, _ in CORE_JOINTS]
+CORE_PARENTS = [-1 if parent is None else CORE_NAMES.index(parent) for _, parent, _ in CORE_JOINTS]
+
+
+def _core_rest():
+    rest = []
+    for name, _, soma in CORE_JOINTS:
+        if soma is None:  # Spine2 sits between SOMA's Spine2 and Chest
+            rest.append((SOMA_REST[SOMA_NAMES.index("Spine2")] + SOMA_REST[SOMA_NAMES.index("Chest")]) / 2)
+        else:
+            rest.append(SOMA_REST[SOMA_NAMES.index(soma)])
+    return np.asarray(rest)
+
+
+CORE_REST = _core_rest()
+
+
+class FakeArdyModel:
+    gen_horizon_len = 40
+    num_frames_per_token = 4
+
+    def __init__(self):
+        self.skeleton = types.SimpleNamespace(
+            bone_order_names=list(CORE_NAMES), joint_parents=np.array(CORE_PARENTS),
+            neutral_joints=CORE_REST.copy(), device="cpu",
+        )
+        self.diffusion = types.SimpleNamespace(num_base_steps=10)
+        self.calls = []
+        model = self
+
+        class MotionRep:
+            fps = 20.0
+
+            def create_conditions_from_constraints_batched(self, constraints, lengths, to_normalize, device):
+                return ("observed", constraints), "mask"
+
+            def inverse(self, motion, is_normalized):
+                return motion
+
+        self.motion_rep = MotionRep()
+
+    def __call__(self, texts, num_frames, **kwargs):
+        self.calls.append((texts, num_frames, kwargs))
+        observed = kwargs["observed_motion"]
+        start = observed[1][0].positions[0] if observed else CORE_REST - [0, CORE_REST[:, 1].min(), 0]
+        frames = np.stack([start + [0.0, 0.0, 0.01 * frame] for frame in range(num_frames)])[None]
+        rotations = np.tile(np.eye(3), (1, num_frames, len(CORE_NAMES), 1, 1))
+        return {"posed_joints": frames, "global_rot_mats": rotations, "local_rot_mats": None,
+                "root_positions": None, "foot_contacts": None}
+
+
+def _stub_ardy(model):
+    ardy = types.ModuleType("ardy")
+    model_module = types.ModuleType("ardy.model")
+    model_module.load_model = lambda name, device=None: model
+    constraints = types.ModuleType("ardy.constraints")
+    constraints.FullBodyConstraintSet = FakeConstraint
+    tools = types.ModuleType("ardy.tools")
+    tools.seed_everything = lambda seed: None
+    tools.to_numpy = lambda value: value
+    rep_tools = types.ModuleType("ardy.motion_rep.tools")
+    rep_tools.length_to_mask = lambda lengths: "pad"
+    post = types.ModuleType("ardy.postprocess")
+    post.post_process_motion = lambda *args, **kwargs: {}
+    return {
+        "torch": _stub_torch(), "ardy": ardy, "ardy.model": model_module, "ardy.constraints": constraints,
+        "ardy.tools": tools, "ardy.motion_rep": types.ModuleType("ardy.motion_rep"),
+        "ardy.motion_rep.tools": rep_tools, "ardy.postprocess": post,
+    }
+
+
+class ArdyTests(RunnerTestCase):
+    def test_ardy_is_the_default_model(self):
+        self.assertEqual(SERVICE.default_model_id(), "ardy-core-rp-20fps-h40")
+        self.assertTrue(REGISTRY.load_specs()["ardy-core-rp-20fps-h40"].capabilities["start_pose_constraint"])
+
+    def test_core_start_pose_matches_the_mannequin(self):
+        keypoints, _, _, _ = world_keypoints()
+        solver = ARDY.solver_skeleton(CORE_NAMES, CORE_PARENTS, CORE_REST)
+        positions, rotations, transform = SOMA.solve_start_pose(solver, keypoints)
+        self.assertEqual(positions.shape, (len(CORE_NAMES), 3))
+        self.assertAlmostEqual(float(positions[:, 1].min()), 0.0, places=6)
+        # The hip line in the keyframe faces the same way as the mannequin's.
+        right, left = (transform.to_pose_studio(positions[CORE_NAMES.index(n)][None])[0] for n in ("RightUpLeg", "LeftUpLeg"))
+        self.assertAlmostEqual(TRANSFORM.heading_angle(right, left), TRANSFORM.heading_angle(keypoints["thigh_r"], keypoints["thigh_l"]), places=4)
+        # The upper arm points where the mannequin's does.
+        arm = positions[CORE_NAMES.index("LeftForeArm")] - positions[CORE_NAMES.index("LeftArm")]
+        target = transform.to_pose_studio(positions[[CORE_NAMES.index("LeftArm"), CORE_NAMES.index("LeftForeArm")]])
+        wanted = np.asarray(keypoints["lowerarm_l"]) - np.asarray(keypoints["upperarm_l"])
+        got = target[1] - target[0]
+        self.assertGreater(float(np.dot(got, wanted) / (np.linalg.norm(got) * np.linalg.norm(wanted))), 0.99)
+        self.assertGreater(np.linalg.norm(arm), 0)
+
+    def test_generation_constrains_frame_zero_and_lands_on_the_mannequin(self):
+        model = FakeArdyModel()
+        self.install(_stub_ardy(model))
+        spec, request, task_id = self.request(duration=2, seed=3, guidance=3, task_id="ardy1")
+        self.assertEqual(spec.backend, "ardy")
+        motion = SERVICE.generate_motion(spec, request, task_id)
+        texts, frames, kwargs = model.calls[0]
+        self.assertEqual((texts, frames), (["a person jumps"], 40))
+        self.assertEqual(kwargs["num_denoising_steps"], 10)
+        self.assertEqual(kwargs["cfg_weight"], (3.0, 2.0))
+        self.assertEqual(kwargs["crop_history_length"], 160)
+        self.assertEqual(kwargs["observed_motion"][1][0].positions.shape, (1, len(CORE_NAMES), 3))
+        self.assertEqual(motion["fps"], 20.0)
+        self.assertTrue(motion["start_pose_constraint"])
+        np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
+        self.assertIn("LeftHand", motion["joints"])
+
+        spec, request, _ = self.request(use_start_pose=False)
+        SERVICE.generate_motion(spec, request)
+        self.assertIsNone(model.calls[1][2]["observed_motion"])
+
+    def test_core_motion_rejects_other_skeletons(self):
+        with self.assertRaises(ValueError):
+            ARDY.core_motion(["Root"], np.zeros((2, 1, 3)), None, 20)
 
 
 class FakeTransformer:

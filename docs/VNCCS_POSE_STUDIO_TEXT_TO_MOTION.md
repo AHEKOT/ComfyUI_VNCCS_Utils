@@ -5,6 +5,7 @@ timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported mod
 
 | Model | Starts from your pose | VRAM (approx.) | License |
 | --- | --- | --- | --- |
+| [NVIDIA ARDY](https://research.nvidia.com/labs/sil/projects/ardy/) Core RP 20FPS (default) | Yes (frame-0 keyframe) | ~16 GB, mostly the text encoder; the motion model runs in real time | NVIDIA Open Model License (weights), Apache 2.0 (code) |
 | [NVIDIA Kimodo](https://research.nvidia.com/labs/sil/projects/kimodo/) SOMA RP v1.1 | Yes (frame-0 keyframe) | ~17 GB, under 3 GB with `TEXT_ENCODER_DEVICE=cpu` | NVIDIA Open Model License |
 | [Tencent HY-Motion 1.0](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) Lite | No (motion is applied on top of your pose) | 24 GB | Tencent HY-Motion 1.0 Community License, **not valid in the EU, UK and South Korea** |
 | Tencent HY-Motion 1.0 | No (motion is applied on top of your pose) | 26 GB | Same as above |
@@ -76,6 +77,21 @@ Options:
 
 Joints a model does not produce (fingers, extra spine joints, toes on some skeletons) keep your
 start pose; head, hands and feet follow the model's rotation change when it provides one.
+
+## Installing ARDY (default)
+
+[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to Kimodo, built
+for real-time generation, so it is the default model once installed. It is a pip package with a
+C++ extension (needs CMake and a C++17 compiler):
+
+    pip install git+https://github.com/nv-tlabs/ardy
+
+It pins `transformers==5.8.1` and `numpy<2`, which replace the versions in ComfyUI's Python and
+conflict with Kimodo's `transformers==5.1.0`: install one of the two NVIDIA models. ARDY downloads
+`nvidia/ARDY-Core-RP-20FPS-Horizon40` and the same gated Llama 3 based LLM2Vec text encoder as
+Kimodo on the first generation (request access and run `hf auth login` once). Its Core skeleton
+(27 joints, 20 FPS) uses Mixamo-style names; the pose you start from becomes a frame-0 keyframe
+like with Kimodo. Fingers and the extra spine joint keep your start pose.
 
 ## Installing Kimodo
 
