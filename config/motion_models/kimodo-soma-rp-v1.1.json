@@ -79,7 +79,7 @@
       "kind": "manual",
       "check": "worker",
       "label": "Isolated motion worker",
-      "detail": "The model runs in its own Python environment, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once, then keep the worker running next to ComfyUI. Windows: motion_worker\\install.bat kimodo, then motion_worker\\run.bat kimodo. Docker (Linux, NVIDIA): docker compose -f motion_worker/docker-compose.yml --profile kimodo up -d --build",
+      "detail": "The model runs in its own venv next to this extension, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once (it creates the venv), then keep the worker running next to ComfyUI. Windows (also ComfyUI portable): motion_worker\\install.bat kimodo, then motion_worker\\run.bat kimodo. No Python on the machine? Install uv first; the script then downloads Python 3.11 into the venv by itself. Optional, if you already use Docker: docker compose -f motion_worker/docker-compose.yml --profile kimodo up -d --build",
       "command": "motion_worker/install.sh kimodo && motion_worker/run.sh kimodo",
       "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
     },
@@ -87,7 +87,7 @@
       "id": "llama-access",
       "kind": "manual",
       "label": "Access to Meta Llama 3 8B Instruct (gated)",
-      "detail": "Kimodo's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once from the worker's environment (Docker: run the command on the host; the container shares your Hugging Face login).",
+      "detail": "Kimodo's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once with the worker's venv (Windows: motion_worker\\envs\\kimodo\\Scripts\\hf.exe auth login; Docker shares the login of the host).",
       "link": "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
       "command": "motion_worker/envs/kimodo/bin/hf auth login"
     },

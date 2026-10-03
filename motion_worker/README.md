@@ -19,10 +19,11 @@ other workflows keep running while a motion is generated. The worker frees its m
 10 minutes without jobs (`--idle-unload`, seconds). Model weights and code checkouts stay in
 `models/text_to_motion`, the same place as before.
 
-Pick **one** of the two ways below, per model family (`ardy`, `kimodo`, `hymotion`,
-`unimate`). The Text to Motion panel shows a model as *ready* as soon as its worker runs.
+The normal way is a **venv** per model family (`ardy`, `kimodo`, `hymotion`, `unimate`), the
+same pattern ComfyUI itself uses. Docker is only an optional alternative for people who
+already run it. The Text to Motion panel shows a model as *ready* as soon as its worker runs.
 
-## venv (Linux, macOS, Windows)
+## venv (recommended; Linux, macOS, Windows, ComfyUI portable)
 
 From `custom_nodes/ComfyUI_VNCCS_Utils`:
 
@@ -33,19 +34,27 @@ motion_worker/run.sh ardy            # keep it running next to ComfyUI
 
 Windows: `motion_worker\install.bat ardy`, then `motion_worker\run.bat ardy`.
 
+- No Python on the machine, or ComfyUI portable (its embedded Python cannot make venvs)?
+  Install [uv](https://docs.astral.sh/uv/) once
+  (Windows: `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`,
+  Linux/macOS: `curl -LsSf https://astral.sh/uv/install.sh | sh`). When uv is present the
+  scripts use it and it downloads Python 3.11 into the venv by itself (`PYTHON_VERSION` picks
+  another); without uv they use the system Python (`py -3.11` on Windows, `python3` elsewhere).
+  ComfyUI's own Python is never used or changed.
 - `install.sh` installs PyTorch from `TORCH_INDEX` (default CUDA 12.6 wheels:
   `TORCH_INDEX=https://download.pytorch.org/whl/cu124 motion_worker/install.sh hymotion`),
   then `requirements/<family>.txt`. Set `PYTHON=python3.11` to choose the interpreter.
 - ARDY builds a C++ extension: install CMake and a C++17 compiler first.
 - ARDY and Kimodo use the gated Llama 3 text encoder: request access on
   <https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct> and run
-  `motion_worker/envs/ardy/bin/hf auth login` once.
+  `motion_worker/envs/ardy/bin/hf auth login` once
+  (Windows: `motion_worker\envs\ardy\Scripts\hf.exe auth login`).
 - HY-Motion and UniMate also need their code in `models/text_to_motion/code/...` (the panel
   shows the clone commands). Do not install those repositories' `requirements.txt` anywhere.
 - The environments live in `motion_worker/envs/`. Updating the extension by deleting and
   re-cloning it removes them; run `install.sh` again then.
 
-## Docker (Linux with the NVIDIA Container Toolkit)
+## Docker (optional; Linux with the NVIDIA Container Toolkit)
 
 ```sh
 docker compose -f motion_worker/docker-compose.yml --profile ardy up -d --build

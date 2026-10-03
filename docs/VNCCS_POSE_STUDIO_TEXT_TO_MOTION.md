@@ -13,7 +13,7 @@ timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported mod
 
 **Isolated worker (recommended).** The models pin their own torch / transformers / numpy
 versions, which break ComfyUI and each other when installed into ComfyUI's Python. They run
-instead in a separate *motion worker* per model family, in its own venv or Docker container,
+instead in a separate *motion worker* per model family, in its own venv (optionally a Docker container),
 that shares only the `models/text_to_motion` folder with ComfyUI and exchanges job files there.
 ComfyUI is never modified and your other workflows keep running while a motion generates. Set
 up and start a worker with one command, see [`motion_worker/README.md`](../motion_worker/README.md).
