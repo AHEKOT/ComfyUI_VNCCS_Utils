@@ -1,0 +1,41 @@
+# Isolated motion workers. From the extension folder (custom_nodes/ComfyUI_VNCCS_Utils):
+#   docker compose -f motion_worker/docker-compose.yml --profile ardy up -d --build
+# COMFYUI_MODELS points at ComfyUI's models folder (default: two levels up from the extension).
+# Files are written as your user (UID/GID) so ComfyUI can read and clean them up.
+x-worker: &worker
+  restart: unless-stopped
+  user: "${UID:-1000}:${GID:-1000}"
+  environment:
+    - TEXT_ENCODER_DEVICE=${TEXT_ENCODER_DEVICE:-cuda}
+  volumes:
+    - ${COMFYUI_MODELS:-../../../models}/text_to_motion:/data
+    - ${HF_CACHE:-~/.cache/huggingface}:/hf/.cache/huggingface
+  deploy:
+    resources:
+      reservations:
+        devices:
+          - driver: nvidia
+            count: all
+            capabilities: [gpu]
+
+services:
+  ardy:
+    <<: *worker
+    profiles: ["ardy"]
+    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: ardy } }
+    image: vnccs-motion-ardy
+  kimodo:
+    <<: *worker
+    profiles: ["kimodo"]
+    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: kimodo } }
+    image: vnccs-motion-kimodo
+  hymotion:
+    <<: *worker
+    profiles: ["hymotion"]
+    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: hymotion } }
+    image: vnccs-motion-hymotion
+  unimate:
+    <<: *worker
+    profiles: ["unimate"]
+    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: unimate } }
+    image: vnccs-motion-unimate

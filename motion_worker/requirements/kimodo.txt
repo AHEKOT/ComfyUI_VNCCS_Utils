@@ -1,0 +1,3 @@
+# NVIDIA Kimodo (pins transformers==5.1.0).
+kimodo @ git+https://github.com/nv-tlabs/kimodo
+huggingface_hub

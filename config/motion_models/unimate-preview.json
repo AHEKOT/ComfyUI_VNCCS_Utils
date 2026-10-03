@@ -1,0 +1,102 @@
+{
+  "id": "unimate-preview",
+  "name": "UniMate (preview)",
+  "order": 40,
+  "backend": "unimate",
+  "description": "UniMate (SIGGRAPH Asia 2026): one model that animates diverse skeletons from text. Driven here on a Mixamo humanoid skeleton.",
+  "homepage": "https://linzhanmou.com/unimate/",
+  "code": {
+    "url": "https://github.com/Friedrich-M/UniMate",
+    "local_dir": "code/UniMate",
+    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh unimate' then 'motion_worker/run.sh unimate' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile unimate up -d --build). See motion_worker/README.md. Clone the model code too: 'git clone --depth 1 https://github.com/Friedrich-M/UniMate models/text_to_motion/code/UniMate'."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "Linzhan/UniMate",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "google/flan-t5-base",
+      "managed": false
+    }
+  ],
+  "options": {
+    "checkpoint_dir": "UniMate",
+    "features_dir": "UniMate/features",
+    "dataset": "mixamo",
+    "object_type": "",
+    "fps": 30
+  },
+  "capabilities": {
+    "start_pose_constraint": false,
+    "max_characters": 1,
+    "duration": {
+      "min": 0.5,
+      "max": 2,
+      "default": 2
+    },
+    "guidance": {
+      "min": 1,
+      "max": 10,
+      "default": 2.5
+    }
+  },
+  "requirements": {
+    "vram_gb": 6,
+    "notes": "Preview checkpoints. Text-only and limited to one 60-frame (2 s) window at 30 fps; Pose Studio applies the movement on top of the current pose. Only joint positions are generated, so hands, feet and head keep their start orientation. Set options.object_type to choose which Mixamo skeleton is used (default: the first one in the features)."
+  },
+  "license": {
+    "name": "MIT License (code); dataset sources keep their own licenses",
+    "url": "https://github.com/Friedrich-M/UniMate/blob/main/LICENSE",
+    "commercial_use": true,
+    "restricted_territories": [],
+    "territory_notice": "",
+    "notice": "UniMate code: Copyright (c) 2026 Linzhan Mou, MIT License. Training data includes Adobe Mixamo, Objaverse-XL and Truebones assets under their own terms."
+  },
+  "guide": {
+    "summary": "Research preview (SIGGRAPH Asia 2026). Short clips of at most 2 s, joint positions only; cannot start from your pose.",
+    "best_for": "Trying the newest research model on short actions",
+    "speed": "Fast, small model",
+    "setup_effort": "Expert: isolated worker, a code checkout and skeleton features built with UniMate's data pipeline",
+    "download_gb": 2
+  },
+  "setup": [
+    {
+      "id": "worker",
+      "kind": "manual",
+      "check": "worker",
+      "label": "Isolated motion worker",
+      "detail": "The model runs in its own venv next to this extension, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once (it creates the venv), then keep the worker running next to ComfyUI. Windows (also ComfyUI portable): motion_worker\\install.bat unimate, then motion_worker\\run.bat unimate. No Python on the machine? Install uv first; the script then downloads Python 3.11 into the venv by itself. Optional, if you already use Docker: docker compose -f motion_worker/docker-compose.yml --profile unimate up -d --build",
+      "command": "motion_worker/install.sh unimate && motion_worker/run.sh unimate",
+      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
+    },
+    {
+      "id": "code",
+      "kind": "manual",
+      "check": "code",
+      "label": "UniMate code",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. The worker installs what it needs; do not install the repository's requirements.txt into ComfyUI.",
+      "command": "git clone --depth 1 https://github.com/Friedrich-M/UniMate models/text_to_motion/code/UniMate",
+      "link": "https://github.com/Friedrich-M/UniMate"
+    },
+    {
+      "id": "checkpoint",
+      "kind": "download",
+      "check": "checkpoint",
+      "label": "Checkpoint (Linzhan/UniMate)",
+      "detail": "Downloads config.json, dataset_stats.npy and the newest checkpoint from Hugging Face into models/text_to_motion/UniMate."
+    },
+    {
+      "id": "features",
+      "kind": "manual",
+      "check": "features",
+      "label": "Mixamo skeleton features",
+      "detail": "UniMate takes its skeleton from preprocessed features. Build dataset/features/mixamo with UniMate's data_process pipeline and copy that folder to models/text_to_motion/UniMate/features/mixamo.",
+      "link": "https://github.com/Friedrich-M/UniMate/blob/main/data_process/README.md"
+    }
+  ]
+}

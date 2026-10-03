@@ -336,10 +336,11 @@ export class UniCanvasPoseEditor {
         eye.setAttribute("aria-label", "Toggle the layers below"); eye.setAttribute("aria-pressed", "true");
         eye.innerHTML = EYE_ICON;
         this.eyeButton = eye;
+        const motion = this.host._button("Motion", "vnccs-uc-btn", () => this.studio?.openTextToMotionPanel?.({ poseOnly: true }), "Text to Motion: describe a movement, then pick the frame you want as this pose");
         const reset = this.host._button("Reset camera", "vnccs-uc-btn", () => this.resetCamera(), "Return the editing camera to the capture framing");
         const cancel = this.host._button("Cancel", "vnccs-uc-btn", () => this.host.finishPoseEdit(false), "Discard this edit session and restore the pose");
         const save = this.host._button("Save pose", "vnccs-uc-btn primary", () => this.host.finishPoseEdit(true), "Keep the pose and leave the editor (Enter / Esc)");
-        bar.append(title, helpButton, eye, reset, cancel, save);
+        bar.append(title, helpButton, eye, motion, reset, cancel, save);
         this.editBar = bar;
         return bar;
     }

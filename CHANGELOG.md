@@ -1,3 +1,30 @@
+# Version 0.6.10
+## Pose Studio Text to Motion
+
+### Pose Studio
+
+* **Text to Motion**: The new **🏃 Motion** button in the action bar generates a motion from a text prompt with NVIDIA Kimodo or Tencent HY-Motion 1.0 (Lite and full). Pick a model, write a prompt, set the length, steps and seed, and press Generate. The result is retargeted onto the mannequin once, so scrubbing and playing the preview stay live.
+* **Animation mode**: Stand on a timeline frame and press Motion: the pose at that frame is the start pose. **OK** deletes everything from that frame on and writes the generated clip there (one undo step); frames before it stay untouched. **Cancel** keeps the previous animation exactly as it was.
+* **Single poses**: Outside Animation mode, scrub to a frame and press OK to use it as the pose. Regenerating always starts again from the pose the panel was opened with, and Cancel or Esc restores it.
+* **Start pose and joints**: Kimodo can start exactly from your pose; HY-Motion cannot, so its movement is applied on top of your pose. Joints a model does not produce (fingers, extra spine joints) keep the start pose. **Keep in place** drops horizontal root travel.
+* **License warning**: A model whose license excludes some territories shows a warning naming them. HY-Motion 1.0 is not licensed in the European Union, the United Kingdom and South Korea.
+* **Isolated motion workers**: Motion models no longer have to be installed into ComfyUI's Python. Each family runs in its own venv (`motion_worker/install.sh ardy`, `run.sh ardy`, or the `.bat` files on Windows) or Docker container (`docker compose -f motion_worker/docker-compose.yml --profile ardy up -d`) and talks to Pose Studio through job files in `models/text_to_motion`. Their pinned torch / transformers / numpy versions cannot break ComfyUI, conflicting models can run side by side, and ComfyUI keeps running other workflows while a motion generates. The model cards now show the worker command instead of installing packages into ComfyUI.
+* **ARDY (new default)**: NVIDIA ARDY, the real-time autoregressive successor to Kimodo, is the first model in the list and the default once installed. Like Kimodo it starts exactly from your pose (a frame-0 keyframe on its Core skeleton).
+* **UniMate (preview)**: [UniMate](https://linzhanmou.com/unimate/) is available as a third model family, driven on a Mixamo humanoid skeleton (text-only, up to 2 s). It needs a manual checkout, checkpoint and skeleton features; see `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
+* **Model cards and setup**: The model list marks each model *ready* or *needs setup*. A card under it says what the model is good at (start pose, maximum length, VRAM, download size) and lists its setup steps: **Install** for Python packages through ComfyUI-Manager followed by **Restart ComfyUI**, **Copy** and a link for manual steps such as code checkouts, and **Download** for the ARDY / Kimodo text encoder and UniMate's checkpoint. When Manager refuses an install, the card names the exact `config.ini` change (Pose Studio never edits it) and the manual pip command.
+* **Motion makes animations**: In Pose Studio the **Motion** button switches to Animation mode when needed and the clip goes on the timeline with **Use as animation**. UniCanvas' pose editor keeps the single-pose flow with a **Use this frame** button. "Start from current pose" only appears for models that support it.
+* **One character at a time**: Kimodo and HY-Motion generate a single character. In a scene with several characters the motion goes to the selected character and the panel says so.
+
+### UniCanvas
+
+* **Motion in the pose editor**: The Edit pose bar has the same **Motion** button and panel.
+
+### Under the Hood
+
+* Every motion model is one JSON file in `config/motion_models/` (download source, files, capabilities, license and territories) behind a shared `MotionBackend` interface, so more models can be added without touching Pose Studio. See `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
+* Model files are downloaded lazily, one file at a time, from public Hugging Face repositories without a token. The ARDY / Kimodo text encoder (Llama 3 8B with LLM2Vec adapters) comes from public copies of the original weights and is stored in `models/text_to_motion/text_encoders`: no Hugging Face account is needed.
+* New routes under `/vnccs/pose_studio/motion/`: `models`, `generate`, `status/{id}` and `unload`.
+
 # Version 0.6.9
 ## Registry Compliance Fix
 

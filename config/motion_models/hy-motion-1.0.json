@@ -1,0 +1,142 @@
+{
+  "id": "hy-motion-1.0",
+  "name": "HY-Motion 1.0",
+  "order": 30,
+  "backend": "hymotion",
+  "description": "Tencent HY-Motion 1.0, 1.0B standard model.",
+  "homepage": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0",
+  "code": {
+    "url": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0",
+    "local_dir": "code/HY-Motion-1.0",
+    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh hymotion' then 'motion_worker/run.sh hymotion' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile hymotion up -d --build). See motion_worker/README.md. Clone the model code too: 'git lfs install && git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-Motion-1.0 models/text_to_motion/code/HY-Motion-1.0'."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "tencent/HY-Motion-1.0",
+      "revision": "main",
+      "local_dir": "HY-Motion-1.0",
+      "files": [
+        "HY-Motion-1.0/config.yml",
+        "HY-Motion-1.0/latest.ckpt"
+      ]
+    },
+    {
+      "role": "text_encoder_llm",
+      "source": "huggingface",
+      "repo_id": "Qwen/Qwen3-8B",
+      "revision": "main",
+      "local_dir": "text_encoders/Qwen3-8B",
+      "files": [
+        "config.json",
+        "generation_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt"
+      ],
+      "index_file": "model.safetensors.index.json"
+    },
+    {
+      "role": "text_encoder_clip",
+      "source": "huggingface",
+      "repo_id": "openai/clip-vit-large-patch14",
+      "revision": "main",
+      "local_dir": "text_encoders/clip-vit-large-patch14",
+      "files": [
+        "config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "model.safetensors"
+      ],
+      "optional_files": [
+        "preprocessor_config.json"
+      ]
+    }
+  ],
+  "options": {
+    "checkpoint_subdir": "HY-Motion-1.0",
+    "body_model_dir": "scripts/gradio/static/assets/dump_wooden"
+  },
+  "capabilities": {
+    "start_pose_constraint": false,
+    "max_characters": 1,
+    "duration": {
+      "min": 1,
+      "max": 10,
+      "default": 4
+    },
+    "steps": {
+      "min": 10,
+      "max": 100,
+      "default": 50
+    },
+    "guidance": {
+      "min": 1,
+      "max": 10,
+      "default": 5
+    }
+  },
+  "requirements": {
+    "vram_gb": 26,
+    "notes": "Text-only: the motion cannot start from a given pose, so Pose Studio applies its movement on top of the current pose. The Qwen3-8B text encoder is most of the download."
+  },
+  "license": {
+    "name": "Tencent HY-Motion 1.0 Community License Agreement",
+    "url": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0/blob/main/License.txt",
+    "commercial_use": true,
+    "restricted_territories": [
+      "European Union",
+      "United Kingdom",
+      "South Korea"
+    ],
+    "territory_notice": "THIS LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA AND IS EXPRESSLY LIMITED TO THE TERRITORY, AS DEFINED BELOW. You must not use, reproduce, modify, distribute, or display the Tencent HY-MOTION 1.0 Works, Output or results of the Tencent HY-MOTION 1.0 Works outside the Territory. Any such use outside the Territory is unlicensed and unauthorized under this Agreement.",
+    "notice": "Tencent HY-MOTION 1.0 is licensed under the Tencent HY-MOTION 1.0 Community License Agreement, Copyright © 2025 Tencent. All Rights Reserved. The trademark rights of “Tencent HY” are owned by Tencent or its affiliate."
+  },
+  "guide": {
+    "summary": "Tencent's text-only model. Full: 1.0B, slower and usually more detailed than Lite. Cannot start from your pose; its movement is applied on top of it.",
+    "best_for": "Expressive full-body actions from a description, when the exact start pose does not matter",
+    "speed": "Slow first load (8B text encoder)",
+    "setup_effort": "Advanced: isolated worker plus a code checkout with git-lfs. Not licensed in the EU, UK and South Korea",
+    "download_gb": 20
+  },
+  "setup": [
+    {
+      "id": "worker",
+      "kind": "manual",
+      "check": "worker",
+      "label": "Isolated motion worker",
+      "detail": "The model runs in its own venv next to this extension, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once (it creates the venv), then keep the worker running next to ComfyUI. Windows (also ComfyUI portable): motion_worker\\install.bat hymotion, then motion_worker\\run.bat hymotion. No Python on the machine? Install uv first; the script then downloads Python 3.11 into the venv by itself. Optional, if you already use Docker: docker compose -f motion_worker/docker-compose.yml --profile hymotion up -d --build",
+      "command": "motion_worker/install.sh hymotion && motion_worker/run.sh hymotion",
+      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
+    },
+    {
+      "id": "code",
+      "kind": "manual",
+      "check": "code",
+      "label": "HY-Motion code",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. The worker installs what it needs; do not install the repository's requirements.txt into ComfyUI.",
+      "command": "git lfs install && git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-Motion-1.0 models/text_to_motion/code/HY-Motion-1.0",
+      "link": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0"
+    },
+    {
+      "id": "body-model",
+      "kind": "manual",
+      "check": "body_model",
+      "label": "Body model files (git-lfs)",
+      "detail": "Pulled by git-lfs together with the code. If this stays unchecked, run the command inside the cloned folder.",
+      "command": "git lfs pull"
+    },
+    {
+      "id": "weights",
+      "kind": "auto",
+      "check": "weights",
+      "label": "Checkpoint and text encoders (~20 GB)",
+      "detail": "Downloaded by Pose Studio on the first generation."
+    }
+  ]
+}

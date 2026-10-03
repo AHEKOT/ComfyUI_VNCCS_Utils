@@ -100,6 +100,15 @@ clips may use exact browser captures; longer clips are evaluated from the sparse
 animation data by the backend rather than being embedded as base64 images in the
 workflow.
 
+## Text to Motion
+
+In pose edit mode, **🏃 Motion** opens a panel where you describe a motion (NVIDIA Kimodo or
+Tencent HY-Motion 1.0), scrub the generated clip on a timeline and press **OK** to keep one
+frame as the pose. Regenerating always starts from the pose you opened the panel with. The
+HY-Motion license does not apply in the European Union, United Kingdom and South Korea; the
+panel warns when you select it. Installation, VRAM and licenses:
+[VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md](VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md).
+
 ## Quick Start
 
 1. Add `VNCCS Pose Studio`.
