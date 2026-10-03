@@ -14,6 +14,7 @@ from .base import (
     MotionRequest,
     empty_torch_cache,
     free_comfy_vram,
+    local_llm2vec_encoder,
     torch_device,
 )
 from .soma import SomaSkeleton, soma_motion, solve_start_pose
@@ -26,6 +27,7 @@ class KimodoBackend(MotionBackend):
         super().__init__(spec, models_dir)
         self.model = None
         self.skeleton = None
+        self.output_skeleton = None
 
     @property
     def model_name(self) -> str:
@@ -40,15 +42,22 @@ class KimodoBackend(MotionBackend):
         except ImportError as exc:
             raise BackendUnavailable(f"{self.spec.name} is not installed.", self.install_hint()) from exc
 
-        self.ensure_weights(report)
+        folders = self.ensure_weights(report)
         report(f"Loading {self.spec.name} (the first run downloads the model and its text encoder)...", 6)
         free_comfy_vram()
-        self.model = load_model(self.model_name, device=torch_device(torch))
-        self.skeleton = self._soma_skeleton(self.model)
+        encoder = None  # None: the model's own loader builds it (needs access to the gated Llama 3 repository)
+        if "text_encoder_llm" in folders:
+            from kimodo.model import LLM2VecEncoder
+
+            encoder = local_llm2vec_encoder(LLM2VecEncoder, folders)
+        self.model = load_model(self.model_name, device=str(torch_device(torch)), text_encoder=encoder)
+        # Kimodo-SOMA works on a 30-joint skeleton (the keyframe uses it) and returns the motion
+        # expanded to the 77-joint one with relaxed hands.
+        self.skeleton = self._soma_skeleton(self.model.skeleton)
+        self.output_skeleton = self._soma_skeleton(getattr(self.model.skeleton, "somaskel77", self.model.skeleton))
 
     @staticmethod
-    def _soma_skeleton(model) -> SomaSkeleton:
-        skeleton = model.skeleton
+    def _soma_skeleton(skeleton) -> SomaSkeleton:
         parents = skeleton.joint_parents
         rest = skeleton.neutral_joints
         return SomaSkeleton(
@@ -98,14 +107,16 @@ class KimodoBackend(MotionBackend):
             request.prompt,
             max(2, int(round(request.duration * fps))),
             num_denoising_steps=steps,
+            num_samples=1,  # keeps the batch dimension Kimodo's post-processing asserts on
             constraint_lst=constraints,
             post_processing=True,
             return_numpy=True,
             progress_bar=self._progress_bar(report, steps),
         )
-        return soma_motion(self.skeleton, output["posed_joints"], output.get("global_rot_mats"), fps)
+        return soma_motion(self.output_skeleton, output["posed_joints"], output.get("global_rot_mats"), fps)
 
     def unload(self) -> None:
         self.model = None
         self.skeleton = None
+        self.output_skeleton = None
         empty_torch_cache()

@@ -52,7 +52,16 @@ def write_json(path: Path, data) -> None:
     temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     with open(temp, "w", encoding="utf-8") as handle:
         json.dump(data, handle)
-    os.replace(temp, path)
+    # Windows refuses to replace a file the other side is reading right now: try again shortly.
+    for attempt in range(20):
+        try:
+            os.replace(temp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                os.unlink(temp)
+                raise
+            time.sleep(0.02)
 
 
 def read_json(path: Path):

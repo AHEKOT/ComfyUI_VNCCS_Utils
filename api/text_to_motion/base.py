@@ -345,7 +345,7 @@ class MotionBackend(ABC):
 
     def check_part(self, name: str):
         """Whether a named part of the install is in place (True/False), or None when unknown."""
-        return None
+        return self.weights_ready() if name == "weights" else None
 
     def step_done(self, step: dict):
         if step["kind"] == "pip":
@@ -361,7 +361,10 @@ class MotionBackend(ABC):
         return [{**step, "done": self.step_done(step)} for step in self.spec.setup]
 
     def run_download(self, step: dict, report: ProgressReport) -> None:
-        """Run a ``download`` setup step (the backend that lists one implements it)."""
+        """Run a ``download`` setup step: the managed weights by default, anything else per backend."""
+        if step.get("check") == "weights":
+            self.ensure_weights(report)
+            return
         raise ValueError(f"{self.spec.name} has no download step {step['id']!r}")
 
     def weights_ready(self) -> bool:
@@ -451,6 +454,35 @@ class MotionBackend(ABC):
 
     def unload(self) -> None:
         """Drop the model and free device memory."""
+
+
+LLAMA3_NAME = "meta-llama/Meta-Llama-3-8B-Instruct"
+
+
+def local_llm2vec_encoder(encoder_class, folders: dict):
+    """The LLM2Vec text encoder of ARDY / Kimodo, built from the managed local folders.
+
+    ``folders`` is what ``ensure_weights`` returns. The MNTP adapter folder (``text_encoder``)
+    also holds the Llama 3 base weights (the ``text_encoder_llm`` source downloads into it), so
+    it is a complete model with an embedded adapter. The adapter names its base model by
+    Hugging Face id, a gated repository that older transformers (Kimodo's 5.1) always fetch;
+    naming the folder itself keeps every version offline and free of credentials.
+    ``text_encoder_adapter`` is the supervised adapter applied on top.
+    """
+    base = Path(folders["text_encoder"])
+    config_path = base / "adapter_config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    if config.get("base_model_name_or_path") != str(base):
+        config["base_model_name_or_path"] = str(base)
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    encoder = encoder_class(
+        base_model_name_or_path=str(base),
+        peft_model_name_or_path=str(folders["text_encoder_adapter"]),
+        dtype="bfloat16", llm_dim=4096, device="auto",
+    )
+    # LLM2Vec picks the Llama 3 prompt format by this name; a local path would silently skip it.
+    encoder.model.model.config._name_or_path = LLAMA3_NAME
+    return encoder
 
 
 def module_missing(name: str) -> bool:

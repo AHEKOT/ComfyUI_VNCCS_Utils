@@ -31,11 +31,12 @@ pose, maximum length, memory, download size) and, until it is ready, lists its s
   `pip install` through ComfyUI-Manager and then offers **Restart ComfyUI**. Manager only
   allows it with `allow_pip_install = true` in its `config.ini`; Pose Studio never edits that
   file and the card says what to change when Manager refuses.
-- **Code checkouts** and **gated logins** are manual steps with a **Copy** button for the
+- **Code checkouts** are manual steps with a **Copy** button for the
   command and a link. They are not installed through Manager on purpose: Manager's git install
   also runs the repository's `requirements.txt`, and these repositories pin torch, numpy and
   transformers versions that would break ComfyUI.
-- **Downloads** Pose Studio can do itself have a **Download** button (UniMate's checkpoint);
+- **Downloads** Pose Studio can do itself have a **Download** button (the ARDY / Kimodo text
+  encoder, UniMate's checkpoint) and go into ComfyUI's `models/text_to_motion` folder;
   model weights listed as automatic are fetched on the first generation.
 - **Check again** looks for the installed parts after you did a manual step.
 
@@ -87,34 +88,33 @@ Options:
 Joints a model does not produce (fingers, extra spine joints, toes on some skeletons) keep your
 start pose; head, hands and feet follow the model's rotation change when it provides one.
 
-## Installing ARDY (default)
+## Installing ARDY (default) and Kimodo
 
-[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to Kimodo, built
-for real-time generation, so it is the default model once installed. It is a pip package with a
-C++ extension (needs CMake and a C++17 compiler):
+[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to
+[Kimodo](https://github.com/nv-tlabs/kimodo), built for real-time generation, so it is the default
+model once installed. Each runs in its own isolated worker (they pin different `transformers`
+versions):
 
-    pip install git+https://github.com/nv-tlabs/ardy
+    motion_worker/install.sh ardy && motion_worker/run.sh ardy        (Windows: install.bat / run.bat)
 
-It pins `transformers==5.8.1` and `numpy<2`, which replace the versions in ComfyUI's Python and
-conflict with Kimodo's `transformers==5.1.0`: install one of the two NVIDIA models. ARDY downloads
-`nvidia/ARDY-Core-RP-20FPS-Horizon40` and the same gated Llama 3 based LLM2Vec text encoder as
-Kimodo on the first generation (request access and run `hf auth login` once). Its Core skeleton
-(27 joints, 20 FPS) uses Mixamo-style names; the pose you start from becomes a frame-0 keyframe
-like with Kimodo. Fingers and the extra spine joint keep your start pose.
+ARDY builds a small C++ extension: it needs a C++17 compiler (Windows: Visual Studio Build Tools
+with the C++ workload); the script installs CMake into the venv. Kimodo is pure Python.
 
-## Installing Kimodo
+**Text encoder.** Both models share one text encoder: Meta Llama 3 8B Instruct with the LLM2Vec
+MNTP and supervised adapters (~16 GB). Press **Download** on the model card (or just generate: the
+worker fetches what is missing) and Pose Studio downloads it once into
+`<ComfyUI>/models/text_to_motion/text_encoders/`, with `hf_hub_download(token=False)` at pinned
+revisions. The Llama weights come from `NousResearch/Meta-Llama-3-8B-Instruct`, a public copy
+whose files are byte-identical to Meta's gated repository (same SHA-256), so no Hugging Face
+account or access request is needed; the Meta Llama 3 Community License still applies and its
+`LICENSE` and `USE_POLICY.md` are downloaded next to the weights. The model checkpoints
+(`nvidia/ARDY-Core-RP-20FPS-Horizon40`, `nvidia/Kimodo-SOMA-RP-v1.1`) are small and are fetched by
+the model's own code on the first generation into `models/text_to_motion/hf_cache`.
 
-Kimodo is a pip package:
-
-    pip install git+https://github.com/nv-tlabs/kimodo
-
-Kimodo downloads its checkpoint (`nvidia/Kimodo-SOMA-RP-v1.1`) and its LLM2Vec text encoder on
-the first generation, into the Hugging Face cache (or `$CHECKPOINT_DIR` / `$TEXT_ENCODERS_DIR`
-if you set them). The text encoder is built on the gated `meta-llama/Meta-Llama-3-8B-Instruct`:
-request access on its Hugging Face page and run `hf auth login` once in ComfyUI's environment.
-
-Most of the memory is the text encoder. Start ComfyUI with `TEXT_ENCODER_DEVICE=cpu` to keep it
-on the CPU; the motion model itself then needs under 3 GB of VRAM.
+Most of the memory is the text encoder. Start the worker with `TEXT_ENCODER_DEVICE=cpu` to keep it
+on the CPU; the motion model itself then needs under 3 GB of VRAM. ARDY's Core skeleton (27 joints,
+20 FPS) uses Mixamo-style names, Kimodo generates on SOMA (30 FPS, with relaxed hands); with both
+the pose you start from becomes a frame-0 keyframe.
 
 ## Installing HY-Motion 1.0
 

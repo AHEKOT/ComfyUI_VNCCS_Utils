@@ -412,6 +412,34 @@ const PANEL_STYLES = `
 .vnccs-ps-t2m-license.is-visible { display: block; }
 .vnccs-ps-t2m-license a { color: inherit; text-decoration: underline; margin-left: 4px; }
 .vnccs-ps-t2m button:disabled, .vnccs-ps-t2m input:disabled { opacity: 0.45; cursor: default; }
+/* Compact: one row (prompt, Generate, play, timeline, OK) so the character stays visible. */
+.vnccs-ps-t2m.is-compact { flex-flow: row nowrap; align-items: center; padding: 6px 8px; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-title,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-options,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-timeline,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-actions { display: contents; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-title > :not(.vnccs-ps-t2m-compact),
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-options > :not(button),
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-actions > .vnccs-ps-t2m-spacer,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-card,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-license,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-note,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-settings,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-frame,
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-status:not(.is-error) { display: none; }
+.vnccs-ps-t2m.is-compact button { flex: none; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-progress { position: absolute; left: 8px; right: 8px; top: 1px; }
+.vnccs-ps-t2m.is-compact textarea.vnccs-ps-textarea { order: 1; flex: 2 1 0; min-width: 60px; min-height: 0; height: 26px; resize: none; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-options > button { order: 2; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-timeline > button { order: 3; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-timeline > input { order: 4; flex: 3 1 0; min-width: 60px; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-actions > button { order: 6; }
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-compact { order: 7; }
+/* Errors float above the row instead of adding a second one. */
+.vnccs-ps-t2m.is-compact .vnccs-ps-t2m-status.is-error {
+    position: absolute; left: 0; right: 0; bottom: calc(100% + 4px);
+    padding: 6px 8px; border-radius: 8px; background: rgba(18, 14, 28, 0.94);
+}
 `;
 
 function ensurePanelStyles(doc) {
@@ -420,6 +448,17 @@ function ensurePanelStyles(doc) {
     style.id = "vnccs-ps-t2m-styles";
     style.textContent = PANEL_STYLES + SETUP_STYLES;
     doc.head.appendChild(style);
+}
+
+const COMPACT_KEY = "vnccs.poseStudio.motionCompact";
+
+/** Per-browser preference; the panel works without storage. */
+function storedCompact() {
+    try {
+        return globalThis.localStorage?.getItem(COMPACT_KEY) === "1";
+    } catch {
+        return false;
+    }
 }
 
 function newTaskId() {
@@ -516,6 +555,7 @@ export class TextToMotionPanel {
             useStartPose: true,
             keepInPlace: true,
         };
+        this.compact = storedCompact();
     }
 
     get viewer() {
@@ -669,8 +709,10 @@ export class TextToMotionPanel {
             this.applyModel();
         });
         modelSelect.title = "Motion model: the card below says what each one is good at and what it needs";
-        title.append(this.element("span", "", "Text to Motion"), modelSelect);
-        const card = this.element("div");
+        const compact = this.element("button", "vnccs-ps-btn vnccs-ps-t2m-compact");
+        compact.addEventListener("click", () => this.setCompact(!this.compact));
+        title.append(this.element("span", "", "Text to Motion"), modelSelect, compact);
+        const card = this.element("div", "vnccs-ps-t2m-card");
 
         // Shown for models whose license excludes some countries or regions.
         const license = this.element("div", "vnccs-ps-t2m-license");
@@ -683,7 +725,7 @@ export class TextToMotionPanel {
         prompt.value = this.settings.prompt;
         prompt.addEventListener("input", () => { this.settings.prompt = prompt.value; this.updateButtons(); });
 
-        const settingsRow = this.element("div", "vnccs-ps-t2m-row");
+        const settingsRow = this.element("div", "vnccs-ps-t2m-row vnccs-ps-t2m-settings");
         const duration = this.numberInput(this.settings.duration, MOTION_DEFAULTS.minDuration, MOTION_DEFAULTS.maxDuration, 0.5);
         duration.addEventListener("input", () => { this.settings.duration = duration.value; });
         const steps = this.numberInput(this.settings.steps, MOTION_DEFAULTS.minSteps, MOTION_DEFAULTS.maxSteps, 10);
@@ -711,7 +753,7 @@ export class TextToMotionPanel {
         seedLabel.appendChild(seed);
         settingsRow.append(durationLabel, stepsLabel, guidanceLabel, seedLabel, randomSeed.label);
 
-        const optionsRow = this.element("div", "vnccs-ps-t2m-row");
+        const optionsRow = this.element("div", "vnccs-ps-t2m-row vnccs-ps-t2m-options");
         const useStartPose = this.checkbox("Start from current pose", this.settings.useStartPose);
         useStartPose.input.addEventListener("change", () => { this.settings.useStartPose = useStartPose.input.checked; });
         const keepInPlace = this.checkbox("Keep in place", this.settings.keepInPlace,
@@ -744,7 +786,7 @@ export class TextToMotionPanel {
         const frameLabel = this.element("span", "vnccs-ps-t2m-frame", "no motion yet");
         timeline.append(play, scrub, frameLabel);
 
-        const actions = this.element("div", "vnccs-ps-t2m-row");
+        const actions = this.element("div", "vnccs-ps-t2m-row vnccs-ps-t2m-actions");
         const cancel = this.element("button", "vnccs-ps-btn", "Cancel");
         cancel.title = "Close and restore the pose you started from";
         cancel.addEventListener("click", () => this.cancel());
@@ -758,12 +800,30 @@ export class TextToMotionPanel {
         root.append(title, card, license, note, prompt, settingsRow, optionsRow, progress, status, timeline, actions);
         this.controls = {
             modelSelect, card, license, note, prompt, duration, steps, stepsLabel, guidance, guidanceLabel, seed,
-            useStartPose: useStartPose.label, generate, progressFill, status, play, scrub, frameLabel, ok,
+            useStartPose: useStartPose.label, generate, progressFill, status, play, scrub, frameLabel, ok, compact,
         };
         this.root = root;
+        this.setCompact(this.compact);
         this.widget.canvasContainer.appendChild(root);
         this.updateButtons();
         prompt.focus?.();
+    }
+
+    /** Compact: prompt, Generate, play, timeline and OK in one row; the model card and settings are hidden. */
+    setCompact(compact) {
+        this.compact = !!compact;
+        try {
+            globalThis.localStorage?.setItem(COMPACT_KEY, this.compact ? "1" : "0");
+        } catch {
+            // Storage is optional.
+        }
+        if (!this.root) return;
+        this.root.classList?.toggle("is-compact", this.compact);
+        const button = this.controls.compact;
+        button.textContent = this.compact ? "▴" : "▾";
+        button.title = this.compact
+            ? "Show the model, its setup and the generation settings"
+            : "Shrink the panel to one row so it does not cover the character";
     }
 
     /** Sync the controls with the selected model: limits, hints and the license warning. */

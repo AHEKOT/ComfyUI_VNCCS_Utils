@@ -44,11 +44,11 @@ Windows: `motion_worker\install.bat ardy`, then `motion_worker\run.bat ardy`.
 - `install.sh` installs PyTorch from `TORCH_INDEX` (default CUDA 12.6 wheels:
   `TORCH_INDEX=https://download.pytorch.org/whl/cu124 motion_worker/install.sh hymotion`),
   then `requirements/<family>.txt`. Set `PYTHON=python3.11` to choose the interpreter.
-- ARDY builds a C++ extension: install CMake and a C++17 compiler first.
-- ARDY and Kimodo use the gated Llama 3 text encoder: request access on
-  <https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct> and run
-  `motion_worker/envs/ardy/bin/hf auth login` once
-  (Windows: `motion_worker\envs\ardy\Scripts\hf.exe auth login`).
+- ARDY builds a C++ extension: install a C++17 compiler first (Windows: Visual Studio Build
+  Tools with the C++ workload). CMake is installed into the venv by the script.
+- ARDY and Kimodo share one text encoder (Llama 3 8B with LLM2Vec adapters, ~16 GB). It is
+  downloaded once into `models/text_to_motion/text_encoders` from public repositories: no
+  Hugging Face account or login is needed.
 - HY-Motion and UniMate also need their code in `models/text_to_motion/code/...` (the panel
   shows the clone commands). Do not install those repositories' `requirements.txt` anywhere.
 - The environments live in `motion_worker/envs/`. Updating the extension by deleting and

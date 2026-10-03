@@ -20,15 +20,39 @@
       "role": "text_encoder",
       "source": "huggingface",
       "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
-      "managed": false,
-      "gated": true
+      "revision": "31474e395ada192e8ed1586db6be79fb3b70c9c0",
+      "local_dir": "text_encoders/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "files": [
+        "config.json",
+        "adapter_config.json",
+        "adapter_model.safetensors",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json"
+      ]
     },
     {
-      "role": "text_encoder",
+      "role": "text_encoder_adapter",
       "source": "huggingface",
-      "repo_id": "meta-llama/Meta-Llama-3-8B-Instruct",
-      "managed": false,
-      "gated": true
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+      "revision": "baa8ebf04a1c2500e61288e7dad65e8ae42601a7",
+      "local_dir": "text_encoders/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+      "files": [
+        "adapter_config.json",
+        "adapter_model.safetensors"
+      ]
+    },
+    {
+      "role": "text_encoder_llm",
+      "source": "huggingface",
+      "repo_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+      "revision": "53346005fb0ef11d3b6a83b12c895cca40156b6c",
+      "local_dir": "text_encoders/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "files": [
+        "LICENSE",
+        "USE_POLICY.md"
+      ],
+      "index_file": "model.safetensors.index.json"
     }
   ],
   "options": {
@@ -64,7 +88,7 @@
     "summary": "Recommended. NVIDIA's newest model: generates in real time and starts exactly from the pose you made, up to 10 s.",
     "best_for": "Continuing your pose; walking, gestures, everyday actions; quick iterations",
     "speed": "Fastest (real-time model)",
-    "setup_effort": "Medium: one command sets up an isolated worker (needs CMake and a C++ compiler) plus a one-time Hugging Face access request",
+    "setup_effort": "Medium: one command sets up an isolated worker (needs a C++ compiler; on Windows the Visual Studio Build Tools)",
     "download_gb": 17
   },
   "setup": [
@@ -78,18 +102,11 @@
       "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
     },
     {
-      "id": "llama-access",
-      "kind": "manual",
-      "label": "Access to Meta Llama 3 8B Instruct (gated)",
-      "detail": "ARDY's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once with the worker's venv (Windows: motion_worker\\envs\\ardy\\Scripts\\hf.exe auth login; Docker shares the login of the host).",
-      "link": "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
-      "command": "motion_worker/envs/ardy/bin/hf auth login"
-    },
-    {
       "id": "weights",
-      "kind": "auto",
-      "label": "Model and text encoder (~17 GB)",
-      "detail": "Downloaded by ARDY itself on the first generation, so the first run takes a while."
+      "kind": "download",
+      "label": "Text encoder (~16 GB)",
+      "detail": "Meta Llama 3 8B Instruct with the LLM2Vec adapters, downloaded into ComfyUI's models/text_to_motion/text_encoders folder (public copies of the original weights, no Hugging Face account needed; the Llama 3 Community License applies). The small ARDY checkpoint is fetched on the first generation.",
+      "check": "weights"
     }
   ]
 }

@@ -708,7 +708,7 @@ def _stub_torch():
 
 def _stub_kimodo(model):
     kimodo = types.ModuleType("kimodo")
-    kimodo.load_model = lambda name, device=None: model
+    kimodo.load_model = lambda name, device=None, text_encoder=None: model
     constraints = types.ModuleType("kimodo.constraints")
     constraints.FullBodyConstraintSet = FakeConstraint
     tools = types.ModuleType("kimodo.tools")
@@ -717,9 +717,16 @@ def _stub_kimodo(model):
 
 
 class RunnerTestCase(unittest.TestCase):
+    #: Runner tests use fake models and must never download the managed weights.
+    downloads_weights = False
+
     def setUp(self):
         SERVICE.unload_model()
         self._saved = {}
+        if not self.downloads_weights:
+            patcher = mock.patch.object(BASE.MotionBackend, "ensure_weights", lambda self, report, sources=None: {})
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         SERVICE._LOADED.update(id=None, backend=None)
@@ -875,7 +882,7 @@ class FakeArdyModel:
 def _stub_ardy(model):
     ardy = types.ModuleType("ardy")
     model_module = types.ModuleType("ardy.model")
-    model_module.load_model = lambda name, device=None: model
+    model_module.load_model = lambda name, device=None, text_encoder=None: model
     constraints = types.ModuleType("ardy.constraints")
     constraints.FullBodyConstraintSet = FakeConstraint
     tools = types.ModuleType("ardy.tools")
@@ -1137,7 +1144,44 @@ class HYMotionRunnerTests(RunnerTestCase):
         self.assertEqual(resolved["n"], 3)
 
 
+class LocalTextEncoderTests(unittest.TestCase):
+    def test_encoder_loads_from_its_own_folder_and_keeps_the_llama_prompt_format(self):
+        seen = {}
+
+        class Encoder:
+            def __init__(self, **kwargs):
+                seen.update(kwargs)
+                config = types.SimpleNamespace(_name_or_path=kwargs["base_model_name_or_path"])
+                self.model = types.SimpleNamespace(model=types.SimpleNamespace(config=config))
+
+        with tempfile.TemporaryDirectory() as folder:
+            base, adapter = Path(folder) / "mntp", Path(folder) / "supervised"
+            base.mkdir()
+            (base / "adapter_config.json").write_text(
+                json.dumps({"base_model_name_or_path": BASE.LLAMA3_NAME, "r": 16}), encoding="utf-8")
+            encoder = BASE.local_llm2vec_encoder(Encoder, {"text_encoder": base, "text_encoder_adapter": adapter})
+            config = json.loads((base / "adapter_config.json").read_text(encoding="utf-8"))
+
+        # The gated hub id is replaced by the folder itself, the rest of the adapter config is kept.
+        self.assertEqual(config, {"base_model_name_or_path": str(base), "r": 16})
+        self.assertEqual(seen["base_model_name_or_path"], str(base))
+        self.assertEqual(seen["peft_model_name_or_path"], str(adapter))
+        self.assertEqual(encoder.model.model.config._name_or_path, BASE.LLAMA3_NAME)
+
+    def test_nvidia_models_download_the_text_encoder_without_gated_repositories(self):
+        for model_id in ("ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1"):
+            spec = REGISTRY.load_specs()[model_id]
+            managed = {source.role: source for source in spec.weights if source.managed}
+            self.assertEqual(set(managed), {"text_encoder", "text_encoder_adapter", "text_encoder_llm"})
+            self.assertEqual(managed["text_encoder_llm"].local_dir, managed["text_encoder"].local_dir)
+            self.assertFalse(any(source.gated for source in spec.weights))
+            self.assertTrue(all(len(source.revision) == 40 for source in managed.values()))
+            self.assertEqual([step["kind"] for step in spec.setup if step["id"] == "weights"], ["download"])
+
+
 class WeightDownloadTests(RunnerTestCase):
+    downloads_weights = True
+
     def test_files_are_fetched_one_by_one_without_credentials(self):
         calls = []
 

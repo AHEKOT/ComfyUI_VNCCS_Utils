@@ -18,6 +18,7 @@ from .base import (
     MotionRequest,
     empty_torch_cache,
     free_comfy_vram,
+    local_llm2vec_encoder,
     torch_device,
 )
 from .soma import SomaSkeleton, solve_start_pose
@@ -115,10 +116,15 @@ class ArdyBackend(MotionBackend):
         except ImportError as exc:
             raise BackendUnavailable(f"{self.spec.name} is not installed.", self.install_hint()) from exc
 
-        self.ensure_weights(report)
+        folders = self.ensure_weights(report)
         report(f"Loading {self.spec.name} (the first run downloads the model and its text encoder)...", 6)
         free_comfy_vram()
-        self.model = load_model(self.model_name, device=torch_device(torch))
+        encoder = None  # None: the model's own loader builds it (needs access to the gated Llama 3 repository)
+        if "text_encoder_llm" in folders:
+            from ardy.model import LLM2VecEncoder
+
+            encoder = local_llm2vec_encoder(LLM2VecEncoder, folders)
+        self.model = load_model(self.model_name, device=str(torch_device(torch)), text_encoder=encoder)
         skeleton = self.model.skeleton
         parents = skeleton.joint_parents
         rest = skeleton.neutral_joints
