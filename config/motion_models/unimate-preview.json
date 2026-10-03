@@ -8,7 +8,7 @@
   "code": {
     "url": "https://github.com/Friedrich-M/UniMate",
     "local_dir": "code/UniMate",
-    "install": "Clone 'https://github.com/Friedrich-M/UniMate' into <ComfyUI>/models/text_to_motion/code/UniMate, install its inference dependencies into ComfyUI's Python ('pip install torchdiffeq einops transformers sentencepiece tyro accelerate loguru'), download the checkpoint folder with 'hf download Linzhan/UniMate --local-dir <ComfyUI>/models/text_to_motion/UniMate', and put the Mixamo skeleton features (dataset/features/mixamo, made by UniMate's data_process pipeline) into <ComfyUI>/models/text_to_motion/UniMate/features/mixamo. Restart ComfyUI. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh unimate' then 'motion_worker/run.sh unimate' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile unimate up -d --build). See motion_worker/README.md. Clone the model code too: 'git clone --depth 1 https://github.com/Friedrich-M/UniMate models/text_to_motion/code/UniMate'."
   },
   "weights": [
     {
@@ -61,40 +61,25 @@
     "summary": "Research preview (SIGGRAPH Asia 2026). Short clips of at most 2 s, joint positions only; cannot start from your pose.",
     "best_for": "Trying the newest research model on short actions",
     "speed": "Fast, small model",
-    "setup_effort": "Expert: needs a code checkout and skeleton features built with UniMate's data pipeline",
+    "setup_effort": "Expert: isolated worker, a code checkout and skeleton features built with UniMate's data pipeline",
     "download_gb": 2
   },
   "setup": [
     {
-      "id": "packages",
-      "kind": "pip",
-      "label": "Python packages",
-      "packages": [
-        "torchdiffeq",
-        "einops",
-        "transformers",
-        "sentencepiece",
-        "tyro",
-        "accelerate",
-        "loguru"
-      ],
-      "modules": [
-        "torchdiffeq",
-        "einops",
-        "transformers",
-        "sentencepiece",
-        "tyro",
-        "accelerate",
-        "loguru"
-      ],
-      "detail": "Installed with ComfyUI-Manager."
+      "id": "worker",
+      "kind": "manual",
+      "check": "worker",
+      "label": "Isolated motion worker",
+      "detail": "The model runs in its own Python environment, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once, then keep the worker running next to ComfyUI. Windows: motion_worker\\install.bat unimate, then motion_worker\\run.bat unimate. Docker (Linux, NVIDIA): docker compose -f motion_worker/docker-compose.yml --profile unimate up -d --build",
+      "command": "motion_worker/install.sh unimate && motion_worker/run.sh unimate",
+      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
     },
     {
       "id": "code",
       "kind": "manual",
       "check": "code",
       "label": "UniMate code",
-      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. Do not install its requirements.txt: it pins torch, Blender and other packages that would break ComfyUI.",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. The worker installs what it needs; do not install the repository's requirements.txt into ComfyUI.",
       "command": "git clone --depth 1 https://github.com/Friedrich-M/UniMate models/text_to_motion/code/UniMate",
       "link": "https://github.com/Friedrich-M/UniMate"
     },

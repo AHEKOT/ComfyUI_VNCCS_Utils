@@ -1,0 +1,3 @@
+# NVIDIA ARDY (pins transformers==5.8.1 and numpy<2). Needs CMake and a C++17 compiler.
+ardy @ git+https://github.com/nv-tlabs/ardy
+huggingface_hub>=1.0

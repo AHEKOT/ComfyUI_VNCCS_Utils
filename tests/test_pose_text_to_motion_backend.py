@@ -5,6 +5,8 @@ Runs without torch, Kimodo or HY-Motion; they are replaced by small stubs where 
 """
 
 import asyncio
+import threading
+import time
 import contextlib
 import importlib.util
 import json
@@ -30,7 +32,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "hymotion_backend", "unimate_backend"):
+    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "hymotion_backend", "unimate_backend", "worker_protocol", "worker_runtime"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -47,7 +49,10 @@ BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
 HYMOTION = _MODULES["hymotion_backend"]
+KIMODO_BACKEND = _MODULES["kimodo_backend"]
 ARDY = _MODULES["ardy_backend"]
+PROTOCOL = _MODULES["worker_protocol"]
+RUNTIME = _MODULES["worker_runtime"]
 UNIMATE = _MODULES["unimate_backend"]
 MANAGER_POLICY = _MODULES["manager_policy"]
 
@@ -511,9 +516,10 @@ class SetupStepTests(unittest.TestCase):
             (backend.features_dir() / "mixamo").mkdir(parents=True)
             (backend.features_dir() / "mixamo" / "cond.npy").write_bytes(b"x")
             self.assertTrue({step["id"]: step["done"] for step in backend.setup_status()}["features"])
+        pip = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "setup": [
+            {"id": "pkgs", "kind": "pip", "packages": ["tyro"], "modules": ["tyro"]}]})
         with mock.patch.object(BASE, "module_missing", side_effect=lambda name: name == "tyro"):
-            pip = next(step for step in backend.setup_status() if step["kind"] == "pip")
-            self.assertFalse(pip["done"])
+            self.assertFalse(KIMODO_BACKEND.KimodoBackend(pip, Path(".")).setup_status()[0]["done"])
 
     def test_hymotion_weights_step_reports_downloaded_files(self):
         spec = REGISTRY.load_specs()["hy-motion-1.0-lite"]
@@ -766,13 +772,13 @@ class KimodoRunnerTests(RunnerTestCase):
         spec, request, _ = self.request(model="kimodo-soma-rp-v1.1")
         with self.assertRaises(BASE.BackendUnavailable) as caught:
             SERVICE.generate_motion(spec, request)
-        self.assertIn("pip install", caught.exception.hint)
+        self.assertIn("install.sh kimodo", caught.exception.hint)
 
     def test_models_route_lists_availability(self):
         self.install({"kimodo": None})
         models = {model["id"]: model for model in SERVICE.list_models()}
         self.assertFalse(models["kimodo-soma-rp-v1.1"]["available"])
-        self.assertIn("pip install", models["kimodo-soma-rp-v1.1"]["install_hint"])
+        self.assertIn("install.sh kimodo", models["kimodo-soma-rp-v1.1"]["install_hint"])
         self.assertFalse(models["hy-motion-1.0-lite"]["available"])
         self.assertEqual(len(models["hy-motion-1.0"]["license"]["restricted_territories"]), 3)
 
@@ -795,7 +801,7 @@ class KimodoRunnerTests(RunnerTestCase):
         response = asyncio.run(SERVICE.handle_generate(Request()))
         self.assertEqual(response.status, 503)
         self.assertTrue(response.data["model_missing"])
-        self.assertIn("pip install", response.data["install_hint"])
+        self.assertIn("install.sh", response.data["install_hint"])
         self.assertEqual(SERVICE.get_task("job2")["status"], "error")
 
 
@@ -932,6 +938,117 @@ class ArdyTests(RunnerTestCase):
     def test_core_motion_rejects_other_skeletons(self):
         with self.assertRaises(ValueError):
             ARDY.core_motion(["Root"], np.zeros((2, 1, 3)), None, 20)
+
+
+class FakeWorkerBackend:
+    """Stands in for a model inside the isolated worker: returns the SMPL-H rest pose moving forward."""
+
+    loads = 0
+
+    def __init__(self, spec, root):
+        self.spec = spec
+
+    def check_available(self):
+        if self.spec.id == "hy-motion-1.0":
+            raise BASE.BackendUnavailable("torch is missing in this environment", "install.sh hymotion")
+
+    def load(self, report):
+        FakeWorkerBackend.loads += 1
+        report("Loading...", 5)
+
+    def generate(self, request, report):
+        report("Generating motion: step 1/1", 50)
+        rest = smplh_rest()
+        frames = int(round(request.duration * 30))
+        return SMPLH.smplh_motion(np.stack([rest + [0, 0, 0.01 * i] for i in range(frames)]), fps=30)
+
+    def unload(self):
+        pass
+
+
+class IsolatedWorkerTests(RunnerTestCase):
+    def start_worker(self, root, **kwargs):
+        specs = REGISTRY.load_specs()
+        worker = RUNTIME.MotionWorker(root, "test", ["ardy-core-rp-20fps-h40", "hy-motion-1.0"], specs=specs,
+                                      make_backend=lambda spec: FakeWorkerBackend(spec, root), **kwargs)
+        thread = threading.Thread(target=worker.run, kwargs={"poll": 0.01}, daemon=True)
+        thread.start()
+        for _ in range(200):
+            if PROTOCOL.worker_for(root, "ardy-core-rp-20fps-h40"):
+                break
+            time.sleep(0.01)
+        self.addCleanup(lambda: (worker.stop(), thread.join(5)))
+        return worker
+
+    def test_payloads_round_trip(self):
+        _, request, _ = self.request(duration=2, seed=4)
+        back = PROTOCOL.request_from_dict(json.loads(json.dumps(PROTOCOL.request_to_dict(request))))
+        self.assertEqual((back.prompt, back.duration, back.seed), (request.prompt, request.duration, request.seed))
+        np.testing.assert_allclose(back.keypoints["pelvis"], request.keypoints["pelvis"])
+        motion = SMPLH.smplh_motion(smplh_rest()[None], np.tile(np.eye(3), (1, 52, 1, 1)), fps=30)
+        again = PROTOCOL.motion_from_dict(json.loads(json.dumps(PROTOCOL.motion_to_dict(motion))))
+        np.testing.assert_allclose(again.positions, motion.positions, atol=1e-6)
+        self.assertEqual(again.joint_map, motion.joint_map)
+        self.assertEqual(again.legs, motion.legs)
+
+    def test_stale_or_foreign_heartbeats_are_ignored(self):
+        with tempfile.TemporaryDirectory() as folder:
+            PROTOCOL.write_heartbeat(Path(folder), "old", ["x"])
+            self.assertIsNotNone(PROTOCOL.worker_for(Path(folder), "x"))
+            self.assertIsNone(PROTOCOL.worker_for(Path(folder), "x", now=time.time() + 60))
+            PROTOCOL.write_json(PROTOCOL.heartbeat_path(Path(folder), "old"), {"protocol": 99, "models": ["x"], "updated_at": time.time()})
+            self.assertIsNone(PROTOCOL.worker_for(Path(folder), "x"))
+        with self.assertRaises(ValueError):
+            PROTOCOL.safe_name("../escape")
+
+    def test_comfyui_generates_through_the_worker_without_its_model_lock(self):
+        with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
+            root = Path(folder)
+            self.start_worker(root)
+            models = {m["id"]: m for m in SERVICE.list_models()}
+            self.assertTrue(models["ardy-core-rp-20fps-h40"]["available"])
+            self.assertEqual(models["ardy-core-rp-20fps-h40"]["runner"], "worker")
+            worker_step = next(s for s in models["ardy-core-rp-20fps-h40"]["setup"] if s["id"] == "worker")
+            self.assertTrue(worker_step["done"])
+            # The worker runs but cannot serve this model: the card says why.
+            hy = models["hy-motion-1.0"]
+            self.assertFalse(hy["available"])
+            self.assertIn("torch is missing", next(s for s in hy["setup"] if s["id"] == "worker")["detail"])
+
+            lock = SERVICE._model_operation_lock()
+            self.assertTrue(lock.acquire(blocking=False))  # ComfyUI-side work holds the lock...
+            try:
+                spec, request, task_id = self.request(duration=1, task_id="w1")
+                motion = SERVICE.generate_motion(spec, request, task_id)  # ...and the worker job still runs
+            finally:
+                lock.release()
+            self.assertEqual(motion["frame_count"], 30)
+            np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
+            self.assertIsNone(SERVICE._LOADED["backend"], "nothing was loaded into ComfyUI")
+            leftovers = [p for p in (root / "jobs").rglob("*.json")]
+            self.assertEqual(leftovers, [], "job files are cleaned up")
+
+    def test_worker_errors_reach_the_browser(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            worker = self.start_worker(root)
+            worker.ready["boom"] = types.SimpleNamespace(id="boom")
+            spec, request, _ = self.request(duration=1)
+            with self.assertRaises(PROTOCOL.WorkerError) as caught:
+                PROTOCOL.run_job(root, "test", "nope", request, lambda *a: None, poll=0.01)
+            self.assertTrue(caught.exception.unavailable)
+
+    def test_idle_worker_frees_its_model(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            worker = RUNTIME.MotionWorker(root, "idle", ["ardy-core-rp-20fps-h40"], idle_unload=0.01,
+                                          make_backend=lambda spec: FakeWorkerBackend(spec, root))
+            worker.probe()
+            worker._backend(worker.ready["ardy-core-rp-20fps-h40"], lambda *a: None)
+            self.assertIsNotNone(worker.loaded)
+            worker.last_job = time.time() - 1
+            worker.step()
+            self.assertIsNone(worker.loaded)
 
 
 class FakeTransformer:

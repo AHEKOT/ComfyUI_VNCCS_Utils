@@ -7,7 +7,7 @@
   "homepage": "https://research.nvidia.com/labs/sil/projects/ardy/",
   "code": {
     "url": "https://github.com/nv-tlabs/ardy",
-    "install": "Install ARDY into ComfyUI's Python environment: 'pip install git+https://github.com/nv-tlabs/ardy' (needs CMake and a C++ compiler for its motion-correction extension), then restart ComfyUI. The text encoder uses the gated meta-llama/Meta-Llama-3-8B-Instruct model: request access on Hugging Face and run 'hf auth login' once. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh ardy' then 'motion_worker/run.sh ardy' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile ardy up -d --build). See motion_worker/README.md."
   },
   "weights": [
     {
@@ -64,29 +64,26 @@
     "summary": "Recommended. NVIDIA's newest model: generates in real time and starts exactly from the pose you made, up to 10 s.",
     "best_for": "Continuing your pose; walking, gestures, everyday actions; quick iterations",
     "speed": "Fastest (real-time model)",
-    "setup_effort": "Easy-medium: one Install button (needs CMake and a C++ compiler) plus a one-time Hugging Face access request",
+    "setup_effort": "Medium: one command sets up an isolated worker (needs CMake and a C++ compiler) plus a one-time Hugging Face access request",
     "download_gb": 17
   },
   "setup": [
     {
-      "id": "package",
-      "kind": "pip",
-      "label": "ARDY Python package",
-      "packages": [
-        "git+https://github.com/nv-tlabs/ardy"
-      ],
-      "modules": [
-        "ardy"
-      ],
-      "detail": "Installed with ComfyUI-Manager. Building it needs CMake and a C++ compiler. ARDY requires transformers 5.8.1 and numpy below 2, which replace the versions in ComfyUI's Python (and conflict with Kimodo's transformers 5.1.0)."
+      "id": "worker",
+      "kind": "manual",
+      "check": "worker",
+      "label": "Isolated motion worker",
+      "detail": "The model runs in its own Python environment, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once, then keep the worker running next to ComfyUI. Windows: motion_worker\\install.bat ardy, then motion_worker\\run.bat ardy. Docker (Linux, NVIDIA): docker compose -f motion_worker/docker-compose.yml --profile ardy up -d --build",
+      "command": "motion_worker/install.sh ardy && motion_worker/run.sh ardy",
+      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
     },
     {
       "id": "llama-access",
       "kind": "manual",
       "label": "Access to Meta Llama 3 8B Instruct (gated)",
-      "detail": "ARDY's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once from ComfyUI's Python environment.",
+      "detail": "ARDY's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once from the worker's environment (Docker: run the command on the host; the container shares your Hugging Face login).",
       "link": "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
-      "command": "hf auth login"
+      "command": "motion_worker/envs/ardy/bin/hf auth login"
     },
     {
       "id": "weights",

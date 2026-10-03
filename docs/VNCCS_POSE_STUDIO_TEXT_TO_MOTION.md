@@ -11,17 +11,26 @@ timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported mod
 | Tencent HY-Motion 1.0 | No (motion is applied on top of your pose) | 26 GB | Same as above |
 | [UniMate](https://linzhanmou.com/unimate/) (preview) | No (motion is applied on top of your pose), max 2 s | ~6 GB | MIT (code); training data keeps its own licenses |
 
+**Isolated worker (recommended).** The models pin their own torch / transformers / numpy
+versions, which break ComfyUI and each other when installed into ComfyUI's Python. They run
+instead in a separate *motion worker* per model family, in its own venv or Docker container,
+that shares only the `models/text_to_motion` folder with ComfyUI and exchanges job files there.
+ComfyUI is never modified and your other workflows keep running while a motion generates. Set
+up and start a worker with one command, see [`motion_worker/README.md`](../motion_worker/README.md).
+A model installed directly into ComfyUI's Python still works as a fallback.
+
 Model code and weights are optional. Pose Studio works without them. The model list marks each
 model **ready** or **needs setup**, and the card under it says what the model is good at (start
 pose, maximum length, memory, download size) and, until it is ready, lists its setup steps:
 
-- **Python packages** have an **Install** button. It queues `pip install` through
-  ComfyUI-Manager (the same server API the VNCCS Control Center uses); **Restart ComfyUI** then
-  restarts through Manager, which installs the packages on startup, and the card refreshes.
-  Current Manager versions only allow this when `allow_pip_install = true` is set under
-  `[default]` in Manager's `config.ini` and ComfyUI listens on 127.0.0.1. Pose Studio never
-  changes that file; when Manager refuses, the card names the file and the line to add (stop
-  ComfyUI, edit, start again) and shows the equivalent `python -m pip install ...` command.
+- **Isolated motion worker**: the command that creates and starts the model's worker
+  (**Copy** button, Windows and Docker variants in the text). The step turns green as soon as
+  the worker runs; if it runs but cannot load the model, the card shows the worker's reason.
+- **Python packages** (`pip` steps, for future models whose dependencies are safe in ComfyUI's
+  Python; none of the bundled models uses one) have an **Install** button that queues
+  `pip install` through ComfyUI-Manager and then offers **Restart ComfyUI**. Manager only
+  allows it with `allow_pip_install = true` in its `config.ini`; Pose Studio never edits that
+  file and the card says what to change when Manager refuses.
 - **Code checkouts** and **gated logins** are manual steps with a **Copy** button for the
   command and a link. They are not installed through Manager on purpose: Manager's git install
   also runs the repository's `requirements.txt`, and these repositories pin torch, numpy and
@@ -232,6 +241,7 @@ else changes.
 
 | Route | Purpose |
 | --- | --- |
+| (files) `models/text_to_motion/workers/`, `jobs/` | Isolated worker heartbeats and jobs, see `api/text_to_motion/worker_protocol.py` |
 | `GET /vnccs/pose_studio/motion/models` | Models with capabilities, license, availability install hint, guide and setup step status |
 | `GET /vnccs/pose_studio/motion/setup/policy` | ComfyUI-Manager's install policy (read-only: config path, `allow_pip_install`, listener) |
 | `POST /vnccs/pose_studio/motion/setup/download` | Run a model's `download` setup step (same-origin requests with `X-VNCCS-CSRF: 1`) |

@@ -8,7 +8,7 @@
   "code": {
     "url": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0",
     "local_dir": "code/HY-Motion-1.0",
-    "install": "Clone the code with git-lfs into ComfyUI's models folder: 'git lfs install && git clone https://github.com/Tencent-Hunyuan/HY-Motion-1.0 <ComfyUI>/models/text_to_motion/code/HY-Motion-1.0', then 'pip install torchdiffeq transformers accelerate einops pyyaml omegaconf' and restart ComfyUI. See docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md."
+    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh hymotion' then 'motion_worker/run.sh hymotion' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile hymotion up -d --build). See motion_worker/README.md. Clone the model code too: 'git lfs install && git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-Motion-1.0 models/text_to_motion/code/HY-Motion-1.0'."
   },
   "weights": [
     {
@@ -101,38 +101,25 @@
     "summary": "Tencent's text-only model. Full: 1.0B, slower and usually more detailed than Lite. Cannot start from your pose; its movement is applied on top of it.",
     "best_for": "Expressive full-body actions from a description, when the exact start pose does not matter",
     "speed": "Slow first load (8B text encoder)",
-    "setup_effort": "Advanced: needs a manual code checkout with git-lfs. Not licensed in the EU, UK and South Korea",
+    "setup_effort": "Advanced: isolated worker plus a code checkout with git-lfs. Not licensed in the EU, UK and South Korea",
     "download_gb": 20
   },
   "setup": [
     {
-      "id": "packages",
-      "kind": "pip",
-      "label": "Python packages",
-      "packages": [
-        "torchdiffeq",
-        "transformers",
-        "accelerate",
-        "einops",
-        "pyyaml",
-        "omegaconf"
-      ],
-      "modules": [
-        "torchdiffeq",
-        "transformers",
-        "accelerate",
-        "einops",
-        "yaml",
-        "omegaconf"
-      ],
-      "detail": "Installed with ComfyUI-Manager (latest versions, not the repository's pinned ones)."
+      "id": "worker",
+      "kind": "manual",
+      "check": "worker",
+      "label": "Isolated motion worker",
+      "detail": "The model runs in its own Python environment, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once, then keep the worker running next to ComfyUI. Windows: motion_worker\\install.bat hymotion, then motion_worker\\run.bat hymotion. Docker (Linux, NVIDIA): docker compose -f motion_worker/docker-compose.yml --profile hymotion up -d --build",
+      "command": "motion_worker/install.sh hymotion && motion_worker/run.sh hymotion",
+      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
     },
     {
       "id": "code",
       "kind": "manual",
       "check": "code",
       "label": "HY-Motion code",
-      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. Its requirements.txt is NOT needed and would replace ComfyUI's torch.",
+      "detail": "Clone the repository into ComfyUI's models folder. Run the command from the ComfyUI folder. The worker installs what it needs; do not install the repository's requirements.txt into ComfyUI.",
       "command": "git lfs install && git clone --depth 1 https://github.com/Tencent-Hunyuan/HY-Motion-1.0 models/text_to_motion/code/HY-Motion-1.0",
       "link": "https://github.com/Tencent-Hunyuan/HY-Motion-1.0"
     },

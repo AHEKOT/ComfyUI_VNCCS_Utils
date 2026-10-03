@@ -33,6 +33,7 @@ export function modelFacts(model) {
     if (!model) return [];
     const caps = model.capabilities || {};
     const facts = [caps.start_pose_constraint ? "Starts from your pose" : "Applied on top of your pose"];
+    if (model.runner === "worker") facts.push(`Isolated worker${model.worker ? ` "${model.worker}"` : ""}`);
     const maxSeconds = Number(caps.duration?.max);
     if (maxSeconds > 0) facts.push(`Up to ${Number(maxSeconds.toFixed(1))} s`);
     const vram = Number(model.requirements?.vram_gb);

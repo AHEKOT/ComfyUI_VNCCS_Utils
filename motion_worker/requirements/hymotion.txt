@@ -1,0 +1,14 @@
+# Tencent HY-Motion 1.0: the inference subset of its requirements.txt (no demo / FBX packages).
+# The code itself is cloned into models/text_to_motion/code/HY-Motion-1.0 (see README.md).
+torchdiffeq==0.2.5
+accelerate==0.30.1
+diffusers==0.26.3
+transformers==4.53.3
+einops==0.8.1
+safetensors==0.5.3
+numpy>=1.24.0,<2.0
+scipy>=1.10.0
+transforms3d==0.4.2
+PyYAML==6.0
+omegaconf==2.3.0
+huggingface_hub
