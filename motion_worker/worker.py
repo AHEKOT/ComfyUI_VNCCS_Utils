@@ -5,8 +5,8 @@ install.bat, or the Docker image) so their pinned torch / transformers / numpy
 versions never touch ComfyUI's Python. ComfyUI and the worker talk through job files
 in <ComfyUI>/models/text_to_motion (see api/text_to_motion/worker_protocol.py).
 
-    python worker.py --family ardy                 # serve every ARDY model
-    python worker.py --models kimodo-soma-rp-v1.1  # serve listed model ids
+    python worker.py --family hymotion        # serve every HY-Motion model
+    python worker.py --models unimate-preview # serve listed model ids
 """
 
 import argparse
@@ -38,7 +38,7 @@ def load_package():
 
 def main():
     parser = argparse.ArgumentParser(description="VNCCS Pose Studio motion worker")
-    parser.add_argument("--family", help="backend family to serve: ardy, kimodo, hymotion or unimate")
+    parser.add_argument("--family", help="backend family to serve: hymotion or unimate")
     parser.add_argument("--models", default="", help="comma-separated model ids (default: all of --family)")
     parser.add_argument("--root", default=str(HERE.parent.parent.parent / "models" / "text_to_motion"),
                         help="ComfyUI's models/text_to_motion folder (shared with ComfyUI)")

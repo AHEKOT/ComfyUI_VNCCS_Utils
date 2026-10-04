@@ -1,5 +1,5 @@
 @echo off
-rem Start the motion worker for one family: run.bat ardy
+rem Start the motion worker for one family: run.bat hymotion
 cd /d "%~dp0"
 set FAMILY=%1
 shift

@@ -7,7 +7,7 @@
   "homepage": "https://research.nvidia.com/labs/sil/projects/kimodo/",
   "code": {
     "url": "https://github.com/nv-tlabs/kimodo",
-    "install": "Set up the isolated motion worker in the ComfyUI_VNCCS_Utils folder: 'motion_worker/install.sh kimodo' then 'motion_worker/run.sh kimodo' (Windows: install.bat / run.bat; Docker: docker compose -f motion_worker/docker-compose.yml --profile kimodo up -d --build). See motion_worker/README.md."
+    "install": "Nothing to install: Kimodo is built into VNCCS Utils and runs in ComfyUI's own Python. The first generation downloads its checkpoint and the Llama 3 based text encoder (~17 GB) into models/text_to_motion."
   },
   "weights": [
     {
@@ -19,26 +19,30 @@
     {
       "role": "text_encoder",
       "source": "huggingface",
+      "repo_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
       "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
-      "managed": false,
-      "gated": true
+      "managed": false
     },
     {
       "role": "text_encoder",
       "source": "huggingface",
       "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
       "managed": false
-    },
-    {
-      "role": "text_encoder",
-      "source": "huggingface",
-      "repo_id": "meta-llama/Meta-Llama-3-8B-Instruct",
-      "managed": false,
-      "gated": true
     }
   ],
   "options": {
-    "model_name": "Kimodo-SOMA-RP-v1.1"
+    "repo_id": "nvidia/Kimodo-SOMA-RP-v1.1",
+    "text_encoder": {
+      "base": "NousResearch/Meta-Llama-3-8B-Instruct",
+      "mntp": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "supervised": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised"
+    },
+    "offload_text_encoder": true
   },
   "capabilities": {
     "start_pose_constraint": true,
@@ -56,7 +60,7 @@
   },
   "requirements": {
     "vram_gb": 17,
-    "notes": "Most of the memory is the LLM2Vec text encoder. Set TEXT_ENCODER_DEVICE=cpu to keep it on the CPU; the motion model itself needs under 3 GB."
+    "notes": "Runs inside ComfyUI, no separate install. About 16 GB of system RAM for the text encoder (kept off the GPU between prompts); the motion model itself is small. Foot-skate post-processing from the original release is not included."
   },
   "license": {
     "name": "NVIDIA Open Model License",
@@ -70,32 +74,15 @@
     "summary": "Starts exactly from the pose you made, with finger and spine detail (SOMA skeleton). Slower than ARDY, up to 10 s.",
     "best_for": "Continuing your pose; walking, gestures, sports, everyday actions",
     "speed": "Fast once loaded, slower than ARDY",
-    "setup_effort": "Medium: one command sets up an isolated worker plus a one-time Hugging Face access request",
+    "setup_effort": "None: built in, downloads on first use",
     "download_gb": 17
   },
   "setup": [
     {
-      "id": "worker",
-      "kind": "manual",
-      "check": "worker",
-      "label": "Isolated motion worker",
-      "detail": "The model runs in its own venv next to this extension, so ComfyUI's packages are never changed and your other workflows keep running. In the custom_nodes/ComfyUI_VNCCS_Utils folder run the command once (it creates the venv), then keep the worker running next to ComfyUI. Windows (also ComfyUI portable): motion_worker\\install.bat kimodo, then motion_worker\\run.bat kimodo. No Python on the machine? Install uv first; the script then downloads Python 3.11 into the venv by itself. Optional, if you already use Docker: docker compose -f motion_worker/docker-compose.yml --profile kimodo up -d --build",
-      "command": "motion_worker/install.sh kimodo && motion_worker/run.sh kimodo",
-      "link": "https://github.com/M4cd1r/ComfyUI_VNCCS_Utils/blob/main/motion_worker/README.md"
-    },
-    {
-      "id": "llama-access",
-      "kind": "manual",
-      "label": "Access to Meta Llama 3 8B Instruct (gated)",
-      "detail": "Kimodo's text encoder is built on Meta Llama 3. Open the model page, accept the license with your Hugging Face account, then log in once with the worker's venv (Windows: motion_worker\\envs\\kimodo\\Scripts\\hf.exe auth login; Docker shares the login of the host).",
-      "link": "https://huggingface.co/meta-llama/Meta-Llama-3-8B-Instruct",
-      "command": "motion_worker/envs/kimodo/bin/hf auth login"
-    },
-    {
       "id": "weights",
       "kind": "auto",
       "label": "Model and text encoder (~17 GB)",
-      "detail": "Downloaded by Kimodo itself on the first generation, so the first run takes a while."
+      "detail": "Built into VNCCS Utils, nothing to install. The first generation downloads the Kimodo checkpoint and the LLM2Vec text encoder (Meta Llama 3 8B Instruct) into models/text_to_motion, so it takes a while once. The text encoder waits in system RAM and is moved to the GPU only while your prompt is read; closing the Motion panel frees everything."
     }
   ]
 }

@@ -1,5 +1,5 @@
 # Isolated motion workers. From the extension folder (custom_nodes/ComfyUI_VNCCS_Utils):
-#   docker compose -f motion_worker/docker-compose.yml --profile ardy up -d --build
+#   docker compose -f motion_worker/docker-compose.yml --profile hymotion up -d --build
 # COMFYUI_MODELS points at ComfyUI's models folder (default: two levels up from the extension).
 # Files are written as your user (UID/GID) so ComfyUI can read and clean them up.
 x-worker: &worker
@@ -19,16 +19,6 @@ x-worker: &worker
             capabilities: [gpu]
 
 services:
-  ardy:
-    <<: *worker
-    profiles: ["ardy"]
-    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: ardy } }
-    image: vnccs-motion-ardy
-  kimodo:
-    <<: *worker
-    profiles: ["kimodo"]
-    build: { context: .., dockerfile: motion_worker/Dockerfile, args: { FAMILY: kimodo } }
-    image: vnccs-motion-kimodo
   hymotion:
     <<: *worker
     profiles: ["hymotion"]

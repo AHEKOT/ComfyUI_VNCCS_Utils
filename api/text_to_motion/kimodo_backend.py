@@ -2,14 +2,15 @@
 
 Kimodo generates on the SOMA skeleton and accepts a full-body keyframe, so the
 mannequin's current pose becomes a frame-0 constraint and the motion starts
-exactly there. Kimodo downloads its checkpoint and text encoder itself (into the
-Hugging Face cache, or $CHECKPOINT_DIR / $TEXT_ENCODERS_DIR when the user sets them).
+exactly there. Kimodo's inference code is vendored (api/text_to_motion/vendor) and
+runs in ComfyUI's own Python; its checkpoint and the shared LLM2Vec text encoder are
+downloaded once into models/text_to_motion. Foot-skate post-processing (a C++
+extension upstream) is not available.
 """
 
 from __future__ import annotations
 
 from .base import (
-    BackendUnavailable,
     MotionBackend,
     MotionRequest,
     empty_torch_cache,
@@ -18,9 +19,22 @@ from .base import (
 )
 from .soma import SomaSkeleton, soma_motion, solve_start_pose
 
+# Python modules the vendored code needs; all of them ship with ComfyUI.
+VENDORED_REQUIRES = ("torch", "transformers", "safetensors", "einops", "scipy", "yaml", "pydantic", "huggingface_hub")
+
+
+def _vendor():
+    """The vendored Kimodo pieces the backend calls (a function, so tests can replace it)."""
+    from types import SimpleNamespace
+
+    from .vendor.kimodo.constraints import FullBodyConstraintSet
+    from .vendor.kimodo.tools import seed_everything
+
+    return SimpleNamespace(FullBodyConstraintSet=FullBodyConstraintSet, seed_everything=seed_everything)
+
 
 class KimodoBackend(MotionBackend):
-    requires = ("torch", "kimodo")
+    requires = VENDORED_REQUIRES
 
     def __init__(self, spec, models_dir):
         super().__init__(spec, models_dir)
@@ -34,16 +48,12 @@ class KimodoBackend(MotionBackend):
     def load(self, report) -> None:
         if self.model is not None:
             return
-        try:
-            import torch
-            from kimodo import load_model
-        except ImportError as exc:
-            raise BackendUnavailable(f"{self.spec.name} is not installed.", self.install_hint()) from exc
+        self.check_available()
+        import torch
 
-        self.ensure_weights(report)
         report(f"Loading {self.spec.name} (the first run downloads the model and its text encoder)...", 6)
         free_comfy_vram()
-        self.model = load_model(self.model_name, device=torch_device(torch))
+        self.model = self.load_vendored("kimodo", report, torch_device(torch))
         self.skeleton = self._soma_skeleton(self.model)
 
     @staticmethod
@@ -59,8 +69,8 @@ class KimodoBackend(MotionBackend):
 
     def _start_pose_constraint(self, positions, rotations):
         import torch
-        from kimodo.constraints import FullBodyConstraintSet
 
+        FullBodyConstraintSet = _vendor().FullBodyConstraintSet
         device = getattr(self.model.skeleton, "device", "cpu")
         return FullBodyConstraintSet(
             self.model.skeleton,
@@ -89,9 +99,7 @@ class KimodoBackend(MotionBackend):
             )
             constraints.append(self._start_pose_constraint(positions, rotations))
 
-        from kimodo.tools import seed_everything
-
-        seed_everything(request.seed)
+        _vendor().seed_everything(request.seed)
         fps = float(self.model.fps)
         steps = int(request.steps or self.spec.capabilities["steps"]["default"])
         output = self.model(
@@ -99,7 +107,7 @@ class KimodoBackend(MotionBackend):
             max(2, int(round(request.duration * fps))),
             num_denoising_steps=steps,
             constraint_lst=constraints,
-            post_processing=True,
+            post_processing=False,  # needs the upstream C++ motion_correction extension
             return_numpy=True,
             progress_bar=self._progress_bar(report, steps),
         )

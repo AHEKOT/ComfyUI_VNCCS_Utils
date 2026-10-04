@@ -22,7 +22,7 @@ import threading
 import time
 
 from . import manager_policy, registry, worker_protocol
-from .base import BackendUnavailable, MotionRequest
+from .base import BackendUnavailable, MotionRequest, empty_torch_cache
 from .transform import align_to_start_pose, motion_to_pose_studio, parse_keypoints
 
 
@@ -238,12 +238,20 @@ def _worker_problem(model_id: str):
 
 
 def unload_model() -> bool:
+    """Free the loaded model and the shared text encoder of the vendored models."""
     backend = _LOADED.get("backend")
     _LOADED.update(id=None, backend=None)
-    if backend is None:
-        return False
-    backend.unload()
-    return True
+    vendor = sys.modules.get(f"{__package__}.vendor.loaders") if __package__ else None
+    if vendor is not None:
+        vendor.release_text_encoder()
+    if backend is not None:
+        backend.unload()
+    if vendor is not None or backend is not None:
+        import gc
+
+        gc.collect()
+        empty_torch_cache()
+    return backend is not None
 
 
 def _backend_for(spec, report):

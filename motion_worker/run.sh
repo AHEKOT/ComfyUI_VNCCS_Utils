@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Start the motion worker for one family; keep it running next to ComfyUI.
-#   ./run.sh ardy
+#   ./run.sh hymotion
 set -e
 cd "$(dirname "$0")"
 FAMILY="$1"; shift || true

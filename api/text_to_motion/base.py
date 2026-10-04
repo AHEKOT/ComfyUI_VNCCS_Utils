@@ -364,6 +364,22 @@ class MotionBackend(ABC):
         """Run a ``download`` setup step (the backend that lists one implements it)."""
         raise ValueError(f"{self.spec.name} has no download step {step['id']!r}")
 
+    def load_vendored(self, family: str, report, device):
+        """Build a vendored ARDY / Kimodo model (api/text_to_motion/vendor) in ComfyUI's own Python.
+
+        ``options.repo_id`` is the checkpoint repository and ``options.text_encoder`` the
+        LLM2Vec sources (``base``, ``mntp``, ``supervised``); both are downloaded once into the
+        models folder with ``token=False``.
+        """
+        from .vendor import loaders
+
+        sources = dict(self.spec.options.get("text_encoder") or {})
+        if not sources.get("base"):
+            raise ValueError(f"{self.spec.id}: options.text_encoder.base is required")
+        encoder = loaders.text_encoder(self.models_dir, sources, device=device,
+                                       offload=bool(self.spec.options.get("offload_text_encoder", True)), report=report)
+        return loaders.motion_model(family, str(self.spec.options["repo_id"]), self.models_dir, device, encoder, report)
+
     def weights_ready(self) -> bool:
         """True when every required file of the managed weights is already downloaded."""
         for source in self.spec.weights:

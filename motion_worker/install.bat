@@ -1,11 +1,11 @@
 @echo off
-rem Create the isolated venv for one motion model family: install.bat ardy
+rem Create the isolated venv for one motion model family: install.bat hymotion
 rem Nothing goes into ComfyUIs Python. Works with ComfyUI portable: its embedded Python is not used.
 rem Uses uv when installed (it downloads Python 3.11 itself, like ComfyUI Desktop), else a system Python.
 setlocal
 cd /d "%~dp0"
 set FAMILY=%1
-if not exist "requirements\%FAMILY%.txt" (echo usage: install.bat ardy^|kimodo^|hymotion^|unimate & exit /b 1)
+if not exist "requirements\%FAMILY%.txt" (echo usage: install.bat hymotion^|unimate & exit /b 1)
 if "%TORCH_INDEX%"=="" set TORCH_INDEX=https://download.pytorch.org/whl/cu126
 if "%PYTHON_VERSION%"=="" set PYTHON_VERSION=3.11
 set ENV=envs\%FAMILY%
@@ -31,5 +31,3 @@ uv pip install --python "%ENV_PY%" torch --index-url %TORCH_INDEX% || exit /b 1
 uv pip install --python "%ENV_PY%" --no-build-isolation -r "requirements\%FAMILY%.txt" || exit /b 1
 :done
 echo Done. Start the worker with: motion_worker\run.bat %FAMILY%
-if "%FAMILY%"=="ardy" echo Gated text encoder: run %ENV%\Scripts\hf.exe auth login once.
-if "%FAMILY%"=="kimodo" echo Gated text encoder: run %ENV%\Scripts\hf.exe auth login once.

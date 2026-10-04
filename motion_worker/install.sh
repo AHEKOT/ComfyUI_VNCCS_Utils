@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # Create the isolated venv for one motion model family (nothing goes into ComfyUI's Python):
-#   ./install.sh ardy            (or kimodo, hymotion, unimate)
+#   ./install.sh hymotion        (or unimate)
 #   TORCH_INDEX=https://download.pytorch.org/whl/cu124 ./install.sh hymotion
 # Uses uv when it is installed (it also downloads Python 3.11 if needed, like ComfyUI Desktop),
 # otherwise the system python3 with the standard venv module.
@@ -8,7 +8,7 @@ set -e
 cd "$(dirname "$0")"
 FAMILY="$1"
 if [ ! -f "requirements/$FAMILY.txt" ]; then
-  echo "usage: $0 ardy|kimodo|hymotion|unimate"; exit 1
+  echo "usage: $0 hymotion|unimate"; exit 1
 fi
 INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu126}"
 ENV="envs/$FAMILY"
@@ -32,4 +32,3 @@ else
 fi
 echo
 echo "Done. Start the worker with: $(pwd)/run.sh $FAMILY"
-case "$FAMILY" in ardy|kimodo) echo "Gated text encoder: run '$(pwd)/$ENV/bin/hf auth login' once.";; esac

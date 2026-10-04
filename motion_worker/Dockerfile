@@ -1,7 +1,7 @@
 # Isolated motion worker image. Build from the extension folder:
-#   docker build -f motion_worker/Dockerfile --build-arg FAMILY=ardy -t vnccs-motion-ardy .
+#   docker build -f motion_worker/Dockerfile --build-arg FAMILY=hymotion -t vnccs-motion-hymotion .
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-devel
-ARG FAMILY=ardy
+ARG FAMILY=hymotion
 RUN apt-get update && apt-get install -y --no-install-recommends git git-lfs cmake build-essential \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app

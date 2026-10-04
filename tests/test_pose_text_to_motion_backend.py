@@ -706,14 +706,8 @@ def _stub_torch():
     return torch
 
 
-def _stub_kimodo(model):
-    kimodo = types.ModuleType("kimodo")
-    kimodo.load_model = lambda name, device=None: model
-    constraints = types.ModuleType("kimodo.constraints")
-    constraints.FullBodyConstraintSet = FakeConstraint
-    tools = types.ModuleType("kimodo.tools")
-    tools.seed_everything = lambda seed: None
-    return {"torch": _stub_torch(), "kimodo": kimodo, "kimodo.constraints": constraints, "kimodo.tools": tools}
+def _stub_kimodo():
+    return types.SimpleNamespace(FullBodyConstraintSet=FakeConstraint, seed_everything=lambda seed: None)
 
 
 class RunnerTestCase(unittest.TestCase):
@@ -737,11 +731,27 @@ class RunnerTestCase(unittest.TestCase):
     def request(self, **overrides):
         return SERVICE.parse_generation_request(RequestTests.payload(RequestTests(), **overrides))
 
+    def vendored(self, backend_module, backend_class, model, namespace):
+        """Replace the vendored model code: load_vendored returns ``model``, _vendor ``namespace``."""
+        self.install({"torch": _stub_torch()})
+        for patcher in (
+            mock.patch.object(backend_module, "_vendor", lambda: namespace),
+            mock.patch.object(BASE.MotionBackend, "load_vendored", lambda self, family, report, device: model),
+            mock.patch.object(backend_class, "requires", ()),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def missing_transformers(self):
+        patcher = mock.patch.object(BASE, "module_missing", side_effect=lambda name: name == "transformers")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
 
 class KimodoRunnerTests(RunnerTestCase):
     def test_generation_constrains_frame_zero_and_returns_pose_studio_motion(self):
         model = FakeModel()
-        self.install(_stub_kimodo(model))
+        self.vendored(KIMODO_BACKEND, KIMODO_BACKEND.KimodoBackend, model, _stub_kimodo())
         spec, request, task_id = self.request(model="kimodo-soma-rp-v1.1", duration=2, seed=11, task_id="job1")
 
         motion = SERVICE.generate_motion(spec, request, task_id)
@@ -767,23 +777,33 @@ class KimodoRunnerTests(RunnerTestCase):
         np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
         self.assertTrue(SERVICE.unload_model())
 
-    def test_missing_kimodo_reports_install_hint(self):
-        self.install({"kimodo": None})
+    def test_vendored_models_need_no_extra_packages(self):
+        # Every module the vendored ARDY / Kimodo code imports ships with ComfyUI.
+        self.assertEqual(set(KIMODO_BACKEND.VENDORED_REQUIRES),
+                         {"torch", "transformers", "safetensors", "einops", "scipy", "yaml", "pydantic", "huggingface_hub"})
+        for model_id in ("kimodo-soma-rp-v1.1", "ardy-core-rp-20fps-h40"):
+            spec = REGISTRY.load_specs()[model_id]
+            self.assertEqual([step["kind"] for step in spec.setup], ["auto"], model_id)
+            self.assertTrue(spec.options["repo_id"].startswith("nvidia/"))
+            self.assertEqual(set(spec.options["text_encoder"]), {"base", "mntp", "supervised"})
+
+    def test_missing_dependency_reports_it(self):
+        self.missing_transformers()
         spec, request, _ = self.request(model="kimodo-soma-rp-v1.1")
         with self.assertRaises(BASE.BackendUnavailable) as caught:
             SERVICE.generate_motion(spec, request)
-        self.assertIn("install.sh kimodo", caught.exception.hint)
+        self.assertIn("transformers", str(caught.exception))
 
     def test_models_route_lists_availability(self):
-        self.install({"kimodo": None})
+        self.missing_transformers()
         models = {model["id"]: model for model in SERVICE.list_models()}
         self.assertFalse(models["kimodo-soma-rp-v1.1"]["available"])
-        self.assertIn("install.sh kimodo", models["kimodo-soma-rp-v1.1"]["install_hint"])
+        self.assertIn("built into VNCCS Utils", models["kimodo-soma-rp-v1.1"]["install_hint"])
         self.assertFalse(models["hy-motion-1.0-lite"]["available"])
         self.assertEqual(len(models["hy-motion-1.0"]["license"]["restricted_territories"]), 3)
 
     def test_generate_route_reports_a_missing_model_as_503(self):
-        self.install({"kimodo": None, "ardy": None})
+        self.missing_transformers()
         web = types.ModuleType("aiohttp.web")
         web.json_response = lambda data, status=200: types.SimpleNamespace(data=data, status=status)
         aiohttp = types.ModuleType("aiohttp")
@@ -801,7 +821,7 @@ class KimodoRunnerTests(RunnerTestCase):
         response = asyncio.run(SERVICE.handle_generate(Request()))
         self.assertEqual(response.status, 503)
         self.assertTrue(response.data["model_missing"])
-        self.assertIn("install.sh", response.data["install_hint"])
+        self.assertIn("built into VNCCS Utils", response.data["install_hint"])
         self.assertEqual(SERVICE.get_task("job2")["status"], "error")
 
 
@@ -872,24 +892,11 @@ class FakeArdyModel:
                 "root_positions": None, "foot_contacts": None}
 
 
-def _stub_ardy(model):
-    ardy = types.ModuleType("ardy")
-    model_module = types.ModuleType("ardy.model")
-    model_module.load_model = lambda name, device=None: model
-    constraints = types.ModuleType("ardy.constraints")
-    constraints.FullBodyConstraintSet = FakeConstraint
-    tools = types.ModuleType("ardy.tools")
-    tools.seed_everything = lambda seed: None
-    tools.to_numpy = lambda value: value
-    rep_tools = types.ModuleType("ardy.motion_rep.tools")
-    rep_tools.length_to_mask = lambda lengths: "pad"
-    post = types.ModuleType("ardy.postprocess")
-    post.post_process_motion = lambda *args, **kwargs: {}
-    return {
-        "torch": _stub_torch(), "ardy": ardy, "ardy.model": model_module, "ardy.constraints": constraints,
-        "ardy.tools": tools, "ardy.motion_rep": types.ModuleType("ardy.motion_rep"),
-        "ardy.motion_rep.tools": rep_tools, "ardy.postprocess": post,
-    }
+def _stub_ardy():
+    return types.SimpleNamespace(
+        FullBodyConstraintSet=FakeConstraint, seed_everything=lambda seed: None,
+        to_numpy=lambda value: value, length_to_mask=lambda lengths: "pad",
+    )
 
 
 class ArdyTests(RunnerTestCase):
@@ -916,7 +923,7 @@ class ArdyTests(RunnerTestCase):
 
     def test_generation_constrains_frame_zero_and_lands_on_the_mannequin(self):
         model = FakeArdyModel()
-        self.install(_stub_ardy(model))
+        self.vendored(ARDY, ARDY.ArdyBackend, model, _stub_ardy())
         spec, request, task_id = self.request(duration=2, seed=3, guidance=3, task_id="ardy1")
         self.assertEqual(spec.backend, "ardy")
         motion = SERVICE.generate_motion(spec, request, task_id)
@@ -969,12 +976,12 @@ class FakeWorkerBackend:
 class IsolatedWorkerTests(RunnerTestCase):
     def start_worker(self, root, **kwargs):
         specs = REGISTRY.load_specs()
-        worker = RUNTIME.MotionWorker(root, "test", ["ardy-core-rp-20fps-h40", "hy-motion-1.0"], specs=specs,
+        worker = RUNTIME.MotionWorker(root, "test", ["unimate-preview", "hy-motion-1.0"], specs=specs,
                                       make_backend=lambda spec: FakeWorkerBackend(spec, root), **kwargs)
         thread = threading.Thread(target=worker.run, kwargs={"poll": 0.01}, daemon=True)
         thread.start()
         for _ in range(200):
-            if PROTOCOL.worker_for(root, "ardy-core-rp-20fps-h40"):
+            if PROTOCOL.worker_for(root, "unimate-preview"):
                 break
             time.sleep(0.01)
         self.addCleanup(lambda: (worker.stop(), thread.join(5)))
@@ -1006,9 +1013,9 @@ class IsolatedWorkerTests(RunnerTestCase):
             root = Path(folder)
             self.start_worker(root)
             models = {m["id"]: m for m in SERVICE.list_models()}
-            self.assertTrue(models["ardy-core-rp-20fps-h40"]["available"])
-            self.assertEqual(models["ardy-core-rp-20fps-h40"]["runner"], "worker")
-            worker_step = next(s for s in models["ardy-core-rp-20fps-h40"]["setup"] if s["id"] == "worker")
+            self.assertTrue(models["unimate-preview"]["available"])
+            self.assertEqual(models["unimate-preview"]["runner"], "worker")
+            worker_step = next(s for s in models["unimate-preview"]["setup"] if s["id"] == "worker")
             self.assertTrue(worker_step["done"])
             # The worker runs but cannot serve this model: the card says why.
             hy = models["hy-motion-1.0"]
@@ -1018,7 +1025,7 @@ class IsolatedWorkerTests(RunnerTestCase):
             lock = SERVICE._model_operation_lock()
             self.assertTrue(lock.acquire(blocking=False))  # ComfyUI-side work holds the lock...
             try:
-                spec, request, task_id = self.request(duration=1, task_id="w1")
+                spec, request, task_id = self.request(model="unimate-preview", duration=1, task_id="w1")
                 motion = SERVICE.generate_motion(spec, request, task_id)  # ...and the worker job still runs
             finally:
                 lock.release()
@@ -1041,10 +1048,10 @@ class IsolatedWorkerTests(RunnerTestCase):
     def test_idle_worker_frees_its_model(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            worker = RUNTIME.MotionWorker(root, "idle", ["ardy-core-rp-20fps-h40"], idle_unload=0.01,
+            worker = RUNTIME.MotionWorker(root, "idle", ["unimate-preview"], idle_unload=0.01,
                                           make_backend=lambda spec: FakeWorkerBackend(spec, root))
             worker.probe()
-            worker._backend(worker.ready["ardy-core-rp-20fps-h40"], lambda *a: None)
+            worker._backend(worker.ready["unimate-preview"], lambda *a: None)
             self.assertIsNotNone(worker.loaded)
             worker.last_job = time.time() - 1
             worker.step()

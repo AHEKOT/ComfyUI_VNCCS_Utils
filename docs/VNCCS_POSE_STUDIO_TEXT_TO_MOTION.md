@@ -5,25 +5,28 @@ timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported mod
 
 | Model | Starts from your pose | VRAM (approx.) | License |
 | --- | --- | --- | --- |
-| [NVIDIA ARDY](https://research.nvidia.com/labs/sil/projects/ardy/) Core RP 20FPS (default) | Yes (frame-0 keyframe) | ~16 GB, mostly the text encoder; the motion model runs in real time | NVIDIA Open Model License (weights), Apache 2.0 (code) |
-| [NVIDIA Kimodo](https://research.nvidia.com/labs/sil/projects/kimodo/) SOMA RP v1.1 | Yes (frame-0 keyframe) | ~17 GB, under 3 GB with `TEXT_ENCODER_DEVICE=cpu` | NVIDIA Open Model License |
+| [NVIDIA ARDY](https://research.nvidia.com/labs/sil/projects/ardy/) Core RP 20FPS (default) | Yes (frame-0 keyframe) | Built in. Small motion model; the 8B text encoder waits in RAM (~16 GB) and uses the GPU only while reading the prompt | NVIDIA Open Model License (weights), Apache 2.0 (code) |
+| [NVIDIA Kimodo](https://research.nvidia.com/labs/sil/projects/kimodo/) SOMA RP v1.1 | Yes (frame-0 keyframe) | Built in, same text encoder as ARDY | NVIDIA Open Model License (weights), Apache 2.0 (code) |
 | [Tencent HY-Motion 1.0](https://github.com/Tencent-Hunyuan/HY-Motion-1.0) Lite | No (motion is applied on top of your pose) | 24 GB | Tencent HY-Motion 1.0 Community License, **not valid in the EU, UK and South Korea** |
 | Tencent HY-Motion 1.0 | No (motion is applied on top of your pose) | 26 GB | Same as above |
 | [UniMate](https://linzhanmou.com/unimate/) (preview) | No (motion is applied on top of your pose), max 2 s | ~6 GB | MIT (code); training data keeps its own licenses |
 
-**Isolated worker (recommended).** The models pin their own torch / transformers / numpy
-versions, which break ComfyUI and each other when installed into ComfyUI's Python. They run
-instead in a separate *motion worker* per model family, in its own venv (optionally a Docker container),
-that shares only the `models/text_to_motion` folder with ComfyUI and exchanges job files there.
-ComfyUI is never modified and your other workflows keep running while a motion generates. Set
-up and start a worker with one command, see [`motion_worker/README.md`](../motion_worker/README.md).
-A model installed directly into ComfyUI's Python still works as a fallback.
+**ARDY and Kimodo are built in.** Their inference code is part of VNCCS Utils
+(`api/text_to_motion/vendor/`) and runs in ComfyUI's own Python like UniCanvas Draw: nothing to
+install, no extra process. The first generation downloads the checkpoint and the text encoder
+into `models/text_to_motion`. The text encoder (Llama 3 8B) waits in system RAM and is moved to
+the GPU only while your prompt is read; closing the Motion panel frees the model and the encoder.
+
+**HY-Motion and UniMate (optional)** pin torch / transformers / numpy versions that would break
+ComfyUI. If you want them, they run in a separate *motion worker* with its own venv (optionally a
+Docker container) that shares only the `models/text_to_motion` folder with ComfyUI. Setup and
+start take one command each, see [`motion_worker/README.md`](../motion_worker/README.md).
 
 Model code and weights are optional. Pose Studio works without them. The model list marks each
 model **ready** or **needs setup**, and the card under it says what the model is good at (start
 pose, maximum length, memory, download size) and, until it is ready, lists its setup steps:
 
-- **Isolated motion worker**: the command that creates and starts the model's worker
+- **Isolated motion worker**: (HY-Motion, UniMate) the command that creates and starts the model's worker
   (**Copy** button, Windows and Docker variants in the text). The step turns green as soon as
   the worker runs; if it runs but cannot load the model, the card shows the worker's reason.
 - **Python packages** (`pip` steps, for future models whose dependencies are safe in ComfyUI's
@@ -87,34 +90,26 @@ Options:
 Joints a model does not produce (fingers, extra spine joints, toes on some skeletons) keep your
 start pose; head, hands and feet follow the model's rotation change when it provides one.
 
-## Installing ARDY (default)
+## ARDY (default) and Kimodo
 
-[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to Kimodo, built
-for real-time generation, so it is the default model once installed. It is a pip package with a
-C++ extension (needs CMake and a C++17 compiler):
+[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to
+[Kimodo](https://github.com/nv-tlabs/kimodo), built for real-time generation, so it is the
+default. Both start exactly from your pose (a frame-0 keyframe). ARDY's Core skeleton (27 joints,
+20 FPS) uses Mixamo-style names; Kimodo uses the SOMA skeleton with fingers (30 FPS). Joints a
+model lacks keep your start pose.
 
-    pip install git+https://github.com/nv-tlabs/ardy
+Nothing has to be installed. On the first generation Pose Studio downloads, file by file with
+`token=False` (no Hugging Face login):
 
-It pins `transformers==5.8.1` and `numpy<2`, which replace the versions in ComfyUI's Python and
-conflict with Kimodo's `transformers==5.1.0`: install one of the two NVIDIA models. ARDY downloads
-`nvidia/ARDY-Core-RP-20FPS-Horizon40` and the same gated Llama 3 based LLM2Vec text encoder as
-Kimodo on the first generation (request access and run `hf auth login` once). Its Core skeleton
-(27 joints, 20 FPS) uses Mixamo-style names; the pose you start from becomes a frame-0 keyframe
-like with Kimodo. Fingers and the extra spine joint keep your start pose.
+- the checkpoint, `nvidia/ARDY-Core-RP-20FPS-Horizon40` or `nvidia/Kimodo-SOMA-RP-v1.1`, into
+  `models/text_to_motion/checkpoints/`;
+- the shared LLM2Vec text encoder into `models/text_to_motion/text_encoders/`: Meta Llama 3 8B
+  Instruct from the ungated mirror `NousResearch/Meta-Llama-3-8B-Instruct` plus the
+  `McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp` and `-mntp-supervised` adapters (~17 GB).
 
-## Installing Kimodo
-
-Kimodo is a pip package:
-
-    pip install git+https://github.com/nv-tlabs/kimodo
-
-Kimodo downloads its checkpoint (`nvidia/Kimodo-SOMA-RP-v1.1`) and its LLM2Vec text encoder on
-the first generation, into the Hugging Face cache (or `$CHECKPOINT_DIR` / `$TEXT_ENCODERS_DIR`
-if you set them). The text encoder is built on the gated `meta-llama/Meta-Llama-3-8B-Instruct`:
-request access on its Hugging Face page and run `hf auth login` once in ComfyUI's environment.
-
-Most of the memory is the text encoder. Start ComfyUI with `TEXT_ENCODER_DEVICE=cpu` to keep it
-on the CPU; the motion model itself then needs under 3 GB of VRAM.
+If a download is refused (for example a repository became gated), download that repository
+yourself into the folder the error names and put an empty file called `.complete` next to it.
+The upstream foot-skate post-processing is a C++ extension and is not included.
 
 ## Installing HY-Motion 1.0
 

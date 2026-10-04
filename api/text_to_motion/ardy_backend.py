@@ -3,9 +3,11 @@
 ARDY is NVIDIA's autoregressive successor to Kimodo, built for real-time
 generation. Its released checkpoints use the 27-joint "Core" skeleton, whose joint
 names are the Mixamo-style Pose Studio motion keys. Like Kimodo it accepts full-body
-keyframes, so the mannequin's current pose becomes a frame-0 constraint. ARDY
-downloads its checkpoint and text encoder itself (Hugging Face cache, or
-$CHECKPOINTS_DIR when the user sets it).
+keyframes, so the mannequin's current pose becomes a frame-0 constraint. ARDY's
+inference code is vendored (api/text_to_motion/vendor) and runs in ComfyUI's own
+Python; its checkpoint and the shared LLM2Vec text encoder are downloaded once into
+models/text_to_motion. Foot-skate post-processing (a C++ extension upstream) is not
+available.
 """
 
 from __future__ import annotations
@@ -13,13 +15,13 @@ from __future__ import annotations
 import numpy as np
 
 from .base import (
-    BackendUnavailable,
     MotionBackend,
     MotionRequest,
     empty_torch_cache,
     free_comfy_vram,
     torch_device,
 )
+from .kimodo_backend import VENDORED_REQUIRES
 from .soma import SomaSkeleton, solve_start_pose
 from .transform import SourceMotion
 
@@ -93,8 +95,20 @@ def core_motion(joint_names, posed_joints, global_rotations, fps: float) -> Sour
     )
 
 
+def _vendor():
+    """The vendored ARDY pieces the backend calls (a function, so tests can replace it)."""
+    from types import SimpleNamespace
+
+    from .vendor.ardy.constraints import FullBodyConstraintSet
+    from .vendor.ardy.motion_rep.tools import length_to_mask
+    from .vendor.ardy.tools import seed_everything, to_numpy
+
+    return SimpleNamespace(FullBodyConstraintSet=FullBodyConstraintSet, length_to_mask=length_to_mask,
+                           seed_everything=seed_everything, to_numpy=to_numpy)
+
+
 class ArdyBackend(MotionBackend):
-    requires = ("torch", "ardy")
+    requires = VENDORED_REQUIRES
 
     def __init__(self, spec, models_dir):
         super().__init__(spec, models_dir)
@@ -109,16 +123,12 @@ class ArdyBackend(MotionBackend):
     def load(self, report) -> None:
         if self.model is not None:
             return
-        try:
-            import torch
-            from ardy.model import load_model
-        except ImportError as exc:
-            raise BackendUnavailable(f"{self.spec.name} is not installed.", self.install_hint()) from exc
+        self.check_available()
+        import torch
 
-        self.ensure_weights(report)
         report(f"Loading {self.spec.name} (the first run downloads the model and its text encoder)...", 6)
         free_comfy_vram()
-        self.model = load_model(self.model_name, device=torch_device(torch))
+        self.model = self.load_vendored("ardy", report, torch_device(torch))
         skeleton = self.model.skeleton
         parents = skeleton.joint_parents
         rest = skeleton.neutral_joints
@@ -131,8 +141,8 @@ class ArdyBackend(MotionBackend):
 
     def _start_pose_constraint(self, positions, rotations):
         import torch
-        from ardy.constraints import FullBodyConstraintSet
 
+        FullBodyConstraintSet = _vendor().FullBodyConstraintSet
         device = getattr(self.model.skeleton, "device", None) or self.model.skeleton.joint_parents.device
         return FullBodyConstraintSet(
             self.model.skeleton,
@@ -149,10 +159,9 @@ class ArdyBackend(MotionBackend):
 
     def generate(self, request: MotionRequest, report):
         import torch
-        from ardy.motion_rep.tools import length_to_mask
-        from ardy.postprocess import post_process_motion
-        from ardy.tools import seed_everything, to_numpy
 
+        vendor = _vendor()
+        length_to_mask, seed_everything, to_numpy = vendor.length_to_mask, vendor.seed_everything, vendor.to_numpy
         model = self.model
         device = next(model.parameters()).device if hasattr(model, "parameters") else torch_device(torch)
         constraints = []
@@ -190,11 +199,7 @@ class ArdyBackend(MotionBackend):
                 crop_history_length=self._history_frames(fps, int(model.gen_horizon_len), int(model.num_frames_per_token)),
             )
             output = model.motion_rep.inverse(motion, is_normalized=True)
-        report("Cleaning up foot contacts...", 90)
-        output.update(post_process_motion(
-            output["local_rot_mats"], output["root_positions"], output["foot_contacts"],
-            model.skeleton, constraint_lst=constraints or None,
-        ))
+        # Upstream foot-skate post-processing needs its C++ extension, so the raw output is used.
         output = to_numpy(output)
         return core_motion(self.joint_names, output["posed_joints"], output.get("global_rot_mats"), fps)
 

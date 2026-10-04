@@ -1163,7 +1163,15 @@ export class TextToMotionPanel {
         if (animation) this.widget.applyAnimationFrame?.(startFrame, { transient: true });
     }
 
+    /** Closing the panel frees the motion model and its text encoder (RAM and VRAM). */
+    releaseModel() {
+        Promise.resolve()
+            .then(() => this.fetchApi(`${MOTION_API}/unload`, { method: "POST" }))
+            .catch(() => {});
+    }
+
     close() {
+        if (this.root) this.releaseModel();
         this.stopPlay();
         this.root?.remove();
         this.root = null;
