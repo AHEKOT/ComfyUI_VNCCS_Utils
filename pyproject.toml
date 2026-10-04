@@ -19,6 +19,7 @@ dependencies = [
     "safetensors",
     "pytorch-lightning",
     "omegaconf",
+    "pyyaml",
     "yacs",
     "timm",
     "einops",
