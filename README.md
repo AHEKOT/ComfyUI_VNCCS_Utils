@@ -1,6 +1,6 @@
 # ComfyUI VNCCS Utils
 
-> **Current release: `0.6.9`**
+> **Current release: `0.6.10`**
 
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
 
@@ -158,6 +158,7 @@ UniCanvas generates with **Qwen-Image-2.1** through the `QwenImage21` family tab
 *   **Dynamic Body Generator**: Fine-tune the character shape with sliders for Age, Gender blending, Weight, Muscle, and Height.
 *   **Multi-Pose Tabs**: Create multiple independent pose states inside one node, making batch outputs and pose sequences easier to build, with copy/paste between tabs.
 *   **Keyframe Animation Mode**: Switch from static images to a dope-sheet timeline with per-bone tracks, playback, Auto-Key, draggable keys, easing presets, and deterministic frame output. Import a Mixamo FBX clip as retargeted bone keyframes.
+*   **Text to Motion**: Describe a motion, generate it with NVIDIA Kimodo or Tencent HY-Motion 1.0, scrub the clip, and keep any frame as the pose ([guide](docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md)).
 *   **Modal Pose Gallery**: Save, browse, load, and delete poses in a focused full-screen gallery, or batch import/export pose data via JSON.
 *   **Tracing Support**: Load a background reference image and align the 3D character to it for accurate pose matching.
 *   **Precision Camera Controls**: Set output dimensions, zoom, model rotation, and camera orbit with an integrated radar-style control, and preview the final render boundary in the viewport.

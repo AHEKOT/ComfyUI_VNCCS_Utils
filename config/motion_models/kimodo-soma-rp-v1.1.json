@@ -1,0 +1,97 @@
+{
+  "id": "kimodo-soma-rp-v1.1",
+  "name": "Kimodo SOMA RP v1.1",
+  "order": 10,
+  "backend": "kimodo",
+  "description": "NVIDIA Kimodo trained on Bones Rigplay. Starts exactly from the current pose.",
+  "homepage": "https://research.nvidia.com/labs/sil/projects/kimodo/",
+  "code": {
+    "url": "https://github.com/nv-tlabs/kimodo",
+    "install": "Nothing to install: Kimodo is built into VNCCS Utils and runs in ComfyUI's own Python. The first generation downloads its checkpoint and the Llama 3 based text encoder (~17 GB) into models/text_to_motion."
+  },
+  "weights": [
+    {
+      "role": "model",
+      "source": "huggingface",
+      "repo_id": "nvidia/Kimodo-SOMA-RP-v1.1",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+      "managed": false
+    },
+    {
+      "role": "text_encoder",
+      "source": "huggingface",
+      "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+      "managed": false
+    }
+  ],
+  "options": {
+    "repo_id": "nvidia/Kimodo-SOMA-RP-v1.1",
+    "text_encoder": {
+      "base": {
+        "repo_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+        "revision": "53346005fb0ef11d3b6a83b12c895cca40156b6c"
+      },
+      "mntp": {
+        "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+        "revision": "31474e395ada192e8ed1586db6be79fb3b70c9c0"
+      },
+      "supervised": {
+        "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+        "revision": "baa8ebf04a1c2500e61288e7dad65e8ae42601a7"
+      }
+    },
+    "offload_text_encoder": true
+  },
+  "capabilities": {
+    "start_pose_constraint": true,
+    "max_characters": 1,
+    "duration": {
+      "min": 1,
+      "max": 10,
+      "default": 4
+    },
+    "steps": {
+      "min": 10,
+      "max": 200,
+      "default": 100
+    }
+  },
+  "requirements": {
+    "vram_gb": 17,
+    "notes": "Runs inside ComfyUI, no separate install. About 16 GB of system RAM for the text encoder (kept off the GPU between prompts); the motion model itself is small. Foot-skate post-processing from the original release is not included."
+  },
+  "license": {
+    "name": "NVIDIA Open Model License",
+    "url": "https://www.nvidia.com/en-us/agreements/enterprise-software/nvidia-open-model-license/",
+    "commercial_use": true,
+    "restricted_territories": [],
+    "territory_notice": "",
+    "notice": ""
+  },
+  "guide": {
+    "summary": "Starts exactly from the pose you made, with finger and spine detail (SOMA skeleton). Slower than ARDY, up to 10 s.",
+    "best_for": "Continuing your pose; walking, gestures, sports, everyday actions",
+    "speed": "Fast once loaded, slower than ARDY",
+    "setup_effort": "None: built in, downloads on first use",
+    "download_gb": 17
+  },
+  "setup": [
+    {
+      "id": "weights",
+      "kind": "auto",
+      "label": "Model and text encoder (~17 GB)",
+      "detail": "Built into VNCCS Utils, nothing to install. The first generation downloads the Kimodo checkpoint and the LLM2Vec text encoder (Meta Llama 3 8B Instruct) into models/text_to_motion, so it takes a while once. The text encoder waits in system RAM and is moved to the GPU only while your prompt is read; closing the Motion panel frees everything."
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+# UniMate: the inference subset of its requirements.txt (no Blender, training or captioning).
+# The code is cloned into models/text_to_motion/code/UniMate (see README.md).
+numpy==2.2.6
+torchdiffeq==0.2.5
+einops==0.8.2
+accelerate==1.14.0
+transformers==5.16.1
+sentencepiece==0.2.1
+spacy>=3.8,<3.9
+en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+num2words==0.5.14
+tyro==1.0.12
+loguru==0.7.3
+tqdm
+huggingface_hub
+Motion @ git+https://github.com/inbar-2344/Motion.git
