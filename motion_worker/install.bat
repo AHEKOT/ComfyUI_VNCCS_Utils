@@ -10,6 +10,8 @@ if "%TORCH_INDEX%"=="" set TORCH_INDEX=https://download.pytorch.org/whl/cu126
 if "%PYTHON_VERSION%"=="" set PYTHON_VERSION=3.11
 set ENV=envs\%FAMILY%
 set ENV_PY=%ENV%\Scripts\python.exe
+rem cmake comes from pip into the venv (some model packages build C++ extensions); its Scripts folder must be on PATH.
+set "PATH=%CD%\%ENV%\Scripts;%PATH%"
 where uv >nul 2>nul
 if %errorlevel%==0 goto :uv
 if "%PYTHON%"=="" set PYTHON=py -%PYTHON_VERSION%
@@ -20,13 +22,13 @@ if errorlevel 1 (
   exit /b 1
 )
 %PYTHON% -m venv "%ENV%" || exit /b 1
-%ENV_PY% -m pip install --upgrade pip "setuptools<81" wheel || exit /b 1
+%ENV_PY% -m pip install --upgrade pip "setuptools<81" wheel cmake || exit /b 1
 %ENV_PY% -m pip install torch --index-url %TORCH_INDEX% || exit /b 1
 %ENV_PY% -m pip install --no-build-isolation -r "requirements\%FAMILY%.txt" || exit /b 1
 goto :done
 :uv
 uv venv --python %PYTHON_VERSION% --seed "%ENV%" || exit /b 1
-uv pip install --python "%ENV_PY%" "setuptools<81" wheel || exit /b 1
+uv pip install --python "%ENV_PY%" "setuptools<81" wheel cmake || exit /b 1
 uv pip install --python "%ENV_PY%" torch --index-url %TORCH_INDEX% || exit /b 1
 uv pip install --python "%ENV_PY%" --no-build-isolation -r "requirements\%FAMILY%.txt" || exit /b 1
 :done

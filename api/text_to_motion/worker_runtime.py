@@ -113,7 +113,10 @@ class MotionWorker:
         outbox = job_dir(self.root, self.name, "outbox") / f"{job_id}.json"
 
         def report(message, progress):
-            write_json(status, {"message": str(message), "progress": float(progress)})
+            try:
+                write_json(status, {"message": str(message), "progress": float(progress)})
+            except OSError:
+                pass  # a lost progress update must not fail the generation
 
         with self._lock:
             self.state = "busy"
@@ -132,7 +135,14 @@ class MotionWorker:
             write_json(outbox, {"ok": False, "error": str(exc), "hint": exc.hint, "unavailable": True})
         except Exception as exc:
             traceback.print_exc()
-            write_json(outbox, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            if "gated repo" in str(exc):
+                # The model's own loader could not fetch a license-gated Hugging Face repository.
+                write_json(outbox, {"ok": False, "unavailable": True,
+                                    "error": "Your Hugging Face account has no access to a gated model this model needs.",
+                                    "hint": "Accept the license on the model page listed in the setup steps, wait for the "
+                                            "approval e-mail, run 'hf auth login' once and generate again."})
+            else:
+                write_json(outbox, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
         finally:
             self.last_job = time.time()
             with self._lock:

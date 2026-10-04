@@ -46,16 +46,24 @@ def text_encoder(models_dir: Path, sources: dict, device=None, offload: bool = T
     """The shared LLM2Vec encoder (built once per process, reused by ARDY and Kimodo)."""
     from .llm2vec_encoder import LLM2VecEncoder
 
-    key = (str(models_dir), sources.get("base"), sources.get("mntp"), sources.get("supervised"), bool(offload))
+    def source(name):
+        value = sources.get(name)
+        if isinstance(value, str):
+            return value, "main"
+        return (value or {}).get("repo_id"), (value or {}).get("revision") or "main"
+
+    key = (str(models_dir), source("base"), source("mntp"), source("supervised"), bool(offload))
     with _ENCODER_LOCK:
         if _ENCODER["key"] == key and _ENCODER["encoder"] is not None:
             return _ENCODER["encoder"]
         root = Path(models_dir) / "text_encoders"
-        base = ensure_repo(sources["base"], root / sources["base"].replace("/", "--"), report, include=TEXT_ENCODER_FILES)
-        adapters = [
-            ensure_repo(sources[name], root / sources[name].replace("/", "--"), report, include=ADAPTER_FILES)
-            for name in ("mntp", "supervised") if sources.get(name)
-        ]
+        repo, revision = source("base")
+        base = ensure_repo(repo, root / repo.replace("/", "--"), report, revision=revision, include=TEXT_ENCODER_FILES)
+        adapters = []
+        for name in ("mntp", "supervised"):
+            repo, revision = source(name)
+            if repo:
+                adapters.append(ensure_repo(repo, root / repo.replace("/", "--"), report, revision=revision, include=ADAPTER_FILES))
         if report:
             report("Loading the text encoder (Llama 3 8B, first time takes a while)...", 8)
         encoder = LLM2VecEncoder(base, adapters, device=device, offload=offload)

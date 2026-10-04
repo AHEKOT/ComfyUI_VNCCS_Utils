@@ -345,7 +345,7 @@ class MotionBackend(ABC):
 
     def check_part(self, name: str):
         """Whether a named part of the install is in place (True/False), or None when unknown."""
-        return None
+        return self.weights_ready() if name == "weights" else None
 
     def step_done(self, step: dict):
         if step["kind"] == "pip":
@@ -361,7 +361,10 @@ class MotionBackend(ABC):
         return [{**step, "done": self.step_done(step)} for step in self.spec.setup]
 
     def run_download(self, step: dict, report: ProgressReport) -> None:
-        """Run a ``download`` setup step (the backend that lists one implements it)."""
+        """Run a ``download`` setup step: the managed weights by default, anything else per backend."""
+        if step.get("check") == "weights":
+            self.ensure_weights(report)
+            return
         raise ValueError(f"{self.spec.name} has no download step {step['id']!r}")
 
     def load_vendored(self, family: str, report, device):
@@ -374,7 +377,7 @@ class MotionBackend(ABC):
         from .vendor import loaders
 
         sources = dict(self.spec.options.get("text_encoder") or {})
-        if not sources.get("base"):
+        if not (sources.get("base") or {}):
             raise ValueError(f"{self.spec.id}: options.text_encoder.base is required")
         encoder = loaders.text_encoder(self.models_dir, sources, device=device,
                                        offload=bool(self.spec.options.get("offload_text_encoder", True)), report=report)

@@ -13,9 +13,11 @@ fi
 INDEX="${TORCH_INDEX:-https://download.pytorch.org/whl/cu126}"
 ENV="envs/$FAMILY"
 ENV_PY="$ENV/bin/python"
+# cmake comes from pip into the venv (some model packages build C++ extensions); its bin folder must be on PATH.
+export PATH="$(pwd)/$ENV/bin:$PATH"
 if command -v uv >/dev/null 2>&1; then
   uv venv --python "${PYTHON_VERSION:-3.11}" --seed "$ENV"
-  uv pip install --python "$ENV_PY" "setuptools<81" wheel
+  uv pip install --python "$ENV_PY" "setuptools<81" wheel cmake
   uv pip install --python "$ENV_PY" torch --index-url "$INDEX"
   uv pip install --python "$ENV_PY" --no-build-isolation -r "requirements/$FAMILY.txt"
 else
@@ -26,7 +28,7 @@ else
     exit 1
   fi
   "$PY" -m venv "$ENV"
-  "$ENV_PY" -m pip install --upgrade pip "setuptools<81" wheel
+  "$ENV_PY" -m pip install --upgrade pip "setuptools<81" wheel cmake
   "$ENV_PY" -m pip install torch --index-url "$INDEX"
   "$ENV_PY" -m pip install --no-build-isolation -r "requirements/$FAMILY.txt"
 fi

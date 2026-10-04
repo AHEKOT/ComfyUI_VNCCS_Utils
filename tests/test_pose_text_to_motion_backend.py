@@ -711,9 +711,16 @@ def _stub_kimodo():
 
 
 class RunnerTestCase(unittest.TestCase):
+    #: Runner tests use fake models and must never download the managed weights.
+    downloads_weights = False
+
     def setUp(self):
         SERVICE.unload_model()
         self._saved = {}
+        if not self.downloads_weights:
+            patcher = mock.patch.object(BASE.MotionBackend, "ensure_weights", lambda self, report, sources=None: {})
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def tearDown(self):
         SERVICE._LOADED.update(id=None, backend=None)
@@ -1144,7 +1151,21 @@ class HYMotionRunnerTests(RunnerTestCase):
         self.assertEqual(resolved["n"], 3)
 
 
+class BuiltInTextEncoderTests(unittest.TestCase):
+    def test_nvidia_models_download_the_text_encoder_without_gated_repositories(self):
+        for model_id in ("ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1"):
+            spec = REGISTRY.load_specs()[model_id]
+            sources = spec.options["text_encoder"]
+            self.assertEqual(set(sources), {"base", "mntp", "supervised"})
+            self.assertEqual(sources["base"]["repo_id"], "NousResearch/Meta-Llama-3-8B-Instruct")
+            self.assertTrue(all(len(source["revision"]) == 40 for source in sources.values()))
+            self.assertFalse(any(source.gated for source in spec.weights))
+            self.assertFalse(any(source.managed for source in spec.weights), "the vendored loader downloads them")
+
+
 class WeightDownloadTests(RunnerTestCase):
+    downloads_weights = True
+
     def test_files_are_fetched_one_by_one_without_credentials(self):
         calls = []
 

@@ -38,9 +38,18 @@
   "options": {
     "repo_id": "nvidia/Kimodo-SOMA-RP-v1.1",
     "text_encoder": {
-      "base": "NousResearch/Meta-Llama-3-8B-Instruct",
-      "mntp": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
-      "supervised": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised"
+      "base": {
+        "repo_id": "NousResearch/Meta-Llama-3-8B-Instruct",
+        "revision": "53346005fb0ef11d3b6a83b12c895cca40156b6c"
+      },
+      "mntp": {
+        "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp",
+        "revision": "31474e395ada192e8ed1586db6be79fb3b70c9c0"
+      },
+      "supervised": {
+        "repo_id": "McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp-supervised",
+        "revision": "baa8ebf04a1c2500e61288e7dad65e8ae42601a7"
+      }
     },
     "offload_text_encoder": true
   },
