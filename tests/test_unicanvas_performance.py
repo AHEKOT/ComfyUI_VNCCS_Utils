@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import performance
 
 

@@ -8,6 +8,7 @@ fetched this way; the error then says which folder to fill by hand.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 from pathlib import Path
 
 _MAX_FILES = 512
@@ -21,10 +22,12 @@ def ensure_repo(repo_id: str, target: Path, report=None, revision: str = "main",
                 include=None, exclude=("*.md", ".gitattributes", "*.png", "*.jpg", "*.gif", "*.mp4")) -> Path:
     """Make sure ``target`` holds the repository's files; downloads only what is missing.
 
-    A folder that already has a ``.complete`` marker is used as is, so a user can also
-    place the files there manually (for example for a gated model).
+    Each revision has a separate folder. Its ``.complete`` marker also accepts files
+    placed there manually (for example for a gated model).
     """
-    target = Path(target)
+    # The revision belongs to the cache identity; old files cannot satisfy a new pin.
+    identity = hashlib.sha256(f"{repo_id}@{revision}".encode("utf-8")).hexdigest()[:16]
+    target = Path(target) / "revisions" / identity
     marker = target / ".complete"
     if marker.is_file():
         return target

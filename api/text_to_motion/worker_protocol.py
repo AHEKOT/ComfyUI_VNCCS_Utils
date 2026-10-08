@@ -215,7 +215,9 @@ def run_job(root: Path, worker: str, model_id: str, request: MotionRequest, repo
                 raise WorkerError("The motion worker did not answer in time.")
             sleep(poll)
     finally:
-        for path in (job_dir(root, worker, "inbox") / f"{job}.json", status_path, result_path):
+        # Removing the claimed request withdraws a running job's right to publish results.
+        for path in (job_dir(root, worker, "inbox") / f"{job}.json",
+                     job_dir(root, worker, "processing") / f"{job}.json", status_path, result_path):
             try:
                 path.unlink()
             except OSError:

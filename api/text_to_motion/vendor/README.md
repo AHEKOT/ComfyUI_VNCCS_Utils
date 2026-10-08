@@ -39,7 +39,8 @@ the Hugging Face loader and the TensorRT path.
   OmegaConf: `${...}` references are resolved and `_target_` may only name a class of this
   vendored code.
 - `hub.py` downloads public repositories file by file with `token=False`. A gated
-  repository can be placed by hand into its folder plus an empty `.complete` file.
+  repository can be placed by hand into the revision folder named by the error plus an
+  empty `.complete` file. Revision folders prevent old weights from satisfying a new pin.
 - `llm2vec_encoder.py` reproduces the LLM2Vec encoder (Llama 3 8B Instruct, made
   bidirectional, MNTP + supervised LoRA, mean pooling) on the stock `LlamaModel`, without
   `peft` and without subclassing transformers internals. The Llama 3 weights come from the

@@ -109,6 +109,8 @@ Nothing has to be installed. On the first generation Pose Studio downloads, file
 
 If a download is refused (for example a repository became gated), download that repository
 yourself into the folder the error names and put an empty file called `.complete` next to it.
+Each repository revision has its own `revisions/<identity>` folder. Changing a revision
+downloads that revision separately; files and markers from older folders are not reused.
 The upstream foot-skate post-processing is a C++ extension and is not included.
 
 ## Installing HY-Motion 1.0

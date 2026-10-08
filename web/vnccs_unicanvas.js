@@ -8012,14 +8012,14 @@ class UniCanvasWidget {
   }
 
   async uploadStatePayload(state, keepalive = false) {
-    // The first flat snapshot after exit must follow any pending spherical upload.
-    if (state.panorama || state.layers?.some(layer => layer.type === "pose") || this.panoramaUploadPromise) {
-      const run = () => this.performStateUpload(state, keepalive);
-      const pending = (this.panoramaUploadPromise || Promise.resolve()).then(run, run);
-      this.panoramaUploadPromise = pending;
-      return pending;
-    }
-    return this.performStateUpload(state, keepalive);
+    // Every snapshot follows the previous upload, including flat raster canvases.
+    const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const run = () => this.performStateUpload(state, keepalive, revision);
+    // A closing page cannot wait for an earlier fetch; revisions protect this final save.
+    if (keepalive) return run();
+    const pending = (this.stateUploadPromise || Promise.resolve()).then(run, run);
+    this.stateUploadPromise = pending;
+    return pending;
   }
 
   async preparePanoramaForQueue() {
@@ -8050,11 +8050,12 @@ class UniCanvasWidget {
       version: 2, storage: "server_cache", origin: { x: 0, y: 0 }, size: { width: canvas.width, height: canvas.height },
       bbox: { x: 0, y: 0, width: canvas.width, height: canvas.height }, layers: [layer],
     };
+    const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
     try {
       const res = await fetch("/vnccs/unicanvas_state_upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ state_id: this.getOutputCacheId(), state }),
+        body: JSON.stringify({ state_id: this.getOutputCacheId(), state, revision }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
       return true;
@@ -8064,17 +8065,19 @@ class UniCanvasWidget {
     }
   }
 
-  async performStateUpload(state, keepalive = false) {
+  async performStateUpload(state, keepalive = false, revision = null) {
     const payload = JSON.stringify({ state_id: this.getStateCacheId(), state });
     if (payload === this.lastUploadedStateJSON) return true;
     this.lastUploadedStateJSON = payload;
     this.saveLocalStateBackup(state);
+    if (revision === null) revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const body = JSON.stringify({ state_id: this.getStateCacheId(), state, revision });
     try {
-      const safeKeepalive = keepalive && payload.length <= 60000;
+      const safeKeepalive = keepalive && body.length <= 60000;
       const res = await fetch("/vnccs/unicanvas_state_upload", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: payload,
+        body,
         keepalive: safeKeepalive,
       });
       if (!res.ok) {
@@ -8083,9 +8086,11 @@ class UniCanvasWidget {
       }
       return true;
     } catch (err) {
-      this.lastUploadedStateJSON = "";
       console.warn("[VNCCS UniCanvas] State cache upload failed", err);
-      this.setStatus(`State cache failed: ${err.message || err}`, true);
+      if (this.lastUploadedStateJSON === payload) {
+        this.lastUploadedStateJSON = "";
+        this.setStatus(`State cache failed: ${err.message || err}`, true);
+      }
       return false;
     }
   }
@@ -8198,6 +8203,7 @@ class UniCanvasWidget {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+          this.stateUploadRevision = Math.max(this.stateUploadRevision || 0, Number(cached?.revision) || 0);
           if (cached?.state?.version && Array.isArray(cached.state.layers)) {
             if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
             if (state.panorama && cached.state.panorama) {

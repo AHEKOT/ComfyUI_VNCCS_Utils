@@ -2,7 +2,7 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / "__init__.py").read_text(encoding="utf-8")
+SOURCE = (ROOT / "api/runtime_caches.py").read_text(encoding="utf-8")
 
 
 def test_state_cache_survives_restarts():

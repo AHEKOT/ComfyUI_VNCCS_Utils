@@ -3,7 +3,7 @@ import io
 import json
 
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 from PIL import Image
 
 from nodes.unicanvas.comfy_bridge import _call_comfy_node

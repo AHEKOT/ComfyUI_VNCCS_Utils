@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from PIL import Image
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import crop_stitch
 
 

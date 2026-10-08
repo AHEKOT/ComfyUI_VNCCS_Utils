@@ -8,6 +8,10 @@ import types
 import pytest
 from PIL import Image
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import gguf_compat, segment
 from nodes.unicanvas.describe_layers import clean_layer_name, layer_thumbnail
 
@@ -84,7 +88,7 @@ def test_sam3_falls_back_to_sam2_without_the_sam3_code(monkeypatch):
 
 
 def test_sam3_keeps_the_union_of_grounded_instances(monkeypatch):
-    import torch
+    torch = pytest.importorskip("torch")
 
     class _Processor:
         def set_image(self, image):

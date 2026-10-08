@@ -375,6 +375,11 @@ The web UI and backend communicate through local ComfyUI routes:
 | `/vnccs/pose_captures/{capture_id}` | Fetch cached captures. |
 | Pose Library API routes under `/vnccs/pose_library/...` | Repository, save, load, delete, refresh, publish, and progress operations. |
 
+Animation tracks referenced by saved workflows live in `user/vnccs/pose_animation_cache`.
+They survive temporary-folder cleanup and are not pruned automatically. Back up that
+directory with workflows; remove unused files explicitly. Older temporary animation
+files are migrated when read, while they are still available.
+
 These are internal workflow/UI routes. They are documented so users understand
 where state comes from; they are not normally called by hand.
 

@@ -97,8 +97,13 @@ class MotionWorker:
 
     def next_job(self):
         inbox = job_dir(self.root, self.name, "inbox")
-        jobs = sorted(inbox.glob("*.json"), key=lambda p: p.stat().st_mtime) if inbox.is_dir() else []
-        return jobs[0] if jobs else None
+        jobs = []
+        for path in inbox.glob("*.json"):
+            try:
+                jobs.append((path.stat().st_mtime, path))
+            except FileNotFoundError:
+                continue  # the client withdrew this job
+        return min(jobs, key=lambda item: item[0])[1] if jobs else None
 
     def process(self, path: Path) -> None:
         processing = job_dir(self.root, self.name, "processing")
@@ -113,6 +118,8 @@ class MotionWorker:
         outbox = job_dir(self.root, self.name, "outbox") / f"{job_id}.json"
 
         def report(message, progress):
+            if not claimed.is_file():
+                return
             try:
                 write_json(status, {"message": str(message), "progress": float(progress)})
             except OSError:
@@ -145,12 +152,19 @@ class MotionWorker:
                 write_json(outbox, {"ok": False, "error": f"{type(exc).__name__}: {exc}"})
         finally:
             self.last_job = time.time()
-            with self._lock:
-                self.state = "idle"
+            if not claimed.is_file():
+                # A timeout may have cleaned the folders before our final write.
+                for abandoned in (status, outbox):
+                    try:
+                        abandoned.unlink()
+                    except OSError:
+                        pass
             try:
                 claimed.unlink()
             except OSError:
                 pass
+            with self._lock:
+                self.state = "idle"
 
     def step(self) -> bool:
         """Run one waiting job, or free the model when idle. Returns True if a job ran."""

@@ -1,6 +1,6 @@
 import math
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 
 from nodes.unicanvas.models.qwen_image21 import (
     QWEN_IMAGE21_DEFAULTS,

@@ -4,6 +4,10 @@ from unittest import mock
 
 import pytest
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import loras
 from nodes.unicanvas.loras import LoraRequirement, _apply_lora_requirements, _apply_lora_stack
 from nodes.unicanvas.models.registry import _get_unicanvas_model_module

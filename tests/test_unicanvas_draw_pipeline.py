@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
-import torch
+torch = pytest.importorskip("torch")
 from PIL import Image
 
 from nodes.unicanvas import draw, draw_pipeline

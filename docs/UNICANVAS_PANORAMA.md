@@ -52,6 +52,9 @@ through the existing ComfyUI state cache. Older versions 1 and 2 retain flat
 canvas behavior. Before queue execution, the latest panorama pixels are committed
 and their upload is awaited; a failed upload stops queueing to prevent exporting
 stale content. Workflows continue to depend on their ComfyUI host's state cache.
+Saved pixels live in `user/vnccs/unicanvas_state_cache` and are not deleted by cache
+size, count, or age. Back up that directory with workflows; remove unused files
+explicitly when their workflows are no longer needed.
 
 ## Limits and verification
 

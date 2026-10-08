@@ -1269,8 +1269,8 @@ def _sync_repository(
             asset_id = _asset_id(raw.get("asset_id"))
             paths = _paths(repo_id, category, asset_id)
             mapping = {
-                "meta": raw.get("meta_path"),
                 "package": raw.get("package_path"),
+                "meta": raw.get("meta_path"),
                 "preview": raw.get("preview_path"),
             }
             for kind, remote_path in mapping.items():
@@ -1294,17 +1294,17 @@ def _sync_repository(
                 paths[kind].parent.mkdir(parents=True, exist_ok=True)
                 temporary = paths[kind].with_suffix(paths[kind].suffix + ".tmp")
                 shutil.copy2(cached, temporary)
-                os.replace(temporary, paths[kind])
                 if (
                     kind == "package"
                     and raw.get("package_sha256")
-                    and _sha256(paths[kind]).lower()
+                    and _sha256(temporary).lower()
                     != str(raw["package_sha256"]).lower()
                 ):
-                    paths[kind].unlink(missing_ok=True)
+                    temporary.unlink(missing_ok=True)
                     raise ValueError(
                         f"SHA256 mismatch for {raw.get('name') or asset_id}"
                     )
+                os.replace(temporary, paths[kind])
                 expected.add(paths[kind].resolve())
                 completed += 1
             if paths["meta"].is_file():
@@ -1353,42 +1353,6 @@ def _publish_local(
     repository_progress_fail(task_id, "Remote publishing is disabled by the VNCCS security policy")
     return
 
-    try:
-        from huggingface_hub import HfApi
-
-        token = token
-        if not token:
-            raise ValueError("Hugging Face token is not configured")
-        _write_local_manifest()
-        api = HfApi(token=token)
-        if create:
-            api.create_repo(
-                repo_id=repo_id,
-                repo_type="model",
-                exist_ok=True,
-                private=bool(private),
-            )
-        else:
-            api.repo_info(repo_id=repo_id, repo_type="model", token=token)
-        root = _root() / LOCAL_REPOSITORY
-        repository_progress_update(task_id, message="Uploading packages and previews…", progress=20)
-        api.upload_folder(
-            repo_id=repo_id,
-            repo_type="model",
-            folder_path=str(root),
-            commit_message="Update VNCCS 3D Factory model library",
-        )
-        result = {"repo_id": repo_id, "published_at": time.time()}
-        save_vnccs_user_config(
-            {
-                "factory3d_library_publish_repo_id": repo_id,
-                "factory3d_library_last_publish": result["published_at"],
-                "factory3d_library_last_publish_result": result,
-            }
-        )
-        repository_progress_finish(task_id, f"Published to {repo_id}.")
-    except Exception as exc:
-        repository_progress_fail(task_id, exc)
 
 
 async def _json(request: Any) -> dict[str, Any]:
@@ -1612,33 +1576,6 @@ def register_routes(routes: Any) -> None:
             status=403,
         )
 
-        try:
-            payload = await _json(request)
-            repo_id = str(
-                payload.get("repo_id")
-                or get_vnccs_user_config().get("factory3d_library_publish_repo_id")
-                or ""
-            ).strip()
-            if repo_id.count("/") != 1 or " " in repo_id:
-                raise ValueError("publish repository must be owner/name")
-            task_id = secrets.token_hex(12)
-            token = str(payload.get("hub_access_key") or "")
-            if not token:
-                raise ValueError("Hugging Face token is required")
-            threading.Thread(
-                target=_publish_local,
-                args=(
-                    repo_id,
-                    task_id,
-                    token,
-                    bool(payload.get("create")),
-                    bool(payload.get("private", False)),
-                ),
-                daemon=True,
-            ).start()
-            return web.json_response({"success": True, "task_id": task_id})
-        except Exception as exc:
-            return _error(exc)
 
     async def repository_progress(request: Any) -> web.Response:
         return web.json_response(get_repository_progress(request.match_info["task_id"]))

@@ -10,6 +10,10 @@ if "__init__" not in sys.modules:
 
 import pytest
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import user_prefs
 
 

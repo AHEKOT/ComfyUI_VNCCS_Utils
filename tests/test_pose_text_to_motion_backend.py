@@ -981,6 +981,62 @@ class FakeWorkerBackend:
 
 
 class IsolatedWorkerTests(RunnerTestCase):
+    def test_queue_scan_skips_withdrawn_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            inbox = PROTOCOL.job_dir(root, "test", "inbox")
+            inbox.mkdir(parents=True)
+            withdrawn, waiting = inbox / "withdrawn.json", inbox / "waiting.json"
+            withdrawn.write_text("{}")
+            waiting.write_text("{}")
+            worker = RUNTIME.MotionWorker(root, "test", specs={})
+            glob = Path.glob
+
+            def files(directory, pattern):
+                for path in glob(directory, pattern):
+                    if path == withdrawn:
+                        path.unlink()
+                    yield path
+
+            with mock.patch.object(Path, "glob", files):
+                self.assertEqual(worker.next_job(), waiting)
+
+    def test_timeout_withdraws_claimed_job_and_removes_late_output(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            entered, release = threading.Event(), threading.Event()
+
+            class SlowBackend(FakeWorkerBackend):
+                def generate(self, request, report):
+                    entered.set()
+                    if not release.wait(3):
+                        raise RuntimeError("test worker was not released")
+                    return super().generate(request, report)
+
+            worker = self.start_worker(root)
+            worker._make = lambda spec: SlowBackend(spec, root)
+            self.addCleanup(release.set)
+            _, request, _ = self.request(duration=1)
+            clock = [time.time()]
+
+            def wait_for_claim(_poll):
+                self.assertTrue(entered.wait(2))
+                clock[0] += 2
+
+            with mock.patch.object(PROTOCOL, "time", types.SimpleNamespace(time=lambda: clock[0], sleep=time.sleep)):
+                with self.assertRaisesRegex(PROTOCOL.WorkerError, "did not answer in time"):
+                    PROTOCOL.run_job(root, "test", "unimate-preview", request, lambda *a: None,
+                                     timeout=1, sleep=wait_for_claim)
+            self.assertEqual(list((root / "jobs").rglob("*.json")), [])
+            release.set()
+            for _ in range(200):
+                if worker.state == "idle":
+                    break
+                time.sleep(0.01)
+            self.assertEqual(worker.state, "idle")
+            self.assertEqual(list((root / "jobs").rglob("*.json")), [])
+            worker.stop()
+
     def start_worker(self, root, **kwargs):
         specs = REGISTRY.load_specs()
         worker = RUNTIME.MotionWorker(root, "test", ["unimate-preview", "hy-motion-1.0"], specs=specs,

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import importlib.util
 import io
 import json
@@ -50,6 +51,32 @@ def preview_data_url():
 
 
 class FactoryLibraryTests(unittest.TestCase):
+    def test_bad_download_checksum_preserves_installed_package(self):
+        paths = self.library._paths("owner/repo", "Things", "a" * 24)
+        paths["package"].write_bytes(b"known good package")
+        paths["meta"].write_text('{"name":"known good asset"}')
+        manifest = self.root / "remote-manifest.json"
+        manifest.write_text(json.dumps({"assets": [{
+            "category": "Things", "asset_id": "a" * 24,
+            "package_path": "updated.vnccs3d",
+            "meta_path": "updated.json",
+            "package_sha256": hashlib.sha256(b"expected bytes").hexdigest(),
+        }]}))
+        downloaded = self.root / "updated.vnccs3d"
+        downloaded.write_bytes(b"wrong bytes")
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = lambda **kwargs: str(manifest if kwargs["filename"] == self.library.MANIFEST_NAME else downloaded)
+        with (
+            mock.patch.dict(sys.modules, {"huggingface_hub": hub}),
+            mock.patch.object(self.library, "repository_progress_start"),
+            mock.patch.object(self.library, "repository_progress_update"),
+            mock.patch.object(self.library, "repository_progress_fail") as failed,
+        ):
+            self.library._sync_repository("owner/repo", "test")
+        self.assertIn("SHA256 mismatch", str(failed.call_args.args[-1]))
+        self.assertEqual(paths["package"].read_bytes(), b"known good package")
+        self.assertEqual(json.loads(paths["meta"].read_text()), {"name": "known good asset"})
+        self.assertFalse(paths["package"].with_suffix(paths["package"].suffix + ".tmp").exists())
     @classmethod
     def setUpClass(cls):
         cls.factory, cls.library = load_modules()

@@ -4,6 +4,10 @@ import json
 
 import pytest
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas.assets import _get_unicanvas_assets
 from nodes.unicanvas.models import UNICANVAS_MODEL_MODULES
 from nodes.unicanvas.models.capabilities import (

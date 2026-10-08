@@ -1,6 +1,10 @@
 import sys
 import types
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import progress
 from nodes.unicanvas.sampling import _report_comfy_sampling_progress
 

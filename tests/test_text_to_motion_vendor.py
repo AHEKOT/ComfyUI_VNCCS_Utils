@@ -113,12 +113,12 @@ class HubTests(unittest.TestCase):
                 return list(files)
 
         def download(repo_id, filename, revision, local_dir, token):
-            calls.append(("download", filename, token))
+            calls.append(("download", filename, token, revision))
             if fail and filename == fail:
                 raise RuntimeError("401 gated")
             path = Path(local_dir) / filename
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("x")
+            path.write_text(revision)
             return str(path)
 
         hub = types.ModuleType("huggingface_hub")
@@ -132,15 +132,40 @@ class HubTests(unittest.TestCase):
         calls = self.install_hub(["config.yaml", "README.md", "weights/a.safetensors", "tokenizer.json"])
         with tempfile.TemporaryDirectory() as folder:
             target = Path(folder) / "repo"
-            HUB.ensure_repo("nvidia/X", target, include=("config.yaml", "weights/*"))
-            self.assertTrue((target / "weights" / "a.safetensors").is_file())
-            self.assertFalse((target / "tokenizer.json").exists())
-            self.assertTrue((target / ".complete").is_file())
+            downloaded = HUB.ensure_repo("nvidia/X", target, include=("config.yaml", "weights/*"))
+            self.assertTrue((downloaded / "weights" / "a.safetensors").is_file())
+            self.assertFalse((downloaded / "tokenizer.json").exists())
+            self.assertTrue((downloaded / ".complete").is_file())
             self.assertIn(("token", False), calls)
             self.assertTrue(all(call[2] is False for call in calls if call[0] == "download"))
             count = len(calls)
             HUB.ensure_repo("nvidia/X", target)  # complete: nothing is fetched again
             self.assertEqual(len(calls), count)
+
+    def test_new_revision_cannot_reuse_previous_weights_or_completion_marker(self):
+        calls = self.install_hub(["weights.safetensors"])
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "repo"
+            first = HUB.ensure_repo("nvidia/X", target, revision="revision-A")
+            second = HUB.ensure_repo("nvidia/X", target, revision="revision-B")
+            self.assertNotEqual(first, second)
+            self.assertEqual((first / "weights.safetensors").read_text(), "revision-A")
+            self.assertEqual((second / "weights.safetensors").read_text(), "revision-B")
+            self.assertEqual([call[3] for call in calls if call[0] == "download"], ["revision-A", "revision-B"])
+            HUB.ensure_repo("nvidia/X", target, revision="revision-B")
+            self.assertEqual(sum(call[0] == "download" for call in calls), 2)
+
+    def test_manual_marker_applies_only_to_its_revision_folder(self):
+        self.install_hub(["weights.safetensors"])
+        with tempfile.TemporaryDirectory() as folder:
+            target = Path(folder) / "repo"
+            downloaded = HUB.ensure_repo("nvidia/X", target, revision="revision-A")
+            # Empty markers remain supported for files placed by the user.
+            (downloaded / ".complete").write_text("")
+            with mock.patch.dict(sys.modules, {"huggingface_hub": None}):
+                self.assertEqual(HUB.ensure_repo("nvidia/X", target, revision="revision-A"), downloaded)
+                with self.assertRaises(HUB.DownloadError):
+                    HUB.ensure_repo("nvidia/X", target, revision="revision-B")
 
     def test_gated_repos_explain_the_manual_route(self):
         self.install_hub(["model.safetensors"], fail="model.safetensors")

@@ -21,6 +21,10 @@ import re
 import pytest
 from PIL import Image
 
+from helpers.unicanvas_package import load_unicanvas_package
+
+load_unicanvas_package("nodes")
+
 from nodes.unicanvas import register_unicanvas_routes
 from nodes.unicanvas.save_output import _run_unicanvas_save_output, _unicanvas_save_output_image
 

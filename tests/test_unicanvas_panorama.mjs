@@ -194,6 +194,49 @@ test("panorama uploads cannot overwrite newer state by finishing out of order", 
   release(); await Promise.all([first, second]); assert.deepEqual(started, [1, 2]);
 });
 
+test("flat raster uploads keep capture order and revisions across failed writes", async () => {
+  const started = []; let release;
+  const w = widget({ stateUploadRevision: Date.now() + 1000, performStateUpload: async (state, keepalive, revision) => {
+    started.push([state.label, revision]);
+    if (state.label === "old") {
+      await new Promise(resolve => { release = resolve; });
+      throw new Error("upload failed");
+    }
+    return true;
+  } });
+  const first = w.uploadStatePayload({ layers: [], label: "old" });
+  const rejection = assert.rejects(first, /upload failed/);
+  const second = w.uploadStatePayload({ layers: [], label: "new" });
+  await Promise.resolve(); assert.equal(started.length, 1);
+  release(); await rejection; assert.equal(await second, true);
+  assert.deepEqual(started.map(item => item[0]), ["old", "new"]);
+  assert.ok(started[1][1] > started[0][1]);
+});
+
+test("closing-page saves start immediately and stale failures do not clear their success", async () => {
+  const previousFetch = context.fetch;
+  const sent = [], errors = []; let finishOld;
+  context.fetch = async (_url, request) => {
+    const payload = JSON.parse(request.body);
+    sent.push({ payload, keepalive: request.keepalive });
+    if (payload.state.label === "old") return new Promise(resolve => {
+      finishOld = () => resolve({ ok: false, status: 500, json: async () => ({ error: "old failure" }) });
+    });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus: message => errors.push(message) });
+    const first = w.uploadStatePayload({ layers: [], label: "old" });
+    await Promise.resolve(); assert.equal(sent.length, 1);
+    assert.equal(await w.uploadStatePayload({ layers: [], label: "new" }, true), true);
+    assert.equal(sent.length, 2); assert.equal(sent[1].keepalive, true);
+    assert.ok(sent[1].payload.revision > sent[0].payload.revision);
+    finishOld(); assert.equal(await first, false);
+    assert.match(w.lastUploadedStateJSON, /"label":"new"/);
+    assert.deepEqual(errors, []);
+  } finally { context.fetch = previousFetch; }
+});
+
 test("generation retains its request camera when the user rotates while waiting", async () => {
   let release;
   context.fetch = () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ images: [{ filename: "result.png" }] }) }); });
