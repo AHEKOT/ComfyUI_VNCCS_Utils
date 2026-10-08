@@ -834,36 +834,10 @@ def _install_skydome(
     if member.file_size <= 0 or member.file_size > factory.MAX_SKYDOME_BYTES:
         raise ValueError("skydome image is empty or too large")
     image_bytes = archive.read(member)
-    suffix, mime, width, height = factory._inspect_skydome_image(image_bytes)
-    root = factory.resolve_scene_dir(scene["scene_id"])
-    skydome_root = root / "skydome"
-    skydome_root.mkdir(parents=True, exist_ok=True)
-    target = skydome_root / f"source{suffix}"
-    temporary = skydome_root / f".source.{secrets.token_hex(6)}.tmp"
-    try:
-        temporary.write_bytes(image_bytes)
-        for candidate in skydome_root.glob("source.*"):
-            if candidate != target:
-                candidate.unlink(missing_ok=True)
-        os.replace(temporary, target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    normalized = factory._normalize_skydome_settings(stored)
-    skydome_id = factory._new_id()
-    scene["skydome"] = {
-        "skydome_id": skydome_id,
-        "type": "skydome",
-        "name": _name(stored.get("name"), "Skydome"),
-        "projection": "equirectangular",
-        "file": str(target.relative_to(root)),
-        "mime": mime,
-        "width": width,
-        "height": height,
-        "size": target.stat().st_size,
-        "updated_at": time.time(),
-        **normalized,
-    }
-    return skydome_id
+    scene["skydome"] = factory._stage_scene_skydome(
+        scene, image_bytes, _name(stored.get("name"), "Skydome"), stored,
+    )
+    return scene["skydome"]["skydome_id"]
 
 
 def _install_textures(
@@ -991,11 +965,16 @@ def load_asset(
                     0,
                     int(scene.get("render_revision", scene.get("revision", 0))),
                 ) + 1
-                factory._save_scene(
-                    scene,
-                    bump_revision=False,
-                    bump_edit_revision=True,
-                )
+                try:
+                    factory._save_scene(
+                        scene,
+                        bump_revision=False,
+                        bump_edit_revision=True,
+                    )
+                except Exception:
+                    shutil.rmtree(factory._scene_skydome_file(scene).parent, ignore_errors=True)
+                    raise
+                factory._prune_scene_skydome_files(scene)
             return {
                 "scene": factory._public_scene(scene),
                 "object_id": "",

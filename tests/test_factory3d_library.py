@@ -494,6 +494,30 @@ class FactoryLibraryTests(unittest.TestCase):
         with Image.open(self.factory._scene_skydome_file(restored)) as restored_sky:
             self.assertEqual(restored_sky.size, (512, 256))
 
+    def test_failed_library_skydome_install_preserves_the_target_scene(self):
+        source = self.factory.create_scene("Source")
+        stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "blue").save(stream, "PNG")
+        self.factory.store_scene_skydome(source["scene_id"], stream.getvalue())
+        record = self.library.save_asset({"scene_id": source["scene_id"], "asset_type": "skydome", "name": "Blue"})
+        target = self.factory.create_scene("Target")
+        stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "red").save(stream, "JPEG")
+        target = self.factory.store_scene_skydome(target["scene_id"], stream.getvalue())
+        root = self.factory.resolve_scene_dir(target["scene_id"])
+        before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        for stage in ("_write_browser_preview", "_save_scene"):
+            with self.subTest(stage=stage):
+                with mock.patch.object(self.factory, stage, side_effect=OSError("disk error")):
+                    with self.assertRaisesRegex(OSError, "disk error"):
+                        self.library.load_asset(record["asset_id"], repository=record["repository"],
+                                                category=record["category"], scene_id=target["scene_id"])
+                self.assertEqual({str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+        restored = self.library.load_asset(record["asset_id"], repository=record["repository"],
+                                           category=record["category"], scene_id=target["scene_id"])
+        self.assertEqual(restored["scene"]["skydome"]["name"], "Blue")
+        self.assertFalse((root / target["skydome"]["file"]).exists())
+
     def test_skydome_library_asset_has_fixed_type_and_replaces_scene_background(self):
         source, _object_id = self.make_scene()
         sky_stream = io.BytesIO()

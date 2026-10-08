@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
 import test from "node:test";
 
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
@@ -111,20 +110,22 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
     assert.ok(modesSource.includes("const extensionManager = app?.extensionManager;"), "extensionManager must be probed safely");
     assert.ok(/title:\s*"Unicanvas"/.test(modesSource), 'the tab must be labeled exactly "Unicanvas"');
     assert.ok(/tooltip:\s*"Unicanvas"/.test(modesSource), 'the tab tooltip must be "Unicanvas"');
-    assert.ok(/icon:\s*UNICANVAS_SIDEBAR_ICON_CLASS/.test(modesSource), "the tab must register an icon");
+    assert.ok(modesSource.includes('icon: `pi pi-images ${UNICANVAS_SIDEBAR_ICON_CLASS}`'), "the tab uses the native monochrome PrimeIcons image stack");
     assert.ok(modesSource.includes('const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";'),
         "the icon class must be a stable marker");
-    assert.ok(modesSource.includes('new URL("./assets/icon.svg", import.meta.url).href'),
-        "the icon is the shipped UniCanvas SVG asset");
-    const icon = readFileSync(new URL("../web/unicanvas/assets/icon.svg", import.meta.url), "utf8");
-    assert.ok(icon.startsWith("<svg") && icon.includes('viewBox="0 0 32 32"') && icon.includes("stroke-dasharray"),
-        "a layer stack with a dashed selection marquee");
-    assert.ok(modesSource.includes('background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat'),
-        "the icon must render from CSS on the sidebar tab <i>");
+    assert.ok(!modesSource.includes("UNICANVAS_SIDEBAR_ICON_SVG"), "the tab must not paint a colored custom icon");
     assert.ok(modesSource.includes('type: "custom"'), "the tab renders a custom DOM container");
     assert.ok(/widget\.standalone = true/.test(modesSource), "the tab opens UniCanvasWidget with standalone: true");
     assert.ok(widgetSource.includes("syncUniCanvasStandaloneSidebarTab(UniCanvasWidget, readUniCanvasStandaloneSetting())"),
         "vnccs_unicanvas.js must register the sidebar tab from the stored setting");
+});
+
+test("only the standalone widget opts into the ComfyUI theme", () => {
+    const create = region(modesSource, "function createStandaloneWidget", "function findUniCanvasSidebarRail");
+    assert.ok(create.includes('widget.container.classList.add("vnccs-uc-standalone")'));
+    const fullscreen = region(modesSource, "export function enterUniCanvasFullscreen", "export function exitUniCanvasFullscreen");
+    assert.ok(!fullscreen.includes('classList.add("vnccs-uc-standalone")'), "node fullscreen must keep the node theme");
+    assert.ok(modesSource.includes("UNICANVAS_MODE_STYLES + STANDALONE_STYLES"));
 });
 
 test("standalone sidebar tab is a ComfyUI setting, on by default", () => {

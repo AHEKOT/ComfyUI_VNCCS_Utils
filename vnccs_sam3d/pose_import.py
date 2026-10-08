@@ -23,6 +23,7 @@ def _dependency_error(exc: Exception) -> RuntimeError:
     )
 
 
+@progress.model_operation
 def process_image_to_pose_json(image_tensor):
     try:
         import torch
@@ -171,6 +172,7 @@ def process_image_to_pose_json(image_tensor):
         return pose_json
 
 
+@progress.model_operation
 def process_pose_json_to_overlay_mesh(pose_data, body_preset=None, pose_adjust=0.0):
     """Build the same postprocessed MHR mesh used by the SAM render node.
 

@@ -29,7 +29,6 @@ from .presets import (
     _get_unicanvas_presets,
     _unicanvas_find_preset_asset,
     _unicanvas_load_preset_registry,
-    _unicanvas_resolve_local_model_path,
 )
 from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types
 from .remove_bg import _run_unicanvas_remove_bg
@@ -143,8 +142,7 @@ def register_unicanvas_routes() -> None:
             queued: list[str] = []
             if kind == "turbo":
                 download_key, asset = _unicanvas_find_preset_asset(preset_id, "turbo")
-                if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
-                    _enqueue_preset_download(download_key, asset)
+                _enqueue_preset_download(download_key, asset)
                 queued.append(download_key)
             else:
                 registry = _unicanvas_load_preset_registry()
@@ -159,8 +157,7 @@ def register_unicanvas_routes() -> None:
                     if not isinstance(asset, dict):
                         continue
                     download_key = f"{preset_id}:asset:{index}"
-                    if not os.path.exists(_unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))):
-                        _enqueue_preset_download(download_key, asset)
+                    _enqueue_preset_download(download_key, asset)
                     queued.append(download_key)
             return web.json_response({"status": "queued", "queued": queued})
         except Exception as exc:

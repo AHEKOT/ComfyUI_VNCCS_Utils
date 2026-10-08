@@ -265,3 +265,74 @@ def test_background_refresh_does_not_turn_a_sync_error_into_success(store, monke
     progress = library.get_repository_progress("failed-background")
     assert progress["status"] == "error"
     assert "artist/poses: offline" in progress["message"]
+
+
+@pytest.mark.parametrize("failed_file", ["Walk.webp", "Walk.json"])
+def test_failed_save_restores_the_previous_pose_and_preview(store, monkeypatch, failed_file):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "Walk.json").write_text('{"pose": "old"}')
+    (directory / "Walk.webp").write_bytes(b"old preview")
+    (directory / "Walk.png").write_bytes(b"older format")
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    prepared = directory / "prepared.webp"
+
+    def prepare(*args):
+        prepared.write_bytes(b"new preview")
+        return str(prepared), ".webp"
+
+    replace = library.os.replace
+
+    def fail_install(source, target):
+        if Path(target).name == failed_file and not Path(source).name.startswith("vnccs_preview_backup_"):
+            raise OSError("disk error")
+        return replace(source, target)
+
+    monkeypatch.setattr(library, "prepare_preview_file", prepare)
+    monkeypatch.setattr(library.os, "replace", fail_install)
+    result = asyncio.run(library.save_pose(request(pose={"pose": "new"}, preview="image")))
+    assert result.status == 400
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+@pytest.mark.parametrize("with_new_preview", [False, True])
+def test_failed_rename_keeps_source_and_removes_uncommitted_destination(store, monkeypatch, with_new_preview):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "A.json").write_text('{"pose": "old"}')
+    (directory / "A.webp").write_bytes(b"old preview")
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    prepared = directory / "prepared.webp"
+
+    def prepare(*args):
+        prepared.write_bytes(b"new preview")
+        return str(prepared), ".webp"
+
+    replace = library.os.replace
+
+    def fail_commit(source, target):
+        if Path(target).name == "B.json":
+            raise OSError("disk error")
+        return replace(source, target)
+
+    monkeypatch.setattr(library, "prepare_preview_file", prepare)
+    monkeypatch.setattr(library.os, "replace", fail_commit)
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "new"},
+                                                   preview="image" if with_new_preview else None)))
+    assert result.status == 400
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_successful_preview_update_retires_old_formats_only_after_commit(store, monkeypatch):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "Walk.json").write_text('{"pose": "old"}')
+    (directory / "Walk.png").write_bytes(b"old preview")
+    prepared = directory / "prepared.webp"
+    prepared.write_bytes(b"new preview")
+    monkeypatch.setattr(library, "prepare_preview_file", lambda *args: (str(prepared), ".webp"))
+    result = asyncio.run(library.save_pose(request(pose={"pose": "new"}, preview="image")))
+    assert result.status == 200
+    assert json.loads((directory / "Walk.json").read_text())["pose"] == "new"
+    assert (directory / "Walk.webp").read_bytes() == b"new preview"
+    assert sorted(path.name for path in directory.iterdir()) == ["Walk.json", "Walk.webp"]

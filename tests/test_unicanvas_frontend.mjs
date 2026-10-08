@@ -48,7 +48,7 @@ test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet defau
     for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3']) {
         assert.ok(removeBg.includes(marker), "missing remove bg backend option: " + marker);
     }
-    assert.ok(removeBg.includes('["qwen_image21", "Qwen Image 2.1"]'), "the edit-model backend needs the QI2.1 choice");
+    assert.ok(removeBg.includes('["qwen_image21", "Qwen Edit 2.1"]'), "the edit-model backend needs the QI2.1 choice");
     assert.ok(!removeBg.includes('"minimax_h3"'), "MiniMax H3 decodes RGB only: it is not a remove bg edit model");
     assert.ok(removeBg.includes("REMOVE_BG_DEFAULT_PROMPT"), "the universal remove bg prompt is editable");
     for (const key of ["model_loader", "gguf_arch", "clip_name", "vae_name", "steps", "cfg", "sampler_name", "scheduler", "lora_name", "prompt"]) {
@@ -210,7 +210,7 @@ test("family detection reads the file name only, prefers the most specific patte
     const method = source.slice(source.indexOf("  detectModuleForModelName(name) {"), source.indexOf("  // A linked config decides the model"));
     const detect = runInNewContext(`${matcher}
         const UNICANVAS_MODEL_MODULES = {
-            qwen_image_edit: { key: "qwen_image_edit", detect: ["qwen-image-edit", "qwen"] },
+            generic: { key: "generic", detect: ["qwen"] },
             qwen_image21: { key: "qwen_image21", detect: ["qwen-image-2.1", "qwen_image_2.1"] },
             sdxl: { key: "sdxl", detect: ["sdxl", "xl"] },
         };
@@ -218,7 +218,7 @@ test("family detection reads the file name only, prefers the most specific patte
         (name) => holder.detect(name)?.key ?? null;`);
     assert.equal(detect("qwen\Qwen-Image-2.1-int8.safetensors"), "qwen_image21", "a qwen/ folder must not select the edit family");
     assert.equal(detect("qwen_image_2.1_int8.safetensors"), "qwen_image21");
-    assert.equal(detect("qwen/qwen-image-edit-2511.safetensors"), "qwen_image_edit");
+    assert.equal(detect("qwen/qwen-image-edit-2511.safetensors"), "generic");
     assert.equal(detect("sdxl\\model.safetensors"), null, "the folder alone never picks a family");
     const auto = source.slice(source.indexOf("  autoDetectGenerationModeFromModel() {"), source.indexOf("  getModelBase() {"));
     assert.ok(auto.includes("if (modelLoader) this.settings.model_loader = modelLoader"), "picking a file never switches the loader");

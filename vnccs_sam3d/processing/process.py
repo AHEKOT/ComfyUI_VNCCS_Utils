@@ -1103,6 +1103,7 @@ def _resolve_default_model_paths():
     }
 
 
+@progress.model_operation
 def _load_sam3d_model(model_config):
     """
     Load SAM 3D Body model from config paths.
@@ -1460,6 +1461,7 @@ class SAM3DBodyProcessToJson:
         cmin, cmax = np.where(cols)[0][[0, -1]]
         return np.array([[cmin, rmin, cmax, rmax]], dtype=np.float32)
 
+    @progress.model_operation
     def process_to_json(self, model, image, bbox_threshold=0.8,
                         inference_type="full", debug_scale=False, mask=None,
                         Left_hand_image=None, Right_hand_image=None):
@@ -1715,6 +1717,7 @@ class SAM3DBodyRenderFromPoseAndBodyPresetJson:
     FUNCTION = "render"
     CATEGORY = "SAM3DBody/render"
 
+    @progress.model_operation
     def render(self, model, pose_json, body_preset_json,
                offset_x=0.0, offset_y=0.0, scale_offset=1.0,
                camera_yaw_deg=0.0, camera_pitch_deg=0.0,

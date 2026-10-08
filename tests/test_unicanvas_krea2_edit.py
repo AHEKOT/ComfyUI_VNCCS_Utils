@@ -88,9 +88,16 @@ class EditContractTests(unittest.TestCase):
 
     def test_missing_edit_lora_keeps_card_uninstalled(self):
         preset = next(p for p in PRESETS._unicanvas_load_preset_registry()["presets"] if p["id"] == "krea2_edit")
-        with patch.object(PRESETS, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}), \
-             patch.object(PRESETS.os.path, "exists", side_effect=lambda p: "identity_edit" not in p):
-            card = PRESETS._get_unicanvas_presets()["presets"][0]
+        with tempfile.TemporaryDirectory() as directory:
+            folders = types.SimpleNamespace(models_dir=directory, get_folder_paths=lambda _key: [],
+                                            get_filename_list=lambda _key: [], get_full_path=lambda _key, _name: None)
+            for asset in preset["assets"][:3]:
+                target = Path(directory).joinpath(*asset["local_path"].split("/")[1:])
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(b"installed")
+            with patch.dict(sys.modules, {"folder_paths": folders}), \
+                 patch.object(PRESETS, "_unicanvas_load_preset_registry", return_value={"presets": [preset]}):
+                card = PRESETS._get_unicanvas_presets()["presets"][0]
         self.assertFalse(card["installed"])
         self.assertEqual([a["installed"] for a in card["assets"]], [True, True, True, False])
 

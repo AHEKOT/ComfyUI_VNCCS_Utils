@@ -8,7 +8,7 @@ const mainSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.me
 
 
 test("engine picker exposes the QwenImage21 family tab", () => {
-    assert.match(panelSource, /label:\s*"QwenImage21"/, "family tab label 'QwenImage21' missing from the Qwen-Image-2.1 module");
+    assert.match(panelSource, /label:\s*"Qwen Edit 2.1"/, "family tab label 'QwenImage21' missing from the Qwen-Image-2.1 module");
     assert.match(panelSource, /key:\s*QWEN21_MODULE_KEY/, "family module key wiring missing");
     assert.match(panelSource, /base:\s*QWEN21_MODULE_KEY/, "family module base wiring missing");
     // The node widget and the standalone host share this one registry entry.
@@ -61,7 +61,7 @@ test("QI2.1 Turbo LoRA uses the shared preset turbo card, not a bespoke switch",
   assert.equal(qi.turbo.strength_setting, "qwen_lora_strength");
   assert.equal(qi.turbo.enable_setting, "qwen21_turbo_enabled");
   assert.deepEqual(qi.turbo.turbo_settings, { steps: 6, cfg: 1 });
-  assert.equal(qi.turbo.asset.local_path, "models/loras/viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors");
+  assert.equal(qi.turbo.asset.local_path, "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors");
   assert.match(qi.turbo.asset.hf_revision, /^[0-9a-f]{40}$/);
 });
 

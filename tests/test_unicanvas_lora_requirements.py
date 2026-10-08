@@ -117,16 +117,6 @@ def test_anima_turbo_lora_keeps_clip_untouched(applied):
     assert applied == [(ANIMA_TURBO_LORA_NAME, 1.0, 0.0)]
 
 
-def test_qwen_edit_lightning_lora_needs_positive_strength(applied):
-    from nodes.unicanvas.models.qwen_image_edit import QWEN_IMAGE_EDIT_TURBO_LORA_NAME
-
-    _family_loras("qwen_image_edit", {"qwen_lora_name": QWEN_IMAGE_EDIT_TURBO_LORA_NAME})
-    _family_loras("qwen_image_edit", {"qwen_lora_name": "style.safetensors", "qwen_lora_strength": 1.0})
-    assert applied == []
-    _family_loras("qwen_image_edit", {"qwen_lora_name": QWEN_IMAGE_EDIT_TURBO_LORA_NAME, "qwen_lora_strength": 0.9})
-    assert applied == [(QWEN_IMAGE_EDIT_TURBO_LORA_NAME, 0.9, 0.0)]
-
-
 def test_qwen21_lora_resolves_the_turbo_download(applied, monkeypatch):
     from nodes.unicanvas.models import qwen_image21
 

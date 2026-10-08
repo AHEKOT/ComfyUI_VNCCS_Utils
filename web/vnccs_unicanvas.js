@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791484100953";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791484100953";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791488863948";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791488863948";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791484100953";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791484100953";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791484100953";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791484100953";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791484100953";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791484100953";
-import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791484100953";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791484100953";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791484100953";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791484100953";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791484100953";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791488863948";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791488863948";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791488863948";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791488863948";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791488863948";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791488863948";
+import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791488863948";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791488863948";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791488863948";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791488863948";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791488863948";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791484100953";
+} from "./unicanvas/transform.mjs?v=1791488863948";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791484100953";
+} from "./unicanvas/presets.mjs?v=1791488863948";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,9 +60,9 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791484100953";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791484100953";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791484100953";
+} from "./unicanvas/modes.mjs?v=1791488863948";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791488863948";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791488863948";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -75,7 +75,7 @@ import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=17914841009
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791484100953";
+const VNCCS_UNICANVAS_VERSION = "1791488863948";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -124,8 +124,8 @@ const VNCCS_UNICANVAS_VERSION = "1791484100953";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791484100953";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791484100953";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791488863948";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791488863948";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -777,31 +777,6 @@ const UNICANVAS_MODEL_MODULES = {
       steps: 10,
       cfg: 1,
       denoise: 1,
-    },
-  },
-  qwen_image_edit: {
-    key: "qwen_image_edit",
-    aliases: ["qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"],
-    label: "Qwen Edit",
-    base: "qwen_image_edit",
-    isEditModel: true,
-    detect: ["qwen-image-edit", "qwen_image_edit", "qwen-edit", "qwen"],
-    defaults: {
-      generation_mode: "qwen_image_edit",
-      model_loader: "gguf",
-      gguf_model_name: "qwen-image-edit-2511-Q5_0.gguf",
-      clip_name: "qwen_2.5_vl_7b_fp8_scaled.safetensors",
-      vae_name: "qwen_image_vae.safetensors",
-      clip_type: "qwen_image",
-      sampler_name: "euler",
-      scheduler: "simple",
-      steps: 4,
-      cfg: 1,
-      denoise: 1,
-      qwen_lora_name: "",
-      qwen_lora_strength: 0,
-      qwen_2511: true,
-      qwen_target_vl_size: 384,
     },
   },
   minimax_h3: {
@@ -1915,12 +1890,31 @@ class UniCanvasWidget {
 
   invalidateLayerCaches(layer) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._boundsHint = undefined;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
     layer._hiresRenderLodCache = null;
+  }
+
+  captureLayerEditState(layer) {
+    return {
+      layer, canvas: layer.canvas, revision: layer._pixelRevision,
+      width: layer.canvas.width, height: layer.canvas.height,
+      originX: this.origin.x, originY: this.origin.y,
+      panorama: this.panorama, panoramaRevision: this.panorama?.revision,
+    };
+  }
+
+  isLayerEditStateCurrent(state) {
+    return state && !this._disposed && !state.layer.locked && this.layers.includes(state.layer)
+      && state.canvas === state.layer.canvas && state.revision === state.layer._pixelRevision
+      && state.width === state.layer.canvas.width && state.height === state.layer.canvas.height
+      && this.transformDraft?.layerId !== state.layer.id && this.dragStart?.layerId !== state.layer.id
+      && state.originX === this.origin.x && state.originY === this.origin.y
+      && state.panorama === this.panorama && state.panoramaRevision === this.panorama?.revision;
   }
 
   invalidateLayerThumbnail(layer) {
@@ -1930,6 +1924,7 @@ class UniCanvasWidget {
 
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -1938,6 +1933,7 @@ class UniCanvasWidget {
 
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
+    layer._pixelRevision = (layer._pixelRevision || 0) + 1;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -2936,8 +2932,6 @@ class UniCanvasWidget {
       "flux klein9b": "Flux",
       "z-image": "Z-image",
       "z_image": "Z-image",
-      qie2511: "QIE2511",
-      qwen_image_edit: "QIE2511",
     };
     return map[raw.toLowerCase()] || raw;
   }
@@ -3020,7 +3014,6 @@ class UniCanvasWidget {
     // their reference convention (spec section 9 style, user request); the
     // generic Steps row is hidden for every family that owns one.
     const editStepsHints = {
-      qwen_image_edit: "Region edit - the working area is the source image; the first Edit model reference (reference_image_1) conditions the subject. Steps control the edit sampling (fewer steps stay closer to the source).",
       flux_klein: "Guided edit - the working area is re-sampled under the prompt and denoise settings; Edit model references condition the result. Steps control the sampling depth.",
       qwen_image21: "Reference edit - working area is <image1>, Edit model references are <image2..5>; the prompt is the edit instruction in the <image N> convention.",
       krea2_edit: "Identity edit - the working area is the background (image 1); one Edit model reference is the character to put into it (image 2). Krea2 takes at most these two pictures.",
@@ -3129,7 +3122,7 @@ class UniCanvasWidget {
     const setting = turbo.setting || "dmd_lora_name";
     const strengthSetting = turbo.strength_setting || "dmd_lora_strength";
     if (turbo.enable_setting && this.settings[turbo.enable_setting] !== true) return false;
-    return this.normalizeRelName(this.settings[setting]) === this.normalizeRelName(turbo.asset.relative_name)
+    return this.normalizeRelName(this.settings[setting]).split("/").pop() === this.normalizeRelName(turbo.asset.relative_name).split("/").pop()
       && Number(this.settings[strengthSetting] ?? 0) > 0;
   }
 
@@ -3141,7 +3134,6 @@ class UniCanvasWidget {
     const fallbackTurboSettings = {
       sdxl: { steps: 4, cfg: 1 },
       anima: { steps: 12, cfg: 1 },
-      qwen_image_edit: { steps: 4, cfg: 1 },
     };
     return {
       ...(fallbackTurboSettings[preset.id] || fallbackTurboSettings[preset.settings?.generation_mode] || {}),
@@ -4096,6 +4088,8 @@ class UniCanvasWidget {
   }
 
   clearSamMask(update = true) {
+    this.sam.requestRevision = (this.sam.requestRevision || 0) + 1;
+    this.sam.layerState = null;
     this.sam.maskCanvas = null;
     this.sam.crop = null;
     this.sam.layerId = null;
@@ -4116,8 +4110,7 @@ class UniCanvasWidget {
   }
 
   async segmentSamMask() {
-    const requestPanorama = this.panorama;
-    const panoramaRevision = requestPanorama?.revision;
+    if (this.sam.busy) return;
     const layer = this.activeLayer;
     if (!layer || layer.type !== "raster") {
       this.setSamStatus("Select a raster layer", true);
@@ -4148,6 +4141,9 @@ class UniCanvasWidget {
       this.setSamStatus("SAM points are outside crop", true);
       return;
     }
+    this.clearSamMask(false);
+    const requestRevision = this.sam.requestRevision;
+    const layerState = this.captureLayerEditState(layer);
     const source = this.cloneCanvasCrop(layer.canvas, crop);
     this.sam.busy = true;
     this.sam.status = "Segmenting...";
@@ -4156,6 +4152,7 @@ class UniCanvasWidget {
     // A seconds counter keeps it visibly alive; the first run of a model loads (or downloads) it.
     const started = performance.now();
     const ticker = setInterval(() => {
+      if (requestRevision !== this.sam.requestRevision || this._disposed) return;
       const seconds = Math.round((performance.now() - started) / 1000);
       this.sam.status = seconds >= 5
         ? `Segmenting... ${seconds}s (first use loads the model${this.sam.model === "sam3" ? ", SAM 3 downloads ~3.4 GB" : ""})`
@@ -4175,7 +4172,10 @@ class UniCanvasWidget {
       const data = await res.json();
       if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
       const img = await this.loadImage(data.mask);
-      if (this._disposed || requestPanorama !== this.panorama || panoramaRevision !== this.panorama?.revision) return;
+      if (requestRevision !== this.sam.requestRevision || !this.isLayerEditStateCurrent(layerState)) {
+        this.sam.status = "SAM input changed; segment again";
+        return;
+      }
       const maskCanvas = document.createElement("canvas");
       maskCanvas.width = crop.width;
       maskCanvas.height = crop.height;
@@ -4183,6 +4183,7 @@ class UniCanvasWidget {
       this.sam.maskCanvas = maskCanvas;
       this.sam.crop = { ...crop };
       this.sam.layerId = layer.id;
+      this.sam.layerState = layerState;
       this.sam.status = data.note ? "Mask ready (SAM2 fallback)" : "Mask ready";
       this.setStatus(data.note ? `SAM mask ready - ${data.note}` : "SAM mask ready", Boolean(data.note));
     } catch (err) {
@@ -4197,7 +4198,12 @@ class UniCanvasWidget {
   }
 
   applySamMask() {
-    const layer = this.layers.find((item) => item.id === this.sam.layerId) || this.activeLayer;
+    if (!this.isLayerEditStateCurrent(this.sam.layerState)) {
+      this.clearSamMask(false);
+      this.setSamStatus("SAM input changed; segment again", true);
+      return;
+    }
+    const layer = this.sam.layerState.layer;
     if (!layer || layer.type !== "raster" || !this.sam.maskCanvas || !this.sam.crop) {
       this.setSamStatus("No SAM mask to apply", true);
       return;
@@ -5392,10 +5398,11 @@ class UniCanvasWidget {
   }
 
   drawBackground(ctx, w, h) {
-    ctx.fillStyle = "#07070c";
+    const theme = this.standalone ? getComputedStyle(this.canvas) : null;
+    ctx.fillStyle = theme?.backgroundColor || "#07070c";
     ctx.fillRect(0, 0, w, h);
     const step = Math.max(8, 64 * this.view.scale);
-    ctx.strokeStyle = "rgba(255,255,255,.045)";
+    ctx.strokeStyle = theme?.color || "rgba(255,255,255,.045)";
     ctx.lineWidth = 1;
     const ox = this.view.x % step;
     const oy = this.view.y % step;
@@ -6997,8 +7004,8 @@ class UniCanvasWidget {
         this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
         return;
       }
-      if (!["qwen_image_edit", "flux_klein"].includes(this.getModelBase())) {
-        this.setStatus("Pose layers require QiE2511 or Klein9b. Select a compatible model or hide the pose layer.", true);
+      if (this.getModelBase() !== "flux_klein") {
+        this.setStatus("Pose layers require Flux Klein. Select a compatible model or hide the pose layer.", true);
         return;
       }
       const preparationKey = () => JSON.stringify([this.bbox, this.getInferenceSize(), this.getModelBase(),

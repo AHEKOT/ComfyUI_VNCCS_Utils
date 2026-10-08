@@ -1923,71 +1923,89 @@ def _inspect_skydome_image(image_bytes: bytes) -> tuple[str, str, int, int]:
     return suffix, mime, width, height
 
 
-def store_scene_skydome(
-    scene_id: str,
-    image_bytes: bytes,
-    file_name: Any = "skydome.jpg",
+def _stage_scene_skydome(
+    scene: dict[str, Any], image_bytes: bytes, name: str, settings: Any,
 ) -> dict[str, Any]:
     suffix, mime, width, height = _inspect_skydome_image(image_bytes)
-    root = resolve_scene_dir(scene_id)
-    skydome_root = root / "skydome"
-    with _STATE_LOCK:
-        scene = load_scene(scene_id)
-        previous = _normalize_scene_skydome(scene.get("skydome"))
-        skydome_root.mkdir(parents=True, exist_ok=True)
-        target = skydome_root / f"source{suffix}"
-        temporary = skydome_root / f".source.{secrets.token_hex(6)}.tmp"
-        try:
-            temporary.write_bytes(image_bytes)
-            for candidate in skydome_root.glob("source.*"):
-                if candidate != target:
-                    candidate.unlink(missing_ok=True)
-            os.replace(temporary, target)
-        finally:
-            temporary.unlink(missing_ok=True)
+    root = resolve_scene_dir(scene["scene_id"])
+    directory = root / "skydome" / _new_id()
+    directory.mkdir(parents=True)
+    target = directory / f"source{suffix}"
+    try:
+        target.write_bytes(image_bytes)
         with Image.open(io.BytesIO(image_bytes)) as image:
             image.load()
-            viewport_target, viewport_mime, viewport_width, viewport_height = (
-                _write_browser_preview(
-                    image,
-                    skydome_root,
-                    "viewport",
-                    SKYDOME_VIEWPORT_SIZE,
-                    88,
-                )
+            viewport, viewport_mime, viewport_width, viewport_height = _write_browser_preview(
+                image, directory, "viewport", SKYDOME_VIEWPORT_SIZE, 88,
             )
-        settings = _normalize_skydome_settings(previous)
-        scene["skydome"] = {
-            "skydome_id": (
-                previous["skydome_id"]
-                if previous is not None
-                else _new_id()
-            ),
+        return {
+            "skydome_id": _new_id(),
             "type": "skydome",
-            "name": _clean_name(
-                Path(str(file_name or "")).stem,
-                previous.get("name", "Skydome") if previous else "Skydome",
-                96,
-            ),
+            "name": name,
             "projection": "equirectangular",
             "file": str(target.relative_to(root)),
             "mime": mime,
             "width": width,
             "height": height,
             "size": target.stat().st_size,
-            "viewport_file": str(viewport_target.relative_to(root)),
+            "viewport_file": str(viewport.relative_to(root)),
             "viewport_mime": viewport_mime,
             "viewport_width": viewport_width,
             "viewport_height": viewport_height,
-            "viewport_size": viewport_target.stat().st_size,
+            "viewport_size": viewport.stat().st_size,
             "updated_at": _now(),
-            **settings,
+            **_normalize_skydome_settings(settings),
         }
+    except Exception:
+        shutil.rmtree(directory, ignore_errors=True)
+        raise
+
+
+def _prune_scene_skydome_files(scene: dict[str, Any]) -> None:
+    scene_root = resolve_scene_dir(scene["scene_id"])
+    root = scene_root / "skydome"
+    keep = (scene_root / scene["skydome"]["file"]).parent if scene.get("skydome") else None
+    try:
+        candidates = list(root.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        if candidate == keep:
+            continue
+        if candidate.is_dir():
+            shutil.rmtree(candidate, ignore_errors=True)
+        else:
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass  # The scene is committed; obsolete files can be retired on the next save.
+
+
+def store_scene_skydome(
+    scene_id: str,
+    image_bytes: bytes,
+    file_name: Any = "skydome.jpg",
+) -> dict[str, Any]:
+    with _STATE_LOCK:
+        scene = load_scene(scene_id)
+        previous = _normalize_scene_skydome(scene.get("skydome"))
+        name = _clean_name(
+            Path(str(file_name or "")).stem,
+            previous.get("name", "Skydome") if previous else "Skydome", 96,
+        )
+        scene["skydome"] = _stage_scene_skydome(scene, image_bytes, name, previous)
+        if previous:
+            scene["skydome"]["skydome_id"] = previous["skydome_id"]
         scene["render_revision"] = max(
-            0,
-            int(scene.get("render_revision", scene.get("revision", 0))),
+            0, int(scene.get("render_revision", scene.get("revision", 0))),
         ) + 1
-        return _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+        try:
+            saved = _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+        except Exception:
+            shutil.rmtree(_scene_skydome_file(scene).parent, ignore_errors=True)
+            raise
+        _prune_scene_skydome_files(saved)
+        return saved
 
 
 def remove_scene_skydome(scene_id: str) -> dict[str, Any]:
@@ -1996,14 +2014,12 @@ def remove_scene_skydome(scene_id: str) -> dict[str, Any]:
         if not isinstance(scene.get("skydome"), dict):
             raise FileNotFoundError("scene has no skydome")
         scene.pop("skydome", None)
-        target = resolve_scene_dir(scene_id) / "skydome"
-        if target.is_dir() and target.parent == resolve_scene_dir(scene_id):
-            shutil.rmtree(target)
         scene["render_revision"] = max(
-            0,
-            int(scene.get("render_revision", scene.get("revision", 0))),
+            0, int(scene.get("render_revision", scene.get("revision", 0))),
         ) + 1
-        return _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+        saved = _save_scene(scene, bump_revision=False, bump_edit_revision=True)
+        _prune_scene_skydome_files(saved)
+        return saved
 
 
 def _scene_texture_file(scene: dict[str, Any], texture_id: Any) -> Path:

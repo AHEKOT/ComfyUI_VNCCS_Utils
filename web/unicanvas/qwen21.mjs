@@ -15,7 +15,7 @@ export const UNICANVAS_QWEN21_MODULE = {
   [QWEN21_MODULE_KEY]: {
     key: QWEN21_MODULE_KEY,
     aliases: QWEN21_MODE_ALIASES.slice(1),
-    label: "QwenImage21",
+    label: "Qwen Edit 2.1",
     base: QWEN21_MODULE_KEY,
     isEditModel: true,
     detect: ["qwen-image-2.1", "qwen_image_2.1", "qwen-image-21", "qwen_image_21", "qwenimage21", "qi21"],
@@ -23,7 +23,7 @@ export const UNICANVAS_QWEN21_MODULE = {
       generation_mode: QWEN21_MODULE_KEY,
       model_loader: "diffusion_model",
       diffusion_model_name: "qwen_image_2.1_int8_convrot.safetensors",
-      clip_name: "qwen3vl_8b_int8_convrot_bf16vision.safetensors",
+      clip_name: "qwen3vl_8b_int8_convrot.safetensors",
       vae_name: "qwen_image_2.1_vae_bf16.safetensors",
       clip_type: "qwen_image",
       sampler_name: "euler",
@@ -33,7 +33,7 @@ export const UNICANVAS_QWEN21_MODULE = {
       cfg: 1,
       denoise: 1,
       qwen21_turbo_enabled: true,
-      qwen_lora_name: "viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
+      qwen_lora_name: "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
       qwen_lora_strength: 1,
       qwen21_opaque_output: false,
       // AusBoss outpaint LoRA v2: applied in outpaint mode only (gray-padded canvas + fixed instruction).

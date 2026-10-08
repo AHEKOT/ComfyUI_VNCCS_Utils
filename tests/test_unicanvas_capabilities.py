@@ -124,7 +124,6 @@ def test_krea2_edit_needs_a_source_image():
 def test_edit_families_declare_their_reference_slots():
     assert _get_unicanvas_model_module("qwen_image21").capabilities.references.slot_label == "<image{n}>"
     assert _get_unicanvas_model_module("minimax_h3").capabilities.references.slot_label == "<Picture {n}>"
-    assert _get_unicanvas_model_module("qwen_image_edit").capabilities.references.max_images >= 1
     for key in ("sdxl", "anima", "z_image"):
         assert _get_unicanvas_model_module(key).capabilities.references is None
 
@@ -141,11 +140,10 @@ def test_minimax_h3_is_a_reference_to_video_model_used_for_stills():
 
 def test_pose_edit_support_is_declared():
     supported = {module.key for module in _families() if module.capabilities.supports_pose_edit}
-    assert supported == {"qwen_image_edit", "flux_klein"}
+    assert supported == {"flux_klein"}
 
 
 def test_default_loaders_are_declared():
-    assert _get_unicanvas_model_module("qwen_image_edit").capabilities.default_loader == "gguf"
     for key in ("anima", "flux_klein", "z_image", "krea2_edit", "qwen_image21"):
         assert _get_unicanvas_model_module(key).capabilities.default_loader == "diffusion_model", key
     assert _get_unicanvas_model_module("sdxl").capabilities.default_loader is None
@@ -212,12 +210,18 @@ def test_every_prompt_guide_cites_its_sources(module):
         assert guide.describe()["sources"] == list(guide.sources)
 
 
-def test_qwen_edit_guide_follows_the_official_edit_prompt_enhancer_rules():
-    guide = _get_unicanvas_model_module("qwen_image_edit").capabilities.prompt_guide
-    assert any("QwenLM/Qwen-Image" in source and "prompt_utils.py" in source for source in guide.sources)
-    assert not any("apiyi" in source for source in guide.sources)  # a text-to-image guide, not an edit guide
-    assert "Replace Y with X" in guide.guide
-    assert "English double quotes" in guide.guide
-    assert "Perform inpainting on this image. The original caption is:" in guide.guide
-    assert "Extend the image beyond its boundaries using outpainting" in guide.guide
-    assert "Picture 2" in guide.guide
+def test_qie2511_is_no_longer_registered():
+    import pytest
+
+    for key in ("qwen_image_edit", "qwen-edit", "qwen_edit", "qwen-image-edit", "qwen_image_edit_2511"):
+        with pytest.raises(ValueError, match="Unsupported UniCanvas model mode"):
+            _get_unicanvas_model_module(key)
+
+
+def test_qi21_defaults_use_the_vnccs_stack():
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.label == "Qwen Edit 2.1"
+    assert module.defaults["diffusion_model_name"] == "qwen_image_2.1_int8_convrot.safetensors"
+    assert module.defaults["clip_name"] == "qwen3vl_8b_int8_convrot.safetensors"
+    assert module.defaults["vae_name"] == "qwen_image_2.1_vae_bf16.safetensors"
+    assert module.defaults["qwen_lora_name"] == "QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"

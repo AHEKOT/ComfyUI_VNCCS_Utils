@@ -17,7 +17,7 @@ export const REMOVE_BG_METHODS = [
   ["sam3", "SAM 3 (pick what to keep)"],
 ];
 export const REMOVE_BG_EDIT_MODES = [
-  ["qwen_image21", "Qwen Image 2.1"],
+  ["qwen_image21", "Qwen Edit 2.1"],
 ];
 // The universal instruction sent for every Remove bg run (editable in the settings).
 export const REMOVE_BG_DEFAULT_PROMPT = "Remove the background, and output a PNG image";

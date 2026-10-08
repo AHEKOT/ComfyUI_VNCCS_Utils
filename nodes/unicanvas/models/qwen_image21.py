@@ -57,7 +57,7 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
     "generation_mode": "qwen_image21",
     "model_loader": "diffusion_model",
     "diffusion_model_name": "qwen_image_2.1_int8_convrot.safetensors",
-    "clip_name": "qwen3vl_8b_int8_convrot_bf16vision.safetensors",
+    "clip_name": "qwen3vl_8b_int8_convrot.safetensors",
     "vae_name": "qwen_image_2.1_vae_bf16.safetensors",
     "clip_type": "qwen_image",
     "sampler": "euler",
@@ -82,7 +82,7 @@ QWEN_IMAGE21_DEFAULTS: dict[str, Any] = {
 QWEN21_TURBO_LORA_REPO_ID = "Viggle/Qwen-Image-2.1-viggle-turbo"
 QWEN21_TURBO_LORA_REVISION = "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
 QWEN21_TURBO_LORA_FILENAME = "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors"
-QWEN21_TURBO_LORA_NAME = f"viggle/{QWEN21_TURBO_LORA_FILENAME}"
+QWEN21_TURBO_LORA_NAME = f"QI2/Viggle/{QWEN21_TURBO_LORA_FILENAME}"
 QWEN21_TURBO_STEPS = 6
 QWEN_IMAGE21_DEFAULTS["qwen_lora_name"] = QWEN21_TURBO_LORA_NAME
 
@@ -149,7 +149,7 @@ def _resolve_hf_lora(repo_id: str, revision: str, filename: str, lora_name: str,
 
 
 def resolve_qwen21_turbo_lora() -> str:
-    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA into models/loras/viggle/."""
+    """Resolve (downloading when missing) the Viggle QI2.1 turbo LoRA into models/loras/QI2/Viggle/."""
     return _resolve_hf_lora(
         QWEN21_TURBO_LORA_REPO_ID, QWEN21_TURBO_LORA_REVISION, QWEN21_TURBO_LORA_FILENAME, QWEN21_TURBO_LORA_NAME,
         _QWEN21_TURBO_LORA_LOCK, _QWEN21_TURBO_LORA_DOWNLOAD, "Viggle QI2.1 turbo LoRA",
@@ -213,7 +213,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
     """
 
     capabilities: ModelCapabilities = ModelCapabilities(
-        label="Qwen Image 2.1",
+        label="Qwen Edit 2.1",
         tasks=(
             STANDARD_TASKS["text_to_image"],
             *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),

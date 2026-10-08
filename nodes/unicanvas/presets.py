@@ -12,7 +12,10 @@ import threading
 import tempfile
 from typing import Any
 
-from .paths import _EXTENSION_ROOT, _is_absolute_any_os
+from .paths import (
+    _EXTENSION_ROOT, _get_full_path_agnostic, _is_absolute_any_os,
+    _resolve_model_filename, _safe_get_folder_paths, _validate_model_name,
+)
 
 
 _PRESET_DOWNLOAD_STATUS: dict[str, dict[str, Any]] = {}
@@ -33,6 +36,11 @@ _PRESET_MODEL_SETTING_KEYS = {
 }
 _PRESET_MIN_MODEL_FILE_SIZE = 1024
 _PRESET_DEFAULT_MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024 * 1024
+_PRESET_FOLDER_ALIASES = {
+    "diffusion_models": ("diffusion_models", "unet"),
+    "unet": ("unet", "diffusion_models"),
+    "text_encoders": ("text_encoders", "clip"),
+}
 
 
 def _unicanvas_presets_path() -> str:
@@ -61,6 +69,7 @@ def _unicanvas_validate_model_filename(path: str) -> None:
 
 
 def _unicanvas_resolve_local_model_path(local_path: str) -> str:
+    _validate_model_name(local_path)
     normalized = str(local_path or "").strip().replace("\\", "/")
     if not normalized:
         raise ValueError("Preset asset local_path is required")
@@ -72,8 +81,18 @@ def _unicanvas_resolve_local_model_path(local_path: str) -> str:
     if any(part in {".", ".."} for part in parts):
         raise ValueError("Preset asset local_path contains path traversal")
     _unicanvas_validate_model_filename(parts[-1])
-    root = _unicanvas_models_root()
-    target = os.path.abspath(os.path.join(root, *parts[1:]))
+    root = os.path.join(_unicanvas_models_root(), parts[1])
+    try:
+        import folder_paths
+    except ImportError:
+        pass
+    else:
+        for category in _PRESET_FOLDER_ALIASES.get(parts[1], (parts[1],)):
+            folders = _safe_get_folder_paths(folder_paths, category)
+            if folders:
+                root = os.path.abspath(folders[0])
+                break
+    target = os.path.abspath(os.path.join(root, *parts[2:]))
     if os.path.commonpath([root, target]) != root:
         raise ValueError("Preset asset local_path escapes ComfyUI models directory")
     return target
@@ -84,11 +103,25 @@ def _unicanvas_asset_rel_name(local_path: str) -> str:
     parts = [part for part in normalized.split("/") if part]
     if len(parts) < 3 or parts[0] != "models":
         return os.path.basename(normalized)
-    folder = parts[1]
-    tail = "/".join(parts[2:])
-    if folder in {"checkpoints", "loras"}:
-        return tail
-    return os.path.basename(tail)
+    return "/".join(parts[2:])
+
+
+def _unicanvas_find_installed_asset(local_path: str) -> tuple[str, str]:
+    target = _unicanvas_resolve_local_model_path(local_path)
+    relative_name = _unicanvas_asset_rel_name(local_path)
+    category = [part for part in local_path.strip().replace("\\", "/").split("/") if part][1]
+    categories = _PRESET_FOLDER_ALIASES.get(category, (category,))
+    try:
+        import folder_paths
+    except ImportError:
+        return target, relative_name
+    for key in categories:
+        for name in (relative_name, relative_name.rsplit("/", 1)[-1],
+                     _resolve_model_filename(folder_paths, key, relative_name)):
+            found = _get_full_path_agnostic(folder_paths, key, name, require_exists=True)
+            if found and os.path.isfile(found):
+                return found, name
+    return target, relative_name
 
 
 def _unicanvas_load_preset_registry() -> dict[str, Any]:
@@ -104,13 +137,13 @@ def _unicanvas_load_preset_registry() -> dict[str, Any]:
 def _unicanvas_enrich_asset(entry: dict[str, Any], download_key: str) -> dict[str, Any]:
     enriched = dict(entry)
     local_path = str(enriched.get("local_path") or "")
-    target_path = _unicanvas_resolve_local_model_path(local_path) if local_path else ""
+    target_path, relative_name = _unicanvas_find_installed_asset(local_path) if local_path else ("", "")
     status = _PRESET_DOWNLOAD_STATUS.get(download_key) or {}
     enriched["download_key"] = download_key
-    enriched["relative_name"] = _unicanvas_asset_rel_name(local_path)
-    enriched["installed"] = bool(target_path and os.path.exists(target_path))
-    enriched["status"] = status.get("status") or ("installed" if enriched["installed"] else "missing")
-    enriched["message"] = status.get("message") or ("Installed" if enriched["installed"] else "Missing")
+    enriched["relative_name"] = relative_name
+    enriched["installed"] = bool(target_path and os.path.isfile(target_path))
+    enriched["status"] = "installed" if enriched["installed"] else status.get("status") or "missing"
+    enriched["message"] = "Installed" if enriched["installed"] else status.get("message") or "Missing"
     if "progress" in status:
         enriched["progress"] = status.get("progress")
     return enriched
@@ -183,7 +216,8 @@ def _unicanvas_download_worker_loop() -> None:
         temp_path = ""
         try:
             target_path = _unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))
-            if os.path.lexists(target_path):
+            installed_path, _ = _unicanvas_find_installed_asset(str(asset.get("local_path") or ""))
+            if os.path.isfile(installed_path) or os.path.lexists(target_path):
                 _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
                 continue
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Initializing", "progress": 0}
@@ -244,6 +278,10 @@ def _ensure_unicanvas_download_worker() -> None:
 
 
 def _enqueue_preset_download(download_key: str, asset: dict[str, Any]) -> None:
+    installed_path, _ = _unicanvas_find_installed_asset(str(asset.get("local_path") or ""))
+    if os.path.isfile(installed_path):
+        _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
+        return
     _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "queued", "message": "Queued", "progress": 0}
     _ensure_unicanvas_download_worker()
     _PRESET_DOWNLOAD_QUEUE.put((download_key, asset))

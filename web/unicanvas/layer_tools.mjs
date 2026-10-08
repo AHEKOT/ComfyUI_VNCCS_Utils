@@ -318,7 +318,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     startSamRemoveBackground(uc, layer);
     return;
   }
-  const editModelLabel = "Qwen Image 2.1";
+  const editModelLabel = "Qwen Edit 2.1";
   const label = method === "edit"
     ? `Remove bg – Edit model (${editModelLabel})`
     : `Remove bg – ${{ birefnet: "BiRefNet", rembg: "rembg", sam3: "SAM 3" }[method] || "Edit model"}`;
@@ -331,7 +331,7 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     uc.setStatus("[VNCCS UniCanvas] Remove bg: layer is locked.", true);
     return;
   }
-  const before = uc.createLayerPixelSnapshot(layer);
+  const layerState = uc.captureLayerEditState(layer);
   const source = uc.cloneCanvasCrop(layer.canvas, crop);
   uc.setStatus(`[VNCCS UniCanvas] ${label} running...`);
   try {
@@ -348,6 +348,11 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     const alpha = await uc.loadImage(data.alpha);
+    if (!uc.isLayerEditStateCurrent(layerState)) {
+      uc.setStatus(`[VNCCS UniCanvas] ${label}: layer changed; run again.`, true);
+      return;
+    }
+    const before = uc.createLayerPixelSnapshot(layer);
     uc.materializeRasterLayerForEditing(layer);
     const ctx = layer.canvas.getContext("2d");
     ctx.save();

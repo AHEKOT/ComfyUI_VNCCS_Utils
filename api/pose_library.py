@@ -9,7 +9,6 @@ import tempfile
 import uuid
 import threading
 import asyncio
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from urllib.parse import unquote, urlparse
 from aiohttp import web
@@ -1508,6 +1507,9 @@ async def save_pose(request):
     old_preview_path = None
     prepared_preview = None
     pose_tmp_path = None
+    preview_target = None
+    preview_backup_path = None
+    preview_installed = False
 
     try:
         if preview_b64:
@@ -1529,21 +1531,49 @@ async def save_pose(request):
         if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
             old_preview_path, _ = find_preview(old_pose_dir, old_name)
 
-        os.replace(pose_tmp_path, pose_path)
-        pose_tmp_path = None
+        if not prepared_preview and old_preview_path:
+            ext = os.path.splitext(old_preview_path)[1].lower() or ".webp"
+            fd, staged = tempfile.mkstemp(prefix="vnccs_preview_", suffix=ext, dir=pose_dir)
+            os.close(fd)
+            prepared_preview = (staged, ext)
+            shutil.copy2(old_preview_path, staged)
 
         if prepared_preview:
-            install_prepared_preview(pose_dir, name, prepared_preview)
+            preview_target = os.path.join(pose_dir, f"{name}{prepared_preview[1]}")
+            if os.path.exists(preview_target):
+                fd, preview_backup_path = tempfile.mkstemp(prefix="vnccs_preview_backup_", dir=pose_dir)
+                os.close(fd)
+                shutil.copy2(preview_target, preview_backup_path)
+            os.replace(prepared_preview[0], preview_target)
+            preview_installed = True
             prepared_preview = None
-        elif old_preview_path:
-            ext = os.path.splitext(old_preview_path)[1].lower() or ".webp"
-            remove_previews(pose_dir, name)
-            shutil.move(old_preview_path, os.path.join(pose_dir, f"{name}{ext}"))
-        elif old_pose_path and old_pose_dir and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
-            remove_previews(old_pose_dir, old_name)
 
-        if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path) and os.path.exists(old_pose_path):
-            os.remove(old_pose_path)
+        # shortcut: write errors roll back; use a manifest-based item format if crash recovery is required.
+        try:
+            os.replace(pose_tmp_path, pose_path)
+        except Exception:
+            if preview_installed:
+                if preview_backup_path:
+                    backup = preview_backup_path
+                    preview_backup_path = None  # Keep the backup if restoring it also fails.
+                    os.replace(backup, preview_target)
+                else:
+                    os.remove(preview_target)
+            raise
+        pose_tmp_path = None
+
+        obsolete = []
+        if preview_installed:
+            obsolete.extend(path for path, _ in preview_candidates(pose_dir, name) if path != preview_target)
+        if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
+            obsolete.append(old_pose_path)
+            obsolete.extend(path for path, _ in preview_candidates(old_pose_dir, old_name))
+        for path in obsolete:
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass  # The new item is committed; keep an obsolete file rather than fail the save.
     except ValueError as exc:
         message = str(exc)
         status = 413 if "too large" in message.lower() or "exceeds" in message.lower() else 400
@@ -1551,7 +1581,7 @@ async def save_pose(request):
     except Exception as exc:
         return web.json_response({"error": f"Failed to save pose: {exc}"}, status=400)
     finally:
-        leftovers = [pose_tmp_path]
+        leftovers = [pose_tmp_path, preview_backup_path]
         if prepared_preview:
             leftovers.append(prepared_preview[0])
         for leftover in leftovers:

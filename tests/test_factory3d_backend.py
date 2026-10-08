@@ -1484,6 +1484,44 @@ class FactoryBackendTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.factory._scene_skydome_file(removed)
 
+    def test_failed_skydome_replacement_preserves_all_previous_assets(self):
+        scene = self.factory.create_scene("Sky")
+        old_stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "red").save(old_stream, "JPEG")
+        saved = self.factory.store_scene_skydome(scene["scene_id"], old_stream.getvalue())
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        for image_format in ("JPEG", "PNG"):
+            stream = io.BytesIO()
+            Image.new("RGB", (16, 8), "blue").save(stream, image_format)
+            for stage in ("_write_browser_preview", "_save_scene"):
+                with self.subTest(image_format=image_format, stage=stage):
+                    with mock.patch.object(self.factory, stage, side_effect=OSError("disk error")):
+                        with self.assertRaisesRegex(OSError, "disk error"):
+                            self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+                    self.assertEqual(
+                        {str(path.relative_to(root)): path.read_bytes() for path in root.rglob("*") if path.is_file()}, before,
+                    )
+                    self.assertEqual(self.factory.load_scene(scene["scene_id"])["skydome"], saved["skydome"])
+        with mock.patch.object(self.factory, "_save_scene", side_effect=OSError("disk error")):
+            with self.assertRaisesRegex(OSError, "disk error"):
+                self.factory.remove_scene_skydome(scene["scene_id"])
+        self.assertEqual(self.factory._scene_skydome_file(saved).read_bytes(), old_stream.getvalue())
+
+    def test_skydome_commit_retires_previous_source_and_viewport(self):
+        scene = self.factory.create_scene("Sky")
+        stream = io.BytesIO()
+        Image.new("RGB", (16, 8), "red").save(stream, "JPEG")
+        old = self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+        previous_source = self.factory._scene_skydome_file(old)
+        previous_viewport = self.factory._scene_skydome_viewport_file(old)
+        new = self.factory.store_scene_skydome(scene["scene_id"], stream.getvalue())
+        self.assertEqual(old["skydome"]["skydome_id"], new["skydome"]["skydome_id"])
+        self.assertFalse(previous_source.exists())
+        self.assertFalse(previous_viewport.exists())
+        self.assertTrue(self.factory._scene_skydome_file(new).is_file())
+        self.assertTrue(self.factory._scene_skydome_viewport_file(new).is_file())
+
     def test_scene_preview_is_a_revision_bound_3d_render(self):
         scene = self.factory.create_scene("Scene")
         scene = self.factory.update_scene(

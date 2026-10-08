@@ -36,6 +36,7 @@ const context = {
   document: { createElement: () => new AlphaCanvas(0, 0) },
   window: { performance: { now: () => 1000 }, setTimeout: () => 1, clearTimeout() {}, devicePixelRatio: 1 },
   console,
+  getComputedStyle: (canvas) => canvas.theme,
   STAGE_SCALE_FACTOR: 0.999, STAGE_MIN_SCALE: 0.1, STAGE_MAX_SCALE: 20, STAGE_SNAP_POINTS: [], STAGE_SNAP_TOLERANCE: 0.02,
   STAGING_ICONS: { show: "<svg>show</svg>", hide: "<svg>hide</svg>" },
 };
@@ -154,6 +155,23 @@ test("the background grid is stroked as one path", () => {
   assert.equal(calls.filter((name) => name === "stroke").length, 1);
   assert.equal(calls.filter((name) => name === "beginPath").length, 1);
   assert.ok(calls.filter((name) => name === "moveTo").length > 300, "every grid line is still drawn");
+});
+
+test("standalone background follows the current theme; node background stays unchanged", () => {
+  const ctx = { fillRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {} };
+  const canvas = { theme: { backgroundColor: "rgb(240, 240, 240)", color: "rgba(0, 0, 0, 0.08)" } };
+  const w = widget({ standalone: true, canvas, view: { x: 0, y: 0, scale: 1 } });
+  w.drawBackground(ctx, 100, 100);
+  assert.equal(ctx.fillStyle, canvas.theme.backgroundColor);
+  assert.equal(ctx.strokeStyle, canvas.theme.color);
+  canvas.theme = { backgroundColor: "rgb(24, 24, 24)", color: "rgba(255, 255, 255, 0.08)" };
+  w.drawBackground(ctx, 100, 100);
+  assert.equal(ctx.fillStyle, canvas.theme.backgroundColor);
+  assert.equal(ctx.strokeStyle, canvas.theme.color);
+  w.standalone = false;
+  w.drawBackground(ctx, 100, 100);
+  assert.equal(ctx.fillStyle, "#07070c");
+  assert.equal(ctx.strokeStyle, "rgba(255,255,255,.045)");
 });
 
 test("per-render panel updates rebuild their HTML only when it changes", () => {

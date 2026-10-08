@@ -55,7 +55,7 @@ Layered; lower layers never import higher ones (no import cycles):
    `latents`, `sampling`, `draw_pipeline` (`ImageDrawPipeline`, `DrawContext`)
 4. Model families: `models/` — `capabilities` (tasks, media kinds, reference slots, prompt
    guides), `base.UniCanvasModelModule` (data + hooks), `registry`, one module per family
-   (`sdxl`, `anima`, `flux_klein`, `qwen_image_edit`, `qwen_image21`, `z_image`,
+   (`sdxl`, `anima`, `flux_klein`, `qwen_image21`, `z_image`,
    `minimax_h3`, `krea2_edit` + vendored `krea2_edit_inference`). Registration happens only
    in `models/__init__.py`.
 5. Features: `presets`, `assets`, `generation`, `draw_request`, `draw`, `segment`,

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
+import { UNICANVAS_QWEN21_MODULE } from "../web/unicanvas/qwen21.mjs";
 
 import {
     forceUniCanvasPresetModelSettings,
@@ -56,6 +58,33 @@ test("selected UniCanvas preset forces model identity but preserves runtime sett
     assert.equal(settings.ckpt_name, "Illustrious/ILFlatMix.safetensors");
     assert.equal(settings.selected_preset_id, "sdxl");
     assert.equal(settings.steps, 31);
+});
+
+
+test("Qwen Edit 2.1 shares the VNCCS model filenames and restores turbo across folders", async () => {
+    const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+    const preset = presets.find((entry) => entry.id === "qwen_image21");
+    assert.equal(preset.title, "Qwen Edit 2.1");
+    assert.equal(UNICANVAS_QWEN21_MODULE.qwen_image21.label, preset.title);
+    for (const key of ["diffusion_model_name", "clip_name", "vae_name"]) {
+        assert.equal(UNICANVAS_QWEN21_MODULE.qwen_image21.defaults[key], preset.settings[key]);
+    }
+    assert.ok(!presets.some((entry) => entry.id === "qwen_image_edit"));
+    assert.ok(!source.includes("qwen_image_edit"));
+
+    const method = source.slice(source.indexOf("  isPresetTurboEnabled(preset) {"), source.indexOf("  getPresetTurboPreviousKey(preset) {"));
+    const widget = runInNewContext(`({ ${method.trim()} })`);
+    const filename = preset.turbo.asset.local_path.split("/").pop();
+    preset.turbo.asset.relative_name = `QI2/Viggle/${filename}`;
+    widget.normalizeRelName = (value) => String(value || "").replaceAll("\\", "/").toLowerCase();
+    widget.settings = { qwen21_turbo_enabled: true, qwen_lora_name: `viggle\\${filename}`, qwen_lora_strength: 1 };
+    assert.equal(widget.isPresetTurboEnabled(preset), true);
+    widget.settings.qwen21_turbo_enabled = false;
+    assert.equal(widget.isPresetTurboEnabled(preset), false);
+    widget.settings.qwen21_turbo_enabled = true;
+    widget.settings.qwen_lora_name = "another.safetensors";
+    assert.equal(widget.isPresetTurboEnabled(preset), false);
 });
 
 

@@ -7,6 +7,7 @@
  */
 
 import { app } from "../../../scripts/app.js";
+import { STANDALONE_STYLES } from "./standalone_theme.mjs";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -16,11 +17,6 @@ const UNICANVAS_PANELS_HIDDEN_CLASS = "vnccs-uc2-panels-hidden";
 const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";
 const UNICANVAS_MODE_STYLE_ID = "vnccs-unicanvas-modes-styles";
 const UNICANVAS_FULLSCREEN_CLASS = "vnccs-uc-fullscreen";
-
-// The UniCanvas sidebar icon (web/unicanvas/assets/icon.svg): a stack of layers with a dashed
-// selection around the active one. The ComfyUI sidebar tab strip renders the icon value as a CSS
-// class on an <i> element, so the SVG is painted from CSS and stays visible without an icon font.
-const UNICANVAS_SIDEBAR_ICON_SVG = new URL("./assets/icon.svg", import.meta.url).href;
 
 const BRUSH_SIZE_MIN = 1;
 const BRUSH_SIZE_MAX = 220;
@@ -44,8 +40,7 @@ const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
 const UNICANVAS_MODE_STYLES = `
-i.${UNICANVAS_SIDEBAR_ICON_CLASS} { display: inline-block; width: 1.6em; height: 1.6em; background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat; }
-.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: #0e0b12; }
+.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: var(--base-background, var(--bg-color)); }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
@@ -77,7 +72,6 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-unicanvas.vnccs-uc-pose-editing .vnccs-uc-side > .vnccs-uc2-save-actions { display: flex !important; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
-body.${UNICANVAS_STANDALONE_BODY_CLASS} .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
 /* ComfyUI's own dialogs (Settings, confirmers) and their dimming scrim must open
    ABOVE the standalone shell and the fullscreen portal, never behind them. The
    stylesheet flag beats the inline z-index that PrimeVue/Reka set on the masks. */
@@ -96,7 +90,7 @@ export function ensureUniCanvasModeStyles() {
   if (document.getElementById(UNICANVAS_MODE_STYLE_ID)) return;
   const style = document.createElement("style");
   style.id = UNICANVAS_MODE_STYLE_ID;
-  style.textContent = UNICANVAS_MODE_STYLES;
+  style.textContent = UNICANVAS_MODE_STYLES + STANDALONE_STYLES;
   document.head.appendChild(style);
 }
 
@@ -923,6 +917,9 @@ function createStandaloneWidget(UniCanvasWidgetClass) {
   };
   const widget = new UniCanvasWidgetClass(stubNode);
   widget.standalone = true;
+  widget.container.classList.add("vnccs-uc-standalone");
+  widget.drawBtn.textContent = "Generate";
+  widget.donateLink.textContent = "Support MIUProject";
   installUniCanvasWidgetModes(widget);
   return widget;
 }
@@ -1095,7 +1092,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     id: UNICANVAS_STANDALONE_TAB_ID,
     title: "Unicanvas",
     tooltip: "Unicanvas",
-    icon: UNICANVAS_SIDEBAR_ICON_CLASS,
+    icon: `pi pi-images ${UNICANVAS_SIDEBAR_ICON_CLASS}`,
     type: "custom",
     render(container) {
       mountContainer = container;

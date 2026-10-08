@@ -53,7 +53,7 @@ _SAMPLING = {
     "repetition_penalty": 1.05,
     "presence_penalty": 0.0,
 }
-# Official rewriters answer in JSON (QI2.1 "rewritten_prompt", Qwen Edit "Rewritten").
+# Official rewriters answer in JSON (QI2.1 "rewritten_prompt").
 _JSON_KEYS = ("rewritten_prompt", "rewritten", "prompt")
 _JSON_FIELD = re.compile(r'"(?:rewritten_prompt|rewritten)"\s*:\s*"((?:[^"\\]|\\.)*)"', re.IGNORECASE)
 
