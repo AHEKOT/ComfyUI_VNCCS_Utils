@@ -621,45 +621,56 @@ def save_asset(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def update_asset(asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
-    record, paths = _find_record(
-        asset_id,
-        str(payload.get("repository") or ""),
-        str(payload.get("old_category") or payload.get("category") or ""),
-    )
-    if record.get("repository") != LOCAL_REPOSITORY:
-        raise ValueError("downloaded repository assets are read-only")
-    category = _category(payload.get("category") or record.get("category"))
-    target_paths = _paths(LOCAL_REPOSITORY, category, record["asset_id"])
-    preview_value = payload.get("preview")
-    if preview_value:
-        target_paths["preview"].write_bytes(_decode_preview(preview_value))
-    elif paths["preview"].is_file() and paths["preview"] != target_paths["preview"]:
-        target_paths["preview"].parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(paths["preview"], target_paths["preview"])
-    for kind in ("package",):
-        if paths[kind] != target_paths[kind]:
-            target_paths[kind].parent.mkdir(parents=True, exist_ok=True)
-            shutil.move(paths[kind], target_paths[kind])
-    record.update(
-        {
-            "name": _name(payload.get("name"), record.get("name") or "3D asset"),
-            "description": str(payload.get("description") or "")[:2000],
-            "category": category,
-            "tags": [
-                str(tag).strip()[:48]
-                for tag in (payload.get("tags") if isinstance(payload.get("tags"), list) else [])
-                if str(tag).strip()
-            ][:32],
-            "updated_at": time.time(),
-            "has_preview": target_paths["preview"].is_file(),
-        }
-    )
-    _atomic_json(target_paths["meta"], record)
-    if paths["meta"] != target_paths["meta"]:
-        paths["meta"].unlink(missing_ok=True)
-    if paths["preview"] != target_paths["preview"]:
-        paths["preview"].unlink(missing_ok=True)
-    return record
+    with factory._STATE_LOCK:
+        record, paths = _find_record(
+            asset_id,
+            str(payload.get("repository") or ""),
+            str(payload.get("old_category") or payload.get("category") or ""),
+        )
+        if record.get("repository") != LOCAL_REPOSITORY:
+            raise ValueError("downloaded repository assets are read-only")
+        category = _category(payload.get("category") or record.get("category"))
+        target_paths = _paths(LOCAL_REPOSITORY, category, record["asset_id"])
+        moving = paths["meta"] != target_paths["meta"]
+        if moving and target_paths["meta"].exists():
+            raise ValueError("asset already exists in the target category")
+        try:
+            preview_value = payload.get("preview")
+            if preview_value:
+                target_paths["preview"].write_bytes(_decode_preview(preview_value))
+            elif paths["preview"].is_file() and paths["preview"] != target_paths["preview"]:
+                target_paths["preview"].parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(paths["preview"], target_paths["preview"])
+            for kind in ("package",):
+                if paths[kind] != target_paths[kind]:
+                    target_paths[kind].parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(paths[kind], target_paths[kind])
+            record.update(
+                {
+                    "name": _name(payload.get("name"), record.get("name") or "3D asset"),
+                    "description": str(payload.get("description") or "")[:2000],
+                    "category": category,
+                    "tags": [
+                        str(tag).strip()[:48]
+                        for tag in (payload.get("tags") if isinstance(payload.get("tags"), list) else [])
+                        if str(tag).strip()
+                    ][:32],
+                    "updated_at": time.time(),
+                    "has_preview": target_paths["preview"].is_file(),
+                }
+            )
+            _atomic_json(target_paths["meta"], record)
+        except Exception:
+            if moving:
+                for kind in ("package", "preview"):
+                    target_paths[kind].unlink(missing_ok=True)
+            raise
+        if paths["meta"] != target_paths["meta"]:
+            paths["meta"].unlink(missing_ok=True)
+            paths["package"].unlink(missing_ok=True)
+        if paths["preview"] != target_paths["preview"]:
+            paths["preview"].unlink(missing_ok=True)
+        return record
 
 
 def _safe_member(member: zipfile.ZipInfo) -> PurePosixPath:
@@ -795,6 +806,7 @@ def _install_object(
             installed[key] = str(target.relative_to(root))
         if "ply" not in installed:
             raise ValueError("Gaussian object package is incomplete")
+        factory.validate_ply_payload(root / installed["ply"])
         item = json.loads(json.dumps(stored))
         item["object_id"] = object_id
         item["name"] = factory._duplicate_object_name(scene, stored.get("name"))

@@ -1346,8 +1346,11 @@ def install_prepared_preview(folder_path, name, prepared_preview):
     if not prepared_preview:
         return
     tmp_path, ext = prepared_preview
-    remove_previews(folder_path, name)
-    os.replace(tmp_path, os.path.join(folder_path, f"{name}{ext}"))
+    target = os.path.join(folder_path, f"{name}{ext}")
+    os.replace(tmp_path, target)
+    for path, _ in preview_candidates(folder_path, name):
+        if path != target and os.path.exists(path):
+            os.remove(path)
 
 def normalize_request_repository(value):
     return str(value or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY

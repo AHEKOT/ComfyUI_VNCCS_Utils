@@ -6,11 +6,30 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from helpers.runtime_caches import load_runtime_caches
+from helpers.unicanvas_package import load_unicanvas_package
 
 
 class RuntimeCacheTests(unittest.TestCase):
+    def test_canvas_node_reads_the_same_normalized_ids_as_upload_api(self):
+        state_module = load_unicanvas_package("vnccs_cache_reader_test").state
+        directory = self.cache["_UNICANVAS_STATE_CACHE_DIR"]
+        with mock.patch.object(state_module, "_UNICANVAS_STATE_CACHE_DIR", directory):
+            for state_id in ("a" * 96, "b" * 97, "c" * 128, "___" + "d" * 128 + "___", "e" * 127 + "__more", "!bad/name!"):
+                with self.subTest(state_id=state_id):
+                    state = {"layers": [], "marker": state_id}
+                    class Request:
+                        headers = {"Content-Length": "1000"}
+
+                        async def json(self):
+                            return {"state_id": state_id, "state": state}
+
+                    response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_upload"](Request()))
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(state_module._read_unicanvas_state_cache(state_id), state)
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

@@ -181,6 +181,22 @@ test("queue synchronization commits pixels before projecting and awaits successf
   await assert.rejects(w.preparePanoramaForQueue(), /Finish/);
 });
 
+test("flat raster queue waits for current pixels and refreshed bounds, and rejects a failed save", async () => {
+  const order = []; let finish;
+  const w = widget({ layers: [{ type: "raster" }],
+    flushStateUpload: () => { order.push("upload"); return new Promise(resolve => { finish = resolve; }); },
+    syncToNode: () => order.push("metadata"),
+  });
+  const pending = w.preparePanoramaForQueue();
+  assert.deepEqual(order, ["upload"]);
+  finish(true); await pending;
+  assert.deepEqual(order, ["upload", "metadata"]);
+  w.flushStateUpload = async () => false;
+  await assert.rejects(w.preparePanoramaForQueue(), /queue stopped/);
+  w.isPointerDown = true;
+  await assert.rejects(w.preparePanoramaForQueue(), /Finish/);
+});
+
 test("panorama uploads cannot overwrite newer state by finishing out of order", async () => {
   const started = []; let release;
   const w = widget({ performStateUpload: async state => {

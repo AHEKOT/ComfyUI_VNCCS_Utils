@@ -55,7 +55,7 @@ def _vnccs_content_length_ok(request, max_bytes):
 
 def _vnccs_safe_id(value, fallback="item"):
     cleaned = _SAFE_ID_RE.sub("_", str(value or "")).strip("_")
-    return cleaned[:128] or fallback
+    return cleaned[:128].rstrip("_") or fallback
 
 def _vnccs_validate_capture_payload(data):
     captured_images = data.get("captured_images", [])

@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791482705880";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791482705880";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791484100953";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791484100953";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791482705880";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791482705880";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791482705880";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791482705880";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791482705880";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791482705880";
-import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791482705880";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791482705880";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791482705880";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791482705880";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791482705880";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791484100953";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791484100953";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791484100953";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791484100953";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791484100953";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791484100953";
+import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791484100953";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791484100953";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791484100953";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791484100953";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791484100953";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791482705880";
+} from "./unicanvas/transform.mjs?v=1791484100953";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791482705880";
+} from "./unicanvas/presets.mjs?v=1791484100953";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,9 +60,9 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791482705880";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791482705880";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791482705880";
+} from "./unicanvas/modes.mjs?v=1791484100953";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791484100953";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791484100953";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -75,7 +75,7 @@ import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=17914827058
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791482705880";
+const VNCCS_UNICANVAS_VERSION = "1791484100953";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -124,8 +124,8 @@ const VNCCS_UNICANVAS_VERSION = "1791482705880";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791482705880";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791482705880";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791484100953";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791484100953";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -2223,12 +2223,6 @@ class UniCanvasWidget {
     this.requestRender();
     this.syncToNode();
     this.setStatus(`Rasterized ${layer.name}`);
-  }
-
-  async preparePoseForQueue() {
-    await this.poseEditor?.flush();
-    this.panorama?.commit();
-    if (await this.uploadStatePayload(this.buildSerializedState(true)) === false) throw new Error("Pose state could not be saved; queue stopped to protect the latest edits");
   }
 
   toolNeedsCanvasRender(tool) {
@@ -8030,9 +8024,15 @@ class UniCanvasWidget {
   }
 
   async preparePanoramaForQueue() {
-    if (this.layers.some(layer => layer.type === "pose")) await this.preparePoseForQueue();
-    if (!this.panorama) return;
-    if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing the panorama");
+    if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing");
+    if (this.layers.some(layer => layer.type === "pose")) await this.poseEditor?.flush();
+    if (!this.panorama) {
+      // Full serialization refreshes raster bounds before the compact prompt is written.
+      const saved = await this.flushStateUpload();
+      this.syncToNode();
+      if (saved === false) throw new Error("UniCanvas state could not be saved; queue stopped to protect the latest edits");
+      return;
+    }
     this.panorama.commit();
     this.panorama.endCamera();
     this.syncToNode();

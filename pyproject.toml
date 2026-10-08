@@ -10,7 +10,6 @@ dependencies = [
     "aiohttp",
     "av",
     "kornia",
-    "requests",
     "torch",
     "torchvision",
     "numpy",

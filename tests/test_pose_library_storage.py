@@ -12,6 +12,22 @@ import pytest
 from test_pose_library_progress import POSE_LIBRARY as library
 
 
+def test_failed_preview_install_preserves_previous_file(tmp_path, monkeypatch):
+    previous = tmp_path / "Walk.webp"
+    previous.write_bytes(b"old preview")
+    prepared = tmp_path / "prepared.webp"
+    prepared.write_bytes(b"new preview")
+    with mock.patch.object(library.os, "replace", side_effect=OSError("disk error")):
+        with pytest.raises(OSError, match="disk error"):
+            library.install_prepared_preview(str(tmp_path), "Walk", (str(prepared), ".webp"))
+    assert previous.read_bytes() == b"old preview"
+    older_format = tmp_path / "Walk.png"
+    older_format.write_bytes(b"older preview")
+    library.install_prepared_preview(str(tmp_path), "Walk", (str(prepared), ".webp"))
+    assert previous.read_bytes() == b"new preview"
+    assert not older_format.exists()
+
+
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     root = tmp_path / "library"

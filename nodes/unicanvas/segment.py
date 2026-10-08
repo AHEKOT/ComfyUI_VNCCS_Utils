@@ -120,14 +120,14 @@ def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:
         from transformers.models.sam import SamModel
         from transformers.models.sam.processing_sam import SamProcessor
 
-        model = SamModel.from_pretrained(model_id)
-        processor = SamProcessor.from_pretrained(model_id)
+        model = SamModel.from_pretrained(model_id, token=False)
+        processor = SamProcessor.from_pretrained(model_id, token=False)
     else:
         from transformers.models.sam2 import Sam2Model
         from transformers.models.sam2.processing_sam2 import Sam2Processor
 
-        model = Sam2Model.from_pretrained(model_id)
-        processor = Sam2Processor.from_pretrained(model_id)
+        model = Sam2Model.from_pretrained(model_id, token=False)
+        processor = Sam2Processor.from_pretrained(model_id, token=False)
 
     device = _torch_device()
     model.to(device)

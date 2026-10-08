@@ -16,6 +16,30 @@ from nodes.unicanvas import gguf_compat, segment
 from nodes.unicanvas.describe_layers import clean_layer_name, layer_thumbnail
 
 
+@pytest.mark.parametrize("key", ["sam1_huge", "sam2_large"])
+def test_sam_public_downloads_disable_implicit_credentials(monkeypatch, key):
+    calls = []
+    model = types.SimpleNamespace(to=lambda _device: None, eval=lambda: None)
+
+    def model_load(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        return model
+
+    def processor_load(model_id, **kwargs):
+        calls.append((model_id, kwargs))
+        return object()
+
+    for family, model_name, processor_name in (("sam", "SamModel", "SamProcessor"), ("sam2", "Sam2Model", "Sam2Processor")):
+        monkeypatch.setitem(sys.modules, f"transformers.models.{family}", types.SimpleNamespace(
+            **{model_name: types.SimpleNamespace(from_pretrained=model_load)}))
+        monkeypatch.setitem(sys.modules, f"transformers.models.{family}.processing_{family}", types.SimpleNamespace(
+            **{processor_name: types.SimpleNamespace(from_pretrained=processor_load)}))
+    monkeypatch.setattr(segment, "_SAM_CACHE", {})
+    monkeypatch.setattr(segment, "_torch_device", lambda: "cpu")
+    assert segment._load_sam_model(key)[0] is model
+    assert calls == [(segment.SAM_MODEL_IDS[key], {"token": False})] * 2
+
+
 def _fake_gguf(monkeypatch):
     """A stand-in ComfyUI-GGUF package: loader + tools.convert with its detect_arch."""
 

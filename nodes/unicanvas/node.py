@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+
 from .draw import _run_unicanvas_draw
 from .progress import _store_draw_result
 from .render import _render_unicanvas_state_to_image_tensor
-from .state import _load_unicanvas_state
+from .state import _load_unicanvas_state, _unicanvas_state_cache_path
 
 
 # The composition keys _run_unicanvas_draw reads from an HTTP-path draw payload (the exact
@@ -52,7 +56,21 @@ class VNCCS_UniCanvas:
 
     @classmethod
     def IS_CHANGED(cls, unicanvas_state: str = "{}", config=None, unique_id: str | None = None):
-        return unicanvas_state
+        digest = hashlib.sha256(str(unicanvas_state or "").encode("utf-8"))
+        try:
+            state = json.loads(unicanvas_state or "{}")
+            if isinstance(state, dict):
+                # Pixels live outside the prompt; include both layer and panorama output caches.
+                output_id = state.get("output_id") or (f"{state['state_id']}_out" if state.get("panorama") and state.get("state_id") else None)
+                for state_id in (state.get("state_id"), output_id):
+                    if state_id:
+                        path = _unicanvas_state_cache_path(str(state_id))
+                        if path:
+                            stat = os.stat(path)
+                            digest.update(f"|{path}|{stat.st_mtime_ns}|{stat.st_ctime_ns}|{stat.st_size}".encode("utf-8"))
+        except (OSError, ValueError):
+            pass
+        return digest.hexdigest()
 
     def export_state(self, unicanvas_state: str = "{}", config=None, unique_id: str | None = None):
         if config is None:

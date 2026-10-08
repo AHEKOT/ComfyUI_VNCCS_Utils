@@ -1,16 +1,19 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import importlib.util
 import io
 import json
 import sys
 import tempfile
+import threading
 import types
 import unittest
 import zipfile
 from pathlib import Path
 from unittest import mock
 
+import numpy as np
 from PIL import Image
 
 
@@ -133,7 +136,13 @@ class FactoryLibraryTests(unittest.TestCase):
         Image.new("RGBA", (64, 64), (200, 80, 40, 255)).save(
             object_root / "prepared.png"
         )
-        (object_root / "model.ply").write_bytes(b"synthetic-ply")
+        names = ["x", "y", "z", "f_dc_0", "f_dc_1", "f_dc_2", "opacity",
+                 "scale_0", "scale_1", "scale_2", "rot_0", "rot_1", "rot_2", "rot_3"]
+        dtype = np.dtype([(name, "<f4") for name in names])
+        records = np.zeros(1, dtype=dtype)
+        records["rot_0"] = 1
+        gaussian = sys.modules[f"{self.factory.__package__}.gaussian_scene"]
+        (object_root / "model.ply").write_bytes(gaussian._ply_header(1, dtype) + records.tobytes())
         scene["objects"].append(
             {
                 "object_id": object_id,
@@ -194,7 +203,7 @@ class FactoryLibraryTests(unittest.TestCase):
         self.assertNotIn("splat", imported["files"])
         self.assertEqual(
             self.factory._object_file(restored["scene_id"], imported, "ply").read_bytes(),
-            b"synthetic-ply",
+            self.factory._object_file(scene["scene_id"], scene["objects"][0], "ply").read_bytes(),
         )
 
         updated = self.library.update_asset(
@@ -217,6 +226,78 @@ class FactoryLibraryTests(unittest.TestCase):
                 record["asset_id"],
             )["meta"].exists()
         )
+
+    def test_category_move_failure_preserves_readable_original_asset(self):
+        scene, object_id = self.make_scene()
+        record = self.library.save_asset({"scene_id": scene["scene_id"], "object_id": object_id,
+            "asset_type": "object", "category": "Props", "preview": preview_data_url()})
+        original = self.library._paths(record["repository"], record["category"], record["asset_id"])
+        before = {kind: path.read_bytes() for kind, path in original.items()}
+        for operation in ("copyfile", "_atomic_json"):
+            with self.subTest(operation=operation):
+                owner = self.library.shutil if operation == "copyfile" else self.library
+                with mock.patch.object(owner, operation, side_effect=OSError("disk full")):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        self.library.update_asset(record["asset_id"], {"old_category": "Props", "category": "New"})
+                self.assertEqual({kind: path.read_bytes() for kind, path in original.items()}, before)
+                self.assertEqual(self.library._find_record(record["asset_id"], record["repository"], "Props")[0], record)
+                target = self.library._paths(record["repository"], "New", record["asset_id"])
+                self.assertFalse(any(path.exists() for path in target.values()))
+
+    def test_invalid_gaussian_package_does_not_change_scene_or_leave_object_files(self):
+        scene, object_id = self.make_scene()
+        self.factory._object_file(scene["scene_id"], scene["objects"][0], "ply").write_bytes(b"NOT A PLY")
+        record = self.library.save_asset({"scene_id": scene["scene_id"], "object_id": object_id,
+            "asset_type": "object", "category": "Props"})
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = (root / "scene.json").read_bytes()
+        with self.assertRaises(ValueError):
+            self.library.load_asset(record["asset_id"], repository=record["repository"],
+                                    category=record["category"], scene_id=scene["scene_id"])
+        self.assertEqual((root / "scene.json").read_bytes(), before)
+        self.assertEqual([path.name for path in (root / "objects").iterdir()], [object_id])
+
+    def test_failed_category_move_cannot_remove_a_concurrent_successful_retry(self):
+        scene, object_id = self.make_scene()
+        record = self.library.save_asset({"scene_id": scene["scene_id"], "object_id": object_id,
+            "asset_type": "object", "category": "Props"})
+        entered, release, retry_started, retry_done = (threading.Event() for _ in range(4))
+        write = self.library._atomic_json
+
+        def failing_write(path, value):
+            if value["name"] == "Fail":
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("test writer timed out")
+                raise OSError("disk full")
+            write(path, value)
+
+        def update(name):
+            if name == "Retry":
+                retry_started.set()
+            try:
+                return self.library.update_asset(record["asset_id"], {
+                    "old_category": "Props", "category": "New", "name": name})
+            finally:
+                if name == "Retry":
+                    retry_done.set()
+
+        with mock.patch.object(self.library, "_atomic_json", side_effect=failing_write), ThreadPoolExecutor(2) as pool:
+            failed = pool.submit(update, "Fail")
+            try:
+                self.assertTrue(entered.wait(5))
+                retried = pool.submit(update, "Retry")
+                self.assertTrue(retry_started.wait(5))
+                self.assertFalse(retry_done.wait(.1))
+            finally:
+                release.set()
+            with self.assertRaisesRegex(OSError, "disk full"):
+                failed.result(timeout=5)
+            retried.result(timeout=5)
+        restored, paths = self.library._find_record(record["asset_id"], record["repository"], "New")
+        self.assertEqual(restored["name"], "Retry")
+        self.assertTrue(paths["package"].is_file())
+        self.library.load_asset(record["asset_id"], repository=record["repository"], category="New", scene_id=scene["scene_id"])
 
     def test_scene_package_preserves_camera_render_lighting_and_layers(self):
         scene, object_id = self.make_scene()
