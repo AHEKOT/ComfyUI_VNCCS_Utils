@@ -1,8 +1,8 @@
 import { PARAMETRIC_PARTS, PRIMITIVE_KINDS, primitiveLabel } from "./factory3d/geometry/parametric_parts.mjs";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { Factory3DViewer } from "./vnccs_3d_factory_viewer.js?v=20260908.4";
+import { installCustomSelects } from "./shared/custom_select.mjs";
+import { Factory3DViewer } from "./factory3d/viewer.js?v=20260908.4";
 import { hasRenderableFactoryScene } from "./factory3d/scene_content.mjs?v=20260905.1";
 import {
     allocateLocalLightShadows,
@@ -41,7 +41,7 @@ import {
 } from "./factory3d/camera_path.mjs?v=20260824.4";
 
 
-const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
+const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 const API_BASE = "/vnccs/3d-factory";
 const LIBRARY_BASE = `${API_BASE}/library`;
 const MODEL_LIBRARY_SCHEMA = "vnccs-3d-factory-library/v1";
@@ -229,7 +229,7 @@ const ICONS = Object.freeze({
 
 
 function installStyles() {
-    const href = new URL("./vnccs_3d_factory.css?v=20260908.2", import.meta.url).href;
+    const href = new URL("./factory3d/styles.css?v=20260908.2", import.meta.url).href;
     const existing = document.getElementById("vnccs-3d-factory-styles");
     if (existing) {
         if (existing.href !== href) existing.href = href;

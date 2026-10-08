@@ -37,7 +37,7 @@ The specs guard the standalone-tab smoke path, the measurement helper, the setti
 the pose edit session and backdrop, the standalone sidebar setting, `VNCSS Config` overrides,
 and the prompt guide; nothing calls GPU generation or downloads models. Geometric assertions
 read layer pixels and pose state through the read-only `window.__VNCCS_UC_E2E__` hook in
-`web/vnccs_unicanvas_modes.mjs`; `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium.
+`web/unicanvas/modes.mjs`; `PW_CHROMIUM_PATH=<chrome>` reuses a preinstalled Chromium.
 
 ## Test platform (Docker)
 

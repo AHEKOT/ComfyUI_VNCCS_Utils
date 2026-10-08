@@ -8,7 +8,7 @@
  */
 
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs";
 
 export const POSE_ANIMATION_SCHEMA_VERSION = 2;
 export const MODEL_ROTATION_TRACK = "@modelRotation";

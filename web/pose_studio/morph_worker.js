@@ -3,7 +3,7 @@ import {
     buildStaticModelData,
     loadMorphPack,
     solveMorph,
-} from "./vnccs_pose_morph_runtime.mjs";
+} from "./morph_runtime.mjs";
 
 let morphDataPromise = null;
 let morphData = null;

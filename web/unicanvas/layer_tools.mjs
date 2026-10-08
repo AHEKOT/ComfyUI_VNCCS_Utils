@@ -21,15 +21,15 @@
  *    strength slider is dragged; the release commits one history entry and
  *    stale previews are dropped (newest value wins).
  *
- * Like vnccs_unicanvas_input_tools.mjs, everything is installed onto the
+ * Like input_tools.mjs, everything is installed onto the
  * widget instance so the shared vnccs_unicanvas.js only needs an import and
  * one install call.
  */
 
-import { clamp } from "./vnccs_unicanvas_input_tools.mjs";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./vnccs_unicanvas_remove_bg.mjs";
-import { autoNameLayers } from "./vnccs_unicanvas_naming.mjs";
+import { clamp } from "./input_tools.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs";
+import { REMOVE_BG_DEFAULT_PROMPT, removeBgEditSettings, resolveRemoveBgSelection } from "./remove_bg.mjs";
+import { autoNameLayers } from "./naming.mjs";
 
 // Small inline stroke icons (14px in the menu): UI_ICONS lives inside
 // vnccs_unicanvas.js and is not exported, so the menu owns its own set.
@@ -241,7 +241,7 @@ async function saveLayerAsImage(uc, layer) {
   }
 }
 
-// Backend selection mirrors the UniCanvas settings popover (vnccs_unicanvas_remove_bg.mjs).
+// Backend selection mirrors the UniCanvas settings popover (remove_bg.mjs).
 export { resolveRemoveBgSelection };
 
 // SAM 3: the user picks what to keep. The SAM tool opens on this layer with SAM 3 selected:

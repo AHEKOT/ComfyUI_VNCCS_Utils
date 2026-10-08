@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
-import { createAnimationCacheReference, createDefaultAnimationState } from "../web/vnccs_pose_animation.mjs";
+import { createAnimationCacheReference, createDefaultAnimationState } from "../web/pose_studio/animation.mjs";
 
 function scene() {
     const result = createScene();

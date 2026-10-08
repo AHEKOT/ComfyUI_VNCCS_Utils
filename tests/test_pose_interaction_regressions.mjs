@@ -2,10 +2,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
-import * as animation from "../web/vnccs_pose_animation.mjs";
-import * as characters from "../web/vnccs_pose_characters.mjs";
-import * as THREE from "../web/three.module.js";
-import { PoseViewerCore as Core } from "../web/vnccs_pose_studio_core.js";
+import * as animation from "../web/pose_studio/animation.mjs";
+import * as characters from "../web/pose_studio/characters.mjs";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { PoseViewerCore as Core } from "../web/pose_studio/core.js";
 
 const source = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 const noop = () => {};

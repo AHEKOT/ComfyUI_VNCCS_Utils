@@ -5,9 +5,9 @@ import test from "node:test";
 
 const uniCanvasSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const poseStudioSource = await readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
-const poseStudioCoreSource = await readFile(new URL("../web/vnccs_pose_studio_core.js", import.meta.url), "utf8");
-const poseAnimationSource = await readFile(new URL("../web/vnccs_pose_animation.mjs", import.meta.url), "utf8");
-const poseCharactersSource = await readFile(new URL("../web/vnccs_pose_characters.mjs", import.meta.url), "utf8");
+const poseStudioCoreSource = await readFile(new URL("../web/pose_studio/core.js", import.meta.url), "utf8");
+const poseAnimationSource = await readFile(new URL("../web/pose_studio/animation.mjs", import.meta.url), "utf8");
+const poseCharactersSource = await readFile(new URL("../web/pose_studio/characters.mjs", import.meta.url), "utf8");
 
 
 test("DOM widgets release global listeners and timers on removal", () => {

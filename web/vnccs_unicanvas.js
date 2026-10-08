@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./vnccs_unicanvas_pose.mjs?v=1790494137676";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./vnccs_unicanvas_pose_state.mjs?v=1790494137676";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791482705880";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791482705880";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./vnccs_unicanvas_panorama_orbit.mjs?v=1790494137676";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./vnccs_unicanvas_panorama.mjs?v=1790494137676";
-import { installCustomSelects } from "./vnccs_custom_select.mjs?v=1790494137676";
-import { installUniCanvasInputTools } from "./vnccs_unicanvas_input_tools.mjs?v=1790494137676";
-import { installUniCanvasLayerTools } from "./vnccs_unicanvas_layer_tools.mjs?v=1790494137676";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./vnccs_unicanvas_model_memory.mjs?v=1790494137676";
-import { installInferenceScaleEdit } from "./vnccs_unicanvas_scale_edit.mjs?v=1790494137676";
-import { buildRemoveBgSettings } from "./vnccs_unicanvas_remove_bg.mjs?v=1790494137676";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./vnccs_unicanvas_naming.mjs?v=1790494137676";
-import { pickRenderLodScale } from "./vnccs_unicanvas_render_lod.mjs?v=1790494137676";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./vnccs_unicanvas_config_bridge.mjs?v=1790494137676";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791482705880";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791482705880";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791482705880";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791482705880";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791482705880";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791482705880";
+import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791482705880";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791482705880";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791482705880";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791482705880";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791482705880";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./vnccs_unicanvas_transform.mjs?v=1790494137676";
+} from "./unicanvas/transform.mjs?v=1791482705880";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./vnccs_unicanvas_presets.mjs?v=1790494137676";
+} from "./unicanvas/presets.mjs?v=1791482705880";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,9 +60,9 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./vnccs_unicanvas_modes.mjs?v=1790494137676";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./vnccs_unicanvas_qwen21.mjs?v=1790494137676";
-import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=1790494137676";
+} from "./unicanvas/modes.mjs?v=1791482705880";
+import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791482705880";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791482705880";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -75,7 +75,7 @@ import { installUniCanvasHelpTooltips } from "./vnccs_unicanvas_help.mjs?v=17904
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1790494137676";
+const VNCCS_UNICANVAS_VERSION = "1791482705880";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -105,7 +105,7 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
 // Self-contained safety net for the history keys: while the fullscreen portal
 // or the standalone shell is open, Ctrl+Z / Ctrl+Y must never fall through to
 // ComfyUI's graph undo (which reverts the workflow and collapses fullscreen).
-// vnccs_unicanvas_modes.mjs owns the full keyboard contract; this shield only
+// unicanvas/modes.mjs owns the full keyboard contract; this shield only
 // exists so that even a stale cached modes module cannot leak the keys, and it
 // is deliberately dependency-free (no imports, hardcoded markers).
 (() => {
@@ -124,10 +124,10 @@ const VNCCS_UNICANVAS_VERSION = "1790494137676";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./vnccs_unicanvas_prompt_guide.mjs?v=1790494137676";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./vnccs_unicanvas_prompt_enhance.mjs?v=1790494137676";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791482705880";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791482705880";
 
-const VNCCS_DONATE_BANNER_URL = new URL("./assets/VNCCS_Donate_Button.png", import.meta.url).href;
+const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
 const STYLES = `
 .vnccs-unicanvas [hidden] { display:none !important; }
@@ -437,7 +437,7 @@ const STYLES = `
   box-sizing:border-box;
 }
 /* Help "?" buttons. The tooltip text is rendered by the shared body-level layer
-   (see vnccs_unicanvas_help.mjs): a pseudo-element tooltip would be clipped by the
+   (see unicanvas/help.mjs): a pseudo-element tooltip would be clipped by the
    sidebars' scroll containers, so the icons only carry data-tip. */
 .vnccs-uc-field-head .vnccs-uc-help { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px; flex:0 0 auto; border-radius:50%; border:1px solid var(--uc-border); color:var(--uc-muted); font-size:10px; line-height:1; cursor:help; }
 .vnccs-uc-field-head { display:flex; align-items:center; gap:5px; min-width:0; }
@@ -4608,7 +4608,7 @@ class UniCanvasWidget {
   // Free Transform (Photoshop style). The draft keeps the layer's ORIGINAL pixels
   // (sourceCanvas over sourceBounds) plus a frame: quad (4 world corners) and, once Warp
   // was used, a 4x4 Bezier mesh. Gestures edit the frame from its state at gesture start;
-  // pixels are resampled once, on Apply. Math lives in vnccs_unicanvas_transform.mjs.
+  // pixels are resampled once, on Apply. Math lives in unicanvas/transform.mjs.
   // ---------------------------------------------------------------------------
 
   transformHitOptions() {
@@ -8699,7 +8699,7 @@ class UniCanvasWidget {
     };
 
     // Background removal (spec 10.3): the backend and, for the Edit model backend, its own
-    // generation settings (vnccs_unicanvas_remove_bg.mjs).
+    // generation settings (unicanvas/remove_bg.mjs).
     section("remove_bg", "Remove background");
     buildRemoveBgSettings(s, {
       bind,

@@ -207,7 +207,7 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                 if (specifier === "../../scripts/api.js") {
                     return syntheticModule(context, specifier, { api });
                 }
-                if (specifier === "./vnccs_pose_studio_core.js") {
+                if (specifier === "./pose_studio/core.js") {
                     class FakePoseViewerCore {
                         constructor() {
                             return new Proxy(this, {
@@ -226,12 +226,12 @@ test("Pose Studio constructs its DOM widget and hides pose_data during node boot
                         PoseViewerCore: FakePoseViewerCore,
                     });
                 }
-                if (specifier === "./vnccs_mixamo_import.js") {
+                if (specifier === "./pose_studio/imports/mixamo.js") {
                     return syntheticModule(context, specifier, {
                         importMixamoFBXAnimation: async () => null,
                     });
                 }
-                if (specifier === "./vnccs_openpose_import.js") {
+                if (specifier === "./pose_studio/imports/openpose.js") {
                     return syntheticModule(context, specifier, {
                         convertOpenPoseToPose: value => value,
                         detectAndParseJSON: value => value,

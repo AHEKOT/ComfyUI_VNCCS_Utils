@@ -2,11 +2,11 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-import { LAYER_MENU_ITEMS } from "../web/vnccs_unicanvas_layer_tools.mjs";
+import { LAYER_MENU_ITEMS } from "../web/unicanvas/layer_tools.mjs";
 
 
-const inputTools = await readFile(new URL("../web/vnccs_unicanvas_input_tools.mjs", import.meta.url), "utf8");
-const layerTools = await readFile(new URL("../web/vnccs_unicanvas_layer_tools.mjs", import.meta.url), "utf8");
+const inputTools = await readFile(new URL("../web/unicanvas/input_tools.mjs", import.meta.url), "utf8");
+const layerTools = await readFile(new URL("../web/unicanvas/layer_tools.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
 const MENU_LABELS = [
@@ -32,8 +32,8 @@ const MENU_GROUPS = [
 ];
 
 test("widget source installs both tool packs", () => {
-  assert.match(widgetSource, /import \{ installUniCanvasInputTools \} from "\.\/vnccs_unicanvas_input_tools\.mjs(\?v=\d+)?";/);
-  assert.match(widgetSource, /import \{ installUniCanvasLayerTools \} from "\.\/vnccs_unicanvas_layer_tools\.mjs(\?v=\d+)?";/);
+  assert.match(widgetSource, /import \{ installUniCanvasInputTools \} from "\.\/unicanvas\/input_tools\.mjs(\?v=\d+)?";/);
+  assert.match(widgetSource, /import \{ installUniCanvasLayerTools \} from "\.\/unicanvas\/layer_tools\.mjs(\?v=\d+)?";/);
   assert.match(widgetSource, /installUniCanvasInputTools\(this\);/);
   assert.match(widgetSource, /installUniCanvasLayerTools\(this\);/);
 });
@@ -126,7 +126,7 @@ test("PSD import reports every skipped non-raster construct", () => {
 });
 
 test("remove background with prompt appends the extra line to the universal prompt", async () => {
-  const { removeBgRunSettings } = await import("../web/vnccs_unicanvas_layer_tools.mjs");
+  const { removeBgRunSettings } = await import("../web/unicanvas/layer_tools.mjs");
   const settings = { remove_bg_edit: { qwen_image21: { prompt: "Remove the background" } } };
   assert.equal(removeBgRunSettings(settings, "qwen_image21", " keep the sword ").prompt, ["Remove the background", "keep the sword"].join("\n"));
   assert.equal(removeBgRunSettings(settings, "qwen_image21", "").prompt, "Remove the background");
@@ -145,7 +145,7 @@ test("strength slider previews live and commits on release", () => {
 });
 
 test("a failed or stale dropdown menu never blocks future opens", async () => {
-    const source = await readFile(new URL("../web/vnccs_custom_select.mjs", import.meta.url), "utf8");
+    const source = await readFile(new URL("../web/shared/custom_select.mjs", import.meta.url), "utf8");
     assert.match(source, /if \(state\.menu && !state\.menu\.isConnected\) state\.menu = null;/, "a detached menu must be discarded before the open guard");
     assert.ok(source.includes("[VNCCS Custom Select] open failed"), "open failures must surface in the console and self-heal");
     assert.ok(source.includes("z-index: 2147483600"), "the menu must render above the fullscreen portal");

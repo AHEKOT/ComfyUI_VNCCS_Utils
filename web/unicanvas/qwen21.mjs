@@ -67,7 +67,7 @@ function ensureQwen21PanelStyles(doc = document) {
 }
 
 // Help "?" icon; the tooltip text is rendered by the shared body-level layer
-// (vnccs_unicanvas_help.mjs), so the icon carries data-tip only (no native title).
+// (help.mjs), so the icon carries data-tip only (no native title).
 function buildQwen21Help(key) {
   const help = document.createElement("span");
   help.className = "vnccs-uc-help";

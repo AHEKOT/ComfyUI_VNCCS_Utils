@@ -6,7 +6,7 @@
  * real object the mannequin stands in front of. Whatever the user does with the camera, the
  * mannequin keeps its place relative to the wall - and so in the saved image.
  */
-import { POSE_BACKDROP_OFFSET_RADII, poseBackdropDistance } from "./vnccs_unicanvas_pose_backdrop.mjs";
+import { POSE_BACKDROP_OFFSET_RADII, poseBackdropDistance } from "./pose_backdrop.mjs";
 
 /**
  * Placement of the wall for a framing camera looking at `rect` (world px). `region` (world px,

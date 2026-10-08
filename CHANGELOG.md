@@ -791,7 +791,7 @@
 *   **Contextual Hand Editing UI**: Hand editing was reworked from a permanent sidebar tool into an in-canvas interaction flow.
     *   Hands can now be targeted directly from the model viewport.
     *   The hand editor opens as a floating popover near the active hand instead of occupying the right sidebar.
-    *   Built-in hand presets were added in [web/vnccs_hand_presets.js](web/vnccs_hand_presets.js) to drive the hand shaping workflow without requiring an external hand-pose library.
+    *   Built-in hand presets were added in [web/pose_studio/hand_presets.js](web/pose_studio/hand_presets.js) to drive the hand shaping workflow without requiring an external hand-pose library.
 
 *   **Improved Hand Pose Controls**: The hand slider system was expanded and stabilized.
     *   Added calibrated hand preset blending for `Spread`, `Grasp`, and per-finger controls.

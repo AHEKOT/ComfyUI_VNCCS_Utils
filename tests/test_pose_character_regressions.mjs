@@ -8,7 +8,7 @@ const poseStudioSource = await readFile(
     "utf8",
 );
 const poseStudioCoreSource = await readFile(
-    new URL("../web/vnccs_pose_studio_core.js", import.meta.url),
+    new URL("../web/pose_studio/core.js", import.meta.url),
     "utf8",
 );
 
@@ -24,11 +24,11 @@ const methodSource = (source, signature, nextSignature) => {
 test("Pose Studio imports one strict version of its transform-track modules", () => {
     assert.match(
         poseStudioSource,
-        /from "\.\/vnccs_pose_animation\.mjs\?v=[^"]+"/,
+        /from "\.\/pose_studio\/animation\.mjs\?v=[^"]+"/,
     );
     assert.match(
         poseStudioSource,
-        /from "\.\/vnccs_pose_characters\.mjs\?v=[^"]+"/,
+        /from "\.\/pose_studio\/characters\.mjs\?v=[^"]+"/,
     );
     assert.doesNotMatch(
         poseStudioSource,

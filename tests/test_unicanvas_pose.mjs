@@ -2,9 +2,9 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
-import * as THREE from "../web/three.module.js";
-import { POSE_HELP_CSS, buildPoseHelp } from "../web/vnccs_unicanvas_pose_help.mjs";
-import * as state from "../web/vnccs_unicanvas_pose_state.mjs";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { POSE_HELP_CSS, buildPoseHelp } from "../web/unicanvas/pose_help.mjs";
+import * as state from "../web/unicanvas/pose_state.mjs";
 import { createScene } from "./helpers/pose_studio_scene.mjs";
 
 const noop = () => {};
@@ -33,7 +33,7 @@ class Element {
     }; }
     toDataURL() { return `image:${this.name || "canvas"}`; }
 }
-const source = fs.readFileSync(new URL("../web/vnccs_unicanvas_pose.mjs", import.meta.url), "utf8");
+const source = fs.readFileSync(new URL("../web/unicanvas/pose.mjs", import.meta.url), "utf8");
 const ucSource = fs.readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 function harness(studioClass = class {}) {
     const document = Object.assign(new Element("document"), { createElement: tag => new Element(tag), head: new Element(), getElementById: () => true });

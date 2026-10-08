@@ -9,8 +9,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const studio = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.js"), "utf8");
-const viewer = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory_viewer.js"), "utf8");
-const styles = fs.readFileSync(path.join(root, "web", "vnccs_3d_factory.css"), "utf8");
+const viewer = fs.readFileSync(path.join(root, "web", "factory3d/viewer.js"), "utf8");
+const styles = fs.readFileSync(path.join(root, "web", "factory3d/styles.css"), "utf8");
 const planGeometry = fs.readFileSync(path.join(root, "web", "factory3d", "plan_geometry.mjs"), "utf8");
 
 function safeObjectName(value) {
@@ -56,7 +56,7 @@ test("Factory widget registers the renamed node and persists opaque state", () =
     assert.match(studio, /scene_snapshot/);
     assert.match(studio, /source: this\.sourceAsset/);
     assert.match(studio, /FRONTEND_BUILD = "20260908\.4"/);
-    assert.match(studio, /vnccs_3d_factory\.css\?v=20260908\.2/);
+    assert.match(studio, /factory3d\/styles\.css\?v=20260908\.2/);
     assert.doesNotMatch(studio, /vnccs-i3s__brand/);
     assert.doesNotMatch(studio, /Image to Gaussian scene/);
     assert.match(studio, /<option value="524288">524K · Experimental<\/option>/);
@@ -442,7 +442,7 @@ test("Generator selector keeps its name, status, and actions in a compact overfl
 });
 
 test("Factory reuses the UniCanvas support banner in the lower-left panel", () => {
-    assert.match(studio, /assets\/VNCCS_Donate_Button\.png/);
+    assert.match(studio, /shared\/assets\/VNCCS_Donate_Button\.png/);
     assert.match(studio, /https:\/\/www\.buymeacoffee\.com\/MIUProject/);
     assert.match(studio, /vnccs-i3s__donate-link/);
     assert.match(studio, /this\._listen\(this\.els\.donateLink, "pointerdown", event => event\.stopPropagation\(\)\)/);
@@ -1011,7 +1011,7 @@ test("Configured nodes cancel blank initialization before restoring their saved 
 
 test("Plan marquee converts client coordinates into the scaled viewport host", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?marquee=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?marquee=${Date.now()}`
     );
     const marqueeViewer = Object.create(module.Factory3DViewer.prototype);
     marqueeViewer.host = { clientWidth: 1600, clientHeight: 900 };
@@ -1039,7 +1039,7 @@ test("Plan marquee converts client coordinates into the scaled viewport host", a
 
 test("Plan object drag moves selected Gaussian objects live while preserving height", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?object-drag=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?object-drag=${Date.now()}`
     );
     const viewer = Object.create(module.Factory3DViewer.prototype);
     const changes = [];
@@ -1192,7 +1192,7 @@ test("Architecture Undo preserves unaffected meshes through opening, building an
 });
 
 test("3D opening placement projects onto a rotated wall and draws a vertical live preview", async () => {
-    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const view = Object.create(Factory3DViewer.prototype);
     view.viewMode = "3d";
@@ -1235,7 +1235,7 @@ test("3D opening placement projects onto a rotated wall and draws a vertical liv
 });
 
 test("Plan framing fits XZ extents without moving the export camera", async () => {
-    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href);
+    const { Factory3DViewer } = await import(pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href);
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const view = Object.create(Factory3DViewer.prototype);
     view.viewMode = "plan";
@@ -1249,7 +1249,7 @@ test("Plan framing fits XZ extents without moving the export camera", async () =
 
 test("Factory viewer and every vendored Three/Spark dependency can actually import", async () => {
     const module = await import(
-        `${pathToFileURL(path.join(root, "web", "vnccs_3d_factory_viewer.js")).href}?test=${Date.now()}`
+        `${pathToFileURL(path.join(root, "web", "factory3d/viewer.js")).href}?test=${Date.now()}`
     );
     const THREE = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "three.module.js")).href);
     const SPARK = await import(pathToFileURL(path.join(root, "web", "vendor", "spark", "spark.module.js")).href);

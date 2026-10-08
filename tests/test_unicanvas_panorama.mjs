@@ -1,11 +1,11 @@
-import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/vnccs_unicanvas_pose_state.mjs";
+import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/unicanvas/pose_state.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory, DEFAULT_PANORAMA_CAMERA } from "../web/vnccs_unicanvas_panorama.mjs";
-import { snapAxisAngles } from "../web/vnccs_unicanvas_panorama_orbit.mjs";
-import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
+import { normalizePanorama, isPanoramaCandidate, viewToSphere, sphereToView, PanoramaDocument, trimPanoramaHistory, DEFAULT_PANORAMA_CAMERA } from "../web/unicanvas/panorama.mjs";
+import { snapAxisAngles } from "../web/unicanvas/panorama_orbit.mjs";
+import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
 
 const settings = (extra = {}) => normalizePanorama({ projection: "equirectangular", width: 4096, height: 2048, ...extra });
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-8, `${a} != ${b}`);

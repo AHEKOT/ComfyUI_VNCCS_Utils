@@ -6,10 +6,10 @@ import {
   UNICANVAS_HELP_TOOLTIP_ID,
   UNICANVAS_HELP_TOOLTIP_Z_INDEX,
   installUniCanvasHelpTooltips,
-} from "../web/vnccs_unicanvas_help.mjs";
+} from "../web/unicanvas/help.mjs";
 
 const mainSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
-const panelSource = await readFile(new URL("../web/vnccs_unicanvas_qwen21.mjs", import.meta.url), "utf8");
+const panelSource = await readFile(new URL("../web/unicanvas/qwen21.mjs", import.meta.url), "utf8");
 
 class FakeElement {
   constructor(tag = "div") {
@@ -127,7 +127,7 @@ test("no CSS pseudo-element tooltip can be clipped by a sidebar any more", () =>
     assert.doesNotMatch(source, /\.vnccs-uc-help:hover::after/, `${name}: the hover ::after tooltip must be gone`);
     assert.ok(source.includes("data-tip"), `${name}: help icons still carry their tip text`);
   }
-  assert.match(mainSource, /import \{ installUniCanvasHelpTooltips \} from "\.\/vnccs_unicanvas_help\.mjs(\?v=\d+)?"/, "the entry must import the shared tooltip layer");
+  assert.match(mainSource, /import \{ installUniCanvasHelpTooltips \} from "\.\/unicanvas\/help\.mjs(\?v=\d+)?"/, "the entry must import the shared tooltip layer");
   assert.match(mainSource, /installUniCanvasHelpTooltips\(\);/, "the extension setup must install the tooltip layer");
 });
 

@@ -3,7 +3,7 @@ import {
     eulerDegreesToQuaternion,
     quaternionToEulerDegrees,
     slerpQuaternion,
-} from "./vnccs_pose_animation.mjs";
+} from "../animation.mjs";
 
 export const VIDEO_FILE_EXTENSIONS = new Set([
     "mp4", "m4v", "webm", "mov", "ogv", "ogg", "avi", "mkv",

@@ -12,8 +12,8 @@ import {
     renderModelCard,
     restartComfyUI,
     waitForServer,
-} from "../web/vnccs_pose_motion_setup.mjs";
-import { MOTION_API, TextToMotionPanel } from "../web/vnccs_pose_text_to_motion.mjs";
+} from "../web/pose_studio/motion_setup.mjs";
+import { MOTION_API, TextToMotionPanel } from "../web/pose_studio/text_to_motion.mjs";
 
 const document = { createElement: (tag) => new Element(tag) };
 

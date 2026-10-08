@@ -7,9 +7,9 @@ import {
   resolvePromptGuide,
   referenceSlotLabels,
   renderPromptGuide,
-} from "../web/vnccs_unicanvas_prompt_guide.mjs";
+} from "../web/unicanvas/prompt_guide.mjs";
 
-const guideSource = await readFile(new URL("../web/vnccs_unicanvas_prompt_guide.mjs", import.meta.url), "utf8");
+const guideSource = await readFile(new URL("../web/unicanvas/prompt_guide.mjs", import.meta.url), "utf8");
 const mainSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
 // The /vnccs/unicanvas/assets "model_modules" shape (UniCanvasModelModule.describe()).
@@ -134,7 +134,7 @@ test("the guide renders as text nodes only", () => {
 });
 
 test("the widget wires the prompt help to the backend descriptors", () => {
-  assert.match(mainSource, /from "\.\/vnccs_unicanvas_prompt_guide\.mjs(\?v=\d+)?"/);
+  assert.match(mainSource, /from "\.\/unicanvas\/prompt_guide\.mjs(\?v=\d+)?"/);
   assert.match(mainSource, /data-prompt-help/);
   assert.match(mainSource, /dataset\.promptGuide = ""/, "the guide overlay keeps its data-prompt-guide hook");
   assert.match(mainSource, /indexModelDescriptors\(data\.model_modules\)/);

@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import { mergePoseCache } from "../web/vnccs_unicanvas_pose_state.mjs";
-import { normalizePanorama } from "../web/vnccs_unicanvas_panorama.mjs";
-import { normalizeTransformMode } from "../web/vnccs_unicanvas_transform.mjs";
+import { mergePoseCache } from "../web/unicanvas/pose_state.mjs";
+import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
+import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 let nextId = 0;

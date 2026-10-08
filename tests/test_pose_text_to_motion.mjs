@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createDefaultAnimationState, setTrackKeyframeFromEuler } from "../web/vnccs_pose_animation.mjs";
+import { createDefaultAnimationState, setTrackKeyframeFromEuler } from "../web/pose_studio/animation.mjs";
 
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import {
@@ -15,7 +15,7 @@ import {
     retargetMotion,
     retargetMotionFrame,
     TextToMotionPanel,
-} from "../web/vnccs_pose_text_to_motion.mjs";
+} from "../web/pose_studio/text_to_motion.mjs";
 
 // Motion keys -> mannequin bones, used to fabricate a "generated" motion from mannequin poses.
 const MOTION_FROM_BONES = {

@@ -58,7 +58,7 @@ test("entry-level history shield: stale cached modules cannot leak Ctrl+Z/Y to t
 
 test("local module imports carry the cache-busting version query", () => {
   const version = entrySource.match(/const VNCCS_UNICANVAS_VERSION = "(\d+)"/)[1];
-  const imports = [...entrySource.matchAll(/from "\.\/(vnccs_[^"?]+)(\?v=(\d+))?"/g)];
+  const imports = [...entrySource.matchAll(/from "\.\/([^"?]+)(\?v=(\d+))?"/g)];
   assert.ok(imports.length >= 14, "expected the full local import graph to be versioned");
   for (const [, path, query, v] of imports) {
     assert.ok(query, `import of ${path} must carry ?v=`);

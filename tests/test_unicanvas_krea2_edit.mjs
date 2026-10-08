@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import { forceUniCanvasPresetModelSettings } from "../web/vnccs_unicanvas_presets.mjs";
-import { UNICANVAS_QWEN21_MODULE } from "../web/vnccs_unicanvas_qwen21.mjs";
+import { forceUniCanvasPresetModelSettings } from "../web/unicanvas/presets.mjs";
+import { UNICANVAS_QWEN21_MODULE } from "../web/unicanvas/qwen21.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const presets = JSON.parse(readFileSync(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;

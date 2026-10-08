@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import * as THREE from "../web/three.module.js";
-import { installBodyDrag, isTorsoPoint } from "../web/vnccs_unicanvas_pose_body_drag.mjs";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { installBodyDrag, isTorsoPoint } from "../web/unicanvas/pose_body_drag.mjs";
 
 const bone = (x, y, z) => ({ getWorldPosition: v => v.set(x, y, z) });
 

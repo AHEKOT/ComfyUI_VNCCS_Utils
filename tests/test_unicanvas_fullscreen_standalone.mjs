@@ -5,7 +5,7 @@ import test from "node:test";
 
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
-const modesSource = await readFile(new URL("../web/vnccs_unicanvas_modes.mjs", import.meta.url), "utf8");
+const modesSource = await readFile(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
 const widgetSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
 // Handler-region scoping: assertions run against the named region only, so they
@@ -114,9 +114,9 @@ test("standalone sidebar tab registers Unicanvas with a visible icon", () => {
     assert.ok(/icon:\s*UNICANVAS_SIDEBAR_ICON_CLASS/.test(modesSource), "the tab must register an icon");
     assert.ok(modesSource.includes('const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";'),
         "the icon class must be a stable marker");
-    assert.ok(modesSource.includes('new URL("./assets/unicanvas_icon.svg", import.meta.url).href'),
+    assert.ok(modesSource.includes('new URL("./assets/icon.svg", import.meta.url).href'),
         "the icon is the shipped UniCanvas SVG asset");
-    const icon = readFileSync(new URL("../web/assets/unicanvas_icon.svg", import.meta.url), "utf8");
+    const icon = readFileSync(new URL("../web/unicanvas/assets/icon.svg", import.meta.url), "utf8");
     assert.ok(icon.startsWith("<svg") && icon.includes('viewBox="0 0 32 32"') && icon.includes("stroke-dasharray"),
         "a layer stack with a dashed selection marquee");
     assert.ok(modesSource.includes('background: url("${UNICANVAS_SIDEBAR_ICON_SVG}") center / contain no-repeat'),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import * as THREE from "../web/three.module.js";
-import { UniCanvasPoseWall, poseWallPlacement } from "../web/vnccs_unicanvas_pose_wall.mjs";
+import * as THREE from "../web/vendor/three/three.module.js";
+import { UniCanvasPoseWall, poseWallPlacement } from "../web/unicanvas/pose_wall.mjs";
 
 const framing = { position: [4, 6, 40], target: [0, 5, 0], fov: 40, zoom: 1.5 };
 const rect = { x: 100, y: 50, width: 400, height: 300 };

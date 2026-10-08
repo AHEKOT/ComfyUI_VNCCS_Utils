@@ -33,11 +33,11 @@ is described in `AGENTS.md`.
   `vnccs_bbox_extractor.py` and `anima_lllite_internal.py`;
   `nodes/unicanvas/` is the UniCanvas package (below).
 - `api/` — 3D Factory and Pose Studio backend services.
-- `web/` — frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large — add
-  feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget);
-  other modules cover pose, panorama, transform, remove-bg, presets, prompt guide, config
-  bridge, input/layer tools. Pose Studio and 3D Factory have their own `vnccs_pose_*` /
-  `vnccs_3d_factory*` files.
+- `web/` — five `vnccs_*.js` extension entry points in the root. Feature modules live in
+  `unicanvas/`, `pose_studio/`, `factory3d/`, `camera_control/`, and `config/`.
+  Common controls and assets live in `shared/`; third-party libraries live in `vendor/`.
+  Pose Studio keeps its morph pack in `pose_studio/assets/` and skin textures in
+  `pose_studio/textures/`.
 - `config/unicanvas_presets.json` — model presets (pinned HF repo/path/revision).
 - `vnccs_sam3d/` — vendored SAM-3D / BiRefNet code.
 - `tests/` — `conftest.py` stubs `comfy`, `folder_paths`, `server` and points the bare
@@ -90,7 +90,7 @@ Draw flow: `draw._run_unicanvas_draw` -> `DrawRequest.from_payload` -> `family.v
   lazy and go through `huggingface_hub` with `token=False`.
 - Paths to repo files use `paths._EXTENSION_ROOT`, not `__file__` math. Model work
   (load/sample/decode) must hold `locks._COMFY_MODEL_OP_LOCK`.
-- Frontend: new UniCanvas features go in their own `web/vnccs_unicanvas_<feature>.mjs`
+- Frontend: new UniCanvas features go in their own `web/unicanvas/<feature>.mjs`
   module, hooked from `vnccs_unicanvas.js`; respect the realtime interaction contract in
   `AGENTS.md` (continuous feedback during gestures, commit-only on release).
 

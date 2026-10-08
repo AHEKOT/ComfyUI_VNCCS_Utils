@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import * as THREE from "../web/three.module.js";
+import * as THREE from "../web/vendor/three/three.module.js";
 import {
     POSE_BACKDROP_OFFSET_RADII,
     UniCanvasPoseBackdrop,
     poseBackdropDistance,
     poseBackdropOverflow,
     poseBackdropSize,
-} from "../web/vnccs_unicanvas_pose_backdrop.mjs";
+} from "../web/unicanvas/pose_backdrop.mjs";
 
 // Minimal Pose Studio viewer: a 2-unit cube stands in for the rig (radius sqrt(3)).
 function rig() {

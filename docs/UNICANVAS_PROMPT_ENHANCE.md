@@ -69,4 +69,4 @@ shows no wand for that box either. SDXL has no default entry.
 
 `nodes/unicanvas/prompt_enhance.py` (encoder, rewrite), `enhance.py` (defaults + `POST
 /vnccs/unicanvas/enhance_prompt`), `draw_pipeline.py::enhance_prompts` (automatic mode),
-`web/vnccs_unicanvas_prompt_enhance.mjs` (wand, settings).
+`web/unicanvas/prompt_enhance.mjs` (wand, settings).

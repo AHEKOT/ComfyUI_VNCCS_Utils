@@ -6,7 +6,7 @@
  * calls (installUniCanvasWidgetModes and registerUniCanvasStandaloneSidebarTab).
  */
 
-import { app } from "../../scripts/app.js";
+import { app } from "../../../scripts/app.js";
 
 export const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";
 
@@ -17,10 +17,10 @@ const UNICANVAS_SIDEBAR_ICON_CLASS = "vnccs-unicanvas-sidebar-icon";
 const UNICANVAS_MODE_STYLE_ID = "vnccs-unicanvas-modes-styles";
 const UNICANVAS_FULLSCREEN_CLASS = "vnccs-uc-fullscreen";
 
-// The UniCanvas sidebar icon (web/assets/unicanvas_icon.svg): a stack of layers with a dashed
+// The UniCanvas sidebar icon (web/unicanvas/assets/icon.svg): a stack of layers with a dashed
 // selection around the active one. The ComfyUI sidebar tab strip renders the icon value as a CSS
 // class on an <i> element, so the SVG is painted from CSS and stays visible without an icon font.
-const UNICANVAS_SIDEBAR_ICON_SVG = new URL("./assets/unicanvas_icon.svg", import.meta.url).href;
+const UNICANVAS_SIDEBAR_ICON_SVG = new URL("./assets/icon.svg", import.meta.url).href;
 
 const BRUSH_SIZE_MIN = 1;
 const BRUSH_SIZE_MAX = 220;

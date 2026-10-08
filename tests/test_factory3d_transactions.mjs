@@ -7,7 +7,7 @@ import { FactoryPropertyGesture } from "../web/factory3d/core/property_gesture.m
 import { LIGHT_NUMERIC_PROPERTIES, acceptNumericDraft, readLightProperty, writeLightProperty } from "../web/factory3d/core/property_descriptors.mjs";
 import { bindNumericPropertyInputs } from "../web/factory3d/ui/numeric_property_binding.mjs";
 import { enqueueFactorySceneSave } from "../web/factory3d/core/save_queue.mjs";
-import { normalizedLighting } from "../web/vnccs_3d_factory_viewer.js";
+import { normalizedLighting } from "../web/factory3d/viewer.js";
 import { migrateEditorState, normalizedWorkspace, fitWorkspaceDocks } from "../web/factory3d/core/editor_migrations.mjs";
 import { findFactoryCommands } from "../web/factory3d/ui/command_registry.mjs";
 import { factoryCameraQuaternion, factoryCameraEuler } from "../web/factory3d/core/camera_rotation.mjs";

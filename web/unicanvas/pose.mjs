@@ -1,16 +1,16 @@
 /** Pose Studio host contract and image preparation for UniCanvas pose layers. */
-import { PoseStudioWidget } from "./vnccs_pose_studio.js";
+import { PoseStudioWidget } from "../vnccs_pose_studio.js";
 
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
-import { composePoseReference, poseAtPanoramaCamera, poseLayerBelow } from "./vnccs_unicanvas_pose_state.mjs";
-import { applyTorsoFraming } from "./vnccs_unicanvas_pose_framing.mjs";
-import { UniCanvasPoseBackdrop } from "./vnccs_unicanvas_pose_backdrop.mjs";
-import { POSE_HELP_CSS, buildPoseHelp } from "./vnccs_unicanvas_pose_help.mjs";
-import { installBodyDrag } from "./vnccs_unicanvas_pose_body_drag.mjs";
-import { UniCanvasPoseWall, poseWallPlacement } from "./vnccs_unicanvas_pose_wall.mjs";
+import { installCustomSelects } from "../shared/custom_select.mjs";
+import { composePoseReference, poseAtPanoramaCamera, poseLayerBelow } from "./pose_state.mjs";
+import { applyTorsoFraming } from "./pose_framing.mjs";
+import { UniCanvasPoseBackdrop } from "./pose_backdrop.mjs";
+import { POSE_HELP_CSS, buildPoseHelp } from "./pose_help.mjs";
+import { installBodyDrag } from "./pose_body_drag.mjs";
+import { UniCanvasPoseWall, poseWallPlacement } from "./pose_wall.mjs";
 const EYE_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>';
 const EYE_OFF_ICON = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.9 17.9A10.1 10.1 0 0 1 12 19c-6.4 0-10-7-10-7a17.7 17.7 0 0 1 4.1-4.9M9.9 5.2A9.7 9.7 0 0 1 12 5c6.4 0 10 7 10 7a17.8 17.8 0 0 1-2.2 3.2M14.1 14.1a3 3 0 1 1-4.2-4.2"/><path d="M2 2l20 20"/></svg>';
-// Pose Studio's own rotation gizmo size (vnccs_pose_studio_core.js: transform.setSize).
+// Pose Studio's own rotation gizmo size (pose_studio/core.js: transform.setSize).
 const GIZMO_SIZE = 0.8;
 const clone = value => value == null ? value : JSON.parse(JSON.stringify(value));
 

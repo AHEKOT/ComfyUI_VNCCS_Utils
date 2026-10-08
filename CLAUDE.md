@@ -34,8 +34,12 @@ is described in `AGENTS.md`.
   `factory3d*.py`, `vncss_config.py`, `vnccs_bbox_extractor.py`,
   and `anima_lllite_internal.py`.
 - `api/` - 3D Factory and Pose Studio backend services.
-- `web/` - frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large - add
-  feature code in a `vnccs_unicanvas_<feature>.mjs` module and only hook it from the widget).
+- `web/` - five `vnccs_*.js` extension entry points in the root. Feature modules live in
+  `unicanvas/`, `pose_studio/`, `factory3d/`, `camera_control/`, and `config/`.
+  Common controls and assets live in `shared/`; third-party libraries live in `vendor/`.
+  Add UniCanvas feature code in `web/unicanvas/<feature>.mjs` and hook it from
+  `vnccs_unicanvas.js`. Pose Studio keeps its morph pack in `pose_studio/assets/`
+  and skin textures in `pose_studio/textures/`.
 - `config/unicanvas_presets.json` - model presets (pinned HF repo/path/revision).
 - `vnccs_sam3d/` - vendored SAM-3D / BiRefNet code.
 - `tests/` - `conftest.py` stubs `comfy`, `folder_paths`, `server` and points the bare

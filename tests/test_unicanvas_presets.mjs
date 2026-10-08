@@ -6,7 +6,7 @@ import {
     forceUniCanvasPresetModelSettings,
     getUniCanvasPresetModelAsset,
     getUniCanvasPresetModelName,
-} from "../web/vnccs_unicanvas_presets.mjs";
+} from "../web/unicanvas/presets.mjs";
 
 
 const sdxlPreset = {

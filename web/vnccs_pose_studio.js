@@ -10,15 +10,15 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./vnccs_pose_studio_core.js?v=20260910.1";
+} from "./pose_studio/core.js?v=20260910.1";
 import {
     cameraPromptToSkydomeRotation,
-} from "./vnccs_camera_control_utils.mjs";
-import { HAND_PRESETS } from "./vnccs_hand_presets.js";
-import { importMixamoFBXAnimation } from "./vnccs_mixamo_import.js";
-import { TextToMotionPanel } from "./vnccs_pose_text_to_motion.mjs";
-import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./vnccs_openpose_import.js";
-import { installCustomSelects } from "./vnccs_custom_select.mjs";
+} from "./camera_control/utils.mjs";
+import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
+import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
+import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs";
+import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
+import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
     DEFAULT_CHARACTER_COLORS,
     MAX_POSE_STUDIO_CHARACTERS,
@@ -35,7 +35,7 @@ import {
     normalizePoseStudioCharacters,
     normalizeSAMProjectionFrame,
     serializePoseStudioCharacter,
-} from "./vnccs_pose_characters.mjs?v=20260908.14";
+} from "./pose_studio/characters.mjs?v=20260908.14";
 import {
     MAX_VIDEO_POSE_SAMPLES,
     canvasToBlob,
@@ -54,7 +54,7 @@ import {
     stabilizeVideoPoseSequence,
     waitForVideoMetadata,
     zoomVideoTimelineViewport,
-} from "./vnccs_video_import.mjs";
+} from "./pose_studio/imports/video.mjs";
 import {
     boneNameForPositionTrack,
     bonePositionTrackName,
@@ -83,9 +83,9 @@ import {
     serializeAnimationStateSnapshot,
     setCharacterTransformKeyframe,
     setTrackKeyframeFromEuler,
-} from "./vnccs_pose_animation.mjs?v=20260908.14";
+} from "./pose_studio/animation.mjs?v=20260908.14";
 
-const VNCCS_POSE_MORPH_WORKER_URL = new URL("./vnccs_pose_morph_worker.js", import.meta.url);
+const VNCCS_POSE_MORPH_WORKER_URL = new URL("./pose_studio/morph_worker.js", import.meta.url);
 let VNCCS_SHARED_MORPH_WORKER = null;
 let VNCCS_SHARED_MORPH_WORKER_FAILED = false;
 let VNCCS_SHARED_MORPH_WORKER_WARMED = false;

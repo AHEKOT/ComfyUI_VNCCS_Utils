@@ -7,7 +7,7 @@
 // animation (OK replaces it from the current frame on); in a pose-only host such as
 // the UniCanvas pose editor OK keeps the selected frame as the pose. Cancel restores
 // what the panel was opened with. Models that are not installed show a card with
-// their setup steps (vnccs_pose_motion_setup.mjs).
+// their setup steps (motion_setup.mjs).
 
 import {
     MODEL_ROTATION_TRACK,
@@ -17,7 +17,7 @@ import {
     getPoseTrackEuler,
     retimeAnimationTiming,
     setTrackKeyframeFromEuler,
-} from "./vnccs_pose_animation.mjs";
+} from "./animation.mjs";
 import {
     MOTION_SETUP_API,
     SETUP_STYLES,
@@ -27,7 +27,7 @@ import {
     renderModelCard,
     restartComfyUI,
     waitForServer,
-} from "./vnccs_pose_motion_setup.mjs";
+} from "./motion_setup.mjs";
 
 const MOTION_ANIMATION_MAX_FRAMES = 600;
 const MOTION_ANIMATION_MAX_KEYS = 120;

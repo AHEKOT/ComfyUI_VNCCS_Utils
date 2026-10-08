@@ -43,7 +43,7 @@ test("the settings gear sits next to the snap-to-grid icon", () => {
 
 test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet default", async () => {
     assert.ok(source.includes('remove_bg_model: "birefnet"'), "BiRefNet must be the default backend");
-    const removeBg = await readFile(new URL("../web/vnccs_unicanvas_remove_bg.mjs", import.meta.url), "utf8");
+    const removeBg = await readFile(new URL("../web/unicanvas/remove_bg.mjs", import.meta.url), "utf8");
     assert.ok(source.includes("buildRemoveBgSettings(s, {"), "the settings popover builds the remove bg rows from the module");
     for (const marker of ['["edit", "Edit model"]', '["birefnet", "BiRefNet"]', '["rembg", "rembg"]', '["sam3", "SAM 3']) {
         assert.ok(removeBg.includes(marker), "missing remove bg backend option: " + marker);

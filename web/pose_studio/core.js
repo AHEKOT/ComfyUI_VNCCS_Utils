@@ -41,9 +41,9 @@ export function buildEquivalentPerspectiveProjectionFrame(
 // === Three.js Module Loader (from Debug3) ===
 const THREE_VERSION = "0.160.0";
 const THREE_SOURCES = {
-    core: `${EXTENSION_URL}three.module.js`,
-    orbit: `${EXTENSION_URL}OrbitControls.js`,
-    transform: `${EXTENSION_URL}TransformControls.js`
+    core: new URL("../vendor/three/three.module.js", import.meta.url).href,
+    orbit: new URL("../vendor/three/OrbitControls.js", import.meta.url).href,
+    transform: new URL("../vendor/three/TransformControls.js", import.meta.url).href
 };
 
 const ThreeModuleLoader = {

@@ -1,20 +1,20 @@
-import { parametricMetrics, createParametricGeometry } from "./factory3d/geometry/parametric_parts.mjs";
-import { renderConditioningPixels, encodeConditioningPixels } from "./factory3d/conditioning.mjs?v=20260908.1";
-import * as THREE from "./vendor/spark/three.module.js";
-import { OrbitControls } from "./vendor/spark/OrbitControls.js";
-import { TransformControls } from "./vendor/spark/TransformControls.js";
+import { parametricMetrics, createParametricGeometry } from "./geometry/parametric_parts.mjs";
+import { renderConditioningPixels, encodeConditioningPixels } from "./conditioning.mjs?v=20260908.1";
+import * as THREE from "../vendor/spark/three.module.js";
+import { OrbitControls } from "../vendor/spark/OrbitControls.js";
+import { TransformControls } from "../vendor/spark/TransformControls.js";
 import {
     dyno,
     SparkRenderer,
     SplatMesh,
-} from "./vendor/spark/spark.module.js";
-import { FactoryArchitectureRuntime } from "./factory3d/plan_geometry.mjs?v=20260908.3";
-import { solveDropToSurface } from "./factory3d/support_solver.mjs?v=20260905.4";
-import { allocateLocalLightShadows } from "./factory3d/lighting_policy.mjs?v=20260905.1";
+} from "../vendor/spark/spark.module.js";
+import { FactoryArchitectureRuntime } from "./plan_geometry.mjs?v=20260908.3";
+import { solveDropToSurface } from "./support_solver.mjs?v=20260905.4";
+import { allocateLocalLightShadows } from "./lighting_policy.mjs?v=20260905.1";
 import {
     disposeFactoryModel,
     loadFactoryModel,
-} from "./factory3d/model_loader.mjs?v=20260902.2";
+} from "./model_loader.mjs?v=20260902.2";
 
 
 const EMPTY = () => {};

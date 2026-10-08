@@ -7,8 +7,8 @@ import {
     entryFromSettings,
     modelMemoryKey,
     patchFromEntry,
-} from "../web/vnccs_unicanvas_model_memory.mjs";
-import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInferenceScale } from "../web/vnccs_unicanvas_scale_edit.mjs";
+} from "../web/unicanvas/model_memory.mjs";
+import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInferenceScale } from "../web/unicanvas/scale_edit.mjs";
 
 const custom = { model_loader: "diffusion", generation_mode: "anima", diffusion_model_name: "anima.safetensors", clip_name: "qwen.safetensors", vae_name: "vae.safetensors", clip_type: "stable_diffusion", lora_stack: [{ name: "style.safetensors", strength: 0.7 }, { name: "", strength: 1 }] };
 
@@ -78,7 +78,7 @@ test("a failing server never throws and recalls nothing", async () => {
 
 test("nothing is stored in the browser any more", async () => {
     const { readFile } = await import("node:fs/promises");
-    const source = await readFile(new URL("../web/vnccs_unicanvas_model_memory.mjs", import.meta.url), "utf8");
+    const source = await readFile(new URL("../web/unicanvas/model_memory.mjs", import.meta.url), "utf8");
     assert.ok(!source.includes("localStorage"), "the memory lives in the user's ComfyUI directory");
 });
 
