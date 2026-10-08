@@ -116,4 +116,9 @@ def _resolve_model_filename(folder_paths: Any, categories: str | tuple[str, ...]
         for entry in listed:
             if str(entry).replace("\\", "/").rsplit("/", 1)[-1].lower() == wanted:
                 return str(entry)
+        # MiniMax's full-precision video VAE can replace the preset's quantized VAE.
+        if category == "vae" and wanted == "minimax_h3_video_vae_int8_convrot.safetensors":
+            for entry in listed:
+                if str(entry).replace("\\", "/").rsplit("/", 1)[-1].lower() == "minimax_h3_video_vae_fp16.safetensors":
+                    return str(entry)
     return raw

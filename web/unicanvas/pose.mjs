@@ -149,6 +149,8 @@ export class UniCanvasPoseEditor {
             if (this.initialized && !this.keepingCamera) this.saveCaptureFraming();
         };
         studio.container.classList.add("vnccs-uc-pose-root");
+        // Loading and camera restoration render intermediate frames; reveal only the aligned view.
+        studio.canvasContainer.style.visibility = "hidden";
         (this.host.standalone ? this.host.stageWrap : this.host.container).appendChild(studio.container);
         this.buildDock();
         this.selectController = installCustomSelects(studio.container, { theme: "pose-studio" });
@@ -171,8 +173,7 @@ export class UniCanvasPoseEditor {
             // layer.pose.viewport is the persisted CAPTURE framing: the camera the layer pixels
             // are rendered with (pre-0.6.8 contract). It doubles as the migration source - a
             // layer saved before the split stores exactly the framing of its baked pixels. The
-            // orbit/wheel camera is a session-only INSPECTION view that starts on this framing
-            // and is never persisted again.
+            // orbit/wheel camera starts on this framing; standalone Save adopts the current view.
             if (layer.pose.viewport) {
                 this.applyViewerCamera(layer.pose.viewport);
             } else {
@@ -203,6 +204,7 @@ export class UniCanvasPoseEditor {
             this.initialized = true;
             this.layout();
             this.capturePreview(true);
+            studio.canvasContainer.style.visibility = "";
             studio.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
             void studio.refreshLibrary(false);
         })();
@@ -331,7 +333,7 @@ export class UniCanvasPoseEditor {
             if (this.help.open) this.help.hide(); else { this.help.show(); helpButton.setAttribute("aria-expanded", "true"); }
         }, "How editing a pose works");
         helpButton.setAttribute("aria-label", "Editing pose help"); helpButton.setAttribute("aria-expanded", "false");
-        this.help = buildPoseHelp(document, { onClose: () => helpButton.setAttribute("aria-expanded", "false") });
+        this.help = buildPoseHelp(document, { saveView: this.host.standalone, onClose: () => helpButton.setAttribute("aria-expanded", "false") });
         const eye = this.host._button("", "vnccs-uc-btn vnccs-uc-pose-eye", () => this.toggleWall(), "Show or hide the layers below (the wall)");
         eye.setAttribute("aria-label", "Toggle the layers below"); eye.setAttribute("aria-pressed", "true");
         eye.innerHTML = EYE_ICON;
@@ -582,6 +584,7 @@ export class UniCanvasPoseEditor {
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
         surface.hidden = !this.layer.visible || this.layer.locked || this.host.hasOpenStagingPanel();
+        if (this.initialized && this.visible) this.studio.performViewerResize(stage.clientWidth, stage.clientHeight);
         this.syncSessionViewOffset();
         if (this.initialized) this.refreshWall();
         // The baked pixels became visible (layer locked or hidden, staging panel opened) after frames
@@ -854,8 +857,9 @@ export class UniCanvasPoseEditor {
         return this.layer === layer || (this.wallContent && poseLayerBelow(this.host.layers, this.layer).includes(layer));
     }
 
-    commit() {
+    commit({ saveView = false } = {}) {
         if (!this.initialized || !this.host.layers.includes(this.layer) || !poseAtPanoramaCamera(this.layer, this.host.panorama)) return;
+        if (saveView) this.saveCaptureFraming();
         this.capturePreview(true);
         this.saveUI();
         this.host.panorama?.commitLayer(this.layer);

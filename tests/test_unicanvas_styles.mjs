@@ -77,7 +77,13 @@ test("UniCanvas STYLES template is intact and contains every panel stylesheet", 
 test("standalone styles use ComfyUI tokens and cannot reach node widgets", () => {
   assertBalancedBraces(STANDALONE_STYLES, "STANDALONE_STYLES");
   // Inspect every selector, including comma-separated groups and rules inside media queries.
-  const css = STANDALONE_STYLES.replace(/\/\*[\s\S]*?\*\//g, "");
+  const css = STANDALONE_STYLES.replace(/\/\*[\s\S]*?\*\//g, "").replace(
+    /@keyframes\s+([\w-]+)\s*\{(?:[^{}]|\{[^{}]*\})*\}/g,
+    (rule, name) => {
+      assert.match(name, /^vnccs-uc-/, "animations must use the UniCanvas namespace");
+      return ""; // Keyframe steps are animation declarations, not DOM selectors.
+    },
+  );
   for (const match of css.matchAll(/([^{}]+)\{/g)) {
     const selector = match[1].trim();
     if (selector.startsWith("@media")) continue;
@@ -90,7 +96,8 @@ test("standalone styles use ComfyUI tokens and cannot reach node widgets", () =>
     }
   }
   assert.doesNotMatch(css, /#[\da-f]{3,8}\b|linear-gradient|Sora/i);
-  assert.match(css, /--vnccs-uc-ui-scale:1 !important/);
+  assert.doesNotMatch(css, /--vnccs-uc-ui-scale:1 !important/);
+  assert.match(css, /zoom:var\(--vnccs-uc-ui-scale\)/);
   for (const token of ["--interface-panel-surface", "--interface-stroke", "--base-foreground", "--secondary-background", "--primary-background"]) {
     assert.ok(css.includes(token), `missing ComfyUI token ${token}`);
   }

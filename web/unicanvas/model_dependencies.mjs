@@ -36,7 +36,7 @@ export function openModelDependencies(widget, catalog, selection) {
   message.textContent = "Some related files are missing. Choose which files to download. Optional files do not block the base model.";
   const list = document.createElement("div");
   list.className = "vnccs-uc-dependency-list";
-  const rows = catalog.assets.map(asset => {
+  const rows = catalog.assets.filter(asset => !asset.installed).map(asset => {
     const row = document.createElement("div");
     row.className = "vnccs-uc-dependency";
     const label = document.createElement("label");
@@ -56,7 +56,7 @@ export function openModelDependencies(widget, catalog, selection) {
     status.className = "vnccs-uc-dependency-status";
     row.append(label, description, progress, status);
     list.append(row);
-    return { asset, checkbox, progress, status };
+    return { asset, row, checkbox, progress, status };
   });
   const summary = document.createElement("div");
   summary.setAttribute("role", "status");
@@ -82,10 +82,11 @@ export function openModelDependencies(widget, catalog, selection) {
     const focused = document.activeElement;
     downloads = states;
     let active = 0, missing = 0;
-    for (const { asset, checkbox, progress, status } of rows) {
+    for (const { asset, row, checkbox, progress, status } of rows) {
       const state = downloadState(asset, downloads);
       const installed = ["installed", "success"].includes(state.status);
       const busy = ["queued", "downloading"].includes(state.status);
+      row.hidden = installed;
       if (installed) checkbox.checked = false;
       checkbox.disabled = installed || busy || submitting;
       active += Number(busy);
@@ -98,8 +99,9 @@ export function openModelDependencies(widget, catalog, selection) {
         : state.status === "downloading" ? `${state.message || "Downloading"}${state.total_bytes ? ` — ${Math.floor(state.progress || 0)}% (${(state.downloaded_bytes / 1048576).toFixed(1)} / ${(state.total_bytes / 1048576).toFixed(1)} MB)` : ""}`
         : state.status === "error" ? `Download failed: ${state.message || "Please retry"}` : "Missing";
     }
+    if (!missing) { close(); return; }
     summary.textContent = active ? `${active} file(s) downloading or queued. Downloads continue if you close this dialog.`
-      : missing ? `${missing} file(s) missing.` : "All related files are installed.";
+      : `${missing} file(s) missing.`;
     closeButton.textContent = missing && !active ? "Later" : "Close";
     downloadButton.disabled = submitting || !missingSelected().length;
     downloadButton.textContent = rows.some(({ status }) => status.dataset.error === "true") ? "Retry selected" : "Download selected";
@@ -117,12 +119,11 @@ export function openModelDependencies(widget, catalog, selection) {
   const dialog = { close, update, error };
   widget._dependencyDialog = dialog;
   closeButton.addEventListener("click", close);
-  overlay.addEventListener("pointerdown", event => { if (event.target === overlay) close(); });
   overlay.addEventListener("keydown", event => {
     event.stopPropagation();
     if (event.key === "Escape") { event.preventDefault(); close(); }
     if (event.key === "Tab") {
-      const focusable = [...modal.querySelectorAll("button, input")].filter(element => !element.disabled);
+      const focusable = [...modal.querySelectorAll("button, input")].filter(element => !element.disabled && !element.closest("[hidden]"));
       const first = focusable[0], last = focusable.at(-1);
       if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
@@ -149,7 +150,7 @@ export function openModelDependencies(widget, catalog, selection) {
     }
   });
   update();
-  closeButton.focus();
+  if (!closed) closeButton.focus();
   if (catalog.assets.some(asset => ["queued", "downloading"].includes(asset.status))) widget.startPresetDownloadPolling();
   return dialog;
 }

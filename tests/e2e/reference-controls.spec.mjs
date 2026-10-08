@@ -62,9 +62,16 @@ for (const width of [900, 1600]) {
     await expect(dialog).toBeVisible();
     const toggle = dialog.getByRole("button", { name:"Use Layers as 1st reference image", exact:true });
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(toggle.locator('.vnccs-uc-reference-state')).toHaveText("On");
+    const enabledBackground = await toggle.evaluate(el => getComputedStyle(el).backgroundColor);
+    expect(enabledBackground).toBe('rgb(35, 102, 146)');
+    expect(await toggle.locator('.vnccs-uc-toggle').evaluate(el => getComputedStyle(el, '::after').left)).toBe('23px');
     await expect(dialog.getByRole("img")).toHaveAttribute("alt", "<image2>");
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
+    await expect(toggle.locator('.vnccs-uc-reference-state')).toHaveText("Off");
+    expect(await toggle.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe(enabledBackground);
+    await expect.poll(() => toggle.locator('.vnccs-uc-toggle').evaluate(el => getComputedStyle(el, '::after').left)).toBe('3px');
     await expect(dialog.getByRole("img")).toHaveAttribute("alt", "<image1>");
     const bounds = await page.evaluate(() => {
       const panel = document.querySelector("[data-edit-refs-popover]").getBoundingClientRect();
@@ -73,7 +80,12 @@ for (const width of [900, 1600]) {
     });
     expect(bounds.left).toBe(8); expect(bounds.bottom).toBe(8);
     expect(bounds.width).toBeLessThanOrEqual(bounds.stageWidth-8);
-    await toggle.click();
+    await toggle.focus();
+    await page.keyboard.press("Space");
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await expect(toggle.locator('.vnccs-uc-reference-state')).toHaveText("On");
+    await expect.poll(() => toggle.locator('.vnccs-uc-toggle').evaluate(el => getComputedStyle(el, '::after').left)).toBe('23px');
+    await dialog.locator('[title="Close reference images"]').focus();
     await page.screenshot({ path:testInfo.outputPath("after.png") });
     for (const family of ["minimax_h3", "flux_klein", "krea2_edit", "sdxl"]) {
       await page.evaluate(family => { widget.settings.generation_mode=family; widget.syncStandaloneGenerationControls(); }, family);

@@ -38,3 +38,14 @@ def test_relative_subfolder_names_work_with_both_separator_styles(tmp_path):
     for name in ("sub/model.safetensors", r"sub\model.safetensors"):
         assert PATHS._get_full_path_agnostic(folders, "checkpoints", name, require_exists=True) == str(model)
     assert PATHS._get_full_path_agnostic(folders, "checkpoints", "missing.safetensors", require_exists=True) is None
+
+
+def test_minimax_vae_alternative_is_scoped_to_vae_and_known_filename():
+    fp16 = r"MiniMax\minimax_h3_video_vae_fp16.safetensors"
+    int8 = "minimax_h3_video_vae_int8_convrot.safetensors"
+    folders = SimpleNamespace(get_filename_list=lambda _category: [fp16])
+    assert PATHS._resolve_model_filename(folders, "vae", int8) == fp16
+    assert PATHS._resolve_model_filename(folders, "loras", int8) == int8
+    assert PATHS._resolve_model_filename(folders, "vae", "another_vae.safetensors") == "another_vae.safetensors"
+    folders.get_filename_list = lambda _category: ["unrelated.safetensors"]
+    assert PATHS._resolve_model_filename(folders, "vae", int8) == int8

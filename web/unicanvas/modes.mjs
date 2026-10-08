@@ -46,6 +46,9 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu { display: none !important; }
+/* The current frontend reserves a separate top-menu row and gutters above the graph pane. */
+body.${UNICANVAS_STANDALONE_BODY_CLASS} div:has(+ [data-testid="graph-canvas-gutter"]) { display: none !important; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} [data-testid="graph-canvas-gutter"] { margin: 0 !important; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .graph-canvas-panel { visibility: hidden; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-bar-panel:has([data-vnccs-unicanvas-mount]),
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-bar-panel:has([data-vnccs-unicanvas-mount]) + .p-splitter-gutter { display: none !important; }
@@ -922,6 +925,7 @@ function createStandaloneWidget(UniCanvasWidgetClass) {
   widget.settings.edit_use_layers_as_reference ??= true;
   widget.container.classList.add("vnccs-uc-standalone");
   widget.syncStandaloneGenerationControls?.();
+  widget.syncInferenceControls?.();
   widget.drawBtn.textContent = "Generate";
   widget.donateLink.textContent = "Support MIUProject";
   installUniCanvasWidgetModes(widget);

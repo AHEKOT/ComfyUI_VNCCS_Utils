@@ -1,13 +1,26 @@
-// Double-click the "W×H" preview next to Inference scale to type the scale itself
-// (a multiplier of the Generation box: 1 = box size, 1.5 = one and a half times).
+// Double-click the scale label to enter MP in the standalone tab or a side multiplier in the node.
 
 export const INFERENCE_SCALE_MIN = 0.5;
 export const INFERENCE_SCALE_MAX = 3;
+export const INFERENCE_SCALE_MP_MIN = 1;
+export const INFERENCE_SCALE_MP_MAX = 4;
+export const INFERENCE_SCALE_MP_STEP = 0.1;
+
+export function inferenceScaleMegapixels(scale) {
+    return Math.min(INFERENCE_SCALE_MP_MAX, Math.max(INFERENCE_SCALE_MP_MIN, Math.round((Number(scale) || 1) ** 2 * 10) / 10));
+}
+
+export function inferenceScaleFromMegapixels(value) {
+    const mp = Math.min(INFERENCE_SCALE_MP_MAX, Math.max(INFERENCE_SCALE_MP_MIN, Math.round((Number(value) || 1) * 10) / 10));
+    // VNCCS keeps the legacy 1344 and 1536 area presets; storage remains a side multiplier.
+    return Math.sqrt(mp === 1.3 ? 1344 / 1024 : mp);
+}
 
 // Parses typed text ("1,5" and "1.5" both work); null when it is not a usable number.
-export function parseInferenceScale(text) {
+export function parseInferenceScale(text, standalone = false) {
     const value = Number(String(text ?? "").trim().replace(",", "."));
     if (!Number.isFinite(value) || value <= 0) return null;
+    if (standalone) return inferenceScaleFromMegapixels(value);
     return Math.min(INFERENCE_SCALE_MAX, Math.max(INFERENCE_SCALE_MIN, Math.round(value * 100) / 100));
 }
 
@@ -19,8 +32,9 @@ export function editInferenceScale(widget, label) {
     input.type = "text";
     input.inputMode = "decimal";
     input.className = "vnccs-uc-input vnccs-uc-infer-scale-edit";
-    input.value = String(Number(widget.settings.inference_scale) || 1);
-    input.title = "Scale relative to the Generation box: 1 = box size, 1.5 = one and a half times. Enter applies, Esc cancels.";
+    const originalScale = widget.settings.inference_scale;
+    input.value = widget.standalone ? inferenceScaleMegapixels(originalScale).toFixed(1) : String(Number(originalScale) || 1);
+    input.title = widget.standalone ? "Inference scale in megapixels: 1–4 MP, step 0.1. Enter applies, Esc cancels." : "Scale relative to the Generation box: 1 = box size, 1.5 = one and a half times. Enter applies, Esc cancels.";
     input.setAttribute("aria-label", "Inference scale");
     label.dataset.editing = "1";
     label.hidden = true;
@@ -29,15 +43,30 @@ export function editInferenceScale(widget, label) {
     const finish = (commit) => {
         if (done) return;
         done = true;
-        const value = commit ? parseInferenceScale(input.value) : null;
+        const value = commit ? parseInferenceScale(input.value, widget.standalone) : null;
         input.remove();
         label.hidden = false;
         delete label.dataset.editing;
-        if (value === null) return;
+        if (value === null) {
+            if (widget.standalone && widget.settings.inference_scale !== originalScale) {
+                widget.settings.inference_scale = originalScale;
+                widget.syncInferenceControls();
+                widget.requestRender?.();
+            }
+            return;
+        }
         widget.settings.inference_scale = value;
         widget.syncInferenceControls();
         widget.syncSettingsToWidget();
     };
+    input.addEventListener("input", () => {
+        if (!widget.standalone) return;
+        const value = parseInferenceScale(input.value, true);
+        if (value === null) return;
+        widget.settings.inference_scale = value;
+        widget.syncInferenceControls();
+        widget.requestRender?.();
+    });
     input.addEventListener("keydown", (event) => {
         event.stopPropagation();
         if (event.key === "Enter") { event.preventDefault(); finish(true); }

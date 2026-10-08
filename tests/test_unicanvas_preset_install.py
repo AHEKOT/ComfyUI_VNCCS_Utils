@@ -100,6 +100,43 @@ def test_qie2511_preset_is_removed():
     assert all(preset["id"] != "qwen_image_edit" for preset in presets._unicanvas_load_preset_registry()["presets"])
 
 
+@pytest.mark.parametrize("subfolder", ["", "MiniMax", r"custom\H3"])
+@pytest.mark.parametrize("has_int8", [False, True])
+def test_minimax_preset_dependencies_and_loader_reuse_fp16_vae(comfy_paths, monkeypatch, subfolder, has_int8):
+    uc = sys.modules[presets.__package__]
+    preset = next(entry for entry in presets._unicanvas_load_preset_registry()["presets"] if entry["id"] == "minimax_h3")
+    vae_asset = next(asset for asset in preset["assets"] if asset["role"] == "vae")
+    vae_root = comfy_paths["vae"] / subfolder.replace("\\", "/")
+    vae_root.mkdir(parents=True, exist_ok=True)
+    fp16 = vae_root / "minimax_h3_video_vae_fp16.safetensors"
+    fp16.write_bytes(b"installed")
+    selected = fp16
+    if has_int8:
+        selected = vae_root / Path(vae_asset["local_path"]).name
+        selected.write_bytes(b"installed")
+    expected = str(selected.relative_to(comfy_paths["vae"]))
+    card = next(entry for entry in presets._get_unicanvas_presets()["presets"] if entry["id"] == preset["id"])
+    installed = next(asset for asset in card["assets"] if asset["role"] == "vae")
+    assert installed["installed"] and installed["relative_name"] == expected
+    for preset_id in (preset["id"], ""):
+        dependencies = presets._get_unicanvas_dependencies("minimax_h3", preset_id)
+        asset = next(asset for asset in dependencies["assets"] if asset["role"] == "vae")
+        assert asset["installed"] and asset["relative_name"] == expected
+
+    comfy = types.ModuleType("comfy")
+    comfy.sd = types.ModuleType("comfy.sd")
+    monkeypatch.setitem(sys.modules, "comfy", comfy)
+    monkeypatch.setitem(sys.modules, "comfy.sd", comfy.sd)
+    load = mock.Mock(return_value=object())
+    monkeypatch.setattr(uc.loaders, "_call_loader_node", load)
+    uc.loaders.DiffusionModelUniCanvasLoader("diffusion_model", ()).load_assets(preset["settings"])
+    assert load.call_args.kwargs["vae_name"] == expected
+    queue = mock.Mock()
+    monkeypatch.setattr(presets, "_PRESET_DOWNLOAD_QUEUE", queue)
+    presets._enqueue_preset_download("minimax-vae", vae_asset)
+    queue.put.assert_not_called()
+
+
 def test_download_uses_the_configured_lora_root_and_vnccs_subfolder(comfy_paths, monkeypatch, tmp_path):
     asset = next(preset for preset in presets._unicanvas_load_preset_registry()["presets"] if preset["id"] == "qwen_image21")["turbo"]["asset"]
     target = comfy_paths["loras"] / "QI2" / "Viggle" / Path(asset["local_path"]).name

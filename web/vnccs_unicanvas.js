@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791500200000";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791500200000";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791508000000";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791508000000";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791500200000";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791500200000";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791500200000";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791500200000";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791500200000";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791500200000";
-import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791500200000";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791500200000";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791500200000";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791500200000";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791500200000";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791508000000";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791508000000";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791508000000";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791508000000";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791508000000";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791508000000";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791508000000";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791508000000";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791508000000";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791508000000";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791508000000";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791500200000";
+} from "./unicanvas/transform.mjs?v=1791508000000";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791500200000";
+} from "./unicanvas/presets.mjs?v=1791508000000";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,10 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791500200000";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791500200000";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791500200000";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791500200000";
+} from "./unicanvas/modes.mjs?v=1791508000000";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791508000000";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791508000000";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791508000000";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -76,7 +76,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791500200000";
+const VNCCS_UNICANVAS_VERSION = "1791508000000";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -126,8 +126,8 @@ const VNCCS_UNICANVAS_VERSION = "1791500200000";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791500200000";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791500200000";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791508000000";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791508000000";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -2007,7 +2007,7 @@ class UniCanvasWidget {
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
     if (previousTool === "pose" && tool !== "pose") {
-      this.poseEditor?.commit();
+      this.poseEditor?.commit({ saveView: Boolean(this.standalone && this.poseEditSession) });
       this.poseEditor?.setVisible(false);
       this.endPoseEditSession();
     }
@@ -3349,8 +3349,9 @@ class UniCanvasWidget {
 
   normalizeGenerationSettings() {
     this.forceSelectedPresetModelSettings();
-    // The scale sliders span 0.5–3; anything else (restored or preset-driven) is pulled back in.
+    // Stored scales remain side multipliers; the standalone UI uses VNCCS megapixel steps.
     this.settings.inference_scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone) this.settings.inference_scale = inferenceScaleFromMegapixels(inferenceScaleMegapixels(this.settings.inference_scale));
     const loader = getUniCanvasModelLoader(this.settings.model_loader);
     this.settings.model_loader = loader.key;
     if (this.settings.model_selection_mode !== "presets") {
@@ -3471,10 +3472,16 @@ class UniCanvasWidget {
   syncInferenceControls(source = null) {
     // Both panels (Presets and Custom) carry an inference scale slider; keep them in lockstep.
     const scaleInputs = this.container.querySelectorAll('[data-setting="inference_scale"]');
-    const scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone && source) this.settings.inference_scale = inferenceScaleFromMegapixels(source.value);
+    let scale = Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1));
+    if (this.standalone) scale = inferenceScaleFromMegapixels(inferenceScaleMegapixels(scale));
     this.settings.inference_scale = scale;
     scaleInputs.forEach((scaleInput) => {
-      if (scaleInput !== source) scaleInput.value = this.formatSettingNumber(scale, 3);
+      scaleInput.min = this.standalone ? INFERENCE_SCALE_MP_MIN : 0.5;
+      scaleInput.max = this.standalone ? INFERENCE_SCALE_MP_MAX : 3;
+      scaleInput.step = this.standalone ? INFERENCE_SCALE_MP_STEP : 0.05;
+      if (this.standalone || scaleInput !== source) scaleInput.value = this.standalone
+        ? inferenceScaleMegapixels(scale).toFixed(1) : this.formatSettingNumber(scale, 3);
     });
     this.updateInferenceSizeLabels();
   }
@@ -3482,7 +3489,7 @@ class UniCanvasWidget {
   // The standalone tab displays the scale itself; the node keeps its size preview.
   updateInferenceSizeLabels(size = this.getInferenceSize()) {
     const text = this.standalone
-      ? `${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 2)}×`
+      ? `${inferenceScaleMegapixels(this.settings.inference_scale).toFixed(1)} MP`
       : `${size.width}×${size.height}`;
     this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
       if (el.textContent !== text) el.textContent = text;
@@ -3683,10 +3690,22 @@ class UniCanvasWidget {
     if (!this.container) return;
     const width = this.container.clientWidth || this.node?.size?.[0] || 1040;
     const height = this.container.clientHeight || this.node?.size?.[1] || 720;
-    const scale = Math.max(0.35, Math.min(2.5, Math.min(width / UNICANVAS_LAYOUT_BASE_WIDTH, height / UNICANVAS_LAYOUT_BASE_HEIGHT)));
+    const scale = this.standalone
+      ? Math.max(0.75, Math.min(1, width / 1440, height / 900))
+      : Math.max(0.35, Math.min(2.5, Math.min(width / UNICANVAS_LAYOUT_BASE_WIDTH, height / UNICANVAS_LAYOUT_BASE_HEIGHT)));
     const next = scale.toFixed(3);
     if (this.container.style.getPropertyValue("--vnccs-uc-ui-scale") !== next) {
       this.container.style.setProperty("--vnccs-uc-ui-scale", next);
+    }
+    if (this.standalone && this.tools) {
+      const stageHeight = this.stageWrap?.clientHeight || height;
+      this.tools.classList.toggle("vnccs-uc-tools-compact", stageHeight < 400);
+      // Measure the full toolbar before fitting it, so every tool stays accessible without scrolling.
+      const toolScale = Math.min(scale, Math.max(0.1, (stageHeight - 16) / (this.tools.scrollHeight + 2)));
+      const toolNext = (Math.floor(toolScale * 1000) / 1000).toFixed(3);
+      if (this.container.style.getPropertyValue("--vnccs-uc-toolbar-scale") !== toolNext) {
+        this.container.style.setProperty("--vnccs-uc-toolbar-scale", toolNext);
+      }
     }
   }
 
@@ -7664,7 +7683,8 @@ class UniCanvasWidget {
         el.value = this.formatSettingNumber(this.settings[key], key === "inference_scale" ? 3 : 2);
       } else if (el instanceof HTMLSelectElement) {
         if (key !== "scheduler") this.ensureSelectOption(el, this.settings[key]);
-        if (key === "scheduler" && this.settings[key] && !Array.from(el.options).some((option) => option.value === String(this.settings[key]))) {
+        // Empty options mean the assets are still loading; never erase the saved scheduler then.
+        if (key === "scheduler" && el.options.length && !Array.from(el.options).some((option) => option.value === String(this.settings[key]))) {
           this.settings[key] = Array.from(el.options).some((option) => option.value === "simple") ? "simple" : (el.options[0]?.value || "");
         }
         el.value = this.settings[key];
@@ -8585,6 +8605,8 @@ class UniCanvasWidget {
     }) : null;
     if (useLayers) {
       useLayers.dataset.useLayersReference = "1";
+      useLayers.setAttribute("aria-label", "Use Layers as 1st reference image");
+      useLayers.innerHTML = '<span>Use Layers as 1st reference image</span><span class="vnccs-uc-reference-state" aria-hidden="true"></span><span class="vnccs-uc-toggle" aria-hidden="true"></span>';
       useLayers.title = "Use all visible image layers inside the selection bbox as the first reference image";
       panel.insertBefore(useLayers, grid);
     }
@@ -8595,6 +8617,10 @@ class UniCanvasWidget {
       const layersFirst = this.settings.edit_use_layers_as_reference !== false;
       useLayers?.setAttribute("aria-pressed", String(layersFirst));
       useLayers?.classList.toggle("active", layersFirst);
+      if (useLayers) {
+        useLayers.querySelector(".vnccs-uc-toggle").classList.toggle("active", layersFirst);
+        useLayers.querySelector(".vnccs-uc-reference-state").textContent = layersFirst ? "On" : "Off";
+      }
       count.textContent = this.standalone
         ? `${list.length + Number(layersFirst)} / ${max + Number(layersFirst)}`
         : `${list.length} / ${max}`;

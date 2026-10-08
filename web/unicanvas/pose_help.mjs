@@ -56,7 +56,7 @@ const ITEMS = [
     { key: "view", title: "Look around", html: "The view is only for inspecting: it never changes the image. Use it to check a hand or a foot from the side, then press <b>Reset camera</b>." },
 ];
 
-export function buildPoseHelp(document, { onClose } = {}) {
+export function buildPoseHelp(document, { onClose, saveView = false } = {}) {
     const overlay = document.createElement("div");
     overlay.className = "vnccs-uc-pose-help"; overlay.hidden = true;
     overlay.setAttribute("role", "dialog"); overlay.setAttribute("aria-label", "Editing pose help");
@@ -71,16 +71,17 @@ export function buildPoseHelp(document, { onClose } = {}) {
         cell.innerHTML = `${svgMarkup}<h4>${heading}</h4><p>${html}</p>`;
         return cell;
     };
-    for (const entry of ITEMS) grid.append(item(ILLUSTRATIONS[entry.key], entry.title, entry.html));
+    for (const entry of ITEMS) grid.append(item(ILLUSTRATIONS[entry.key], entry.title,
+        saveView && entry.key === "view" ? "Orbit, pan or zoom to frame the pose. <b>Save pose</b> keeps this view in the image. <b>Reset camera</b> returns to the last saved framing." : entry.html));
     const mice = document.createElement("div"); mice.className = "vnccs-uc-pose-help-item";
-    mice.innerHTML = `<div class="vnccs-uc-pose-help-buttons"><div>${MOUSE_ORBIT}<span>Right-drag<br>orbit</span></div><div>${MOUSE_PAN}<span>Middle-drag<br>pan</span></div><div>${MOUSE_WHEEL}<span>Wheel<br>zoom</span></div></div><h4>Camera mouse controls</h4><p>These move the editing view only. Undo (<kbd>Ctrl</kbd>+<kbd>Z</kbd>) reverts the mannequin, never the view.</p>`;
+    mice.innerHTML = `<div class="vnccs-uc-pose-help-buttons"><div>${MOUSE_ORBIT}<span>Right-drag<br>orbit</span></div><div>${MOUSE_PAN}<span>Middle-drag<br>pan</span></div><div>${MOUSE_WHEEL}<span>Wheel<br>zoom</span></div></div><h4>Camera mouse controls</h4><p>${saveView ? "Save pose keeps the current camera framing." : "These move the editing view only."} Undo (<kbd>Ctrl</kbd>+<kbd>Z</kbd>) reverts the mannequin, never the view.</p>`;
     grid.append(mice);
     const buttons = document.createElement("div"); buttons.className = "vnccs-uc-pose-help-item wide";
     buttons.innerHTML = `<h4>Buttons</h4><div class="vnccs-uc-pose-help-legend">
 <span class="vnccs-uc-btn icon">${EYE}</span><span>Show or hide the layers below the pose (the wall). The eye closes when they are hidden.</span>
 <span class="vnccs-uc-btn">Reset camera</span><span>Editing view back to the image framing. The mannequin is not touched.</span>
 <span class="vnccs-uc-btn">Cancel</span><span>Discard this session and restore the pose.</span>
-<span class="vnccs-uc-btn primary">Save pose</span><span>Keep the pose and leave the editor (Enter).</span></div>
+<span class="vnccs-uc-btn primary">Save pose</span><span>Keep the pose${saveView ? " and camera framing" : ""} and leave the editor (Enter).</span></div>
 <p>The Pose Library is in the <b>Scene</b> tab; body shape, gender and proportions are in <b>Body</b>. A new character starts as a copy of the current one.</p>`;
     grid.append(buttons);
     card.append(bar, grid); overlay.append(card);

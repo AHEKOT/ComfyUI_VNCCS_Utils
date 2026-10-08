@@ -1,9 +1,49 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { runInNewContext } from "node:vm";
 
 
 const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+
+test("scheduler survives pending assets and repairs blank or unavailable restored selections", () => {
+    class Select {
+        dataset = { setting:"scheduler" };
+        options = [];
+        set value(value) { this.selected = this.options.find(option => option.value === String(value))?.value || ""; }
+        get value() { return this.selected || ""; }
+    }
+    const method = source.slice(source.indexOf("  syncPromptControls() {"), source.indexOf("  // The \"?\" guide opens"));
+    const prototype = runInNewContext(`(class { ${method} }).prototype`, {
+        HTMLSelectElement:Select, HTMLInputElement:class {}, NUMERIC_SETTINGS:new Set(),
+    });
+    for (const standalone of [true, false]) {
+        const select = new Select();
+        const widget = Object.create(prototype);
+        Object.assign(widget, { standalone, settings:{ scheduler:"normal" },
+            normalizeGenerationSettings:() => ({ loader:{ key:"diffusion_model" } }),
+            container:{ querySelector:() => null, querySelectorAll:selector => selector === "[data-setting]" ? [select] : [] },
+        });
+        for (const name of ["syncInferenceControls", "syncDenoiseControls", "syncSeedModeControl", "renderModelSelectionControls",
+            "renderLoraStackControls", "syncPromptGuide", "autoResizePromptTextareas"]) widget[name] = () => {};
+        widget.syncPromptControls();
+        assert.equal(widget.settings.scheduler, "normal", "pending assets must preserve the saved value");
+        select.options = ["normal", "simple", "beta"].map(value => ({ value }));
+        widget.syncPromptControls();
+        assert.equal(select.value, "normal", "the saved value appears when assets arrive");
+        for (const saved of ["", "removed_scheduler", "simple", "beta"]) {
+            widget.settings.scheduler = saved;
+            widget.syncPromptControls();
+            const expected = ["simple", "beta"].includes(saved) ? saved : "simple";
+            assert.equal(widget.settings.scheduler, expected);
+            assert.equal(select.value, expected);
+        }
+        select.options = [{ value:"normal" }];
+        widget.settings.scheduler = "";
+        widget.syncPromptControls();
+        assert.equal(select.value, "normal", "use an available scheduler when simple is absent");
+    }
+});
 
 
 test("imported UniCanvas images immediately refresh the layer list", () => {

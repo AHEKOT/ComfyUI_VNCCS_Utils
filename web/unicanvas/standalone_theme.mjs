@@ -17,13 +17,12 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
   --uc-font:var(--font-inter, Arial, sans-serif);
   --uc-selected:var(--interface-panel-selected-surface, var(--content-hover-bg));
   --uc-radius:var(--p-border-radius-sm, 4px);
-  --vnccs-uc-ui-scale:1 !important;
   font:12px/1.4 var(--uc-font);
   border-radius:0;
   color-scheme:inherit;
 }
 .vnccs-unicanvas.vnccs-uc-standalone :is(.vnccs-uc-left, .vnccs-uc-side) {
-  width:280px; padding:8px; gap:8px; zoom:1; background:var(--uc-panel);
+  width:280px; padding:8px; gap:8px; zoom:var(--vnccs-uc-ui-scale); background:var(--uc-panel);
 }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-left { width:336px; }
 .vnccs-unicanvas.vnccs-uc-standalone :is([data-h3-panel], [data-edit-steps-panel]) { display:none !important; }
@@ -93,7 +92,8 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-denoise-control { min-height:28px; padding:6px; font-weight:400; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-seed-row { grid-template-columns:minmax(0,1fr) 28px; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-seed-dice { width:28px; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools { left:8px; gap:8px; padding:8px; border-radius:var(--uc-radius); background:var(--uc-panel); box-shadow:none; zoom:1; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools { left:8px; gap:8px; padding:8px; border-radius:var(--uc-radius); background:var(--uc-panel); box-shadow:none; zoom:var(--vnccs-uc-toolbar-scale, var(--vnccs-uc-ui-scale)); max-height:none; overflow:visible; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools.vnccs-uc-tools-compact { display:grid; grid-template-columns:repeat(2,64px); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools .vnccs-uc-icon { width:64px; height:64px; flex-shrink:0; border-radius:var(--uc-radius); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools svg { width:36px; height:36px; }
 .vnccs-unicanvas.vnccs-uc-standalone :is(.vnccs-uc-gear, .vnccs-uc-staging-popover .vnccs-uc-icon) svg { width:16px; height:16px; }
@@ -116,6 +116,11 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle.active { background:var(--uc-accent); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-toggle.active::after { background:var(--primary-fg); }
+.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] { height:auto; min-height:40px; display:flex; align-items:center; gap:8px; padding:8px 10px; text-align:left; }
+.vnccs-unicanvas.vnccs-uc-standalone [data-use-layers-reference] > span:first-child { flex:1; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-reference-state { font-weight:600; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-btn[data-use-layers-reference][aria-pressed="true"] { background:var(--primary-background, var(--primary-bg)); border-color:var(--uc-accent); color:var(--primary-fg); }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-btn[data-use-layers-reference][aria-pressed="true"]:hover { background:var(--primary-background-hover, var(--primary-background, var(--primary-bg))); }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-donate-link { padding:6px; background:var(--uc-panel); color:var(--uc-muted); text-align:center; box-shadow:none; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-enhance-spark { display:none; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-enhance-btn { filter:none; animation:none; }

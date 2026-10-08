@@ -85,8 +85,13 @@ for (const entry of ["preset", "custom"]) {
     expect(server.gets[0]).toEqual({ generation_mode:"qwen_image21", preset_id:entry === "preset" ? "qwen_image21" : "",
       ...(entry === "custom" ? { clip_name:"custom/encoder.safetensors", vae_name:"custom/vae.safetensors" } : {}) });
     expect(server.posts).toHaveLength(0);
-    await expect(page.getByRole("checkbox", { name:"Text encoder", exact:true })).toBeDisabled();
+    await expect(page.getByRole("checkbox", { name:"Text encoder", exact:true })).toHaveCount(0);
+    await expect(page.getByRole("checkbox", { name:"VAE", exact:true })).toHaveCount(0);
+    await expect(dialog.locator('.vnccs-uc-dependency')).toHaveCount(2);
     await page.getByRole("checkbox", { name:"Turbo LoRA", exact:true }).uncheck();
+    await page.mouse.click(5, 5);
+    await expect(dialog).toBeVisible();
+    await expect(page.getByRole("checkbox", { name:"Turbo LoRA", exact:true })).not.toBeChecked();
     const before = await page.evaluate(() => ({ ...widget.settings }));
     server.failDownload = true;
     await page.getByRole("button", { name:"Download selected" }).click();
@@ -98,6 +103,9 @@ for (const entry of ["preset", "custom"]) {
     server.states[outpaintKey] = { status:"downloading", message:"Downloading", progress:50, downloaded_bytes:1048576, total_bytes:2097152 };
     await expect(dialog).toContainText("50% (1.0 / 2.0 MB)");
     await expect(dialog.getByRole("progressbar", { name:"Outpaint LoRA" })).toHaveAttribute("value", "50");
+    await page.mouse.click(5, 5);
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("progressbar", { name:"Outpaint LoRA" })).toHaveAttribute("value", "50");
     const box = await dialog.boundingBox();
     expect(box.x).toBeGreaterThanOrEqual(0); expect(box.y).toBeGreaterThanOrEqual(0);
     expect(box.x + box.width).toBeLessThanOrEqual(900); expect(box.y + box.height).toBeLessThanOrEqual(650);
@@ -106,11 +114,20 @@ for (const entry of ["preset", "custom"]) {
     await expect(dialog).toContainText("Transfer interrupted");
     await page.getByRole("button", { name:"Retry selected" }).click();
     server.states[outpaintKey] = { status:"success", progress:100 };
-    await expect(page.getByRole("checkbox", { name:"Outpaint LoRA", exact:true })).toBeDisabled();
+    await expect(dialog.locator('.vnccs-uc-dependency').filter({ hasText:"Outpaint LoRA" })).toBeHidden();
     await expect(dialog.getByRole("progressbar", { name:"Outpaint LoRA" })).toBeHidden();
+    await expect(page.getByRole("checkbox", { name:"Turbo LoRA", exact:true })).toBeVisible();
+    await page.getByRole("button", { name:"Later", exact:true }).focus();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("checkbox", { name:"Turbo LoRA", exact:true })).toBeFocused();
     expect(await page.evaluate(() => widget.settings)).toEqual(before);
     await expect.poll(() => page.evaluate(() => widget.assetRefreshes)).toBeGreaterThan(0);
-    await page.keyboard.press("Escape");
+    // Keep the modal while another file is missing; close after the last one succeeds.
+    await expect(dialog).toBeVisible();
+    await page.getByRole("checkbox", { name:"Turbo LoRA", exact:true }).check();
+    await page.getByRole("button", { name:"Download selected" }).click();
+    await expect(dialog).toContainText("Queued");
+    server.states[turboKey] = { status:"success", progress:100 };
     await expect(dialog).toHaveCount(0);
     await expect(page.locator(`#${entry}`)).toBeFocused();
     expect(await page.locator("#controls").evaluate(element => element.inert)).toBe(false);
@@ -147,6 +164,11 @@ test("fixture: keyboard focus stays inside the modal and disposal releases the b
   await expect(page.getByRole("checkbox", { name:"Outpaint LoRA", exact:true })).toBeFocused();
   await page.keyboard.press("Shift+Tab");
   await expect(page.getByRole("button", { name:"Download selected" })).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator("#custom")).toBeFocused();
+  await page.locator("#custom").click();
+  await expect(dialog).toBeVisible();
   await page.evaluate(() => window.dispose());
   await expect(dialog).toHaveCount(0);
   expect(await page.locator("#controls").evaluate(element => element.inert)).toBe(false);

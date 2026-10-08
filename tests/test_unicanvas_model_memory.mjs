@@ -10,29 +10,37 @@ import {
     modelMemoryKey,
     patchFromEntry,
 } from "../web/unicanvas/model_memory.mjs";
-import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInferenceScale } from "../web/unicanvas/scale_edit.mjs";
+import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInferenceScale, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "../web/unicanvas/scale_edit.mjs";
 
 const custom = { model_loader: "diffusion", generation_mode: "anima", diffusion_model_name: "anima.safetensors", clip_name: "qwen.safetensors", vae_name: "vae.safetensors", clip_type: "stable_diffusion", lora_stack: [{ name: "style.safetensors", strength: 0.7 }, { name: "", strength: 1 }] };
 
 test("inference scale labels update both tab panels immediately and preserve the node size preview", () => {
     const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
     const methods = source.slice(source.indexOf("  syncInferenceControls(source = null) {"), source.indexOf("  getDenoiseControlSetting() {"));
-    const widget = runInNewContext(`(class { ${methods} }).prototype`);
+    const widget = runInNewContext(`(class { ${methods} }).prototype`, { inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP });
     const slider = { value: "1" }, customSlider = { value: "1" };
     const labels = [{ textContent: "" }, { textContent: "" }];
     Object.assign(widget, { standalone:true, settings:{ inference_scale:1 },
         getInferenceSize:() => ({ width:1280, height:1280 }),
         formatSettingNumber:value => String(value),
         container:{ querySelectorAll:selector => selector === "[data-inference-size]" ? labels : [slider, customSlider] } });
-    for (const scale of [0.5, 1, 1.25, 3]) {
-        widget.settings.inference_scale = scale;
+    for (const scale of [1, 1.3, 1.5, 4]) {
         slider.value = String(scale);
         widget.syncInferenceControls(slider);
-        assert.equal(customSlider.value, String(scale));
-        assert.deepEqual(labels.map(label => label.textContent), [`${scale}×`, `${scale}×`]);
+        assert.equal(customSlider.value, scale.toFixed(1));
+        assert.equal(widget.settings.inference_scale, inferenceScaleFromMegapixels(scale));
+        assert.equal(slider.step, 0.1);
+        assert.equal(slider.min, 1);
+        assert.equal(slider.max, 4);
+        assert.deepEqual(labels.map(label => label.textContent), [`${scale.toFixed(1)} MP`, `${scale.toFixed(1)} MP`]);
     }
     widget.standalone = false;
+    widget.settings.inference_scale = 1.25;
     widget.syncInferenceControls();
+    assert.equal(slider.step, 0.05);
+    assert.equal(slider.min, 0.5);
+    assert.equal(slider.max, 3);
+    assert.equal(slider.value, "1.25");
     assert.deepEqual(labels.map(label => label.textContent), ["1280×1280", "1280×1280"]);
 });
 
@@ -138,4 +146,35 @@ test("double-clicking the size label edits the scale; Enter applies and Esc canc
         assert.deepEqual(calls, key === "Enter" ? ["sync", "save"] : []);
         assert.ok(doc.input.removed);
     }
+});
+
+
+test("standalone scale follows VNCCS area presets and tenth steps", () => {
+    for (let tenth = 10; tenth <= 40; tenth++) {
+        const mp = tenth / 10;
+        const scale = inferenceScaleFromMegapixels(mp);
+        assert.equal(inferenceScaleMegapixels(scale), mp);
+        assert.ok(Math.abs(scale * scale - (mp === 1.3 ? 1344 / 1024 : mp)) < 1e-12);
+    }
+    assert.equal(parseInferenceScale("1,35", true), Math.sqrt(1.4));
+    assert.equal(parseInferenceScale("0.05", true), 1);
+    assert.equal(parseInferenceScale("99", true), 2);
+});
+
+test("standalone exact scale previews on input and Escape restores the previous value", () => {
+    const doc = fakeDocument();
+    const label = { dataset:{}, hidden:false, ownerDocument:doc, after() {} };
+    let saves = 0, renders = 0;
+    const widget = { standalone:true, settings:{ inference_scale:1 }, syncInferenceControls() {},
+        syncSettingsToWidget() { saves++; }, requestRender() { renders++; } };
+    editInferenceScale(widget, label);
+    assert.equal(doc.input.value, "1.0");
+    doc.input.value = "1,35";
+    doc.listeners.input();
+    assert.equal(widget.settings.inference_scale, Math.sqrt(1.4));
+    assert.equal(renders, 1);
+    doc.listeners.keydown({ key:"Escape", preventDefault() {}, stopPropagation() {} });
+    assert.equal(widget.settings.inference_scale, 1);
+    assert.equal(saves, 0);
+    assert.equal(renders, 2);
 });

@@ -101,7 +101,7 @@ function selectionHarness() {
     const calls = [];
     host.setStatus = message => calls.push(["status", message]);
     host.poseEditor = {
-        commit: () => calls.push(["commit"]),
+        commit: options => calls.push(["commit", options?.saveView]),
         setVisible: show => calls.push(["visible", show]), layout: noop,
         activate: async (selected, options) => calls.push(["activate", selected.id, options.show]),
         setCharacterOpen: open => calls.push(["character", open]),
@@ -122,6 +122,7 @@ test("selecting a pose layer only selects it; Edit pose enters and Save pose lea
     host.finishPoseEdit(true);
     assert.equal(host.tool, "move"); assert.equal(host.poseEditSession, null);
     assert.ok(calls.some(call => call[0] === "visible" && call[1] === false));
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], false, "node mode keeps its existing capture framing");
     assert.equal(host.undoStack.length, 0, "an unchanged session adds no undo step");
 });
 
@@ -154,7 +155,7 @@ test("a pose edit session is one undo step on Save and fully restored on Cancel"
 });
 
 test("standalone pose entry, Save and Cancel keep the workspace pan and zoom", () => {
-    const { host, layer } = selectionHarness();
+    const { host, layer, calls } = selectionHarness();
     host.standalone = true;
     host.centerBbox = () => { throw new Error("Standalone must never auto-frame a pose"); };
     host.view = { x: -137, y: 83, scale: 0.73 }; host.intendedScale = 0.73;
@@ -162,11 +163,13 @@ test("standalone pose entry, Save and Cancel keep the workspace pan and zoom", (
     host.editPoseLayer(layer);
     assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
     host.finishPoseEdit(true);
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], true, "Save adopts the editing camera");
     assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
     host.editPoseLayer(layer);
     host.view = { x: 23, y: -41, scale: 1.2 }; host.intendedScale = 1.2;
     const inspected = JSON.stringify([host.view, host.intendedScale, host.bbox]);
     host.finishPoseEdit(false);
+    assert.equal(calls.filter(call => call[0] === "commit").at(-1)[1], false, "Cancel never adopts the editing camera");
     assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), inspected,
         "Cancel restores the pose, without resetting explicit workspace navigation");
 });
@@ -703,6 +706,73 @@ function controlledStudio(load = async () => true) {
     }
     return { Studio, instances };
 }
+
+test("standalone Save bakes the wheel camera, persists it and reopens at the same size", async () => {
+    const controlled = controlledStudio();
+    const { Editor } = harness(controlled.Studio);
+    const { host, layer } = selectionHarness();
+    host.standalone = true;
+    host.layers = [layer];
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    const editor = host.poseEditor = new Editor(host);
+    host.editPoseLayer(layer);
+    await editor.ready;
+    const studio = controlled.instances[0];
+    const saved = JSON.stringify(layer.pose.viewport);
+    studio.viewer.camera.position.fromArray([1, 2, 1]);
+    studio.viewer.camera.zoom = 1.5;
+    studio.canvas.fire("wheel");
+    studio.host.onViewportRender();
+    assert.equal(JSON.stringify(layer.pose.viewport), saved, "navigation remains realtime without baking each wheel tick");
+    const captures = [];
+    studio.viewer.capture = (...args) => {
+        captures.push(JSON.stringify(editor.snapshotViewerCamera()));
+        return args[8].targetCanvas;
+    };
+    const zoomed = JSON.stringify(editor.snapshotViewerCamera());
+    host.finishPoseEdit(true);
+    assert.equal(JSON.stringify(layer.pose.viewport), zoomed);
+    assert.equal(captures.at(-1), zoomed, "the layer pixels use the same camera seen before Save");
+    assert.equal(JSON.stringify(host.undoStack.at(-1).after.pose.viewport), zoomed, "the session history includes the camera");
+    host.editPoseLayer(layer);
+    await editor.ready;
+    assert.equal(JSON.stringify(editor.snapshotViewerCamera()), zoomed, "reopening keeps the saved zoom");
+    studio.viewer.camera.position.fromArray([1, 2, 0.5]);
+    host.finishPoseEdit(false);
+    assert.equal(JSON.stringify(layer.pose.viewport), zoomed, "Cancel restores the last saved camera");
+    editor.release();
+});
+
+test("pose initialization hides intermediate frames until stage size and view offset are ready", async () => {
+    let finish;
+    const controlled = controlledStudio(() => new Promise(resolve => { finish = resolve; }));
+    const { editor, host, layer } = harness(controlled.Studio);
+    host.standalone = true;
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    const loading = editor.activate(layer);
+    await new Promise(setImmediate);
+    const studio = controlled.instances[0], camera = studio.viewer.camera;
+    assert.equal(studio.canvasContainer.style.visibility, "hidden");
+    const frames = [];
+    studio.viewer.renderer.render = () => frames.push({ visibility:studio.canvasContainer.style.visibility, aspect:camera.aspect, view:{...camera.view} });
+    camera.setViewOffset = (fullWidth, fullHeight, offsetX, offsetY, width, height) => {
+        camera.view = { enabled:true, fullWidth, fullHeight, offsetX, offsetY, width, height };
+    };
+    studio.performViewerResize = (width, height) => {
+        camera.aspect = width / height;
+        studio.viewer.renderer.render();
+        studio.host.onViewportRender();
+    };
+    studio.viewer.renderer.render();
+    finish();
+    await loading;
+    assert.ok(frames.length >= 2);
+    assert.ok(frames.every(frame => frame.visibility === "hidden"), "wrong loading frames are never visible");
+    assert.equal(studio.canvasContainer.style.visibility, "");
+    assert.equal(frames.at(-1).aspect, host.stageWrap.clientWidth / host.stageWrap.clientHeight);
+    assert.deepEqual(frames.at(-1).view, { enabled:true, fullWidth:750, fullHeight:600, offsetX:165, offsetY:-20, width:1000, height:800 });
+    editor.release();
+});
 
 test("deleting or switching a loading pose ignores old initialization and releases its editor", async () => {
     let finish;

@@ -28,6 +28,8 @@ for (const location of ["left", "right"]) {
           #splitter { display:flex; flex:1; min-width:0; }
           .side-bar-panel { width:200px; background:#444; pointer-events:auto; }
           #center { display:flex; flex:1; flex-direction:column; }
+          #graph-topmenu { height:50px; flex-shrink:0; pointer-events:auto; }
+          [data-testid="graph-canvas-gutter"] { display:flex; flex:1; flex-direction:column; min-height:0; margin:0 8px 8px; }
           .graph-canvas-panel { flex:1; position:relative; }
           .bottom-panel { height:200px; flex-shrink:0; background:#454545; pointer-events:auto; }
           .p-splitter-gutter { height:8px; flex-shrink:0; pointer-events:auto; }
@@ -48,9 +50,12 @@ for (const location of ["left", "right"]) {
             <div id="help-menu" hidden><button id="help-link">Documentation</button></div>
           </nav>
           <div id="splitter"><aside class="side-bar-panel"><div id="mount"></div></aside>
-            <div id="side-gutter" class="p-splitter-gutter" style="width:8px;height:auto"></div><div id="center"><div class="graph-canvas-panel"><button id="graph-action">Graph action</button></div>
+            <div id="side-gutter" class="p-splitter-gutter" style="width:8px;height:auto"></div><div id="center">
+              <div id="graph-topmenu"><button>Graph toolbar</button></div>
+              <div data-testid="graph-canvas-gutter"><div class="graph-canvas-panel"><button id="graph-action">Graph action</button></div>
               <div id="gutter" class="p-splitter-gutter" hidden></div>
               <div class="bottom-panel" hidden><input aria-label="Console input"><button id="close-dock" onclick="toggleDock()">Close dock</button></div>
+              </div>
             </div>
           </div>
         </div>
@@ -82,6 +87,8 @@ for (const location of ["left", "right"]) {
     await page.goto("http://native-chrome.test/");
     const shell = page.locator(".vnccs-uc2-standalone-shell");
     await expect(shell).toBeVisible();
+    await expect(page.locator('#graph-topmenu')).toBeHidden();
+    await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().top)).toBe(0);
     await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().height)).toBe(800);
     // Native ancestors can establish a fixed-position containing block below a header.
     await page.locator('#overlay').evaluate(el => { el.style.top='24px'; el.style.transform='translateZ(0)'; });
@@ -135,6 +142,9 @@ for (const location of ["left", "right"]) {
     await expect(page.locator("#graph-action")).toBeVisible();
     await expect(page.locator(".side-bar-panel")).toBeVisible();
     await expect(page.locator("#side-gutter")).toBeVisible();
+    await expect(page.locator("#graph-topmenu")).toBeVisible();
+    expect(await page.locator("#graph-topmenu").evaluate(el => el.getBoundingClientRect().height)).toBe(50);
+    expect(await page.locator('[data-testid="graph-canvas-gutter"]').evaluate(el => getComputedStyle(el).marginBottom)).toBe('8px');
     await page.locator(".bottom-panel").evaluate(el => { el.style.height="250px"; });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     expect(errors).toEqual([]);
