@@ -9,14 +9,11 @@ import tempfile
 import uuid
 import threading
 import asyncio
-import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fractions import Fraction
 from urllib.parse import unquote, urlparse
 from aiohttp import web
 from PIL import Image
-
-LOGGER = logging.getLogger(__name__)
 
 DEFAULT_REPO_ID = "MIUProject/VNCCS_PoseLibrary_Main"
 SECONDARY_DEFAULT_REPO_ID = "Totemistyk/General_Poses_PoseStudio"
@@ -34,11 +31,8 @@ MAX_LIBRARY_SAVE_REQUEST_BYTES = 64 * 1024 * 1024
 MAX_POSE_REPOSITORY_FILE_BYTES = 32 * 1024 * 1024
 MAX_POSE_REPOSITORY_SYNC_BYTES = 256 * 1024 * 1024
 POSE_REPOSITORY_LEGACY_GIT_CACHE_DIR = ".repository_git_cache"
-POSE_REPOSITORY_GIT_TIMEOUT_SECONDS = 180
 _REPOSITORY_PROGRESS = {}
 _REPOSITORY_PROGRESS_LOCK = threading.Lock()
-_REPOSITORY_GIT_LOCKS = {}
-_REPOSITORY_GIT_LOCKS_GUARD = threading.Lock()
 _REPOSITORY_PROGRESS_MAX = 256
 _REPOSITORY_PROGRESS_TTL_SECONDS = 60 * 60
 _REPOSITORY_PROGRESS_RUNNING_TTL_SECONDS = 24 * 60 * 60
@@ -125,70 +119,12 @@ def get_library_path():
     os.makedirs(lib_path, exist_ok=True)
     return lib_path
 
-class GitRepositorySyncUnavailable(RuntimeError):
-    """Signals that repository sync should retry through the HTTP transport."""
-
-def get_repository_git_lock(repo_id):
-    with _REPOSITORY_GIT_LOCKS_GUARD:
-        return _REPOSITORY_GIT_LOCKS.setdefault(repo_id, threading.Lock())
-
 def walk_pose_library(lib_path):
     """Walk user-visible pose data without exposing the internal Git cache."""
     for root, dirs, files in os.walk(lib_path):
         if os.path.abspath(root) == os.path.abspath(lib_path):
             dirs[:] = [directory for directory in dirs if directory != POSE_REPOSITORY_LEGACY_GIT_CACHE_DIR]
         yield root, dirs, files
-
-def safe_repository_source_file(source_root, path_in_repo):
-    normalized = str(path_in_repo or "").replace("\\", "/").strip()
-    parts = normalized.split("/")
-    if not normalized or normalized.startswith("/") or any(part in {"", ".", ".."} for part in parts):
-        raise GitRepositorySyncUnavailable(f"Unsafe repository path: {path_in_repo}")
-
-    source_root = os.path.abspath(source_root)
-    candidate = os.path.abspath(os.path.join(source_root, *parts))
-    real_source_root = os.path.realpath(source_root)
-    real_candidate = os.path.realpath(candidate)
-    try:
-        inside_root = os.path.commonpath([real_source_root, real_candidate]) == real_source_root
-    except ValueError:
-        inside_root = False
-    if not inside_root or os.path.islink(candidate) or not os.path.isfile(candidate):
-        raise GitRepositorySyncUnavailable(f"Repository file is missing or unsafe: {path_in_repo}")
-    return candidate
-
-def is_git_lfs_pointer(path):
-    try:
-        if os.path.getsize(path) > 4096:
-            return False
-        with open(path, "rb") as file:
-            return file.read(256).startswith(b"version https://git-lfs.github.com/spec/v1")
-    except Exception:
-        return False
-
-def run_pose_repository_git(command):
-    raise GitRepositorySyncUnavailable("Process-based repository transport is disabled")
-
-def update_git_pose_repository_checkout(repo_id, task_id=None):
-    raise GitRepositorySyncUnavailable("Process-based repository transport is disabled")
-
-def load_git_pose_manifest(checkout, manifest_path):
-    source = safe_repository_source_file(checkout, manifest_path)
-    size = os.path.getsize(source)
-    if size > MAX_POSE_REPOSITORY_FILE_BYTES:
-        raise GitRepositorySyncUnavailable(
-            f"{manifest_path} is too large ({human_bytes(size)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})"
-        )
-    if is_git_lfs_pointer(source):
-        raise GitRepositorySyncUnavailable(f"{manifest_path} is stored through Git LFS/Xet")
-    try:
-        with open(source, "r", encoding="utf-8") as file:
-            manifest = json.load(file)
-    except Exception as exc:
-        raise GitRepositorySyncUnavailable(f"Cannot read {manifest_path}: {exc}") from exc
-    if not isinstance(manifest, dict):
-        raise GitRepositorySyncUnavailable(f"Invalid repository manifest: {manifest_path}")
-    return manifest
 
 def get_default_repositories_path():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -367,7 +303,6 @@ def refresh_pose_repository(repo, task_id=None):
         "asset_count": int(repo.get("asset_count") or repo.get("pose_count") or 0),
         "last_checked": time.time(),
         "last_error": "",
-        "git_error": "",
         "transport": "",
     }
     try:
@@ -377,94 +312,20 @@ def refresh_pose_repository(repo, task_id=None):
         repository_progress_update(task_id, message=f"Reading repository info for {repo_id}...", progress=2)
         info = api.repo_info(repo_id=repo_id, repo_type="model", token=token)
         result["sha"] = getattr(info, "sha", "") or ""
-        manifest = None
-        sync_result = None
-        transport = ""
-        git_failure = ""
-
-        # A shallow Git transfer packs all of the small JSON/WebP assets into a
-        # handful of requests, avoiding one HTTP round trip per file. Private
-        # repositories stay on the authenticated HTTP path so tokens never
-        # appear in Git configuration or process arguments.
-        if not bool(getattr(info, "private", False)):
-            checkout = None
-            try:
-                with get_repository_git_lock(repo_id):
-                    checkout = update_git_pose_repository_checkout(repo_id, task_id=task_id)
-                    manifest = load_git_pose_manifest(checkout, manifest_path)
-                    sync_result = sync_pose_repository_files(
-                        repo,
-                        manifest,
-                        token,
-                        task_id=task_id,
-                        source_root=checkout,
-                    )
-                transport = "git"
-            except GitRepositorySyncUnavailable as exc:
-                git_failure = str(exc)
-                LOGGER.warning(
-                    "Git sync failed for %s; using HTTP fallback: %s",
-                    repo_id,
-                    git_failure,
-                )
-                manifest = None
-                sync_result = None
-                result["git_error"] = git_failure
-            finally:
-                if checkout:
-                    shutil.rmtree(checkout, ignore_errors=True)
-
-        if manifest is None:
-            fallback_message = f"Using compatible HTTP download for {repo_id}..."
-            if git_failure:
-                fallback_message = f"Git unavailable ({git_failure}). Using HTTP download..."
-            repository_progress_update(
-                task_id,
-                message=fallback_message,
-                progress=5,
-                git_error=git_failure,
-                transport="http",
+        repository_progress_update(task_id, message=f"Downloading manifest for {repo_id}...", progress=5, transport="http")
+        manifest_file = None
+        try:
+            manifest_file = download_hf_file_with_progress(
+                repo_id=repo_id, path_in_repo=manifest_path, token=token,
+                task_id=task_id, file_index=0, total_files=1,
             )
-            manifest_file = None
-            try:
-                manifest_file = download_hf_file_with_progress(
-                    repo_id=repo_id,
-                    path_in_repo=manifest_path,
-                    token=token,
-                    task_id=task_id,
-                    file_index=0,
-                    total_files=1,
-                )
-                with open(manifest_file, "r", encoding="utf-8") as f:
-                    manifest = json.load(f)
-                if not isinstance(manifest, dict):
-                    raise ValueError(f"Invalid repository manifest: {manifest_path}")
-            except Exception:
-                repository_progress_update(task_id, message=f"Manifest not found. Counting files in {repo_id}...", progress=50)
-                files = api.list_repo_files(repo_id=repo_id, repo_type="model", token=token)
-                result["asset_count"] = len([
-                    file for file in files
-                    if file.lower().endswith(".json") and os.path.basename(file) != manifest_path
-                ])
-                result["animation_count"] = len([
-                    file for file in files
-                    if str(file).replace("\\", "/").startswith("animations/") and file.lower().endswith(".json")
-                ])
-                result["pose_count"] = result["asset_count"] - result["animation_count"]
-                result["transport"] = "api"
-                result["status"] = "ok"
-                repository_progress_finish(task_id, f"Repository checked: {result['asset_count']} library JSON files found, no manifest to sync.")
-                return result
-            finally:
-                if manifest_file:
-                    try:
-                        os.remove(manifest_file)
-                    except Exception:
-                        pass
-
-            sync_result = sync_pose_repository_files(repo, manifest, token, task_id=task_id)
-            transport = "http"
-
+            with open(manifest_file, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        finally:
+            if manifest_file:
+                os.remove(manifest_file)
+        sync_result = sync_pose_repository_files(repo, manifest, token, task_id=task_id)
+        transport = "http"
         poses = manifest.get("poses") or []
         result["animation_count"] = sum(
             1 for item in poses
@@ -479,6 +340,9 @@ def refresh_pose_repository(repo, task_id=None):
         result["skipped_count"] = sync_result["skipped_count"]
         result["removed_count"] = sync_result["removed_count"]
         result["transport"] = transport
+        result["errors"] = sync_result["errors"]
+        if sync_result["errors"]:
+            raise ValueError("; ".join(sync_result["errors"]))
         manifest_title = manifest.get("title")
         result["title"] = (
             (result.get("title") or repo_id)
@@ -493,11 +357,7 @@ def refresh_pose_repository(repo, task_id=None):
             f"Repository sync complete via {transport}: {sync_result['downloaded_count']} downloaded, "
             f"{sync_result['skipped_count']} unchanged, {sync_result['removed_count']} removed.",
         )
-        repository_progress_update(
-            task_id,
-            git_error=git_failure,
-            transport=transport,
-        )
+        repository_progress_update(task_id, transport=transport)
     except Exception as exc:
         result["status"] = "error"
         result["last_error"] = str(exc)
@@ -636,8 +496,7 @@ def collect_local_pose_files():
             except Exception:
                 continue
             meta = get_pose_meta(pose_data)
-            category = meta.get("category") or DEFAULT_CATEGORY
-            asset_type = meta.get("asset_type") or POSE_ASSET_TYPE
+            _repository, category, asset_type = pose_file_location(path, pose_data, {LOCAL_USER_REPOSITORY: LOCAL_USER_REPOSITORY})
             preview_path, preview_type = find_preview(root, name)
             preview_ext = os.path.splitext(preview_path)[1].lower() if preview_path else ""
             category_dir = category_to_dir(category)
@@ -727,7 +586,14 @@ def copy_if_changed(src_path, dst_path, expected_sha=""):
                 return False
         except Exception:
             pass
-    shutil.copy2(src_path, dst_path)
+    fd, staged_path = tempfile.mkstemp(prefix=".vnccs_sync_", dir=os.path.dirname(dst_path))
+    os.close(fd)
+    try:
+        shutil.copy2(src_path, staged_path)
+        os.replace(staged_path, dst_path)
+    finally:
+        if os.path.exists(staged_path):
+            os.remove(staged_path)
     return True
 
 def local_file_matches(path, expected_sha):
@@ -806,33 +672,58 @@ def remove_local_repository_cache(repo_id):
         shutil.rmtree(repo_root, ignore_errors=True)
     return removed_count
 
-def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=None):
-    """Import new/changed pose files from Git or the Hugging Face HTTP API."""
+def sync_pose_repository_files(repo, manifest, token, task_id=None):
+    """Validate the complete manifest before importing public Hugging Face assets."""
     repo_id = repo["repo_id"]
-    poses = manifest.get("poses") or []
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("poses"), list):
+        raise ValueError("Repository manifest must contain a poses array")
+    poses = manifest["poses"]
+    destinations = {}
     pose_states = {}
     download_jobs = []
     expected_json_paths = set()
     expected_preview_paths = set()
     errors = []
 
-    for pose in poses:
+    for index, pose in enumerate(poses):
         if not isinstance(pose, dict):
-            continue
+            raise ValueError(f"Invalid manifest entry {index}: expected an object")
         hub_json_path = pose.get("json_path") or pose.get("path")
-        if not hub_json_path:
-            continue
+        if not isinstance(hub_json_path, str) or not hub_json_path.lower().endswith(".json"):
+            raise ValueError(f"Invalid manifest entry {index}: JSON path required")
+        for field in ("json_path", "path", "preview_path", "name", "category", "asset_type", "json_sha256", "preview_sha256"):
+            if field in pose and not isinstance(pose[field], str):
+                raise ValueError(f"Invalid manifest entry {index}: {field} must be a string")
+        for hub_path in (hub_json_path, pose.get("preview_path") or ""):
+            if hub_path and (hub_path.startswith(("/", "\\")) or any(part in {"", ".", ".."} for part in hub_path.replace("\\", "/").split("/"))):
+                raise ValueError(f"Unsafe repository path: {hub_path}")
+        for field in ("json_sha256", "preview_sha256"):
+            sha = pose.get(field) or ""
+            if sha and (len(sha) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha)):
+                raise ValueError(f"Invalid manifest entry {index}: {field}")
         name = sanitize_pose_name(pose.get("name") or os.path.splitext(os.path.basename(hub_json_path))[0])
         if not name:
-            continue
+            raise ValueError(f"Invalid manifest entry {index}: name required")
         category = str(pose.get("category") or infer_category_from_hub_path(hub_json_path) or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
-        asset_type = (
-            ANIMATION_ASSET_TYPE
-            if str(hub_json_path).replace("\\", "/").startswith("animations/")
-            else normalize_asset_type(pose.get("asset_type"))
-        )
-        pose_dir = get_pose_dir(repo_id, category)
+        if pose.get("asset_type") and pose["asset_type"] not in {POSE_ASSET_TYPE, ANIMATION_ASSET_TYPE}:
+            raise ValueError(f"Invalid manifest entry {index}: asset_type")
+        asset_type = ANIMATION_ASSET_TYPE if hub_json_path.replace("\\", "/").startswith("animations/") else normalize_asset_type(pose.get("asset_type"))
+        pose_dir = get_pose_dir(repo_id, category, asset_type)
         target_json = os.path.join(pose_dir, f"{name}.json")
+        preview_path = pose.get("preview_path") or ""
+        targets = [(target_json, hub_json_path)]
+        if preview_path:
+            ext = os.path.splitext(preview_path)[1].lower()
+            if ext not in {".webm", ".mp4", ".webp", ".jpg", ".jpeg", ".png"}:
+                raise ValueError(f"Unsupported preview path: {preview_path}")
+            targets.append((os.path.join(pose_dir, f"{name}{ext}"), preview_path))
+        for target, source in targets:
+            key = normalize_local_path(target).casefold()
+            if key in destinations:
+                raise ValueError(f"Conflicting manifest entries: {destinations[key]} and {source} target {os.path.relpath(target, get_library_path())}")
+            destinations[key] = source
+        if hub_json_path in pose_states:
+            raise ValueError(f"Duplicate manifest JSON path: {hub_json_path}")
         pose_states[hub_json_path] = {"changed": False, "error": False}
 
         # Planned targets are always kept by cleanup so a failed download never
@@ -871,38 +762,13 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
             errors.append(f"{hub_json_path}: {exc}")
             pose_states[hub_json_path]["error"] = True
 
-    if source_root and download_jobs:
-        source_bytes = 0
-        try:
-            for job in download_jobs:
-                source_path = safe_repository_source_file(source_root, job["hub_path"])
-                file_bytes = os.path.getsize(source_path)
-                if file_bytes > MAX_POSE_REPOSITORY_FILE_BYTES:
-                    raise GitRepositorySyncUnavailable(
-                        f"{job['hub_path']} is too large ({human_bytes(file_bytes)} > {human_bytes(MAX_POSE_REPOSITORY_FILE_BYTES)})"
-                    )
-                if is_git_lfs_pointer(source_path):
-                    raise GitRepositorySyncUnavailable(f"{job['hub_path']} is stored through Git LFS/Xet")
-                source_bytes += file_bytes
-                if source_bytes > MAX_POSE_REPOSITORY_SYNC_BYTES:
-                    raise GitRepositorySyncUnavailable(
-                        f"Repository sync exceeds the total limit ({human_bytes(MAX_POSE_REPOSITORY_SYNC_BYTES)})"
-                    )
-                verify_expected_sha(source_path, job.get("expected_sha") or "")
-                job["source_path"] = source_path
-        except GitRepositorySyncUnavailable:
-            raise
-        except Exception as exc:
-            raise GitRepositorySyncUnavailable(f"Cannot validate Git checkout: {exc}") from exc
-
     if download_jobs:
         downloaded_bytes = 0
-        operation = "Importing" if source_root else "Downloading"
-        progress_start = 8 if source_root else 2
-        progress_span = 88 if source_root else 94
+        progress_start = 2
+        progress_span = 94
         repository_progress_update(
             task_id,
-            message=f"{operation} {len(download_jobs)} changed files...",
+            message=f"Downloading {len(download_jobs)} changed files...",
             current_file="",
             file_index=0,
             total_files=len(download_jobs),
@@ -911,10 +777,9 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
         for completed, job in enumerate(download_jobs, start=1):
             tmp_path = None
             try:
-                if source_root:
-                    tmp_path = job["source_path"]
-                else:
-                    tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+                tmp_path = download_hf_file(repo_id, job["hub_path"], token=token)
+                if job["expected_kind"] == "json" and not isinstance(read_pose_json(tmp_path), dict):
+                    raise ValueError("Library asset JSON must be an object")
                 file_bytes = os.path.getsize(tmp_path)
                 if downloaded_bytes + file_bytes > MAX_POSE_REPOSITORY_SYNC_BYTES:
                     raise ValueError(f"Repository sync exceeded the total download limit ({human_bytes(MAX_POSE_REPOSITORY_SYNC_BYTES)})")
@@ -930,14 +795,14 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
                 errors.append(f"{job['hub_path']}: {exc}")
                 pose_states[job["pose_key"]]["error"] = True
             finally:
-                if tmp_path and not source_root:
+                if tmp_path:
                     try:
                         os.remove(tmp_path)
                     except Exception:
                         pass
             repository_progress_update(
                 task_id,
-                message=f"{'Imported' if source_root else 'Downloaded'} {completed}/{len(download_jobs)} changed files...",
+                message=f"Downloaded {completed}/{len(download_jobs)} changed files...",
                 current_file=job["hub_path"],
                 file_index=completed,
                 total_files=len(download_jobs),
@@ -957,7 +822,7 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
         if not state.get("changed") and not state.get("error")
     ]
 
-    removed = cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=task_id)
+    removed = [] if errors else cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=task_id)
 
     return {
         "downloaded_count": len(downloaded),
@@ -1097,7 +962,6 @@ def persist_refreshed_repositories(refreshed):
                     "skipped_count",
                     "removed_count",
                     "transport",
-                    "git_error",
                 )
             })
         elif repo["repo_id"] in by_id:
@@ -1120,7 +984,11 @@ def run_background_enabled_repository_refresh(task_id):
             )
             refreshed.append(refresh_pose_repository(repo, task_id=task_id))
         persist_refreshed_repositories(refreshed)
-        repository_progress_finish(task_id, "Enabled pose repositories are up to date.")
+        failures = [f"{repo['repo_id']}: {repo['last_error']}" for repo in refreshed if repo.get("status") == "error"]
+        if failures:
+            repository_progress_fail(task_id, "; ".join(failures))
+        else:
+            repository_progress_finish(task_id, "Enabled pose repositories are up to date.")
     except Exception as exc:
         repository_progress_fail(task_id, exc)
     finally:
@@ -1187,7 +1055,7 @@ async def refresh_pose_repositories(request):
         lambda: [refresh_pose_repository(repo, task_id=task_id if len(targets) == 1 else f"{task_id}-{index}") for index, repo in enumerate(targets)]
     )
     persist_refreshed_repositories(refreshed)
-    return web.json_response({"success": True, "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
+    return web.json_response({"success": all(repo.get("status") != "error" for repo in refreshed), "task_id": task_id, "repositories": load_pose_repositories(), "refreshed": refreshed})
 
 async def publish_local_pose_repository(request):
     return web.json_response(
@@ -1221,14 +1089,17 @@ def repository_dir_map():
         mapping[repository_to_dir(repo.get("repo_id"))] = repo.get("repo_id")
     return mapping
 
-def get_pose_dir(repository, category):
+def get_pose_dir(repository, category, asset_type=POSE_ASSET_TYPE):
     lib_path = get_library_path()
     repo_dir = repository_to_dir(repository)
     category_dir = category_to_dir(category)
-    return os.path.join(lib_path, repo_dir, category_dir)
+    return os.path.join(lib_path, repo_dir, asset_type_folder(asset_type), category_dir)
 
-def get_pose_path(repository, category, name):
-    return os.path.join(get_pose_dir(repository, category), f"{name}.json")
+def asset_type_folder(asset_type):
+    return "animations" if asset_type == ANIMATION_ASSET_TYPE else "poses"
+
+def get_pose_path(repository, category, name, asset_type=POSE_ASSET_TYPE):
+    return os.path.join(get_pose_dir(repository, category, asset_type), f"{name}.json")
 
 def read_pose_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -1484,91 +1355,75 @@ def normalize_request_repository(value):
 def normalize_request_category(value):
     return str(value or DEFAULT_CATEGORY).strip() or DEFAULT_CATEGORY
 
-def build_pose_record(name, path, pose_data, full_details=False, repository=None, category=None):
-    folder_path = os.path.dirname(path)
+def pose_file_location(path, pose_data, repo_map):
+    parts = os.path.relpath(os.path.dirname(path), get_library_path()).split(os.sep)
+    if parts == ["."]:
+        parts = []
+    meta = get_raw_library_meta(pose_data)
+    typed = len(parts) >= 3 and parts[1] in {"poses", "animations"}
+    repository = repo_map.get(parts[0], parts[0]) if parts else meta.get("repository") or LOCAL_USER_REPOSITORY
+    category = meta.get("category") or (parts[2] if typed else parts[1] if len(parts) > 1 else DEFAULT_CATEGORY)
+    asset_type = (ANIMATION_ASSET_TYPE if parts[1] == "animations" else POSE_ASSET_TYPE) if typed else get_pose_meta(pose_data)["asset_type"]
+    return repository, category, asset_type
+
+def build_pose_record(name, path, pose_data, full_details=False, repository=None, category=None, asset_type=None):
     meta = get_pose_meta(pose_data)
     repository = repository or meta.get("repository") or LOCAL_USER_REPOSITORY
     category = category or meta.get("category") or DEFAULT_CATEGORY
-    preview_path, preview_type = find_preview(folder_path, name)
-    preview_mtime = int(os.path.getmtime(preview_path)) if preview_path and os.path.exists(preview_path) else 0
-    asset_type = meta.get("asset_type") or POSE_ASSET_TYPE
+    asset_type = asset_type or meta["asset_type"]
+    preview_path, preview_type = find_preview(os.path.dirname(path), name)
     return {
-        "id": f"{repository_to_dir(repository)}/{category_to_dir(category)}/{name}",
+        "id": f"{repository_to_dir(repository)}/{asset_type_folder(asset_type)}/{category_to_dir(category)}/{name}",
         "name": name,
         "repository": repository,
         "repository_path": repository_to_dir(repository),
         "category": category,
         "category_path": category_to_dir(category),
-        "tags": meta["tags"],
+        "tags": normalize_library_tags(meta["tags"], asset_type),
         "asset_type": asset_type,
         "is_animation": asset_type == ANIMATION_ASSET_TYPE,
         "has_preview": preview_path is not None,
         "preview_type": preview_type,
-        "preview_mtime": preview_mtime,
+        "preview_mtime": int(os.path.getmtime(preview_path)) if preview_path else 0,
         "data": pose_data if full_details else None,
     }
 
-def find_pose_file(name, repository=None, category=None):
+def find_pose_file(name, repository=None, category=None, asset_type=None):
     name = sanitize_pose_name(name)
     if not name:
         return None, None, None
-
-    lib_path = get_library_path()
-    repository = str(repository or "").strip()
-    category = str(category or "").strip()
-
-    if repository and category:
-        path = get_pose_path(repository, category, name)
-        if os.path.exists(path):
-            return path, repository, category
-
-    legacy_path = os.path.join(lib_path, f"{name}.json")
-    if not repository and not category and os.path.exists(legacy_path):
-        return legacy_path, LOCAL_USER_REPOSITORY, ""
-
+    if asset_type and asset_type not in {POSE_ASSET_TYPE, ANIMATION_ASSET_TYPE}:
+        raise ValueError("Unknown library asset type")
     repo_map = repository_dir_map()
-    for root, _dirs, files in walk_pose_library(lib_path):
-        filename = f"{name}.json"
-        if filename not in files:
+    matches = []
+    for root, _dirs, files in walk_pose_library(get_library_path()):
+        if f"{name}.json" not in files:
             continue
-        path = os.path.join(root, filename)
-        rel = os.path.relpath(root, lib_path)
-        parts = [] if rel == "." else rel.split(os.sep)
-        pose_data = None
+        path = os.path.join(root, f"{name}.json")
         try:
-            pose_data = read_pose_json(path)
+            data = read_pose_json(path)
         except Exception:
-            pass
-        raw_meta = get_raw_library_meta(pose_data)
-        found_repo = repo_map.get(parts[0], parts[0]) if parts else (raw_meta.get("repository") or LOCAL_USER_REPOSITORY)
-        found_category = raw_meta.get("category") or (parts[1] if len(parts) > 1 else DEFAULT_CATEGORY)
-        if repository and found_repo != repository:
             continue
-        if category and found_category != category:
+        found_repo, found_category, found_type = pose_file_location(path, data, repo_map)
+        if repository and found_repo != repository or category and found_category != category or asset_type and found_type != asset_type:
             continue
-        return path, found_repo, found_category
-    return None, None, None
+        matches.append((path, found_repo, found_category))
+    # New files take precedence over the same entity in the legacy layout.
+    if repository and category and asset_type:
+        target = get_pose_path(repository, category, name, asset_type)
+        for match in matches:
+            if match[0] == target:
+                return match
+    if len(matches) > 1:
+        raise ValueError("Ambiguous library asset; specify repository, category and asset_type")
+    return matches[0] if matches else (None, None, None)
 
-async def list_poses(request):
-    """GET /vnccs/pose_library/list - Returns list of saved poses."""
-    full_details = request.query.get("full") == "true"
-    lib_path = get_library_path()
-    poses = []
-
+def scan_poses(full_details=False):
+    poses = {}
     repo_map = repository_dir_map()
-    repository_states = {
-        repo["repo_id"]: bool(repo.get("enabled", True))
-        for repo in load_pose_repositories()
-    }
-    repository_states[LOCAL_USER_REPOSITORY] = True
-    try:
-        walker = walk_pose_library(lib_path)
-    except FileNotFoundError:
-        return web.json_response({"poses": []})
-
-    for root, _dirs, files in walker:
-        rel = os.path.relpath(root, lib_path)
-        parts = [] if rel == "." else rel.split(os.sep)
+    states = {repo["repo_id"]: bool(repo.get("enabled", True)) for repo in load_pose_repositories()}
+    states[LOCAL_USER_REPOSITORY] = True
+    for root, _dirs, files in walk_pose_library(get_library_path()):
         for filename in files:
             if not filename.endswith(".json") or filename in RESERVED_LIBRARY_JSON:
                 continue
@@ -1577,28 +1432,21 @@ async def list_poses(request):
                 continue
             path = os.path.join(root, filename)
             try:
-                pose_data = read_pose_json(path)
+                data = read_pose_json(path)
             except Exception:
-                pose_data = {}
-            raw_meta = get_raw_library_meta(pose_data)
-            repository = repo_map.get(parts[0], parts[0]) if parts else raw_meta.get("repository")
-            category = raw_meta.get("category")
-            if not repository:
-                repository = repo_map.get(parts[0], parts[0]) if parts else LOCAL_USER_REPOSITORY
-            if repository != LOCAL_USER_REPOSITORY and not repository_states.get(repository, False):
                 continue
-            if not category:
-                category = parts[1] if len(parts) > 1 else DEFAULT_CATEGORY
-            poses.append(build_pose_record(
-                name,
-                path,
-                pose_data,
-                full_details=full_details,
-                repository=repository,
-                category=category,
-            ))
+            repository, category, asset_type = pose_file_location(path, data, repo_map)
+            if not states.get(repository, False):
+                continue
+            record = build_pose_record(name, path, data, full_details, repository, category, asset_type)
+            canonical = get_pose_path(repository, category, name, asset_type)
+            if record["id"] not in poses or path == canonical:
+                poses[record["id"]] = record
+    return sorted(poses.values(), key=lambda x: (x["repository"], x["category"], x["name"], x["asset_type"]))
 
-    return web.json_response({"poses": sorted(poses, key=lambda x: (x["repository"], x["category"], x["name"]))})
+async def list_poses(request):
+    full_details = request.query.get("full") == "true"
+    return await asyncio.to_thread(lambda: web.json_response({"poses": scan_poses(full_details)}))
 
 async def get_pose(request):
     """GET /vnccs/pose_library/get/{name} - Returns pose data and preview."""
@@ -1608,7 +1456,10 @@ async def get_pose(request):
 
     repository = request.query.get("repository")
     category = request.query.get("category")
-    pose_path, found_repository, found_category = find_pose_file(name, repository, category)
+    try:
+        pose_path, found_repository, found_category = find_pose_file(name, repository, category, request.query.get("asset_type"))
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     if not pose_path or not os.path.exists(pose_path):
         return web.json_response({"error": "Pose not found"}, status=404)
 
@@ -1629,7 +1480,7 @@ async def get_pose(request):
         "preview": preview_b64,
         "preview_type": preview_type,
         "tags": meta["tags"],
-        "asset_type": meta.get("asset_type") or POSE_ASSET_TYPE,
+        "asset_type": pose_file_location(pose_path, pose_data, repository_dir_map())[2],
     })
 
 async def save_pose(request):
@@ -1641,6 +1492,8 @@ async def save_pose(request):
     except:
         return web.json_response({"error": "Invalid JSON"}, status=400)
     
+    if not isinstance(data, dict):
+        return web.json_response({"error": "Request must be an object"}, status=400)
     name = data.get("name")
     old_name = sanitize_pose_name(data.get("old_name") or "")
     pose = data.get("pose")
@@ -1662,14 +1515,17 @@ async def save_pose(request):
     if not name:
         return web.json_response({"error": "Invalid name"}, status=400)
     
-    pose_dir = get_pose_dir(repository, category)
+    pose_dir = get_pose_dir(repository, category, asset_type)
     os.makedirs(pose_dir, exist_ok=True)
     pose_path = os.path.join(pose_dir, f"{name}.json")
     old_pose_path = None
     old_pose_dir = None
-    if old_name:
-        old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category)
-        old_pose_dir = os.path.dirname(old_pose_path) if old_pose_path else None
+    old_name = old_name or name
+    try:
+        old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category, data.get("old_asset_type") or asset_type)
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
+    old_pose_dir = os.path.dirname(old_pose_path) if old_pose_path else None
 
     pose = set_pose_meta(
         pose,
@@ -1736,7 +1592,7 @@ async def save_pose(request):
         "repository": repository,
         "category": category,
         "asset_type": asset_type,
-        "id": f"{repository_to_dir(repository)}/{category_to_dir(category)}/{name}",
+        "id": f"{repository_to_dir(repository)}/{asset_type_folder(asset_type)}/{category_to_dir(category)}/{name}",
         "path": os.path.relpath(pose_path, get_library_path()),
     })
 
@@ -1746,11 +1602,12 @@ async def delete_pose(request):
     if not name:
         return web.json_response({"error": "Name required"}, status=400)
 
-    pose_path, _repository, _category = find_pose_file(
-        name,
-        request.query.get("repository"),
-        request.query.get("category"),
-    )
+    try:
+        pose_path, _repository, _category = find_pose_file(
+            name, request.query.get("repository"), request.query.get("category"), request.query.get("asset_type"),
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     if not pose_path or not os.path.exists(pose_path):
         return web.json_response({"error": "Pose not found"}, status=404)
 
@@ -1765,11 +1622,12 @@ async def get_preview(request):
     if not name:
         return web.Response(status=400)
 
-    pose_path, _repository, _category = find_pose_file(
-        name,
-        request.query.get("repository"),
-        request.query.get("category"),
-    )
+    try:
+        pose_path, _repository, _category = find_pose_file(
+            name, request.query.get("repository"), request.query.get("category"), request.query.get("asset_type"),
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc)}, status=400)
     if not pose_path:
         return web.Response(status=404)
     preview_path, content_type = find_preview(os.path.dirname(pose_path), name)

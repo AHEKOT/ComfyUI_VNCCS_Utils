@@ -1852,6 +1852,35 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(status, 409)
         self.assertIn("another editor", body["error"])
 
+        object_handler = next(handler for method, path, handler in routes.definitions
+                              if method == "PATCH" and path == "/vnccs/3d-factory/scenes/{scene_id}/objects/{object_id}")
+        original = self.factory.create_scene("Object route")
+        original = self.factory.create_primitive_object(original["scene_id"], {"primitive": {"kind": "plane"}})["scene"]
+        upgraded = self.factory.upgrade_scene(original["scene_id"])
+        for scene in (original, upgraded):
+            with self.subTest(schema_version=scene["schema_version"]):
+                object_id = scene["objects"][0]["object_id"]
+                request.match_info = {"scene_id": scene["scene_id"], "object_id": object_id}
+                payload = {"schema_version": scene["schema_version"], "edit_revision": scene["edit_revision"],
+                           "object_id": "other-object", "name": "Renamed object"}
+                request.json = mock.AsyncMock(return_value=payload)
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 200, body)
+                self.assertEqual(body["objects"][0]["object_id"], object_id)
+                self.assertEqual(body["objects"][0]["name"], "Renamed object")
+                before = self.factory.load_scene(scene["scene_id"])
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 409, body)
+                self.assertEqual(self.factory.load_scene(scene["scene_id"]), before)
+                request.json = mock.AsyncMock(return_value={"name": "Missing revision"})
+                status, body = asyncio.run(object_handler(request))
+                self.assertEqual(status, 400, body)
+                if scene["schema_version"] == 12:
+                    request.json = mock.AsyncMock(return_value={"edit_revision": before["edit_revision"], "name": "Old writer"})
+                    status, body = asyncio.run(object_handler(request))
+                    self.assertEqual(status, 400, body)
+                    self.assertEqual(self.factory.load_scene(scene["scene_id"]), before)
+
 
 if __name__ == "__main__":
     unittest.main()

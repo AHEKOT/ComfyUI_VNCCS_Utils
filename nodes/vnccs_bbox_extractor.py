@@ -1,6 +1,5 @@
 """Extract bounding-box detections into a padded image batch."""
 
-import numpy as np
 import torch
 
 from nodes import MAX_RESOLUTION
@@ -40,11 +39,7 @@ class VNCCS_BBox_Extractor:
         except Exception as e:
             raise Exception(f'[VNCCS] ERROR: Failed to detect segments with bbox_detector: {str(e)}')
 
-        # Handle different return formats from bbox detectors
-        if isinstance(segs_result, tuple) and len(segs_result) == 2:
-            segs = segs_result
-        else:
-            segs = segs_result
+        segs = segs_result
 
         # Validate segs format
         if not isinstance(segs, tuple) or len(segs) != 2:
@@ -65,26 +60,8 @@ class VNCCS_BBox_Extractor:
             x2 = min(image_width, x2 + dilation)
             y2 = min(image_height, y2 + dilation)
 
-            # Extract cropped_mask if available (for SAM/Segm refinement)
-            cropped_mask = None
-            if hasattr(seg, 'cropped_mask') and seg.cropped_mask is not None:
-                cropped_mask = seg.cropped_mask.copy() if isinstance(seg.cropped_mask, np.ndarray) else seg.cropped_mask
-
             if x2 - x1 >= min_region_size and y2 - y1 >= min_region_size:
-                # Create new seg-like object with adjusted crop_region
-                adjusted_seg = type('AdjustedSEG', (), {
-                    'crop_region': (x1, y1, x2, y2),
-                    'bbox': seg.bbox if hasattr(seg, 'bbox') else (x1, y1, x2, y2),
-                    'cropped_mask': cropped_mask
-                })()
-                # Copy other attributes if needed
-                for attr in dir(seg):
-                    if not attr.startswith('_') and not hasattr(adjusted_seg, attr):
-                        try:
-                            setattr(adjusted_seg, attr, getattr(seg, attr))
-                        except:
-                            pass
-                valid_segs.append(adjusted_seg)
+                valid_segs.append((x1, y1, x2, y2))
 
         if len(valid_segs) == 0:
             # No segments detected, return empty image
@@ -96,16 +73,14 @@ class VNCCS_BBox_Extractor:
         max_w = 0
 
         # First pass: find max dimensions
-        for seg in valid_segs:
-            x1, y1, x2, y2 = seg.crop_region
+        for x1, y1, x2, y2 in valid_segs:
             h = y2 - y1
             w = x2 - x1
             max_h = max(max_h, h)
             max_w = max(max_w, w)
 
         # Second pass: crop and pad to max dimensions
-        for i, seg in enumerate(valid_segs):
-            x1, y1, x2, y2 = seg.crop_region
+        for x1, y1, x2, y2 in valid_segs:
             cropped = image[:, y1:y2, x1:x2, :]
             h = y2 - y1
             w = x2 - x1

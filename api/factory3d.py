@@ -4751,15 +4751,21 @@ def register_routes(routes: Any) -> None:
     @routes.patch(f"{API_BASE}/scenes/{{scene_id}}/objects/{{object_id}}")
     async def factory_object_update(request: Any) -> Any:
         try:
+            if not _content_length_ok(request, MAX_SCENE_JSON_BYTES):
+                return web.json_response({"error": "object update is too large"}, status=413)
             payload = await request.json()
             object_id = _validate_id(request.match_info["object_id"], "object id")
-            scene = update_scene(
-                request.match_info["scene_id"],
-                {"objects": [{"object_id": object_id, **(payload if isinstance(payload, dict) else {})}]},
-            )
+            if not isinstance(payload, dict) or "edit_revision" not in payload:
+                raise ValueError("Object saves require edit_revision; reload the extension before saving")
+            update = {key: payload[key] for key in ("schema_version", "edit_revision") if key in payload}
+            changes = {key: value for key, value in payload.items() if key not in {"schema_version", "edit_revision", "object_id"}}
+            update["objects"] = [{**changes, "object_id": object_id}]
+            scene = await asyncio.to_thread(update_scene, request.match_info["scene_id"], update)
             return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:
             return _json_error(web, exc, 404)
+        except RuntimeError as exc:
+            return _json_error(web, exc, 409)
         except Exception as exc:
             return _json_error(web, exc)
 

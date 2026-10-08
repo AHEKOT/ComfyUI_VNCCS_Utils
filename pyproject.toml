@@ -48,8 +48,6 @@ NodeIds = [
     "VNCCS_PositionControl",
     "VNCCS_VisualPositionControl",
     "VNCCS_BBox_Extractor",
-    "VNCCS_ModelManager",
-    "VNCCS_ModelSelector",
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
     "VNCCS_3DFactory",

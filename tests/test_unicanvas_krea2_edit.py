@@ -125,7 +125,6 @@ class EditContractTests(unittest.TestCase):
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_QUEUE", queue))
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_STATUS", {}))
             stack.enter_context(patch.object(PRESETS, "_unicanvas_resolve_local_model_path", return_value=str(target)))
-            stack.enter_context(patch.object(PRESETS, "_unicanvas_temp_dir", return_value=str(root / "temp")))
             with self.assertRaises(StopIteration):
                 PRESETS._unicanvas_download_worker_loop()
             hub.hf_hub_download.assert_called_once_with(repo_id=asset["hf_repo"], filename=asset["hf_path"],

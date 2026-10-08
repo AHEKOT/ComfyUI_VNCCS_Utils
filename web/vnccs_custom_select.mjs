@@ -56,13 +56,6 @@ function installStyles(doc) {
     font: 11px 'Sora', -apple-system, BlinkMacSystemFont, sans-serif;
     pointer-events: auto;
 }
-.vnccs-custom-select-menu--model-manager {
-    border-color: #555;
-    border-radius: 6px;
-    background: #222;
-    color: #ddd;
-    font-family: sans-serif;
-}
 .vnccs-custom-select-option {
     display: flex;
     align-items: center;
@@ -85,11 +78,6 @@ function installStyles(doc) {
     background: rgba(255, 143, 163, .18);
     color: #ffdce5;
 }
-.vnccs-custom-select-menu--model-manager .vnccs-custom-select-option:hover,
-.vnccs-custom-select-menu--model-manager .vnccs-custom-select-option.is-highlighted {
-    background: #3a3a3a;
-    color: #fff;
-}
 .vnccs-custom-select-option:disabled {
     opacity: .38;
     cursor: not-allowed;
@@ -100,7 +88,6 @@ function installStyles(doc) {
     color: #ff8fa3;
     font-weight: 900;
 }
-.vnccs-custom-select-menu--model-manager .vnccs-custom-select-check { color: #8f8; }
 .vnccs-custom-select-option-label {
     flex: 1 1 auto;
     min-width: 0;

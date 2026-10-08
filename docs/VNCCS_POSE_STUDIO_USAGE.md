@@ -314,7 +314,7 @@ Library features:
 - Organize by repository and category.
 - Store tags and metadata.
 - Refresh enabled remote repositories.
-- Publish local pose repositories to Hugging Face when configured.
+- Download public Hugging Face pose repositories. Remote publishing is currently disabled.
 
 Local pose metadata is stored inside each pose JSON under `_library`.
 
@@ -373,7 +373,7 @@ The web UI and backend communicate through local ComfyUI routes:
 | --- | --- |
 | `/vnccs/pose_captures_upload` | Upload frontend-rendered captures for backend execution. |
 | `/vnccs/pose_captures/{capture_id}` | Fetch cached captures. |
-| Pose Library API routes under `/vnccs/pose_library/...` | Repository, save, load, delete, refresh, publish, and progress operations. |
+| Pose Library API routes under `/vnccs/pose_library/...` | Repository, save, load, delete, refresh, and progress operations. Publishing requests return 403. |
 
 Animation tracks referenced by saved workflows live in `user/vnccs/pose_animation_cache`.
 They survive temporary-folder cleanup and are not pruned automatically. Back up that
@@ -441,7 +441,7 @@ Standalone SAM 3D Body classes present in the vendored package:
 | SAM 3D Body: Render Human From Pose and Body Preset JSON | `SAM3DBodyRenderFromPoseAndBodyPresetJson` | Render a human image from pose JSON and body preset JSON. |
 
 In this repository version, the top-level ComfyUI registration exports the
-VNCCS nodes listed in `MODEL_MANAGER_GUIDE.md`. The vendored SAM3D classes are
+VNCCS nodes listed in `VNCCS_UTILS_NODE_GUIDE.md`. The vendored SAM3D classes are
 kept as the backend bridge and may be registered by dedicated SAM3D entrypoints
 in environments that load them directly.
 
@@ -670,5 +670,20 @@ Pose Library repository sync limits:
 
 ## Related Docs
 
-- `MODEL_MANAGER_GUIDE.md` - full registered VNCCS node reference.
-- `MODEL_SELECTOR_USAGE.md` - focused guide for model manifests, downloads, and selector output paths.
+- `VNCCS_UTILS_NODE_GUIDE.md` - full registered VNCCS node reference.
+
+## Typed library storage
+
+Poses and animations are separate assets. New local files use
+`PoseLibrary/<repository>/poses/<category>/<name>.json` and
+`PoseLibrary/<repository>/animations/<category>/<name>.json`, with previews beside
+each JSON file. Both types may share a name and category. The library API uses
+`asset_type=pose` or `asset_type=animation` for loading, previews, and deletion.
+Legacy files remain readable and migrate to typed storage when saved. An
+untyped lookup matching multiple assets returns an error instead of selecting
+one arbitrarily. Repository synchronization requires a valid `poses` array;
+invalid manifests and failed downloads retain the existing cache.
+
+`VNCCS_ModelManager` and `VNCCS_ModelSelector` have been removed. Older workflows
+using them must select their model or LoRA directly in standard ComfyUI loaders.
+The bundled workflow examples already use those loaders.

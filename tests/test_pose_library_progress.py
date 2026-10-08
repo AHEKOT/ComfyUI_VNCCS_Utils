@@ -91,13 +91,6 @@ class PoseLibraryProgressTests(unittest.TestCase):
         self.assertTrue(repositories[1]["builtin"])
         self.assertEqual(repositories[1]["title"], "General Poses PoseStudio")
 
-    def test_process_based_repository_transport_is_disabled(self):
-        with self.assertRaisesRegex(
-            POSE_LIBRARY.GitRepositorySyncUnavailable,
-            "Process-based repository transport is disabled",
-        ):
-            POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
-
     def test_manifest_preserves_a_custom_title(self):
         title = POSE_LIBRARY.repository_manifest_title(
             "owner/repository",
@@ -253,129 +246,7 @@ class PoseLibraryProgressTests(unittest.TestCase):
         self.assertEqual(refresh.call_args.kwargs["task_id"], "add-and-sync")
         persist.assert_called_once_with([refreshed])
 
-    def test_git_checkout_imports_manifest_assets_without_http_requests(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            library_root = Path(temporary) / "PoseLibrary"
-            checkout = Path(temporary) / "checkout"
-            json_source = checkout / "poses" / "General" / "Standing.json"
-            preview_source = checkout / "previews" / "General" / "Standing.webp"
-            json_source.parent.mkdir(parents=True)
-            preview_source.parent.mkdir(parents=True)
-            json_source.write_bytes(b'{"pose": true}')
-            preview_source.write_bytes(b"RIFF-test-webp")
-            manifest = {
-                "poses": [{
-                    "name": "Standing",
-                    "category": "General",
-                    "json_path": "poses/General/Standing.json",
-                    "preview_path": "previews/General/Standing.webp",
-                    "json_sha256": POSE_LIBRARY.sha256_file(json_source),
-                    "preview_sha256": POSE_LIBRARY.sha256_file(preview_source),
-                }],
-            }
-
-            with (
-                mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)),
-                mock.patch.object(POSE_LIBRARY, "download_hf_file") as http_download,
-            ):
-                result = POSE_LIBRARY.sync_pose_repository_files(
-                    {"repo_id": "artist/poses"},
-                    manifest,
-                    token=None,
-                    source_root=str(checkout),
-                )
-
-            target = library_root / "artist__poses" / "General"
-            self.assertEqual((target / "Standing.json").read_bytes(), json_source.read_bytes())
-            self.assertEqual((target / "Standing.webp").read_bytes(), preview_source.read_bytes())
-            self.assertEqual(result["downloaded_count"], 1)
-            self.assertEqual(result["errors"], [])
-            http_download.assert_not_called()
-
-    def test_git_lfs_pointer_falls_back_before_modifying_the_library(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            library_root = Path(temporary) / "PoseLibrary"
-            checkout = Path(temporary) / "checkout"
-            json_source = checkout / "poses" / "General" / "Standing.json"
-            json_source.parent.mkdir(parents=True)
-            json_source.write_text(
-                "version https://git-lfs.github.com/spec/v1\n"
-                "oid sha256:0123456789abcdef\n"
-                "size 12345\n",
-                encoding="utf-8",
-            )
-            manifest = {
-                "poses": [{
-                    "name": "Standing",
-                    "category": "General",
-                    "json_path": "poses/General/Standing.json",
-                    "json_sha256": POSE_LIBRARY.sha256_file(json_source),
-                }],
-            }
-
-            with mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)):
-                with self.assertRaises(POSE_LIBRARY.GitRepositorySyncUnavailable):
-                    POSE_LIBRARY.sync_pose_repository_files(
-                        {"repo_id": "artist/poses"},
-                        manifest,
-                        token=None,
-                        source_root=str(checkout),
-                    )
-
-            self.assertFalse((library_root / "artist__poses" / "General" / "Standing.json").exists())
-
-    def test_public_repository_refresh_prefers_shallow_git_checkout(self):
-        class FakeHfApi:
-            def repo_info(self, **_kwargs):
-                return types.SimpleNamespace(sha="git-sha", private=False)
-
-        fake_hub = types.ModuleType("huggingface_hub")
-        fake_hub.HfApi = FakeHfApi
-        with tempfile.TemporaryDirectory() as temporary:
-            library_root = Path(temporary) / "PoseLibrary"
-            checkout = Path(temporary) / "checkout"
-            pose_source = checkout / "poses" / "General" / "Standing.json"
-            pose_source.parent.mkdir(parents=True)
-            pose_source.write_bytes(b'{"pose": true}')
-            (checkout / "pose_library.json").write_text(
-                json.dumps({
-                    "title": "VNCCS Pose Library",
-                    "poses": [{
-                        "name": "Standing",
-                        "category": "General",
-                        "json_path": "poses/General/Standing.json",
-                        "json_sha256": POSE_LIBRARY.sha256_file(pose_source),
-                    }],
-                }),
-                encoding="utf-8",
-            )
-
-            with (
-                mock.patch.dict(sys.modules, {"huggingface_hub": fake_hub}),
-                mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)),
-                mock.patch.object(
-                    POSE_LIBRARY,
-                    "update_git_pose_repository_checkout",
-                    return_value=str(checkout),
-                ) as git_checkout,
-                mock.patch.object(POSE_LIBRARY, "download_hf_file_with_progress") as http_manifest,
-                mock.patch.object(POSE_LIBRARY, "download_hf_file") as http_asset,
-            ):
-                result = POSE_LIBRARY.refresh_pose_repository(
-                    {"repo_id": "artist/poses", "enabled": True},
-                    task_id="git-refresh",
-                )
-
-            self.assertEqual(result["status"], "ok")
-            self.assertEqual(result["transport"], "git")
-            self.assertEqual(result["title"], "artist/poses")
-            self.assertEqual(result["downloaded_count"], 1)
-            git_checkout.assert_called_once_with("artist/poses", task_id="git-refresh")
-            http_manifest.assert_not_called()
-            http_asset.assert_not_called()
-            self.assertFalse(checkout.exists())
-
-    def test_git_failure_automatically_retries_through_http(self):
+    def test_repository_refresh_downloads_through_public_http(self):
         class FakeHfApi:
             def repo_info(self, **_kwargs):
                 return types.SimpleNamespace(sha="remote-sha", private=False)
@@ -404,11 +275,6 @@ class PoseLibraryProgressTests(unittest.TestCase):
                 mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=str(library_root)),
                 mock.patch.object(
                     POSE_LIBRARY,
-                    "update_git_pose_repository_checkout",
-                    side_effect=POSE_LIBRARY.GitRepositorySyncUnavailable("Git is unavailable"),
-                ),
-                mock.patch.object(
-                    POSE_LIBRARY,
                     "download_hf_file_with_progress",
                     return_value=str(manifest_download),
                 ) as http_manifest,
@@ -420,24 +286,16 @@ class PoseLibraryProgressTests(unittest.TestCase):
             ):
                 result = POSE_LIBRARY.refresh_pose_repository(
                     {"repo_id": "artist/poses", "enabled": True},
-                    task_id="http-fallback",
+                    task_id="http-refresh",
                 )
 
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["transport"], "http")
-            self.assertEqual(result["git_error"], "Git is unavailable")
             self.assertEqual(result["downloaded_count"], 1)
-            progress = POSE_LIBRARY.get_repository_progress("http-fallback")
-            self.assertEqual(progress["git_error"], "Git is unavailable")
+            progress = POSE_LIBRARY.get_repository_progress("http-refresh")
             self.assertEqual(progress["transport"], "http")
             http_manifest.assert_called_once()
             http_asset.assert_called_once()
-
-    def test_disabled_process_transport_creates_no_checkout(self):
-        with mock.patch.object(POSE_LIBRARY.tempfile, "mkdtemp") as make_temp:
-            with self.assertRaises(POSE_LIBRARY.GitRepositorySyncUnavailable):
-                POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
-        make_temp.assert_not_called()
 
     def test_pose_library_walker_hides_internal_git_checkout(self):
         with tempfile.TemporaryDirectory() as temporary:

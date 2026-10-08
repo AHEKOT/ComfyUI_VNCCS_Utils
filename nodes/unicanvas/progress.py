@@ -99,7 +99,7 @@ def _raise_if_interrupted() -> None:
         check()
 
 
-def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None) -> None:
+def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0, steps: int = 0, message: str | None = None, *, cancel_before_start: bool = False) -> None:
     # Every step and stage change is a checkpoint: a Stop (ComfyUI's interrupt flag) ends the draw here.
     if stage not in _TERMINAL_STAGES:
         _raise_if_interrupted()
@@ -114,9 +114,17 @@ def _set_draw_progress(draw_id: str, stage: str, progress: float, step: int = 0,
         "message": message + speed if stage == "sampling" and step else message,
         "updated_at": time.time(),
     }
+    if cancel_before_start:
+        payload["cancel_before_start"] = True
     with _DRAW_PROGRESS_LOCK:
         _DRAW_PROGRESS[draw_id] = payload
         _prune_draw_progress()
+
+
+def consume_draw_cancellation(draw_id: str) -> bool:
+    with _DRAW_PROGRESS_LOCK:
+        state = _DRAW_PROGRESS.get(draw_id)
+        return bool(state and state.pop("cancel_before_start", False))
 
 
 def _get_draw_progress(draw_id: str) -> dict[str, Any]:

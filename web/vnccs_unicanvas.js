@@ -7105,6 +7105,7 @@ class UniCanvasWidget {
     this._stopRequested = false;
     this._drawViaQueue = configLinked;
     this._drawDebugId = configLinked ? this.settings.draw_id : debugId;
+    this._queuedDrawPromptId = null;
     this.showStopButton(true);
     let performance = "";
     try {
@@ -7115,6 +7116,10 @@ class UniCanvasWidget {
           // The queued prompt id scopes both the failure events and the queue-membership check to
           // this draw, so an unrelated node failure in the same prompt cannot abort it.
           const promptId = await this._queuedPromptId(queueResponse);
+          this._queuedDrawPromptId = promptId;
+          if (this._stopRequested && promptId) {
+            await fetch("/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [promptId] }) });
+          }
           result = await this._pollForResult(this.settings.draw_id, promptId);
         } finally {
           // The composition is one-shot: once the poll settles (success or failure) the payload must
@@ -7147,6 +7152,7 @@ class UniCanvasWidget {
         this.updateGenerationProgress({ progress: 1, message: `Failed: ${err.message || err}`, stage: "error" }, true);
       }
     } finally {
+      this._queuedDrawPromptId = null;
       this.showStopButton(false);
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
@@ -7165,22 +7171,20 @@ class UniCanvasWidget {
     this.drawControl?.classList.toggle("generating", visible);
   }
 
-  // Stop: ComfyUI's interrupt flag ends the draw at the next step; the backend then drops its tensors
-  // and unloads the models. A config-linked draw runs as a queued ComfyUI prompt, so it goes through
-  // ComfyUI's own /interrupt (and /free for the memory).
+  // Stop only this draw; queued graph prompts are removed by their own prompt id.
   async stopDraw() {
     if (!this.drawInProgress || this._stopRequested) return;
     this._stopRequested = true;
     this.stopBtn.disabled = true;
     this.setStatus("Stopping...");
     this.updateGenerationProgress({ message: "Stopping...", stage: "status" }, false);
+    const queuedPromptId = this._drawViaQueue ? this._queuedDrawPromptId : null;
     const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
     try {
-      if (this._drawViaQueue) {
-        await post("/interrupt");
-        await post("/free", { unload_models: true, free_memory: true });
-      } else {
-        await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      const response = await post("/vnccs/unicanvas/interrupt", { draw_id: this._drawDebugId });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      if (queuedPromptId) {
+        await post("/queue", { delete: [queuedPromptId] });
       }
     } catch (err) {
       this.setStatus(`Stop failed: ${err.message || err}`, true);
@@ -7551,6 +7555,7 @@ class UniCanvasWidget {
     api.addEventListener("execution_interrupted", onExecutionInterrupted);
     try {
       while (Date.now() - started < timeoutMs) {
+        if (this._stopRequested) throw Object.assign(new Error("Generation stopped"), { cancelled: true });
         if (executionFailure) throw executionFailure;
         const res = await fetch(`/vnccs/unicanvas/result/${encodeURIComponent(drawId)}?t=${Date.now()}`);
         if (!res.ok) throw new Error(`Queued result request failed: HTTP ${res.status}`);

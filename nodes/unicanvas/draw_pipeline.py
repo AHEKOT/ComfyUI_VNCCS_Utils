@@ -161,8 +161,8 @@ class ImageDrawPipeline:
         ctx.result_images = []
         with contextlib.suppress(Exception):
             _release_generation_sampling_refs(ctx.settings, ctx.draw_id, COMMON_SCRATCH_KEYS + tuple(self.module.sampling_scratch_keys))
-        set_interrupt(False)
         with _COMFY_MODEL_OP_LOCK, contextlib.suppress(Exception):
+            set_interrupt(False)
             _release_generation_state()
             import comfy.model_management as model_management
 

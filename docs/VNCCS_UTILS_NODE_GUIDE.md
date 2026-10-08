@@ -10,8 +10,6 @@ Registered nodes:
 | VNCCS Position Control | `VNCCS_PositionControl` | `VNCCS` | Build a camera-angle prompt string from sliders. |
 | VNCCS Visual Camera Control | `VNCCS_VisualPositionControl` | `VNCCS` | Same prompt builder, controlled by the custom visual JS widget. |
 | VNCCS BBox Extractor | `VNCCS_BBox_Extractor` | `VNCCS/detailing` | Crop detected bounding-box regions into an image batch. |
-| VNCCS Model Manager | `VNCCS_ModelManager` | `VNCCS/manager` | Fetch a model manifest, display model install state, and queue downloads. |
-| VNCCS Model Selector | `VNCCS_ModelSelector` | `VNCCS/manager` | Select one manifest model and output a loader-compatible model path. |
 | VNCCS Pose Studio | `VNCCS_PoseStudio` | `VNCCS/pose` | Interactive 3D pose, body, camera, lighting, and pose-library workspace. |
 
 The bundled `vnccs_sam3d` package is used by Pose Studio for image-to-pose import
@@ -121,95 +119,6 @@ Output:
 Use this node to tune `threshold`,
 `dilation`, or detector choice.
 
-## VNCCS Model Manager
-
-`VNCCS Model Manager` is a UI/control node for project model manifests. It
-passes through a Hugging Face repository id and the web UI uses that id to load
-`model_updater.json`, show install state, and queue downloads.
-Only the fixed `MIUProject/VNCCS` manifest repository is accepted.
-
-Input:
-
-| Input | Type | Default |
-| --- | --- | --- |
-| `repo_id` | `STRING` | `MIUProject/VNCCS` |
-
-Output:
-
-| Output | Type | Notes |
-| --- | --- | --- |
-| `repo_id` | `STRING` | Pass this into `VNCCS Model Selector` so both nodes use the same manifest. |
-
-Manifest location:
-
-- The manager expects `model_updater.json` at the root of `MIUProject/VNCCS`. Other manifest repositories are rejected before cache or network access.
-- The manager caches the manifest briefly to avoid excessive remote HEAD/fetch requests.
-- Use the UI refresh/check action when you need to force a fresh check.
-
-`model_updater.json` format:
-
-```json
-{
-  "config_version": "1.0",
-  "models": [
-    {
-      "name": "Example LoRA",
-      "version": "1.0.0",
-      "description": "Short text shown in the manager UI.",
-      "hf_repo": "MIUProject/VNCCS",
-      "hf_path": "models/loras/example.safetensors",
-      "local_path": "models/loras/example.safetensors"
-    }
-  ]
-}
-```
-
-Required model fields:
-
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `name` | string | Display name and selector key. Multiple entries may share a name if they are different versions. |
-| `version` | string | Version string. Parsed with `packaging.version` when available; otherwise string-sorted. |
-| `description` | string | UI description. |
-| `local_path` | string | Install path. Must name a file in a known model folder under ComfyUI's models directory. |
-
-Download source:
-
-| Field | Type | Purpose |
-| --- | --- | --- |
-| `hf_repo` + `hf_path` | string | Download a file from a Hugging Face model repository. If `hf_repo` is omitted, the manager uses the node's `repo_id`. |
-
-Security and path rules:
-
-- `local_path` must be relative and start with `models/<known-folder>/`.
-- Known folders are `checkpoints`, `loras`, `vae`, `controlnet`, `style_models`, `upscale_models`, `clip`, `clip_vision`, `text_encoders`, `unet`, `diffusion_models`, `diffusers`, `model_patches`, `embeddings`, `configs`, `sam3dbody`, and `birefnet`.
-- Absolute/UNC paths, drive prefixes, alternate data streams, `..`, `~`, and symlinks escaping `folder_paths.models_dir` are rejected.
-- Existing files and symlinks are never replaced. An existing target returns HTTP 409; a target created while downloading also prevents installation.
-- Downloads have a 100 GiB safety cap. Completed temporary files are published atomically without replacement; the model filesystem must support hard links.
-- Direct URLs and credential storage are disabled. Hugging Face downloads explicitly disable credentials.
-
-Local state files:
-
-| File | Purpose |
-| --- | --- |
-| `vnccs_installed_models.json` | Active version registry by model name. |
-| `vnccs_user_config.json` | User-level settings; it cannot change the trusted manifest repository. |
-
-## VNCCS Model Selector
-
-`VNCCS Model Selector` reads the same manifest as the manager and outputs one
-selected model path. See `MODEL_SELECTOR_USAGE.md` for the focused selector
-guide.
-
-Minimal manager/selector setup:
-
-1. Add `VNCCS Model Manager`.
-2. Set `repo_id`.
-3. Add `VNCCS Model Selector`.
-4. Connect manager `repo_id` to selector `repo_id`.
-5. Use the selector UI card to choose a model.
-6. Connect selector `model_path` into a standard ComfyUI loader input such as `lora_name`, `ckpt_name`, or `control_net_name`.
-
 ## VNCCS Pose Studio
 
 `VNCCS Pose Studio` is the interactive pose/body/camera/lighting node. It has
@@ -232,19 +141,6 @@ Outputs:
 | `lighting_prompt` | `STRING` list | Combined lighting, pose, and connected camera prompt per output image. |
 
 ## Troubleshooting
-
-### The model selector outputs an empty string
-
-- Check that `model_name` is selected in the selector UI.
-- Check that `repo_id` is `MIUProject/VNCCS`.
-- Check that the manifest entry has a valid `local_path` under `models/`.
-- Check the ComfyUI console for `VNCCS ModelSelector` messages.
-
-### A download is rejected
-
-- Only the fixed `MIUProject/VNCCS` manifest is accepted; model assets must be public Hugging Face files.
-- `local_path` must name a file inside a known model folder without escaping through symlinks.
-- Existing targets are preserved. Use a different versioned filename or manage replacement manually on disk.
 
 ### Pose Studio does not update from the UI
 

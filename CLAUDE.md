@@ -8,7 +8,7 @@ interaction, E2E suite, Docker test platform, evidence policy) live in `AGENTS.m
 ## What this is
 
 A ComfyUI custom-node extension (VNCCS Utils): **UniCanvas** (in-node canvas editor with
-direct generation), **Pose Studio**, **3D Factory**, Model Manager/Selector, VNCSS Config,
+direct generation), **Pose Studio**, **3D Factory**, VNCSS Config,
 BBox Extractor and helpers. Python backend runs inside ComfyUI; the frontend is plain ES
 modules in `web/` (no bundler, no build step). `.github/copilot-instructions.md` carries the
 same guidance for GitHub Copilot.
@@ -31,7 +31,7 @@ is described in `AGENTS.md`.
 - `__init__.py` - extension entry point: node mappings, `WEB_DIRECTORY`, Pose Studio and
   UniCanvas state-cache routes, calls `register_unicanvas_routes()`.
 - `nodes/` - node classes. `nodes/unicanvas/` is a package (below); `pose_studio.py`,
-  `factory3d*.py`, `vncss_config.py`, `vnccs_model_manager.py`, `vnccs_bbox_extractor.py`,
+  `factory3d*.py`, `vncss_config.py`, `vnccs_bbox_extractor.py`,
   and `anima_lllite_internal.py`.
 - `api/` - 3D Factory and Pose Studio backend services.
 - `web/` - frontend widgets. UniCanvas: `vnccs_unicanvas.js` (main widget, very large - add

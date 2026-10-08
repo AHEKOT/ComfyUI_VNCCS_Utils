@@ -3358,35 +3358,6 @@ const STYLES = `
     white-space: nowrap;
 }
 
-.vnccs-ps-library-repo-diagnostic,
-.vnccs-ps-library-repo-progress-diagnostic {
-    margin-top: 12px;
-    color: #ffd27d;
-    font-size: 17px;
-    line-height: 1.4;
-}
-
-.vnccs-ps-library-repo-diagnostic summary,
-.vnccs-ps-library-repo-progress-diagnostic summary {
-    cursor: pointer;
-    font-weight: 700;
-}
-
-.vnccs-ps-library-repo-diagnostic pre,
-.vnccs-ps-library-repo-progress-diagnostic pre {
-    max-height: 180px;
-    margin: 10px 0 0;
-    padding: 12px;
-    overflow: auto;
-    border: 1px solid rgba(255, 210, 125, 0.3);
-    border-radius: 6px;
-    background: rgba(0, 0, 0, 0.28);
-    color: var(--ps-text-muted);
-    font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-}
-
 .vnccs-ps-library-repo-actions {
     display: flex;
     gap: 12px;
@@ -11583,18 +11554,11 @@ class PoseStudioWidget {
                 ? ` · ${Number(repo.downloaded_count || 0)} downloaded · ${Number(repo.skipped_count || 0)} unchanged · ${Number(repo.removed_count || 0)} removed`
                 : '';
             const transportMeta = repo.transport ? ` · via ${repo.transport}` : '';
-            const gitDiagnostic = repo.git_error
-                ? `<details class="vnccs-ps-library-repo-diagnostic">
-                    <summary>Git clone failed — HTTP fallback was used</summary>
-                    <pre>${this.escapeHtml(repo.git_error)}</pre>
-                </details>`
-                : '';
             card.innerHTML = `
                 <div>
                     <div class="vnccs-ps-library-repo-title">${this.escapeHtml(repo.title || repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-id">${this.escapeHtml(repo.repo_id)}</div>
                     <div class="vnccs-ps-library-repo-meta">${Number(repo.pose_count || 0)} poses · ${Number(repo.animation_count || 0)} animations · ${repo.enabled ? 'enabled' : 'disabled'} · ${this.escapeHtml(status)} · checked ${this.escapeHtml(checked)}${this.escapeHtml(syncMeta)}${this.escapeHtml(transportMeta)}</div>
-                    ${gitDiagnostic}
                 </div>
                 <div class="vnccs-ps-library-repo-actions">
                     <button class="vnccs-ps-library-repo-action toggle">${repo.enabled ? 'Disable' : 'Enable'}</button>
@@ -11856,20 +11820,13 @@ class PoseStudioWidget {
                 progress.update({
                     status: "success",
                     progress: 100,
-                    message: refreshed.git_error
-                        ? `${repoId} downloaded through HTTP after Git clone failed.`
-                        : `${repoId} added: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
-                    git_error: refreshed.git_error || "",
+                    message: `${repoId} added: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged.`,
                     transport: refreshed.transport || "",
                 });
-                if (refreshed.git_error) {
-                    this.showRepositoryNotice("Git clone failed; the repository was downloaded through the slower HTTP fallback. Open Git diagnostics below.");
-                } else {
-                    this.clearRepositoryNotice();
-                }
+                this.clearRepositoryNotice();
             }
             await this.refreshLibrary(true);
-            if (refreshed.status !== "error" && !refreshed.git_error) {
+            if (refreshed.status !== "error") {
                 await this.toggleLibrarySettings(false);
             }
         } catch (err) {
@@ -11899,10 +11856,6 @@ class PoseStudioWidget {
                 <div class="vnccs-ps-library-repo-progress-track">
                     <div class="vnccs-ps-library-repo-progress-fill"></div>
                 </div>
-                <details class="vnccs-ps-library-repo-progress-diagnostic" hidden>
-                    <summary>Git clone failed — HTTP fallback active</summary>
-                    <pre></pre>
-                </details>
             </div>
         `;
     }
@@ -11938,15 +11891,9 @@ class PoseStudioWidget {
         const messageEl = progress.querySelector('.vnccs-ps-library-repo-progress-message');
         const percentEl = progress.querySelector('.vnccs-ps-library-repo-progress-percent');
         const fillEl = progress.querySelector('.vnccs-ps-library-repo-progress-fill');
-        const diagnosticEl = progress.querySelector('.vnccs-ps-library-repo-progress-diagnostic');
         if (messageEl) messageEl.textContent = state.message || "Working...";
         if (percentEl) percentEl.textContent = `${Math.round(percent)}%`;
         if (fillEl) fillEl.style.width = `${percent}%`;
-        if (diagnosticEl) {
-            diagnosticEl.hidden = !state.git_error;
-            const diagnosticText = diagnosticEl.querySelector('pre');
-            if (diagnosticText) diagnosticText.textContent = state.git_error || "";
-        }
     }
 
     createInlineRepositoryProgress(key, initialText = "Starting...") {
@@ -11966,7 +11913,6 @@ class PoseStudioWidget {
                 if (status.status) patch.status = status.status;
                 if (status.message) patch.message = status.message;
                 if (status.progress !== undefined) patch.progress = status.progress;
-                if (Object.prototype.hasOwnProperty.call(status, "git_error")) patch.git_error = status.git_error || "";
                 if (Object.prototype.hasOwnProperty.call(status, "transport")) patch.transport = status.transport || "";
                 this.setRepositoryProgressState(key, patch);
             },
@@ -12067,15 +12013,9 @@ class PoseStudioWidget {
                 progress: 100,
                 message: refreshed.status === "error"
                     ? `Error: ${refreshed.last_error || "refresh failed"}`
-                    : refreshed.git_error
-                        ? `Repository sync completed through HTTP after Git clone failed.`
-                        : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged, ${Number(refreshed.removed_count || 0)} removed.`,
-                git_error: refreshed.git_error || "",
+                    : `Repository sync complete: ${Number(refreshed.downloaded_count || 0)} downloaded, ${Number(refreshed.skipped_count || 0)} unchanged, ${Number(refreshed.removed_count || 0)} removed.`,
                 transport: refreshed.transport || "",
             });
-            if (refreshed.git_error) {
-                this.showRepositoryNotice("Git clone failed; the repository was downloaded through the slower HTTP fallback. Open Git diagnostics below.");
-            }
             await this.refreshLibrary(true);
         } finally {
             if (pollTimer) clearInterval(pollTimer);
@@ -12134,7 +12074,7 @@ class PoseStudioWidget {
     getLibraryPoseId(pose) {
         if (!pose) return "";
         const meta = this.getLibraryPoseMeta(pose);
-        return pose.id || `${meta.repository}/${meta.category}/${pose.name}`;
+        return pose.id || `${meta.repository}/${meta.assetType === "animation" ? "animations" : "poses"}/${meta.category}/${pose.name}`;
     }
 
     getLibraryPoseQuery(poseOrName) {
@@ -12143,6 +12083,7 @@ class PoseStudioWidget {
         const params = new URLSearchParams();
         params.set("repository", meta.repository);
         params.set("category", meta.category);
+        params.set("asset_type", meta.assetType);
         return `?${params.toString()}`;
     }
 
@@ -12152,6 +12093,7 @@ class PoseStudioWidget {
         const params = new URLSearchParams();
         params.set("repository", meta.repository);
         params.set("category", meta.category);
+        params.set("asset_type", meta.assetType);
         if (pose.preview_mtime) params.set("v", String(pose.preview_mtime));
         return `/vnccs/pose_library/preview/${encodeURIComponent(pose.name)}?${params.toString()}`;
     }

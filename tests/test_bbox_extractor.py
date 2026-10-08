@@ -42,3 +42,17 @@ def test_empty_detector_returns_one_black_pixel_and_batches_are_rejected():
     assert torch.count_nonzero(result) == 0
     with pytest.raises(Exception, match="does not allow image batches"):
         node.extract(image.repeat(2, 1, 1, 1), detector)
+
+
+def test_cropping_does_not_read_unused_segmentation_masks():
+    class Segment:
+        crop_region = (2, 3, 12, 13)
+
+        @property
+        def cropped_mask(self):
+            raise AssertionError("BBox crops must not load or copy segmentation masks")
+
+    image = torch.arange(20 * 20 * 3).reshape(1, 20, 20, 3)
+    detector = SimpleNamespace(detect=lambda *args: ((20, 20), [Segment()]))
+    result, = extractor.VNCCS_BBox_Extractor().extract(image, detector, dilation=0)
+    assert torch.equal(result, image[:, 3:13, 2:12])

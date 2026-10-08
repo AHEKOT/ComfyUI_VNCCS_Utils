@@ -60,8 +60,8 @@ assets through the bundled SparkJS viewport.
   every saved scene camera.
 * **Gaussian Library**: Save individual objects or complete scenes with
   automatic 3D previews. `.vnccs3d` packages keep only canonical PLY assets,
-  then synchronize or publish manifest-driven model repositories on Hugging
-  Face through the Pose Studio repository workflow.
+  and can be saved and loaded locally. Public repository assets can be
+  downloaded; publishing repositories is currently disabled.
 * **Observable Jobs**: Background removal, image encoding, diffusion steps,
   Gaussian decoding, serialization, and scene insertion expose real progress,
   printed to the ComfyUI console and retained in a downloadable per-job log.
@@ -179,25 +179,6 @@ An interactive node with a visual widget for controlling camera position. It is 
 *   **Elevation Slider**: Pick elevation from -30° to 60°.
 *   **Trigger Word Toggle**: Enable or disable the `<sks>` trigger from the widget.
 *   **Random Range Toggle**: Randomize across the full 360° or restrict random views to the front ±45° while keeping elevation and distance random.
-
-### VNCCS Model Manager & Selector
-A system for managing and selecting LoRAs and checkpoints directly in ComfyUI, with support for Civitai and HuggingFace.
-
-#### VNCCS Model Manager
-The backend node that reads a HuggingFace-hosted `model_updater.json` and manages model downloads: point it at your repository, queue downloads in the background, and use API key authentication for restricted Civitai models.
-
-👉 **[Configuration Guide: How to create your own model repo](docs/MODEL_MANAGER_GUIDE.md)**
-
-#### VNCCS Model Selector
-The companion UI node for choosing models from the configured repository.
-
-*   **Visual Card UI**: Shows model name, version, status, and description.
-*   **Smart Search**: Opens a searchable modal model list.
-*   **Status Indicators**: Shows Installed, Update Available, Missing, and Downloading states.
-*   **One-Click Install/Update**: Install or update models directly from the selector.
-*   **Universal Connection**: Outputs a standard relative path string compatible with standard ComfyUI nodes.
-
-👉 **[Usage Guide: How to use Selector with Standard Loaders](docs/MODEL_SELECTOR_USAGE.md)**
 
 ### VNCCS BBox Extractor
 

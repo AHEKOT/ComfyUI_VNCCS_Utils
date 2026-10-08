@@ -15,7 +15,7 @@ from .color_match import _run_unicanvas_color_match
 from .constants import _MAX_UPLOAD_BYTES
 from .debug import debug_enabled, debug_event, set_unicanvas_debug
 from .describe_layers import _run_unicanvas_describe_layers
-from .draw import _run_unicanvas_draw
+from .draw import DrawCancelled, _run_unicanvas_draw, interrupt_draw
 from .enhance import _run_unicanvas_enhance_prompt, load_default_prompts
 from .models.qwen_image21 import (
     _QWEN21_TURBO_LORA_DOWNLOAD,
@@ -31,7 +31,7 @@ from .presets import (
     _unicanvas_load_preset_registry,
     _unicanvas_resolve_local_model_path,
 )
-from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types, set_interrupt
+from .progress import _get_draw_progress, _get_draw_result, _set_draw_progress, interrupt_types
 from .remove_bg import _run_unicanvas_remove_bg
 from .save_output import _run_unicanvas_save_output
 from .user_prefs import load_model_memory, remember_model_choice
@@ -39,14 +39,13 @@ from .segment import _run_unicanvas_segment
 
 
 _DRAW_LOCK = asyncio.Lock()
-_DRAWS_RUNNING = 0  # UniCanvas draws inside the draw lock (Stop only acts on those)
 
 
 def _run_draw_cancellable(payload: dict[str, Any]) -> dict[str, Any]:
     """The draw in its worker thread; a Stop ends it as {"cancelled": true}, never as an exception."""
     try:
         return _run_unicanvas_draw(payload)
-    except interrupt_types():
+    except (DrawCancelled,) + interrupt_types():
         return {"cancelled": True}
 _UNICANVAS_LAYER_ROUTES_REGISTERED = False
 
@@ -174,13 +173,8 @@ def register_unicanvas_routes() -> None:
         payload: dict[str, Any] = {}
         try:
             payload = await request.json()
-            global _DRAWS_RUNNING
             async with _DRAW_LOCK:
-                _DRAWS_RUNNING += 1
-                try:
-                    result = await asyncio.to_thread(_run_draw_cancellable, payload)
-                finally:
-                    _DRAWS_RUNNING -= 1
+                result = await asyncio.to_thread(_run_draw_cancellable, payload)
             return web.json_response(result)
         except Exception as exc:
             import traceback
@@ -191,13 +185,19 @@ def register_unicanvas_routes() -> None:
             return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/interrupt")
-    async def vnccs_unicanvas_interrupt(_request):
-        # Same flag as ComfyUI's own /interrupt, but only while a UniCanvas draw is running, so a late
-        # click cannot leave a stale flag behind for the next prompt.
-        running = _DRAWS_RUNNING > 0
-        if running:
-            set_interrupt(True)
-        return web.json_response({"interrupted": running})
+    async def vnccs_unicanvas_interrupt(request):
+        if not _content_length_ok(request, 64 * 1024):
+            return web.json_response({"error": "Interrupt payload is too large"}, status=413)
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Interrupt request must be an object")
+            draw_id = payload.get("draw_id")
+            if not isinstance(draw_id, str) or not draw_id or len(draw_id) > 256:
+                raise ValueError("draw_id must be a non-empty string of at most 256 characters")
+            return web.json_response({"interrupted": interrupt_draw(draw_id)})
+        except (ValueError, TypeError) as exc:
+            return web.json_response({"error": str(exc)}, status=400)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/segment")
     async def vnccs_unicanvas_segment(request):

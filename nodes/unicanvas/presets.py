@@ -9,16 +9,16 @@ import queue
 import re
 import shutil
 import threading
+import tempfile
 from typing import Any
 
-from .paths import _EXTENSION_ROOT, _is_absolute_any_os, _unicanvas_runtime_temp_root
+from .paths import _EXTENSION_ROOT, _is_absolute_any_os
 
 
 _PRESET_DOWNLOAD_STATUS: dict[str, dict[str, Any]] = {}
 _PRESET_DOWNLOAD_QUEUE: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue()
 _PRESET_DOWNLOAD_WORKER_LOCK = threading.Lock()
 _PRESET_DOWNLOAD_WORKER: threading.Thread | None = None
-_PRESET_DOWNLOAD_TIMEOUT = (10, 60)
 _PRESET_MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf", ".ckpt", ".pt", ".pth", ".bin"}
 _PRESET_MODEL_SETTING_KEYS = {
     "generation_mode",
@@ -47,17 +47,6 @@ def _unicanvas_models_root() -> str:
         return os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(base, "models")))
     except Exception:
         return os.path.abspath(os.path.join(os.getcwd(), "models"))
-
-
-def _unicanvas_temp_dir() -> str:
-    try:
-        import folder_paths
-
-        base = getattr(folder_paths, "base_path", os.getcwd())
-        temp_dir = getattr(folder_paths, "get_temp_directory", lambda: os.path.join(base, "temp"))()
-        return os.path.abspath(temp_dir)
-    except Exception:
-        return _unicanvas_runtime_temp_root()
 
 
 def _unicanvas_max_download_bytes() -> int:
@@ -208,7 +197,7 @@ def _unicanvas_download_worker_loop() -> None:
         temp_path = ""
         try:
             target_path = _unicanvas_resolve_local_model_path(str(asset.get("local_path") or ""))
-            if os.path.exists(target_path):
+            if os.path.lexists(target_path):
                 _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
                 continue
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Initializing", "progress": 0}
@@ -224,9 +213,6 @@ def _unicanvas_download_worker_loop() -> None:
                 filename = filename[len(repo_id) + 1 :]
 
             expected_name = os.path.basename(target_path)
-            temp_dir = _unicanvas_temp_dir()
-            os.makedirs(temp_dir, exist_ok=True)
-            temp_path = os.path.join(temp_dir, f"vnccs_unicanvas_{re.sub(r'[^A-Za-z0-9]+', '_', download_key)}.tmp")
             cached_path = hf_hub_download(
                 repo_id=repo_id,
                 filename=filename,
@@ -237,18 +223,23 @@ def _unicanvas_download_worker_loop() -> None:
             size = os.path.getsize(cached_path)
             if size > _unicanvas_max_download_bytes():
                 raise ValueError(f"{expected_name} exceeded max download size")
+            os.makedirs(os.path.dirname(target_path), exist_ok=True)
+            fd, temp_path = tempfile.mkstemp(prefix=".vnccs_preset_", dir=os.path.dirname(target_path))
+            os.close(fd)
             shutil.copy2(cached_path, temp_path)
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Validating", "progress": 99}
             _unicanvas_validate_downloaded_file(temp_path, expected_name)
-            os.makedirs(os.path.dirname(target_path), exist_ok=True)
-            shutil.move(temp_path, target_path)
+            try:
+                os.link(temp_path, target_path)  # Never replace a model installed while this download was running.
+            except FileExistsError:
+                pass
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
         except Exception as exc:
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "error", "message": str(exc)}
+        finally:
             if temp_path and os.path.exists(temp_path):
                 with contextlib.suppress(Exception):
                     os.remove(temp_path)
-            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "error", "message": str(exc)}
-        finally:
             _PRESET_DOWNLOAD_QUEUE.task_done()
 
 

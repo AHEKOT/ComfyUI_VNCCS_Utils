@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 
-const modelManagerSource = await readFile(new URL("../web/vnccs_model_manager.js", import.meta.url), "utf8");
 const uniCanvasSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const poseStudioSource = await readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 const poseStudioCoreSource = await readFile(new URL("../web/vnccs_pose_studio_core.js", import.meta.url), "utf8");
@@ -11,20 +10,7 @@ const poseAnimationSource = await readFile(new URL("../web/vnccs_pose_animation.
 const poseCharactersSource = await readFile(new URL("../web/vnccs_pose_characters.mjs", import.meta.url), "utf8");
 
 
-test("Model Manager never interpolates remote data into innerHTML", () => {
-    const assignments = modelManagerSource.matchAll(/innerHTML\s*\+?=\s*(`[^`]*`|"[^"]*"|'[^']*')/gs);
-    for (const assignment of assignments) {
-        assert.equal(assignment[1].includes("${"), false, assignment[0]);
-    }
-    assert.match(modelManagerSource, /appendTextElement\(topRow, "span", model\.name/);
-    assert.match(modelManagerSource, /appendTextElement\(el, "div", m\.name/);
-});
-
-
 test("DOM widgets release global listeners and timers on removal", () => {
-    assert.match(modelManagerSource, /this\.listWidget\?\.dispose\(\)/);
-    assert.match(modelManagerSource, /this\.selectorWidget\?\.dispose\(\)/);
-    assert.match(modelManagerSource, /removeEventListener\("vnccs-registry-updated"/);
     assert.match(uniCanvasSource, /this\._eventAbortController\?\.abort\(\)/);
     assert.match(uniCanvasSource, /this\.stopDrawProgressPolling\(\)/);
     assert.match(poseStudioSource, /document\.removeEventListener\("pointerdown", this\._boundHandleDocumentPointerDown\)/);
@@ -679,27 +665,6 @@ test("full capture updates every character for the current frame or pose before 
     );
 });
 
-
-test("repository Git fallback keeps clone diagnostics visible", () => {
-    const renderStart = poseStudioSource.indexOf("renderPoseRepositorySettings() {");
-    const renderEnd = poseStudioSource.indexOf("\n    renderLocalPoseRepositorySettings()", renderStart);
-    const renderMethod = poseStudioSource.slice(renderStart, renderEnd);
-    assert.match(renderMethod, /repo\.git_error/);
-    assert.match(renderMethod, /Git clone failed — HTTP fallback was used/);
-    assert.match(renderMethod, /vnccs-ps-library-repo-diagnostic/);
-
-    const progressStart = poseStudioSource.indexOf("createInlineRepositoryProgress(key");
-    const progressEnd = poseStudioSource.indexOf("\n    async pollRepositoryProgress", progressStart);
-    const progressMethod = poseStudioSource.slice(progressStart, progressEnd);
-    assert.match(progressMethod, /hasOwnProperty\.call\(status, "git_error"\)/);
-    assert.match(progressMethod, /patch\.git_error = status\.git_error/);
-
-    const addStart = poseStudioSource.indexOf("async addPoseRepository() {");
-    const addEnd = poseStudioSource.indexOf("\n    createRepositoryTaskId", addStart);
-    const addMethod = poseStudioSource.slice(addStart, addEnd);
-    assert.match(addMethod, /!refreshed\.git_error/);
-    assert.match(addMethod, /Open Git diagnostics below/);
-});
 
 test("Pose Studio redraws its position marker after viewport rendering", () => {
     assert.match(poseStudioSource, /onViewportRender: \(\) => \{[\s\S]*?this\.radarRedraw\?\.\(\);[\s\S]*?this\.host\.onViewportRender\?\.\(\);/);

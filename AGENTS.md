@@ -1,7 +1,7 @@
 # VNCCS-Utils Project Rules
 
 Binding rules for the whole repository and every VNCCS-Utils widget: 3D Factory, Pose Studio,
-UniCanvas, Model Manager, Model Selector, and future interactive nodes.
+UniCanvas, and future interactive nodes.
 
 ## Realtime interaction is mandatory
 
