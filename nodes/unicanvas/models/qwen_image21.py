@@ -95,6 +95,13 @@ QWEN21_OUTPAINT_INSTRUCTION = (
 )
 QWEN_IMAGE21_DEFAULTS["qwen21_outpaint_lora_name"] = QWEN21_OUTPAINT_LORA_NAME
 
+QWEN21_POSE_LORA_REPO_ID = "MIUProject/VNCCS_PoseStudio_QI2.1"
+QWEN21_POSE_LORA_REVISION = "b0518fd047fa75d7dcd909d68390a7c1d337e5cd"
+QWEN21_POSE_LORA_FILENAME = "VNCCS_QI2_PoseStudioV1.1.safetensors"
+QWEN21_POSE_LORA_NAME = f"QI2.1/VNCCS/{QWEN21_POSE_LORA_FILENAME}"
+_QWEN21_POSE_LORA_LOCK = threading.Lock()
+_QWEN21_POSE_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
+
 _QWEN21_TURBO_LORA_LOCK = threading.Lock()
 _QWEN21_TURBO_LORA_DOWNLOAD: dict[str, Any] = {"status": "missing", "progress": 0.0, "message": "Missing"}
 _QWEN21_OUTPAINT_LORA_LOCK = threading.Lock()
@@ -159,6 +166,14 @@ def resolve_qwen21_outpaint_lora() -> str:
     )
 
 
+def resolve_qwen21_pose_lora() -> str:
+    """Reuse an installed Pose Studio LoRA or download the pinned public version."""
+    return _resolve_hf_lora(
+        QWEN21_POSE_LORA_REPO_ID, QWEN21_POSE_LORA_REVISION, QWEN21_POSE_LORA_FILENAME,
+        QWEN21_POSE_LORA_NAME, _QWEN21_POSE_LORA_LOCK, _QWEN21_POSE_LORA_DOWNLOAD, "QI2.1 Pose Studio LoRA",
+    )
+
+
 def _qwen21_image_size(image: Any) -> tuple[int, int]:
     """Return (height, width) of a (B,H,W,C) or (H,W,C) image tensor."""
     shape = tuple(int(value) for value in (getattr(image, "shape", ()) or ()))
@@ -209,6 +224,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
 
     capabilities: ModelCapabilities = ModelCapabilities(
         label="Qwen Edit 2.1",
+        supports_pose_edit=True,
         tasks=(
             STANDARD_TASKS["text_to_image"],
             *(STANDARD_TASKS[key].with_prompt_guide(QWEN_IMAGE21_EDIT_PROMPT_GUIDE) for key in ("image_to_image", "inpaint", "outpaint")),
@@ -248,6 +264,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         "_qwen21_prompts",
         "_qwen21_prompt",
         "_qwen21_negative_prompt",
+        "_qwen21_pose_edit",
     )
     lora_requirements: tuple[LoraRequirement, ...] = (
         LoraRequirement(
@@ -277,7 +294,21 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             resolve_match=QWEN21_OUTPAINT_LORA_NAME,
             description="Qwen-Image-2.1 outpaint LoRA (AusBoss v2, outpaint mode only, downloads on first use)",
         ),
+        LoraRequirement(
+            name_setting="qwen21_pose_lora_name",
+            default_name=QWEN21_POSE_LORA_NAME,
+            enabled_setting="_qwen21_pose_edit",
+            fixed_strength=1.0,
+            clip_strength=0.0,
+            resolver=lambda: resolve_qwen21_pose_lora(),
+            resolve_match=QWEN21_POSE_LORA_NAME,
+            description="Qwen Edit 2.1 Pose Studio LoRA (pose layers only)",
+        ),
     )
+
+    def prepare_pose_edit(self, ctx) -> None:
+        super().prepare_pose_edit(ctx)
+        ctx.settings["_qwen21_pose_edit"] = True
 
     def on_masked_mode_dropped(self, ctx) -> None:
         # An empty outpaint mask turned the draw into img2img after the LoRAs were applied:
@@ -316,6 +347,9 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
         Slot 1 is the canvas working area; slots 2..5 are the Edit model
         reference images in socket order.
         """
+        pose_images = (gen_settings or {}).get("_pose_edit_images")
+        if pose_images:
+            return dict(enumerate(pose_images, start=1))
         return _reference_image_slots(image_tensor, gen_settings)
 
     def assemble_instruction(self, prompt: str, slots, outpaint: bool = False, use_layers: bool = True) -> str:
@@ -388,7 +422,10 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             # Pure text-to-image has no working area; references keep fixed slots.
             slots.pop(1, None)
         outpaint = str(gen_settings.get("draw_mode") or "") == "outpaint"
-        instruction = self.assemble_instruction(gen_settings.get("_qwen21_prompt"), slots, outpaint=outpaint, use_layers=use_layers)
+        pose_edit = bool(gen_settings.get("_pose_edit_images"))
+        instruction = str(gen_settings.get("_qwen21_prompt") or "") if pose_edit else self.assemble_instruction(
+            gen_settings.get("_qwen21_prompt"), slots, outpaint=outpaint, use_layers=use_layers,
+        )
         negative_prompt = str(gen_settings.get("_qwen21_negative_prompt") or "")
         condition_images = {slot: self._prepare_qi21_condition_image(tensor) for slot, tensor in slots.items()}
         image_h, image_w = _qwen21_image_size(image_tensor)
@@ -402,7 +439,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             resolution=_qwen21_encoder_resolution(target_w, target_h),
             draw_id=draw_id,
         )
-        gen_settings["_qwen21_latent"] = self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
+        gen_settings["_qwen21_latent"] = None if pose_edit else self._qwen21_working_latent(vae, image_tensor, gen_settings, draw_id)
         _uc_log(
             draw_id,
             "Qwen-Image-2.1 conditioning prepared",

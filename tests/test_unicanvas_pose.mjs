@@ -195,9 +195,13 @@ test("Generate redirects a missing character to the pose picker without starting
 test("Generate reaches pose capture while the Pose tool is active and a character is selected", async () => {
     const { host, layer, raster, calls } = selectionHarness();
     layer.pose.character = { source:"layer", layerId:raster.id };
-    host.editPoseLayer(layer); await host.draw();
-    assert.equal(host.tool, "pose");
-    assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id));
+    for (const model of ["flux_klein", "qwen_image21"]) {
+        host.getModelBase = () => model;
+        calls.length = 0;
+        host.editPoseLayer(layer); await host.draw();
+        assert.equal(host.tool, "pose");
+        assert.ok(calls.some(call => call[0] === "generation" && call[1] === layer.id), model);
+    }
     assert.equal(host.drawInProgress, false); assert.equal(host.drawBtn.disabled, false);
 });
 

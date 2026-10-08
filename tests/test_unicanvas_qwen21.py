@@ -438,3 +438,71 @@ def test_outpaint_uses_gray_canvas_and_trained_instruction():
     text = module.assemble_instruction("a forest at dusk", {1: object()}, outpaint=True)
     assert text == f"{QWEN21_OUTPAINT_INSTRUCTION} Scene: a forest at dusk"
     assert module.assemble_instruction("", {1: object()}, outpaint=True) == QWEN21_OUTPAINT_INSTRUCTION
+
+
+def test_pose_uses_the_same_two_images_and_unmodified_pose_studio_prompt(monkeypatch):
+    from types import SimpleNamespace
+    from nodes.unicanvas.models import qwen_image21
+
+    module = _get_unicanvas_model_module("qwen_image21")
+    assert module.capabilities.supports_pose_edit
+    settings = {"draw_mode": "img2img", "_qwen21_clip": "CLIP", "_qwen21_prompt": "Draw character from image2\nsoft lighting",
+                "_qwen21_negative_prompt": "blurry", "edit_use_layers_as_reference": False}
+    ctx = SimpleNamespace(settings=settings, denoise=0.4, mode="img2img", width=64, height=64, draw_id="pose")
+    module.prepare_pose_edit(ctx)
+    assert ctx.denoise == settings["denoise"] == 1.0
+    pose, character = torch.rand(1, 64, 64, 3), torch.rand(1, 64, 64, 3)
+    settings["_pose_edit_images"] = [pose, character]
+    settings["_external"] = {"references": {"reference_image_1": torch.zeros_like(pose)}}
+    calls = []
+    monkeypatch.setattr(qwen_image21, "_call_comfy_node", lambda name, **kwargs: calls.append((name, kwargs)) or ("POS", "NEG"))
+    positive, negative = module.prepare_reference_conditioning(None, None, object(), character, settings, "pose")
+    assert (positive, negative) == ("POS", "NEG")
+    name, encoded = calls[0]
+    assert name == "TextEncodeQwenImage21"
+    assert encoded["prompt"] == settings["_qwen21_prompt"]
+    assert encoded["negative_prompt"] == "blurry"
+    assert list(encoded["images"]) == ["image_1", "image_2"]
+    assert torch.equal(encoded["images"]["image_1"], pose)
+    assert torch.equal(encoded["images"]["image_2"], character)
+    assert settings["_qwen21_latent"] is None
+    latent = module.prepare_generation_latent(ctx)
+    assert latent["samples"].shape == (1, 64, 4, 4)
+    assert not torch.any(latent["samples"])
+    assert "_qwen21_pose_edit" in module.sampling_scratch_keys
+
+
+def test_pose_lora_is_model_only_automatic_and_deduplicated(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    import folder_paths
+    from nodes.unicanvas.models import qwen_image21
+
+    module = _get_unicanvas_model_module("qwen_image21")
+    installed = tmp_path / "custom" / qwen_image21.QWEN21_POSE_LORA_FILENAME
+    installed.parent.mkdir(); installed.touch()
+    relative = str(installed.relative_to(tmp_path))
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name) if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: [relative])
+    resolver_calls, apply_calls = [], []
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_pose_lora", lambda: resolver_calls.append(True) or relative)
+    monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None:
+                        apply_calls.append((name, strength, clip_strength)) or (m, c))
+    settings = {"qwen_lora_name": "", "draw_mode": "img2img"}
+    module.apply_loras("MODEL", "CLIP", settings)
+    assert resolver_calls == apply_calls == []
+    module.prepare_pose_edit(SimpleNamespace(settings=settings, denoise=0.4))
+    settings["lora_stack"] = [{"name": relative, "strength": 1.0}]
+    module.apply_loras("MODEL", "CLIP", settings)
+    assert resolver_calls == [True]
+    assert apply_calls == [(relative, 1.0, 0.0)]
+
+
+def test_restored_pose_scratch_cannot_enable_lora_in_an_ordinary_draw():
+    from nodes.unicanvas.draw_request import DrawRequest
+
+    request = DrawRequest.from_payload({"mode": "img2img", "settings": {
+        "generation_mode": "qwen_image21", "_qwen21_pose_edit": True,
+        "_pose_edit_images": ["stale pose", "stale character"],
+    }})
+    assert "_qwen21_pose_edit" not in request.settings
+    assert "_pose_edit_images" not in request.settings

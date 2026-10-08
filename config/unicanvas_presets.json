@@ -117,6 +117,15 @@
           "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
           "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
           "description": "Used for outpaint; downloaded separately from the base model."
+        },
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Pose Studio LoRA v1.1",
+          "hf_repo": "MIUProject/VNCCS_PoseStudio_QI2.1",
+          "hf_revision": "b0518fd047fa75d7dcd909d68390a7c1d337e5cd",
+          "hf_path": "VNCCS_QI2_PoseStudioV1.1.safetensors",
+          "local_path": "models/loras/QI2.1/VNCCS/VNCCS_QI2_PoseStudioV1.1.safetensors",
+          "description": "Applied automatically when generating from a pose layer."
         }
       ]
     },

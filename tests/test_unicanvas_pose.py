@@ -15,7 +15,7 @@ def payload():
 
 class PoseEditContracts(unittest.TestCase):
     def test_reference_order_is_pose_then_background_and_character(self):
-        for model in ("flux_klein",):
+        for model in ("flux_klein", "qwen_image21"):
             images = UC.draw._prepare_pose_edit_images(payload(), model, (64, 64))
             self.assertEqual([i.getpixel((0, 0)) for i in images], [(200, 10, 20), (10, 100, 200)])
             self.assertTrue(all(i.mode == "RGB" for i in images))

@@ -146,3 +146,25 @@ test("MiniMax H3 preset ships the 3-step TaoMate Turbo LoRA on the shared turbo 
   assert.equal(turbo.asset.hf_repo, "Robert1212star/TaoMate-H3-3Step-ComfyUI");
   assert.equal(turbo.asset.hf_path, "taomate_h3_3step_comfy.safetensors");
 });
+
+
+test("rendered model menu pins Qwen second and Krea2 Turbo third even with an old server catalog", async () => {
+    const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+    const prototype = runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
+        + "\nUniCanvasWidget.prototype");
+    const widget = Object.create(prototype);
+    const oldOrder = ["sdxl", "anima", "flux_klein", "z_image", "qwen_image21", "minimax_h3", "krea2_edit_raw", "krea2_edit"];
+    const oldCatalog = oldOrder.map(id => presets.find(preset => preset.id === id));
+    const snapshot = JSON.stringify(oldCatalog);
+    for (const catalog of [oldCatalog, presets]) {
+        widget.presets = catalog;
+        const rows = [...widget.groupPresetsByType().values()].flat();
+        assert.deepEqual(rows.slice(0, 3).map(preset => preset.id), ["sdxl", "qwen_image21", "krea2_edit"]);
+        assert.equal(rows[3].id, "krea2_edit_raw", "Raw stays beside its Turbo family");
+        assert.deepEqual(rows.slice(4).map(preset => preset.id), ["anima", "flux_klein", "z_image", "minimax_h3"]);
+    }
+    assert.equal(JSON.stringify(oldCatalog), snapshot, "rendering never mutates the server catalog");
+    widget.presets = presets.filter(preset => !["sdxl", "qwen_image21", "krea2_edit"].includes(preset.id));
+    assert.deepEqual([...widget.groupPresetsByType().values()].flat().map(preset => preset.id), widget.presets.map(preset => preset.id));
+});

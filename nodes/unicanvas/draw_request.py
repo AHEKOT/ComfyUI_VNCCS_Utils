@@ -61,6 +61,7 @@ class DrawRequest:
         external = payload.get("external")
         settings = _normalize_gen_settings(_request_settings(payload, external))
         settings.pop("_pose_edit_images", None)
+        settings.pop("_qwen21_pose_edit", None)
         settings.pop("_edit_layers_reference", None)
         module = _get_unicanvas_model_module(settings.get("generation_mode"))
         task = _resolve_task(module, task_key, mode)

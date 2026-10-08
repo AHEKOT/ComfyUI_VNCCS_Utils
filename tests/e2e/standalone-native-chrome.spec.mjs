@@ -22,14 +22,17 @@ for (const location of ["left", "right"]) {
       return route.fulfill({ contentType:"text/html", body:`<!doctype html>
         <style>
           body { margin:0; background:#222; color:white; }
-          #overlay { position:absolute; inset:0; z-index:999; pointer-events:none; display:flex; flex-direction:${location === "left" ? "row" : "row-reverse"}; }
+          #graph-canvas-container { position:relative; top:16px; height:calc(100vh - 16px); overflow:clip; }
+          #overlay { position:absolute; inset:0; z-index:999; pointer-events:none; display:flex; flex-direction:column; }
+          #workspace { display:flex; flex:1; overflow:hidden; flex-direction:${location === "left" ? "row" : "row-reverse"}; }
+          .workflow-tabs-container { height:38px; flex-shrink:0; pointer-events:auto; background:#700; }
           nav { width:56px; flex-shrink:0; pointer-events:auto; background:#333; }
           nav button { display:block; width:56px; height:48px; }
           #splitter { display:flex; flex:1; min-width:0; }
           .side-bar-panel { width:200px; background:#444; pointer-events:auto; }
           #center { display:flex; flex:1; flex-direction:column; }
           #graph-topmenu { height:50px; flex-shrink:0; pointer-events:auto; }
-          [data-testid="graph-canvas-gutter"] { display:flex; flex:1; flex-direction:column; min-height:0; margin:0 8px 8px; }
+          .splitter-overlay-bottom { display:flex; flex:1; flex-direction:column; min-height:0; margin:0 8px 8px; }
           .graph-canvas-panel { flex:1; position:relative; }
           .bottom-panel { height:200px; flex-shrink:0; background:#454545; pointer-events:auto; }
           .p-splitter-gutter { height:8px; flex-shrink:0; pointer-events:auto; }
@@ -40,7 +43,9 @@ for (const location of ["left", "right"]) {
           #last-action { position:absolute; bottom:8px; left:8px; }
           [hidden] { display:none !important; }
         </style>
-        <div id="overlay">
+        <div id="graph-canvas-container"><div id="overlay">
+          <div class="workflow-tabs-container" data-testid="topbar-workflow-tabs"><button>Workflow tabs</button></div>
+          <div id="workspace">
           <nav class="side-tool-bar-container">
             <button class="side-bar-button-selected" data-testid="vnccs-unicanvas-standalone-tab-button">UniCanvas</button>
             <button id="help" onclick="document.querySelector('#help-menu').hidden=false">Help</button>
@@ -52,13 +57,13 @@ for (const location of ["left", "right"]) {
           <div id="splitter"><aside class="side-bar-panel"><div id="mount"></div></aside>
             <div id="side-gutter" class="p-splitter-gutter" style="width:8px;height:auto"></div><div id="center">
               <div id="graph-topmenu"><button>Graph toolbar</button></div>
-              <div data-testid="graph-canvas-gutter"><div class="graph-canvas-panel"><button id="graph-action">Graph action</button></div>
+              <div class="splitter-overlay-bottom"><div class="graph-canvas-panel"><button id="graph-action">Graph action</button></div>
               <div id="gutter" class="p-splitter-gutter" hidden></div>
               <div class="bottom-panel" hidden><input aria-label="Console input"><button id="close-dock" onclick="toggleDock()">Close dock</button></div>
               </div>
             </div>
           </div>
-        </div>
+        </div></div></div>
         <div id="settings" role="dialog" hidden><input aria-label="Setting"><button id="close-settings" onclick="this.parentElement.hidden=true">Close settings</button></div>
         <script>
           function toggleDock() { for (const el of document.querySelectorAll('.bottom-panel, #gutter')) el.hidden = !el.hidden; }
@@ -88,12 +93,15 @@ for (const location of ["left", "right"]) {
     const shell = page.locator(".vnccs-uc2-standalone-shell");
     await expect(shell).toBeVisible();
     await expect(page.locator('#graph-topmenu')).toBeHidden();
+    await expect(page.locator('.workflow-tabs-container')).toBeHidden();
+    await expect.poll(() => page.locator('#graph-canvas-container').evaluate(el => el.getBoundingClientRect().top)).toBe(0);
+    expect(await page.evaluate(() => document.elementFromPoint(300, 1).closest('.vnccs-uc2-standalone-shell') !== null)).toBe(true);
     await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().top)).toBe(0);
     await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().height)).toBe(800);
     // Native ancestors can establish a fixed-position containing block below a header.
     await page.locator('#overlay').evaluate(el => { el.style.top='24px'; el.style.transform='translateZ(0)'; });
-    await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().top)).toBe(24);
-    await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().height)).toBe(776);
+    await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().top)).toBe(0);
+    await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().height)).toBe(800);
     await page.locator('#overlay').evaluate(el => { el.style.top='0'; });
     await expect.poll(() => shell.evaluate(el => el.getBoundingClientRect().height)).toBe(800);
     // Native menus overlap the workspace intentionally, and must receive clicks/keys.
@@ -143,8 +151,10 @@ for (const location of ["left", "right"]) {
     await expect(page.locator(".side-bar-panel")).toBeVisible();
     await expect(page.locator("#side-gutter")).toBeVisible();
     await expect(page.locator("#graph-topmenu")).toBeVisible();
+    await expect(page.locator('.workflow-tabs-container')).toBeVisible();
+    await expect.poll(() => page.locator('#graph-canvas-container').evaluate(el => el.getBoundingClientRect().top)).toBe(16);
     expect(await page.locator("#graph-topmenu").evaluate(el => el.getBoundingClientRect().height)).toBe(50);
-    expect(await page.locator('[data-testid="graph-canvas-gutter"]').evaluate(el => getComputedStyle(el).marginBottom)).toBe('8px');
+    expect(await page.locator('.splitter-overlay-bottom').evaluate(el => getComputedStyle(el).marginBottom)).toBe('8px');
     await page.locator(".bottom-panel").evaluate(el => { el.style.height="250px"; });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     expect(errors).toEqual([]);

@@ -36,7 +36,7 @@ The canvas displays a transparent rendering. A separate transparent WebGL overla
 
 The **Character reference** section at the top of the editing sidebar has a preview, a layer picker, Upload image and Clear, and says when a reference is still needed. It accepts an image file or an existing image layer. Generate with a missing reference opens the pose editor, highlights this section and explains the missing reference before any inference request is sent. Uploaded references are fitted into the reference canvas. A selected visible lower layer is already part of the reference and is included once. Other selected layers are fitted from their full content bounds, even when their canvas position is outside the bbox.
 
-To generate, adjust the mannequin, choose its character reference, select Klein9b in the standard model panel and press the normal Generate button without leaving the Pose tool. The model receives exactly two images:
+To generate, adjust the mannequin, choose its character reference, select Klein9b or Qwen Edit 2.1 in the standard model panel and press the normal Generate button without leaving the Pose tool. The model receives exactly two images:
 
 1. **image1:** the pose rendering in the bbox, composited over Pose Studio's solid background color.
 2. **image2:** the lower visible image layers, composited bottom-to-top, plus the selected character reference. Uncovered pixels are white.
@@ -45,7 +45,7 @@ A file with an opaque background can cover the lower composite within its fitted
 
 The prompt is produced by Pose Studio's existing `generatePromptFromLights` method and template. The selected pose prompt and UniCanvas prompt fill `<user_prompt>`; lights fill `<lighting>`. The default character reference remains `image2`. There is no third reference image.
 
-Pose generation uses full denoising. Klein9b appends both reference latents in the same order to positive and negative conditioning using its existing node pipeline. Normal image editing retains its previous reference path. A visible pose layer requires a compatible model; hide it to use other UniCanvas models.
+Pose generation uses full denoising. Klein9b appends both reference latents in the same order to positive and negative conditioning using its existing node pipeline. Qwen Edit 2.1 uses the same two images and unchanged Pose Studio prompt through its native text encoder, starts from an empty latent at full denoising, and automatically applies `VNCCS_QI2_PoseStudioV1.1.safetensors` at model strength 1 (without patching CLIP). The LoRA is offered in the existing related-files dialog for both Presets and Custom; an installed copy in any configured LoRA folder is reused. It is not required for ordinary Qwen editing and is not applied there. Normal image editing retains its previous reference path. A visible pose layer requires a compatible model; hide it to use other UniCanvas models.
 
 ## Persistence and lifecycle
 

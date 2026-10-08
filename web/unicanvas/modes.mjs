@@ -46,8 +46,13 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu { display: none !important; }
-/* The current frontend reserves a separate top-menu row and gutters above the graph pane. */
+/* Standalone owns the page from its top edge; workflow chrome belongs to graph mode. */
+body.${UNICANVAS_STANDALONE_BODY_CLASS} #graph-canvas-container { position: fixed !important; inset: 0 !important; width: 100% !important; height: 100% !important; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .workflow-tabs-container,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} [data-testid="topbar-workflow-tabs"],
+body.${UNICANVAS_STANDALONE_BODY_CLASS} div:has(+ .splitter-overlay-bottom),
 body.${UNICANVAS_STANDALONE_BODY_CLASS} div:has(+ [data-testid="graph-canvas-gutter"]) { display: none !important; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .splitter-overlay-bottom,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} [data-testid="graph-canvas-gutter"] { margin: 0 !important; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .graph-canvas-panel { visibility: hidden; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-bar-panel:has([data-vnccs-unicanvas-mount]),
@@ -937,50 +942,43 @@ function findUniCanvasSidebarRail(doc) {
 }
 
 function findUniCanvasStandaloneHost(doc) {
-  // The native graph pane already shrinks continuously with the bottom dock.
   const graphPane = doc.querySelector(".graph-canvas-panel");
-  if (graphPane) return graphPane;
-  // Keep the shell inside the native overlay's stacking context, below its menus.
+  // Share the native overlay with its rail and menus, above the workflow/header rows.
   for (let parent = findUniCanvasSidebarRail(doc)?.parentElement; parent; parent = parent.parentElement) {
-    if (parent.querySelector(".graph-canvas-panel, [data-testid='graph-canvas-gutter']")) return parent;
+    if (graphPane && parent.contains(graphPane) && ["absolute", "fixed"].includes(doc.defaultView.getComputedStyle(parent).position)) return parent;
   }
   return doc.querySelector("#graph-canvas-container") || doc.body;
 }
 
 function applyUniCanvasStandaloneShellInset(shell, doc) {
-  if (shell.parentElement?.classList.contains("graph-canvas-panel")) {
-    shell.style.position = "absolute";
-    shell.style.inset = "0";
-    return;
-  }
-  shell.style.position = "fixed";
-  // Reserve the rail and native bottom dock, including its resize handle.
-  const rail = findUniCanvasSidebarRail(doc);
-  const railRect = rail?.getBoundingClientRect?.();
-  shell.style.top = "0";
-  shell.style.bottom = "0";
-  shell.style.left = "0";
-  shell.style.right = "0";
   const viewportWidth = doc.defaultView?.innerWidth || 0;
-  if (railRect && railRect.width > 0 && viewportWidth > 0) {
-    if (railRect.left + railRect.width / 2 < viewportWidth / 2) {
-      shell.style.left = `${Math.ceil(railRect.right)}px`;
-    } else {
-      shell.style.right = `${Math.ceil(viewportWidth - railRect.left)}px`;
-    }
-  } else {
-    shell.style.left = "56px";
-  }
   const viewportHeight = doc.defaultView?.innerHeight || 0;
+  const hostRect = shell.parentElement?.getBoundingClientRect();
+  const positionedHost = shell.parentElement !== doc.body;
+  shell.style.position = positionedHost ? "absolute" : "fixed";
+  // A positioned native ancestor may start below the viewport or establish a transform.
+  const hostLeft = positionedHost ? hostRect.left : 0;
+  const hostTop = positionedHost ? hostRect.top : 0;
+  const hostRight = positionedHost ? hostRect.right : viewportWidth;
+  const hostBottom = positionedHost ? hostRect.bottom : viewportHeight;
+  let left = 0, right = viewportWidth, bottom = viewportHeight;
+  const railRect = findUniCanvasSidebarRail(doc)?.getBoundingClientRect?.();
+  if (railRect && railRect.width > 0 && viewportWidth > 0) {
+    if (railRect.left + railRect.width / 2 < viewportWidth / 2) left = Math.ceil(railRect.right);
+    else right = Math.floor(railRect.left);
+  } else left = 56;
   for (const panel of doc.querySelectorAll(".bottom-panel, #comfyui-body-bottom, .comfyui-body-bottom")) {
     const rect = panel.getBoundingClientRect();
     if (rect.width <= 0 || rect.height <= 0 || rect.top >= viewportHeight) continue;
     const gutter = panel.previousElementSibling;
-    const top = gutter?.classList.contains("p-splitter-gutter") && gutter.getBoundingClientRect().height > 0
-      ? Math.min(rect.top, gutter.getBoundingClientRect().top) : rect.top;
-    const inset = Math.max(0, viewportHeight - top);
-    shell.style.bottom = `${Math.max(parseFloat(shell.style.bottom), Math.ceil(inset))}px`;
+    const gutterRect = gutter?.classList.contains("p-splitter-gutter") ? gutter.getBoundingClientRect() : null;
+    const top = gutterRect?.height > 0 ? Math.min(rect.top, gutterRect.top) : rect.top;
+    bottom = Math.min(bottom, Math.floor(top));
   }
+  shell.style.top = `${-hostTop}px`;
+  shell.style.left = `${left - hostLeft}px`;
+  shell.style.right = `${hostRight - right}px`;
+  shell.style.bottom = `${hostBottom - bottom}px`;
 }
 
 function watchUniCanvasStandaloneTab(onChange) {
@@ -1072,6 +1070,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     if (!widget) return;
     if (active) {
       if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);
+      document.body.classList.add(UNICANVAS_STANDALONE_BODY_CLASS);
       if (!shell) {
         shell = document.createElement("div");
         shell.className = "vnccs-uc2-standalone-shell";
@@ -1104,7 +1103,6 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       }
       applyUniCanvasStandaloneShellInset(shell, document);
       if (widget.container.parentNode !== shell) shell.appendChild(widget.container);
-      document.body.classList.add(UNICANVAS_STANDALONE_BODY_CLASS);
     } else {
       // Leaving the tab restores the standard ComfyUI chrome.
       if (widget._vnccsFullscreen) exitUniCanvasFullscreen(widget);

@@ -24,12 +24,19 @@ def test_card_and_custom_offer_the_same_qwen_dependencies_without_the_base_model
     card = presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")
     custom = presets._get_unicanvas_dependencies("qi21")
     assert card == custom
-    assert [asset["required"] for asset in card["assets"]] == [True, True, False, False]
+    assert [asset["required"] for asset in card["assets"]] == [True, True, False, False, False]
     assert all(asset["role"] not in {"diffusion_model", "checkpoint", "gguf"} for asset in card["assets"])
     outpaint = next(asset for asset in card["assets"] if "Outpaint" in asset["name"])
     assert outpaint["hf_revision"] == UC.models.qwen_image21.QWEN21_OUTPAINT_LORA_REVISION
     assert outpaint["local_path"] == "models/loras/" + UC.models.qwen_image21.QWEN21_OUTPAINT_LORA_NAME
     assert not outpaint["installed"]
+    pose = next(asset for asset in card["assets"] if "Pose Studio" in asset["name"])
+    family = UC.models.qwen_image21
+    assert pose["hf_repo"] == family.QWEN21_POSE_LORA_REPO_ID
+    assert pose["hf_revision"] == family.QWEN21_POSE_LORA_REVISION
+    assert pose["hf_path"] == family.QWEN21_POSE_LORA_FILENAME
+    assert pose["local_path"] == "models/loras/" + family.QWEN21_POSE_LORA_NAME
+    assert not pose["required"] and not pose["installed"]
 
 
 def test_custom_uses_installed_manually_selected_encoder_and_vae(tmp_path):
@@ -39,9 +46,9 @@ def test_custom_uses_installed_manually_selected_encoder_and_vae(tmp_path):
         target.write_bytes(b"installed")
     catalog = presets._get_unicanvas_dependencies(
         "qwen_image21", clip_name="custom/alternative.safetensors", vae_name="custom/alternative.safetensors")
-    assert len(catalog["assets"]) == 2
+    assert len(catalog["assets"]) == 3
     assert all(not asset["required"] for asset in catalog["assets"])
-    assert len(presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")["assets"]) == 4
+    assert len(presets._get_unicanvas_dependencies("qwen_image21", "qwen_image21")["assets"]) == 5
     with pytest.raises(ValueError):
         presets._get_unicanvas_dependencies("qwen_image21", clip_name="../alternative.safetensors")
 
