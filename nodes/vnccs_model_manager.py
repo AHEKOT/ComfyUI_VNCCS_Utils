@@ -11,10 +11,17 @@ import queue
 import urllib.parse
 import time
 import ipaddress
+import tempfile
 
 # Cache for model_updater.json to prevent excessive HEAD requests
 # Structure: { repo_id: { "timestamp": float, "remote_timestamp": float, "path": str } }
 _CONFIG_CACHE = {}
+MODEL_MANIFEST_REPO_ID = "MIUProject/VNCCS"
+ALLOWED_MODEL_FOLDERS = {
+    "checkpoints", "loras", "vae", "controlnet", "style_models", "upscale_models",
+    "clip", "clip_vision", "text_encoders", "unet", "diffusion_models", "diffusers",
+    "model_patches", "embeddings", "configs", "sam3dbody", "birefnet",
+}
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024 * 1024  # 100 GiB safety cap
 REQUEST_TIMEOUT = (10, 60)
 MAX_DOWNLOAD_REDIRECTS = 5
@@ -45,26 +52,27 @@ def _is_relative_safe_path(path):
     if not path:
         return False
     path = str(path).replace("\\", "/")
-    if path.startswith(("~", "/", "\\")) or "://" in path:
+    if path.startswith(("~", "/", "\\")) or ":" in path or "\x00" in path:
         return False
     parts = [part for part in path.split("/") if part not in ("", ".")]
-    return bool(parts) and ".." not in parts
+    return bool(parts) and all(part.rstrip(" ") != ".." for part in parts)
 
 def resolve_model_local_path(relative_path):
-    """Resolve a model manifest path while preventing writes outside models/."""
+    """Resolve a manifest path inside a known model folder, including symlink checks."""
     if not _is_relative_safe_path(relative_path):
         raise ValueError(f"Unsafe local_path: {relative_path!r}")
 
     base = os.path.abspath(getattr(folder_paths, "base_path", os.getcwd()))
-    models_dir = os.path.abspath(getattr(folder_paths, "models_dir", os.path.join(base, "models")))
+    models_dir = os.path.realpath(getattr(folder_paths, "models_dir", os.path.join(base, "models")))
     normalized = str(relative_path).replace("\\", "/")
     parts = [part for part in normalized.split("/") if part not in ("", ".")]
-    if not parts or parts[0] != "models" or len(parts) < 2:
-        raise ValueError("local_path must start with models/ and include a file path")
+    if len(parts) < 3 or parts[0] != "models" or parts[1] not in ALLOWED_MODEL_FOLDERS:
+        raise ValueError("local_path must name a file inside a known models/ folder")
 
     target_abs = os.path.abspath(os.path.join(models_dir, *parts[1:]))
+    target_real = os.path.realpath(target_abs)
 
-    if target_abs == models_dir or not target_abs.startswith(models_dir + os.sep):
+    if target_real == models_dir or not target_real.startswith(models_dir + os.sep):
         raise ValueError("local_path must stay inside the ComfyUI models directory")
     return target_abs
 
@@ -100,6 +108,8 @@ def _download_url_is_host(url, domain):
     return host == domain or host.endswith(f".{domain}")
 
 def get_cached_config_path(repo_id, force_refresh=False):
+    if repo_id != MODEL_MANIFEST_REPO_ID:
+        raise PermissionError(f"Only the {MODEL_MANIFEST_REPO_ID} model manifest is allowed")
     now = time.time()
     UI_CACHE_TTL = 300      # 5 minutes (return what we have quickly)
     UPDATE_CHECK_TTL = 3600 # 60 minutes (actually check for remote updates)
@@ -201,6 +211,11 @@ def worker_loop():
         repo_id, model_name, target_model = task
         temp_path = None
         try:
+            if repo_id != MODEL_MANIFEST_REPO_ID:
+                raise PermissionError(f"Only the {MODEL_MANIFEST_REPO_ID} model manifest is allowed")
+            target_abs_path = resolve_model_local_path(target_model.get("local_path"))
+            if os.path.lexists(target_abs_path):
+                raise FileExistsError("Model file already exists; automatic replacement is disabled")
             _set_download_status(repo_id, model_name, {"status": "downloading", "message": "Initializing..."})
             if target_model.get("url"):
                 raise ValueError("Direct model URLs are disabled; use a public Hugging Face repository asset")
@@ -227,9 +242,14 @@ def worker_loop():
             os.makedirs(target_dir, exist_ok=True)
             import shutil
 
-            temp_path = f"{target_abs_path}.tmp.{os.getpid()}.{threading.get_ident()}"
-            shutil.copy2(cached_path, temp_path)
-            os.replace(temp_path, target_abs_path)
+            with tempfile.NamedTemporaryFile(dir=target_dir, prefix=".vnccs.tmp.", delete=False) as staged:
+                temp_path = staged.name
+                with open(cached_path, "rb") as source:
+                    shutil.copyfileobj(source, staged)
+            # A hard link publishes the complete file atomically and fails if the target exists.
+            # ponytail: unsupported filesystems fail closed; add a safe installer when supporting them.
+            os.link(temp_path, target_abs_path)
+            os.unlink(temp_path)
             temp_path = None
 
             update_installed_version(model_name, target_model["version"], repo_id)
@@ -257,7 +277,7 @@ class VNCCS_ModelManager:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "repo_id": ("STRING", {"default": "MIUProject/VNCCS", "multiline": False}),
+                "repo_id": ("STRING", {"default": MODEL_MANIFEST_REPO_ID, "multiline": False}),
             }
         }
 
@@ -391,8 +411,8 @@ async def check_models(request):
         return web.json_response({"error": "No repo_id provided"}, status=400)
 
     # Validate Repo ID to prevent internal errors
-    if " " in repo_id or repo_id.strip() == "":
-         return web.json_response({"error": f"Invalid Repo ID format: '{repo_id}'"}, status=400)
+    if repo_id != MODEL_MANIFEST_REPO_ID:
+         return web.json_response({"error": f"Only the {MODEL_MANIFEST_REPO_ID} model manifest is allowed"}, status=403)
 
     try:
         # Force refresh parameter from query string (default: use cache)
@@ -500,6 +520,8 @@ async def check_models(request):
 async def download_model(request):
     try:
         data = await request.json()
+        if not isinstance(data, dict):
+            raise ValueError("Request body must be an object")
     except Exception:
         return web.json_response({"error": "Invalid JSON body"}, status=400)
         
@@ -507,14 +529,8 @@ async def download_model(request):
     model_name = data.get("model_name")
     target_version = data.get("version") # New field
     
-    if not repo_id or " " in repo_id:
-         return web.json_response({"error": "Invalid Repo ID"}, status=400)
-    if model_name:
-        _set_download_status(repo_id, model_name, {
-            "status": "queued",
-            "message": f"Preparing v{target_version or 'latest'}..."
-        })
-    
+    if repo_id != MODEL_MANIFEST_REPO_ID:
+         return web.json_response({"error": f"Only the {MODEL_MANIFEST_REPO_ID} model manifest is allowed"}, status=403)
     try:
         def fetch_config_sync():
             # Use cached config to avoid excessive HEAD requests
@@ -540,7 +556,9 @@ async def download_model(request):
             return web.json_response({"error": f"Model '{model_name}' (v{target_version}) not found in config"}, status=404)
 
         try:
-            resolve_model_local_path(target_model.get("local_path"))
+            target_path = resolve_model_local_path(target_model.get("local_path"))
+            if os.path.lexists(target_path):
+                return web.json_response({"error": "Model file already exists; automatic replacement is disabled"}, status=409)
             if target_model.get("url"):
                 raise ValueError("Direct model URLs are disabled; use hf_repo and hf_path")
         except ValueError as exc:
@@ -565,7 +583,7 @@ class VNCCS_ModelSelector:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "repo_id": ("STRING", {"default": "MIUProject/VNCCS", "multiline": False}),
+                "repo_id": ("STRING", {"default": MODEL_MANIFEST_REPO_ID, "multiline": False}),
             },
             "hidden": {
                 "model_name": ("STRING", {"default": ""}), 

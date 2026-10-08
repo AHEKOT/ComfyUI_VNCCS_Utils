@@ -12,7 +12,8 @@ Extractor, and Pose Studio, see `MODEL_MANAGER_GUIDE.md`.
 
 `VNCCS Model Manager` gives a workflow a project model repository id. The custom
 web UI uses that id to load a remote `model_updater.json`, display install
-status, save tokens, and queue downloads.
+status and queue downloads. Both nodes accept only the fixed `MIUProject/VNCCS`
+manifest repository.
 
 `VNCCS Model Selector` reads the same manifest and outputs a model path string
 that can be connected to standard ComfyUI loaders.
@@ -52,7 +53,6 @@ The manager UI can:
 - Show models grouped by `name`.
 - Show installed, missing, outdated, and downloading states.
 - Queue downloads.
-- Save Hugging Face and Civitai tokens.
 - Set the active installed version for a model name.
 
 ## VNCCS Model Selector
@@ -115,46 +115,12 @@ Model fields:
 | `name` | string | yes | Display name and selector key. Use the same name for multiple versions. |
 | `version` | string | yes | Version string. Semantic versions sort best, but plain strings are accepted. |
 | `description` | string | recommended | Displayed in UI. |
-| `local_path` | string | yes | Must start with `models/` and include the filename. |
+| `local_path` | string | yes | Must name a file under a known `models/<folder>/` directory; see the path rules below. |
 | `hf_repo` | string | for HF source | Overrides the manager `repo_id` for this one file. |
 | `hf_path` | string | for HF source | File path inside the Hugging Face model repository. |
-| `url` | string | for direct source | HTTPS direct download URL or supported Civitai model URL. |
 
-Use either `hf_repo`/`hf_path` or `url` for each model entry.
-
-## Direct URLs and Civitai
-
-Direct URL example:
-
-```json
-{
-  "name": "Example Direct Model",
-  "version": "1.0.0",
-  "description": "Downloaded from a direct HTTPS URL.",
-  "url": "https://example.com/files/model.safetensors",
-  "local_path": "models/loras/example_direct_model.safetensors"
-}
-```
-
-Civitai model-page URL example:
-
-```json
-{
-  "name": "Example Civitai LoRA",
-  "version": "1.0.0",
-  "description": "Downloaded from Civitai.",
-  "url": "https://civitai.com/models/12345?modelVersionId=67890",
-  "local_path": "models/loras/example_civitai_lora.safetensors"
-}
-```
-
-When a Civitai page URL contains `modelVersionId`, the manager converts it to:
-
-```text
-https://civitai.com/api/download/models/<modelVersionId>
-```
-
-If the file requires auth, save a Civitai token in the manager UI.
+Use public Hugging Face assets from the trusted manifest. Direct URLs and
+credential storage are disabled.
 
 ## Path Rules
 
@@ -162,11 +128,13 @@ If the file requires auth, save a Civitai token in the manager UI.
 
 - It must be relative.
 - It must start with `models/`.
-- It must include a file path after `models/`.
+- It must include a filename inside one of the known model folders listed in [MODEL_MANAGER_GUIDE.md](MODEL_MANAGER_GUIDE.md#vnccs-model-manager).
 - It cannot contain `..`.
 - It cannot start with `/`, `\`, or `~`.
 - It cannot be URL-like.
-- It must resolve inside ComfyUI's configured `models_dir`.
+- It must resolve inside ComfyUI's configured `models_dir`, including symlink resolution.
+- Drive prefixes, UNC paths and alternate data streams are rejected.
+- Existing model files are never replaced, including files created during download.
 
 Valid examples:
 
@@ -219,8 +187,8 @@ If no known prefix matches, the selector returns the normalized `local_path`.
 
 ### Shared Team LoRA
 
-1. Create a Hugging Face model repository for your team.
-2. Put `model_updater.json` in the repository root.
+1. Use the trusted `MIUProject/VNCCS` manifest repository.
+2. Have its maintainer add the team's public model assets to `model_updater.json`.
 3. Add each LoRA version as a separate manifest entry with the same `name` and a different `version`.
 4. In ComfyUI, add `VNCCS Model Manager` and set `repo_id`.
 5. Add `VNCCS Model Selector`, connect `repo_id`, choose the LoRA in the card UI.
@@ -232,11 +200,8 @@ If no known prefix matches, the selector returns the normalized `local_path`.
 2. Select a checkpoint in `VNCCS Model Selector`.
 3. Connect `model_path` to `CheckpointLoaderSimple.ckpt_name`.
 
-### Private Hugging Face Repository
-
-1. Save `hf_token` in the manager UI.
-2. Use either the manager `repo_id` as the source repository or set `hf_repo` per entry.
-3. Queue downloads from the manager UI.
+Private repositories and saved credentials are not supported; manifest assets
+must be publicly downloadable.
 
 ## Status Meaning
 
@@ -254,8 +219,8 @@ If no known prefix matches, the selector returns the normalized `local_path`.
 | File | Location | Purpose |
 | --- | --- | --- |
 | `vnccs_installed_models.json` | ComfyUI root | Maps model name to active version. |
-| `vnccs_user_config.json` | ComfyUI root | Stores `hf_token`, `civitai_token`, and related settings. |
-| temporary download files | `<ComfyUI>/temp` | Used while downloads are in progress, then moved into `models/`. |
+| `vnccs_user_config.json` | ComfyUI root | User-level settings; it cannot change the trusted manifest repository. |
+| temporary install files | Target model directory | Completed downloads are staged and published atomically without replacement; hard links must be supported. |
 
 ## Troubleshooting
 
@@ -274,19 +239,16 @@ If no known prefix matches, the selector returns the normalized `local_path`.
 ### The selector output does not match the loader
 
 - Confirm the manifest path uses a standard prefix such as `models/loras/`.
-- For custom model folders not listed above, the selector may return the full normalized path.
+- Known model folders without a loader-prefix mapping keep the normalized `local_path`.
 - Standard ComfyUI loaders usually expect paths relative to their model subfolder.
 
 ### Downloads fail for direct URLs
 
-- The URL must be HTTPS.
-- Local/private/reserved network destinations are blocked, including hostnames that resolve to those IP ranges.
-- For Civitai, include `modelVersionId` in page URLs or use a direct API/download URL.
-- Save `civitai_token` when the Civitai file requires authentication.
+- Direct URLs are disabled. Use a public Hugging Face asset listed in the trusted manifest.
 
 ### Hugging Face downloads fail
 
 - Check that the repository exists and is a model repository.
 - Check that `model_updater.json` exists at the root.
-- Save `hf_token` for private repositories.
+- Only public assets from the trusted `MIUProject/VNCCS` manifest are supported.
 - Check the ComfyUI console for Hugging Face validation or 404 messages.

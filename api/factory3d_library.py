@@ -1574,12 +1574,15 @@ def register_routes(routes: Any) -> None:
 
     async def delete_repository(request: Any) -> web.Response:
         try:
-            repo_id = request.match_info["repo_id"]
+            repo_id = str(request.match_info.get("repo_id") or "").strip()
+            repository_dir = _repo_dir(repo_id)
+            if repo_id.count("/") != 1 or not repository_dir or repository_dir.casefold() == LOCAL_REPOSITORY.casefold():
+                raise ValueError("A remote repository is required; the local library cannot be removed")
             if any(item["repo_id"] == repo_id and item.get("builtin") for item in _repositories()):
                 raise ValueError("built-in repository cannot be removed")
             users = [item for item in _user_repositories() if item.get("repo_id") != repo_id]
             _save_user_repositories(users)
-            shutil.rmtree(_root() / _repo_dir(repo_id), ignore_errors=True)
+            shutil.rmtree(_root() / repository_dir, ignore_errors=True)
             return web.json_response({"success": True})
         except Exception as exc:
             return _error(exc)

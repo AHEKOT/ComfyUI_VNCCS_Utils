@@ -1,5 +1,7 @@
+import asyncio
 import importlib.util
 import json
+import queue
 import sys
 import tempfile
 import types
@@ -64,6 +66,122 @@ MODEL_MANAGER = _load_model_manager_module()
 class ModelManagerSecurityTests(unittest.TestCase):
     def setUp(self):
         MODEL_MANAGER.download_status.clear()
+
+    def test_untrusted_manifest_is_rejected_before_cache_or_network_access(self):
+        with mock.patch.object(MODEL_MANAGER, "hf_hub_download") as download:
+            for repo_id in ("attacker/models", "", None, ["MIUProject/VNCCS"]):
+                with self.subTest(repo_id=repo_id), self.assertRaises(PermissionError):
+                    MODEL_MANAGER.get_cached_config_path(repo_id)
+            download.assert_not_called()
+
+    def test_download_route_rejects_untrusted_repository(self):
+        with mock.patch.object(MODEL_MANAGER, "get_cached_config_path") as config:
+            for payload, status in (({"repo_id": "attacker/models", "model_name": "payload"}, 403),
+                                    ({"repo_id": ["MIUProject/VNCCS"]}, 403), ([], 400), (None, 400)):
+                with self.subTest(payload=payload):
+                    request = types.SimpleNamespace(json=mock.AsyncMock(return_value=payload))
+                    _args, kwargs = asyncio.run(MODEL_MANAGER.download_model(request))
+                    self.assertEqual(kwargs["status"], status)
+        config.assert_not_called()
+
+    def test_download_route_queues_only_new_files_in_known_folders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config_path = root / "manifest.json"
+            entry = {"name": "Test", "version": "1", "hf_path": "model.safetensors"}
+            request = types.SimpleNamespace(json=mock.AsyncMock(return_value={
+                "repo_id": "MIUProject/VNCCS", "model_name": "Test", "version": "1",
+                "hf_repo": "attacker/models", "local_path": "models/unknown/payload.pt",
+            }))
+            with (mock.patch.object(MODEL_MANAGER.folder_paths, "models_dir", str(root / "models")),
+                  mock.patch.object(MODEL_MANAGER, "get_cached_config_path", return_value=str(config_path)),
+                  mock.patch.object(MODEL_MANAGER, "download_queue") as tasks):
+                for path, status in (("models/unknown/model.pt", 400), ("models/loras/model.safetensors", 200)):
+                    entry["local_path"] = path
+                    config_path.write_text(json.dumps({"models": [entry]}))
+                    _args, kwargs = asyncio.run(MODEL_MANAGER.download_model(request))
+                    self.assertEqual(kwargs.get("status", 200), status)
+                tasks.put.assert_called_once_with(("MIUProject/VNCCS", "Test", entry))
+                tasks.reset_mock()
+                target = root / entry["local_path"]
+                target.parent.mkdir(parents=True)
+                target.write_bytes(b"installed")
+                _args, kwargs = asyncio.run(MODEL_MANAGER.download_model(request))
+                self.assertEqual(kwargs["status"], 409)
+                tasks.put.assert_not_called()
+                self.assertEqual(target.read_bytes(), b"installed")
+
+    def test_model_paths_require_known_folders_and_reject_symlink_escape(self):
+        with tempfile.TemporaryDirectory() as directory:
+            models = Path(directory) / "models"
+            models.mkdir()
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            (models / "loras").symlink_to(outside, target_is_directory=True)
+            with mock.patch.object(MODEL_MANAGER.folder_paths, "models_dir", str(models)):
+                for path in ("models/unknown/file.pt", "models/file.pt", "models/vae",
+                             "models/loras/file.pt", "models/vae/../file.pt", "models/vae/.. /file.pt",
+                             "models/vae/C:payload.pt", "C:/models/vae/file.pt",
+                             "//host/models/vae/file.pt", "models/vae/file.pt:stream"):
+                    with self.subTest(path=path), self.assertRaises(ValueError):
+                        MODEL_MANAGER.resolve_model_local_path(path)
+                self.assertEqual(MODEL_MANAGER.resolve_model_local_path(r"models\vae\sub\file.pt"),
+                                 str(models.resolve() / "vae" / "sub" / "file.pt"))
+
+    def _run_download(self, directory, *, existing=False, race=False, broken_symlink=False):
+        root = Path(directory)
+        target = root / "models" / "loras" / "model.safetensors"
+        target.parent.mkdir(parents=True)
+        if existing:
+            target.write_bytes(b"installed")
+        if broken_symlink:
+            target.symlink_to("missing.safetensors")
+        cached = root / "cached.safetensors"
+        cached.write_bytes(b"downloaded")
+
+        def download(**_kwargs):
+            if race:
+                target.write_bytes(b"installed during download")
+            return str(cached)
+
+        tasks = queue.Queue()
+        tasks.put(("MIUProject/VNCCS", "Test", {
+            "hf_path": "model.safetensors", "local_path": "models/loras/model.safetensors", "version": "1",
+        }))
+        tasks.put(None)
+        with (mock.patch.object(MODEL_MANAGER, "download_queue", tasks),
+              mock.patch.object(MODEL_MANAGER.folder_paths, "models_dir", str(root / "models")),
+              mock.patch.object(MODEL_MANAGER, "hf_hub_download", side_effect=download) as fetch,
+              mock.patch.object(MODEL_MANAGER, "update_installed_version") as registry):
+            MODEL_MANAGER.worker_loop()
+        self.assertEqual(list(target.parent.glob("*.tmp.*")), [])
+        return target.read_bytes() if target.is_file() else None, fetch, registry
+
+    def test_download_installs_new_file_and_records_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            contents, fetch, registry = self._run_download(directory)
+        self.assertEqual(contents, b"downloaded")
+        fetch.assert_called_once()
+        registry.assert_called_once_with("Test", "1", "MIUProject/VNCCS")
+
+    def test_download_never_replaces_an_existing_file_even_during_a_race(self):
+        for race in (False, True):
+            with self.subTest(race=race), tempfile.TemporaryDirectory() as directory:
+                contents, fetch, registry = self._run_download(directory, existing=not race, race=race)
+                self.assertEqual(contents, b"installed during download" if race else b"installed")
+                if not race:
+                    fetch.assert_not_called()
+                registry.assert_not_called()
+                self.assertEqual(MODEL_MANAGER.download_status["Test"]["status"], "error")
+
+    def test_download_preserves_an_existing_dangling_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            _contents, fetch, registry = self._run_download(directory, broken_symlink=True)
+            target = Path(directory) / "models/loras/model.safetensors"
+            self.assertTrue(target.is_symlink())
+            self.assertFalse(target.exists())
+        fetch.assert_not_called()
+        registry.assert_not_called()
 
     def test_download_url_credentials_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "Credentials"):

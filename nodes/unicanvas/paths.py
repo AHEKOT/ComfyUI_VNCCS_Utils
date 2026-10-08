@@ -42,8 +42,17 @@ def _is_absolute_any_os(value: str) -> bool:
     return os.path.isabs(raw) or ntpath.isabs(raw) or bool(ntpath.splitdrive(raw)[0])
 
 
-def _path_variants(name: str) -> list[str]:
+def _validate_model_name(name: Any) -> str:
     raw = str(name or "").strip()
+    if (_is_absolute_any_os(raw) or ":" in raw or "\x00" in raw
+            or raw.startswith(("~", "/", "\\"))
+            or any(part.rstrip(" ") == ".." for part in raw.replace("\\", "/").split("/"))):
+        raise ValueError("Model name must be a relative path without '..', drive or UNC prefixes")
+    return raw
+
+
+def _path_variants(name: str) -> list[str]:
+    raw = _validate_model_name(name)
     if not raw:
         return []
     variants = []
@@ -60,23 +69,12 @@ def _safe_get_folder_paths(folder_paths: Any, category: str) -> list[str]:
         return []
 
 
-def _is_under_any_folder(path: str, folders: list[str]) -> bool:
-    try:
-        path_abs = os.path.abspath(_normalize_path(path))
-        for folder in folders:
-            folder_abs = os.path.abspath(_normalize_path(folder))
-            if os.path.commonpath([folder_abs, path_abs]) == folder_abs:
-                return True
-    except Exception:
-        return False
-    return False
-
-
 def _get_full_path_agnostic(folder_paths: Any, category: str, name: str, require_exists: bool = False) -> str | None:
+    variants = _path_variants(name)
     folders = _safe_get_folder_paths(folder_paths, category)
     first_match = None
 
-    for candidate in _path_variants(name):
+    for candidate in variants:
         try:
             found = folder_paths.get_full_path(category, candidate)
         except Exception:
@@ -94,13 +92,6 @@ def _get_full_path_agnostic(folder_paths: Any, category: str, name: str, require
             if first_match is None:
                 first_match = joined
 
-        if _is_absolute_any_os(candidate) and _is_under_any_folder(candidate, folders):
-            normalized_candidate = _normalize_path(candidate)
-            if os.path.exists(normalized_candidate):
-                return normalized_candidate
-            if first_match is None:
-                first_match = normalized_candidate
-
     return None if require_exists else first_match
 
 
@@ -111,7 +102,7 @@ def _resolve_model_filename(folder_paths: Any, categories: str | tuple[str, ...]
     while users keep them in one ("qwen/qwen_image_vae.safetensors"). An exact entry wins;
     otherwise the first listed entry with the same file name (case-insensitive). Unknown names come back unchanged so the loader reports them.
     """
-    raw = str(name or "").strip()
+    raw = _validate_model_name(name)
     if not raw:
         return raw
     wanted = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()

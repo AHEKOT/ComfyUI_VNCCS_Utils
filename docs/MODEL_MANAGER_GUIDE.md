@@ -205,7 +205,8 @@ Use this node before QWEN Detailer when you need to tune `threshold`,
 
 `VNCCS Model Manager` is a UI/control node for project model manifests. It
 passes through a Hugging Face repository id and the web UI uses that id to load
-`model_updater.json`, show install state, save tokens, and queue downloads.
+`model_updater.json`, show install state, and queue downloads.
+Only the fixed `MIUProject/VNCCS` manifest repository is accepted.
 
 Input:
 
@@ -221,7 +222,7 @@ Output:
 
 Manifest location:
 
-- The manager expects `model_updater.json` at the root of the Hugging Face model repository named by `repo_id`.
+- The manager expects `model_updater.json` at the root of `MIUProject/VNCCS`. Other manifest repositories are rejected before cache or network access.
 - The manager caches the manifest briefly to avoid excessive remote HEAD/fetch requests.
 - Use the UI refresh/check action when you need to force a fresh check.
 
@@ -250,38 +251,29 @@ Required model fields:
 | `name` | string | Display name and selector key. Multiple entries may share a name if they are different versions. |
 | `version` | string | Version string. Parsed with `packaging.version` when available; otherwise string-sorted. |
 | `description` | string | UI description. |
-| `local_path` | string | Install path. Must start with `models/` and resolve inside ComfyUI's models directory. |
+| `local_path` | string | Install path. Must name a file in a known model folder under ComfyUI's models directory. |
 
-Download source, choose one:
+Download source:
 
 | Field | Type | Purpose |
 | --- | --- | --- |
 | `hf_repo` + `hf_path` | string | Download a file from a Hugging Face model repository. If `hf_repo` is omitted, the manager uses the node's `repo_id`. |
-| `url` | string | Direct HTTPS download URL. Civitai model-page URLs with `modelVersionId` are converted to Civitai API download URLs. |
 
 Security and path rules:
 
-- `local_path` must be relative and must start with `models/`.
-- Absolute paths, `..`, `~`, URL-like paths, and paths outside `folder_paths.models_dir` are rejected.
-- Direct URLs must use HTTPS.
-- Localhost, private, loopback, link-local, multicast, reserved IPs, and hostnames resolving to those ranges are rejected.
-- Direct downloads have a 100 GiB safety cap and use temporary files before install.
-- User tokens are stored in `vnccs_user_config.json`; the file is chmodded to `0600` where supported.
-
-Supported token fields:
-
-| Field | Used for |
-| --- | --- |
-| `hf_token` | Private Hugging Face repositories/files. |
-| `civitai_token` | Civitai downloads requiring authorization. |
-| `token` | Legacy alias for `civitai_token`. |
+- `local_path` must be relative and start with `models/<known-folder>/`.
+- Known folders are `checkpoints`, `loras`, `vae`, `controlnet`, `style_models`, `upscale_models`, `clip`, `clip_vision`, `text_encoders`, `unet`, `diffusion_models`, `diffusers`, `model_patches`, `embeddings`, `configs`, `sam3dbody`, and `birefnet`.
+- Absolute/UNC paths, drive prefixes, alternate data streams, `..`, `~`, and symlinks escaping `folder_paths.models_dir` are rejected.
+- Existing files and symlinks are never replaced. An existing target returns HTTP 409; a target created while downloading also prevents installation.
+- Downloads have a 100 GiB safety cap. Completed temporary files are published atomically without replacement; the model filesystem must support hard links.
+- Direct URLs and credential storage are disabled. Hugging Face downloads explicitly disable credentials.
 
 Local state files:
 
 | File | Purpose |
 | --- | --- |
 | `vnccs_installed_models.json` | Active version registry by model name. |
-| `vnccs_user_config.json` | HF/Civitai tokens and other user-level settings. |
+| `vnccs_user_config.json` | User-level settings; it cannot change the trusted manifest repository. |
 
 ## VNCCS Model Selector
 
@@ -324,16 +316,15 @@ Outputs:
 ### The model selector outputs an empty string
 
 - Check that `model_name` is selected in the selector UI.
-- Check that `repo_id` points to a repository containing `model_updater.json`.
+- Check that `repo_id` is `MIUProject/VNCCS`.
 - Check that the manifest entry has a valid `local_path` under `models/`.
 - Check the ComfyUI console for `VNCCS ModelSelector` messages.
 
 ### A download is rejected
 
-- Direct URLs must be HTTPS.
-- Hostnames resolving to local/private networks are blocked.
-- `local_path` must stay inside ComfyUI's models directory.
-- For private HF or Civitai models, save the relevant token in the manager UI.
+- Only the fixed `MIUProject/VNCCS` manifest is accepted; model assets must be public Hugging Face files.
+- `local_path` must name a file inside a known model folder without escaping through symlinks.
+- Existing targets are preserved. Use a different versioned filename or manage replacement manually on disk.
 
 ### QWEN Detailer returns the original image
 

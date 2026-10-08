@@ -1,3 +1,4 @@
+import asyncio
 import importlib.util
 import io
 import json
@@ -7,6 +8,7 @@ import types
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -464,6 +466,48 @@ class FactoryLibraryTests(unittest.TestCase):
             ("GET", "/vnccs/3d-factory/library/repositories"),
             paths,
         )
+
+        delete_repository = next(handler for method, path, handler in routes.definitions
+                                 if method == "DELETE" and path.endswith("/repositories/{repo_id:.+}"))
+        fake_web = types.SimpleNamespace(json_response=lambda payload, status=200:
+                                         types.SimpleNamespace(payload=payload, status=status))
+        with (mock.patch.dict(sys.modules, {"aiohttp": types.SimpleNamespace(web=fake_web)}),
+              mock.patch.object(self.library, "_repositories", return_value=[]),
+              mock.patch.object(self.library, "_save_user_repositories") as save,
+              mock.patch.object(self.library.shutil, "rmtree") as remove):
+            for repo_id in ("", " ", ".", "..", "/", self.library.LOCAL_REPOSITORY,
+                            self.library.LOCAL_REPOSITORY.upper(), self.library.LOCAL_REPOSITORY + "/"):
+                with self.subTest(repo_id=repo_id):
+                    response = asyncio.run(delete_repository(types.SimpleNamespace(match_info={"repo_id": repo_id})))
+                    self.assertEqual(response.status, 400)
+            save.assert_not_called()
+            remove.assert_not_called()
+            with mock.patch.object(self.library, "_repositories", return_value=[{"repo_id": "official/models", "builtin": True}]):
+                response = asyncio.run(delete_repository(types.SimpleNamespace(match_info={"repo_id": "official/models"})))
+                self.assertEqual(response.status, 400)
+            save.assert_not_called()
+            remove.assert_not_called()
+
+        # The valid remote path still removes only that repository's cache.
+        remote = self.library._root() / self.library._repo_dir("artist/models")
+        remote.mkdir(parents=True)
+        (remote / "cache.json").write_text("{}")
+        local = self.library._root() / self.library.LOCAL_REPOSITORY
+        local.mkdir()
+        with (mock.patch.dict(sys.modules, {"aiohttp": types.SimpleNamespace(web=fake_web)}),
+              mock.patch.object(self.library, "_repositories", return_value=[]),
+              mock.patch.object(self.library, "_user_repositories", return_value=[{"repo_id": "artist/models"}]),
+              mock.patch.object(self.library, "_save_user_repositories") as save):
+            # The route captures its web module when registered.
+            routes = RouteTable()
+            self.library.register_routes(routes)
+            delete_repository = next(handler for method, path, handler in routes.definitions
+                                     if method == "DELETE" and path.endswith("/repositories/{repo_id:.+}"))
+            response = asyncio.run(delete_repository(types.SimpleNamespace(match_info={"repo_id": "artist/models"})))
+            self.assertEqual(response.status, 200)
+            self.assertFalse(remote.exists())
+            self.assertTrue(local.exists())
+            save.assert_called_once_with([])
 
 
 if __name__ == "__main__":
