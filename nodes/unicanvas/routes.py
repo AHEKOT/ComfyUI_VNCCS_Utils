@@ -27,6 +27,8 @@ from .presets import (
     _PRESET_DOWNLOAD_STATUS,
     _enqueue_preset_download,
     _get_unicanvas_presets,
+    _get_unicanvas_dependencies,
+    _download_unicanvas_dependencies,
     _unicanvas_find_preset_asset,
     _unicanvas_load_preset_registry,
 )
@@ -132,6 +134,30 @@ def register_unicanvas_routes() -> None:
     @PromptServer.instance.routes.get("/vnccs/unicanvas/presets/status")
     async def vnccs_unicanvas_presets_status(_request):
         return web.json_response(dict(_PRESET_DOWNLOAD_STATUS))
+
+    @PromptServer.instance.routes.get("/vnccs/unicanvas/dependencies")
+    async def vnccs_unicanvas_dependencies(request):
+        try:
+            return web.json_response(_get_unicanvas_dependencies(
+                request.query.get("generation_mode", ""), request.query.get("preset_id", ""),
+                request.query.get("clip_name", ""), request.query.get("vae_name", "")))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
+    @PromptServer.instance.routes.post("/vnccs/unicanvas/dependencies/download")
+    async def vnccs_unicanvas_dependencies_download(request):
+        try:
+            payload = await request.json()
+            if not isinstance(payload, dict):
+                raise ValueError("Dependency download must be an object")
+            queued = _download_unicanvas_dependencies(payload)
+            return web.json_response({"queued": queued})
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/presets/download")
     async def vnccs_unicanvas_presets_download(request):

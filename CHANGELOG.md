@@ -58,7 +58,7 @@
 
 ### UniCanvas Models
 
-* **Qwen-Image-2.1 (QI2.1)**: New preset with a 6-step Turbo LoRA (turn it off for the full-quality profile). Output is transparent by default; a single **Transparent output** switch under Steps turns it off. The separate 2K aspect preset was removed - use Inference scale for the size.
+* **Qwen-Image-2.1 (QI2.1)**: New preset with a 6-step Turbo LoRA (turn it off for the full-quality profile). Decoded alpha is always preserved, with no transparency switch or automatic transparency instructions. The separate 2K aspect preset was removed - use Inference scale for the size.
 * **MiniMax H3**: New still-image preset with a 3-step Turbo LoRA.
 * **Krea2 presets**: Clearer names and descriptions.
 * Removed the Spectrum acceleration option.

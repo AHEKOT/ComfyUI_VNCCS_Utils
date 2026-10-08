@@ -47,7 +47,7 @@ if TYPE_CHECKING:
 
 MASKED_MODES = frozenset({"inpaint", "outpaint"})
 # Settings every draw may carry that are only needed until sampling finishes.
-COMMON_SCRATCH_KEYS = ("_pose_edit_images",)
+COMMON_SCRATCH_KEYS = ("_pose_edit_images", "_edit_layers_reference")
 
 
 def _save_temp_image(image: Image.Image, prefix: str = "VNCCS_UniCanvas") -> dict[str, str]:
@@ -346,6 +346,8 @@ class ImageDrawPipeline:
             _uc_log(ctx.draw_id, "edit-model txt2img source replaced with black reference image", {"size": ctx.source.size})
         ctx.image_tensor = _pil_to_image_tensor(ctx.source)
         ctx.reference_image_tensor = _pil_to_image_tensor(ctx.reference_source)
+        if self.module.is_edit_model and ctx.settings.get("edit_use_layers_as_reference") is True and ctx.full_source_rgba is not None:
+            ctx.settings["_edit_layers_reference"] = _pil_to_image_tensor(ctx.full_source_rgba.convert("RGB"))
         if ctx.pose_images:
             ctx.settings["_pose_edit_images"] = [_pil_to_image_tensor(image) for image in ctx.pose_images]
         _uc_log(

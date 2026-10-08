@@ -101,7 +101,7 @@ export function isUniCanvasTextTarget(event) {
 
 export function isUniCanvasModalOpen(widget) {
   // The widget's confirm/prompt modal owns Enter and Escape while it is open.
-  return Boolean(widget?.container?.querySelector(".vnccs-uc-modal-overlay"));
+  return Boolean(widget?.container?.querySelector(".vnccs-uc-modal-overlay, [data-edit-refs-popover]"));
 }
 
 function isUniCanvasCanvasFocused(widget, event) {
@@ -519,7 +519,7 @@ export function enterUniCanvasFullscreen(widget) {
   // shortcuts receive nothing. An open widget modal keeps its own Enter and
   // Escape contract, and the UniCanvas shortcut map runs first so the canvas
   // keeps its own keys.
-  const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape");
+  const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape" || event.key === "Tab");
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
@@ -917,7 +917,9 @@ function createStandaloneWidget(UniCanvasWidgetClass) {
   };
   const widget = new UniCanvasWidgetClass(stubNode);
   widget.standalone = true;
+  widget.settings.edit_use_layers_as_reference ??= true;
   widget.container.classList.add("vnccs-uc-standalone");
+  widget.syncStandaloneGenerationControls?.();
   widget.drawBtn.textContent = "Generate";
   widget.donateLink.textContent = "Support MIUProject";
   installUniCanvasWidgetModes(widget);

@@ -16,7 +16,7 @@ from ..sampling import (
     _report_comfy_sampling_progress,
     _suppress_direct_sampling_comfy_progress,
 )
-from .base import UniCanvasModelModule
+from .base import UniCanvasModelModule, _reference_image_slots
 from .capabilities import ModelCapabilities, PromptGuide
 
 
@@ -203,7 +203,7 @@ class FluxKleinUniCanvasModule(UniCanvasModelModule):
             "vae": vae,
             "image_tensor": image_tensor,
         }
-        references = gen_settings.get("_pose_edit_images") or [image_tensor]
+        references = gen_settings.get("_pose_edit_images") or list(_reference_image_slots(image_tensor, gen_settings).values())
         for reference in references:
             context["image_tensor"] = reference
             _run_pipeline_steps(self.pipeline.reference, context, draw_id)

@@ -39,8 +39,7 @@ def test_defaults_follow_qi21_recipe():
     # ComfyUI core >= 0.37 loader semantics for the QI2.1 stack.
     assert defaults["model_loader"] == "diffusion_model"
     assert defaults["clip_type"] == "qwen_image"
-    # RGBA is the default output.
-    assert defaults["qwen21_opaque_output"] is False
+    assert "qwen21_opaque_output" not in defaults
 
 
 def test_generation_size_follows_the_canvas():
@@ -54,19 +53,20 @@ def test_create_empty_latent_uses_64_channel_16x_compression():
     assert tuple(latent["samples"].shape) == (1, 64, 48, 64)
 
 
-def test_rgba_default_prompt_convention():
+def test_reference_prompt_has_no_automatic_transparency_instructions():
     module = _get_unicanvas_model_module("qwen_image21")
     text = module.assemble_instruction("Keep the face from <image2>.", {1: object(), 2: object()})
-    assert text.startswith("This is an RGBA image with transparency.")
-    assert text.endswith("The image has alpha channel and the background is transparent.")
+    assert "RGBA" not in text
+    assert "transparent" not in text
+    assert "alpha channel" not in text
     assert "Working area: <image1>." in text
     assert "Reference images: <image2>." in text
     assert "Keep the face from <image2>." in text
 
 
-def test_opaque_output_switch_disables_rgba_prompting():
+def test_plain_prompt_has_no_automatic_transparency_instructions():
     module = _get_unicanvas_model_module("qwen_image21")
-    text = module.assemble_instruction("a cat", {1: object()}, opaque_output=True)
+    text = module.assemble_instruction("a cat", {1: object()})
     assert "RGBA" not in text
     assert "transparent" not in text
     assert text == "Working area: <image1>. a cat"
@@ -188,7 +188,7 @@ def test_decode_samples_keeps_alpha_by_default():
     assert torch.all(decoded[..., 3] == 0.5)
 
 
-def test_decode_samples_opaque_switch_flattens():
+def test_decode_samples_preserves_alpha_with_legacy_opaque_setting():
     module = _get_unicanvas_model_module("qwen_image21")
 
     class FakeVae:
@@ -199,8 +199,9 @@ def test_decode_samples_opaque_switch_flattens():
             return decoded
 
     decoded = module.decode_samples(FakeVae(), {"samples": torch.zeros(1, 64, 1, 1)}, {"qwen21_opaque_output": True})
-    assert tuple(decoded.shape) == (1, 8, 8, 3)
-    assert torch.allclose(decoded, torch.full((1, 8, 8, 3), 0.625))
+    assert tuple(decoded.shape) == (1, 8, 8, 4)
+    assert torch.all(decoded[..., :3] == 0.25)
+    assert torch.all(decoded[..., 3] == 0.5)
 
 
 def test_remove_background_contract(monkeypatch):
@@ -434,6 +435,6 @@ def test_outpaint_uses_gray_canvas_and_trained_instruction():
     source.putpixel((0, 0), (255, 0, 0, 255))
     padded = module.prepare_outpaint_reference_image(source, None, "t")
     assert padded.mode == "RGB" and padded.getpixel((3, 3)) == (128, 128, 128) and padded.getpixel((0, 0)) == (255, 0, 0)
-    text = module.assemble_instruction("a forest at dusk", {1: object()}, opaque_output=False, outpaint=True)
+    text = module.assemble_instruction("a forest at dusk", {1: object()}, outpaint=True)
     assert text == f"{QWEN21_OUTPAINT_INSTRUCTION} Scene: a forest at dusk"
     assert module.assemble_instruction("", {1: object()}, outpaint=True) == QWEN21_OUTPAINT_INSTRUCTION

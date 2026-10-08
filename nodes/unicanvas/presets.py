@@ -142,6 +142,9 @@ def _unicanvas_enrich_asset(entry: dict[str, Any], download_key: str) -> dict[st
     enriched["download_key"] = download_key
     enriched["relative_name"] = relative_name
     enriched["installed"] = bool(target_path and os.path.isfile(target_path))
+    if not enriched["installed"] and status.get("status") == "success":
+        _PRESET_DOWNLOAD_STATUS.pop(download_key, None)
+        status = {}
     enriched["status"] = "installed" if enriched["installed"] else status.get("status") or "missing"
     enriched["message"] = "Installed" if enriched["installed"] else status.get("message") or "Missing"
     if "progress" in status:
@@ -203,6 +206,84 @@ def _unicanvas_find_preset_asset(preset_id: str, asset_kind: str, asset_index: i
     raise ValueError(f"Preset '{preset_id}' not found")
 
 
+def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_name: str = "", vae_name: str = "") -> dict[str, Any]:
+    from .models.registry import _get_unicanvas_model_module
+
+    module = _get_unicanvas_model_module(generation_mode)
+    candidates = [preset for preset in _unicanvas_load_preset_registry()["presets"]
+                  if preset.get("settings", {}).get("generation_mode") == module.key
+                  and (not preset_id or preset.get("id") == preset_id)]
+    if preset_id and not candidates:
+        raise ValueError("Preset does not belong to the selected model family")
+    custom_installed = set()
+    if not preset_id:
+        for role, category, name in (("clip", "text_encoders", clip_name), ("vae", "vae", vae_name)):
+            if name:
+                name = _validate_model_name(name)
+                path, _ = _unicanvas_find_installed_asset(f"models/{category}/{name}")
+                if os.path.isfile(path):
+                    custom_installed.add(role)
+    assets = {}
+    for preset in candidates:
+        entries = [(f"{preset['id']}:asset:{index}", asset, True)
+                   for index, asset in enumerate(preset.get("assets") or [])
+                   if asset.get("role") not in {"checkpoint", "diffusion_model", "gguf"}]
+        entries.extend((f"{preset['id']}:dependency:{index}", asset, bool(asset.get("required")))
+                       for index, asset in enumerate(preset.get("dependencies") or []))
+        turbo = preset.get("turbo", {}).get("asset")
+        if turbo:
+            entries.append((f"{preset['id']}:turbo", turbo, False))
+        for key, asset, required in entries:
+            if asset.get("role") in custom_installed:
+                continue
+            identity = str(asset.get("local_path") or "").replace("\\", "/").lower()
+            if identity not in assets:
+                enriched = _unicanvas_enrich_asset(asset, key)
+                enriched["required"] = required
+                assets[identity] = enriched
+    return {"generation_mode": module.key, "label": module.label, "assets": list(assets.values())}
+
+
+def _download_unicanvas_dependencies(payload: dict[str, Any]) -> list[str]:
+    catalog = _get_unicanvas_dependencies(
+        str(payload.get("generation_mode") or ""), str(payload.get("preset_id") or ""),
+        str(payload.get("clip_name") or ""), str(payload.get("vae_name") or ""))
+    allowed = {asset["download_key"]: asset for asset in catalog["assets"]}
+    keys = payload.get("download_keys")
+    if not isinstance(keys, list) or not keys or any(not isinstance(key, str) or key not in allowed for key in keys):
+        raise ValueError("Select dependencies from the selected model family's catalog")
+    queued = list(dict.fromkeys(keys))
+    for key in queued:
+        _enqueue_preset_download(key, allowed[key])
+    return queued
+
+
+def _unicanvas_download_progress_class(download_key: str):
+    from tqdm.auto import tqdm
+
+    class DownloadProgress(tqdm):
+        def __init__(self, *args, **kwargs):
+            kwargs.pop("name", None)
+            kwargs["disable"] = False  # Hub transfers must keep counting even when console bars are disabled.
+            super().__init__(*args, **kwargs)
+            self._publish()
+
+        def _publish(self):
+            total = self.total or 0
+            _PRESET_DOWNLOAD_STATUS[download_key] = {
+                "status": "downloading", "message": "Downloading",
+                "progress": min(98, 98 * self.n / total) if total else 0,
+                "downloaded_bytes": self.n, "total_bytes": total,
+            }
+
+        def update(self, n=1):
+            result = super().update(n)
+            self._publish()
+            return result
+
+    return DownloadProgress
+
+
 def _unicanvas_validate_downloaded_file(path: str, expected_name: str) -> None:
     size = os.path.getsize(path)
     if size < _PRESET_MIN_MODEL_FILE_SIZE:
@@ -239,6 +320,7 @@ def _unicanvas_download_worker_loop() -> None:
                 repo_type="model",
                 revision=asset.get("hf_revision") or None,
                 token=False,
+                tqdm_class=_unicanvas_download_progress_class(download_key),
             )
             size = os.path.getsize(cached_path)
             if size > _unicanvas_max_download_bytes():
@@ -246,6 +328,7 @@ def _unicanvas_download_worker_loop() -> None:
             os.makedirs(os.path.dirname(target_path), exist_ok=True)
             fd, temp_path = tempfile.mkstemp(prefix=".vnccs_preset_", dir=os.path.dirname(target_path))
             os.close(fd)
+            _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Installing", "progress": 98}
             shutil.copy2(cached_path, temp_path)
             _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "downloading", "message": "Validating", "progress": 99}
             _unicanvas_validate_downloaded_file(temp_path, expected_name)
@@ -281,6 +364,8 @@ def _enqueue_preset_download(download_key: str, asset: dict[str, Any]) -> None:
     installed_path, _ = _unicanvas_find_installed_asset(str(asset.get("local_path") or ""))
     if os.path.isfile(installed_path):
         _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "success", "message": "Installed", "progress": 100}
+        return
+    if _PRESET_DOWNLOAD_STATUS.get(download_key, {}).get("status") in {"queued", "downloading"}:
         return
     _PRESET_DOWNLOAD_STATUS[download_key] = {"status": "queued", "message": "Queued", "progress": 0}
     _ensure_unicanvas_download_worker()

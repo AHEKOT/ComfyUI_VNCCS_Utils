@@ -68,8 +68,8 @@ test("UniCanvas shortcut map covers tools, history, brush size, panels and Esc",
 });
 
 test("open widget modals keep their Enter/Escape keyboard contract in fullscreen", () => {
-    assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape")'),
-        "Enter/Escape must be deferred to the modal while one is open");
+    assert.ok(modesSource.includes('const modalOwnsKey = (event) => isUniCanvasModalOpen(widget) && (event.key === "Enter" || event.key === "Escape" || event.key === "Tab")'),
+        "Enter/Escape/Tab must be deferred to the modal while one is open");
     assert.ok(modesSource.includes(".vnccs-uc-modal-overlay"), "the modal overlay must be detected");
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     assert.ok(shortcuts.includes("isUniCanvasModalOpen(widget)"), "an open modal must keep the keyboard");

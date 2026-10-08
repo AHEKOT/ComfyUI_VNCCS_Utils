@@ -101,7 +101,17 @@
           "local_path": "models/loras/Anima/anima-turbo-lora-v0.1.safetensors",
           "description": "Turbo LoRA for Anima."
         }
-      }
+      },
+      "dependencies": [
+        {
+          "role": "controlnet",
+          "name": "Anima LLLite Inpaint v2",
+          "hf_repo": "kohya-ss/Anima-LLLite",
+          "hf_path": "anima-lllite-inpainting-v2.safetensors",
+          "local_path": "models/controlnet/anima-lllite-inpainting-v2.safetensors",
+          "description": "Used for inpaint and outpaint."
+        }
+      ]
     },
     {
       "id": "flux_klein",
@@ -189,6 +199,16 @@
           "local_path": "models/vae/ae.safetensors",
           "description": "AE VAE for Z-Image Turbo."
         }
+      ],
+      "dependencies": [
+        {
+          "role": "model_patch",
+          "name": "Z-Image Fun ControlNet Union 2.1 Lite",
+          "hf_repo": "alibaba-pai/Z-Image-Turbo-Fun-Controlnet-Union-2.1",
+          "hf_path": "Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+          "local_path": "models/model_patches/Z-Image-Turbo-Fun-Controlnet-Union-2.1-lite-2602-8steps.safetensors",
+          "description": "Used for inpaint and outpaint."
+        }
       ]
     },
     {
@@ -249,13 +269,25 @@
         },
         "asset": {
           "name": "Qwen Image 2.1 Viggle Turbo",
+          "role": "lora",
           "hf_repo": "Viggle/Qwen-Image-2.1-viggle-turbo",
           "hf_path": "Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
           "local_path": "models/loras/QI2/Viggle/Qwen-Image-2.1-viggle-turbo-v0.2.1-6step-lora-r128.safetensors",
           "description": "Six-step Viggle Turbo LoRA for Qwen Image 2.1.",
           "hf_revision": "b77064be8b3f0b1a13c6a212067cb3d281c60c84"
         }
-      }
+      },
+      "dependencies": [
+        {
+          "role": "lora",
+          "name": "Qwen Edit 2.1 Outpaint LoRA v2",
+          "hf_repo": "ausboss/Qwen-Image-2.1-Outpaint-LoRA",
+          "hf_revision": "449336db42ff074aee970ba0facc0ac0feb77863",
+          "hf_path": "qwen-image-2.1-outpaint-v2.safetensors",
+          "local_path": "models/loras/ausboss/qwen-image-2.1-outpaint-v2.safetensors",
+          "description": "Used for outpaint; downloaded separately from the base model."
+        }
+      ]
     },
     {
       "id": "minimax_h3",
@@ -315,6 +347,7 @@
         },
         "asset": {
           "name": "TaoMate H3 3-Step Turbo",
+          "role": "lora",
           "hf_repo": "Robert1212star/TaoMate-H3-3Step-ComfyUI",
           "hf_path": "taomate_h3_3step_comfy.safetensors",
           "local_path": "models/loras/H3/taomate_h3_3step_comfy.safetensors",

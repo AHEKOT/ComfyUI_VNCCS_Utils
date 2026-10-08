@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791488863948";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791488863948";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791491423307";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791491423307";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791488863948";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791488863948";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791488863948";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791488863948";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791488863948";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791488863948";
-import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791488863948";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791488863948";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791488863948";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791488863948";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791488863948";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791491423307";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791491423307";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791491423307";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791491423307";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791491423307";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791491423307";
+import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791491423307";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791491423307";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791491423307";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791491423307";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791491423307";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791488863948";
+} from "./unicanvas/transform.mjs?v=1791491423307";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791488863948";
+} from "./unicanvas/presets.mjs?v=1791491423307";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,9 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791488863948";
-import { UNICANVAS_QWEN21_MODULE, syncQwen21Panel } from "./unicanvas/qwen21.mjs?v=1791488863948";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791488863948";
+} from "./unicanvas/modes.mjs?v=1791491423307";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791491423307";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791491423307";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791491423307";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -75,7 +76,7 @@ import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=17914888639
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791488863948";
+const VNCCS_UNICANVAS_VERSION = "1791491423307";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -124,8 +125,8 @@ const VNCCS_UNICANVAS_VERSION = "1791488863948";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791488863948";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791488863948";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791491423307";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791491423307";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -291,7 +292,6 @@ const STYLES = `
 .vnccs-uc-config-linked .vnccs-uc-turbo-section,
 .vnccs-uc-config-linked .vnccs-uc-lora-stack,
 .vnccs-uc-config-linked .vnccs-uc-refs-btn,
-.vnccs-uc-config-linked .vnccs-uc-qwen21-panel,
 .vnccs-uc-config-linked [data-family-field],
 .vnccs-uc-config-linked [data-mode-control] { display:none !important; }
 .vnccs-uc-model-card-list { display:flex; flex-direction:column; gap:7px; }
@@ -339,6 +339,7 @@ const STYLES = `
 .vnccs-uc-edit-steps-row { display:flex; align-items:flex-end; gap:6px; }
 .vnccs-uc-edit-steps-row .vnccs-uc-field { flex:1 1 auto; }
 .vnccs-uc-refs-btn { position:relative; flex:0 0 auto; }
+.vnccs-uc-refs-wide { display:none; }
 .vnccs-uc-refs-badge { position:absolute; top:-4px; right:-4px; min-width:14px; height:14px; padding:0 3px; border-radius:999px; background:var(--uc-accent); color:#14101e; font-size:9px; font-weight:900; line-height:14px; text-align:center; }
 /* Edit model reference images popover (same surface as the settings popover). */
 .vnccs-uc-refs-popover {
@@ -464,7 +465,7 @@ const STYLES = `
 if (!document.getElementById("vnccs-unicanvas-styles")) {
   const style = document.createElement("style");
   style.id = "vnccs-unicanvas-styles";
-  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS;
+  style.textContent = STYLES + PROMPT_GUIDE_CSS + PROMPT_ENHANCE_CSS + MODEL_DEPENDENCIES_CSS;
   document.head.appendChild(style);
 }
 
@@ -1334,6 +1335,7 @@ class UniCanvasWidget {
       <div class="vnccs-uc-h3-panel" data-edit-steps-panel style="display:none">
         <div class="vnccs-uc-edit-steps-row"><label class="vnccs-uc-field"><span class="vnccs-uc-field-head"><span>Steps</span><span class="vnccs-uc-help" data-edit-steps-help data-tip hidden>?</span></span><input class="vnccs-uc-input" data-setting="steps" type="number" lang="en-US" inputmode="decimal" min="1" max="60" step="1"></label><button class="vnccs-uc-icon vnccs-uc-refs-btn" type="button" data-action="edit-refs" data-config-override title="Edit model reference images (Krea2 Edit: 1, others: up to 4)"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="14" height="12" rx="2"/><path d="M3 7v12a2 2 0 0 0 2 2h12"/></svg><span class="vnccs-uc-refs-badge" data-edit-refs-badge hidden>0</span></button></div>
       </div>
+      <button class="vnccs-uc-btn vnccs-uc-refs-wide" type="button" data-action="edit-refs" data-standalone-refs data-config-override hidden>Reference Images</button>
       <div class="vnccs-uc-generation-grid">
         <label class="vnccs-uc-field" data-generic-steps>Steps<input class="vnccs-uc-input" data-setting="steps" type="number"></label>
         <label class="vnccs-uc-field">Sampler<select class="vnccs-uc-select" data-setting="sampler_name"></select></label>
@@ -2448,6 +2450,7 @@ class UniCanvasWidget {
         if (this.recallModelChoice()) this.syncPromptControls();
         this.renderModelSelectionControls();
         this.syncSettingsToWidget();
+        void checkModelDependencies(this, this.settings.model_selection_mode === "presets" ? this.getActivePreset() : null);
       } else if (btn.dataset.presetPickerToggle) {
         e.preventDefault();
         this.presetPickerOpen = !this.presetPickerOpen;
@@ -2580,6 +2583,9 @@ class UniCanvasWidget {
       if (key === "inference_scale") this.syncInferenceControls(target);
       if (key in MODEL_MEMORY_ASSET_FIELDS || key === "clip_type" || key === "gguf_arch") this.rememberModelChoice();
       this.syncSettingsToWidget();
+      if (["generation_mode", "model_loader", "ckpt_name", "diffusion_model_name", "gguf_model_name"].includes(key)) {
+        void checkModelDependencies(this);
+      }
     });
     this.left.addEventListener("change", (e) => {
       const target = e.target;
@@ -2650,10 +2656,12 @@ class UniCanvasWidget {
   }
 
   async loadPresets() {
+    if (this._disposed) return;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets?t=${Date.now()}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Preset list failed");
+      if (this._disposed) return;
       this.presets = Array.isArray(data.presets) ? data.presets : [];
       this.presetDownloads = data.downloads || {};
     } catch (err) {
@@ -3035,8 +3043,24 @@ class UniCanvasWidget {
       genericSteps.style.display = ownsSteps ? "none" : "";
     }
     // Qwen-Image-2.1 family: mount and gate the QI2.1 settings panel.
-    syncQwen21Panel(this);
+    this.syncStandaloneGenerationControls();
     this.updateEditRefsBadge();
+  }
+
+  syncStandaloneGenerationControls() {
+    if (!this.standalone) return;
+    const module = getUniCanvasModelModule(this.settings.generation_mode);
+    const steps = this.container.querySelector("[data-generic-steps]");
+    if (steps) {
+      steps.style.display = "";
+      const input = steps.querySelector("input");
+      input.dataset.setting = module.key === "minimax_h3" ? "minimax_h3_steps" : "steps";
+      input.value = String(this.settings[input.dataset.setting] ?? 24);
+    }
+    const refs = this.container.querySelector("[data-standalone-refs]");
+    if (refs) refs.hidden = !module.isEditModel;
+    if (this._editRefsFamily !== module.key) this.closeEditReferenceImages();
+    this._editRefsFamily = module.key;
   }
 
   presetRuntimeSettingKeys(preset) {
@@ -3114,6 +3138,7 @@ class UniCanvasWidget {
     // No auto-download: the header card shows the description and a Download button when missing.
     this.syncPromptControls();
     this.syncSettingsToWidget();
+    void checkModelDependencies(this, preset);
   }
 
   isPresetTurboEnabled(preset) {
@@ -3219,20 +3244,24 @@ class UniCanvasWidget {
   }
 
   startPresetDownloadPolling() {
-    if (this._disposed || this.presetDownloadTimer) return;
-    this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 2000);
+    if (this._disposed) return;
+    this._presetDownloadRevision = (this._presetDownloadRevision || 0) + 1;
+    if (this.presetDownloadTimer) return;
+    this.presetDownloadTimer = window.setInterval(() => this.refreshPresetDownloadStatus(), 750);
     this.refreshPresetDownloadStatus();
   }
 
   async refreshPresetDownloadStatus() {
-    if (this._disposed) return;
+    if (this._disposed || this._presetStatusRefreshing) return;
+    this._presetStatusRefreshing = true;
+    const revision = this._presetDownloadRevision;
     try {
       const res = await fetch(`/vnccs/unicanvas/presets/status?t=${Date.now()}`);
       const data = await res.json();
-      if (this._disposed) return;
+      if (this._disposed || revision !== this._presetDownloadRevision) return;
       if (!res.ok) throw new Error(data.error || "Status failed");
       this.presetDownloads = data || {};
-      await this.loadPresets();
+      this._dependencyDialog?.update(this.presetDownloads);
       this.renderModelSelectionControls();
       const active = Object.values(this.presetDownloads).some((item) => ["queued", "downloading"].includes(item?.status));
       if (!active && this.presetDownloadTimer) {
@@ -3241,11 +3270,11 @@ class UniCanvasWidget {
         await this._loadAssets();
       }
     } catch (err) {
-      if (this.presetDownloadTimer) {
-        window.clearInterval(this.presetDownloadTimer);
-        this.presetDownloadTimer = null;
-      }
+      if (this._disposed) return;
+      this._dependencyDialog?.error(`Status unavailable: ${err.message || err}. Retrying…`);
       this.setStatus(`Preset status failed: ${err.message || err}`, true);
+    } finally {
+      this._presetStatusRefreshing = false;
     }
   }
 
@@ -3282,7 +3311,6 @@ class UniCanvasWidget {
       this.applyInferenceModuleDefaults(key, { preserveModelSelection: true });
       this.syncInferenceControls();
       this.syncPromptControls();
-      syncQwen21Panel(this);
       this.syncSettingsToWidget();
     } finally {
       this._syncingConfigFamily = false;
@@ -3367,7 +3395,6 @@ class UniCanvasWidget {
     this.syncInferenceControls();
     this.syncPromptControls();
     // Re-gate the Qwen-Image-2.1 settings panel for the new family.
-    syncQwen21Panel(this);
   }
 
   applyModelLoaderDefaults(loaderType) {
@@ -3450,9 +3477,11 @@ class UniCanvasWidget {
     this.updateInferenceSizeLabels();
   }
 
-  // Live "W×H" preview(s) next to the inference scale sliders; duplicates the HUD `infer` chip.
+  // The standalone tab displays the scale itself; the node keeps its size preview.
   updateInferenceSizeLabels(size = this.getInferenceSize()) {
-    const text = `${size.width}×${size.height}`;
+    const text = this.standalone
+      ? `${this.formatSettingNumber(Math.min(3, Math.max(0.5, Number(this.settings.inference_scale) || 1)), 2)}×`
+      : `${size.width}×${size.height}`;
     this.container.querySelectorAll("[data-inference-size]").forEach((el) => {
       if (el.textContent !== text) el.textContent = text;
     });
@@ -7036,7 +7065,7 @@ class UniCanvasWidget {
         this.syncConfigFamily();
         try {
           const refs = await loadConfigReferences(resolved.references);
-          configOverrides = { ...resolved.settings, edit_reference_images: refs };
+          configOverrides = { ...resolved.settings, edit_reference_images: refs, edit_use_layers_as_reference: true };
         } catch (err) {
           this.setStatus(`VNCSS Config references: ${err.message || err} - queueing the workflow for this draw.`);
         }
@@ -8471,7 +8500,7 @@ class UniCanvasWidget {
 
   // How many reference pictures the active family reads besides the working area (Krea2 Edit: 1).
   maxEditReferenceImages() {
-    const perFamily = { krea2_edit: 1 };
+    const perFamily = { krea2_edit: this.settings.edit_use_layers_as_reference === false ? 2 : 1 };
     return perFamily[this.getModelBase()] ?? 4;
   }
 
@@ -8506,6 +8535,11 @@ class UniCanvasWidget {
     const panel = document.createElement("div");
     panel.className = "vnccs-uc-refs-popover";
     panel.dataset.editRefsPopover = "1";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-label", "Reference images");
+    panel.addEventListener("keydown", event => {
+      if (event.key === "Escape") { event.stopPropagation(); this.closeEditReferenceImages(); }
+    });
     const head = document.createElement("div");
     head.className = "vnccs-uc-refs-head";
     const title = document.createElement("div");
@@ -8529,13 +8563,31 @@ class UniCanvasWidget {
     fileInput.multiple = true;
     fileInput.className = "vnccs-uc-file";
     panel.append(head, hint, grid, fileInput);
+    const useLayers = this.standalone ? this._button("Use Layers as 1st reference image", "vnccs-uc-btn", () => {
+      this.settings.edit_use_layers_as_reference = this.settings.edit_use_layers_as_reference === false;
+      this.syncSettingsToWidget();
+      render();
+    }) : null;
+    if (useLayers) {
+      useLayers.dataset.useLayersReference = "1";
+      useLayers.title = "Use all visible image layers inside the selection bbox as the first reference image";
+      panel.insertBefore(useLayers, grid);
+    }
     const render = () => {
       grid.innerHTML = "";
       const max = this.maxEditReferenceImages();
       const list = this.editReferenceImages();
-      count.textContent = `${list.length} / ${max}`;
+      const layersFirst = this.settings.edit_use_layers_as_reference !== false;
+      useLayers?.setAttribute("aria-pressed", String(layersFirst));
+      useLayers?.classList.toggle("active", layersFirst);
+      count.textContent = this.standalone
+        ? `${list.length + Number(layersFirst)} / ${max + Number(layersFirst)}`
+        : `${list.length} / ${max}`;
+      if (this.standalone) hint.textContent = layersFirst
+        ? "Image 1 uses all visible image layers inside the selection bbox. Uploaded images follow it."
+        : "Uploaded images start at image 1. Canvas layers are not used as a reference.";
       list.forEach((data, index) => {
-        const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2).text;
+        const label = referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + (layersFirst ? 2 : 1)).text;
         const cell = document.createElement("div");
         cell.className = "vnccs-uc-refs-cell";
         cell.title = label;
@@ -8585,9 +8637,13 @@ class UniCanvasWidget {
         reader.readAsDataURL(file);
       });
     });
-    this.container.appendChild(panel);
-    const anchor = this.container.querySelector("[data-action='edit-refs']");
-    if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
+    (this.standalone ? this.stageWrap : this.container).appendChild(panel);
+    const anchor = this.container.querySelector(this.standalone ? "[data-standalone-refs]" : "[data-action='edit-refs']");
+    if (this.standalone) {
+      panel.style.left = "8px";
+      panel.style.bottom = "8px";
+      panel.style.maxHeight = "calc(100% - 16px)";
+    } else if (anchor) this.anchorPopoverTo(panel, anchor, this.container);
     else {
       panel.style.left = "24px";
       panel.style.top = "48px";
@@ -8804,6 +8860,7 @@ class UniCanvasWidget {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
     this._disposed = true;
+    disposeModelDependencies(this);
     this._removeScaleEdit?.();
     this.closeEditReferenceImages();
     teardownUniCanvasWidgetModes(this);

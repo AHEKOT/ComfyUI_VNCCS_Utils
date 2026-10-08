@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
 
 import {
     MODEL_MEMORY_ROUTE,
@@ -11,6 +13,28 @@ import {
 import { INFERENCE_SCALE_MAX, INFERENCE_SCALE_MIN, editInferenceScale, parseInferenceScale } from "../web/unicanvas/scale_edit.mjs";
 
 const custom = { model_loader: "diffusion", generation_mode: "anima", diffusion_model_name: "anima.safetensors", clip_name: "qwen.safetensors", vae_name: "vae.safetensors", clip_type: "stable_diffusion", lora_stack: [{ name: "style.safetensors", strength: 0.7 }, { name: "", strength: 1 }] };
+
+test("inference scale labels update both tab panels immediately and preserve the node size preview", () => {
+    const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const methods = source.slice(source.indexOf("  syncInferenceControls(source = null) {"), source.indexOf("  getDenoiseControlSetting() {"));
+    const widget = runInNewContext(`(class { ${methods} }).prototype`);
+    const slider = { value: "1" }, customSlider = { value: "1" };
+    const labels = [{ textContent: "" }, { textContent: "" }];
+    Object.assign(widget, { standalone:true, settings:{ inference_scale:1 },
+        getInferenceSize:() => ({ width:1280, height:1280 }),
+        formatSettingNumber:value => String(value),
+        container:{ querySelectorAll:selector => selector === "[data-inference-size]" ? labels : [slider, customSlider] } });
+    for (const scale of [0.5, 1, 1.25, 3]) {
+        widget.settings.inference_scale = scale;
+        slider.value = String(scale);
+        widget.syncInferenceControls(slider);
+        assert.equal(customSlider.value, String(scale));
+        assert.deepEqual(labels.map(label => label.textContent), [`${scale}×`, `${scale}×`]);
+    }
+    widget.standalone = false;
+    widget.syncInferenceControls();
+    assert.deepEqual(labels.map(label => label.textContent), ["1280×1280", "1280×1280"]);
+});
 
 // A fake server: GET returns the stored document, POST stores one entry.
 function fakeServer(initial = {}) {

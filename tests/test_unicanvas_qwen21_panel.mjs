@@ -17,31 +17,15 @@ test("engine picker exposes the QwenImage21 family tab", () => {
 });
 
 
-test("QI2.1 panel is gated to the Qwen-Image-2.1 family", () => {
-    const sync = panelSource.match(/export function syncQwen21Panel\(widget\)([\s\S]*?)\n\}/);
-    assert.ok(sync, "syncQwen21Panel missing");
-    assert.match(sync[1], /isQwen21Mode\(/, "gating must consult the QI2.1 family check");
-    assert.match(sync[1], /\.display = active \? "flex" : "none"/, "panel must hide outside the QI2.1 family");
-    assert.match(mainSource, /syncQwen21Panel\(this\)/, "main widget must sync the QI2.1 panel");
-    const renderHook = mainSource.match(/renderModelSelectionControls\(\) \{([\s\S]*?)\n  \}/);
-    assert.match(renderHook[1], /syncQwen21Panel\(this\)/, "panel must gate in renderModelSelectionControls");
-    const modeHook = mainSource.match(/applyGenerationModeDefaults\(mode\) \{([\s\S]*?)\n  \}/);
-    assert.match(modeHook[1], /syncQwen21Panel\(this\)/, "panel must re-gate when the family changes");
-});
-
 test("Spectrum acceleration is gone from the frontend", () => {
     assert.doesNotMatch(panelSource, /spectrum/i);
     assert.doesNotMatch(mainSource, /spectrum/i);
 });
 
 
-test("Qwen-Image-2.1 exposes one transparent-output switch below Steps and no aspect preset", () => {
-    assert.match(panelSource, /qwen21_opaque_output/, "output switch setting missing");
-    assert.ok(panelSource.includes("transparent output"), "switch must be labelled 'transparent output'");
-    assert.ok(panelSource.includes("data-edit-steps-panel"), "switch must mount right below the Steps panel");
-    assert.doesNotMatch(panelSource, /aspect_preset|2048x2048/, "the redundant 2K aspect preset is gone");
-    assert.ok(panelSource.includes("data-qwen21-panel"), "panel root marker missing");
-    assert.ok(panelSource.includes("buildQwen21Help") && panelSource.includes("data-tip"), "help tooltip must be attached");
+test("Qwen-Image-2.1 has no transparency switch or panel", () => {
+    assert.doesNotMatch(panelSource, /qwen21_opaque_output|transparent output|data-qwen21-panel|type=.?checkbox/);
+    assert.doesNotMatch(mainSource, /syncQwen21Panel|vnccs-uc-qwen21-panel/);
 });
 
 test("edit families show a full-width Steps field with a hint and hide the generic one", () => {

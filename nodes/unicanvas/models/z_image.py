@@ -14,7 +14,7 @@ from ..comfy_bridge import _call_node_method
 from ..debug import _conditioning_debug, _latent_debug, _tensor_debug, _uc_log
 from ..latents import _encode_source_latent
 from ..loras import _clone_model_clip, _load_model_patch
-from ..paths import _get_full_path_agnostic, _safe_get_folder_paths
+from ..paths import _get_full_path_agnostic, _resolve_model_filename, _safe_get_folder_paths
 from ..sampling import _preload_vae_for_direct_decode, _unload_vae_after_direct_decode
 from .base import UniCanvasModelModule
 from .capabilities import ModelCapabilities, PromptGuide
@@ -402,9 +402,10 @@ def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknow
     if basename != Z_IMAGE_FUN_CONTROLNET_FILENAME:
         return patch_name
 
-    found = _get_full_path_agnostic(folder_paths, "model_patches", requested, require_exists=True)
+    installed = _resolve_model_filename(folder_paths, "model_patches", requested)
+    found = _get_full_path_agnostic(folder_paths, "model_patches", installed, require_exists=True)
     if found:
-        return patch_name
+        return installed
     found = _get_full_path_agnostic(folder_paths, "model_patches", basename, require_exists=True)
     if found:
         return basename

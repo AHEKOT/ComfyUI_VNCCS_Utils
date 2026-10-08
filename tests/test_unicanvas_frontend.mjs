@@ -58,10 +58,10 @@ test("remove bg offers edit model / birefnet / rembg / sam 3 with BiRefNet defau
     assert.ok(!removeBg.includes('"lora_strength"'), "the remove bg LoRA always runs at strength 1");
 });
 
-test("edit model reference images upload next to Steps with per-family slot markers", () => {
+test("edit model reference images upload with per-family slot markers", () => {
     assert.ok(source.includes('data-action="edit-refs"'), "the cards icon button must exist");
     assert.ok(source.includes("data-edit-refs-badge"), "the icon must carry a count badge");
-    assert.ok(source.includes("referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + 2)"), "uploaded images are marked with the active family's slot 2.. name");
+    assert.ok(source.includes("referenceSlotName(this.modelDescriptors, this.settings.generation_mode, index + (layersFirst ? 2 : 1))"), "uploaded image slots follow the canvas reference toggle");
     assert.ok(source.includes("edit_reference_images"), "the uploads must persist in the widget settings");
     assert.match(source, /openEditReferenceImages\(\)/, "the popover entry point must exist");
 });
@@ -193,7 +193,7 @@ test("preset dropdown: compact header card, one-line menu rows, chevron drawn wi
 
 test("a linked VNCSS Config hides model, family, turbo and LoRA controls and drives the family", () => {
     assert.match(source, /\.vnccs-uc-config-linked \[data-mode-control\][^}]*display:none !important/, "Mode is hidden");
-    for (const part of [".vnccs-uc-model-tabs", ".vnccs-uc-turbo-section", ".vnccs-uc-lora-stack", ".vnccs-uc-refs-btn", ".vnccs-uc-qwen21-panel"]) {
+    for (const part of [".vnccs-uc-model-tabs", ".vnccs-uc-turbo-section", ".vnccs-uc-lora-stack", ".vnccs-uc-refs-btn"]) {
         assert.ok(source.includes(`.vnccs-uc-config-linked ${part}`), `${part} must be hidden while linked`);
     }
     assert.ok(source.includes('panel.style.display = configLinked ? (panelMode === "custom" ? "" : "none")'), "only the cut-down Custom panel (inference scale) stays");

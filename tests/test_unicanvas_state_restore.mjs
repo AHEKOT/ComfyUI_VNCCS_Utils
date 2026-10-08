@@ -5,10 +5,11 @@ import test from "node:test";
 import { mergePoseCache } from "../web/unicanvas/pose_state.mjs";
 import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
 import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
+import { disposeModelDependencies } from "../web/unicanvas/model_dependencies.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 let nextId = 0;
-const context = { mergePoseCache, normalizePanorama, normalizeTransformMode, uid: () => `copy${++nextId}`, console };
+const context = { mergePoseCache, normalizePanorama, normalizeTransformMode, disposeModelDependencies, uid: () => `copy${++nextId}`, console };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const plain = value => JSON.parse(JSON.stringify(value));
 const base = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_1_original", layers: [] };

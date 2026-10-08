@@ -9,7 +9,6 @@ import {
 } from "../web/unicanvas/help.mjs";
 
 const mainSource = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
-const panelSource = await readFile(new URL("../web/unicanvas/qwen21.mjs", import.meta.url), "utf8");
 
 class FakeElement {
   constructor(tag = "div") {
@@ -123,7 +122,7 @@ test("the layer stylesheet is fixed, transparent to pointers and ranked between 
 });
 
 test("no CSS pseudo-element tooltip can be clipped by a sidebar any more", () => {
-  for (const [name, source] of [["main", mainSource], ["panel", panelSource]]) {
+  for (const [name, source] of [["main", mainSource]]) {
     assert.doesNotMatch(source, /\.vnccs-uc-help:hover::after/, `${name}: the hover ::after tooltip must be gone`);
     assert.ok(source.includes("data-tip"), `${name}: help icons still carry their tip text`);
   }
@@ -132,8 +131,6 @@ test("no CSS pseudo-element tooltip can be clipped by a sidebar any more", () =>
 });
 
 test("help icons no longer double up with a native title tooltip", () => {
-  assert.match(panelSource, /help\.dataset\.tip = QWEN21_HELP_TEXTS\[key\] \|\| "";/, "the panel icons set data-tip");
-  assert.doesNotMatch(panelSource, /help\.title = QWEN21_HELP_TEXTS/, "the panel icons must not set a native title");
   assert.match(mainSource, /helpBtn\.dataset\.tip = hint;/, "the Steps hint icon sets data-tip");
   assert.doesNotMatch(mainSource, /helpBtn\.title = hint;/, "the Steps hint icon must not set a native title");
 });

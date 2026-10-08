@@ -132,10 +132,11 @@ class EditContractTests(unittest.TestCase):
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_QUEUE", queue))
             stack.enter_context(patch.object(PRESETS, "_PRESET_DOWNLOAD_STATUS", {}))
             stack.enter_context(patch.object(PRESETS, "_unicanvas_resolve_local_model_path", return_value=str(target)))
+            stack.enter_context(patch.object(PRESETS, "_unicanvas_download_progress_class", return_value=object))
             with self.assertRaises(StopIteration):
                 PRESETS._unicanvas_download_worker_loop()
             hub.hf_hub_download.assert_called_once_with(repo_id=asset["hf_repo"], filename=asset["hf_path"],
-                                                       repo_type="model", revision=asset["hf_revision"], token=False)
+                                                       repo_type="model", revision=asset["hf_revision"], token=False, tqdm_class=object)
             self.assertEqual(target.read_bytes(), cached.read_bytes())
             self.assertEqual(PRESETS._PRESET_DOWNLOAD_STATUS["test:edit"]["status"], "success")
             queue.task_done.assert_called_once()
@@ -188,7 +189,7 @@ class EditContractTests(unittest.TestCase):
         self.assertNotIn("_krea2_edit_image_b", settings)
 
     def test_lora_default_is_found_in_any_subfolder(self):
-        from nodes.unicanvas import loras
+        loras = UC.loras
 
         class _FolderPaths:
             @staticmethod

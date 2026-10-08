@@ -140,6 +140,8 @@ def edit_images(canvas: Image.Image | None, settings: dict[str, Any]) -> list[Im
     make sense next to a canvas. An empty canvas (which an edit model would draw as a black picture)
     is ignored: the request is a text-to-image one, with no pictures at all.
     """
+    if settings.get("edit_use_layers_as_reference") is False:
+        return reference_images(settings) or None
     if canvas is None:
         return None
     return [canvas, *reference_images(settings)]

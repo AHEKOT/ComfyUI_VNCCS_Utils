@@ -15,6 +15,12 @@ torch_stub.Tensor = object
 presets = load_unicanvas_package("vnccs_preset_install_test", torch_module=torch_stub).presets
 
 
+@pytest.fixture(autouse=True)
+def fake_download_progress(monkeypatch):
+    # These tests fake the Hub transport; the real progress adapter has its own contract test.
+    monkeypatch.setattr(presets, "_unicanvas_download_progress_class", lambda _key: object)
+
+
 @pytest.fixture
 def comfy_paths(tmp_path, monkeypatch):
     folders = types.ModuleType("folder_paths")
