@@ -149,7 +149,7 @@ export class UniCanvasPoseEditor {
             if (this.initialized && !this.keepingCamera) this.saveCaptureFraming();
         };
         studio.container.classList.add("vnccs-uc-pose-root");
-        this.host.container.appendChild(studio.container);
+        (this.host.standalone ? this.host.stageWrap : this.host.container).appendChild(studio.container);
         this.buildDock();
         this.selectController = installCustomSelects(studio.container, { theme: "pose-studio" });
         this.setVisible(show);
@@ -567,15 +567,17 @@ export class UniCanvasPoseEditor {
         if (!this.host.layers.includes(this.layer)) { this.release(); return; }
         const rect = this.layer.pose.rect, view = this.host.view, stage = this.host.stageWrap;
         const surface = this.studio.canvasContainer;
+        const left = this.host.standalone ? 0 : stage.offsetLeft;
+        const top = this.host.standalone ? 0 : stage.offsetTop;
         // Controls are confined to the stage, leaving model settings, Generate and layers accessible.
-        Object.assign(this.controls.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+        Object.assign(this.controls.style, { left: `${left}px`, top: `${top}px`,
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         this.controls.inert = this.layer.locked || !this.layer.visible || this.host.hasOpenStagingPanel();
         this.sidePanel.inert = this.layer.locked || !this.layer.visible;
         // The session viewport covers the whole stage, not the generation box: the camera is
         // free to look at (and edit) the mannequin anywhere, and the rect is only where the
         // framing lands (see syncSessionViewOffset).
-        Object.assign(surface.style, { left: `${stage.offsetLeft}px`, top: `${stage.offsetTop}px`,
+        Object.assign(surface.style, { left: `${left}px`, top: `${top}px`,
             width: `${stage.clientWidth}px`, height: `${stage.clientHeight}px` });
         surface.style.opacity = String(this.layer.opacity);
         surface.style.mixBlendMode = this.layer.blendMode === "source-over" ? "normal" : this.layer.blendMode;
@@ -840,7 +842,7 @@ export class UniCanvasPoseEditor {
     // stage must skip the bitmap so navigation cannot ghost the baked framing underneath
     // (the pre-0.6.8 editor did the same via layer._poseEditing). Mirrors the surface
     // visibility rules in layout(), so both the viewport and the bitmap hide together.
-    // True while the editing view is shown: the stage skips the generation box outline.
+    // The base canvas skips the frame; standalone keeps it on the overlay above the 3D view.
     hidesBbox() {
         return Boolean(this.visible && this.initialized && this.layer?.visible && !this.layer.locked && !this.host.hasOpenStagingPanel());
     }

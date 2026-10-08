@@ -153,6 +153,24 @@ test("a pose edit session is one undo step on Save and fully restored on Cancel"
     assert.equal(host.undoStack.length, 1, "a canceled session adds no undo step");
 });
 
+test("standalone pose entry, Save and Cancel keep the workspace pan and zoom", () => {
+    const { host, layer } = selectionHarness();
+    host.standalone = true;
+    host.centerBbox = () => { throw new Error("Standalone must never auto-frame a pose"); };
+    host.view = { x: -137, y: 83, scale: 0.73 }; host.intendedScale = 0.73;
+    const before = JSON.stringify([host.view, host.intendedScale, host.bbox]);
+    host.editPoseLayer(layer);
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
+    host.finishPoseEdit(true);
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), before);
+    host.editPoseLayer(layer);
+    host.view = { x: 23, y: -41, scale: 1.2 }; host.intendedScale = 1.2;
+    const inspected = JSON.stringify([host.view, host.intendedScale, host.bbox]);
+    host.finishPoseEdit(false);
+    assert.equal(JSON.stringify([host.view, host.intendedScale, host.bbox]), inspected,
+        "Cancel restores the pose, without resetting explicit workspace navigation");
+});
+
 test("invalid selection and an unfinished transform cannot change the current tool or layer", () => {
     const { host, layer, calls } = selectionHarness();
     host.setActiveLayer("missing");
@@ -259,6 +277,42 @@ test("pose controls stay inside the resized stage and never replace the generati
     assert.doesNotMatch(source, /\.vnccs-uc-left\s*\{/);
     host.hasOpenStagingPanel = () => true; editor.layout();
     assert.equal(editor.controls.inert, true);
+});
+
+test("standalone mounts its editor in the stage and uses stage-local coordinates", async () => {
+    const controlled = controlledStudio();
+    const { editor, host, layer } = harness(controlled.Studio);
+    host.standalone = true;
+    host.stageWrap = Object.assign(new Element(), host.stageWrap);
+    await editor.activate(layer);
+    assert.equal(editor.studio.container.parentElement, host.stageWrap);
+    for (const [width, height] of [[1000,800], [540,480]]) {
+        Object.assign(host.stageWrap, { clientWidth:width, clientHeight:height });
+        editor.layout();
+        for (const element of [editor.controls, editor.studio.canvasContainer]) {
+            assert.deepEqual([element.style.left, element.style.top, element.style.width, element.style.height],
+                ["0px", "0px", `${width}px`, `${height}px`]);
+        }
+    }
+    editor.release();
+    assert.equal(host.stageWrap.children.length, 0, "disposing leaves the existing stage intact");
+});
+
+test("standalone redraws the bbox above the pose viewport even when the pointer leaves", () => {
+    const { host } = selectionHarness();
+    delete host.updateToolPreviewOverlay;
+    host.standalone = true; host.poseEditor.visible = true; host.sam = {};
+    host.previewCanvas = Object.assign(new Element("canvas"), { width:1000, height:800 });
+    const ctx = host.previewCanvas.getContext("2d");
+    ctx.setTransform = noop; ctx.translate = noop; ctx.scale = noop;
+    let frames = 0;
+    host.drawBbox = () => frames++;
+    host.updateToolPreviewOverlay();
+    host.clearToolPreviewOverlay();
+    assert.equal(frames, 2, "clearing a cursor preview cannot remove the generation frame");
+    host.standalone = false;
+    host.updateToolPreviewOverlay(); host.clearToolPreviewOverlay();
+    assert.equal(frames, 2, "node mode keeps its existing render contract");
 });
 
 test("shared modal overlays lift their stacking context above the toolbox only while open", () => {
@@ -542,7 +596,7 @@ test("the help popup illustrates every control it documents", () => {
     for (const label of ["Reset camera", "Cancel", "Save pose", "Shift"]) assert.ok(text.includes(label), label);
 });
 
-test("the generation box outline is hidden exactly while the editing view is shown", () => {
+test("node mode hides its generation box outline exactly while the editing view is shown", () => {
     const { editor, host, layer } = harness(); editor.layer = layer;
     assert.equal(editor.hidesBbox(), false, "not initialized");
     editor.initialized = true; editor.visible = true;

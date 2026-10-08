@@ -40,14 +40,19 @@ const TRUE_FULLSCREEN_ICON_SVG =
   '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="8" height="8" rx="1.5"/><rect x="13" y="13" width="8" height="8" rx="1.5"/><path d="M13 7h4a2 2 0 0 1 2 2v4"/><path d="M11 17H7a2 2 0 0 1-2-2v-4"/></svg>';
 
 const UNICANVAS_MODE_STYLES = `
-.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 2147481000; background: var(--base-background, var(--bg-color)); }
+.vnccs-uc2-standalone-shell { position: fixed; top: 0; bottom: 0; display: flex; z-index: 1; visibility: visible; pointer-events: auto; background: var(--base-background, var(--bg-color)); }
 .vnccs-uc2-standalone-shell > .vnccs-unicanvas { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; }
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-top,
 body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfy-menu,
-body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu,
-body.${UNICANVAS_STANDALONE_BODY_CLASS} #comfyui-body-bottom,
-body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !important; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-menu { display: none !important; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .graph-canvas-panel { visibility: hidden; }
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-bar-panel:has([data-vnccs-unicanvas-mount]),
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-bar-panel:has([data-vnccs-unicanvas-mount]) + .p-splitter-gutter { display: none !important; }
+/* Share ComfyUI's overlay context; its rail, menus and dock stay above our workspace. */
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .side-tool-bar-container,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .bottom-panel,
+body.${UNICANVAS_STANDALONE_BODY_CLASS} .p-splitter-gutter:has(+ .bottom-panel) { position: relative; z-index: 2; }
 .vnccs-uc-stage-wrap { position: relative; }
 .vnccs-uc2-fullscreen-btn svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .vnccs-uc2-fullscreen-btn.exit { background: #e5484d; border-color: #e5484d; color: #fff; }
@@ -72,16 +77,10 @@ body.${UNICANVAS_STANDALONE_BODY_CLASS} .comfyui-body-bottom { display: none !im
 .vnccs-unicanvas.vnccs-uc-pose-editing .vnccs-uc-side > .vnccs-uc2-save-actions { display: flex !important; }
 .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-left, .${UNICANVAS_PANELS_HIDDEN_CLASS} .vnccs-uc-side { display: none !important; }
 .vnccs-uc-fullscreen .vnccs-uc-tools { zoom: calc(var(--vnccs-uc-ui-scale, 1) * 0.5); }
-/* ComfyUI's own dialogs (Settings, confirmers) and their dimming scrim must open
-   ABOVE the standalone shell and the fullscreen portal, never behind them. The
-   stylesheet flag beats the inline z-index that PrimeVue/Reka set on the masks. */
-body:has(.vnccs-uc2-standalone-shell) .p-dialog-mask,
+/* The node fullscreen portal still needs to lift ComfyUI dialogs and their scrim. */
 body:has(.vnccs-uc2-fullscreen-portal) .p-dialog-mask,
-body:has(.vnccs-uc2-standalone-shell) .comfy-modal,
 body:has(.vnccs-uc2-fullscreen-portal) .comfy-modal,
-body:has(.vnccs-uc2-standalone-shell) [role="dialog"],
 body:has(.vnccs-uc2-fullscreen-portal) [role="dialog"],
-body:has(.vnccs-uc2-standalone-shell) [role="alertdialog"],
 body:has(.vnccs-uc2-fullscreen-portal) [role="alertdialog"] { z-index: 2147484000 !important; }
 `;
 
@@ -269,7 +268,7 @@ function installUniCanvasShortcuts(widget) {
 // fullscreen and "refreshes" the workflow under the user's hands.
 //
 // A UniCanvas surface owns the history keys when
-//   - the standalone tab is active (its shell covers the whole app),
+//   - interaction belongs to the active standalone workspace,
 //   - the widget is in fullscreen, or
 //   - the last pointerdown landed inside the widget (node mode; the DOM
 //     widget does not hold keyboard focus reliably) or its canvas is focused.
@@ -292,7 +291,11 @@ function trackUniCanvasPointerHover(event) {
 
 function uniCanvasHistoryOwner(event) {
   if (document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS) && standaloneHistoryWidget) {
-    return standaloneHistoryWidget;
+    const target = event?.target;
+    if (standaloneHistoryWidget.container.contains(target)) return standaloneHistoryWidget;
+    if ((target === document.body || target === document.documentElement)
+      && standaloneHistoryWidget._vnccsPointerInside) return standaloneHistoryWidget;
+    return null; // Native menus, dialogs and the console keep their keyboard.
   }
   for (const widget of uniCanvasModeWidgets) {
     if (widget._vnccsFullscreen) return widget;
@@ -310,8 +313,7 @@ function isUniCanvasHistoryCombo(event) {
 }
 
 function uniCanvasOwnsFullKeyboard(widget) {
-  // Fullscreen and the standalone shell cover the whole app: no key may reach
-  // ComfyUI there at all. Node mode only claims the history keys (below).
+  // Once owned, standalone/fullscreen isolate all keys; node mode only claims history.
   return Boolean(widget._vnccsFullscreen)
     || (Boolean(widget.standalone) && document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS));
 }
@@ -930,9 +932,25 @@ function findUniCanvasSidebarRail(doc) {
   return doc.querySelector("nav.side-tool-bar-container") || doc.querySelector(".side-tool-bar-container");
 }
 
+function findUniCanvasStandaloneHost(doc) {
+  // The native graph pane already shrinks continuously with the bottom dock.
+  const graphPane = doc.querySelector(".graph-canvas-panel");
+  if (graphPane) return graphPane;
+  // Keep the shell inside the native overlay's stacking context, below its menus.
+  for (let parent = findUniCanvasSidebarRail(doc)?.parentElement; parent; parent = parent.parentElement) {
+    if (parent.querySelector(".graph-canvas-panel, [data-testid='graph-canvas-gutter']")) return parent;
+  }
+  return doc.querySelector("#graph-canvas-container") || doc.body;
+}
+
 function applyUniCanvasStandaloneShellInset(shell, doc) {
-  // Entering the standalone tab hides all ComfyUI chrome and keeps only the
-  // icon sidebar visible: the app surface stops exactly at the tab strip.
+  if (shell.parentElement?.classList.contains("graph-canvas-panel")) {
+    shell.style.position = "absolute";
+    shell.style.inset = "0";
+    return;
+  }
+  shell.style.position = "fixed";
+  // Reserve the rail and native bottom dock, including its resize handle.
   const rail = findUniCanvasSidebarRail(doc);
   const railRect = rail?.getBoundingClientRect?.();
   shell.style.top = "0";
@@ -948,6 +966,16 @@ function applyUniCanvasStandaloneShellInset(shell, doc) {
     }
   } else {
     shell.style.left = "56px";
+  }
+  const viewportHeight = doc.defaultView?.innerHeight || 0;
+  for (const panel of doc.querySelectorAll(".bottom-panel, #comfyui-body-bottom, .comfyui-body-bottom")) {
+    const rect = panel.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || rect.top >= viewportHeight) continue;
+    const gutter = panel.previousElementSibling;
+    const top = gutter?.classList.contains("p-splitter-gutter") && gutter.getBoundingClientRect().height > 0
+      ? Math.min(rect.top, gutter.getBoundingClientRect().top) : rect.top;
+    const inset = Math.max(0, viewportHeight - top);
+    shell.style.bottom = `${Math.max(parseFloat(shell.style.bottom), Math.ceil(inset))}px`;
   }
 }
 
@@ -1031,6 +1059,9 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
   let tabWatcher = null;
   let containerObserver = null;
   let windowResizeHandler = null;
+  let layoutObserver = null;
+  let layoutMutationObserver = null;
+  let layoutFrame = null;
   let active = false;
 
   const syncStandaloneChrome = () => {
@@ -1040,12 +1071,31 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       if (!shell) {
         shell = document.createElement("div");
         shell.className = "vnccs-uc2-standalone-shell";
-        document.body.appendChild(shell);
+        findUniCanvasStandaloneHost(document).appendChild(shell);
         windowResizeHandler = () => {
-          if (!shell || !widget) return;
-          applyUniCanvasStandaloneShellInset(shell, document);
-          widget.resize?.();
+          if (layoutFrame !== null) return;
+          layoutFrame = requestAnimationFrame(() => {
+            layoutFrame = null;
+            if (!shell || !widget) return;
+            const host = findUniCanvasStandaloneHost(document);
+            if (shell.parentNode !== host) host.appendChild(shell);
+            applyUniCanvasStandaloneShellInset(shell, document);
+            widget.resize?.();
+          });
         };
+        layoutObserver = new ResizeObserver(windowResizeHandler);
+        const observeLayout = () => {
+          layoutObserver.disconnect();
+          for (const el of document.querySelectorAll(".side-tool-bar-container, .graph-canvas-panel, .bottom-panel, #comfyui-body-bottom, .comfyui-body-bottom")) {
+            layoutObserver.observe(el);
+          }
+          windowResizeHandler();
+        };
+        layoutMutationObserver = new MutationObserver((records) => {
+          if (records.some(record => !shell?.contains(record.target) && !mountContainer?.contains(record.target))) observeLayout();
+        });
+        layoutMutationObserver.observe(document.body, { subtree: true, childList: true });
+        observeLayout();
         window.addEventListener("resize", windowResizeHandler);
       }
       applyUniCanvasStandaloneShellInset(shell, document);
@@ -1057,6 +1107,12 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
       document.body.classList.remove(UNICANVAS_STANDALONE_BODY_CLASS);
       if (windowResizeHandler) window.removeEventListener("resize", windowResizeHandler);
       windowResizeHandler = null;
+      layoutObserver?.disconnect();
+      layoutObserver = null;
+      layoutMutationObserver?.disconnect();
+      layoutMutationObserver = null;
+      if (layoutFrame !== null) cancelAnimationFrame(layoutFrame);
+      layoutFrame = null;
       shell?.remove();
       shell = null;
       if (!parking) parking = document.createDocumentFragment();
@@ -1098,6 +1154,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
     type: "custom",
     render(container) {
       mountContainer = container;
+      container.dataset.vnccsUnicanvasMount = "";
       if (!widget) widget = createStandaloneWidget(UniCanvasWidgetClass);
       standaloneHistoryWidget = widget;
       // Read-only E2E hook (tests/e2e): exposes full-resolution layer pixels

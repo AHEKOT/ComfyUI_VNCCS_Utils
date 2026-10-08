@@ -234,7 +234,7 @@ test("standalone mode hides ComfyUI chrome with explicit markers", () => {
         "entering the tab must add the chrome-hiding class");
     assert.ok(modesSource.includes("document.body.classList.remove(UNICANVAS_STANDALONE_BODY_CLASS)"),
         "leaving the tab must restore the standard chrome");
-    for (const selector of ["#comfyui-body-top", ".comfyui-body-top", "#comfy-menu", "#comfyui-body-bottom"]) {
+    for (const selector of ["#comfyui-body-top", ".comfyui-body-top", "#comfy-menu"]) {
         assert.ok(modesSource.includes(selector), `chrome-hiding CSS must cover ${selector}`);
     }
     assert.ok(modesSource.includes("vnccs-uc2-standalone-shell"), "the standalone app surface must exist");
@@ -369,9 +369,12 @@ test("the ChangeTracker gate stops ComfyUI's own Ctrl+Z before it reloads the gr
         "the keydown handler must (re)install the gate before anything else runs");
 });
 
-test("ComfyUI dialogs and their scrim open above the standalone shell and fullscreen portal", () => {
+test("standalone shares native stacking; node fullscreen still lifts native dialogs", () => {
     const styles = region(modesSource, "const UNICANVAS_MODE_STYLES = `", "ensureUniCanvasModeStyles");
-    for (const marker of [".vnccs-uc2-standalone-shell", ".vnccs-uc2-fullscreen-portal"]) {
+    assert.match(styles, /standalone-shell \{[^}]*z-index: 1;/);
+    assert.ok(!styles.includes("body:has(.vnccs-uc2-standalone-shell)"), "standalone must not override native modal stacking");
+    assert.ok(!/comfyui-body-bottom[^}]*display: none/.test(styles), "native bottom dock must stay visible");
+    for (const marker of [".vnccs-uc2-fullscreen-portal"]) {
         assert.ok(styles.includes(`body:has(${marker}) .p-dialog-mask`),
             `PrimeVue dialog masks must lift above ${marker}`);
         assert.ok(styles.includes(`body:has(${marker}) [role="dialog"]`),
@@ -380,5 +383,5 @@ test("ComfyUI dialogs and their scrim open above the standalone shell and fullsc
             `legacy modals must lift above ${marker}`);
     }
     assert.ok(/z-index:\s*2147484000 !important/.test(styles),
-        "the lifted z-index must beat the shell (2147481000) and portal (2147482000) with !important");
+        "the lifted z-index must beat the node fullscreen portal with !important");
 });

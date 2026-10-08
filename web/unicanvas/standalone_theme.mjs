@@ -43,6 +43,7 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-bottom { padding:6px 8px; gap:6px; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-stage-wrap { border-radius:0; }
+.vnccs-unicanvas.vnccs-uc-standalone.vnccs-uc-pose-active .vnccs-uc-preview-stage { z-index:6; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-stage { background:var(--uc-bg); color:color-mix(in srgb, var(--uc-text) 8%, transparent); }
 .vnccs-unicanvas.vnccs-uc-standalone :is(.vnccs-uc-section, .vnccs-uc-side-control, .vnccs-uc-draw-control,
   .vnccs-uc-model-card, .vnccs-uc-h3-panel, .vnccs-uc-lora-item, .vnccs-uc-settings-section,
@@ -92,9 +93,9 @@ body.vnccs-unicanvas-standalone-mode .vnccs-custom-select-menu {
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-denoise-control { min-height:28px; padding:6px; font-weight:400; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-seed-row { grid-template-columns:minmax(0,1fr) 28px; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-seed-dice { width:28px; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools { left:8px; gap:4px; padding:4px; border-radius:var(--uc-radius); background:var(--uc-panel); box-shadow:none; zoom:1; }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools .vnccs-uc-icon { width:32px; height:32px; border-radius:var(--uc-radius); }
-.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools svg { width:18px; height:18px; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools { left:8px; gap:8px; padding:8px; border-radius:var(--uc-radius); background:var(--uc-panel); box-shadow:none; zoom:1; }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools .vnccs-uc-icon { width:64px; height:64px; flex-shrink:0; border-radius:var(--uc-radius); }
+.vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-tools svg { width:36px; height:36px; }
 .vnccs-unicanvas.vnccs-uc-standalone :is(.vnccs-uc-gear, .vnccs-uc-staging-popover .vnccs-uc-icon) svg { width:16px; height:16px; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-staging-popover .vnccs-uc-icon { width:28px; height:28px; }
 .vnccs-unicanvas.vnccs-uc-standalone .vnccs-uc-chip { padding:3px 6px; background:var(--uc-panel); border-radius:var(--uc-radius); }

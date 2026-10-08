@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791491423307";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791491423307";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791500200000";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791500200000";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791491423307";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791491423307";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791491423307";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791491423307";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791491423307";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791491423307";
-import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791491423307";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791491423307";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791491423307";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791491423307";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791491423307";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791500200000";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791500200000";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791500200000";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791500200000";
+import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791500200000";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791500200000";
+import { installInferenceScaleEdit } from "./unicanvas/scale_edit.mjs?v=1791500200000";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791500200000";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791500200000";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791500200000";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791500200000";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791491423307";
+} from "./unicanvas/transform.mjs?v=1791500200000";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791491423307";
+} from "./unicanvas/presets.mjs?v=1791500200000";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,10 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791491423307";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791491423307";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791491423307";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791491423307";
+} from "./unicanvas/modes.mjs?v=1791500200000";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791500200000";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791500200000";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791500200000";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -76,7 +76,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791491423307";
+const VNCCS_UNICANVAS_VERSION = "1791500200000";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -119,14 +119,15 @@ const VNCCS_UNICANVAS_VERSION = "1791491423307";
     const target = event.target;
     if (target?.closest?.("input, textarea, select, [contenteditable]")) return;
     const fullscreenOpen = Boolean(document.querySelector(".vnccs-uc2-fullscreen-portal"));
-    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode");
+    const standaloneOpen = document.body.classList.contains("vnccs-unicanvas-standalone-mode")
+      && Boolean(target?.closest?.(".vnccs-uc2-standalone-shell"));
     if (!fullscreenOpen && !standaloneOpen) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791491423307";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791491423307";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791500200000";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791500200000";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -2104,8 +2105,8 @@ class UniCanvasWidget {
       view: { ...this.view },
       intendedScale: this.intendedScale,
     };
-    // Frame the pose rect so the mannequin is large enough to work on.
-    this.centerBbox(true, layer.pose.rect, 2);
+    // The standalone workspace keeps the user's framing throughout pose editing.
+    if (!this.standalone) this.centerBbox(true, layer.pose.rect, 2);
     this.requestRender();
     this.updateHistoryButtons();
     this.setStatus("Editing pose - Save pose (Enter) or Cancel when done. Ctrl+Z / Ctrl+Y undo and redo pose changes.");
@@ -2128,6 +2129,7 @@ class UniCanvasWidget {
   }
 
   restorePoseEditView(session) {
+    if (this.standalone) return;
     if (!session?.view) return;
     this.view = { ...session.view };
     this.intendedScale = session.intendedScale ?? this.view.scale;
@@ -3564,6 +3566,10 @@ class UniCanvasWidget {
 
   clearToolPreviewOverlay() {
     if (!this.previewCanvas) return;
+    if (this.standalone && this.poseEditor?.visible) {
+      this.updateToolPreviewOverlay();
+      return;
+    }
     const ctx = this.previewCanvas.getContext("2d");
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -3578,6 +3584,14 @@ class UniCanvasWidget {
     const h = this.previewCanvas.height / dpr;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    // Keep the generation frame above the embedded 3D viewport, including its wall.
+    if (this.standalone && this.poseEditor?.visible) {
+      ctx.save();
+      ctx.translate(this.view.x, this.view.y);
+      ctx.scale(this.view.scale, this.view.scale);
+      this.drawBbox(ctx);
+      ctx.restore();
+    }
     if (this.tool === "sam" || this.sam.maskCanvas) {
       ctx.save();
       ctx.translate(this.view.x, this.view.y);
@@ -5409,7 +5423,7 @@ class UniCanvasWidget {
     this.drawLassoDraft(ctx);
     this.drawResizeOverlay(ctx);
     if (this.panorama) ctx.restore();
-    // The generation box is not drawn while a pose is being edited: the 3D view owns the stage.
+    // Standalone pose editing draws the frame on the preview canvas above the 3D view.
     if (!this.poseEditor?.hidesBbox()) this.drawBbox(ctx);
     ctx.restore();
     const inferenceSize = this.getInferenceSize();
@@ -7607,6 +7621,7 @@ class UniCanvasWidget {
     const { loader } = this.normalizeGenerationSettings();
     const negativeInput = this.container.querySelector('[data-setting="negative"]');
     if (negativeInput) {
+      negativeInput.closest(".vnccs-uc-field").hidden = Boolean(this.standalone && this.isPresetTurboEnabled(this.getActivePreset()));
       const groundedEdit = this.getModelBase() === "krea2_edit";
       negativeInput.disabled = groundedEdit;
       negativeInput.title = groundedEdit ? "Krea2 Edit uses the same source image with an empty instruction for negative conditioning." : "";

@@ -87,6 +87,42 @@ test("Qwen Edit 2.1 shares the VNCCS model filenames and restores turbo across f
     assert.equal(widget.isPresetTurboEnabled(preset), false);
 });
 
+test("standalone hides the complete negative field only while its family's Turbo is active", async () => {
+    const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+    const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
+    const prototype = runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension("))
+        + "\nUniCanvasWidget.prototype", { getUniCanvasModelModule: key => ({ key }) });
+    const field = { hidden:false };
+    const input = { value:"Keep this negative prompt", closest: selector => selector === ".vnccs-uc-field" ? field : null };
+    const widget = Object.create(prototype);
+    widget.standalone = true; widget.presets = presets;
+    widget.container = {
+        querySelector: selector => selector === '[data-setting="negative"]' ? input : null,
+        querySelectorAll: () => [],
+    };
+    widget.normalizeGenerationSettings = () => ({ loader:{ key:"diffusion_model" } });
+    widget.getModelBase = () => widget.settings.generation_mode;
+    for (const name of ["syncInferenceControls", "syncDenoiseControls", "syncSeedModeControl", "renderModelSelectionControls",
+        "renderLoraStackControls", "syncPromptGuide", "autoResizePromptTextareas", "syncSettingsToWidget"]) widget[name] = () => {};
+    widget.presetAssetStatus = () => ({ installed:true });
+    for (const mode of ["presets", "custom"]) {
+        for (const preset of presets.filter(item => item.turbo)) {
+            preset.turbo.asset.relative_name = preset.turbo.asset.local_path.replace("models/loras/", "");
+            widget.settings = { ...preset.settings, model_selection_mode:mode, selected_preset_id:preset.id, negative:input.value };
+            widget.syncPromptControls(); assert.equal(field.hidden, false, `${preset.id}: base`);
+            widget.togglePresetTurbo(preset.id); assert.equal(field.hidden, true, `${preset.id}: Turbo`);
+            widget.togglePresetTurbo(preset.id); assert.equal(field.hidden, false, `${preset.id}: restored`);
+            assert.equal(widget.settings.negative, input.value, "toggling keeps the user's text");
+            widget.togglePresetTurbo(preset.id);
+            widget.standalone = false; widget.syncPromptControls();
+            assert.equal(field.hidden, false, "node UI keeps its original negative field");
+            widget.standalone = true;
+            widget.settings.generation_mode = "flux_klein"; widget.settings.model_selection_mode = "custom";
+            widget.syncPromptControls(); assert.equal(field.hidden, false, "a different family ignores stale Turbo settings");
+        }
+    }
+});
+
 
 test("MiniMax H3 preset pins the family and ships its three model assets", async () => {
   const presets = JSON.parse(await readFile(new URL("../config/unicanvas_presets.json", import.meta.url), "utf8")).presets;
