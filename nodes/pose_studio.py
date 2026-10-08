@@ -147,7 +147,7 @@ def _animation_frame_rate(data):
         fps = 12.0
     if not math.isfinite(fps):
         fps = 12.0
-    return max(1.0, min(120.0, fps))
+    return max(0.001, min(120.0, fps))
 
 
 def _positive_int(value, name, default):

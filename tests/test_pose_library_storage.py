@@ -50,6 +50,49 @@ def request(name="Walk", asset_type="pose", repository="artist/poses", **body):
     )
 
 
+def test_rename_to_existing_pose_preserves_both_assets(store):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    for name in ("A", "B"):
+        (directory / f"{name}.json").write_text(json.dumps({"pose": name}))
+        (directory / f"{name}.png").write_bytes(name.encode())
+    before = {path.name: path.read_bytes() for path in directory.iterdir()}
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "edited"})))
+    assert result.status == 409
+    assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
+
+
+def test_same_pose_can_be_updated_and_renamed_to_free_name(store):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "A.json").write_text('{"pose": "old"}')
+    (directory / "A.png").write_bytes(b"preview")
+    assert asyncio.run(library.save_pose(request(name="A", pose={"pose": "updated"}))).status == 200
+    assert json.loads((directory / "A.json").read_text())["pose"] == "updated"
+    assert asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "renamed"}))).status == 200
+    assert not (directory / "A.json").exists()
+    assert (directory / "B.png").read_bytes() == b"preview"
+
+
+def test_rename_rechecks_collision_after_async_preview_preparation(store, monkeypatch):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "A.json").write_text('{"pose": "original"}')
+    prepared = directory / "prepared.webp"
+
+    def prepare(*args):
+        (directory / "B.json").write_text('{"pose": "concurrent save"}')
+        prepared.write_bytes(b"preview")
+        return str(prepared), ".webp"
+
+    monkeypatch.setattr(library, "prepare_preview_file", prepare)
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "edited"}, preview="image")))
+    assert result.status == 409
+    assert json.loads((directory / "A.json").read_text()) == {"pose": "original"}
+    assert json.loads((directory / "B.json").read_text()) == {"pose": "concurrent save"}
+    assert not prepared.exists()
+
+
 def test_same_name_pose_and_animation_keep_separate_files_previews_and_ids(store, tmp_path, monkeypatch):
     legacy = store / "artist__poses" / "Standing" / "Walk.json"
     legacy.parent.mkdir(parents=True)

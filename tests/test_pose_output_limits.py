@@ -43,6 +43,13 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_sparse_animation_export_preserves_imported_duration(self):
+        fps = POSE_STUDIO._animation_frame_rate({"animation": {"fps": 600 / 7200}})
+        self.assertAlmostEqual(600 / fps, 7200)
+        for raw, expected in ((0, 0.001), (500, 120), ("invalid", 12), (float("nan"), 12)):
+            with self.subTest(raw=raw):
+                self.assertEqual(POSE_STUDIO._animation_frame_rate({"animation": {"fps": raw}}), expected)
+
     def test_sam_sync_error_is_reported_without_claiming_proportions_were_applied(self):
         node = POSE_STUDIO.VNCCS_PoseStudio()
         failure = {"sync_error": "Pose Manager previews are still refreshing."}

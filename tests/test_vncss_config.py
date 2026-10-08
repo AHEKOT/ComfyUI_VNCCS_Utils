@@ -157,6 +157,19 @@ def test_lora_resolution_normalizes_backslash_separators(monkeypatch):
     assert requested == ["subdir\\foo.safetensors", "subdir/foo.safetensors"]
 
 
+def test_lora_aliases_resolving_to_same_file_apply_once(monkeypatch, tmp_path):
+    import nodes.vncss_config as vc
+    file = tmp_path / "adapter.safetensors"
+    file.touch()
+    alias = tmp_path / "alias.safetensors"
+    alias.symlink_to(file)
+    monkeypatch.setattr(vc, "_resolve_lora_path", lambda name: str(alias if name == "alias" else file))
+    calls = []
+    monkeypatch.setattr(vc, "_apply_lora_cached", lambda m, c, name, *args: calls.append(name) or (m, c))
+    vc.apply_lora_stack("m", "c", vc.normalize_lora_stack([{"name": "adapter"}, {"name": "alias"}]))
+    assert calls == ["adapter"]
+
+
 def test_execute_returns_patched_model(monkeypatch):
     import nodes.vncss_config as vc
     monkeypatch.setattr(vc, "_apply_lora_cached",

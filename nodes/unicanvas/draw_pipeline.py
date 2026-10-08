@@ -27,6 +27,7 @@ from .imaging import (
     _decode_data_url,
     _image_tensor_to_pil_list,
     _pil_to_image_tensor,
+    _pil_rgba_to_image_tensor,
     _pil_to_mask_image,
     _pil_to_mask_tensor,
 )
@@ -491,5 +492,8 @@ class ImageDrawPipeline:
             "performance": ctx.settings.get("_performance", ""),
         }
         if request.payload.get("return_tensor"):
-            result["tensor"] = ctx.decoded.detach().cpu()
+            result["tensor"] = torch.cat([
+                (_pil_rgba_to_image_tensor(image) if image.mode == "RGBA" else _pil_to_image_tensor(image))
+                for image in ctx.result_images
+            ])
         return result

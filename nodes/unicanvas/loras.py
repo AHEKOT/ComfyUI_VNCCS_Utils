@@ -1,4 +1,4 @@
-"""LoRA and model-patch loading with a process-wide cache."""
+"""LoRA and model-patch loading."""
 
 from __future__ import annotations
 
@@ -8,11 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .comfy_bridge import _call_node_method
-from .locks import _MODEL_CACHE_LOCK
 from .paths import _get_full_path_agnostic, _resolve_model_filename
-
-
-_LORA_CACHE: dict[str, Any] = {}
 
 
 def _clone_model_clip(model: Any, clip: Any) -> tuple[Any, Any]:
@@ -30,7 +26,17 @@ def _lora_name_matches(value: Any, expected: str) -> bool:
 
 
 def _lora_name_in(value: Any, names: list[str] | tuple[str, ...]) -> bool:
-    return any(_lora_name_matches(value, name) for name in names)
+    key = _lora_file_key(value)
+    return any(key == _lora_file_key(name) for name in names)
+
+
+def _lora_file_key(name: Any) -> str:
+    try:
+        path = _get_lora_full_path(str(name or ""))
+    except ValueError:
+        # Missing files still reach the loader's error; never collapse distinct folders.
+        path = str(name or "").replace("\\", "/").strip()
+    return os.path.normcase(os.path.realpath(path))
 
 
 def _active_lora_names(lora_stack: Any) -> list[str]:
@@ -70,12 +76,7 @@ def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, c
     import comfy.sd
     import comfy.utils
 
-    with _MODEL_CACHE_LOCK:
-        lora = _LORA_CACHE.get(lora_name)
-    if lora is None:
-        lora = comfy.utils.load_torch_file(_get_lora_full_path(lora_name), safe_load=True)
-        with _MODEL_CACHE_LOCK:
-            _LORA_CACHE[lora_name] = lora
+    lora = comfy.utils.load_torch_file(_get_lora_full_path(lora_name), safe_load=True)
     return comfy.sd.load_lora_for_models(model, clip, lora, strength, strength if clip_strength is None else clip_strength)
 
 

@@ -1836,6 +1836,34 @@ class FactoryBackendTests(unittest.TestCase):
             ("DELETE", "/vnccs/3d-factory/library/items/{asset_id}"),
         }
         self.assertTrue(expected.issubset(registered), expected.difference(registered))
+        preview_handler = next(handler for method, path, handler in routes.definitions
+                               if method == "POST" and path == "/vnccs/3d-factory/scenes/{scene_id}/preview")
+        preview_scene = self.factory.create_scene("Preview worker")
+        thread_ids = []
+        png = io.BytesIO()
+        Image.new("RGB", (1024, 1024)).save(png, "PNG")
+        payload = png.getvalue()
+
+        def read_preview(limit):
+            thread_ids.append(threading.get_ident())
+            return payload[:limit]
+
+        original_store_preview = self.factory.store_scene_preview
+
+        def save_preview(*args):
+            thread_ids.append(threading.get_ident())
+            return original_store_preview(*args)
+
+        aiohttp_stub.web.json_response = lambda body, status=200: (status, body)
+        preview_request = types.SimpleNamespace(headers={}, match_info={"scene_id": preview_scene["scene_id"]},
+                                               post=mock.AsyncMock(return_value={"image": types.SimpleNamespace(
+                                                   file=types.SimpleNamespace(read=read_preview))}))
+        with mock.patch.object(self.factory, "store_scene_preview", side_effect=save_preview):
+            status, _body = asyncio.run(preview_handler(preview_request))
+        self.assertEqual(status, 201, _body)
+        self.assertEqual(len(thread_ids), 2)
+        self.assertTrue(all(thread_id != threading.get_ident() for thread_id in thread_ids))
+
         handler = next(handler for method, path, handler in routes.definitions
                        if method == "PATCH" and path == "/vnccs/3d-factory/scenes/{scene_id}")
         aiohttp_stub.web.json_response = lambda body, status=200: (status, body)

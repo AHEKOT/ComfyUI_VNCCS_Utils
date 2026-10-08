@@ -88,7 +88,7 @@ def apply_lora_stack(model: Any, clip: Any, lora_stack: list[dict[str, Any]], co
         if not item.get("enabled") or abs(float(item.get("strength", 1.0))) <= 1e-6:
             continue
         # The same file is applied once; later duplicates are dropped silently.
-        key = os.path.basename(str(item["name"]).replace("\\", "/").strip().lower())
+        key = os.path.normcase(os.path.realpath(_resolve_lora_path(item["name"])))
         if key in applied:
             continue
         applied.append(key)

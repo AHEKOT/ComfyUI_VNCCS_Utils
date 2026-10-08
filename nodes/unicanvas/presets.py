@@ -170,20 +170,6 @@ def _unicanvas_find_preset_asset(preset_id: str, asset_kind: str, asset_index: i
     raise ValueError(f"Preset '{preset_id}' not found")
 
 
-def _unicanvas_validate_download_response(response: Any, expected_name: str) -> tuple[int, int]:
-    url = str(getattr(response, "url", "") or "")
-    if not url.startswith("https://"):
-        raise ValueError("Preset download URL must use HTTPS")
-    total_size = int(response.headers.get("content-length", 0) or 0)
-    max_bytes = _unicanvas_max_download_bytes()
-    if total_size > max_bytes:
-        raise ValueError(
-            f"{expected_name} is too large to download safely "
-            f"({total_size / (1024 * 1024 * 1024):.1f} GB, limit {max_bytes / (1024 * 1024 * 1024):.1f} GB)"
-        )
-    return total_size, max_bytes
-
-
 def _unicanvas_validate_downloaded_file(path: str, expected_name: str) -> None:
     size = os.path.getsize(path)
     if size < _PRESET_MIN_MODEL_FILE_SIZE:

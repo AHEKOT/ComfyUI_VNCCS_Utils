@@ -397,10 +397,17 @@ def test_turbo_model_samples_on_the_viggle_schedule(monkeypatch):
 # --- AusBoss outpaint LoRA -----------------------------------------------------------
 
 
-def test_outpaint_lora_applies_only_in_outpaint(monkeypatch):
+def test_outpaint_lora_applies_only_in_outpaint(monkeypatch, tmp_path):
+    import folder_paths
     from nodes.unicanvas.models import qwen_image21
 
     calls = []
+    installed = tmp_path / qwen_image21.QWEN21_OUTPAINT_LORA_NAME
+    installed.parent.mkdir(parents=True)
+    installed.touch()
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name)
+                        if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: [qwen_image21.QWEN21_OUTPAINT_LORA_NAME])
     monkeypatch.setattr(qwen_image21, "resolve_qwen21_outpaint_lora", lambda: qwen_image21.QWEN21_OUTPAINT_LORA_NAME)
     monkeypatch.setattr("nodes.unicanvas.loras._apply_lora_cached", lambda m, c, name, strength, clip_strength=None: calls.append(name) or (m, c))
     module = _get_unicanvas_model_module("qwen_image21")

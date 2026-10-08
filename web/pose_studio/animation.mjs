@@ -1669,7 +1669,17 @@ export class PoseAnimationTimeline {
         this.frameInput.type = "number";
         this.frameInput.min = "0";
         this.frameInput.title = "Current frame number";
-        this.frameInput.addEventListener("change", () => this.setFrame(this.frameInput.value));
+        for (const type of ["input", "change"]) {
+            this.frameInput.addEventListener(type, () => {
+                const value = this.frameInput.value;
+                if (value !== "" && Number.isFinite(Number(value))) {
+                    this.setFrame(value, { scrub: type === "input", force: type === "change" });
+                } else if (type === "change") {
+                    this.setFrame(this.state.currentFrame, { force: true });
+                }
+            });
+        }
+        this.frameInput.addEventListener("blur", () => this.updateToolbar());
 
         this.status = document.createElement("span");
         this.status.className = "vnccs-ps-tl-status";
@@ -1723,13 +1733,6 @@ export class PoseAnimationTimeline {
         this.fpsInput.max = String(MAX_ANIMATION_FPS);
         this.fpsInput.step = "0.001";
         this.fpsInput.title = "Animation frame rate";
-        this.fpsInput.addEventListener("change", () => {
-            retimeAnimationTiming(this.state, { fps: this.fpsInput.value });
-            this._clearSelection();
-            this.render();
-            this.onFrameChange(this.state.currentFrame, { settings: true });
-            this.onStateChange({ type: "timing" });
-        });
 
         this.durationInput = document.createElement("input");
         this.durationInput.type = "number";
@@ -1738,13 +1741,33 @@ export class PoseAnimationTimeline {
         this.durationInput.max = "600";
         this.durationInput.step = "0.001";
         this.durationInput.title = "Animation duration in seconds";
-        this.durationInput.addEventListener("change", () => {
-            retimeAnimationTiming(this.state, { duration: this.durationInput.value });
-            this._clearSelection();
-            this.render();
-            this.onFrameChange(this.state.currentFrame, { settings: true });
-            this.onStateChange({ type: "timing" });
-        });
+        for (const [input, key] of [[this.fpsInput, "fps"], [this.durationInput, "duration"]]) {
+            for (const type of ["input", "change"]) {
+                input.addEventListener(type, () => {
+                    const value = Number(input.value);
+                    const valid = input.value !== "" && Number.isFinite(value) && value > 0;
+                    if (!valid && (type === "input" || !this._timingBaseline)) return;
+                    if (valid) {
+                        if (!this._timingBaseline) {
+                            this._timingBaseline = cloneJSON(this.state);
+                            this.onStateChange({ type: "timingStart", transient: true });
+                        }
+                        // Preview from the gesture's start, so temporary low FPS cannot merge keys permanently.
+                        Object.assign(this.state, cloneJSON(this._timingBaseline));
+                        retimeAnimationTiming(this.state, { [key]: value });
+                    }
+                    this._clearSelection();
+                    this.onStateChange({ type: "timing", transient: type === "input" });
+                    this.render();
+                    this.onFrameChange(this.state.currentFrame, { settings: true, transient: true });
+                    if (type === "change") this._timingBaseline = null;
+                });
+            }
+            input.addEventListener("blur", () => {
+                this._toolbarTimingSignature = null;
+                this.updateToolbar();
+            });
+        }
 
         const fpsLabel = document.createElement("label");
         fpsLabel.className = "vnccs-ps-tl-compact-label";
@@ -2246,6 +2269,7 @@ export class PoseAnimationTimeline {
 
     setState(state) {
         this.stopPlayback();
+        this._timingBaseline = null;
         this.state = state;
         this._clearSelection();
         this.render();
@@ -2399,7 +2423,7 @@ export class PoseAnimationTimeline {
         if (!this.state) return;
         const fps = getAnimationFPS(this.state);
         const frameValue = String(this.state.currentFrame);
-        if (this.frameInput.value !== frameValue) this.frameInput.value = frameValue;
+        if (document.activeElement !== this.frameInput && this.frameInput.value !== frameValue) this.frameInput.value = frameValue;
         const selectionStatus = this.selectedKeys.size ? ` · ${this.selectedKeys.size} key${this.selectedKeys.size === 1 ? "" : "s"}` : "";
         const status = `Frame ${this.state.currentFrame} · ${(this.state.currentFrame / fps).toFixed(2)}s${selectionStatus}`;
         if (this.status.textContent !== status) this.status.textContent = status;
@@ -2408,10 +2432,10 @@ export class PoseAnimationTimeline {
         if (this._toolbarTimingSignature !== timingSignature) {
             this._toolbarTimingSignature = timingSignature;
             this.frameInput.max = String(this.state.frameCount - 1);
-            this.fpsInput.value = String(Number(fps.toFixed(3)));
+            if (document.activeElement !== this.fpsInput) this.fpsInput.value = String(Number(fps.toFixed(3)));
             this.durationInput.min = String(MIN_FRAME_COUNT / fps);
             this.durationInput.max = String(MAX_FRAME_COUNT / fps);
-            this.durationInput.value = String(Number(this.state.duration.toFixed(3)));
+            if (document.activeElement !== this.durationInput) this.durationInput.value = String(Number(this.state.duration.toFixed(3)));
         }
 
         const flagsSignature = `${this._playing}|${!!this.state.autoKey}|${!!this.state.loop}`;

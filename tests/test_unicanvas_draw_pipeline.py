@@ -118,6 +118,39 @@ def test_plugin_family_runs_through_the_default_pipeline(register):
     assert family.log == [("encode", "a cat"), ("encode", "blurry"), ("empty", 64, 64), ("sample", "M", 1.0)]
 
 
+@pytest.mark.parametrize("crop", [False, True])
+@pytest.mark.parametrize("channels", [3, 4])
+def test_graph_tensor_matches_final_saved_pixels_and_size(register, monkeypatch, crop, channels):
+    from types import SimpleNamespace
+    from nodes.unicanvas.crop_stitch import CropPlan
+    from nodes.unicanvas.imaging import _image_tensor_to_pil_list
+
+    saved = []
+    monkeypatch.setattr(draw_pipeline, "_save_temp_image", lambda image, prefix: saved.append(image.copy()) or {"filename": prefix})
+    request = SimpleNamespace(settings={}, mode="txt2img", denoise=1, draw_id="output", steps=1,
+                              payload={"return_tensor": True}, task=SimpleNamespace(key="text_to_image"))
+    pipeline = ImageDrawPipeline(EchoFamily(), request)
+    ctx = pipeline.ctx
+    ctx.decoded = torch.zeros(2, 64, 64, channels)
+    ctx.decoded[0, :, :, 0] = 1
+    ctx.decoded[1, :, :, 1] = 1
+    if channels == 4:
+        ctx.decoded[:, :, :, 3] = 1
+    ctx.result_images = _image_tensor_to_pil_list(ctx.decoded)
+    ctx.output_size = (128, 128)
+    if crop:
+        ctx.full_source_rgba = Image.new("RGBA", (128, 128), (0, 0, 255, 255))
+        ctx.crop_plan = CropPlan(box=(48, 48, 80, 80), full_size=(128, 128), work_size=(64, 64))
+    pipeline.fit_to_output()
+    result = pipeline.save_result()
+    returned = _image_tensor_to_pil_list(result["tensor"])
+    assert result["tensor"].shape[:3] == (2, 128, 128)
+    assert [image.tobytes() for image in returned] == [image.tobytes() for image in saved]
+    if crop:
+        assert returned[0].getpixel((0, 0)) == (0, 0, 255, 255)[:channels]
+        assert returned[0].getpixel((64, 64)) == (255, 0, 0, 255)[:channels]
+
+
 class EchoPipeline(ImageDrawPipeline):
     def run(self):
         return {"status": "custom", "task": self.request.task.key, "family": self.module.key}

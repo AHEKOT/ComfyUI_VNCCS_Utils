@@ -22,6 +22,7 @@ def applied(monkeypatch):
         return model, clip
 
     monkeypatch.setattr(loras, "_apply_lora_cached", fake_apply)
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name.lower()}")
     return calls
 
 
@@ -161,7 +162,13 @@ def test_no_family_overrides_apply_loras():
         assert type(module).apply_loras is UniCanvasModelModule.apply_loras, module.key
 
 
-def test_a_lora_is_never_applied_twice(applied):
+def test_a_lora_is_never_applied_twice(applied, monkeypatch):
+    aliases = {"viggle/Turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "viggle/turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "Turbo.safetensors": "/loras/viggle/turbo.safetensors",
+               "loras/turbo.safetensors": "/loras/viggle/turbo.safetensors"}
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: aliases.get(name, f"/loras/{name}"))
     rules = (LoraRequirement(name_setting="turbo"), LoraRequirement(name_setting="again"))
     # The linked config stack already carries the turbo file: the family rule skips it.
     settings = {
@@ -183,7 +190,8 @@ def test_a_lora_is_never_applied_twice(applied):
         {"name": "sub/style.safetensors", "strength": 0.9},
         {"name": "Turbo.safetensors", "strength": 1.0},
     ], ["viggle/turbo.safetensors"])
-    assert applied == [("style.safetensors", 0.0, None), ("style.safetensors", 0.6, None)]
+    assert applied == [("style.safetensors", 0.0, None), ("style.safetensors", 0.6, None),
+                       ("sub/style.safetensors", 0.9, None)]
 
 
 def test_vncss_config_applies_each_lora_once(monkeypatch):
@@ -198,4 +206,50 @@ def test_vncss_config_applies_each_lora_once(monkeypatch):
         {"name": "b.safetensors"},
     ])
     vncss_config.apply_lora_stack("m", "c", stack)
-    assert calls == ["A.safetensors", "b.safetensors"]
+    assert calls == ["A.safetensors", "dir/a.safetensors", "b.safetensors"]
+
+
+def test_different_lora_files_with_same_basename_both_apply(applied, monkeypatch):
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name}")
+    _apply_lora_stack("m", "c", [{"name": "portraits/adapter.safetensors"},
+                                  {"name": "styles/adapter.safetensors"},
+                                  {"name": "portraits/adapter.safetensors"}])
+    assert [name for name, *_ in applied] == ["portraits/adapter.safetensors", "styles/adapter.safetensors"]
+
+
+def test_loaded_lora_weights_are_not_retained_by_a_global_cache(monkeypatch):
+    import weakref
+    import comfy.sd
+    import comfy.utils
+
+    class Weights:
+        pass
+
+    references = []
+
+    def load(path, safe_load):
+        weights = Weights()
+        references.append(weakref.ref(weights))
+        return weights
+
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: f"/loras/{name}")
+    monkeypatch.setattr(comfy.utils, "load_torch_file", load)
+    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda model, clip, weights, *args: (model, clip))
+    for name in ("a", "b", "a"):
+        assert loras._apply_lora_cached("m", "c", name, 1) == ("m", "c")
+    assert len(references) == 3
+    assert all(reference() is None for reference in references)
+
+
+def test_lora_identity_resolves_installed_files_and_default_aliases(tmp_path, monkeypatch):
+    import folder_paths
+
+    for name in ("portraits/adapter.safetensors", "styles/adapter.safetensors"):
+        file = tmp_path / name
+        file.parent.mkdir()
+        file.touch()
+    monkeypatch.setattr(folder_paths, "get_full_path", lambda kind, name: str(tmp_path / name)
+                        if (tmp_path / name).is_file() else None)
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: ["portraits/adapter.safetensors", "styles/adapter.safetensors"])
+    assert not loras._lora_name_in("styles/adapter.safetensors", ["portraits/adapter.safetensors"])
+    assert loras._lora_name_in("adapter.safetensors", ["portraits/adapter.safetensors"])

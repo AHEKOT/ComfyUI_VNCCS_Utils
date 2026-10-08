@@ -54,6 +54,88 @@ def preview_data_url():
 
 
 class FactoryLibraryTests(unittest.TestCase):
+    def test_invalid_manifest_cannot_replace_or_remove_installed_assets(self):
+        valid = {"asset_id": "a" * 24, "category": "Things", "package_path": "a.vnccs3d", "meta_path": "a.json"}
+        invalid = [None, {}, {"assets": None}, {"assets": False}, {"assets": {}},
+                   {"assets": [None]}, {"assets": [{}]},
+                   {"assets": [{**valid, "asset_id": ""}]},
+                   {"assets": [{**valid, "category": []}]},
+                   {"assets": [{**valid, "package_sha256": "invalid"}]},
+                   {"assets": [{**valid, "meta_path": "/absolute.json"}]},
+                   {"assets": [valid, {**valid, "asset_id": "b" * 24, "meta_path": ""}]},
+                   {"assets": [{**valid, "package_path": "../a.vnccs3d"}]},
+                   {"assets": [valid, valid]}]
+        paths = self.library._paths("owner/repo", "Things", "a" * 24)
+        paths["package"].write_bytes(b"installed package")
+        paths["meta"].write_bytes(b"installed metadata")
+        manifest = self.root / "remote.json"
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = mock.Mock(return_value=str(manifest))
+        for value in invalid:
+            with self.subTest(value=value):
+                manifest.write_text(json.dumps(value))
+                hub.hf_hub_download.reset_mock()
+                with mock.patch.dict(sys.modules, {"huggingface_hub": hub}):
+                    with self.assertRaises(ValueError):
+                        self.library._sync_repository("owner/repo", "test", manage_progress=False)
+                self.assertEqual(hub.hf_hub_download.call_count, 1)
+                self.assertEqual(paths["package"].read_bytes(), b"installed package")
+                self.assertEqual(paths["meta"].read_bytes(), b"installed metadata")
+
+    def test_explicit_empty_manifest_removes_obsolete_downloads(self):
+        paths = self.library._paths("owner/repo", "Things", "a" * 24)
+        paths["package"].write_bytes(b"obsolete")
+        manifest = self.root / "remote.json"
+        manifest.write_text('{"assets": []}')
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = lambda **kwargs: str(manifest)
+        with mock.patch.dict(sys.modules, {"huggingface_hub": hub}):
+            self.library._sync_repository("owner/repo", "test", manage_progress=False)
+        self.assertFalse(paths["package"].exists())
+
+    def test_parallel_refreshes_do_not_overlap_file_updates(self):
+        manifest = self.root / "remote.json"
+        manifest.write_text(json.dumps({"assets": [{"asset_id": "a" * 24, "category": "Things",
+                                                   "package_path": "a.vnccs3d", "meta_path": "a.json"}]}))
+        package = self.root / "remote.vnccs3d"
+        package.write_bytes(b"package")
+        metadata = self.root / "metadata.json"
+        metadata.write_text('{}')
+        first_entered, release, second_started, second_entered = (threading.Event() for _ in range(4))
+
+        def download(**kwargs):
+            if kwargs["filename"] == self.library.MANIFEST_NAME:
+                if not first_entered.is_set():
+                    first_entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("first refresh was not released")
+                else:
+                    second_entered.set()
+                return str(manifest)
+            return str(package if kwargs["filename"] == "a.vnccs3d" else metadata)
+
+        def second_refresh():
+            second_started.set()
+            self.library._sync_repository("owner/repo", "second", manage_progress=False)
+
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = download
+        with (mock.patch.dict(sys.modules, {"huggingface_hub": hub}),
+              mock.patch.object(self.library, "repository_progress_update"), ThreadPoolExecutor(max_workers=2) as pool):
+            first = pool.submit(self.library._sync_repository, "owner/repo", "first", manage_progress=False)
+            try:
+                self.assertTrue(first_entered.wait(5))
+                second = pool.submit(second_refresh)
+                self.assertTrue(second_started.wait(5))
+                self.assertFalse(second_entered.wait(0.2))
+            finally:
+                release.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        paths = self.library._paths("owner/repo", "Things", "a" * 24)
+        self.assertEqual(paths["package"].read_bytes(), b"package")
+        self.assertEqual(json.loads(paths["meta"].read_text())["repository"], "owner/repo")
+
     def test_bad_download_checksum_preserves_installed_package(self):
         paths = self.library._paths("owner/repo", "Things", "a" * 24)
         paths["package"].write_bytes(b"known good package")

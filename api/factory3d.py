@@ -4416,13 +4416,14 @@ def register_routes(routes: Any) -> None:
             if not _content_length_ok(request, MAX_PREVIEW_BYTES + 1024 * 1024):
                 return web.json_response({"error": "preview upload is too large"}, status=413)
             scene_id = _validate_id(request.match_info["scene_id"], "scene id")
-            load_scene(scene_id)
+            await asyncio.to_thread(load_scene, scene_id)
             post = await request.post()
             image_field = post.get("image")
             if image_field is None or not hasattr(image_field, "file"):
                 raise ValueError("missing scene preview image")
-            image_bytes = image_field.file.read(MAX_PREVIEW_BYTES + 1)
-            scene = store_scene_preview(
+            image_bytes = await asyncio.to_thread(image_field.file.read, MAX_PREVIEW_BYTES + 1)
+            scene = await asyncio.to_thread(
+                store_scene_preview,
                 scene_id,
                 image_bytes,
                 post.get("revision"),

@@ -43,6 +43,7 @@ MAX_PREVIEW_BYTES = 16 * 1024 * 1024
 MAX_PACKAGE_FILES = 4096
 MAX_EXTRACTED_BYTES = 16 * 1024 * 1024 * 1024
 _SAFE_PART = re.compile(r"[^A-Za-z0-9._ -]+")
+_REPOSITORY_SYNC_LOCK = threading.Lock()
 
 
 def _pose_library_call(name: str, *args: Any, **kwargs: Any) -> Any:
@@ -1256,79 +1257,99 @@ def _sync_repository(
     if manage_progress:
         repository_progress_start(task_id, f"Reading {repo_id} manifest…")
     try:
-        from huggingface_hub import hf_hub_download
+        with _REPOSITORY_SYNC_LOCK:
+            from huggingface_hub import hf_hub_download
 
-        manifest_path = Path(
-            hf_hub_download(
-                repo_id=repo_id,
-                filename=MANIFEST_NAME,
-                repo_type="model",
-                token=False,
+            manifest_path = Path(
+                hf_hub_download(
+                    repo_id=repo_id,
+                    filename=MANIFEST_NAME,
+                    repo_type="model",
+                    token=False,
+                )
             )
-        )
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assets = manifest.get("assets") or []
-        if not isinstance(assets, list):
-            raise ValueError("repository manifest has no assets list")
-        root = _root() / _repo_dir(repo_id)
-        expected: set[Path] = set()
-        total = max(1, len(assets) * 3)
-        completed = 0
-        for raw in assets:
-            if not isinstance(raw, dict):
-                continue
-            category = _category(raw.get("category"))
-            asset_id = _asset_id(raw.get("asset_id"))
-            paths = _paths(repo_id, category, asset_id)
-            mapping = {
-                "package": raw.get("package_path"),
-                "meta": raw.get("meta_path"),
-                "preview": raw.get("preview_path"),
-            }
-            for kind, remote_path in mapping.items():
-                if not remote_path:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict) or not isinstance(manifest.get("assets"), list):
+                raise ValueError("repository manifest has no assets list")
+            assets = manifest["assets"]
+            seen = set()
+            for raw in assets:
+                if not isinstance(raw, dict) or not isinstance(raw.get("asset_id"), str) or not raw["asset_id"]:
+                    raise ValueError("repository manifest has an invalid asset")
+                if raw.get("category") is not None and not isinstance(raw["category"], str):
+                    raise ValueError("repository manifest has an invalid category")
+                identity = (_category(raw.get("category")), _asset_id(raw["asset_id"]))
+                if identity in seen:
+                    raise ValueError("repository manifest has duplicate assets")
+                seen.add(identity)
+                for key in ("package_path", "meta_path", "preview_path"):
+                    remote_path = raw.get(key)
+                    if key == "preview_path" and remote_path in (None, ""):
+                        continue
+                    if (not isinstance(remote_path, str) or not remote_path.strip()
+                        or "\\" in remote_path or "\x00" in remote_path or ":" in remote_path or PurePosixPath(remote_path).is_absolute()
+                        or ".." in PurePosixPath(remote_path).parts or remote_path == "."):
+                        raise ValueError(f"repository manifest has an invalid {key}")
+                checksum = raw.get("package_sha256")
+                if checksum not in (None, "") and (not isinstance(checksum, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", checksum)):
+                    raise ValueError("repository manifest has an invalid package checksum")
+            root = _root() / _repo_dir(repo_id)
+            expected: set[Path] = set()
+            total = max(1, len(assets) * 3)
+            completed = 0
+            for raw in assets:
+                category = _category(raw.get("category"))
+                asset_id = _asset_id(raw.get("asset_id"))
+                paths = _paths(repo_id, category, asset_id)
+                mapping = {
+                    "package": raw.get("package_path"),
+                    "meta": raw.get("meta_path"),
+                    "preview": raw.get("preview_path"),
+                }
+                for kind, remote_path in mapping.items():
+                    if not remote_path:
+                        completed += 1
+                        continue
+                    repository_progress_update(
+                        task_id,
+                        message=f"Downloading {raw.get('name') or asset_id}",
+                        current_file=str(remote_path),
+                        progress=completed / total * 100,
+                    )
+                    cached = Path(
+                        hf_hub_download(
+                            repo_id=repo_id,
+                            filename=str(remote_path),
+                            repo_type="model",
+                            token=False,
+                        )
+                    )
+                    paths[kind].parent.mkdir(parents=True, exist_ok=True)
+                    temporary = paths[kind].with_suffix(paths[kind].suffix + ".tmp")
+                    shutil.copy2(cached, temporary)
+                    if (
+                        kind == "package"
+                        and raw.get("package_sha256")
+                        and _sha256(temporary).lower()
+                        != str(raw["package_sha256"]).lower()
+                    ):
+                        temporary.unlink(missing_ok=True)
+                        raise ValueError(
+                            f"SHA256 mismatch for {raw.get('name') or asset_id}"
+                        )
+                    os.replace(temporary, paths[kind])
+                    expected.add(paths[kind].resolve())
                     completed += 1
-                    continue
-                repository_progress_update(
-                    task_id,
-                    message=f"Downloading {raw.get('name') or asset_id}",
-                    current_file=str(remote_path),
-                    progress=completed / total * 100,
-                )
-                cached = Path(
-                    hf_hub_download(
-                        repo_id=repo_id,
-                        filename=str(remote_path),
-                        repo_type="model",
-                        token=False,
-                    )
-                )
-                paths[kind].parent.mkdir(parents=True, exist_ok=True)
-                temporary = paths[kind].with_suffix(paths[kind].suffix + ".tmp")
-                shutil.copy2(cached, temporary)
-                if (
-                    kind == "package"
-                    and raw.get("package_sha256")
-                    and _sha256(temporary).lower()
-                    != str(raw["package_sha256"]).lower()
-                ):
-                    temporary.unlink(missing_ok=True)
-                    raise ValueError(
-                        f"SHA256 mismatch for {raw.get('name') or asset_id}"
-                    )
-                os.replace(temporary, paths[kind])
-                expected.add(paths[kind].resolve())
-                completed += 1
-            if paths["meta"].is_file():
-                record = json.loads(paths["meta"].read_text(encoding="utf-8"))
-                record["repository"] = repo_id
-                record["category"] = category
-                _atomic_json(paths["meta"], record)
-        for path in root.glob("*/*"):
-            if path.is_file() and path.name != MANIFEST_NAME and path.resolve() not in expected:
-                path.unlink(missing_ok=True)
-        if manage_progress:
-            repository_progress_finish(task_id, f"{len(assets)} 3D assets synchronized.")
+                if paths["meta"].is_file():
+                    record = json.loads(paths["meta"].read_text(encoding="utf-8"))
+                    record["repository"] = repo_id
+                    record["category"] = category
+                    _atomic_json(paths["meta"], record)
+            for path in root.glob("*/*"):
+                if path.is_file() and path.name != MANIFEST_NAME and path.resolve() not in expected:
+                    path.unlink(missing_ok=True)
+            if manage_progress:
+                repository_progress_finish(task_id, f"{len(assets)} 3D assets synchronized.")
     except Exception as exc:
         if manage_progress:
             repository_progress_fail(task_id, exc)

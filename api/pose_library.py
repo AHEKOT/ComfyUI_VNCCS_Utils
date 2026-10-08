@@ -535,38 +535,6 @@ def get_local_repository_info():
         "last_publish_result": config.get("pose_library_last_publish_result") or None,
     }
 
-def load_remote_pose_manifest(repo_id, token=False):
-    try:
-        from huggingface_hub import hf_hub_download
-        manifest_file = hf_hub_download(
-            repo_id=repo_id,
-            filename="pose_library.json",
-            repo_type="model",
-            token=False,
-            local_files_only=False,
-        )
-        with open(manifest_file, "r", encoding="utf-8") as f:
-            manifest = json.load(f)
-        if not isinstance(manifest, dict):
-            return {}
-        return manifest
-    except Exception:
-        return {}
-
-def remote_file_sha256(repo_id, path_in_repo, token=False):
-    try:
-        from huggingface_hub import hf_hub_download
-        path = hf_hub_download(
-            repo_id=repo_id,
-            filename=path_in_repo,
-            repo_type="model",
-            token=False,
-            local_files_only=False,
-        )
-        return sha256_file(path)
-    except Exception:
-        return ""
-
 def infer_category_from_hub_path(path_in_repo):
     parts = [part for part in str(path_in_repo or "").replace("\\", "/").split("/") if part]
     if len(parts) >= 3 and parts[0] in {"poses", "previews", "animations", "animation_previews"}:
@@ -1549,6 +1517,10 @@ async def save_pose(request):
                 preview_b64,
                 asset_type,
             )
+
+        # Check after preview preparation: another save may finish while it awaits.
+        if os.path.exists(pose_path) and (not old_pose_path or os.path.abspath(old_pose_path) != os.path.abspath(pose_path)):
+            return web.json_response({"error": "A library item with this name already exists"}, status=409)
 
         fd, pose_tmp_path = tempfile.mkstemp(prefix="vnccs_pose_", suffix=".json", dir=pose_dir)
         with os.fdopen(fd, "w", encoding="utf-8") as f:

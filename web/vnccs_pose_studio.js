@@ -5272,17 +5272,31 @@ class PoseStudioWidget {
             boneNames: [],
             onFrameChange: (frame, options = {}) => {
                 this.applyAnimationFrame(frame, {
-                    transient: options.playback || options.scrub,
+                    transient: options.playback || options.scrub || options.transient,
                     updateTimeline: false,
                 });
             },
             onStateChange: (change = {}) => {
-                if (change.transient) return;
+                if (change.type === "timingStart") {
+                    this._timelineTimingBaseline = (this.characters || [])
+                        .filter(character => character.animationState && character.animationState !== this.animationState)
+                        .map(character => [character, JSON.stringify(character.animationState)]);
+                    return;
+                }
+                if (change.transient && change.type !== "timing") return;
+                if (change.type === "timing") {
+                    for (const [character, snapshot] of this._timelineTimingBaseline || []) {
+                        Object.assign(character.animationState, JSON.parse(snapshot));
+                    }
+                }
                 this.syncSharedTimelineFromActive();
                 this.retimeAllCharacterAnimations(this.sharedTimeline);
                 this.animationTimeline?.render();
                 this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
-                this.syncToNode(false, { skipCapture: true });
+                if (!change.transient) {
+                    this._timelineTimingBaseline = null;
+                    this.syncToNode(false, { skipCapture: true });
+                }
             },
             onRequestKey: (trackName, frame) => this.addAnimationKey(trackName, frame),
             onTrackSelect: (trackName) => {
