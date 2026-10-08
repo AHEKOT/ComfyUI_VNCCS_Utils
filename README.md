@@ -180,21 +180,7 @@ An interactive node with a visual widget for controlling camera position. It is 
 *   **Trigger Word Toggle**: Enable or disable the `<sks>` trigger from the widget.
 *   **Random Range Toggle**: Randomize across the full 360° or restrict random views to the front ±45° while keeping elevation and distance random.
 
-### VNCCS QWEN Detailer
-**[Example Workflow](workflows/VNCCS_Utils%20QwenDetailer_ChangeEmotion.json)**
-
-A QWEN-Image-Edit2511 detailer for enhancing detected regions such as faces, hands, and objects with vision-guided instructions.
-
-*   **Smart Cropping**: Automatically squares crops and handles padding.
-*   **Vision-Guided Enhancement**: Uses QWEN-generated instructions or user prompts.
-*   **Drift Fix**: Helps keep the enhanced area aligned with the original composition.
-*   **Quality of Life Tools**: Includes color matching, Poisson blending, and upscaling options.
-*   **Inpainting Mode**: Supports mask-based editing and filling black areas.
-*   **QWEN Options**: Supports QWEN-Image-Edit2511-specific options such as `distortion_fix` and `qwen_2511` mode.
-
 ### VNCCS Model Manager & Selector
-**[Example Workflow](workflows/VNCCS_Utils%20Model%20Loader%20ShowCase.json)**
-
 A system for managing and selecting LoRAs and checkpoints directly in ComfyUI, with support for Civitai and HuggingFace.
 
 #### VNCCS Model Manager

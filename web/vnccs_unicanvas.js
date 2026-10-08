@@ -1121,8 +1121,10 @@ class UniCanvasWidget {
     installUniCanvasLayerTools(this);
     this._removeScaleEdit = installInferenceScaleEdit(this);
     this._createInitialLayers();
-    this._loadFromNode().finally(() => {
-      if (this._disposed) return;
+    const initialRestore = this._loadFromNode();
+    const initialRevision = this._stateLoadRevision;
+    initialRestore.finally(() => {
+      if (this._disposed || initialRevision !== this._stateLoadRevision) return;
       this._isRestoring = false;
       if (this.settings.debug_mode) this.applyDebugMode();
       this.fitInitialView();
@@ -8181,6 +8183,24 @@ class UniCanvasWidget {
   }
 
 
+  mergeCachedState(state, cached) {
+    const cachedById = new Map(cached.layers.map(layer => [layer.id, layer]));
+    return { ...cached, ...state,
+      settings: { ...(cached.settings || {}), ...(state.settings || {}) },
+      layers: state.layers.map(layer => {
+        const pixels = layer.cached === false ? null : cachedById.get(layer.id);
+        const hiresRect = layer.hiresRect === undefined ? pixels?.hiresRect : layer.hiresRect;
+        return { ...layer,
+          dataURL: layer.dataURL || pixels?.dataURL,
+          crop: layer.dataURL ? layer.crop : layer.crop || pixels?.crop,
+          hiresRect,
+          hiresDataURL: layer.hiresDataURL || (hiresRect ? pixels?.hiresDataURL : null),
+          pose: layer.type === "pose" ? mergePoseCache(layer.pose, cachedById.get(layer.id)?.pose) : layer.pose,
+        };
+      }),
+    };
+  }
+
   async _loadFromNode() {
     const loadRevision = this._stateLoadRevision = (this._stateLoadRevision || 0) + 1;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
@@ -8188,13 +8208,11 @@ class UniCanvasWidget {
     try {
       let state = JSON.parse(widget.value);
       if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) return;
-      // The workflow's own settings (model, CLIP, VAE, sampler, LoRAs...) are the newest ones: the
-      // server cache and the local backup only refresh with the layer pixels, so they must never
-      // win over what was saved in the workflow.
+      const workflowState = state;
       const workflowSettings = state.settings && typeof state.settings === "object" ? state.settings : null;
-      const withWorkflowSettings = (next) => (workflowSettings
-        ? { ...next, settings: { ...(next?.settings || {}), ...workflowSettings } }
-        : next);
+      // Workflow metadata wins; caches supply pixels only for the workflow's surviving layers.
+      const sharedCache = state.state_id && this.node.graph?._nodes?.some(node =>
+        node !== this.node && !node.uniCanvasWidget?._disposed && node.uniCanvasWidget?.stateCacheId === state.state_id);
       if (state.state_id) this.stateCacheId = state.state_id;
       let cacheRestoreFailed = false;
       if (state.storage === "server_cache" && state.state_id) {
@@ -8206,16 +8224,7 @@ class UniCanvasWidget {
           this.stateUploadRevision = Math.max(this.stateUploadRevision || 0, Number(cached?.revision) || 0);
           if (cached?.state?.version && Array.isArray(cached.state.layers)) {
             if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
-            if (state.panorama && cached.state.panorama) {
-              const cachedById = new Map(cached.state.layers.map(layer => [layer.id, layer]));
-              state = { ...cached.state, ...state, layers: state.layers.map(layer => ({
-                ...cachedById.get(layer.id), ...layer,
-                dataURL: layer.dataURL || cachedById.get(layer.id)?.dataURL,
-                crop: layer.crop || cachedById.get(layer.id)?.crop,
-                pose: mergePoseCache(layer.pose, cachedById.get(layer.id)?.pose),
-              })) };
-            } else state = cached.state;
-            this.stateCacheId = state.state_id || this.stateCacheId;
+            state = this.mergeCachedState(workflowState, cached.state);
           }
         } catch (err) {
           cacheRestoreFailed = true;
@@ -8226,7 +8235,7 @@ class UniCanvasWidget {
       if (!this.stateHasLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         if (backup) {
-          state = backup;
+          state = this.mergeCachedState(workflowState, backup);
           this.setStatus(cacheRestoreFailed ? "Restored canvas from local backup" : "Restored canvas backup");
         } else if (cacheRestoreFailed) {
           this.setStatus("State cache missing and no local image backup found", true);
@@ -8234,13 +8243,22 @@ class UniCanvasWidget {
           return;
         }
       }
-      state = withWorkflowSettings(state);
-      if (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state)) {
+      if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+      const forkCache = sharedCache || (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state));
+      if (forkCache) {
         this.stateCacheId = this.createStateCacheId();
         this.stateBackupKey = null;
         state.state_id = this.stateCacheId;
       }
-      if (!this._disposed && loadRevision === this._stateLoadRevision) await this.applySerializedState(state);
+      const restored = await this.applySerializedState(state);
+      if (restored && forkCache && !this._disposed && loadRevision === this._stateLoadRevision) {
+        // Copy pixels before changing the workflow reference, so an immediate save can reopen it.
+        if (await this.uploadStatePayload(state)) {
+          const compact = { ...workflowState, state_id: this.stateCacheId };
+          if (state.panorama && await this.uploadOutputSnapshot()) compact.output_id = this.getOutputCacheId();
+          if (!this._disposed && loadRevision === this._stateLoadRevision) widget.value = JSON.stringify(compact);
+        }
+      }
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
     }
@@ -8259,10 +8277,11 @@ class UniCanvasWidget {
     try {
       if (!this.stateHasLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
-        if (backup && this.stateHasLayerPixels(backup)) {
-          state = backup;
+        const merged = backup ? this.mergeCachedState(state, backup) : null;
+        if (merged && this.stateHasLayerPixels(merged)) {
+          state = merged;
           this.setStatus("Recovered canvas images from local backup");
-        } else if (this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+        } else if (state.layers.some(layer => layer.cached !== false) && this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
           this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
           // The existing pixels are protected, but the saved model/generation settings still apply.
           if (state.settings) this.applySerializedSettings(state.settings);
@@ -8337,6 +8356,7 @@ class UniCanvasWidget {
       this.updatePanoramaControls();
       this.renderLayerList();
       previous.panorama?.dispose();
+      return true;
     } catch (err) {
       if (previous) Object.assign(this, previous);
       this.updatePanoramaControls();
@@ -8767,7 +8787,7 @@ class UniCanvasWidget {
     this.poseEditor?.dispose();
     if (this._disposed) return;
     try {
-      void this.flushStateUpload(true);
+      if (!this._isRestoring) void this.flushStateUpload(true);
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);
     }
@@ -8912,7 +8932,10 @@ app.registerExtension({
         if (!this.uniCanvasWidget) return;
         syncUniCanvasDOMWidgetWidth(this);
         this.uniCanvasWidget._isRestoring = true;
-        await this.uniCanvasWidget._loadFromNode();
+        const restore = this.uniCanvasWidget._loadFromNode();
+        const revision = this.uniCanvasWidget._stateLoadRevision;
+        await restore;
+        if (!this.uniCanvasWidget || this.uniCanvasWidget._disposed || revision !== this.uniCanvasWidget._stateLoadRevision) return;
         this.uniCanvasWidget._isRestoring = false;
         this.uniCanvasWidget.renderLayerList();
         this.uniCanvasWidget.resize();

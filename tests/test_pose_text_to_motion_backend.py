@@ -621,6 +621,19 @@ class CharacterCountTests(unittest.TestCase):
 
 
 class RequestTests(unittest.TestCase):
+    def test_motion_memory_cleanup_preserves_other_workflows_live_models(self):
+        management = types.ModuleType("comfy.model_management")
+        management.cleanup_models = mock.Mock()
+        management.soft_empty_cache = mock.Mock()
+        management.unload_all_models = mock.Mock(side_effect=AssertionError("live models must stay loaded"))
+        comfy = types.ModuleType("comfy")
+        comfy.model_management = management
+        with mock.patch.dict(sys.modules, {"comfy": comfy, "comfy.model_management": management}):
+            BASE.free_comfy_vram()
+        management.cleanup_models.assert_called_once_with()
+        management.soft_empty_cache.assert_called_once_with()
+        management.unload_all_models.assert_not_called()
+
     def payload(self, **overrides):
         keypoints, _, _, _ = world_keypoints()
         data = {"prompt": "  a person  jumps ", "keypoints": {k: v.tolist() for k, v in keypoints.items()}}

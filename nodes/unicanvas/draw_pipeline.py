@@ -154,7 +154,7 @@ class ImageDrawPipeline:
             raise
 
     def free_after_interrupt(self) -> None:
-        """Stop pressed: drop every tensor the draw held and unload the models it put on the GPU."""
+        """Stop pressed: drop this draw's tensors and clean up unused models."""
         ctx = self.ctx
         ctx.model = ctx.clip = ctx.vae = ctx.positive = ctx.negative = ctx.latent = ctx.decoded = None
         ctx.image_tensor = ctx.reference_image_tensor = ctx.mask = None
@@ -166,7 +166,6 @@ class ImageDrawPipeline:
             _release_generation_state()
             import comfy.model_management as model_management
 
-            model_management.unload_all_models()
             model_management.cleanup_models()
         gc.collect()
         with contextlib.suppress(Exception):

@@ -3629,6 +3629,12 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
         scene = load_scene(scene_id)
         if scene.get("schema_version", 11) >= 12 and payload.get("schema_version") != 12:
             raise ValueError("This scene requires an Editor 12 writer; reload the extension before saving")
+        if "edit_revision" in payload:
+            revision = payload["edit_revision"]
+            if type(revision) is not int or revision < 0:
+                raise ValueError("edit_revision must be a non-negative integer")
+            if revision != scene["edit_revision"]:
+                raise RuntimeError("The scene changed in another editor; reload it before saving")
         visible_before = _visible_object_ids(scene)
         changed = False
         render_changed = False
@@ -3818,7 +3824,7 @@ def update_scene(scene_id: str, payload: Any) -> dict[str, Any]:
             if render != previous_render:
                 scene["render"] = render
                 changed = True
-                preview_changed = (
+                preview_changed = preview_changed or (
                     render["width"] != previous_render["width"]
                     or render["height"] != previous_render["height"]
                 )
@@ -4207,6 +4213,8 @@ def register_routes(routes: Any) -> None:
             if not _content_length_ok(request, MAX_SCENE_JSON_BYTES):
                 return web.json_response({"error": "scene update is too large"}, status=413)
             payload = await request.json()
+            if not isinstance(payload, dict) or "edit_revision" not in payload:
+                raise ValueError("Scene saves require edit_revision; reload the extension before saving")
             scene = update_scene(request.match_info["scene_id"], payload)
             return web.json_response(_public_scene(scene))
         except FileNotFoundError as exc:

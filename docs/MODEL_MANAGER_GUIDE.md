@@ -9,7 +9,6 @@ Registered nodes:
 | --- | --- | --- | --- |
 | VNCCS Position Control | `VNCCS_PositionControl` | `VNCCS` | Build a camera-angle prompt string from sliders. |
 | VNCCS Visual Camera Control | `VNCCS_VisualPositionControl` | `VNCCS` | Same prompt builder, controlled by the custom visual JS widget. |
-| VNCCS QWEN Detailer | `VNCCS_QWEN_Detailer` | `VNCCS/detailing` | Detect image regions, regenerate them with a Qwen image/edit model, and paste them back. |
 | VNCCS BBox Extractor | `VNCCS_BBox_Extractor` | `VNCCS/detailing` | Crop detected bounding-box regions into an image batch. |
 | VNCCS Model Manager | `VNCCS_ModelManager` | `VNCCS/manager` | Fetch a model manifest, display model install state, and queue downloads. |
 | VNCCS Model Selector | `VNCCS_ModelSelector` | `VNCCS/manager` | Select one manifest model and output a loader-compatible model path. |
@@ -97,89 +96,10 @@ to restrict azimuth to front-left (`315°`), front (`0°`), and front-right
 If the hidden JSON is missing or invalid, the node falls back to front,
 eye-level, medium shot, with `<sks>` enabled.
 
-## VNCCS QWEN Detailer
-
-`VNCCS QWEN Detailer` is a region-detailing node. It detects one or more regions
-with an Impact Pack-compatible `BBOX_DETECTOR`, crops each region, generates a
-replacement with a Qwen image/edit model, color-matches it if requested, and
-pastes it back into the original image.
-
-Required inputs:
-
-| Input | Type | Purpose |
-| --- | --- | --- |
-| `image` | `IMAGE` | Source image. Batches are rejected; use one image at a time. |
-| `bbox_detector` | `BBOX_DETECTOR` | Detector that returns Impact Pack-style SEGS. |
-| `model` | `MODEL` | Diffusion model used for the replacement crop. |
-| `clip` | `CLIP` | Qwen-compatible text/vision encoder. |
-| `vae` | `VAE` | VAE used for reference latent encoding and decode. |
-| `prompt` | `STRING` | User edit prompt. |
-| `threshold` | `FLOAT` | Detector confidence threshold. |
-| `dilation` | `INT` | Expands or shrinks detected crop regions. |
-| `drop_size` | `INT` | Detector minimum object size. |
-| `feather` | `INT` | Paste blending feather. |
-| `steps` | `INT` | Sampling steps. |
-| `cfg` | `FLOAT` | Classifier-free guidance. |
-| `seed` | `INT` | Sampling seed. |
-| `sampler_name` | enum | ComfyUI sampler. |
-| `scheduler` | enum | ComfyUI scheduler. |
-| `denoise` | `FLOAT` | Denoise strength for the crop generation. |
-| `tiled_vae_decode` | `BOOLEAN` | Decode generated crop with tiled VAE. |
-| `tile_size` | `INT` | Tile size for tiled decode. |
-
-Optional inputs:
-
-| Input | Type | Purpose |
-| --- | --- | --- |
-| `controlnet_image` | `IMAGE` | Optional control image. It is resized to match `image` if needed. |
-| `image2` | `IMAGE` | Optional second visual reference sent to Qwen. |
-| `sam_model_opt` | `SAM_MODEL` | Optional SAM refinement from Impact Pack. |
-| `segm_detector_opt` | `SEGM_DETECTOR` | Optional segmentation refinement from Impact Pack. |
-| `sam_detection_hint` | enum | SAM point/mask hint mode. |
-| `sam_dilation` | `INT` | SAM mask dilation. |
-| `sam_threshold` | `FLOAT` | SAM threshold. |
-| `sam_bbox_expansion` | `INT` | SAM bbox expansion. |
-| `sam_mask_hint_threshold` | `FLOAT` | SAM mask hint threshold. |
-| `sam_mask_hint_use_negative` | enum | Negative hint behavior. |
-| `target_size` | enum | Long-side target for Qwen crop processing. Available values include 512, 768, 1024, 1344, 1536, 2048. |
-| `upscale_method` | enum | Resize method: nearest-exact, bilinear, area, bicubic, or lanczos. |
-| `crop_method` | enum | `center` or `disabled`. |
-| `instruction` | `STRING` | System-style instruction prepended to the Qwen prompt template. |
-| `inpaint_mode` | `BOOLEAN` | Blacks out the detected bbox inside the crop and asks Qwen to fill it. |
-| `inpaint_prompt` | `STRING` | Prefix used when `inpaint_mode` is enabled. |
-| `color_match_method` | enum | `disabled` or `kornia_reinhard`. |
-| `seam_fix` | `BOOLEAN` | Uses Poisson blending when enabled; otherwise standard paste. |
-| `qwen_2511` | `BOOLEAN` | Applies the `reference_latents_method=index_timestep_zero` conditioning patch for Qwen 2.5/2.5.1-style workflows. |
-| `distortion_fix` | `BOOLEAN` | Squares the crop before Qwen processing and unsquares it before paste-back to reduce aspect drift. |
-
-Output:
-
-| Output | Type | Notes |
-| --- | --- | --- |
-| `image` | `IMAGE` | Original image with detected regions replaced. If no region is detected, the original image is returned. |
-
-Recommended workflow:
-
-1. Load an image.
-2. Connect an Impact Pack bbox detector, such as a face/person detector.
-3. Connect Qwen image/edit `MODEL`, `CLIP`, and `VAE`.
-4. Set `threshold` so only the intended region is detected.
-5. Start with `target_size=1024`, `steps=4`, `cfg=1.0`, `denoise=1.0`.
-6. Enable `distortion_fix` for faces, hands, or tall/narrow crops.
-7. Enable `color_match_method=kornia_reinhard` when the patch does not match the original image lighting.
-
-Important limits and behavior:
-
-- `image`, `controlnet_image`, and `image2` batches are rejected.
-- Detected regions smaller than 10 pixels in width or height are skipped.
-- `controlnet_image` is resized to match `image` before region cropping.
-- If `kornia` is not installed, color matching is skipped with a console warning.
-- If no valid segment remains after dilation/size checks, the original image is returned.
-
 ## VNCCS BBox Extractor
 
 `VNCCS BBox Extractor` is a utility node for checking detector regions. It runs
-the same bbox detector style as QWEN Detailer, crops all valid detections, pads
+an Impact Pack-compatible bbox detector, crops all valid detections, pads
 them to a common size, and returns them as an image batch.
 
 Inputs:
@@ -198,7 +118,7 @@ Output:
 | --- | --- | --- |
 | `images` | `IMAGE` | Batch of cropped detections. Returns a 1x1 black image if no valid region is detected. |
 
-Use this node before QWEN Detailer when you need to tune `threshold`,
+Use this node to tune `threshold`,
 `dilation`, or detector choice.
 
 ## VNCCS Model Manager
@@ -325,18 +245,6 @@ Outputs:
 - Only the fixed `MIUProject/VNCCS` manifest is accepted; model assets must be public Hugging Face files.
 - `local_path` must name a file inside a known model folder without escaping through symlinks.
 - Existing targets are preserved. Use a different versioned filename or manage replacement manually on disk.
-
-### QWEN Detailer returns the original image
-
-- No bbox segment was detected or all segments were smaller than 10 px.
-- Lower `threshold`, reduce negative `dilation`, or test with `VNCCS BBox Extractor`.
-- Make sure the detector returns Impact Pack-compatible SEGS.
-
-### QWEN Detailer crop looks warped
-
-- Enable `distortion_fix`.
-- Increase `target_size`.
-- Use `VNCCS BBox Extractor` to verify the crop is not too narrow or too loose.
 
 ### Pose Studio does not update from the UI
 

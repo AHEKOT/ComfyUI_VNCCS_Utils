@@ -57,15 +57,13 @@ class PoseLibraryProgressTests(unittest.TestCase):
 
         self.assertNotIn("finished", POSE_LIBRARY._REPOSITORY_PROGRESS)
 
-    def test_generated_manifest_uses_repository_specific_title(self):
-        manifest = POSE_LIBRARY.build_pose_manifest(
+    def test_manifest_uses_repository_specific_title(self):
+        title = POSE_LIBRARY.repository_manifest_title(
             "Totemistyk/General_Poses_PoseStudio",
-            {"title": "VNCCS Pose Library", "poses": []},
-            [],
-            set(),
+            "VNCCS Pose Library",
         )
 
-        self.assertEqual(manifest["title"], "Totemistyk/General_Poses_PoseStudio")
+        self.assertEqual(title, "Totemistyk/General_Poses_PoseStudio")
 
     def test_repository_id_accepts_a_hugging_face_tree_url(self):
         self.assertEqual(
@@ -100,15 +98,47 @@ class PoseLibraryProgressTests(unittest.TestCase):
         ):
             POSE_LIBRARY.update_git_pose_repository_checkout("artist/poses")
 
-    def test_generated_manifest_preserves_a_custom_title(self):
-        manifest = POSE_LIBRARY.build_pose_manifest(
+    def test_manifest_preserves_a_custom_title(self):
+        title = POSE_LIBRARY.repository_manifest_title(
             "owner/repository",
-            {"title": "Portrait Pose Collection", "poses": []},
-            [],
-            set(),
+            "Portrait Pose Collection",
         )
 
-        self.assertEqual(manifest["title"], "Portrait Pose Collection")
+        self.assertEqual(title, "Portrait Pose Collection")
+
+    def test_scoped_lookup_never_returns_an_unrelated_legacy_pose(self):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            mock.patch.object(POSE_LIBRARY, "get_library_path", return_value=directory),
+            mock.patch.object(POSE_LIBRARY, "repository_dir_map", return_value={}),
+        ):
+            legacy = Path(directory) / "Walk.json"
+            legacy.write_text("{}")
+            self.assertEqual(POSE_LIBRARY.find_pose_file("Walk")[0], str(legacy))
+            for repository, category in [("artist/remote", "Run"), ("artist/remote", None), (None, "Run")]:
+                with self.subTest(repository=repository, category=category):
+                    self.assertEqual(POSE_LIBRARY.find_pose_file("Walk", repository, category), (None, None, None))
+            self.assertEqual(
+                POSE_LIBRARY.find_pose_file("Walk", POSE_LIBRARY.LOCAL_USER_REPOSITORY, POSE_LIBRARY.DEFAULT_CATEGORY)[0],
+                str(legacy),
+            )
+
+    def test_repository_save_failure_preserves_existing_config(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repositories.json"
+            previous = {"schema_version": 1, "repositories": [{"repo_id": "artist/poses"}]}
+            path.write_text(json.dumps(previous))
+            def broken_dump(_data, stream, **_kwargs):
+                stream.write("{")
+                raise OSError("disk full")
+            with (
+                mock.patch.object(POSE_LIBRARY, "get_user_repositories_path", return_value=str(path)),
+                mock.patch.object(POSE_LIBRARY.json, "dump", side_effect=broken_dump),
+                self.assertRaisesRegex(OSError, "disk full"),
+            ):
+                POSE_LIBRARY.save_user_repositories([{"repo_id": "artist/new"}])
+            self.assertEqual(json.loads(path.read_text()), previous)
+            self.assertEqual(list(Path(directory).glob("*.tmp.*")), [])
 
     def test_legacy_generic_titles_are_normalized_while_loading_repositories(self):
         with (

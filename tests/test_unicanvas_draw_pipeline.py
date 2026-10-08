@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from unittest import mock
 torch = pytest.importorskip("torch")
 from PIL import Image
 
@@ -19,6 +20,29 @@ from nodes.unicanvas.models.capabilities import CANVAS_TASKS, STANDARD_TASKS, Mo
 
 ROOT = Path(__file__).resolve().parents[1]
 GUIDE = PromptGuide(hint="Describe it", guide="A test family that echoes what the pipeline hands it.")
+
+
+def test_interrupt_releases_draw_references_without_unloading_other_workflows(monkeypatch):
+    import comfy.model_management as management
+    from types import SimpleNamespace
+
+    cleanup, unload, empty = mock.Mock(), mock.Mock(), mock.Mock()
+    monkeypatch.setattr(management, "cleanup_models", cleanup, raising=False)
+    monkeypatch.setattr(management, "unload_all_models", unload, raising=False)
+    monkeypatch.setattr(management, "soft_empty_cache", empty, raising=False)
+    monkeypatch.setattr(draw_pipeline, "set_interrupt", lambda value: None)
+    monkeypatch.setattr(draw_pipeline, "_release_generation_sampling_refs", lambda *args: None)
+    monkeypatch.setattr(draw_pipeline, "_release_generation_state", lambda: None)
+    monkeypatch.setattr(draw_pipeline, "_set_draw_progress", lambda *args: None)
+    request = SimpleNamespace(settings={}, mode="inpaint", denoise=1, draw_id="interrupt-test")
+    pipeline = ImageDrawPipeline(SimpleNamespace(sampling_scratch_keys=()), request)
+    pipeline.ctx.model = pipeline.ctx.latent = pipeline.ctx.image_tensor = object()
+    pipeline.free_after_interrupt()
+    assert pipeline.ctx.model is pipeline.ctx.latent is pipeline.ctx.image_tensor is None
+    assert pipeline.ctx.result_images == []
+    cleanup.assert_called_once_with()
+    empty.assert_called_once_with(True)
+    unload.assert_not_called()
 
 
 def png(alpha=255, size=64):

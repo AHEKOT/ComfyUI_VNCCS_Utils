@@ -47,7 +47,6 @@ Icon = "https://github.com/AHEKOT/ComfyUI_VNCCS/blob/main/images/VNCCS_LOGO.png?
 NodeIds = [
     "VNCCS_PositionControl",
     "VNCCS_VisualPositionControl",
-    "VNCCS_QWEN_Detailer",
     "VNCCS_BBox_Extractor",
     "VNCCS_ModelManager",
     "VNCCS_ModelSelector",

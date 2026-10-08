@@ -1,4 +1,5 @@
 import ast
+import asyncio
 import importlib.util
 import io
 import json
@@ -216,6 +217,31 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_stale_editor_cannot_overwrite_a_newer_scene(self):
+        scene = self.factory.create_scene("Concurrent editors")
+        payload = {"name": "First edit", "edit_revision": scene["edit_revision"]}
+        updated = self.factory.update_scene(scene["scene_id"], payload)
+        self.assertGreater(updated["edit_revision"], scene["edit_revision"])
+        before = (self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json").read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "another editor"):
+            self.factory.update_scene(scene["scene_id"], {**payload, "name": "Stale edit"})
+        self.assertEqual((self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json").read_bytes(), before)
+        for revision in [-1, True, "1", 1.5, None]:
+            with self.subTest(revision=revision), self.assertRaisesRegex(ValueError, "edit_revision"):
+                self.factory.update_scene(scene["scene_id"], {"edit_revision": revision})
+        saved = self.factory.update_scene(scene["scene_id"], {"name": "Next edit", "edit_revision": updated["edit_revision"]})
+        self.assertEqual(saved["name"], "Next edit")
+
+    def test_frame_setting_does_not_cancel_object_preview_invalidation(self):
+        scene = self.factory.create_scene("Preview invalidation")
+        created = self.factory.create_primitive_object(scene["scene_id"], {"primitive": {"kind": "plane"}})
+        scene = created["scene"]
+        updated = self.factory.update_scene(scene["scene_id"], {
+            "objects": [{"object_id": scene["objects"][0]["object_id"], "light_transport": "transmissive"}],
+            "render": {**scene["render"], "show_camera_frame": True},
+        })
+        self.assertGreater(updated["render_revision"], scene["render_revision"])
 
     def test_room_can_be_saved_without_a_building(self):
         scene = self.factory.create_scene("Standalone room")
@@ -1810,6 +1836,21 @@ class FactoryBackendTests(unittest.TestCase):
             ("DELETE", "/vnccs/3d-factory/library/items/{asset_id}"),
         }
         self.assertTrue(expected.issubset(registered), expected.difference(registered))
+        handler = next(handler for method, path, handler in routes.definitions
+                       if method == "PATCH" and path == "/vnccs/3d-factory/scenes/{scene_id}")
+        aiohttp_stub.web.json_response = lambda body, status=200: (status, body)
+        scene = self.factory.create_scene("Guarded HTTP save")
+        request = types.SimpleNamespace(headers={"Content-Length": "20"}, match_info={"scene_id": scene["scene_id"]})
+        request.json = mock.AsyncMock(return_value={"name": "Legacy writer"})
+        status, _body = asyncio.run(handler(request))
+        self.assertEqual(status, 400)
+        payload = {"name": "Current writer", "edit_revision": scene["edit_revision"]}
+        request.json = mock.AsyncMock(return_value=payload)
+        status, _body = asyncio.run(handler(request))
+        self.assertEqual(status, 200)
+        status, body = asyncio.run(handler(request))
+        self.assertEqual(status, 409)
+        self.assertIn("another editor", body["error"])
 
 
 if __name__ == "__main__":

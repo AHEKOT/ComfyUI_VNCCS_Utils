@@ -7158,10 +7158,15 @@ class Factory3DWidget {
             try {
                 if (snapshot && Array.isArray(snapshot.objects)) {
                     try {
+                        const replay = { ...snapshot };
+                        if (replay.edit_revision === undefined) {
+                            const saved = await this._fetchJSON(ENDPOINTS.scene(this.sceneId));
+                            replay.edit_revision = saved.edit_revision;
+                        }
                         const scene = await this._fetchJSON(ENDPOINTS.scene(this.sceneId), {
                             method: "PATCH",
                             headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify(snapshot),
+                            body: JSON.stringify(replay),
                         });
                         await this._applyScene(scene, { preserveSource });
                     } catch (error) {
@@ -9029,8 +9034,12 @@ class Factory3DWidget {
         this.scene.name = this.els.sceneName.value.trim() || this.scene.name || "Untitled scene";
         const sceneId = this.sceneId;
         const sceneOwner = this.scene;
-        const payload = this._scenePayload();
-        const operation = enqueueFactorySceneSave(this._sceneSaveSerial, sceneId, payload, async (ownerId, snapshot) => {
+        const payload = { ...this._scenePayload(), edit_revision: sceneOwner.edit_revision ?? 0 };
+        const operation = enqueueFactorySceneSave(this._sceneSaveSerial, sceneId, payload, async (ownerId, snapshot, previous) => {
+            // Queued edits share a base revision; advance it only after our own successful save.
+            if (previous?.scene_id === ownerId) {
+                snapshot.edit_revision = Math.max(snapshot.edit_revision, previous.edit_revision);
+            }
             const updated = await this._fetchJSON(ENDPOINTS.scene(ownerId), {
                 method: "PATCH",
                 headers: { "Content-Type": "application/json" },
@@ -12213,7 +12222,7 @@ class Factory3DWidget {
             },
             active_camera_track_id: this.activeCameraTrackId,
             selected_camera_keyframe_id: this.selectedCameraKeyframeId,
-            scene_snapshot: this.scene ? this._scenePayload() : null,
+            scene_snapshot: this.scene ? { ...this._scenePayload(), edit_revision: this.scene.edit_revision ?? 0 } : null,
             source: this.sourceAsset
                 ? { ...this.sourceAsset, scene_id: this.sceneId }
                 : null,

@@ -183,20 +183,6 @@ class ModelManagerSecurityTests(unittest.TestCase):
         fetch.assert_not_called()
         registry.assert_not_called()
 
-    def test_download_url_credentials_are_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Credentials"):
-            MODEL_MANAGER.validate_download_url("https://user" + ":password@models.example/file")
-
-    def test_non_global_address_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "Private or local"):
-            MODEL_MANAGER.validate_download_url("https://100.64.0.1/file")
-
-    def test_direct_url_host_match_is_exact(self):
-        self.assertTrue(MODEL_MANAGER._download_url_is_host("https://civitai.com/api/download", "civitai.com"))
-        self.assertTrue(MODEL_MANAGER._download_url_is_host("https://www.civitai.com/models/1", "civitai.com"))
-        self.assertFalse(MODEL_MANAGER._download_url_is_host("https://attacker.example/civitai.com", "civitai.com"))
-        self.assertFalse(MODEL_MANAGER._download_url_is_host("https://evilcivitai.com/models/1", "civitai.com"))
-
     def test_download_status_is_isolated_by_repository(self):
         MODEL_MANAGER._set_download_status("org/one", "shared", {"status": "downloading", "progress": 25})
         MODEL_MANAGER._set_download_status("org/two", "shared", {"status": "success"})

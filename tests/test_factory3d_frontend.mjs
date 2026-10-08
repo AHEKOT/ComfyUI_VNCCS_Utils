@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 
@@ -28,32 +29,10 @@ function normalizedQuaternion(value = [0, 0, 0, 1]) {
 
 
 function serializeFactoryState(widget) {
-    return {
-        schema_version: 17,
-        scene_id: widget.sceneId,
-        selected_object_id: widget.selectedObjectId,
-        selected_object_ids: Array.from(widget.selectedObjectIds),
-        selected_group_id: widget.selectedGroupId,
-        selected_skydome: widget.selectedSkydome,
-        selected_architecture: widget.selectedArchitecture,
-        selected_architectures: widget._selectedArchitectureRefs(),
-        selected_camera_id: widget.selectedCameraId,
-        selected_camera_ids: Array.from(widget.selectedCameraIds),
-        selected_light_id: widget.selectedLightId,
-        collapsed_group_ids: Array.from(widget.collapsedGroupIds),
-        settings: { ...widget.settings },
-        render_settings: { ...widget.exportSettings },
-        lighting_settings: { ...widget.lighting },
-        viewer_state: widget.viewer?.getState?.() || widget.viewerState,
-        editor_view: {
-            ...widget.editorView,
-            plan_camera: widget.viewer?.getState?.().plan_camera || widget.editorView.plan_camera,
-        },
-        active_camera_track_id: widget.activeCameraTrackId,
-        selected_camera_keyframe_id: widget.selectedCameraKeyframeId,
-        scene_snapshot: widget.scene ? widget._scenePayload() : null,
-        source: widget.sourceAsset ? { ...widget.sourceAsset, scene_id: widget.sceneId } : null,
-    };
+    const start = studio.indexOf("    serializeState() {");
+    const end = studio.indexOf("\n    _scheduleStateSave(", start);
+    const methods = vm.runInNewContext(`({ ${studio.slice(start, end)} })`, { STATE_VERSION: 17 });
+    return JSON.parse(JSON.stringify(methods.serializeState.call(widget)));
 }
 
 function hideStateWidget(node) {
@@ -974,7 +953,7 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
                 camera: { position: [1, 2, 3] },
             }),
         },
-        scene: { objects: snapshot.objects },
+        scene: { objects: snapshot.objects, edit_revision: 8 },
         sourceAsset: { url: "/reference", name: "input.png" },
         _selectedArchitectureRefs: () => [{ type: "room", id: "room-a" }],
         _scenePayload: () => snapshot,
@@ -985,7 +964,7 @@ test("Factory serializes settings, source, scene snapshot, selection, and viewer
     assert.deepEqual(state.selected_object_ids, ["object-a", "object-b"]);
     assert.equal(state.selected_group_id, "group-a");
     assert.deepEqual(state.collapsed_group_ids, ["group-a"]);
-    assert.deepEqual(state.scene_snapshot, snapshot);
+    assert.deepEqual(state.scene_snapshot, { ...snapshot, edit_revision: 8 });
     assert.equal(state.source.url, "/reference");
     assert.equal(state.viewer_state.mode, "scale");
     assert.equal(state.viewer_state.zoom_sensitivity, 0.08);

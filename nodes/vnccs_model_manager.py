@@ -8,9 +8,7 @@ import threading
 import traceback
 import asyncio
 import queue
-import urllib.parse
 import time
-import ipaddress
 import tempfile
 
 # Cache for model_updater.json to prevent excessive HEAD requests
@@ -23,9 +21,6 @@ ALLOWED_MODEL_FOLDERS = {
     "model_patches", "embeddings", "configs", "sam3dbody", "birefnet",
 }
 MAX_DOWNLOAD_BYTES = 100 * 1024 * 1024 * 1024  # 100 GiB safety cap
-REQUEST_TIMEOUT = (10, 60)
-MAX_DOWNLOAD_REDIRECTS = 5
-_DOWNLOAD_REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 
 # Universal Type to force connections
 class AnyType(str):
@@ -75,37 +70,6 @@ def resolve_model_local_path(relative_path):
     if target_real == models_dir or not target_real.startswith(models_dir + os.sep):
         raise ValueError("local_path must stay inside the ComfyUI models directory")
     return target_abs
-
-def _reject_local_download_ip(ip_text):
-    ip = ipaddress.ip_address(ip_text)
-    if not ip.is_global or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved:
-        raise ValueError("Private or local download hosts are not allowed")
-
-def validate_download_url(url):
-    parsed = urllib.parse.urlparse(str(url or ""))
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Only https download URLs are allowed")
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("Credentials in download URLs are not allowed")
-    host = parsed.hostname or ""
-    lowered = host.lower()
-    if lowered in {"localhost", "localdomain"} or lowered.endswith(".localhost"):
-        raise ValueError("Local download hosts are not allowed")
-    try:
-        _reject_local_download_ip(lowered)
-    except ValueError as exc:
-        if "download hosts" in str(exc):
-            raise
-    return urllib.parse.urlunparse(parsed)
-
-def _download_url_origin(url):
-    parsed = urllib.parse.urlparse(url)
-    return (parsed.scheme.lower(), (parsed.hostname or "").lower(), parsed.port or 443)
-
-def _download_url_is_host(url, domain):
-    host = (urllib.parse.urlparse(str(url or "")).hostname or "").lower()
-    domain = str(domain).lower().lstrip(".")
-    return host == domain or host.endswith(f".{domain}")
 
 def get_cached_config_path(repo_id, force_refresh=False):
     if repo_id != MODEL_MANIFEST_REPO_ID:

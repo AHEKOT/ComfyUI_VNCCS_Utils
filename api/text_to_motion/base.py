@@ -495,11 +495,11 @@ def torch_device(torch):
 
 
 def free_comfy_vram() -> None:
-    """Unload ComfyUI's models so the motion model and its text encoder fit."""
+    """Release unused models without unloading another workflow's live models."""
     try:
         import comfy.model_management as model_management
 
-        model_management.unload_all_models()
+        model_management.cleanup_models()
         model_management.soft_empty_cache()
     except Exception:
         pass

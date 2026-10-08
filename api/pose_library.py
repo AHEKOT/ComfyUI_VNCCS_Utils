@@ -11,7 +11,6 @@ import threading
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
 from fractions import Fraction
 from urllib.parse import unquote, urlparse
 from aiohttp import web
@@ -337,8 +336,7 @@ def save_user_repositories(repositories):
         for repo in repositories
         if not repo.get("builtin")
     ]
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump({"schema_version": 1, "repositories": user_repos}, f, indent=2)
+    write_private_json(path, {"schema_version": 1, "repositories": user_repos})
 
 def load_pose_repositories():
     defaults = {repo["repo_id"]: repo for repo in load_default_repositories()}
@@ -971,120 +969,6 @@ def sync_pose_repository_files(repo, manifest, token, task_id=None, source_root=
         "errors": errors,
     }
 
-def build_pose_manifest(repo_id, remote_manifest, local_poses, changed_paths):
-    remote_poses = remote_manifest.get("poses") if isinstance(remote_manifest, dict) else []
-    remote_by_json = {}
-    for pose in remote_poses or []:
-        if isinstance(pose, dict) and pose.get("json_path"):
-            remote_by_json[pose["json_path"]] = pose
-
-    now = datetime.now(timezone.utc).isoformat()
-    manifest_poses = []
-    for pose in local_poses:
-        entry = {
-            "name": pose["name"],
-            "category": pose["category"],
-            "tags": pose["tags"],
-            "asset_type": pose.get("asset_type") or POSE_ASSET_TYPE,
-            "json_path": pose["hub_json_path"],
-            "preview_path": pose["hub_preview_path"],
-            "preview_type": pose["preview_type"],
-            "json_sha256": pose["json_sha256"],
-            "preview_sha256": pose["preview_sha256"],
-            "updated_at": now,
-        }
-        previous = remote_by_json.get(pose["hub_json_path"])
-        if previous and pose["hub_json_path"] not in changed_paths and pose["hub_preview_path"] not in changed_paths:
-            entry["updated_at"] = previous.get("updated_at") or now
-        manifest_poses.append(entry)
-
-    title = remote_manifest.get("title") if isinstance(remote_manifest, dict) else ""
-    return {
-        "schema_version": 2,
-        "title": repository_manifest_title(repo_id, title),
-        "repo_id": repo_id,
-        "updated_at": now,
-        "poses": sorted(manifest_poses, key=lambda item: (item.get("category") or "", item.get("name") or "")),
-    }
-
-def collect_remote_pose_paths_to_delete(remote_manifest, local_poses, remote_files):
-    local_paths = set()
-    for pose in local_poses:
-        local_paths.add(pose["hub_json_path"])
-        if pose.get("hub_preview_path"):
-            local_paths.add(pose["hub_preview_path"])
-
-    delete_paths = set()
-    remote_poses = remote_manifest.get("poses") if isinstance(remote_manifest, dict) else []
-    for pose in remote_poses or []:
-        if not isinstance(pose, dict):
-            continue
-        for key in ("json_path", "path", "preview_path"):
-            path = str(pose.get(key) or "").strip()
-            if path and path not in local_paths:
-                delete_paths.add(path)
-
-    if remote_manifest and remote_files:
-        for path in remote_files:
-            normalized = str(path or "").replace("\\", "/")
-            if normalized.startswith(("poses/", "previews/", "animations/", "animation_previews/")) and normalized not in local_paths:
-                delete_paths.add(normalized)
-
-    return sorted(path for path in delete_paths if path and path != "pose_library.json")
-
-def delete_remote_pose_files(api, repo_id, token, paths, task_id=None):
-    deleted = []
-    errors = []
-    for index, path in enumerate(paths):
-        repository_progress_update(
-            task_id,
-            progress=min(86 + (index / max(len(paths), 1)) * 6, 92),
-            message=f"Deleting {path}...",
-            current_file=path,
-            file_index=index + 1,
-            total_files=len(paths),
-        )
-        try:
-            delete_file = getattr(api, "delete_file", None)
-            if callable(delete_file):
-                delete_file(
-                    path_in_repo=path,
-                    repo_id=repo_id,
-                    repo_type="model",
-                    token=token,
-                    commit_message=f"Delete stale pose file {path}",
-                )
-            else:
-                from huggingface_hub import CommitOperationDelete
-                api.create_commit(
-                    repo_id=repo_id,
-                    repo_type="model",
-                    operations=[CommitOperationDelete(path_in_repo=path)],
-                    token=token,
-                    commit_message=f"Delete stale pose file {path}",
-                )
-            deleted.append(path)
-        except Exception as exc:
-            if "404" in str(exc) or "not found" in str(exc).lower():
-                deleted.append(path)
-            else:
-                errors.append(f"{path}: {exc}")
-    return deleted, errors
-
-def upload_pose_repository_file_job(repo_id, token, job):
-    from huggingface_hub import HfApi
-
-    api = HfApi(token=token)
-    api.upload_file(
-        path_or_fileobj=job["local_path"],
-        path_in_repo=job["hub_path"],
-        repo_id=repo_id,
-        repo_type="model",
-        token=token,
-        commit_message=job["commit_message"],
-    )
-    return job["hub_path"]
-
 def publish_local_repository_to_hf(repo_id, token=None, create=False, private=False, task_id=None):
     repository_progress_fail(task_id, "Remote publishing is disabled by the VNCCS security policy")
     raise PermissionError("Remote publishing is disabled by the VNCCS security policy")
@@ -1639,7 +1523,7 @@ def find_pose_file(name, repository=None, category=None):
             return path, repository, category
 
     legacy_path = os.path.join(lib_path, f"{name}.json")
-    if os.path.exists(legacy_path):
+    if not repository and not category and os.path.exists(legacy_path):
         return legacy_path, LOCAL_USER_REPOSITORY, ""
 
     repo_map = repository_dir_map()

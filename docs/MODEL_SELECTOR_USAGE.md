@@ -5,7 +5,7 @@ This guide focuses on the model-management pair:
 - `VNCCS Model Manager`
 - `VNCCS Model Selector`
 
-For the full node reference, including Position Control, QWEN Detailer, BBox
+For the full node reference, including Position Control, BBox
 Extractor, and Pose Studio, see `MODEL_MANAGER_GUIDE.md`.
 
 ## What These Nodes Do
