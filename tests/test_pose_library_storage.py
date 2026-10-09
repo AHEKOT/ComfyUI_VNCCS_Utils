@@ -51,31 +51,91 @@ def request(name="Walk", asset_type="pose", repository="artist/poses", **body):
 
 
 def test_rename_to_existing_pose_preserves_both_assets(store):
-    directory = store / "artist__poses" / "poses" / "Standing"
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     for name in ("A", "B"):
         (directory / f"{name}.json").write_text(json.dumps({"pose": name}))
         (directory / f"{name}.png").write_bytes(name.encode())
     before = {path.name: path.read_bytes() for path in directory.iterdir()}
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "edited"})))
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"})))
     assert result.status == 409
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
 
 
 def test_same_pose_can_be_updated_and_renamed_to_free_name(store):
-    directory = store / "artist__poses" / "poses" / "Standing"
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     (directory / "A.json").write_text('{"pose": "old"}')
     (directory / "A.png").write_bytes(b"preview")
-    assert asyncio.run(library.save_pose(request(name="A", pose={"pose": "updated"}))).status == 200
+    assert asyncio.run(library.save_pose(request(name="A", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "updated"}))).status == 200
     assert json.loads((directory / "A.json").read_text())["pose"] == "updated"
-    assert asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "renamed"}))).status == 200
+    assert asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "renamed"}))).status == 200
     assert not (directory / "A.json").exists()
     assert (directory / "B.png").read_bytes() == b"preview"
 
 
-def test_rename_rechecks_collision_after_async_preview_preparation(store, monkeypatch):
+def test_new_save_cannot_overwrite_an_existing_local_item(store):
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    target = directory / "A.json"
+    target.write_text('{"pose": "original"}')
+    result = asyncio.run(library.save_pose(request(
+        name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"},
+    )))
+    assert result.status == 409
+    assert json.loads(target.read_text()) == {"pose": "original"}
+
+
+def test_downloaded_library_is_read_only_for_save(store):
     directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    target = directory / "A.json"
+    target.write_text('{"pose": "original"}')
+    result = asyncio.run(library.save_pose(request(name="A", old_name="A", pose={"pose": "edited"})))
+    assert result.status == 403
+    assert json.loads(target.read_text()) == {"pose": "original"}
+
+
+def test_local_copy_preserves_remote_source_and_preview_across_refresh(store):
+    directory = store / "artist__poses" / "poses" / "Standing"
+    directory.mkdir(parents=True)
+    target = directory / "A.json"
+    target.write_text('{"pose": "original"}')
+    target.with_suffix(".png").write_bytes(b"source preview")
+    result = asyncio.run(library.save_pose(request(
+        name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY,
+        old_repository="artist/poses", pose={"pose": "edited"},
+    )))
+    assert result.status == 200
+    assert target.exists()
+    assert json.loads(target.read_text()) == {"pose": "original"}
+    assert target.with_suffix(".png").read_bytes() == b"source preview"
+    copy = store / result.data["path"]
+    assert json.loads(copy.read_text())["pose"] == "edited"
+    assert copy.with_suffix(".png").read_bytes() == b"source preview"
+    library.cleanup_local_repository_cache("artist/poses", set(), set())
+    assert copy.exists()
+    assert copy.with_suffix(".png").read_bytes() == b"source preview"
+
+
+def test_remote_copy_cannot_overwrite_an_existing_local_item(store):
+    remote = store / "artist__poses" / "poses" / "Standing" / "A.json"
+    local = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing" / "A.json"
+    for path, pose in ((remote, "source"), (local, "local")):
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({"pose": pose}))
+        path.with_suffix(".png").write_bytes(pose.encode())
+    before = {path: path.read_bytes() for path in store.rglob("*") if path.is_file()}
+    result = asyncio.run(library.save_pose(request(
+        name="A", old_name="A", repository=library.LOCAL_USER_REPOSITORY,
+        old_repository="artist/poses", pose={"pose": "edited"},
+    )))
+    assert result.status == 409
+    assert {path: path.read_bytes() for path in store.rglob("*") if path.is_file()} == before
+
+
+def test_rename_rechecks_collision_after_async_preview_preparation(store, monkeypatch):
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     (directory / "A.json").write_text('{"pose": "original"}')
     prepared = directory / "prepared.webp"
@@ -86,7 +146,7 @@ def test_rename_rechecks_collision_after_async_preview_preparation(store, monkey
         return str(prepared), ".webp"
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "edited"}, preview="image")))
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"}, preview="image")))
     assert result.status == 409
     assert json.loads((directory / "A.json").read_text()) == {"pose": "original"}
     assert json.loads((directory / "B.json").read_text()) == {"pose": "concurrent save"}
@@ -201,7 +261,7 @@ def test_saving_legacy_asset_migrates_only_its_type_and_keeps_preview(store):
     legacy.with_suffix(".png").write_bytes(b"old preview")
     animation = asyncio.run(library.save_pose(request(asset_type="animation", repository=repository, pose={"animation": {"frames": []}})))
     assert animation.status == 200
-    saved = asyncio.run(library.save_pose(request(repository=repository, pose={"pose": "new"})))
+    saved = asyncio.run(library.save_pose(request(old_name="Walk", repository=repository, pose={"pose": "new"})))
     assert saved.status == 200
     assert not legacy.exists()
     assert (store / saved.data["path"]).with_suffix(".png").read_bytes() == b"old preview"
@@ -269,7 +329,7 @@ def test_background_refresh_does_not_turn_a_sync_error_into_success(store, monke
 
 @pytest.mark.parametrize("failed_file", ["Walk.webp", "Walk.json"])
 def test_failed_save_restores_the_previous_pose_and_preview(store, monkeypatch, failed_file):
-    directory = store / "artist__poses" / "poses" / "Standing"
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     (directory / "Walk.json").write_text('{"pose": "old"}')
     (directory / "Walk.webp").write_bytes(b"old preview")
@@ -290,14 +350,14 @@ def test_failed_save_restores_the_previous_pose_and_preview(store, monkeypatch, 
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
     monkeypatch.setattr(library.os, "replace", fail_install)
-    result = asyncio.run(library.save_pose(request(pose={"pose": "new"}, preview="image")))
+    result = asyncio.run(library.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
     assert result.status == 400
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
 
 
 @pytest.mark.parametrize("with_new_preview", [False, True])
 def test_failed_rename_keeps_source_and_removes_uncommitted_destination(store, monkeypatch, with_new_preview):
-    directory = store / "artist__poses" / "poses" / "Standing"
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     (directory / "A.json").write_text('{"pose": "old"}')
     (directory / "A.webp").write_bytes(b"old preview")
@@ -317,21 +377,21 @@ def test_failed_rename_keeps_source_and_removes_uncommitted_destination(store, m
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
     monkeypatch.setattr(library.os, "replace", fail_commit)
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", pose={"pose": "new"},
+    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"},
                                                    preview="image" if with_new_preview else None)))
     assert result.status == 400
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
 
 
 def test_successful_preview_update_retires_old_formats_only_after_commit(store, monkeypatch):
-    directory = store / "artist__poses" / "poses" / "Standing"
+    directory = store / library.LOCAL_USER_REPOSITORY / "poses" / "Standing"
     directory.mkdir(parents=True)
     (directory / "Walk.json").write_text('{"pose": "old"}')
     (directory / "Walk.png").write_bytes(b"old preview")
     prepared = directory / "prepared.webp"
     prepared.write_bytes(b"new preview")
     monkeypatch.setattr(library, "prepare_preview_file", lambda *args: (str(prepared), ".webp"))
-    result = asyncio.run(library.save_pose(request(pose={"pose": "new"}, preview="image")))
+    result = asyncio.run(library.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
     assert result.status == 200
     assert json.loads((directory / "Walk.json").read_text())["pose"] == "new"
     assert (directory / "Walk.webp").read_bytes() == b"new preview"

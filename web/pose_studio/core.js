@@ -1601,6 +1601,8 @@ export class PoseViewerCore {
         this.canvas.addEventListener("pointerdown", (e) => this.handlePointerDown(e));
         this.canvas.addEventListener("pointermove", (e) => this.schedulePointerMove(e));
         this.canvas.addEventListener("pointerup", (e) => this.handlePointerUp(e));
+        this.canvas.addEventListener("pointercancel", (e) => this.handlePointerUp(e, { cancelled: true }));
+        this.canvas.addEventListener("lostpointercapture", (e) => this.handlePointerUp(e, { cancelled: true }));
 
         this.hoveredBoneName = null;
         this.directDrag = { active: false, chainKey: null, effector: null, effectorBone: null, plane: null, offset: null, hasDragged: false, clickedBone: null, startClientX: 0, startClientY: 0 };
@@ -2236,7 +2238,7 @@ export class PoseViewerCore {
         }
     }
 
-    handlePointerUp(e) {
+    handlePointerUp(e, { cancelled = false } = {}) {
         if (!this.initialized || !this.skinnedMesh) return;
         if (this._hoverPointerFrame) {
             cancelAnimationFrame(this._hoverPointerFrame);
@@ -2245,7 +2247,7 @@ export class PoseViewerCore {
         this._pendingHoverPointer = null;
 
         if (this.directDrag && this.directDrag.active) {
-            const dragged = !!this.directDrag.hasDragged;
+            const dragged = cancelled || !!this.directDrag.hasDragged;
             const clickedBone = this.directDrag.clickedBone || null;
             this.directDrag.active = false;
             this.directDrag.effector = null;

@@ -3552,6 +3552,11 @@ const STYLES = `
     box-shadow: 0 0 0 1px var(--ps-accent-border), 0 10px 28px rgba(0,0,0,0.35);
 }
 
+.vnccs-ps-library-item:focus-visible {
+    outline: 2px solid var(--ps-accent);
+    outline-offset: 2px;
+}
+
 .vnccs-ps-library-item-delete {
     position: absolute;
     top: calc(6px * var(--vnccs-ps-library-ui-scale));
@@ -4290,6 +4295,7 @@ class PoseStudioWidget {
         clearTimeout(this._animationCacheUploadTimer);
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
+        this._closeLibraryModal?.();
         // The text-to-motion panel polls the backend and owns a playback loop.
         this.textToMotionPanel?.cancel?.();
         void this.flushAnimationCacheUpload?.();
@@ -5859,6 +5865,9 @@ class PoseStudioWidget {
     animationHistorySnapshot() {
         const state = JSON.parse(this.animationSnapshot());
         if (this.meshParams) state.editorMesh = { ...this.meshParams };
+        state.characterAnimations = (this.characters || [])
+            .filter(character => character.animationState && character.id !== this.activeCharacterId)
+            .map(character => ({ id: character.id, animation: JSON.parse(this.animationSnapshot(character.animationState)) }));
         return JSON.stringify(state);
     }
 
@@ -5881,13 +5890,22 @@ class PoseStudioWidget {
             const currentFrame = this.animationState.currentFrame;
             const activeCharacter = this.getActiveCharacter();
             this.pendingAgeCameraFit = false;
-            const editorMesh = JSON.parse(snapshot).editorMesh;
+            const restored = JSON.parse(snapshot);
+            const editorMesh = restored.editorMesh;
             if (editorMesh) this.restoreMeshHistory(editorMesh);
             this.animationState = restoreAnimationStateSnapshot(snapshot, {
                 currentFrame,
                 fallbackPose: this.animationState.basePose || {},
             });
             if (activeCharacter) activeCharacter.animationState = this.animationState;
+            for (const entry of restored.characterAnimations || []) {
+                const character = this.characters?.find(character => character.id === entry.id);
+                if (character) character.animationState = restoreAnimationStateSnapshot(entry.animation, {
+                    currentFrame,
+                    fallbackPose: character.poses?.[this.activeTab] || {},
+                });
+            }
+            this.syncSharedTimelineFromActive();
             this._animationInitialized = true;
             this.animationTimeline?.setState(this.animationState);
             this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
@@ -5940,6 +5958,12 @@ class PoseStudioWidget {
     }
 
     updateAnimationSettings({ fps, duration, loop, autoKey } = {}) {
+        if ((fps !== undefined || duration !== undefined) && this._settingsTimingBaseline) {
+            for (const [character, snapshot] of this._settingsTimingBaseline) {
+                Object.assign(character.animationState, JSON.parse(snapshot));
+            }
+            this.syncSharedTimelineFromActive();
+        }
         if (fps !== undefined || duration !== undefined || loop !== undefined) {
             this.retimeAllCharacterAnimations({ fps, duration, loop });
         }
@@ -6579,6 +6603,7 @@ class PoseStudioWidget {
         const target = this.characters.find(character => character.id === id);
         const previous = this.getActiveCharacter();
         if (!target || !previous || target.id === previous.id || this._switchingCharacter) return false;
+        if (this.textToMotionPanel?.isOpen()) this.textToMotionPanel.cancel();
         this._finishPoseGesture?.();
         this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         const token = ++this._characterSwitchToken;
@@ -7920,7 +7945,7 @@ class PoseStudioWidget {
         return changed;
     }
 
-    trackPoseGesture(control, { recordPose = false } = {}) {
+    trackPoseGesture(control, { recordPose = false, animationTiming = false } = {}) {
         let active = false;
         let pointer = false;
         let key = false;
@@ -7935,6 +7960,12 @@ class PoseStudioWidget {
             active = true;
             this._poseGestureActive = true;
             this._finishPoseGesture = finish;
+            if (animationTiming) {
+                this._settingsTimingBaseline = (this.characters || []).map(character => {
+                    this.ensureCharacterRuntime(character);
+                    return [character, JSON.stringify(character.animationState)];
+                });
+            }
             if (recordPose && !this.isAnimationMode()) this.viewer?.recordState?.();
         };
         const finish = () => {
@@ -7942,6 +7973,7 @@ class PoseStudioWidget {
             active = pointer = key = false;
             this._poseGestureActive = false;
             this._finishPoseGesture = null;
+            if (animationTiming) this._settingsTimingBaseline = null;
             this.syncToNode(false);
         };
         control.addEventListener("pointerdown", event => {
@@ -11349,6 +11381,7 @@ class PoseStudioWidget {
     }
 
     showLibraryModal() {
+        this._closeLibraryModal?.();
         const animationMode = this.isAnimationMode();
         const overlay = document.createElement('div');
         overlay.className = 'vnccs-ps-modal-overlay vnccs-ps-library-overlay';
@@ -11400,7 +11433,10 @@ class PoseStudioWidget {
         }
         this.applyLibraryThumbnailSize(this.libraryWorkspace);
 
+        let closed = false;
         const closeLibraryModal = () => {
+            if (closed) return;
+            closed = true;
             if (this.libraryResizeObserver) {
                 this.libraryResizeObserver.disconnect();
                 this.libraryResizeObserver = null;
@@ -11414,8 +11450,14 @@ class PoseStudioWidget {
                 this._libraryResizeFrame = null;
             }
             this.libraryModal = null;
+            this.libraryGrid = this.libraryInspector = this.libraryWorkspace = null;
+            this.librarySearchInput = this.librarySizeInput = this.librarySizeValue = null;
+            this.libraryCategoriesEl = this.librarySettingsEl = null;
+            this._libraryInspectorLoadToken = (this._libraryInspectorLoadToken || 0) + 1;
+            this._closeLibraryModal = null;
             overlay.remove();
         };
+        this._closeLibraryModal = closeLibraryModal;
         modal.querySelector('.vnccs-ps-modal-close').onclick = closeLibraryModal;
         modal.querySelector('.vnccs-ps-library-save-current').onclick = () => this.showSaveToLibraryModal();
         modal.querySelector('.vnccs-ps-library-menu-btn').onclick = () => this.toggleLibrarySettings();
@@ -12227,6 +12269,9 @@ class PoseStudioWidget {
             const item = document.createElement('div');
             item.className = 'vnccs-ps-library-item';
             item.dataset.poseId = this.getLibraryPoseId(pose);
+            item.tabIndex = 0;
+            item.setAttribute('role', 'button');
+            item.setAttribute('aria-pressed', String(this.getLibraryPoseId(pose) === this.librarySelectedName));
             if (this.getLibraryPoseId(pose) === this.librarySelectedName) item.classList.add('selected');
 
             const preview = document.createElement('div');
@@ -12245,6 +12290,12 @@ class PoseStudioWidget {
             name.innerText = pose.name;
 
             item.onclick = () => this.selectLibraryPose(pose);
+            item.addEventListener('keydown', event => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                event.stopPropagation();
+                this.selectLibraryPose(pose);
+            });
 
             const previewVideo = preview.querySelector("video");
             if (previewVideo) {
@@ -12277,7 +12328,9 @@ class PoseStudioWidget {
     selectLibraryPose(pose) {
         this.librarySelectedName = this.getLibraryPoseId(pose);
         this.libraryGrid?.querySelectorAll('.vnccs-ps-library-item').forEach((item) => {
-            item.classList.toggle('selected', item.dataset.poseId === this.librarySelectedName);
+            const selected = item.dataset.poseId === this.librarySelectedName;
+            item.classList.toggle('selected', selected);
+            item.setAttribute('aria-pressed', String(selected));
         });
         this.renderLibraryInspector(pose);
     }
@@ -12313,6 +12366,7 @@ class PoseStudioWidget {
         }
         const meta = this.getLibraryPoseMeta(pose);
         const isAnimation = meta.assetType === "animation";
+        const localCopy = meta.repository !== "local_user_poses";
         const previewSrc = this.getLibraryPreviewUrl(pose);
         const previewMarkup = previewSrc
             ? (this.isLibraryVideoPreview(pose)
@@ -12357,16 +12411,17 @@ class PoseStudioWidget {
                     <span>Custom ${isAnimation ? "Video Preview" : "Image"}</span>
                     <input class="vnccs-ps-library-preview-input" type="file" accept="${isAnimation ? "video/*" : "image/*"}">
                 </label>
-                <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">Save Changes</button>
+                <button class="vnccs-ps-btn primary vnccs-ps-library-save-edit">${localCopy ? "Save Local Copy" : "Save Changes"}</button>
             </div>
         `;
         requestAnimationFrame(() => this.updateLibraryInspectorScale());
 
         let pendingPreview = null;
         const previewBox = this.libraryInspector.querySelector('.vnccs-ps-library-inspector-preview');
+        const closeLibraryModal = this._closeLibraryModal;
         this.libraryInspector.querySelector('.vnccs-ps-library-apply').onclick = async () => {
             await this.loadFromLibrary(pose);
-            this.libraryInspector.closest('.vnccs-ps-modal-overlay')?.remove();
+            closeLibraryModal?.();
         };
         this.libraryInspector.querySelector('.vnccs-ps-library-delete').onclick = () => this.showDeleteConfirmModal(pose);
         this.libraryInspector.querySelector('.vnccs-ps-library-preview-input').onchange = async (event) => {
@@ -12405,20 +12460,24 @@ class PoseStudioWidget {
                 updatedPoseData.animation.basePose = updatedPoseData.animation.basePose || {};
                 updatedPoseData.animation.basePose.prompt = posePromptValue;
             }
-            const result = await this.saveLibraryPoseRecord({
-                oldName: pose.name,
-                oldRepository: meta.repository,
-                oldCategory: meta.category,
-                name: newName,
-                pose: updatedPoseData,
-                repository: meta.repository,
-                category,
-                tags,
-                preview: pendingPreview,
-                assetType: meta.assetType,
-            });
-            this.librarySelectedName = result.id || `${meta.repository}/${category}/${newName}`;
-            await this.refreshLibrary(false);
+            try {
+                const result = await this.saveLibraryPoseRecord({
+                    oldName: pose.name,
+                    oldRepository: meta.repository,
+                    oldCategory: meta.category,
+                    name: newName,
+                    pose: updatedPoseData,
+                    repository: "local_user_poses",
+                    category,
+                    tags,
+                    preview: pendingPreview,
+                    assetType: meta.assetType,
+                });
+                this.librarySelectedName = result.id || `local_user_poses/${category}/${newName}`;
+                await this.refreshLibrary(false);
+            } catch (error) {
+                this.showMessage(`Failed to save library item: ${error?.message || error}`, true);
+            }
         };
     }
 
@@ -13288,7 +13347,7 @@ class PoseStudioWidget {
             updateInterfaceUI?.();
         };
         for (const [key, setting] of [["fps", fpsSetting], ["duration", durationSetting]]) {
-            this.trackPoseGesture(setting.input);
+            this.trackPoseGesture(setting.input, { animationTiming: true });
             setting.input.addEventListener("input", () => {
                 if (setting.input.value === "" || !Number.isFinite(Number(setting.input.value))) return;
                 this.updateAnimationSettings({ [key]: setting.input.value });

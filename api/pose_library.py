@@ -1474,6 +1474,9 @@ async def save_pose(request):
     old_category = data.get("old_category") or category
     tags = data.get("tags")
     asset_type = normalize_asset_type(data.get("asset_type"), pose)
+
+    if repository != LOCAL_USER_REPOSITORY:
+        return web.json_response({"error": "Downloaded library items are read-only. Save a copy in Local User Poses."}, status=403)
     
     if not name or not isinstance(pose, dict) or not pose:
         return web.json_response({"error": "Name and pose required"}, status=400)
@@ -1490,9 +1493,9 @@ async def save_pose(request):
     pose_path = os.path.join(pose_dir, f"{name}.json")
     old_pose_path = None
     old_pose_dir = None
-    old_name = old_name or name
     try:
-        old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category, data.get("old_asset_type") or asset_type)
+        if old_name:
+            old_pose_path, _found_repo, _found_category = find_pose_file(old_name, old_repository, old_category, data.get("old_asset_type") or asset_type)
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)
     old_pose_dir = os.path.dirname(old_pose_path) if old_pose_path else None
@@ -1565,7 +1568,7 @@ async def save_pose(request):
         obsolete = []
         if preview_installed:
             obsolete.extend(path for path, _ in preview_candidates(pose_dir, name) if path != preview_target)
-        if old_pose_path and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
+        if old_pose_path and old_repository == LOCAL_USER_REPOSITORY and os.path.abspath(old_pose_path) != os.path.abspath(pose_path):
             obsolete.append(old_pose_path)
             obsolete.extend(path for path, _ in preview_candidates(old_pose_dir, old_name))
         for path in obsolete:
