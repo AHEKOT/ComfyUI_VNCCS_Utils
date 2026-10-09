@@ -1,17 +1,13 @@
 """Model names must stay relative before any filesystem or ComfyUI lookup."""
 
-import importlib.util
-from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import pytest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("vnccs_unicanvas_paths_test", ROOT / "nodes/unicanvas/paths.py")
-PATHS = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(PATHS)
+from helpers.backend_package import service_package
+PATHS = service_package("vnccs_unicanvas_paths_test")("nodes.unicanvas.paths")
 
 
 @pytest.mark.parametrize("name", [

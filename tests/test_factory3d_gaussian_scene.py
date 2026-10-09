@@ -9,7 +9,7 @@ import numpy as np
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MODULE_PATH = ROOT / "api" / "gaussian_scene.py"
+MODULE_PATH = ROOT / "nodes/factory3d/gaussian_scene.py"
 
 
 def load_module():
@@ -37,6 +37,22 @@ class GaussianSceneTests(unittest.TestCase):
         record["x"], record["y"], record["z"] = xyz
         record["rot_0"] = 1
         path.write_bytes(self.module._ply_header(1, dtype) + record.tobytes())
+
+    def test_compound_rotation_matches_viewport_and_gaussian_orientation(self):
+        angles = [30, 45, 60]
+        x, y, z = (math.radians(value) for value in angles)
+        rx = np.array([[1, 0, 0], [0, math.cos(x), -math.sin(x)], [0, math.sin(x), math.cos(x)]])
+        ry = np.array([[math.cos(y), 0, math.sin(y)], [0, 1, 0], [-math.sin(y), 0, math.cos(y)]])
+        rz = np.array([[math.cos(z), -math.sin(z), 0], [math.sin(z), math.cos(z), 0], [0, 0, 1]])
+        expected = rx @ ry @ rz
+        self.assertTrue(np.allclose(self.module._rotation_matrix_xyz(angles), expected, atol=1e-6))
+        w, x, y, z = self.module._rotation_quaternion_xyz(angles)
+        quaternion_matrix = np.array([
+            [1 - 2 * (y*y + z*z), 2 * (x*y - w*z), 2 * (x*z + w*y)],
+            [2 * (x*y + w*z), 1 - 2 * (x*x + z*z), 2 * (y*z - w*x)],
+            [2 * (x*z - w*y), 2 * (y*z + w*x), 1 - 2 * (x*x + y*y)],
+        ])
+        self.assertTrue(np.allclose(quaternion_matrix, expected, atol=1e-6))
 
     def test_translation_rotation_and_uniform_scale_are_baked(self):
         with tempfile.TemporaryDirectory() as directory:

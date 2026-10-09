@@ -7,30 +7,7 @@ import os
 from typing import Any
 
 
-# Repository root of the VNCCS-Utils extension (nodes/unicanvas/paths.py -> ../../..).
-_EXTENSION_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def _unicanvas_runtime_temp_root() -> str:
-    try:
-        import folder_paths
-
-        root = folder_paths.get_temp_directory()
-    except Exception:
-        root = os.path.join(_EXTENSION_ROOT, ".runtime_cache")
-    os.makedirs(root, exist_ok=True)
-    return os.path.abspath(root)
-
-
-def _unicanvas_state_cache_dir() -> str:
-    """Where the server writes UniCanvas state caches (ComfyUI user dir, so they survive a restart)."""
-    try:
-        import folder_paths
-
-        root = folder_paths.get_user_directory()
-    except Exception:
-        root = os.path.join(_EXTENSION_ROOT, ".runtime_cache", "user")
-    return os.path.join(root, "vnccs", "unicanvas_state_cache")
+from ..shared.paths import _EXTENSION_ROOT, _vnccs_runtime_temp_root as _unicanvas_runtime_temp_root
 
 
 def _normalize_path(value: str) -> str:

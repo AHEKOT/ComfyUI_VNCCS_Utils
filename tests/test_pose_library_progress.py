@@ -1,5 +1,4 @@
 import asyncio
-import importlib.util
 import json
 import sys
 import tempfile
@@ -13,49 +12,42 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_pose_library():
-    aiohttp_module = types.ModuleType("aiohttp")
-    aiohttp_module.web = types.SimpleNamespace()
-    previous = sys.modules.get("aiohttp")
-    sys.modules["aiohttp"] = aiohttp_module
-    try:
-        spec = importlib.util.spec_from_file_location("vnccs_pose_library_progress_test", ROOT / "api" / "pose_library.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module
-    finally:
-        if previous is None:
-            sys.modules.pop("aiohttp", None)
-        else:
-            sys.modules["aiohttp"] = previous
+    from helpers.backend_package import service_package, stub_imports
+    load = service_package("vnccs_pose_library_progress_test")
+    with stub_imports({"aiohttp": types.SimpleNamespace(web=types.SimpleNamespace())}):
+        library = load("nodes.posestudio.library")
+        api = load("api.pose_library")
+        progress = load("nodes.shared.repository_progress")
+    return library, api, progress
 
 
-POSE_LIBRARY = _load_pose_library()
+POSE_LIBRARY, POSE_API, REPOSITORY_PROGRESS = _load_pose_library()
 
 
 class PoseLibraryProgressTests(unittest.TestCase):
     def test_progress_registry_is_bounded(self):
-        POSE_LIBRARY._REPOSITORY_PROGRESS.clear()
+        REPOSITORY_PROGRESS._REPOSITORY_PROGRESS.clear()
         now = 10_000.0
-        for index in range(POSE_LIBRARY._REPOSITORY_PROGRESS_MAX + 20):
-            POSE_LIBRARY._REPOSITORY_PROGRESS[str(index)] = {
+        for index in range(REPOSITORY_PROGRESS._REPOSITORY_PROGRESS_MAX + 20):
+            REPOSITORY_PROGRESS._REPOSITORY_PROGRESS[str(index)] = {
                 "status": "running",
                 "updated_at": now + index,
             }
 
-        POSE_LIBRARY._prune_repository_progress(now + POSE_LIBRARY._REPOSITORY_PROGRESS_MAX + 20)
+        REPOSITORY_PROGRESS._prune_repository_progress(now + REPOSITORY_PROGRESS._REPOSITORY_PROGRESS_MAX + 20)
 
-        self.assertEqual(len(POSE_LIBRARY._REPOSITORY_PROGRESS), POSE_LIBRARY._REPOSITORY_PROGRESS_MAX)
+        self.assertEqual(len(REPOSITORY_PROGRESS._REPOSITORY_PROGRESS), REPOSITORY_PROGRESS._REPOSITORY_PROGRESS_MAX)
 
     def test_completed_progress_expires(self):
-        POSE_LIBRARY._REPOSITORY_PROGRESS.clear()
-        POSE_LIBRARY._REPOSITORY_PROGRESS["finished"] = {
+        REPOSITORY_PROGRESS._REPOSITORY_PROGRESS.clear()
+        REPOSITORY_PROGRESS._REPOSITORY_PROGRESS["finished"] = {
             "status": "success",
             "updated_at": 1.0,
         }
 
-        POSE_LIBRARY._prune_repository_progress(1.0 + POSE_LIBRARY._REPOSITORY_PROGRESS_TTL_SECONDS + 1)
+        REPOSITORY_PROGRESS._prune_repository_progress(1.0 + REPOSITORY_PROGRESS._REPOSITORY_PROGRESS_TTL_SECONDS + 1)
 
-        self.assertNotIn("finished", POSE_LIBRARY._REPOSITORY_PROGRESS)
+        self.assertNotIn("finished", REPOSITORY_PROGRESS._REPOSITORY_PROGRESS)
 
     def test_manifest_uses_repository_specific_title(self):
         title = POSE_LIBRARY.repository_manifest_title(
@@ -185,7 +177,7 @@ class PoseLibraryProgressTests(unittest.TestCase):
             json_response=lambda payload, status=200: FakeResponse(payload, status),
         )
         with (
-            mock.patch.object(POSE_LIBRARY, "web", fake_web),
+            mock.patch.object(POSE_API, "web", fake_web),
             mock.patch.object(
                 POSE_LIBRARY,
                 "get_vnccs_user_config",
@@ -193,7 +185,7 @@ class PoseLibraryProgressTests(unittest.TestCase):
             ),
             mock.patch.object(POSE_LIBRARY, "publish_local_repository_to_hf") as publish,
         ):
-            response = asyncio.run(POSE_LIBRARY.publish_local_pose_repository(FakeRequest()))
+            response = asyncio.run(POSE_API.publish_local_pose_repository(FakeRequest()))
 
         self.assertEqual(response.status, 403)
         self.assertIn("disabled", response.payload["error"])
@@ -228,14 +220,14 @@ class PoseLibraryProgressTests(unittest.TestCase):
         )
         saved = []
         with (
-            mock.patch.object(POSE_LIBRARY, "web", fake_web),
+            mock.patch.object(POSE_API, "web", fake_web),
             mock.patch.object(POSE_LIBRARY, "load_pose_repositories", side_effect=[[], [refreshed]]),
             mock.patch.object(POSE_LIBRARY, "load_user_repositories", return_value=[]),
             mock.patch.object(POSE_LIBRARY, "save_user_repositories", side_effect=lambda repos: saved.extend(repos)),
             mock.patch.object(POSE_LIBRARY, "refresh_pose_repository", return_value=refreshed) as refresh,
             mock.patch.object(POSE_LIBRARY, "persist_refreshed_repositories") as persist,
         ):
-            response = asyncio.run(POSE_LIBRARY.add_pose_repository(FakeRequest()))
+            response = asyncio.run(POSE_API.add_pose_repository(FakeRequest()))
 
         self.assertEqual(response.status, 200)
         self.assertEqual(response.payload["task_id"], "add-and-sync")
@@ -292,7 +284,7 @@ class PoseLibraryProgressTests(unittest.TestCase):
             self.assertEqual(result["status"], "ok")
             self.assertEqual(result["transport"], "http")
             self.assertEqual(result["downloaded_count"], 1)
-            progress = POSE_LIBRARY.get_repository_progress("http-refresh")
+            progress = REPOSITORY_PROGRESS.get_repository_progress("http-refresh")
             self.assertEqual(progress["transport"], "http")
             http_manifest.assert_called_once()
             http_asset.assert_called_once()

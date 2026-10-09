@@ -16,7 +16,7 @@ class RuntimeCacheTests(unittest.TestCase):
     def test_canvas_node_reads_the_same_normalized_ids_as_upload_api(self):
         state_module = load_unicanvas_package("vnccs_cache_reader_test").state
         directory = self.cache["_UNICANVAS_STATE_CACHE_DIR"]
-        with mock.patch.object(state_module, "_UNICANVAS_STATE_CACHE_DIR", directory):
+        with mock.patch.object(state_module.cache, "_UNICANVAS_STATE_CACHE_DIR", directory):
             for state_id in ("a" * 96, "b" * 97, "c" * 128, "___" + "d" * 128 + "___", "e" * 127 + "__more", "!bad/name!"):
                 with self.subTest(state_id=state_id):
                     state = {"layers": [], "marker": state_id}
@@ -128,7 +128,7 @@ class RuntimeCacheTests(unittest.TestCase):
             headers = {"Content-Length": "100"}
             async def json(self):
                 return {"state_id": "same", "revision": 2, "state": {"layers": [{"dataURL": "new"}]}}
-        with mock.patch.dict(self.cache, {"_vnccs_write_unicanvas_state_cache_file": mock.Mock(side_effect=OSError("disk full"))}):
+        with mock.patch.object(self.cache["canvas_service"], "_vnccs_write_unicanvas_state_cache_file", side_effect=OSError("disk full")):
             response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_upload"](Request()))
         self.assertEqual(response.status, 500)
         self.assertEqual(self.cache["VNCCS_UNICANVAS_STATE_CACHE"]["same"], previous)
@@ -142,7 +142,7 @@ class RuntimeCacheTests(unittest.TestCase):
             headers = {"Content-Length": "100"}
             async def json(self):
                 return {"animation_id": "same", "revision": 2, "animation": {"tracks": {}}}
-        with mock.patch.dict(self.cache, {"_vnccs_write_pose_animation_cache_file": mock.Mock(side_effect=OSError("disk full"))}):
+        with mock.patch.object(self.cache["pose_service"], "_vnccs_write_pose_animation_cache_file", side_effect=OSError("disk full")):
             response = asyncio.run(self.cache["routes"]["/vnccs/pose_animation_upload"](Request()))
         self.assertEqual(response.status, 500)
         self.assertEqual(self.cache["VNCCS_POSE_ANIMATION_CACHE"]["same"], previous)
@@ -165,7 +165,7 @@ class RuntimeCacheTests(unittest.TestCase):
 
     def test_build_info_keeps_extension_root_after_cache_extraction(self):
         self.assertEqual(Path(self.cache["_EXTENSION_ROOT"]), Path(__file__).resolve().parents[1])
-        self.cache["_EXTENSION_ROOT"] = str(self.root)
+        self.cache["build_service"]._EXTENSION_ROOT = str(self.root)
         git = self.root / ".git"
         git.mkdir()
         (git / "HEAD").write_text("a" * 40)

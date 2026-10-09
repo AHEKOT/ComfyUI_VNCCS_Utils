@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from test_pose_library_progress import POSE_LIBRARY as library
+from test_pose_library_progress import POSE_LIBRARY as library, POSE_API as routes, REPOSITORY_PROGRESS as progress_service
 
 
 def test_failed_preview_install_preserves_previous_file(tmp_path, monkeypatch):
@@ -34,7 +34,7 @@ def store(tmp_path, monkeypatch):
     root.mkdir()
     monkeypatch.setattr(library, "get_library_path", lambda: str(root))
     monkeypatch.setattr(library, "load_pose_repositories", lambda: [{"repo_id": "artist/poses", "enabled": True}])
-    monkeypatch.setattr(library, "web", SimpleNamespace(
+    monkeypatch.setattr(routes, "web", SimpleNamespace(
         json_response=lambda data, status=200: SimpleNamespace(data=data, status=status),
         Response=lambda **kwargs: SimpleNamespace(**kwargs),
     ))
@@ -57,7 +57,7 @@ def test_rename_to_existing_pose_preserves_both_assets(store):
         (directory / f"{name}.json").write_text(json.dumps({"pose": name}))
         (directory / f"{name}.png").write_bytes(name.encode())
     before = {path.name: path.read_bytes() for path in directory.iterdir()}
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"})))
+    result = asyncio.run(routes.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"})))
     assert result.status == 409
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
 
@@ -67,9 +67,9 @@ def test_same_pose_can_be_updated_and_renamed_to_free_name(store):
     directory.mkdir(parents=True)
     (directory / "A.json").write_text('{"pose": "old"}')
     (directory / "A.png").write_bytes(b"preview")
-    assert asyncio.run(library.save_pose(request(name="A", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "updated"}))).status == 200
+    assert asyncio.run(routes.save_pose(request(name="A", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "updated"}))).status == 200
     assert json.loads((directory / "A.json").read_text())["pose"] == "updated"
-    assert asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "renamed"}))).status == 200
+    assert asyncio.run(routes.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "renamed"}))).status == 200
     assert not (directory / "A.json").exists()
     assert (directory / "B.png").read_bytes() == b"preview"
 
@@ -79,7 +79,7 @@ def test_new_save_cannot_overwrite_an_existing_local_item(store):
     directory.mkdir(parents=True)
     target = directory / "A.json"
     target.write_text('{"pose": "original"}')
-    result = asyncio.run(library.save_pose(request(
+    result = asyncio.run(routes.save_pose(request(
         name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"},
     )))
     assert result.status == 409
@@ -91,7 +91,7 @@ def test_downloaded_library_is_read_only_for_save(store):
     directory.mkdir(parents=True)
     target = directory / "A.json"
     target.write_text('{"pose": "original"}')
-    result = asyncio.run(library.save_pose(request(name="A", old_name="A", pose={"pose": "edited"})))
+    result = asyncio.run(routes.save_pose(request(name="A", old_name="A", pose={"pose": "edited"})))
     assert result.status == 403
     assert json.loads(target.read_text()) == {"pose": "original"}
 
@@ -102,7 +102,7 @@ def test_local_copy_preserves_remote_source_and_preview_across_refresh(store):
     target = directory / "A.json"
     target.write_text('{"pose": "original"}')
     target.with_suffix(".png").write_bytes(b"source preview")
-    result = asyncio.run(library.save_pose(request(
+    result = asyncio.run(routes.save_pose(request(
         name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY,
         old_repository="artist/poses", pose={"pose": "edited"},
     )))
@@ -126,7 +126,7 @@ def test_remote_copy_cannot_overwrite_an_existing_local_item(store):
         path.write_text(json.dumps({"pose": pose}))
         path.with_suffix(".png").write_bytes(pose.encode())
     before = {path: path.read_bytes() for path in store.rglob("*") if path.is_file()}
-    result = asyncio.run(library.save_pose(request(
+    result = asyncio.run(routes.save_pose(request(
         name="A", old_name="A", repository=library.LOCAL_USER_REPOSITORY,
         old_repository="artist/poses", pose={"pose": "edited"},
     )))
@@ -146,7 +146,7 @@ def test_rename_rechecks_collision_after_async_preview_preparation(store, monkey
         return str(prepared), ".webp"
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"}, preview="image")))
+    result = asyncio.run(routes.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "edited"}, preview="image")))
     assert result.status == 409
     assert json.loads((directory / "A.json").read_text()) == {"pose": "original"}
     assert json.loads((directory / "B.json").read_text()) == {"pose": "concurrent save"}
@@ -181,19 +181,19 @@ def test_same_name_pose_and_animation_keep_separate_files_previews_and_ids(store
     repeated = library.sync_pose_repository_files({"repo_id": "artist/poses"}, {"poses": entries}, False)
     assert repeated["downloaded_count"] == 0
     assert repeated["skipped_count"] == 2
-    records = asyncio.run(library.list_poses(request())).data["poses"]
+    records = asyncio.run(routes.list_poses(request())).data["poses"]
     assert {r["id"] for r in records} == {"artist__poses/poses/Standing/Walk", "artist__poses/animations/Standing/Walk"}
     for kind in ("pose", "animation"):
-        loaded = asyncio.run(library.get_pose(request(asset_type=kind)))
+        loaded = asyncio.run(routes.get_pose(request(asset_type=kind)))
         assert loaded.data["asset_type"] == kind
-        preview = asyncio.run(library.get_preview(request(asset_type=kind)))
+        preview = asyncio.run(routes.get_preview(request(asset_type=kind)))
         assert preview.body == f"{kind} preview".encode()
     untyped = request()
     untyped.query.pop("asset_type")
-    assert asyncio.run(library.get_pose(untyped)).status == 400
-    assert asyncio.run(library.delete_pose(untyped)).status == 400
-    assert asyncio.run(library.delete_pose(request(asset_type="animation"))).data["success"]
-    assert asyncio.run(library.get_pose(request())).data["pose"] == {"pose": "still"}
+    assert asyncio.run(routes.get_pose(untyped)).status == 400
+    assert asyncio.run(routes.delete_pose(untyped)).status == 400
+    assert asyncio.run(routes.delete_pose(request(asset_type="animation"))).data["success"]
+    assert asyncio.run(routes.get_pose(request())).data["pose"] == {"pose": "still"}
     assert len(library.scan_poses()) == 1
 
 
@@ -259,13 +259,13 @@ def test_saving_legacy_asset_migrates_only_its_type_and_keeps_preview(store):
     legacy.parent.mkdir(parents=True)
     legacy.write_text('{"pose": "old"}')
     legacy.with_suffix(".png").write_bytes(b"old preview")
-    animation = asyncio.run(library.save_pose(request(asset_type="animation", repository=repository, pose={"animation": {"frames": []}})))
+    animation = asyncio.run(routes.save_pose(request(asset_type="animation", repository=repository, pose={"animation": {"frames": []}})))
     assert animation.status == 200
-    saved = asyncio.run(library.save_pose(request(old_name="Walk", repository=repository, pose={"pose": "new"})))
+    saved = asyncio.run(routes.save_pose(request(old_name="Walk", repository=repository, pose={"pose": "new"})))
     assert saved.status == 200
     assert not legacy.exists()
     assert (store / saved.data["path"]).with_suffix(".png").read_bytes() == b"old preview"
-    assert asyncio.run(library.get_pose(request(asset_type="animation", repository=repository))).data["pose"]["animation"] == {"frames": []}
+    assert asyncio.run(routes.get_pose(request(asset_type="animation", repository=repository))).data["pose"]["animation"] == {"frames": []}
     assert {p["asset_type"] for p in library.collect_local_pose_files()} == {"pose", "animation"}
 
 
@@ -275,7 +275,7 @@ def test_large_animation_listing_reads_and_serializes_off_the_event_loop(store, 
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"animation": {"frames": list(range(10000))}}))
     original = library.read_pose_json
-    original_response = library.web.json_response
+    original_response = routes.web.json_response
     threads, serialization_threads = [], []
 
     def read(path):
@@ -288,11 +288,11 @@ def test_large_animation_listing_reads_and_serializes_off_the_event_loop(store, 
         serialization_threads.append(threading.get_ident())
         return original_response(*args, **kwargs)
 
-    monkeypatch.setattr(library.web, "json_response", response)
+    monkeypatch.setattr(routes.web, "json_response", response)
     event_loop_thread = threading.get_ident()
     query = request()
     query.query["full"] = "true" if full else "false"
-    response = asyncio.run(library.list_poses(query))
+    response = asyncio.run(routes.list_poses(query))
     assert response.data["poses"][0]["asset_type"] == "animation"
     assert bool(response.data["poses"][0]["data"]) == full
     assert threads and all(t != event_loop_thread for t in threads)
@@ -314,7 +314,7 @@ def test_refresh_reports_asset_failure_as_error(store, tmp_path, monkeypatch):
     assert result["status"] == "error"
     assert "offline" in result["last_error"]
     assert result["errors"] == ["poses/Standing/Walk.json: offline"]
-    assert library.get_repository_progress("failed-assets")["status"] == "error"
+    assert progress_service.get_repository_progress("failed-assets")["status"] == "error"
 
 
 def test_background_refresh_does_not_turn_a_sync_error_into_success(store, monkeypatch):
@@ -322,7 +322,7 @@ def test_background_refresh_does_not_turn_a_sync_error_into_success(store, monke
     monkeypatch.setattr(library, "refresh_pose_repository", lambda *args, **kwargs: failure)
     monkeypatch.setattr(library, "persist_refreshed_repositories", mock.Mock())
     library.run_background_enabled_repository_refresh("failed-background")
-    progress = library.get_repository_progress("failed-background")
+    progress = progress_service.get_repository_progress("failed-background")
     assert progress["status"] == "error"
     assert "artist/poses: offline" in progress["message"]
 
@@ -350,7 +350,7 @@ def test_failed_save_restores_the_previous_pose_and_preview(store, monkeypatch, 
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
     monkeypatch.setattr(library.os, "replace", fail_install)
-    result = asyncio.run(library.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
+    result = asyncio.run(routes.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
     assert result.status == 400
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
 
@@ -377,7 +377,7 @@ def test_failed_rename_keeps_source_and_removes_uncommitted_destination(store, m
 
     monkeypatch.setattr(library, "prepare_preview_file", prepare)
     monkeypatch.setattr(library.os, "replace", fail_commit)
-    result = asyncio.run(library.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"},
+    result = asyncio.run(routes.save_pose(request(name="B", old_name="A", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"},
                                                    preview="image" if with_new_preview else None)))
     assert result.status == 400
     assert {path.name: path.read_bytes() for path in directory.iterdir()} == before
@@ -391,8 +391,37 @@ def test_successful_preview_update_retires_old_formats_only_after_commit(store, 
     prepared = directory / "prepared.webp"
     prepared.write_bytes(b"new preview")
     monkeypatch.setattr(library, "prepare_preview_file", lambda *args: (str(prepared), ".webp"))
-    result = asyncio.run(library.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
+    result = asyncio.run(routes.save_pose(request(old_name="Walk", repository=library.LOCAL_USER_REPOSITORY, pose={"pose": "new"}, preview="image")))
     assert result.status == 200
     assert json.loads((directory / "Walk.json").read_text())["pose"] == "new"
     assert (directory / "Walk.webp").read_bytes() == b"new preview"
     assert sorted(path.name for path in directory.iterdir()) == ["Walk.json", "Walk.webp"]
+
+
+def test_concurrent_worker_saves_cannot_overwrite_a_new_item(store, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+
+    started, release = threading.Event(), threading.Event()
+    original_dump = library.json.dump
+    def hold_first_write(value, handle, **kwargs):
+        if not started.is_set():
+            started.set()
+            assert release.wait(3)
+        return original_dump(value, handle, **kwargs)
+
+    monkeypatch.setattr(library.json, "dump", hold_first_write)
+    body = {"name": "Walk", "repository": library.LOCAL_USER_REPOSITORY,
+            "category": "Standing", "pose": {"pose": "first"}}
+    with ThreadPoolExecutor(2) as workers:
+        first = workers.submit(library.save_pose, body)
+        assert started.wait(3)
+        second = workers.submit(library.save_pose, {**body, "pose": {"pose": "second"}})
+        try:
+            with pytest.raises(FutureTimeoutError):
+                second.result(timeout=0.1)
+        finally:
+            release.set()
+        assert first.result(timeout=3)[1] == 200
+        assert second.result(timeout=3)[1] == 409
+    saved = store / library.LOCAL_USER_REPOSITORY / "poses/Standing/Walk.json"
+    assert json.loads(saved.read_text())["pose"] == "first"

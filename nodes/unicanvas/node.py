@@ -9,7 +9,8 @@ import os
 from .draw import _run_unicanvas_draw
 from .progress import _store_draw_result
 from .render import _render_unicanvas_state_to_image_tensor
-from .state import _load_unicanvas_state, _unicanvas_state_cache_path
+from .state import _load_unicanvas_state
+from .cache import _unicanvas_state_cache_path
 
 
 # The composition keys _run_unicanvas_draw reads from an HTTP-path draw payload (the exact

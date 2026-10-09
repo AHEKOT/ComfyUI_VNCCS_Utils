@@ -1,7 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import importlib.util
 import io
 import json
 import sys
@@ -21,27 +20,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_modules():
-    package = types.ModuleType("vnccs_library_test")
-    package.__path__ = [str(ROOT)]
-    api_package = types.ModuleType("vnccs_library_test.api")
-    api_package.__path__ = [str(ROOT / "api")]
-    sys.modules[package.__name__] = package
-    sys.modules[api_package.__name__] = api_package
-    modules = {}
-    for name in (
-        "gaussian_scene",
-        "factory3d",
-        "factory3d_library",
-    ):
-        spec = importlib.util.spec_from_file_location(
-            f"vnccs_library_test.api.{name}",
-            ROOT / "api" / f"{name}.py",
-        )
-        module = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = module
-        spec.loader.exec_module(module)
-        modules[name] = module
-    return modules["factory3d"], modules["factory3d_library"]
+    from helpers.backend_package import service_package
+    load = service_package("vnccs_library_test")
+    factory = load("nodes.factory3d.storage")
+    library = load("nodes.factory3d.library")
+    load("api.factory3d_library")
+    return factory, library
 
 
 def preview_data_url():
@@ -165,6 +149,7 @@ class FactoryLibraryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.factory, cls.library = load_modules()
+        cls.api = sys.modules["vnccs_library_test.api.factory3d_library"]
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -663,7 +648,7 @@ class FactoryLibraryTests(unittest.TestCase):
         original_aiohttp = sys.modules.get("aiohttp")
         sys.modules["aiohttp"] = types.SimpleNamespace(web=types.SimpleNamespace())
         try:
-            self.library.register_routes(routes)
+            self.api.register_routes(routes)
         finally:
             if original_aiohttp is None:
                 sys.modules.pop("aiohttp", None)
@@ -714,7 +699,7 @@ class FactoryLibraryTests(unittest.TestCase):
               mock.patch.object(self.library, "_save_user_repositories") as save):
             # The route captures its web module when registered.
             routes = RouteTable()
-            self.library.register_routes(routes)
+            self.api.register_routes(routes)
             delete_repository = next(handler for method, path, handler in routes.definitions
                                      if method == "DELETE" and path.endswith("/repositories/{repo_id:.+}"))
             response = asyncio.run(delete_repository(types.SimpleNamespace(match_info={"repo_id": "artist/models"})))

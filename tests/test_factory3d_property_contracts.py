@@ -4,7 +4,7 @@ from pathlib import Path
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("factory3d_property_schema", ROOT / "api/factory3d_schema.py")
+spec = importlib.util.spec_from_file_location("factory3d_property_schema", ROOT / "nodes/factory3d/schema.py")
 schema = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(schema)
 

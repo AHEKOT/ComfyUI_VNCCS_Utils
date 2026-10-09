@@ -54,15 +54,8 @@ The ComfyUI HTTP adapter in `service.py` validates requests and projects output 
 Studio coordinates using `transform.py`; standalone hosts can use the same helpers.
 Hosts must serialize backend calls and must not unload during generation.
 
-## Optional worker
-
-```sh
-python -m ttm.worker --family ardy --root /path/to/ComfyUI/models/text_to_motion
-```
-
-The worker and ComfyUI share the root and exchange jobs through files. The repository's
-`motion_worker/worker.py` entry point forwards to this packaged CLI.
-`service.register_routes` remains the ComfyUI adapter. Importing `ttm` does not register
+Pose Studio runs ARDY inside ComfyUI's process under the shared model lock.
+`service.register_routes` provides the ComfyUI adapter. Importing `ttm` does not register
 routes or import PyTorch.
 
 ## Distribution and limits

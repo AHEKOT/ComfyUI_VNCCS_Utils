@@ -1,4 +1,4 @@
-"""Runtime synchronization API for Pose Studio browser captures."""
+"""HTTP synchronization of Pose Studio browser captures for graph execution."""
 
 import json
 import os

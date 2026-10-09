@@ -8,8 +8,6 @@ import sys
 import tempfile
 import threading
 import unittest
-import contextlib
-import io
 from pathlib import Path
 from unittest import mock
 
@@ -47,7 +45,7 @@ class StandalonePackageTests(unittest.TestCase):
             before = set(sys.modules)
             with mock.patch.dict(sys.modules, {"detached_ttm": package}):
                 spec.loader.exec_module(package)
-                from detached_ttm import registry, service, worker
+                from detached_ttm import registry, service
 
                 self.assertEqual(list(package.load_specs()), ["ardy-core-rp-20fps-h40"])
                 backend = package.create_backend("weights")
@@ -73,7 +71,7 @@ class StandalonePackageTests(unittest.TestCase):
             self.assertIs(service._model_operation_lock(), lock)
         self.assertIs(service._model_operation_lock(), service._MODEL_LOCK)
 
-    def test_backend_unload_releases_encoder_for_standalone_and_worker_hosts(self):
+    def test_backend_unload_releases_encoder(self):
         from nodes.posestudio.ttm import create_backend
         from nodes.posestudio.ttm.vendor import loaders
 
@@ -95,25 +93,3 @@ class StandalonePackageTests(unittest.TestCase):
                 self.assertEqual(registry.load_specs(Path(folder)), {})
         self.assertFalse((MODULE / "kimodo_backend.py").exists())
         self.assertFalse((MODULE / "vendor" / "kimodo").exists())
-
-    def test_worker_entrypoint_loads_without_model_dependencies(self):
-        from nodes.posestudio.ttm.worker import main
-
-        output = io.StringIO()
-        with mock.patch.object(sys, "argv", ["worker", "--help"]), contextlib.redirect_stdout(output):
-            with self.assertRaises(SystemExit) as caught:
-                main()
-        self.assertEqual(caught.exception.code, 0)
-        self.assertIn("--family {ardy}", output.getvalue())
-        self.assertIn("--root", output.getvalue())
-
-    def test_worker_accepts_the_legacy_entrypoint_model_root(self):
-        from nodes.posestudio.ttm import worker
-
-        with tempfile.TemporaryDirectory() as folder, \
-             mock.patch.object(sys, "argv", ["worker", "--family", "ardy"]), \
-             mock.patch.object(worker, "MotionWorker") as runtime:
-            worker.main(default_root=Path(folder))
-            self.assertEqual(runtime.call_args.args[:3],
-                             (Path(folder).resolve(), "ardy", ["ardy-core-rp-20fps-h40"]))
-            runtime.return_value.run.assert_called_once_with()

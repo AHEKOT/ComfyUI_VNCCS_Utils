@@ -5,8 +5,6 @@ Runs without torch or model packages; they are replaced by small stubs where nee
 """
 
 import asyncio
-import threading
-import time
 import contextlib
 import dataclasses
 import importlib.util
@@ -34,7 +32,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "base", "manager_policy", "registry", "service", "ardy_backend", "worker_protocol", "worker_runtime"):
+    for name in ("transform", "soma", "base", "manager_policy", "registry", "service", "ardy_backend"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -50,8 +48,6 @@ BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
 ARDY = _MODULES["ardy_backend"]
-PROTOCOL = _MODULES["worker_protocol"]
-RUNTIME = _MODULES["worker_runtime"]
 MANAGER_POLICY = _MODULES["manager_policy"]
 
 
@@ -947,6 +943,25 @@ class ArdyTests(RunnerTestCase):
         self.assertEqual(SERVICE.default_model_id(), "ardy-core-rp-20fps-h40")
         self.assertTrue(REGISTRY.load_specs()["ardy-core-rp-20fps-h40"].capabilities["start_pose_constraint"])
 
+    def test_generation_uses_the_local_backend_under_the_shared_model_lock(self):
+        lock = mock.MagicMock()
+
+        class Model(FakeArdyModel):
+            def __call__(self, *args, **kwargs):
+                lock.__enter__.assert_called_once_with()
+                lock.__exit__.assert_not_called()
+                return super().__call__(*args, **kwargs)
+
+        model = Model()
+        self.vendored(ARDY, ARDY.ArdyBackend, model, _stub_ardy())
+        spec, request, _ = self.request(duration=1, use_start_pose=False)
+        with mock.patch.object(SERVICE, "_model_operation_lock", return_value=lock):
+            motion = SERVICE.generate_motion(spec, request)
+        lock.__exit__.assert_called_once_with(None, None, None)
+        self.assertIs(SERVICE._LOADED["backend"].model, model)
+        self.assertEqual(motion["model"], spec.id)
+        self.assertEqual(len(model.calls), 1)
+
     def test_core_start_pose_matches_the_mannequin(self):
         keypoints, _, _, _ = world_keypoints()
         solver = ARDY.solver_skeleton(CORE_NAMES, CORE_PARENTS, CORE_REST)
@@ -1027,218 +1042,6 @@ class ArdyTests(RunnerTestCase):
     def test_core_motion_rejects_other_skeletons(self):
         with self.assertRaises(ValueError):
             ARDY.core_motion(["Root"], np.zeros((2, 1, 3)), None, 20)
-
-
-class FakeWorkerBackend:
-    """Stands in for a model inside the isolated worker: returns a SOMA rest pose moving forward."""
-
-    loads = 0
-
-    def __init__(self, spec, root):
-        self.spec = spec
-
-    def check_available(self):
-        if self.spec.id == "unavailable-motion":
-            raise BASE.BackendUnavailable("torch is missing in this environment", "Install worker dependencies")
-
-    def load(self, report):
-        FakeWorkerBackend.loads += 1
-        report("Loading...", 5)
-
-    def generate(self, request, report):
-        report("Generating motion: step 1/1", 50)
-        frames = int(round(request.duration * 30))
-        positions = np.stack([SOMA_REST + [0, 0, 0.01 * i] for i in range(frames)])
-        rotations = np.tile(np.eye(3), (frames, len(SOMA_NAMES), 1, 1))
-        return SOMA.soma_motion(skeleton(), positions, rotations, fps=30)
-
-    def unload(self):
-        pass
-
-
-class IsolatedWorkerTests(RunnerTestCase):
-    def test_idle_worker_advertises_weights_downloaded_after_startup(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            installed = root / "weights.ready"
-            checks = []
-            clock = [0.0]
-
-            class DownloadableBackend(FakeWorkerBackend):
-                def check_available(self):
-                    checks.append(clock[0])
-                    if not installed.is_file():
-                        raise BASE.BackendUnavailable("compact files missing")
-
-            with mock.patch.object(RUNTIME.time, "monotonic", side_effect=lambda: clock[0]):
-                worker = RUNTIME.MotionWorker(root, "download", make_backend=lambda spec: DownloadableBackend(spec, root))
-                worker.probe()
-                worker.heartbeat()
-                model_id = "ardy-core-rp-20fps-h40"
-                self.assertIsNone(PROTOCOL.worker_for(root, model_id))
-                self.assertIn(model_id, worker.unavailable)
-
-                installed.touch()
-                clock[0] = RUNTIME.HEARTBEAT_SECONDS / 2
-                worker.step()
-                self.assertEqual(checks, [0.0], "queue polling must not repeat availability checks")
-                self.assertIsNone(PROTOCOL.worker_for(root, model_id))
-
-                clock[0] = RUNTIME.HEARTBEAT_SECONDS
-                worker.step()
-                self.assertIsNotNone(PROTOCOL.worker_for(root, model_id))
-                self.assertEqual(worker.unavailable, {})
-                self.assertIsNone(worker.loaded, "checking availability must not load the model")
-
-                clock[0] += RUNTIME.HEARTBEAT_SECONDS
-                worker.step()
-                self.assertEqual(checks, [0.0, RUNTIME.HEARTBEAT_SECONDS])
-
-    def test_queue_scan_skips_withdrawn_files(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            inbox = PROTOCOL.job_dir(root, "test", "inbox")
-            inbox.mkdir(parents=True)
-            withdrawn, waiting = inbox / "withdrawn.json", inbox / "waiting.json"
-            withdrawn.write_text("{}")
-            waiting.write_text("{}")
-            worker = RUNTIME.MotionWorker(root, "test", specs={})
-            glob = Path.glob
-
-            def files(directory, pattern):
-                for path in glob(directory, pattern):
-                    if path == withdrawn:
-                        path.unlink()
-                    yield path
-
-            with mock.patch.object(Path, "glob", files):
-                self.assertEqual(worker.next_job(), waiting)
-
-    def test_timeout_withdraws_claimed_job_and_removes_late_output(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            entered, release = threading.Event(), threading.Event()
-
-            class SlowBackend(FakeWorkerBackend):
-                def generate(self, request, report):
-                    entered.set()
-                    if not release.wait(3):
-                        raise RuntimeError("test worker was not released")
-                    return super().generate(request, report)
-
-            worker = self.start_worker(root)
-            worker._make = lambda spec: SlowBackend(spec, root)
-            self.addCleanup(release.set)
-            _, request, _ = self.request(duration=1)
-            clock = [time.time()]
-
-            def wait_for_claim(_poll):
-                self.assertTrue(entered.wait(2))
-                clock[0] += 2
-
-            with mock.patch.object(PROTOCOL, "time", types.SimpleNamespace(time=lambda: clock[0], sleep=time.sleep)):
-                with self.assertRaisesRegex(PROTOCOL.WorkerError, "did not answer in time"):
-                    PROTOCOL.run_job(root, "test", "ardy-core-rp-20fps-h40", request, lambda *a: None,
-                                     timeout=1, sleep=wait_for_claim)
-            self.assertEqual(list((root / "jobs").rglob("*.json")), [])
-            release.set()
-            for _ in range(200):
-                if worker.state == "idle":
-                    break
-                time.sleep(0.01)
-            self.assertEqual(worker.state, "idle")
-            self.assertEqual(list((root / "jobs").rglob("*.json")), [])
-            worker.stop()
-
-    def start_worker(self, root, **kwargs):
-        specs = REGISTRY.load_specs()
-        unavailable = json.loads((REGISTRY.MODELS_CONFIG_DIR / "ardy-core-rp-20fps-h40.json").read_text())
-        unavailable["setup"] = [{"id": "worker", "kind": "manual", "check": "worker", "label": "Worker"}]
-        specs["ardy-core-rp-20fps-h40"] = BASE.MotionModelSpec.from_dict(unavailable)
-        specs["unavailable-motion"] = BASE.MotionModelSpec.from_dict({**unavailable, "id": "unavailable-motion"})
-        worker = RUNTIME.MotionWorker(root, "test", ["ardy-core-rp-20fps-h40", "unavailable-motion"], specs=specs,
-                                      make_backend=lambda spec: FakeWorkerBackend(spec, root), **kwargs)
-        thread = threading.Thread(target=worker.run, kwargs={"poll": 0.01}, daemon=True)
-        thread.start()
-        for _ in range(200):
-            if PROTOCOL.worker_for(root, "ardy-core-rp-20fps-h40"):
-                break
-            time.sleep(0.01)
-        self.addCleanup(lambda: (worker.stop(), thread.join(5)))
-        return worker
-
-    def test_payloads_round_trip(self):
-        _, request, _ = self.request(duration=2, seed=4)
-        back = PROTOCOL.request_from_dict(json.loads(json.dumps(PROTOCOL.request_to_dict(request))))
-        self.assertEqual((back.prompt, back.duration, back.seed), (request.prompt, request.duration, request.seed))
-        np.testing.assert_allclose(back.keypoints["pelvis"], request.keypoints["pelvis"])
-        motion = SOMA.soma_motion(skeleton(), SOMA_REST[None], np.tile(np.eye(3), (1, len(SOMA_NAMES), 1, 1)), fps=30)
-        again = PROTOCOL.motion_from_dict(json.loads(json.dumps(PROTOCOL.motion_to_dict(motion))))
-        np.testing.assert_allclose(again.positions, motion.positions, atol=1e-6)
-        self.assertEqual(again.joint_map, motion.joint_map)
-        self.assertEqual(again.legs, motion.legs)
-
-    def test_stale_or_foreign_heartbeats_are_ignored(self):
-        with tempfile.TemporaryDirectory() as folder:
-            PROTOCOL.write_heartbeat(Path(folder), "old", ["x"])
-            self.assertIsNotNone(PROTOCOL.worker_for(Path(folder), "x"))
-            self.assertIsNone(PROTOCOL.worker_for(Path(folder), "x", now=time.time() + 60))
-            PROTOCOL.write_json(PROTOCOL.heartbeat_path(Path(folder), "old"), {"protocol": 99, "models": ["x"], "updated_at": time.time()})
-            self.assertIsNone(PROTOCOL.worker_for(Path(folder), "x"))
-        with self.assertRaises(ValueError):
-            PROTOCOL.safe_name("../escape")
-
-    def test_comfyui_generates_through_the_worker_without_its_model_lock(self):
-        with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
-            root = Path(folder)
-            worker = self.start_worker(root)
-            with mock.patch.object(SERVICE, "specs", return_value=worker.specs):
-                models = {m["id"]: m for m in SERVICE.list_models()}
-            self.assertTrue(models["ardy-core-rp-20fps-h40"]["available"])
-            self.assertEqual(models["ardy-core-rp-20fps-h40"]["runner"], "worker")
-            worker_step = next(s for s in models["ardy-core-rp-20fps-h40"]["setup"] if s["id"] == "worker")
-            self.assertTrue(worker_step["done"])
-            # The worker runs but cannot serve this model: the card says why.
-            unavailable = models["unavailable-motion"]
-            self.assertFalse(unavailable["available"])
-            self.assertIn("torch is missing", next(s for s in unavailable["setup"] if s["id"] == "worker")["detail"])
-
-            lock = SERVICE._model_operation_lock()
-            self.assertTrue(lock.acquire(blocking=False))  # ComfyUI-side work holds the lock...
-            try:
-                spec, request, task_id = self.request(model="ardy-core-rp-20fps-h40", duration=1, task_id="w1")
-                motion = SERVICE.generate_motion(spec, request, task_id)  # ...and the worker job still runs
-            finally:
-                lock.release()
-            self.assertEqual(motion["frame_count"], 30)
-            np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
-            self.assertIsNone(SERVICE._LOADED["backend"], "nothing was loaded into ComfyUI")
-            leftovers = [p for p in (root / "jobs").rglob("*.json")]
-            self.assertEqual(leftovers, [], "job files are cleaned up")
-
-    def test_worker_errors_reach_the_browser(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            worker = self.start_worker(root)
-            worker.ready["boom"] = types.SimpleNamespace(id="boom")
-            spec, request, _ = self.request(duration=1)
-            with self.assertRaises(PROTOCOL.WorkerError) as caught:
-                PROTOCOL.run_job(root, "test", "nope", request, lambda *a: None, poll=0.01)
-            self.assertTrue(caught.exception.unavailable)
-
-    def test_idle_worker_frees_its_model(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            worker = RUNTIME.MotionWorker(root, "idle", ["ardy-core-rp-20fps-h40"], idle_unload=0.01,
-                                          make_backend=lambda spec: FakeWorkerBackend(spec, root))
-            worker.probe()
-            worker._backend(worker.ready["ardy-core-rp-20fps-h40"], lambda *a: None)
-            self.assertIsNotNone(worker.loaded)
-            worker.last_job = time.time() - 1
-            worker.step()
-            self.assertIsNone(worker.loaded)
-
-
 
 
 class WeightDownloadTests(RunnerTestCase):

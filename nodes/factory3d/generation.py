@@ -24,18 +24,21 @@ from PIL import Image, ImageOps
 
 
 TRIPOSPLAT = "triposplat"
+
 PIXAL3D = "pixal3d"
+
 TRELLIS2 = "trellis2"
+
 PROVIDER_KEYS = (TRIPOSPLAT, PIXAL3D, TRELLIS2)
+
 MESH_PROVIDER_KEYS = (PIXAL3D, TRELLIS2)
 
 _COMFY_PROGRESS_LOCAL = threading.local()
+
 _COMFY_PROGRESS_PATCH_LOCK = threading.Lock()
+
 _COMFY_PROGRESS_PATCHED = False
 
-
-# Revisions are pinned to the public repository heads used while importing the
-# official ComfyUI workflow. Downloads always pass token=False in factory3d.py.
 WEIGHT_SPECS: dict[str, dict[str, str]] = {
     "vae/trellis_2_texture_vae_bf16.safetensors": {
         "repo_id": "Comfy-Org/Pixal3D",

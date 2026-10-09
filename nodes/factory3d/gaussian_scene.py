@@ -23,15 +23,15 @@ import numpy as np
 
 
 LOGGER = logging.getLogger("vnccs.3d_factory.gaussian_scene")
+
 _MAX_HEADER_BYTES = 64 * 1024
+
 _MAX_VERTICES = 64 * 1024 * 1024
+
 _CHUNK = 65_536
+
 _SCENE_METADATA_COMMENT = "comment vnccs_scene_metadata_base64 "
-# TripoSplat's official Three.js viewer applies child yaw +90° around Y,
-# followed by parent pitch 180° around X. Canonical model.ply files and their
-# disposable cached SPLAT derivatives remain in TripoSplat's native export
-# frame; every VNCCS scene/object export bakes this canonical orientation
-# before its editable scene transform.
+
 _CANONICAL_ORIENTATION = np.asarray(
     [
         [0.0, 0.0, 1.0],
@@ -40,10 +40,12 @@ _CANONICAL_ORIENTATION = np.asarray(
     ],
     dtype=np.float32,
 )
+
 _CANONICAL_QUATERNION = np.asarray(
     [0.0, math.sqrt(0.5), 0.0, math.sqrt(0.5)],
     dtype=np.float32,
 )
+
 _TYPE_MAP = {
     "char": "i1",
     "int8": "i1",
@@ -62,6 +64,7 @@ _TYPE_MAP = {
     "double": "<f8",
     "float64": "<f8",
 }
+
 _PLY_TYPE_NAME = {
     "i1": "char",
     "u1": "uchar",
@@ -72,6 +75,7 @@ _PLY_TYPE_NAME = {
     "<f4": "float",
     "<f8": "double",
 }
+
 _REQUIRED = {
     "x",
     "y",
@@ -88,6 +92,7 @@ _REQUIRED = {
     "rot_2",
     "rot_3",
 }
+
 _CORE_FLOAT_FIELDS = tuple(sorted(_REQUIRED))
 
 
@@ -323,12 +328,12 @@ def _rotation_matrix_xyz(degrees: Iterable[float]) -> np.ndarray:
     sx, cx = math.sin(x), math.cos(x)
     sy, cy = math.sin(y), math.cos(y)
     sz, cz = math.sin(z), math.cos(z)
-    # Three.js Euler order XYZ: R = Rz * Ry * Rx for column vectors.
+    # Match Three.js intrinsic XYZ and the quaternion used for covariance.
     return np.asarray(
         [
-            [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
-            [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
-            [-sy, sx * cy, cx * cy],
+            [cy * cz, -cy * sz, sy],
+            [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+            [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
         ],
         dtype=np.float32,
     )

@@ -17,9 +17,13 @@ from PIL import Image
 
 
 _EMPTY_STATE = '{"schema_version":18,"scene_id":"","selected_object_id":"","selected_group_id":"","selected_object_ids":[]}'
+
 _MAX_STATE_CHARS = 16 * 1024 * 1024
+
 _MAX_PREVIEW_PIXELS = 4096 * 4096
+
 _MAX_SCENE_CAMERAS = 32
+
 _ID_RE = re.compile(r"^[a-f0-9]{32}$")
 
 
@@ -642,7 +646,7 @@ def _wait_for_scene_capture_set(
 
 
 def _backend():
-    from ..api import factory3d
+    from . import storage as factory3d
 
     return factory3d
 
@@ -661,7 +665,7 @@ def _has_renderable_scene(scene: dict[str, Any]) -> bool:
 
 
 def _scene_handle(backend, scene, unique_id):
-    from ..api.factory3d_conditioning import create_scene_handle
+    from .conditioning import create_scene_handle
     return create_scene_handle(backend, scene, unique_id)
 
 

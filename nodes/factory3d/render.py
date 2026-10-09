@@ -9,7 +9,7 @@ from PIL import Image, ImageFilter
 
 
 def _services():
-    from ..api import factory3d, factory3d_conditioning
+    from . import storage as factory3d, conditioning as factory3d_conditioning
     return factory3d, factory3d_conditioning
 
 

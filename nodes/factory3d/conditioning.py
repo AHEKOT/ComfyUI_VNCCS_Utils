@@ -1,7 +1,5 @@
-"""Immutable Factory conditioning captures. No renderer or model dependencies."""
-
+"""Immutable Factory conditioning captures, independent of HTTP and model runtimes."""
 from __future__ import annotations
-
 import hashlib
 import io
 import json
@@ -11,15 +9,17 @@ import re
 import secrets
 import shutil
 import time
-from pathlib import Path
-
 import numpy as np
 from PIL import Image
 
 BUILD = "20260907.1"
+
 PROFILE_NAMES = ("Mesh geometry", "Coarse boxes for Gaussian objects")
+
 PARTS = ("rgb", "depth", "normal", "object_id")
+
 _HASH = re.compile(r"^[a-f0-9]{64}$")
+
 _SCENE_FIELDS = ("scene_id", "schema_version", "revision", "render_revision", "objects",
                  "architecture", "levels", "layers", "textures", "lighting", "skydome", "camera", "cameras", "render")
 
@@ -348,62 +348,3 @@ def load_capture(backend, handle):
             if hashlib.file_digest(source, "sha256").hexdigest() != expected:
                 raise ValueError("Capture part integrity check failed")
     return directory, manifest
-
-
-def register_routes(routes, backend):
-    from aiohttp import web
-    import asyncio
-
-    base = backend.API_BASE + "/conditioning/{scene_id}/jobs/{job_id}"
-
-    @routes.get(base)
-    async def get_job(request):
-        try:
-            job = read_job(backend, request.match_info["scene_id"], request.match_info["job_id"])
-            await asyncio.to_thread(_snapshot, backend, job["handle"], True)
-            return web.json_response(job)
-        except (ValueError, FileNotFoundError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-
-    @routes.post(base + "/shots/{index}")
-    async def upload_shot(request):
-        try:
-            if not backend._content_length_ok(request, 130 * 1024 * 1024):
-                raise ValueError("Conditioning upload is too large")
-            post = await request.post()
-            sources = {}
-            for name in PARTS:
-                field = post.get(name)
-                if not hasattr(field, "file"):
-                    raise ValueError(f"Missing {name} capture")
-                sources[name] = field.file
-            raw_metadata = str(post.get("metadata", ""))
-            if len(raw_metadata) > 65536:
-                raise ValueError("Capture metadata is too large")
-            result = await asyncio.to_thread(store_shot, backend, request.match_info["scene_id"],
-                                            request.match_info["job_id"], int(request.match_info["index"]),
-                                            sources, json.loads(raw_metadata))
-            return web.json_response(result, status=201)
-        except (ValueError, FileNotFoundError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-
-    @routes.post(base + "/publish")
-    async def publish(request):
-        try:
-            result = await asyncio.to_thread(publish_capture, backend, request.match_info["scene_id"], request.match_info["job_id"])
-            return web.json_response(result, status=201)
-        except (ValueError, FileNotFoundError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)
-
-    @routes.post(base + "/error")
-    async def error(request):
-        try:
-            if not backend._content_length_ok(request, 8192):
-                raise ValueError("Capture error is too large")
-            payload = await request.json()
-            if not isinstance(payload, dict):
-                raise ValueError("Capture error must be an object")
-            fail_job(backend, request.match_info["scene_id"], request.match_info["job_id"], payload.get("error", "Capture failed"))
-            return web.json_response({"status": "recorded"})
-        except (ValueError, FileNotFoundError) as exc:
-            return web.json_response({"error": str(exc)}, status=400)

@@ -2,7 +2,7 @@ import pathlib
 import re
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SOURCE = (ROOT / "api/runtime_caches.py").read_text(encoding="utf-8")
+SOURCE = (ROOT / "nodes/unicanvas/cache.py").read_text(encoding="utf-8")
 
 
 def test_state_cache_survives_restarts():
@@ -14,14 +14,13 @@ def test_state_cache_survives_restarts():
 
 
 def test_reads_fall_back_to_the_old_temp_cache():
-    read = SOURCE[SOURCE.index("def _vnccs_read_unicanvas_state_cache_file"):SOURCE.index("def _vnccs_unicanvas_build_info")]
+    read = SOURCE[SOURCE.index("def _vnccs_read_unicanvas_state_cache_file"): ]
     assert "_UNICANVAS_LEGACY_STATE_CACHE_DIR" in read
 
 
 def test_node_side_reader_uses_the_directory_the_upload_route_writes():
     # state.py (what the node renders from) once kept reading the temp dir after the route moved to the user dir.
     state = (ROOT / "nodes" / "unicanvas" / "state.py").read_text(encoding="utf-8")
-    paths = (ROOT / "nodes" / "unicanvas" / "paths.py").read_text(encoding="utf-8")
-    assert re.search(r"^_UNICANVAS_STATE_CACHE_DIR = _unicanvas_state_cache_dir\(\)$", state, re.M)
-    assert "get_user_directory()" in paths and '"vnccs", "unicanvas_state_cache"' in paths
-    assert "_UNICANVAS_LEGACY_STATE_CACHE_DIR" in state
+    routes = (ROOT / "api/pose_unicanvas_caches.py").read_text(encoding="utf-8")
+    assert "cache._vnccs_read_unicanvas_state_cache_file(state_id)" in state
+    assert "canvas_cache._vnccs_write_unicanvas_state_cache_file(state_id, entry)" in routes

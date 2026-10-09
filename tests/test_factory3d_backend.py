@@ -1,6 +1,4 @@
-import ast
 import asyncio
-import importlib.util
 import io
 import json
 import sys
@@ -81,28 +79,12 @@ def matrix_to_quat(matrices):
 
 
 def load_modules():
-    root_package = types.ModuleType("vnccs_factory_test")
-    root_package.__path__ = [str(ROOT)]
-    api_package = types.ModuleType("vnccs_factory_test.api")
-    api_package.__path__ = [str(ROOT / "api")]
-    sys.modules[root_package.__name__] = root_package
-    sys.modules[api_package.__name__] = api_package
-
-    gaussian_spec = importlib.util.spec_from_file_location(
-        "vnccs_factory_test.api.gaussian_scene",
-        ROOT / "api" / "gaussian_scene.py",
-    )
-    gaussian = importlib.util.module_from_spec(gaussian_spec)
-    sys.modules[gaussian_spec.name] = gaussian
-    gaussian_spec.loader.exec_module(gaussian)
-
-    factory_spec = importlib.util.spec_from_file_location(
-        "vnccs_factory_test.api.factory3d",
-        ROOT / "api" / "factory3d.py",
-    )
-    factory = importlib.util.module_from_spec(factory_spec)
-    sys.modules[factory_spec.name] = factory
-    factory_spec.loader.exec_module(factory)
+    from helpers.backend_package import service_package
+    load = service_package("vnccs_factory_test")
+    gaussian = load("nodes.factory3d.gaussian_scene")
+    factory = load("nodes.factory3d.storage")
+    load("nodes.factory3d.runtime")
+    load("api.factory3d_scene_editor")
     return gaussian, factory
 
 
@@ -110,6 +92,8 @@ class FactoryBackendTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.gaussian, cls.factory = load_modules()
+        cls.runtime = sys.modules["vnccs_factory_test.nodes.factory3d.runtime"]
+        cls.api = sys.modules["vnccs_factory_test.api.factory3d_scene_editor"]
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -454,7 +438,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(off["lighting"]["shadows"]["quality"], "medium")
 
     def test_experimental_density_modes_are_supported_through_api_and_triposplat(self):
-        capabilities = self.factory.capabilities()
+        capabilities = self.runtime.capabilities()
         self.assertEqual(capabilities["formats"], ["ply", "glb"])
         self.assertEqual(set(capabilities["generators"]), {"triposplat", "pixal3d", "trellis2"})
         self.assertEqual(capabilities["generators"]["pixal3d"]["output_format"], "glb")
@@ -529,7 +513,7 @@ class FactoryBackendTests(unittest.TestCase):
 
         result = self.factory.factory3d_generation._detach_tensor(GradTensor())
         self.assertTrue(result.detached)
-        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         pipeline_index = source.index("def run_mesh_generation")
         remove_index = source.index('"RemoveBackground"', pipeline_index)
         crop_index = source.index('"ImageCropToMask"', remove_index)
@@ -635,7 +619,7 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(events, ["status", "progress"])
 
     def test_mesh_pipeline_uses_inference_mode_and_releases_moge_before_dino(self):
-        source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         pipeline_index = source.index("def run_mesh_generation")
         moge_index = source.index('"MoGeInference"', pipeline_index)
         release_index = source.index("del geometry, moge", moge_index)
@@ -647,8 +631,8 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertIn("release_runtime_memory()", source[release_index:clip_index])
 
     def test_factory_model_lifecycle_matches_unicanvas_without_global_unload(self):
-        factory_source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
-        generation_source = (ROOT / "api" / "factory3d_generation.py").read_text(encoding="utf-8")
+        factory_source = (ROOT / "nodes/factory3d/runtime.py").read_text(encoding="utf-8")
+        generation_source = (ROOT / "nodes/factory3d/generation.py").read_text(encoding="utf-8")
         self.assertNotIn("unload_all_models()", generation_source)
         self.assertIn('getattr(model_management, "cleanup_models", None)', generation_source)
         self.assertIn("with _FactoryModelOperation(job), torch.inference_mode():", factory_source)
@@ -662,7 +646,7 @@ class FactoryBackendTests(unittest.TestCase):
         module = types.ModuleType(module_name)
         module._COMFY_MODEL_OP_LOCK = shared_lock
         with mock.patch.dict(sys.modules, {module_name: module}):
-            self.assertIs(self.factory._model_operation_lock(), shared_lock)
+            self.assertIs(self.runtime._model_operation_lock(), shared_lock)
 
     def test_cancelled_factory_lock_acquisition_cannot_leak_the_lock(self):
         class RecordingLock:
@@ -683,14 +667,14 @@ class FactoryBackendTests(unittest.TestCase):
             "progress": 0,
         }
         job["cancel_event"].set()
-        with mock.patch.object(self.factory, "_model_operation_lock", return_value=lock):
-            with self.assertRaises(self.factory.JobCancelled):
-                with self.factory._FactoryModelOperation(job):
+        with mock.patch.object(self.runtime, "_model_operation_lock", return_value=lock):
+            with self.assertRaises(self.runtime.JobCancelled):
+                with self.runtime._FactoryModelOperation(job):
                     pass
         self.assertFalse(lock.locked)
 
     def test_conditioning_resolution_settings_include_experimental_native_size_mode(self):
-        capabilities = self.factory.capabilities()
+        capabilities = self.runtime.capabilities()
         self.assertEqual(capabilities["conditioning_resolutions"], [1024, 1536, 2048])
         self.assertEqual(capabilities["experimental_conditioning_resolutions"], [1536, 2048])
         self.assertEqual(capabilities["defaults"]["conditioning_resolution"], 1024)
@@ -943,8 +927,8 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(cached.stat().st_size, 2 * 32)
 
     def test_generation_result_embeds_committed_public_scene_for_frontend_hydration(self):
-        source = (ROOT / "api" / "factory3d.py").read_text(encoding="utf-8")
-        self.assertIn('"scene": _public_scene(scene)', source)
+        source = (ROOT / "nodes/factory3d/runtime.py").read_text(encoding="utf-8")
+        self.assertIn('"scene": backend._public_scene(scene)', source)
 
     def test_pixal_generation_commits_a_textured_mesh_asset(self):
         scene = self.factory.create_scene("Pixal")
@@ -956,7 +940,7 @@ class FactoryBackendTests(unittest.TestCase):
             "quality": "preview",
             "seed": "7",
         })
-        job = self.factory._new_job("generation", scene["scene_id"])
+        job = self.runtime._new_job("generation", scene["scene_id"])
 
         def fake_generate(_provider, _image, target, prepared, _settings, **_callbacks):
             target.write_bytes(b"glTF" + b"\0" * 32)
@@ -970,7 +954,7 @@ class FactoryBackendTests(unittest.TestCase):
             }
 
         with mock.patch.object(
-            self.factory,
+            self.runtime,
             "_provider_weights_status",
             return_value={"ready": True},
         ), mock.patch.object(
@@ -978,7 +962,7 @@ class FactoryBackendTests(unittest.TestCase):
             "run_mesh_generation",
             side_effect=fake_generate,
         ):
-            result = self.factory._generate_mesh_object(
+            result = self.runtime._generate_mesh_object(
                 job,
                 image_stream.getvalue(),
                 object_id,
@@ -1430,6 +1414,53 @@ class FactoryBackendTests(unittest.TestCase):
             rf"^/vnccs/3d-factory/scenes/{scene['scene_id']}/reference/preview\?v=\d+$",
         )
 
+    def test_failed_reference_save_preserves_manifest_source_and_preview(self):
+        scene = self.factory.create_scene("Scene")
+        def image(color):
+            stream = io.BytesIO()
+            Image.new("RGB", (64, 64), color).save(stream, "PNG")
+            return stream.getvalue()
+        saved = self.factory.store_scene_reference(scene["scene_id"], image("red"))
+        root = self.factory.resolve_scene_dir(scene["scene_id"])
+        before = {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+        for operation in ("_save_scene", "_write_browser_preview"):
+            with self.subTest(operation=operation), mock.patch.object(
+                self.factory, operation, side_effect=OSError("disk full"),
+            ):
+                with self.assertRaisesRegex(OSError, "disk full"):
+                    self.factory.store_scene_reference(scene["scene_id"], image("blue"))
+                self.assertEqual({path: path.read_bytes() for path in root.rglob("*") if path.is_file()}, before)
+        self.assertEqual(self.factory.load_scene(scene["scene_id"])["reference"], saved["reference"])
+
+    def test_explicit_scene_root_ownership_survives_reload_with_buildings(self):
+        scene = self.factory.create_scene("Scene")
+        scene_id = scene["scene_id"]
+        scene = self.factory.update_scene(scene_id, {"architecture": {"buildings": [{"building_id": "b" * 32}]}})
+        created = self.factory.create_primitive_object(scene_id, {"primitive": {"kind": "plane"}})
+        self.factory.update_scene(scene_id, {
+            "objects": [{"object_id": created["object_id"], "building_id": ""}],
+            "cameras": [{"camera_id": "c" * 32, "building_id": ""}],
+            "camera_tracks": [{"track_id": "d" * 32, "building_id": ""}],
+            "lighting": {"lights": [{"light_id": "e" * 32, "building_id": "", "level_id": scene["levels"][0]["level_id"]}]},
+        })
+        restored = self.factory.load_scene(scene_id)
+        for entries in (restored["objects"], restored["cameras"], restored["camera_tracks"], restored["lighting"]["lights"]):
+            self.assertEqual(entries[0]["building_id"], "")
+
+        manifest = self.factory.resolve_scene_dir(scene_id) / "scene.json"
+        for invalid_id in (None, "f" * 32, "invalid"):
+            with self.subTest(building_id=invalid_id):
+                raw = json.loads(manifest.read_text())
+                for entries in (raw["objects"], raw["cameras"], raw["camera_tracks"], raw["lighting"]["lights"]):
+                    if invalid_id is None:
+                        entries[0].pop("building_id", None)
+                    else:
+                        entries[0]["building_id"] = invalid_id
+                manifest.write_text(json.dumps(raw))
+                restored = self.factory.load_scene(scene_id)
+                for entries in (restored["objects"], restored["cameras"], restored["camera_tracks"], restored["lighting"]["lights"]):
+                    self.assertEqual(entries[0]["building_id"], "b" * 32)
+
     def test_skydome_image_settings_and_public_asset_are_scene_persistent(self):
         scene = self.factory.create_scene("Sky")
         stream = io.BytesIO()
@@ -1770,7 +1801,7 @@ class FactoryBackendTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"weight")
 
-        status = self.factory._weights_status()
+        status = self.runtime._weights_status()
         self.assertTrue(status["ready"])
         self.assertEqual(Path(status["root"]), model_root)
         self.assertTrue(all(Path(item["resolved_path"]).is_file() for item in status["files"]))
@@ -1792,9 +1823,9 @@ class FactoryBackendTests(unittest.TestCase):
             path.write_bytes(b"weight")
             expected[relative] = path.resolve()
 
-        paths = self.factory._weight_paths()
+        paths = self.runtime._weight_paths()
         self.assertEqual(paths, expected)
-        self.assertTrue(self.factory._weights_status()["ready"])
+        self.assertTrue(self.runtime._weights_status()["ready"])
 
     def test_all_factory_api_routes_are_registered_on_the_comfy_route_table(self):
         class RouteTableStub:
@@ -1826,12 +1857,12 @@ class FactoryBackendTests(unittest.TestCase):
         aiohttp_stub = types.ModuleType("aiohttp")
         aiohttp_stub.web = types.SimpleNamespace()
         routes = RouteTableStub()
-        self.factory._REGISTERED = False
+        self.api._REGISTERED = False
         try:
             with mock.patch.dict(sys.modules, {"aiohttp": aiohttp_stub}):
-                self.factory.register_routes(routes)
+                self.api.register_routes(routes)
         finally:
-            self.factory._REGISTERED = False
+            self.api._REGISTERED = False
         registered = {(method, path) for method, path, _handler in routes.definitions}
         expected = {
             ("GET", "/vnccs/3d-factory/capabilities"),

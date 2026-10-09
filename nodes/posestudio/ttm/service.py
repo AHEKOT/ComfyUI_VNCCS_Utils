@@ -21,7 +21,7 @@ import sys
 import threading
 import time
 
-from . import manager_policy, registry, worker_protocol
+from . import manager_policy, registry
 from .base import BackendUnavailable, MotionRequest, empty_torch_cache
 from .transform import align_to_start_pose, motion_to_pose_studio, parse_keypoints
 
@@ -102,18 +102,6 @@ def list_models() -> list:
             entry["setup"] = backend.setup_status()
         except Exception:
             entry["setup"] = [{**step, "done": None} for step in spec.setup]
-        worker = _worker_for(spec.id)
-        problem = _worker_problem(spec.id) if worker is None else None
-        for step in entry["setup"]:
-            if step.get("check") == "worker":
-                step["done"] = worker is not None
-                if problem:
-                    step["detail"] = f"{problem}\n\n{step.get('detail', '')}".strip()
-        if worker is not None:
-            entry.update(available=True, unavailable_reason="", install_hint="", runner="worker",
-                         worker=str(worker.get("worker") or ""))
-            models.append(entry)
-            continue
         entry["runner"] = "comfyui"
         try:
             backend.check_available()
@@ -222,26 +210,6 @@ def _model_operation_lock():
     return lock if hasattr(lock, "acquire") and hasattr(lock, "release") else _MODEL_LOCK
 
 
-def _worker_for(model_id: str):
-    try:
-        return worker_protocol.worker_for(registry.default_models_dir(), model_id)
-    except (OSError, ValueError):
-        return None
-
-
-def _worker_problem(model_id: str):
-    """Why a running worker that was asked to serve ``model_id`` cannot (shown in the card)."""
-    try:
-        beats = worker_protocol.live_workers(registry.default_models_dir())
-    except (OSError, ValueError):
-        return None
-    for beat in beats:
-        info = (beat.get("unavailable") or {}).get(model_id)
-        if isinstance(info, dict) and info.get("reason"):
-            return f"The worker '{beat.get('worker')}' is running but cannot use this model: {info['reason']}"
-    return None
-
-
 def unload_model() -> bool:
     """Free the loaded model and the shared text encoder of the vendored models."""
     backend = _LOADED.get("backend")
@@ -271,26 +239,15 @@ def _backend_for(spec, report):
 
 
 def generate_motion(spec, request: MotionRequest, task_id: str = "") -> dict:
-    """Run the model synchronously (call from a worker thread)."""
+    """Run the model inside ComfyUI (call from a background thread)."""
 
     def report(message, progress):
         set_task(task_id, "running", message, progress)
 
-    worker = _worker_for(spec.id)
-    if worker is not None:
-        # Isolated worker: no ComfyUI lock and no VRAM eviction, other flows keep running.
-        report(f"Sending the job to the motion worker '{worker['worker']}'...", 2)
-        try:
-            source = worker_protocol.run_job(registry.default_models_dir(), worker["worker"], spec.id, request, report)
-        except worker_protocol.WorkerError as exc:
-            if exc.unavailable:
-                raise BackendUnavailable(str(exc), exc.hint) from exc
-            raise RuntimeError(str(exc)) from exc
-    else:
-        with _model_operation_lock():
-            report(f"Preparing {spec.name}...", 2)
-            backend = _backend_for(spec, report)
-            source = backend.generate(request, report)
+    with _model_operation_lock():
+        report(f"Preparing {spec.name}...", 2)
+        backend = _backend_for(spec, report)
+        source = backend.generate(request, report)
 
     report("Mapping the motion onto Pose Studio...", 97)
     motion = motion_to_pose_studio(source, align_to_start_pose(source, request.keypoints))

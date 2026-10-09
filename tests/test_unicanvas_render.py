@@ -84,8 +84,8 @@ class UniCanvasRenderTests(unittest.TestCase):
     def test_pixel_cache_changes_invalidate_comfy_output_without_metadata_changes(self):
         with (
             tempfile.TemporaryDirectory() as root,
-            mock.patch.object(UNICANVAS.state, "_UNICANVAS_STATE_CACHE_DIR", root),
-            mock.patch.object(UNICANVAS.state, "_UNICANVAS_LEGACY_STATE_CACHE_DIR", root),
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_STATE_CACHE_DIR", root),
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_LEGACY_STATE_CACHE_DIR", root),
         ):
             state = json.dumps({"storage": "server_cache", "state_id": "layers", "output_id": "output"})
             node = UNICANVAS.VNCCS_UniCanvas
@@ -110,6 +110,25 @@ class UniCanvasRenderTests(unittest.TestCase):
             for path in Path(root).glob("*.json"):
                 path.unlink()
             self.assertEqual(node.IS_CHANGED(state), missing)
+
+    def test_rendering_cached_pixels_preserves_comfy_output_fingerprint(self):
+        with (
+            tempfile.TemporaryDirectory() as root,
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_STATE_CACHE_DIR", root),
+            mock.patch.object(UNICANVAS.state.cache, "_UNICANVAS_LEGACY_STATE_CACHE_DIR", root),
+        ):
+            cached = {"layers": [], "bbox": {"x": 0, "y": 0, "width": 64, "height": 64}}
+            for cache_id in ("layers", "output"):
+                path = Path(root) / f"{cache_id}.json"
+                path.write_text(json.dumps({"state": cached}))
+                os.utime(path, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+            for output_id in (None, "output"):
+                with self.subTest(output_id=output_id):
+                    state = json.dumps({"storage": "server_cache", "state_id": "layers", "output_id": output_id})
+                    before = UNICANVAS.VNCCS_UniCanvas.IS_CHANGED(state)
+                    result = UNICANVAS.render._render_unicanvas_state_to_rgba(state)
+                    self.assertEqual(result.size, (64, 64))
+                    self.assertEqual(UNICANVAS.VNCCS_UniCanvas.IS_CHANGED(state), before)
 
     def panorama_state(self):
         base = Image.new("RGBA", (8, 4), (20, 40, 60, 255))

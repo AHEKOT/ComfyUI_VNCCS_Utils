@@ -70,7 +70,6 @@ test("readiness counts checked steps and pending pip installs", () => {
 
 test("facts tell models apart", () => {
     assert.deepEqual(modelFacts(READY), ["Starts from your pose", "Up to 10 s", "~17 GB VRAM", "~17 GB download"]);
-    assert.deepEqual(modelFacts({ ...READY, runner: "worker", worker: "ardy" }).slice(0, 2), ["Starts from your pose", 'Isolated worker "ardy"']);
     assert.deepEqual(modelFacts(NEEDS_SETUP), ["Applied on top of your pose", "Up to 2 s", "~6 GB VRAM", "~2 GB download"]);
 });
 

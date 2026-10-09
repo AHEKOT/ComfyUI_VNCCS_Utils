@@ -4,7 +4,7 @@ from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 from .nodes.vncss_config import VNCCS_Config
 from .nodes.factory3d import VNCCS_3DFactory
-from .nodes.factory3d_render import VNCCS_FactoryRender, VNCCS_FactoryMask
+from .nodes.factory3d.render import VNCCS_FactoryRender, VNCCS_FactoryMask
 
 NODE_CLASS_MAPPINGS = {
     "VNCCS_PositionControl": VNCCS_PositionControl,
@@ -40,10 +40,8 @@ import numpy as np
 _SAM3D_MAX_UPLOAD_BYTES = 32 * 1024 * 1024
 _SAM3D_MAX_PIXELS = 4096 * 4096
 
-from .api.runtime_caches import (
-    VNCCS_CAPTURE_CACHE, VNCCS_POSE_ANIMATION_CACHE, VNCCS_UNICANVAS_STATE_CACHE,
-    vnccs_get_capture_cache, vnccs_get_pose_animation_cache,
-    _vnccs_content_length_ok, _vnccs_safe_id,
+from .api.pose_unicanvas_caches import (
+    _vnccs_content_length_ok,
     _vnccs_register_capture_cache, _vnccs_register_pose_animation_cache,
     _vnccs_register_unicanvas_state_cache,
 )
@@ -63,7 +61,7 @@ _vnccs_register_pose_library()
 def _vnccs_register_pose_sync():
     try:
         from server import PromptServer
-        from .api.pose_sync import register_routes
+        from .api.pose_capture_sync import register_routes
         register_routes(PromptServer.instance.app)
     except Exception as e:
         print(f"[VNCCS] Failed to register Pose Sync API: {e}")
@@ -205,7 +203,7 @@ _vnccs_register_text_to_motion()
 def _vnccs_register_3d_factory():
     try:
         from server import PromptServer
-        from .api.factory3d import register_routes
+        from .api.factory3d_scene_editor import register_routes
 
         # Core Factory and its independent Gaussian model library are
         # registered together on ComfyUI's /api RouteTableDef.

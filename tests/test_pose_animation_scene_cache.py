@@ -24,8 +24,8 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.validator = load_runtime_caches(Path(temporary.name))
-        self.validator["_POSE_ANIMATION_CACHE_MAX_KEYS"] = 100
-        self.validator["_POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS"] = 100_000
+        self.validator["pose_service"]._POSE_ANIMATION_CACHE_MAX_KEYS = 100
+        self.validator["pose_service"]._POSE_ANIMATION_CACHE_MAX_TOTAL_CHARS = 100_000
 
     def test_accepts_primary_clip_plus_three_character_clips(self):
         animation = {

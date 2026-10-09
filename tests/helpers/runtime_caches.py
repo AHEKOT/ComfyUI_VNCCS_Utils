@@ -1,11 +1,6 @@
 """Import production cache helpers and routes without the ComfyUI entry point."""
-import importlib.util
-import sys
-from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
-
-ROOT = Path(__file__).resolve().parents[2]
+from .backend_package import service_package, stub_imports
 
 
 def load_runtime_caches(root):
@@ -28,11 +23,14 @@ def load_runtime_caches(root):
         "aiohttp": SimpleNamespace(web=SimpleNamespace(json_response=lambda data, status=200, **_kwargs:
                                                      SimpleNamespace(data=data, status=status))),
     }
-    spec = importlib.util.spec_from_file_location("vnccs_cache_test", ROOT / "api/runtime_caches.py")
-    module = importlib.util.module_from_spec(spec)
-    with mock.patch.dict(sys.modules, modules):
-        spec.loader.exec_module(module)
-        module._vnccs_register_pose_animation_cache()
-        module._vnccs_register_unicanvas_state_cache()
-    module.routes = routes
-    return vars(module)
+    load = service_package("vnccs_cache_test_" + root.name.replace("-", "_"))
+    with stub_imports(modules):
+        pose = load("nodes.posestudio.caches")
+        canvas = load("nodes.unicanvas.cache")
+        build = load("nodes.unicanvas.build_info")
+        api = load("api.pose_unicanvas_caches")
+        api._vnccs_register_capture_cache()
+        api._vnccs_register_pose_animation_cache()
+        api._vnccs_register_unicanvas_state_cache()
+    return {**vars(pose), **vars(canvas), **vars(build), **vars(api),
+            "routes": routes, "pose_service": pose, "canvas_service": canvas, "build_service": build}

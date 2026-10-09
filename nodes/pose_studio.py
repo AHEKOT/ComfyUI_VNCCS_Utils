@@ -208,7 +208,7 @@ def _hydrate_cached_pose_animation(data):
     if not cache_id:
         return data
     try:
-        from .. import vnccs_get_pose_animation_cache
+        from .posestudio.caches import vnccs_get_pose_animation_cache
         entry = vnccs_get_pose_animation_cache(cache_id)
         animation = entry.get("animation") if isinstance(entry, dict) else None
         if isinstance(animation, dict):
@@ -483,7 +483,7 @@ class VNCCS_PoseStudio:
             capture_id = data.get("capture_id")
             if capture_id:
                 try:
-                    from .. import vnccs_get_capture_cache
+                    from .posestudio.caches import vnccs_get_capture_cache
                     cached = vnccs_get_capture_cache(capture_id)
                     if cached:
                         data["captured_images"] = cached.get("captured_images", [])

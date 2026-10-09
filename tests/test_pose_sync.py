@@ -20,7 +20,7 @@ stub_aiohttp.web = types.SimpleNamespace(
     json_response=lambda data, status=200: StubResponse(data, status),
 )
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "api" / "pose_sync.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "api" / "pose_capture_sync.py"
 SPEC = importlib.util.spec_from_file_location("vnccs_pose_sync_test_module", MODULE_PATH)
 POSE_SYNC = importlib.util.module_from_spec(SPEC)
 previous_aiohttp = sys.modules.get("aiohttp")
