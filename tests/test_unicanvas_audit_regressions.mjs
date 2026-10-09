@@ -19,6 +19,63 @@ const widget = props => Object.assign(Object.create(prototype), {
   renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {},
 }, props);
 
+test("layer controls update live and record one undo snapshot per gesture", () => {
+  class Input {}
+  class Select {}
+  const listeners = {}, snapshots = [];
+  const layer = { id: "A", opacity: 1, blendMode: "source-over" };
+  const w = widget({ layers: [layer], activeLayerId: layer.id,
+    layerSubhead: { addEventListener: (type, listener) => { listeners[type] = listener; } },
+    layerList: { querySelector: () => null }, invalidateLayerThumbnail() {},
+    recordHistoryBefore() { snapshots.push({ opacity: layer.opacity, blendMode: layer.blendMode }); },
+  });
+  const start = source.indexOf("    const onLayerSubheadChange =");
+  const end = source.indexOf('    this.toolSettings.addEventListener("input"', start);
+  vm.runInNewContext(`(function () { ${source.slice(start, end)} }).call(w)`, {
+    w, HTMLInputElement: Input, HTMLSelectElement: Select,
+  });
+  const input = Object.assign(new Input(), { dataset: { layerControl: "opacity" }, value: "0.5" });
+  listeners.input({ target: input });
+  assert.equal(layer.opacity, .5);
+  input.value = "0.2";
+  listeners.input({ target: input });
+  listeners.change({ target: input });
+  assert.deepEqual(snapshots, [{ opacity: 1, blendMode: "source-over" }]);
+  const select = Object.assign(new Select(), { dataset: { layerControl: "blendMode" }, value: "multiply" });
+  listeners.input({ target: select });
+  listeners.change({ target: select });
+  assert.equal(layer.blendMode, "multiply");
+  assert.deepEqual(snapshots[1], { opacity: .2, blendMode: "source-over" });
+  input.value = "0.8";
+  listeners.input({ target: input });
+  listeners.change({ target: input });
+  assert.equal(snapshots.length, 3);
+});
+
+for (const failed of [false, true]) {
+  test(`config reference preparation blocks repeat GENERATE and unlocks (${failed ? "failed" : "loaded"})`, async () => {
+    let finish, calls = 0;
+    const ctx = { poseGenerationLayer: () => null,
+      resolveConfigDrawSettings: () => ({ settings: {}, references: [] }),
+      loadConfigReferences: () => { calls++; return new Promise((resolve, reject) => { finish = () => failed ? reject(Error("read failed")) : resolve([]); }); },
+    };
+    const proto = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", ctx);
+    const w = Object.assign(Object.create(proto), { node: { graph: {} }, panorama: null,
+      drawBtn: {}, _documentRevision: 0, settings: {}, _isConfigLinked: () => true,
+      syncConfigFamily() {}, flushSettingsToWidget() {}, setStatus() {},
+    });
+    const first = w.draw();
+    assert.equal(w.drawInProgress, true);
+    assert.equal(w.drawBtn.disabled, true);
+    await w.draw();
+    assert.equal(calls, 1);
+    w._documentRevision++;
+    finish(); await first;
+    assert.equal(w.drawInProgress, false);
+    assert.equal(w.drawBtn.disabled, false);
+  });
+}
+
 test("standalone saves large documents on the server and survives browser quota errors", async () => {
   let raw = null, quota = false, saved = true;
   const snapshots = [];
@@ -72,10 +129,10 @@ test("flat history fits the same byte budget as panorama history", () => {
   assert.equal(w.undoStack.length, 3);
 });
 
-for (const panorama of [null, { settings: { width: 1, height: 1 }, commit() {} }]) {
-  test(`PSD export preserves opacity and blend modes (${panorama ? "panorama" : "flat"})`, async () => {
+for (const panorama of [null, { settings: { width: 1, height: 1 }, commit() {} }]) for (const visible of [true, false]) {
+  test(`PSD export preserves opacity, blend modes and visibility (${panorama ? "panorama" : "flat"}, ${visible ? "visible" : "hidden"})`, async () => {
     const layers = ["color-dodge", "color-burn", "hard-light", "soft-light", "multiply"].map(blendMode => ({
-      name: blendMode, type: "raster", visible: true, opacity: 0.5, blendMode, canvas: canvas(1, 1), panoramaCanvas: canvas(1, 1),
+      name: blendMode, type: "raster", visible, opacity: 0.5, blendMode, canvas: canvas(1, 1), panoramaCanvas: canvas(1, 1),
     }));
     let roundtrip;
     const imageData = { width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) };
@@ -92,6 +149,7 @@ for (const panorama of [null, { settings: { width: 1, height: 1 }, commit() {} }
     for (const layer of roundtrip.children) {
       assert.ok(Math.abs(layer.opacity - 0.5) < 0.005);
       assert.equal(layer.blendMode, layer.name.replace(/-/g, " "));
+      assert.equal(Boolean(layer.hidden), !visible);
     }
   });
 }

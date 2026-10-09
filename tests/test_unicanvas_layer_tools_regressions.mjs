@@ -9,7 +9,7 @@ const prototype = vm.runInNewContext(widgetSource.slice(widgetSource.indexOf("cl
 
 function tools(context = {}) {
     return vm.runInNewContext(source.replace(/^import .*;$/gm, "").replace(/^export \{.*\};$/gm, "").replace(/^export /gm, "")
-        + "\nrequestColorMatch = matchRequest; ({collectPsdRasterLayers, importPSDFile, loadColorMatchMethod, scheduleColorMatchPreview, commitColorMatchPreview, closeColorMatchPreview});",
+        + "\nrequestColorMatch = matchRequest; ({collectPsdRasterLayers, importPSDFile, buildColorMatchReference, loadColorMatchMethod, scheduleColorMatchPreview, commitColorMatchPreview, closeColorMatchPreview});",
     { clamp: (n, min, max) => Math.max(min, Math.min(max, n)), matchRequest: async () => "match", ...context });
 }
 
@@ -142,7 +142,7 @@ test("current PSD imports preserve stacking and inherited visibility", async () 
             { name: "top", canvas: { width: 10, height: 10 } },
             { name: "hidden", hidden: true, opacity: .5, children: [{ name: "bottom", canvas: { width: 10, height: 10 } }] },
         ] }) }),
-        ensureWorldBounds() {}, configureImageContext: value => value,
+        ensureWorldRectBounds: () => true, configureImageContext: value => value,
         addLayer(type, name) {
             const layer = { name, canvas: { getContext: () => ({ drawImage() {} }) } };
             created.push(layer);
@@ -157,6 +157,40 @@ test("current PSD imports preserve stacking and inherited visibility", async () 
     assert.equal(created[1].visible, true);
     assert.match(status, /PSD imported 2 raster layers/);
     assert.match(status, /unsupported group appearance "hidden"/);
+});
+
+test("PSD import reports failed expansion without adding an empty layer", async () => {
+    let status;
+    const uc = { _documentRevision: 0, bbox: { x: 0, y: 0 },
+        loadAgPsd: async () => ({ readPsd: () => ({ children: [
+            { name: "too far", left: 500000, canvas: { width: 10, height: 10 } },
+        ] }) }),
+        ensureWorldRectBounds: () => false,
+        addLayer: () => assert.fail("failed expansion must not create a layer"),
+        setStatus(value) { status = value; },
+    };
+    await tools().importPSDFile(uc, { arrayBuffer: async () => new ArrayBuffer(0) });
+    assert.match(status, /PSD import failed:.*too far/);
+});
+
+test("color match ignores masks both below the target and in the fallback", () => {
+    const drawn = [];
+    const api = tools({ document: { createElement: () => ({ getContext: () => ({ save() {}, restore() {} }) }) } });
+    const target = { id: "target", type: "raster", visible: true };
+    const mask = { id: "mask", type: "mask", visible: true };
+    const image = { id: "image", type: "pose", visible: true };
+    const uc = { origin: { x: 0, y: 0 }, configureImageContext: value => value,
+        drawRasterLayerToWorldRect(_ctx, layer) { drawn.push(layer.id); } };
+    const crop = { x: 0, y: 0, width: 10, height: 10 };
+    for (const layers of [[target, mask], [mask, target]]) {
+        uc.layers = layers;
+        assert.equal(api.buildColorMatchReference(uc, target, crop), null);
+    }
+    for (const layers of [[target, mask, image], [mask, image, target]]) {
+        uc.layers = layers;
+        assert.ok(api.buildColorMatchReference(uc, target, crop));
+    }
+    assert.deepEqual(drawn, ["image", "image"]);
 });
 
 for (const change of ["reset", "dispose", "new import"]) {

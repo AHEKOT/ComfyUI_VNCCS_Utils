@@ -179,8 +179,9 @@ function createPsdLayer(uc, entry) {
   const top = Number(entry.top) || 0;
   const worldX = uc.bbox.x + left;
   const worldY = uc.bbox.y + top;
-  uc.ensureWorldBounds(worldX + source.width, worldY + source.height, 64);
-  uc.ensureWorldBounds(worldX, worldY, 64);
+  if (!uc.ensureWorldRectBounds({ x: worldX, y: worldY, width: source.width, height: source.height }, 64)) {
+    throw new Error(`Canvas could not fit PSD layer "${entry.name || "Unnamed"}".`);
+  }
   const layer = uc.addLayer("raster", entry.name || "PSD Layer", true, true);
   layer.visible = entry.hidden ? false : true;
   layer.opacity = normalizePsdOpacity(entry.opacity);
@@ -393,8 +394,9 @@ async function removeLayerBackground(uc, layer, extraPrompt = "") {
 
 function buildColorMatchReference(uc, layer, crop) {
   const index = uc.layers.indexOf(layer);
-  const below = uc.layers.slice(index + 1).filter((item) => item.visible);
-  const pool = below.length ? below : uc.layers.filter((item) => item.visible && item.id !== layer.id);
+  const isReference = (item) => item.visible && (item.type === "raster" || item.type === "pose");
+  const below = uc.layers.slice(index + 1).filter(isReference);
+  const pool = below.length ? below : uc.layers.filter((item) => isReference(item) && item.id !== layer.id);
   if (!pool.length) return null;
   const canvas = document.createElement("canvas");
   canvas.width = crop.width;

@@ -241,7 +241,7 @@ test("a linked VNCSS Config hides model, family, turbo and LoRA controls and dri
     const family = source.slice(source.indexOf("  syncConfigFamily() {"), source.indexOf("  syncConfigOverride() {"));
     assert.ok(family.includes("resolveConfigDrawSettings(") && family.includes("detectModuleForModelName("), "the family follows the config's model file");
     assert.ok(family.includes("forcedMode"), "a checkpoint config stays SDXL");
-    assert.match(source, /this\.syncConfigFamily\(\);\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE re-detects the family before drawing");
+    assert.match(source, /this\.syncConfigFamily\(\);\s*this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE re-detects the family and locks the button before loading references");
 });
 
 test("family detection reads the file name only, prefers the most specific pattern and keeps the loader", async () => {

@@ -5,7 +5,7 @@
  * workflow runs only when the user queues it for the final image. A linked VNCSS Config normally
  * hands over MODEL/CLIP/VAE tensors that exist only while the graph executes, so the draw used to
  * queue the whole workflow. Here the config's inputs are traced back to their loader nodes
- * (checkpoint / diffusion model / GGUF / CLIP / VAE loaders, LoRA loaders in between, LoadImage
+ * (checkpoint / diffusion model / GGUF / CLIP / VAE loaders and LoadImage
  * references) and the same files are loaded by UniCanvas directly. Only when the chain holds
  * something UniCanvas cannot reproduce (a custom node patching the model, a generated reference
  * image) does the caller fall back to queueing the prompt.
@@ -59,27 +59,13 @@ export function upstreamNode(graph, node, inputName) {
 }
 
 /**
- * Walks one input chain down to its loader. LoRA loaders on the way add to `loras` (in graph
- * order). Returns the loader's settings, or { unsupported } naming the node that blocks it.
+ * Returns the loader's settings, or { unsupported } for a chain the internal draw cannot replay.
  */
-function walk(graph, node, inputName, loaders, loras, loraInput) {
-  let current = upstreamNode(graph, node, inputName);
-  for (let hops = 0; hops < 32; hops += 1) {
-    if (!current) return { unsupported: `nothing is connected to ${inputName}` };
-    const read = loaders[current.type];
-    if (read) return read(current);
-    if (current.type === "LoraLoader" || current.type === "LoraLoaderModelOnly") {
-      if (loraInput === "model") {
-        const name = widget(current, "lora_name");
-        const strength = Number(widget(current, "strength_model") ?? 1);
-        if (name && strength) loras.unshift({ name, strength });
-      }
-      current = upstreamNode(graph, current, loraInput);
-      continue;
-    }
-    return { unsupported: `${current.title || current.type} (${current.type})` };
-  }
-  return { unsupported: "the chain is too long" };
+function walk(graph, node, inputName, loaders) {
+  const current = upstreamNode(graph, node, inputName);
+  if (!current) return { unsupported: `nothing is connected to ${inputName}` };
+  const read = loaders[current.type];
+  return read ? read(current) : { unsupported: `${current.title || current.type} (${current.type})` };
 }
 
 function configLoraStack(configNode) {
@@ -92,7 +78,8 @@ function configLoraStack(configNode) {
   }
   return (Array.isArray(state?.loras) ? state.loras : [])
     .filter((item) => item && item.name && item.enabled !== false && Number(item.strength ?? 1) !== 0)
-    .map((item) => ({ name: String(item.name), strength: Number(item.strength ?? 1) }));
+    .map((item) => ({ name: String(item.name), strength: Number(item.strength ?? 1),
+      clip_strength: item.clip_strength == null || !Number.isFinite(Number(item.clip_strength)) ? null : Number(item.clip_strength) }));
 }
 
 /**
@@ -102,12 +89,11 @@ function configLoraStack(configNode) {
 export function resolveConfigDrawSettings(graph, widgetNode) {
   const configNode = upstreamNode(graph, widgetNode, "config");
   if (!configNode) return { unsupported: "the VNCSS Config node was not found" };
-  const loras = [];
-  const model = walk(graph, configNode, "model", MODEL_LOADERS, loras, "model");
+  const model = walk(graph, configNode, "model", MODEL_LOADERS);
   if (model.unsupported) return { unsupported: `model: ${model.unsupported}` };
-  const clip = walk(graph, configNode, "clip", CLIP_LOADERS, [], "clip");
+  const clip = walk(graph, configNode, "clip", CLIP_LOADERS);
   if (clip.unsupported) return { unsupported: `clip: ${clip.unsupported}` };
-  const vae = walk(graph, configNode, "vae", VAE_LOADERS, [], "vae");
+  const vae = walk(graph, configNode, "vae", VAE_LOADERS);
   if (vae.unsupported) return { unsupported: `vae: ${vae.unsupported}` };
   if (model.model_loader === "checkpoint") {
     // UniCanvas loads CLIP and VAE from the checkpoint itself.
@@ -125,9 +111,9 @@ export function resolveConfigDrawSettings(graph, widgetNode) {
     const file = String(widget(source, "image") || "");
     if (!file) return { unsupported: `reference_image_${index} has no image` };
     const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
-    references.push({ filename: slash >= 0 ? file.slice(slash + 1) : file, subfolder: slash >= 0 ? file.slice(0, slash) : "", type: "input" });
+    references.push({ slot: index, filename: slash >= 0 ? file.slice(slash + 1) : file, subfolder: slash >= 0 ? file.slice(0, slash) : "", type: "input" });
   }
-  const settings = { model_loader: model.model_loader, model_selection_mode: "custom", lora_stack: [...loras, ...configLoraStack(configNode)] };
+  const settings = { model_loader: model.model_loader, model_selection_mode: "custom", lora_stack: configLoraStack(configNode) };
   for (const part of [model, clip, vae]) {
     for (const [key, value] of Object.entries(part)) {
       if (!key.startsWith("_") && key !== "model_loader" && value !== undefined && value !== "") settings[key] = value;
@@ -136,7 +122,7 @@ export function resolveConfigDrawSettings(graph, widgetNode) {
   return { settings, references };
 }
 
-/** LoadImage references as data URLs, in slot order. */
+/** LoadImage references as data URLs, preserving empty socket positions. */
 export async function loadConfigReferences(references) {
   const urls = [];
   for (const ref of references || []) {
@@ -144,12 +130,12 @@ export async function loadConfigReferences(references) {
     const res = await fetch(`/view?${params.toString()}`);
     if (!res.ok) throw new Error(`reference ${ref.filename}: HTTP ${res.status}`);
     const blob = await res.blob();
-    urls.push(await new Promise((resolve, reject) => {
+    urls[(ref.slot ?? urls.length + 1) - 1] = await new Promise((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(reader.result);
       reader.onerror = () => reject(reader.error);
       reader.readAsDataURL(blob);
-    }));
+    });
   }
   return urls;
 }

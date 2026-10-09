@@ -200,8 +200,9 @@ def _request_settings(payload: dict[str, Any], external: Any) -> dict[str, Any]:
         if not isinstance(references, dict):
             references = {}
             external_block["references"] = references
-        uploads = [item for item in edit_refs if isinstance(item, str) and item][:MAX_UPLOADED_REFERENCES]
-        for index, value in enumerate(uploads):
+        for index, value in enumerate(edit_refs[:MAX_UPLOADED_REFERENCES]):
+            if not isinstance(value, str) or not value:
+                continue
             name = f"reference_image_{index + 1}"
             if references.get(name) is None:
                 references[name] = _pil_to_image_tensor(_decode_data_url(value, "RGB"))

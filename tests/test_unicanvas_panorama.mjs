@@ -254,6 +254,80 @@ test("closing-page saves start immediately and stale failures do not clear their
   } finally { context.fetch = previousFetch; }
 });
 
+test("a pending autosave never replaces the final save of the same state", async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishOld;
+  context.fetch = async (_url, request) => {
+    sent.push(request);
+    if (sent.length === 1) return new Promise(resolve => {
+      finishOld = () => resolve({ ok: false, status: 500, json: async () => ({ error: "old failure" }) });
+    });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const state = { layers: [], label: "same" };
+    const first = w.uploadStatePayload(state);
+    await Promise.resolve();
+    assert.equal(w.lastUploadedStateJSON, undefined, "the server has not confirmed the first write");
+    assert.equal(await w.uploadStatePayload(state, true), true);
+    assert.equal(sent.length, 2);
+    assert.equal(sent[1].keepalive, true);
+    finishOld(); assert.equal(await first, false);
+    assert.match(w.lastUploadedStateJSON, /"label":"same"/);
+    assert.equal(await w.uploadStatePayload(state), true);
+    assert.equal(sent.length, 2, "only an acknowledged idle save may be deduplicated");
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
+for (const started of [true, false]) test(`final save restores acknowledged pixels while another autosave is ${started ? "running" : "queued"}`, async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishDifferent;
+  context.fetch = async (_url, request) => {
+    const state = JSON.parse(request.body).state;
+    sent.push(state.label);
+    if (state.label === "different") return new Promise(resolve => { finishDifferent = () => resolve({ ok: true }); });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const original = { layers: [], label: "original" };
+    await w.uploadStatePayload(original);
+    const pending = w.uploadStatePayload({ layers: [], label: "different" });
+    if (started) await Promise.resolve();
+    await w.uploadStatePayload(original, true);
+    assert.equal(sent.length, 3, "the final state must be sent even when it matches the last acknowledged state");
+    assert.equal(sent.filter(label => label === "original").length, 2);
+    finishDifferent(); await pending;
+    assert.match(w.lastUploadedStateJSON, /"label":"original"/);
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
+test("a queued save restores acknowledged pixels after an intermediate write", async () => {
+  const previousFetch = context.fetch;
+  const sent = []; let finishDifferent;
+  context.fetch = async (_url, request) => {
+    const state = JSON.parse(request.body).state;
+    sent.push(state.label);
+    if (state.label === "different") return new Promise(resolve => { finishDifferent = () => resolve({ ok: true }); });
+    return { ok: true };
+  };
+  try {
+    const w = widget({ getStateCacheId: () => "saved", saveLocalStateBackup() {}, setStatus() {} });
+    const original = { layers: [], label: "original" };
+    await w.uploadStatePayload(original);
+    const pending = w.uploadStatePayload({ layers: [], label: "different" });
+    const restored = w.uploadStatePayload(original);
+    await Promise.resolve();
+    finishDifferent(); await Promise.all([pending, restored]);
+    assert.deepEqual(sent, ["original", "different", "original"]);
+    assert.match(w.lastUploadedStateJSON, /"label":"original"/);
+    assert.equal(w.stateUploadsPending, 0);
+  } finally { context.fetch = previousFetch; }
+});
+
 test("generation retains its request camera when the user rotates while waiting", async () => {
   let release;
   context.fetch = () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ images: [{ filename: "result.png" }] }) }); });

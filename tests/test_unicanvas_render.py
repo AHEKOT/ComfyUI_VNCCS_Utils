@@ -31,6 +31,16 @@ def _data_url(image):
 
 
 class UniCanvasRenderTests(unittest.TestCase):
+    def test_uploaded_reference_gaps_keep_their_socket_numbers(self):
+        uploads = [None, "", "third", *([None] * 6), "tenth", "outside_limit"]
+        with (
+            mock.patch.object(UNICANVAS.draw_request, "_decode_data_url", side_effect=lambda value, mode: value),
+            mock.patch.object(UNICANVAS.draw_request, "_pil_to_image_tensor", side_effect=lambda value: value),
+        ):
+            settings = UNICANVAS.draw_request._request_settings({"settings": {"edit_reference_images": uploads}}, None)
+        self.assertEqual(settings["_external"]["references"], {"reference_image_3": "third", "reference_image_10": "tenth"})
+        self.assertEqual(UNICANVAS.models.base._reference_image_slots("canvas", settings), {1: "canvas", 4: "third", 11: "tenth"})
+
     def test_cache_merge_preserves_workflow_geometry_and_hires_clear(self):
         cached = {"layers": [{"id": "image", "crop": {"x": 0}, "dataURL": "pixels",
                               "hiresRect": {"x": 0}, "hiresDataURL": "hires"}]}
