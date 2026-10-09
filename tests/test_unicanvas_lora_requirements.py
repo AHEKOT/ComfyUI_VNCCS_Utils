@@ -159,7 +159,7 @@ def test_a_lora_is_never_applied_twice(applied, monkeypatch):
                "Turbo.safetensors": "/loras/viggle/turbo.safetensors",
                "loras/turbo.safetensors": "/loras/viggle/turbo.safetensors"}
     monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: aliases.get(name, f"/loras/{name}"))
-    rules = (LoraRequirement(name_setting="turbo"), LoraRequirement(name_setting="again"))
+    rules = (LoraRequirement(name_setting="turbo", required=True), LoraRequirement(name_setting="again", required=True))
     # The linked config stack already carries the turbo file: the family rule skips it.
     settings = {
         "turbo": "viggle/Turbo.safetensors",
@@ -197,6 +197,35 @@ def test_vncss_config_applies_each_lora_once(monkeypatch):
     ])
     vncss_config.apply_lora_stack("m", "c", stack)
     assert calls == ["A.safetensors", "dir/a.safetensors", "b.safetensors"]
+
+
+@pytest.mark.parametrize("settings", [
+    {"model_loader": "external", "_external": {"lora_stack": []}},
+    {"_config_model_override": True, "lora_stack": [{"name": "config.safetensors", "strength": .5}]},
+])
+def test_config_owns_optional_loras_but_keeps_required_adapters(applied, settings):
+    resolver = mock.Mock(side_effect=AssertionError("optional LoRA must not download"))
+    rules = (
+        LoraRequirement(name_setting="optional", default_name="turbo.safetensors", resolver=resolver),
+        LoraRequirement(name_setting="required", default_name="edit.safetensors", required=True),
+    )
+    model, clip, names = _apply_lora_requirements("m", "c", rules, settings)
+    _apply_lora_stack(model, clip, settings.get("lora_stack"), names)
+    assert applied == [("edit.safetensors", 1.0, None)] + (
+        [("config.safetensors", .5, None)] if settings.get("_config_model_override") else []
+    )
+    resolver.assert_not_called()
+
+
+def test_config_qwen_lora_defaults_never_download(applied, monkeypatch):
+    from nodes.unicanvas.models import qwen_image21
+
+    resolver = mock.Mock(side_effect=AssertionError("widget turbo must not download"))
+    monkeypatch.setattr(qwen_image21, "resolve_qwen21_turbo_lora", resolver)
+    module = _get_unicanvas_model_module("qwen_image21")
+    module.apply_loras("m", "c", {**module.defaults, "model_loader": "external", "_external": {"lora_stack": []}})
+    assert applied == []
+    resolver.assert_not_called()
 
 
 def test_different_lora_files_with_same_basename_both_apply(applied, monkeypatch):

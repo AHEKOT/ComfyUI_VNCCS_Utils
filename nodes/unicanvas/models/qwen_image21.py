@@ -298,6 +298,7 @@ class QwenImage21UniCanvasModule(UniCanvasModelModule):
             name_setting="qwen21_pose_lora_name",
             default_name=QWEN21_POSE_LORA_NAME,
             enabled_setting="_qwen21_pose_edit",
+            required=True,
             fixed_strength=1.0,
             clip_strength=0.0,
             resolver=lambda: resolve_qwen21_pose_lora(),

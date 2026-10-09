@@ -13,13 +13,15 @@
 
 const MODEL_LOADERS = {
   CheckpointLoaderSimple: (node) => ({ model_loader: "checkpoint", ckpt_name: widget(node, "ckpt_name"), _ckptNode: node.id }),
-  UNETLoader: (node) => ({ model_loader: "diffusion_model", diffusion_model_name: widget(node, "unet_name") }),
+  UNETLoader: (node) => widget(node, "weight_dtype") && widget(node, "weight_dtype") !== "default"
+    ? { unsupported: "UNETLoader weight_dtype requires the original loader" }
+    : { model_loader: "diffusion_model", diffusion_model_name: widget(node, "unet_name") },
   UnetLoaderGGUF: (node) => ({ model_loader: "gguf", gguf_model_name: widget(node, "unet_name") }),
-  UnetLoaderGGUFAdvanced: (node) => ({ model_loader: "gguf", gguf_model_name: widget(node, "unet_name") }),
 };
 const CLIP_LOADERS = {
-  CLIPLoader: (node) => ({ clip_name: widget(node, "clip_name"), clip_type: lower(widget(node, "type")) }),
-  CLIPLoaderGGUF: (node) => ({ clip_name: widget(node, "clip_name"), clip_type: lower(widget(node, "type")) }),
+  CLIPLoader: (node) => widget(node, "device") && widget(node, "device") !== "default"
+    ? { unsupported: "CLIPLoader device requires the original loader" }
+    : { clip_name: widget(node, "clip_name"), clip_type: lower(widget(node, "type")) },
   CheckpointLoaderSimple: (node) => ({ _ckptNode: node.id }),
 };
 const VAE_LOADERS = {
@@ -64,6 +66,9 @@ export function upstreamNode(graph, node, inputName) {
 function walk(graph, node, inputName, loaders) {
   const current = upstreamNode(graph, node, inputName);
   if (!current) return { unsupported: `nothing is connected to ${inputName}` };
+  if (current.inputs?.some(input => input.link != null)) {
+    return { unsupported: `${current.type} has linked loader settings` };
+  }
   const read = loaders[current.type];
   return read ? read(current) : { unsupported: `${current.title || current.type} (${current.type})` };
 }
@@ -113,7 +118,8 @@ export function resolveConfigDrawSettings(graph, widgetNode) {
     const slash = Math.max(file.lastIndexOf("/"), file.lastIndexOf("\\"));
     references.push({ slot: index, filename: slash >= 0 ? file.slice(slash + 1) : file, subfolder: slash >= 0 ? file.slice(0, slash) : "", type: "input" });
   }
-  const settings = { model_loader: model.model_loader, model_selection_mode: "custom", lora_stack: configLoraStack(configNode) };
+  const settings = { model_loader: model.model_loader, model_selection_mode: "custom", lora_stack: configLoraStack(configNode),
+    _config_model_override: true, turbo_enabled: false };
   for (const part of [model, clip, vae]) {
     for (const [key, value] of Object.entries(part)) {
       if (!key.startsWith("_") && key !== "model_loader" && value !== undefined && value !== "") settings[key] = value;

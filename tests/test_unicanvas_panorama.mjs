@@ -172,7 +172,7 @@ test("queue synchronization commits pixels before projecting and awaits successf
     syncToNode: () => order.push("metadata"), flushStateUpload: async () => { order.push("upload"); return true; },
     uploadOutputSnapshot: async () => { order.push("output"); return true; },
   });
-  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "metadata", "output", "upload"]);
+  await w.preparePanoramaForQueue(); assert.deepEqual(order, ["commit", "view", "upload", "metadata", "output"]);
   // The flattened output is what the node needs: without it the queue stops, a failed full-state save only warns.
   w.flushStateUpload = async () => false;
   await w.preparePanoramaForQueue();
@@ -187,13 +187,17 @@ test("flat raster queue waits for current pixels and refreshed bounds, and rejec
   const w = widget({ layers: [{ type: "raster" }],
     flushStateUpload: () => { order.push("upload"); return new Promise(resolve => { finish = resolve; }); },
     syncToNode: () => order.push("metadata"),
+    uploadOutputSnapshot: async () => { order.push("output"); return true; },
   });
   const pending = w.preparePanoramaForQueue();
   assert.deepEqual(order, ["upload"]);
   finish(true); await pending;
-  assert.deepEqual(order, ["upload", "metadata"]);
+  assert.deepEqual(order, ["upload", "metadata", "output"]);
   w.flushStateUpload = async () => false;
   await assert.rejects(w.preparePanoramaForQueue(), /queue stopped/);
+  w.flushStateUpload = async () => true;
+  w.uploadOutputSnapshot = async () => false;
+  await assert.rejects(w.preparePanoramaForQueue(), /output.*queue stopped/i);
   w.isPointerDown = true;
   await assert.rejects(w.preparePanoramaForQueue(), /Finish/);
 });

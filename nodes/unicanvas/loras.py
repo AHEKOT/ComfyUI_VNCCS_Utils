@@ -141,6 +141,8 @@ class LoraRequirement:
 
     def resolve(self, settings: dict[str, Any]) -> tuple[str, float] | None:
         """Return ``(lora_name, strength)`` when the rule applies to these settings."""
+        if not self.required and (settings.get("_config_model_override") or settings.get("model_loader") == "external"):
+            return None
         name = str(settings.get(self.name_setting) or self.default_name or "")
         if not name:
             return None

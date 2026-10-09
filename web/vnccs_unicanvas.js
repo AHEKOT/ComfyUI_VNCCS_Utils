@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791520781990";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791520781990";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791522278843";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791522278843";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791520781990";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791520781990";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791520781990";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791520781990";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791520781990";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791520781990";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791520781990";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791520781990";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791520781990";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791520781990";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791520781990";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791522278843";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791522278843";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791522278843";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791522278843";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791522278843";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791522278843";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791522278843";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791522278843";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791522278843";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791522278843";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791522278843";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791520781990";
+} from "./unicanvas/transform.mjs?v=1791522278843";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791520781990";
+} from "./unicanvas/presets.mjs?v=1791522278843";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,10 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791520781990";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791520781990";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791520781990";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791520781990";
+} from "./unicanvas/modes.mjs?v=1791522278843";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791522278843";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791522278843";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791522278843";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -76,7 +76,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791520781990";
+const VNCCS_UNICANVAS_VERSION = "1791522278843";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -126,8 +126,8 @@ const VNCCS_UNICANVAS_VERSION = "1791520781990";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791520781990";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791520781990";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791522278843";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791522278843";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -7849,6 +7849,16 @@ class UniCanvasWidget {
     this.scheduleStateUpload();
   }
 
+  snapshotForWorkflow() {
+    if (this._disposed || this._isRestoring || this._stateRestoreFailed) return Promise.resolve(false);
+    const pending = this.flushStateUpload();
+    this.syncToNode();
+    const output = this.uploadOutputSnapshot();
+    // A serialized workflow owns this snapshot; later edits must copy it before writing.
+    if (!this.standalone) this._frozenStateJSON = this._capturedStateJSON;
+    return Promise.all([pending, output]).then(([saved, exported]) => saved && exported);
+  }
+
   // Prompt-only view of the state widget: the widget value stays light (workflow draft), the
   // one-shot queued draw composition is merged in only while a draw is queued.
   // Reference images are kept out of the widget value, so the prompt gets them back here.
@@ -7899,7 +7909,7 @@ class UniCanvasWidget {
     }
     state.version = this.panorama ? 3 : 2;
     state.panorama = this.panorama ? { ...this.panorama.settings } : null;
-    state.output_id = this.panorama ? this.getOutputCacheId() : null;
+    state.output_id = this.getOutputCacheId();
     state.storage = "server_cache";
     state.state_id = this.getStateCacheId();
     state.origin = this.origin;
@@ -7961,7 +7971,7 @@ class UniCanvasWidget {
     return {
       version: this.panorama ? 3 : 2,
       panorama: this.panorama ? { ...this.panorama.settings } : null,
-      output_id: this.panorama ? this.getOutputCacheId() : null,
+      output_id: this.getOutputCacheId(),
       storage: "server_cache",
       state_id: stateId,
       origin: this.origin,
@@ -8106,10 +8116,25 @@ class UniCanvasWidget {
   }
 
   async uploadStatePayload(state, keepalive = false) {
+    let stateJSON = JSON.stringify(state);
+    if (!this.standalone && this._frozenStateJSON && stateJSON !== this._frozenStateJSON) {
+      this.stateCacheId = this.createStateCacheId();
+      this.stateBackupKey = null;
+      this._frozenStateJSON = null;
+      this.lastUploadedStateJSON = null;
+      state = { ...state, state_id: this.stateCacheId, output_id: this.getOutputCacheId() };
+      stateJSON = JSON.stringify(state);
+      const widget = this.node.widgets?.find(w => w.name === "unicanvas_state");
+      if (widget) {
+        const compact = JSON.parse(widget.value || "{}");
+        widget.value = JSON.stringify({ ...compact, state_id: state.state_id, output_id: state.output_id });
+      }
+    }
+    this._capturedStateJSON = stateJSON;
     // Every snapshot follows the previous upload, including flat raster canvases.
     const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
     const deduplicate = !this.stateUploadsPending;
-    const run = () => this.performStateUpload(state, keepalive, revision, deduplicate);
+    const run = () => this.performStateUpload(JSON.parse(stateJSON), keepalive, revision, deduplicate);
     this.stateUploadsPending = (this.stateUploadsPending || 0) + 1;
     try {
       // A closing page cannot wait for an earlier fetch; revisions protect this final save.
@@ -8125,20 +8150,15 @@ class UniCanvasWidget {
   async preparePanoramaForQueue() {
     if (this._isRestoring || this.isPointerDown || this.transformDraft) throw new Error("Finish the UniCanvas edit before queueing");
     if (this.layers.some(layer => layer.type === "pose")) await this.poseEditor?.flush();
-    if (!this.panorama) {
-      // Full serialization refreshes raster bounds before the compact prompt is written.
-      const saved = await this.flushStateUpload();
-      this.syncToNode();
-      if (saved === false) throw new Error("UniCanvas state could not be saved; queue stopped to protect the latest edits");
-      return;
-    }
-    this.panorama.commit();
-    this.panorama.endCamera();
+    this.panorama?.commit();
+    this.panorama?.endCamera();
+    // Copy a frozen document before naming its flattened output, and refresh raster bounds.
+    const saved = await this.flushStateUpload();
     this.syncToNode();
-    // The node output is the flattened, bbox-cropped view, so it never depends on the (huge)
-    // spherical layers reaching the server.
-    if (await this.uploadOutputSnapshot() === false) throw new Error("The panorama output could not be sent; queue stopped");
-    if (await this.flushStateUpload() === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
+    if (!this.panorama && saved === false) throw new Error("UniCanvas state could not be saved; queue stopped to protect the latest edits");
+    // Both document modes export the bbox composite; large source layers never need server decoding.
+    if (await this.uploadOutputSnapshot() === false) throw new Error("The canvas output could not be sent; queue stopped");
+    if (saved === false) this.setStatus("The panorama layers are too large to save on the server; the output was sent, but reopening this workflow may lose edits", true);
   }
 
   getOutputCacheId() {
@@ -8156,7 +8176,10 @@ class UniCanvasWidget {
       version: 2, storage: "server_cache", origin: { x: 0, y: 0 }, size: { width: canvas.width, height: canvas.height },
       bbox: { x: 0, y: 0, width: canvas.width, height: canvas.height }, layers: [layer],
     };
-    const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const payload = JSON.stringify({ state_id: this.getOutputCacheId(), state });
+    if (!this.outputUploadsPending && payload === this.lastUploadedOutputJSON) return true;
+    const revision = this.outputUploadRevision = Math.max(Date.now(), (this.outputUploadRevision || 0) + 1);
+    this.outputUploadsPending = (this.outputUploadsPending || 0) + 1;
     try {
       const res = await fetch("/vnccs/unicanvas_state_upload", {
         method: "POST",
@@ -8164,19 +8187,23 @@ class UniCanvasWidget {
         body: JSON.stringify({ state_id: this.getOutputCacheId(), state, revision }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      if (revision === this.outputUploadRevision) this.lastUploadedOutputJSON = payload;
       return true;
     } catch (err) {
       this.setStatus(`Output upload failed: ${err.message || err}`, true);
       return false;
+    } finally {
+      this.outputUploadsPending--;
     }
   }
 
   async performStateUpload(state, keepalive = false, revision = null, deduplicate = true) {
-    const payload = JSON.stringify({ state_id: this.getStateCacheId(), state });
+    const stateId = state.state_id || this.getStateCacheId();
+    const payload = JSON.stringify({ state_id: stateId, state });
     if (deduplicate && payload === this.lastUploadedStateJSON) return true;
     this.saveLocalStateBackup(state);
     if (revision === null) revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
-    const body = JSON.stringify({ state_id: this.getStateCacheId(), state, revision });
+    const body = JSON.stringify({ state_id: stateId, state, revision });
     try {
       const safeKeepalive = keepalive && body.length <= 60000;
       const res = await fetch("/vnccs/unicanvas_state_upload", {
@@ -8367,6 +8394,7 @@ class UniCanvasWidget {
         return;
       }
       if (this._disposed || loadRevision !== this._stateLoadRevision) return;
+      this._frozenStateJSON = null;
       const forkCache = sharedCache || (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state));
       if (forkCache) {
         this.stateCacheId = this.createStateCacheId();
@@ -8382,6 +8410,9 @@ class UniCanvasWidget {
           if (state.panorama && await this.uploadOutputSnapshot()) compact.output_id = this.getOutputCacheId();
           if (!this._disposed && loadRevision === this._stateLoadRevision) widget.value = JSON.stringify(compact);
         }
+      }
+      if (restored && !this.standalone && !this._disposed && loadRevision === this._stateLoadRevision) {
+        this._frozenStateJSON = JSON.stringify(state);
       }
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
@@ -9122,19 +9153,14 @@ app.registerExtension({
 
     const onSerialize = nodeType.prototype.onSerialize;
     nodeType.prototype.onSerialize = function (o) {
-      // A settings change still inside its 250 ms debounce must land in the saved workflow too.
       const canvasWidget = this.uniCanvasWidget;
-      if (canvasWidget?.settingsSyncTimer && !canvasWidget._isRestoring) {
+      if (canvasWidget && !canvasWidget._isRestoring) {
         const stateWidget = this.widgets?.find((w) => w.name === "unicanvas_state");
         const staleValue = stateWidget?.value;
-        canvasWidget.flushSettingsToWidget();
+        void canvasWidget.snapshotForWorkflow();
         if (Array.isArray(o?.widgets_values) && stateWidget && stateWidget.value !== staleValue) {
           o.widgets_values = o.widgets_values.map((value) => (value === staleValue ? stateWidget.value : value));
         }
-      }
-      if (this.uniCanvasWidget?.panorama && !this.uniCanvasWidget._isRestoring) {
-        this.uniCanvasWidget.syncToNode();
-        void this.uniCanvasWidget.flushStateUpload();
       }
       return onSerialize?.apply(this, arguments);
     };

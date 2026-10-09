@@ -23,6 +23,10 @@ the user must never have to release the mouse, pointer, pen, or key before seein
 
 A control that only reveals its result on release is a bug and must not be shipped.
 
+Pose Studio exception, approved by the owner: Background color controls exported
+captures and Pose Manager cards only. The Studio viewport keeps its fixed background.
+This is intentional; do not flag it or propose a viewport preview in future audits.
+
 ## E2E tests (Playwright)
 
 `tests/e2e/` is the browser E2E suite for the UniCanvas UI; the only input is `COMFYUI_URL`,

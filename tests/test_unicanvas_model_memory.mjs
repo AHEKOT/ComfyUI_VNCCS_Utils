@@ -178,3 +178,27 @@ test("standalone exact scale previews on input and Escape restores the previous 
     assert.equal(saves, 0);
     assert.equal(renders, 2);
 });
+
+test("node exact scale previews each input, skips invalid text, and Escape restores paired controls", () => {
+    const doc = fakeDocument();
+    const label = { dataset: {}, ownerDocument: doc, after() {} };
+    const synced = [];
+    let saves = 0, renders = 0;
+    const widget = { standalone: false, settings: { inference_scale: 1 },
+        syncInferenceControls() { synced.push(this.settings.inference_scale); },
+        syncSettingsToWidget() { saves++; }, requestRender() { renders++; } };
+    editInferenceScale(widget, label);
+    for (const text of ["1,5", "", "2"]) {
+        doc.input.value = text;
+        doc.listeners.input();
+    }
+    assert.equal(widget.settings.inference_scale, 2);
+    assert.deepEqual(synced, [1.5, 2]);
+    assert.equal(saves, 0);
+    doc.listeners.keydown({ key: "Escape", preventDefault() {}, stopPropagation() {} });
+    assert.equal(widget.settings.inference_scale, 1);
+    assert.deepEqual(synced, [1.5, 2, 1]);
+    assert.equal(renders, 3);
+    doc.listeners.blur();
+    assert.equal(saves, 0, "blur after Escape must not commit");
+});

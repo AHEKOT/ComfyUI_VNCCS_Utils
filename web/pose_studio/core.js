@@ -1357,6 +1357,9 @@ export class PoseViewerCore {
         }
 
         this.clearPassiveCharacters();
+        this.skeleton?.dispose?.();
+        this.skeletonHelper?.geometry?.dispose?.();
+        this.skeletonHelper?.material?.dispose?.();
         this.cachedSkinTexture?.dispose?.();
         this.cachedSkinTexture = null;
 
@@ -3096,6 +3099,9 @@ export class PoseViewerCore {
     }
 
     _cleanupPrevious() {
+        this.skeleton?.dispose?.();
+        this.skeletonHelper?.geometry?.dispose?.();
+        this.skeletonHelper?.material?.dispose?.();
         if (this.skinnedMesh) {
             this.scene.remove(this.skinnedMesh);
             this.skinnedMesh.geometry.dispose();
@@ -4414,6 +4420,7 @@ export class PoseViewerCore {
 
     _disposePassiveCharacter(entry) {
         if (!entry) return;
+        entry.skeleton?.dispose?.();
         if (entry.mesh?.parent) entry.mesh.parent.remove(entry.mesh);
         entry.mesh?.geometry?.dispose?.();
         const materials = Array.isArray(entry.mesh?.material)

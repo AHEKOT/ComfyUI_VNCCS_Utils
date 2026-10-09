@@ -144,17 +144,19 @@ def _sample_generation_latent_default(
         latent=latent,
         denoise=denoise,
     )
-    try:
-        sig = inspect.signature(nodes.common_ksampler)
-        if "callback" in sig.parameters:
+    common_sampler = getattr(nodes, "common_ksampler", None)
+    if callable(common_sampler):
+        try:
+            parameters = inspect.signature(common_sampler).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "callback" in parameters:
             kwargs["callback"] = on_step
         _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
         with _suppress_direct_sampling_comfy_progress():
-            sampled = nodes.common_ksampler(**kwargs)[0]
+            sampled = common_sampler(**kwargs)[0]
         _uc_log(draw_id, "common_ksampler output", _latent_debug(sampled))
         return sampled
-    except Exception as exc:
-        _uc_log(draw_id, "common_ksampler with progress failed; falling back to KSampler", {"error": str(exc)})
 
     _set_draw_progress(draw_id, "sampling", 0.35, 0, steps, f"Sampling 0/{steps}")
     with _suppress_direct_sampling_comfy_progress():

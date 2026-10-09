@@ -656,11 +656,13 @@ export async function importMixamoFBXAnimation(file, viewer, options = {}) {
     if (!viewer?.isInitialized?.() || !viewer.THREE) throw new Error('Pose viewer is not ready.');
 
     const { THREE, FBXLoader } = await loadMixamoModules();
+    if (options.isCurrent && !options.isCurrent()) return null;
     const loader = new FBXLoader();
     const fileUrl = URL.createObjectURL(file);
 
     try {
         const root = await loader.loadAsync(fileUrl);
+        if (options.isCurrent && !options.isCurrent()) return null;
         const clip = root?.animations?.[0];
         if (!clip) throw new Error('The FBX file does not contain any animation clips.');
 

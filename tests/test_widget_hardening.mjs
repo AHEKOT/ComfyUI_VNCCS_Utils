@@ -138,7 +138,7 @@ test("adding a Pose Library repository downloads it and refreshes the library in
     assert.match(addMethod, /JSON\.stringify\(\{ repo_id: repoId, task_id: taskId \}\)/);
     assert.match(addMethod, /setInterval\(\(\) => this\.pollRepositoryProgress\(taskId, progress\), 350\)/);
     assert.match(addMethod, /const refreshed = data\.refreshed \|\| \{\};/);
-    assert.match(addMethod, /await this\.refreshLibrary\(true\);/);
+    assert.match(addMethod, /await this\.refreshLibrary\(false\);/);
     assert.match(addMethod, /refreshed\.status !== "error"[\s\S]*await this\.toggleLibrarySettings\(false\);/);
 });
 

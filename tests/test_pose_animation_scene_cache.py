@@ -77,6 +77,16 @@ class PoseAnimationSceneCacheValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "animation key limit"):
             self.validator["_vnccs_validate_pose_animation_payload"]({"animation": animation})
 
+    def test_distinct_workflow_snapshots_survive_memory_eviction(self):
+        write = self.validator["_vnccs_write_pose_animation_cache_file"]
+        read = self.validator["vnccs_get_pose_animation_cache"]
+        for animation_id, marker in (("node_snapshot_a", "original"), ("node_snapshot_b", "edited")):
+            write(animation_id, {"revision": 1, "animation": _clip(marker)})
+            read(animation_id)
+        self.validator["VNCCS_POSE_ANIMATION_CACHE"].clear()
+        self.assertEqual(read("node_snapshot_a")["animation"]["basePose"]["character"], "original")
+        self.assertEqual(read("node_snapshot_b")["animation"]["basePose"]["character"], "edited")
+
 
 if __name__ == "__main__":
     unittest.main()

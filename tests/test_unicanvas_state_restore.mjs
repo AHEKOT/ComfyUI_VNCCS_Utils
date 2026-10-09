@@ -9,7 +9,8 @@ import { disposeModelDependencies } from "../web/unicanvas/model_dependencies.mj
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 let nextId = 0;
-const context = { mergePoseCache, normalizePanorama, normalizeTransformMode, disposeModelDependencies, uid: () => `copy${++nextId}`, console };
+const context = { mergePoseCache, normalizePanorama, normalizeTransformMode, disposeModelDependencies, uid: () => `copy${++nextId}`, console, clearTimeout };
+context.buildUniCanvasBboxCompositeCanvas = widget => ({ width: 1, height: 1, toDataURL: () => widget.pixels });
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const plain = value => JSON.parse(JSON.stringify(value));
 const base = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_1_original", layers: [] };
@@ -240,4 +241,127 @@ test("an invalid successful cache response cannot replace saved pixels with a bl
         assert.equal(await w.flushStateUpload(), false);
         assert.equal(w.uploaded, undefined);
     }
+});
+
+function writableWidget(pixels = "red") {
+    const w = widget({ ...base, layers: [{ id: "image", cached: true }] });
+    delete w.uploadStatePayload;
+    Object.assign(w, {
+        pixels, settings: {}, bbox: { x: 0 }, saveLocalStateBackup() {},
+        buildSerializedState() {
+            return { ...base, state_id: this.getStateCacheId(), output_id: this.getOutputCacheId(),
+                bbox: this.bbox, settings: this.settings, layers: [{ id: "image", dataURL: this.pixels }] };
+        },
+        syncToNode() {
+            this.node.widgets[0].value = JSON.stringify({ ...this.buildSerializedState(), layers: [{ id: "image", cached: true }] });
+        },
+    });
+    return w;
+}
+
+test("saved workflows keep their pixels after later autosaves and reopening in another tab", async () => {
+    const stored = new Map();
+    context.fetch = async (url, request) => {
+        if (request) {
+            const entry = JSON.parse(request.body);
+            stored.set(entry.state_id, entry.state);
+            return { ok: true };
+        }
+        return { ok: true, json: async () => ({ state: stored.get(url.split("/").at(-1)) }) };
+    };
+    const w = writableWidget();
+    await w.snapshotForWorkflow();
+    const savedA = w.node.widgets[0].value;
+    await w.snapshotForWorkflow();
+    assert.equal(w.node.widgets[0].value, savedA, "unchanged saves reuse the snapshot");
+    assert.equal(stored.size, 2, "unchanged saves keep one layer snapshot and one bbox snapshot");
+    w.pixels = "blue";
+    await w.flushStateUpload();
+    await w.snapshotForWorkflow();
+    const savedB = w.node.widgets[0].value;
+    assert.notEqual(JSON.parse(savedA).state_id, JSON.parse(savedB).state_id);
+    assert.equal(stored.get(JSON.parse(savedA).state_id).layers[0].dataURL, "red");
+    assert.equal(stored.get(JSON.parse(savedB).state_id).layers[0].dataURL, "blue");
+    assert.equal(stored.get(JSON.parse(savedA).output_id).layers[0].dataURL, "red");
+    assert.equal(stored.get(JSON.parse(savedB).output_id).layers[0].dataURL, "blue");
+    const otherTab = widget(JSON.parse(savedA));
+    await otherTab._loadFromNode();
+    assert.equal(otherTab.restored.layers[0].dataURL, "red");
+    delete otherTab.uploadStatePayload;
+    otherTab.saveLocalStateBackup = () => {};
+    await otherTab.uploadStatePayload({ ...otherTab.restored, layers: [{ id: "image", dataURL: "green" }] });
+    assert.notEqual(otherTab.stateCacheId, JSON.parse(savedA).state_id);
+    assert.equal(stored.get(JSON.parse(savedA).state_id).layers[0].dataURL, "red");
+});
+
+test("queued uploads capture the cache ID and geometry before later edits fork it", async () => {
+    const sent = [];
+    let finish;
+    context.fetch = async (_url, request) => {
+        sent.push(JSON.parse(request.body));
+        if (sent.length === 1) await new Promise(resolve => { finish = resolve; });
+        return { ok: true };
+    };
+    const w = writableWidget();
+    const first = w.snapshotForWorkflow();
+    const firstId = JSON.parse(w.node.widgets[0].value).state_id;
+    w.pixels = "blue";
+    w.bbox.x = 42;
+    const second = w.snapshotForWorkflow();
+    const secondId = JSON.parse(w.node.widgets[0].value).state_id;
+    assert.notEqual(firstId, secondId);
+    await Promise.resolve();
+    finish();
+    await Promise.all([first, second]);
+    assert.deepEqual(sent.filter(entry => !entry.state_id.endsWith("_out")).map(entry => [entry.state_id, entry.state.bbox.x, entry.state.layers[0].dataURL]),
+        [[firstId, 0, "red"], [secondId, 42, "blue"]]);
+    assert.deepEqual(sent.filter(entry => entry.state_id.endsWith("_out")).map(entry => [entry.state_id, entry.state.layers[0].dataURL]),
+        [[`${firstId}_out`, "red"], [`${secondId}_out`, "blue"]]);
+});
+
+test("the serialize hook writes the fresh snapshot into the saved workflow and preserves the previous callback", async () => {
+    const w = writableWidget();
+    context.fetch = async () => ({ ok: true });
+    await w.snapshotForWorkflow();
+    const stale = w.node.widgets[0].value;
+    w.pixels = "blue";
+    let previousCalled = false;
+    const nodeType = { prototype: { onSerialize(output) {
+        previousCalled = true;
+        assert.equal(this, w.node);
+        assert.notEqual(JSON.parse(output.widgets_values[0]).state_id, JSON.parse(stale).state_id);
+    } } };
+    const start = source.indexOf("    const onSerialize = nodeType.prototype.onSerialize;");
+    const end = source.indexOf("    const onRemoved =", start);
+    vm.runInNewContext(source.slice(start, end), { nodeType });
+    const output = { widgets_values: [stale, "unrelated"] };
+    nodeType.prototype.onSerialize.call(w.node, output);
+    assert.equal(previousCalled, true);
+    assert.equal(output.widgets_values[1], "unrelated");
+    assert.equal(JSON.parse(output.widgets_values[0]).layers[0].dataURL, undefined, "saved workflow stays compact");
+    await w.stateUploadPromise;
+});
+
+test("unchanged bbox output is deduplicated only after pending writes have settled", async () => {
+    const sent = [];
+    let finish;
+    context.fetch = async (_url, request) => {
+        const entry = JSON.parse(request.body);
+        sent.push(entry.state.layers[0].dataURL);
+        if (entry.state.layers[0].dataURL === "blue") await new Promise(resolve => { finish = resolve; });
+        return { ok: true };
+    };
+    const w = writableWidget();
+    await w.uploadOutputSnapshot();
+    await w.uploadOutputSnapshot();
+    assert.deepEqual(sent, ["red"]);
+    w.pixels = "blue";
+    const pending = w.uploadOutputSnapshot();
+    w.pixels = "red";
+    await w.uploadOutputSnapshot();
+    assert.deepEqual(sent, ["red", "blue", "red"], "an earlier acknowledged output cannot hide an outstanding different write");
+    finish(); await pending;
+    await w.uploadOutputSnapshot();
+    assert.deepEqual(sent, ["red", "blue", "red"]);
+    assert.equal(w.outputUploadsPending, 0);
 });

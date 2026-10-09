@@ -31,6 +31,20 @@ def _data_url(image):
 
 
 class UniCanvasRenderTests(unittest.TestCase):
+    def test_large_flat_layer_exports_its_small_bbox_without_decoding_the_whole_layer(self):
+        pixels = _data_url(Image.new("RGBA", (6000, 4000), "red"))
+        state = {"version": 2, "state_id": "large-layer", "output_id": "large-layer_out",
+                 "bbox": {"x": 0, "y": 0, "width": 1024, "height": 1024},
+                 "layers": [{"id": "image", "type": "raster", "dataURL": pixels,
+                             "crop": {"x": 0, "y": 0, "width": 6000, "height": 4000}}]}
+        output = {"bbox": state["bbox"], "layers": [{"id": "output", "type": "raster",
+                  "crop": state["bbox"], "dataURL": _data_url(Image.new("RGBA", (1024, 1024), "red"))}]}
+        with mock.patch.object(UNICANVAS.render, "_read_unicanvas_state_cache", return_value=output) as read:
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        read.assert_called_once_with("large-layer_out")
+        self.assertEqual(result.size, (1024, 1024))
+        self.assertEqual(result.getpixel((0, 0)), (255, 0, 0, 255))
+
     def test_uploaded_reference_gaps_keep_their_socket_numbers(self):
         uploads = [None, "", "third", *([None] * 6), "tenth", "outside_limit"]
         with (

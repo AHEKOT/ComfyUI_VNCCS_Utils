@@ -48,7 +48,7 @@ export function editInferenceScale(widget, label) {
         label.hidden = false;
         delete label.dataset.editing;
         if (value === null) {
-            if (widget.standalone && widget.settings.inference_scale !== originalScale) {
+            if (widget.settings.inference_scale !== originalScale) {
                 widget.settings.inference_scale = originalScale;
                 widget.syncInferenceControls();
                 widget.requestRender?.();
@@ -60,8 +60,7 @@ export function editInferenceScale(widget, label) {
         widget.syncSettingsToWidget();
     };
     input.addEventListener("input", () => {
-        if (!widget.standalone) return;
-        const value = parseInferenceScale(input.value, true);
+        const value = parseInferenceScale(input.value, widget.standalone);
         if (value === null) return;
         widget.settings.inference_scale = value;
         widget.syncInferenceControls();

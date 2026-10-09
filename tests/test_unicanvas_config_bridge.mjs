@@ -25,11 +25,46 @@ test("config LoRAs retain separate CLIP strengths, including zero", () => {
   ]);
   const result = resolveConfigDrawSettings(graph, canvas);
   assert.equal(result.unsupported, undefined);
+  assert.equal(result.settings._config_model_override, true);
+  assert.equal(result.settings.turbo_enabled, false);
   assert.deepEqual(result.settings.lora_stack, [
     { name: "model-only", strength: 1, clip_strength: 0 },
     { name: "separate", strength: .8, clip_strength: .2 },
     { name: "shared", strength: .7, clip_strength: null },
   ]);
+});
+
+for (const [type, values] of [
+  ["UnetLoaderGGUFAdvanced", { unet_name: "model.gguf", dequant_dtype: "float32", patch_dtype: "float16", patch_on_device: true }],
+  ["UNETLoader", { unet_name: "model.safetensors", weight_dtype: "fp8_e4m3fn" }],
+  ["CLIPLoaderGGUF", { clip_name: "clip.gguf", type: "flux" }],
+  ["CLIPLoader", { clip_name: "clip.safetensors", type: "flux", device: "cpu" }],
+]) test(`${type} settings that cannot be replayed use the original graph`, () => {
+  const { graph, config, canvas, nodes } = graphWithConfig();
+  const input = type.startsWith("CLIP") ? "clip" : "model";
+  nodes.push(node(4, type, values));
+  graph.links[config.inputs.find(item => item.name === input).link] = { origin_id: 4 };
+  assert.match(resolveConfigDrawSettings(graph, canvas).unsupported, new RegExp(`${input}:`));
+});
+
+test("linked loader widgets use the graph instead of stale widget values", () => {
+  const { graph, canvas, nodes } = graphWithConfig();
+  nodes[0].inputs = [{ name: "ckpt_name", link: 9 }];
+  graph.links[9] = { origin_id: 99 };
+  assert.match(resolveConfigDrawSettings(graph, canvas).unsupported, /model:/);
+});
+
+test("plain diffusion loaders with default options keep the direct Config path", () => {
+  const { graph, canvas, nodes } = graphWithConfig();
+  nodes.push(node(4, "UNETLoader", { unet_name: "model.safetensors", weight_dtype: "default" }),
+    node(5, "CLIPLoader", { clip_name: "clip.safetensors", type: "flux", device: "default" }),
+    node(6, "VAELoader", { vae_name: "vae.safetensors" }));
+  graph.links[1] = { origin_id: 4 }; graph.links[2] = { origin_id: 5 }; graph.links[3] = { origin_id: 6 };
+  const result = resolveConfigDrawSettings(graph, canvas);
+  assert.equal(result.unsupported, undefined);
+  assert.equal(result.settings.diffusion_model_name, "model.safetensors");
+  assert.equal(result.settings.clip_name, "clip.safetensors");
+  assert.equal(result.settings.vae_name, "vae.safetensors");
 });
 
 for (const type of ["LoraLoader", "LoraLoaderModelOnly"]) for (const input of ["model", "clip"]) {
