@@ -231,6 +231,7 @@ async function runEnhance(widget, button) {
   const textarea = button.parentElement.querySelector("textarea");
   const entry = activeEnhanceEntry(widget);
   const original = text(textarea.value);
+  const documentRevision = widget._documentRevision || 0;
   if (!entry || !original) {
     flash(button, "Type a prompt first");
     return;
@@ -251,6 +252,7 @@ async function runEnhance(widget, button) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    if (widget._disposed || documentRevision !== (widget._documentRevision || 0)) return;
     if (text(textarea.value) !== original) throw new Error("The prompt changed while it was being enhanced, so the result was dropped.");
     setTextareaValue(widget, textarea, String(data.prompt));
     succeeded = true;

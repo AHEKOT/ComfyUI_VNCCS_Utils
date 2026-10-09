@@ -146,3 +146,37 @@ test("pose assets restore even when the pose layer has no cached raster pixels",
     assert.deepEqual(plain(restored.layers[0].pose), { studio: { angle: 9, background_url: "background" } });
     assert.equal(restored.layers[0].dataURL, undefined);
 });
+
+test("standalone pointer restores the full server document, including panorama and settings", async () => {
+    const pointer = { ...base, state_id: "vnccs_unicanvas_standalone_tab" };
+    const saved = { ...pointer, panorama: { projection: "equirectangular", width: 2048, height: 1024 },
+        settings: { prompt: "saved" }, layers: [{ id: "A", dataURL: "large saved pixels" }] };
+    cache(saved);
+    const w = widget(pointer);
+    w.standalone = true;
+    await w._loadFromNode();
+    assert.deepEqual(w.restored, saved);
+});
+
+test("failed restore cannot overwrite saved pixels with the initial blank document on disposal", async () => {
+    const saved = { ...base, layers: [{ id: "A", cached: true }] };
+    context.fetch = async () => { throw new Error("offline"); };
+    const w = widget(saved);
+    w.layers = [];
+    await w._loadFromNode();
+    assert.equal(w._stateRestoreFailed, true);
+    assert.equal(await w.flushStateUpload(), false);
+    assert.equal(w.uploaded, undefined);
+});
+
+test("an invalid successful cache response cannot replace saved pixels with a blank document", async () => {
+    for (const state of [null, { version: 99, layers: [] }, { version: 2, layers: "invalid" }]) {
+        context.fetch = async () => ({ ok: true, json: async () => ({ state }) });
+        const w = widget({ ...base, layers: [{ id: "A", cached: true }] });
+        await w._loadFromNode();
+        assert.equal(w._stateRestoreFailed, true);
+        assert.equal(w.restored, undefined);
+        assert.equal(await w.flushStateUpload(), false);
+        assert.equal(w.uploaded, undefined);
+    }
+});

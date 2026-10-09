@@ -373,7 +373,7 @@ test("Pose Manager independently fits and centers every deformed pose preview", 
     assert.match(refreshMethod, /viewer\.setPose\(pose, true\);[\s\S]*computePoseManagerCaptureFraming\(w, h, poseCamera\)/);
     assert.match(
         refreshMethod,
-        /if \(!framing\) continue;[\s\S]*viewer\.capture\([\s\S]*framing\.zoom,[\s\S]*framing\.offsetX,[\s\S]*framing\.offsetY/,
+        /if \(!framing\) throw new Error[\s\S]*viewer\.capture\([\s\S]*framing\.zoom,[\s\S]*framing\.offsetX,[\s\S]*framing\.offsetY/,
     );
     assert.match(
         refreshMethod,

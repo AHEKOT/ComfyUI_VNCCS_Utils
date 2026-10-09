@@ -43,6 +43,7 @@ def _load_model(key: str = DEFAULT_NAMING_MODEL) -> tuple[Any, Any, Any]:
     with _MODEL_LOCK:
         cached = _MODEL.get(key)
         if cached is not None:
+            cached[0].to(cached[2])
             return cached
         _MODEL.clear()  # one naming model at a time
         import torch
@@ -121,9 +122,15 @@ def _run_unicanvas_describe_layers(payload: dict[str, Any]) -> dict[str, Any]:
     key = naming_model_key((payload or {}).get("model"))
     names = []
     with _COMFY_MODEL_OP_LOCK:
-        for item in items[:MAX_LAYERS_PER_REQUEST]:
-            if not isinstance(item, dict) or not item.get("id") or not item.get("image"):
-                continue
-            image = _decode_data_url(str(item["image"]), "RGBA")
-            names.append({"id": str(item["id"]), "name": _describe(image, key)})
+        try:
+            for item in items[:MAX_LAYERS_PER_REQUEST]:
+                if not isinstance(item, dict) or not item.get("id") or not item.get("image"):
+                    continue
+                image = _decode_data_url(str(item["image"]), "RGBA")
+                names.append({"id": str(item["id"]), "name": _describe(image, key)})
+        finally:
+            with _MODEL_LOCK:
+                cached = _MODEL.get(key)
+                if cached is not None:
+                    cached[0].to("cpu")
     return {"names": names, "model": key}

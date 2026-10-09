@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import tempfile
 
 from aiohttp import web
 
@@ -49,8 +50,16 @@ async def upload_pose_sync(request):
         if file_abs != temp_abs and not file_abs.startswith(temp_abs + os.sep):
             return web.json_response({"error": "Invalid node_id"}, status=400)
 
-        with open(filepath, "w") as f:
-            json.dump(data, f)
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=temp_dir,
+                                             prefix="vnccs_pose_sync_", delete=False) as handle:
+                temp_path = handle.name
+                json.dump(data, handle)
+            os.replace(temp_path, filepath)
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                os.remove(temp_path)
 
         return web.json_response({"status": "ok"})
     except Exception as exc:

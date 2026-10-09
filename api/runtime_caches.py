@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import tempfile
 
 _EXTENSION_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]+")
@@ -190,10 +191,16 @@ def _vnccs_pose_animation_cache_path(animation_id):
 def _vnccs_write_pose_animation_cache_file(animation_id, entry):
     os.makedirs(_POSE_ANIMATION_CACHE_DIR, exist_ok=True)
     path = _vnccs_pose_animation_cache_path(animation_id)
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(entry, handle, ensure_ascii=False, separators=(",", ":"))
-    os.replace(temp_path, path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                                         prefix="cache_", delete=False) as handle:
+            temp_path = handle.name
+            json.dump(entry, handle, ensure_ascii=False, separators=(",", ":"))
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 def _vnccs_read_pose_animation_cache_file(animation_id):
     path = _vnccs_pose_animation_cache_path(animation_id)
@@ -264,10 +271,10 @@ def _vnccs_register_pose_animation_cache():
                 "animation": animation,
                 "revision": revision,
             }
+            _vnccs_write_pose_animation_cache_file(animation_id, entry)
             if animation_id in VNCCS_POSE_ANIMATION_CACHE:
                 del VNCCS_POSE_ANIMATION_CACHE[animation_id]
             VNCCS_POSE_ANIMATION_CACHE[animation_id] = entry
-            _vnccs_write_pose_animation_cache_file(animation_id, entry)
             while len(VNCCS_POSE_ANIMATION_CACHE) > _POSE_ANIMATION_CACHE_MAX:
                 oldest = next(iter(VNCCS_POSE_ANIMATION_CACHE))
                 del VNCCS_POSE_ANIMATION_CACHE[oldest]
@@ -297,10 +304,16 @@ def _vnccs_unicanvas_state_cache_path(state_id):
 def _vnccs_write_unicanvas_state_cache_file(state_id, entry):
     os.makedirs(_UNICANVAS_STATE_CACHE_DIR, exist_ok=True)
     path = _vnccs_unicanvas_state_cache_path(state_id)
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(entry, handle, ensure_ascii=False)
-    os.replace(temp_path, path)
+    temp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=os.path.dirname(path),
+                                         prefix="cache_", delete=False) as handle:
+            temp_path = handle.name
+            json.dump(entry, handle, ensure_ascii=False)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            os.remove(temp_path)
 
 def _vnccs_read_unicanvas_state_cache_file(state_id):
     path = _vnccs_unicanvas_state_cache_path(state_id)
@@ -410,10 +423,10 @@ def _vnccs_register_unicanvas_state_cache():
             entry = {"state": state}
             if revision is not None:
                 entry["revision"] = revision
+            _vnccs_write_unicanvas_state_cache_file(state_id, entry)
             if state_id in VNCCS_UNICANVAS_STATE_CACHE:
                 del VNCCS_UNICANVAS_STATE_CACHE[state_id]
             VNCCS_UNICANVAS_STATE_CACHE[state_id] = entry
-            _vnccs_write_unicanvas_state_cache_file(state_id, entry)
             while len(VNCCS_UNICANVAS_STATE_CACHE) > _UNICANVAS_STATE_CACHE_MAX:
                 oldest = next(iter(VNCCS_UNICANVAS_STATE_CACHE))
                 del VNCCS_UNICANVAS_STATE_CACHE[oldest]

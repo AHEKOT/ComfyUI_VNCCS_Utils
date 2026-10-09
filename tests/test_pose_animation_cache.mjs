@@ -106,3 +106,24 @@ test("a pending cache failure cannot interrupt image mode or a replacement stati
         if (replaceScene) assert.equal(s.w._deferredAnimationReference, null);
     }
 });
+
+test("restoring a newer server animation advances edits beyond its revision", async () => {
+    const s = scene(); saveReference(s, "animation");
+    const posts = [];
+    s.context.fetch = async (_url, options) => {
+        if (options?.method === "POST") {
+            posts.push(JSON.parse(options.body));
+            return { ok: true, json: async () => ({ status: "ok", revision: posts.at(-1).revision }) };
+        }
+        return { ok: true, json: async () => ({ revision: 100, animation: createDefaultAnimationState({}) }) };
+    };
+    s.w.loadFromNode();
+    assert.equal(await s.w._animationCacheRestorePromise, true);
+    assert.equal(s.w._animationCacheRevision, 100);
+    s.w.animationState.basePose.prompt = "new edit";
+    s.w.syncToNode(false, { skipCapture: true, skipCaptureUpload: true });
+    assert.equal(await s.w.flushAnimationCacheUpload(), true);
+    assert.equal(posts.length, 1);
+    assert.equal(posts[0].revision, 101);
+    assert.equal(posts[0].animation.basePose.prompt, "new edit");
+});

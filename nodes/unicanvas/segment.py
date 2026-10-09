@@ -65,6 +65,8 @@ def _load_sam3_model() -> tuple[Any, Any]:
     with _MODEL_CACHE_LOCK:
         cached = _SAM_CACHE.get(SAM3_KEY)
         if cached is not None:
+            cached[0].to(cached[2])
+            cached[1].device = cached[2].type
             return cached[0], cached[1]
     code = _sam3_code()
     if code is None:
@@ -83,6 +85,7 @@ def _load_sam3_model() -> tuple[Any, Any]:
     )
     processor = processor_cls(model=model, resolution=1008, device=device.type, confidence_threshold=0.3)
     with _MODEL_CACHE_LOCK:
+        _SAM_CACHE.clear()
         _SAM_CACHE[SAM3_KEY] = (model, processor, device)
     return model, processor
 
@@ -113,6 +116,7 @@ def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:
     with _MODEL_CACHE_LOCK:
         cached = _SAM_CACHE.get(key)
         if cached is not None:
+            cached[0].to(cached[2])
             return cached
 
     model_id = SAM_MODEL_IDS[key]
@@ -134,6 +138,7 @@ def _load_sam_model(model_key: str) -> tuple[Any, Any, Any]:
     model.eval()
     cached = (model, processor, device)
     with _MODEL_CACHE_LOCK:
+        _SAM_CACHE.clear()
         _SAM_CACHE[key] = cached
     return cached
 
@@ -215,43 +220,49 @@ def _run_unicanvas_segment(payload: dict[str, Any]) -> dict[str, Any]:
     if not points:
         raise ValueError("SAM points are outside the layer crop")
 
-    if model_key == SAM3_KEY:
-        with _COMFY_MODEL_OP_LOCK:
-            mask_image = _sam3_mask(image, points, labels)
-        return _mask_result(mask_image, image, model_key, note)
-
     with _COMFY_MODEL_OP_LOCK:
-        model, processor, device = _load_sam_model(model_key)
-        if model_key == "sam1_huge":
-            processor_points = [points]
-            processor_labels = [labels]
-        else:
-            processor_points = [[points]]
-            processor_labels = [[labels]]
-        inputs = processor(
-            images=image,
-            input_points=processor_points,
-            input_labels=processor_labels,
-            return_tensors="pt",
-        )
-        if hasattr(inputs, "to"):
-            inputs = inputs.to(device)
-        else:
-            inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
+        try:
+            if model_key == SAM3_KEY:
+                mask_image = _sam3_mask(image, points, labels)
+                return _mask_result(mask_image, image, model_key, note)
+            model, processor, device = _load_sam_model(model_key)
+            if model_key == "sam1_huge":
+                processor_points = [points]
+                processor_labels = [labels]
+            else:
+                processor_points = [[points]]
+                processor_labels = [[labels]]
+            inputs = processor(
+                images=image,
+                input_points=processor_points,
+                input_labels=processor_labels,
+                return_tensors="pt",
+            )
+            if hasattr(inputs, "to"):
+                inputs = inputs.to(device)
+            else:
+                inputs = {key: value.to(device) if hasattr(value, "to") else value for key, value in inputs.items()}
 
-        with torch.inference_mode():
-            outputs = model(**inputs)
+            with torch.inference_mode():
+                outputs = model(**inputs)
 
-    pred_masks = getattr(outputs, "pred_masks", None)
-    if pred_masks is None:
-        raise RuntimeError("SAM returned no masks")
-    masks = _post_process_sam_masks(processor, pred_masks, inputs)
-    mask = _largest_sam_mask(masks)
-    mask_np = (mask.numpy().astype(np.uint8) * 255)
-    mask_image = Image.fromarray(mask_np, mode="L")
-    if mask_image.size != image.size:
-        mask_image = mask_image.resize(image.size, Image.Resampling.NEAREST)
-    return _mask_result(mask_image, image, model_key, note)
+            pred_masks = getattr(outputs, "pred_masks", None)
+            if pred_masks is None:
+                raise RuntimeError("SAM returned no masks")
+            masks = _post_process_sam_masks(processor, pred_masks, inputs)
+            mask = _largest_sam_mask(masks)
+            mask_np = (mask.numpy().astype(np.uint8) * 255)
+            mask_image = Image.fromarray(mask_np, mode="L")
+            if mask_image.size != image.size:
+                mask_image = mask_image.resize(image.size, Image.Resampling.NEAREST)
+            return _mask_result(mask_image, image, model_key, note)
+        finally:
+            with _MODEL_CACHE_LOCK:
+                cached = _SAM_CACHE.get(model_key)
+                if cached is not None:
+                    cached[0].to("cpu")
+                    if model_key == SAM3_KEY:
+                        cached[1].device = "cpu"
 
 
 def _mask_result(mask_image: Image.Image, image: Image.Image, model_key: str, note: str = "") -> dict[str, Any]:

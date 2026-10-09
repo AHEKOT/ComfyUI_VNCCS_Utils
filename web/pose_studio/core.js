@@ -5670,9 +5670,9 @@ export class PoseViewerCore {
 
         let dataURL = null;
         const ownsCaptureBatch = !this._captureBatch;
-        this.beginCaptureBatch(width, height);
 
         try {
+            this.beginCaptureBatch(width, height);
             // Render with Fixed Camera
             const camera = options.viewport ? this.camera : this.captureCamera;
             this.renderer.render(this.scene, camera);

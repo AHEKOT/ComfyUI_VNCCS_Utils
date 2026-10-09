@@ -55,7 +55,7 @@ export function sphereToView(u, v, camera) {
   return a >= 0 && a < 1 && b >= 0 && b < 1 ? { u: a, v: b } : null;
 }
 
-// Bound retained pixel history as well as gesture count for large panoramas.
+// Bound retained pixel history as well as gesture count for every document.
 export function trimPanoramaHistory(undo, redo, budget = 384 * 1024 * 1024) {
   const measure = () => {
     const seen = new Set();
@@ -64,7 +64,7 @@ export function trimPanoramaHistory(undo, redo, budget = 384 * 1024 * 1024) {
       seen.add(value);
       if (typeof value.getContext === "function") return value.width * value.height * 4;
       if (Array.isArray(value)) return value.reduce((sum, item) => sum + visit(item), 0);
-      return ["canvas", "panoramaCanvas", "hiresCanvas", "_panoramaBefore", "layers", "layer", "before", "after", "stagingItems", "sourceCanvas"].reduce((sum, key) => sum + visit(value[key]), 0);
+      return ["canvas", "panoramaCanvas", "hiresCanvas", "_panoramaBefore", "layers", "layer", "before", "after", "stagingItems", "sourceCanvas", "maskCanvas", "userMaskCanvas", "resultMaskCanvas"].reduce((sum, key) => sum + visit(value[key]), 0);
     };
     return visit(undo) + visit(redo);
   };

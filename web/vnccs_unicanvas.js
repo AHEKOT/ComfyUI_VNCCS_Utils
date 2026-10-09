@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791511000000";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791511000000";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791500040145";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791500040145";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791511000000";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791511000000";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791511000000";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791511000000";
-import { installUniCanvasLayerTools } from "./unicanvas/layer_tools.mjs?v=1791511000000";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791511000000";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791511000000";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791511000000";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791511000000";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791511000000";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791511000000";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791500040145";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791500040145";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791500040145";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791500040145";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791500040145";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791500040145";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791500040145";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791500040145";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791500040145";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791500040145";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791500040145";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791511000000";
+} from "./unicanvas/transform.mjs?v=1791500040145";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791511000000";
+} from "./unicanvas/presets.mjs?v=1791500040145";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,10 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791511000000";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791511000000";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791511000000";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791511000000";
+} from "./unicanvas/modes.mjs?v=1791500040145";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791500040145";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791500040145";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791500040145";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -76,7 +76,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791511000000";
+const VNCCS_UNICANVAS_VERSION = "1791500040145";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -126,8 +126,8 @@ const VNCCS_UNICANVAS_VERSION = "1791511000000";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791511000000";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791511000000";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791500040145";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791500040145";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -994,6 +994,7 @@ bindEnhanceSettingsReader((id) => {
 class UniCanvasWidget {
   constructor(node) {
     this.node = node;
+    this.standalone = node?.unicanvasStandalone === true;
     this.container = document.createElement("div");
     this.container.className = "vnccs-unicanvas";
     this.layers = [];
@@ -1911,8 +1912,8 @@ class UniCanvasWidget {
     };
   }
 
-  isLayerEditStateCurrent(state) {
-    return state && !this._disposed && !state.layer.locked && this.layers.includes(state.layer)
+  isLayerEditStateCurrent(state, allowLocked = false) {
+    return state && !this._disposed && (allowLocked || !state.layer.locked) && this.layers.includes(state.layer)
       && state.canvas === state.layer.canvas && state.revision === state.layer._pixelRevision
       && state.width === state.layer.canvas.width && state.height === state.layer.canvas.height
       && this.transformDraft?.layerId !== state.layer.id && this.dragStart?.layerId !== state.layer.id
@@ -4462,6 +4463,7 @@ class UniCanvasWidget {
   restoreHistorySnapshot(snapshot) {
     if (!snapshot) return;
     this.cancelDeferredCanvasCommit();
+    this._documentRevision = (this._documentRevision || 0) + 1;
     this.poseEditor?.release();
     this.historyRestoring = true;
     this.panorama?.dispose();
@@ -4630,11 +4632,11 @@ class UniCanvasWidget {
     this.renderLayerList();
     this.requestRender();
     this.syncLightStateToWidget();
-    if (this.panorama || entry.layer?.type === "pose" || this.layers.some(layer => layer.type === "pose")) this.scheduleFullSync();
+    this.scheduleFullSync();
   }
 
   updateHistoryButtons() {
-    if (this.panorama) trimPanoramaHistory(this.undoStack, this.redoStack);
+    trimPanoramaHistory(this.undoStack, this.redoStack);
     if (this.tool === "pose" && this.poseEditSession && this.poseEditor) {
       // The buttons drive Pose Studio's history during a pose edit; they stay enabled because
       // mannequin edits are recorded inside Pose Studio without notifying the canvas.
@@ -7056,6 +7058,7 @@ class UniCanvasWidget {
 
   async draw() {
     if (this.drawInProgress) return;
+    const requestDocumentRevision = this._documentRevision || 0;
     const poseLayer = poseGenerationLayer(this);
     let poseRequest = null;
     if (poseLayer) {
@@ -7082,7 +7085,7 @@ class UniCanvasWidget {
       try {
         this.poseEditor ||= new UniCanvasPoseEditor(this);
         poseRequest = await this.poseEditor.generation(poseLayer, this.getInferenceSize());
-        if (this._disposed || preparationDocument !== this.panorama || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
+        if (this._disposed || preparationDocument !== this.panorama || requestDocumentRevision !== (this._documentRevision || 0) || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
       } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
       finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
     }
@@ -7107,6 +7110,7 @@ class UniCanvasWidget {
         }
       }
     }
+    if (this._disposed || requestDocumentRevision !== (this._documentRevision || 0)) return;
     const configLinked = this._isConfigLinked() && !configOverrides;
     const { loader } = this.normalizeGenerationSettings();
     // A linked config forwards the model/clip/vae tensors through the graph, so the node's own loader
@@ -7150,7 +7154,7 @@ class UniCanvasWidget {
     this.settings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
     this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama };
+    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, requestDocumentRevision };
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
@@ -7354,8 +7358,8 @@ class UniCanvasWidget {
         const { width, height } = this.panorama.settings;
         const children = [...this.layers].reverse().filter(layer => isImageLayer(layer) && layer.visible).map(layer => ({
           name: layer.name, left: 0, top: 0, right: width, bottom: height,
-          opacity: Math.round(Math.max(0, Math.min(1, layer.opacity)) * 255),
-          blendMode: layer.blendMode === "source-over" ? "normal" : layer.blendMode,
+          opacity: Math.max(0, Math.min(1, layer.opacity)),
+          blendMode: compositeBlendModeToPsd(layer.blendMode),
           canvas: layer.panoramaCanvas,
         }));
         const buffer = writePsd({ width, height, channels: 3, bitsPerChannel: 8, colorMode: 3, children });
@@ -7389,9 +7393,9 @@ class UniCanvasWidget {
           top: Math.floor(worldY - visibleRect.y),
           right: Math.floor(worldX - visibleRect.x + canvas.width),
           bottom: Math.floor(worldY - visibleRect.y + canvas.height),
-          opacity: Math.floor(Math.max(0, Math.min(1, layer.opacity)) * 255),
+          opacity: Math.max(0, Math.min(1, layer.opacity)),
           hidden: false,
-          blendMode: layer.blendMode === "source-over" ? "normal" : (layer.blendMode || "normal"),
+          blendMode: compositeBlendModeToPsd(layer.blendMode),
           canvas,
         };
       });
@@ -7534,8 +7538,8 @@ class UniCanvasWidget {
     for (const image of resultImages) {
       const url = this.resultImageURL(image);
       const img = await this.loadImage(url);
-      // A panorama swapped or closed while the draw ran makes this result stale.
-      if (this._disposed || context.requestPanorama !== this.panorama) return;
+      // A replaced document makes the result stale, including flat-to-flat resets.
+      if (this._disposed || context.requestPanorama !== this.panorama || (context.requestDocumentRevision || 0) !== (this._documentRevision || 0)) return;
       this.addStagingItem({
         panoramaCamera: context.panoramaCamera ?? null,
         url,
@@ -7818,7 +7822,7 @@ class UniCanvasWidget {
   }
 
   syncToNode() {
-    if (this._disposed || this._isRestoring) return;
+    if (this._disposed || this._isRestoring || this._stateRestoreFailed) return;
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
     clearTimeout(this.fullSyncTimer);
@@ -7873,7 +7877,7 @@ class UniCanvasWidget {
   }
 
   writeLightStateToWidget() {
-    if (this._isRestoring) return;
+    if (this._isRestoring || this._stateRestoreFailed) return;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
     let state = null;
@@ -8069,6 +8073,7 @@ class UniCanvasWidget {
   }
 
   flushStateUpload(keepalive = false) {
+    if (this._isRestoring || this._stateRestoreFailed) return Promise.resolve(false);
     clearTimeout(this.stateUploadTimer);
     const state = this.buildSerializedState(true);
     this.pendingStateUpload = null;
@@ -8076,7 +8081,7 @@ class UniCanvasWidget {
   }
 
   async uploadStateSnapshot() {
-    if (!this.pendingStateUpload) return;
+    if (!this.pendingStateUpload || this._isRestoring || this._stateRestoreFailed) return;
     if (this.isPointerDown || this.drawInProgress || this.poseEditor?.isGestureActive?.()) {
       this.scheduleStateUpload();
       return;
@@ -8297,13 +8302,19 @@ class UniCanvasWidget {
       if (state.storage === "server_cache" && state.state_id) {
         try {
           const res = await fetch(`/vnccs/unicanvas_state/${encodeURIComponent(state.state_id)}`);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          if (!res.ok) {
+            // A first-ever standalone document has no server snapshot yet.
+            if (this.standalone && res.status === 404) { cacheRestoreFailed = false; }
+            else throw new Error(`HTTP ${res.status}`);
+          }
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
           this.stateUploadRevision = Math.max(this.stateUploadRevision || 0, Number(cached?.revision) || 0);
-          if (cached?.state?.version && Array.isArray(cached.state.layers)) {
-            if (Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
-            state = this.mergeCachedState(workflowState, cached.state);
+          if ([1, 2, 3].includes(cached?.state?.version) && Array.isArray(cached.state.layers)) {
+            if (!this.standalone && Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
+            state = this.standalone ? cached.state : this.mergeCachedState(workflowState, cached.state);
+          } else if (res.ok) {
+            throw new Error("Cached canvas state is invalid.");
           }
         } catch (err) {
           cacheRestoreFailed = true;
@@ -8318,7 +8329,11 @@ class UniCanvasWidget {
           this.setStatus(cacheRestoreFailed ? "Restored canvas from local backup" : "Restored canvas backup");
         } else if (cacheRestoreFailed) {
           this.setStatus("State cache missing and no local image backup found", true);
-          if (workflowSettings && !this._disposed && loadRevision === this._stateLoadRevision) this.applySerializedSettings(workflowSettings);
+          if (!this._disposed && loadRevision === this._stateLoadRevision) {
+            this._stateRestoreFailed = true;
+            this.setStatus("Canvas restore failed. Reload to recover saved pixels, or start a new canvas before saving.", true);
+            if (workflowSettings) this.applySerializedSettings(workflowSettings);
+          }
           return;
         }
       }
@@ -8330,6 +8345,7 @@ class UniCanvasWidget {
         state.state_id = this.stateCacheId;
       }
       const restored = await this.applySerializedState(state);
+      if (restored) this._stateRestoreFailed = false;
       if (restored && forkCache && !this._disposed && loadRevision === this._stateLoadRevision) {
         // Copy pixels before changing the workflow reference, so an immediate save can reopen it.
         if (await this.uploadStatePayload(state)) {
@@ -8415,6 +8431,7 @@ class UniCanvasWidget {
       if (this._disposed || restoreRevision !== this._stateRestoreRevision) return;
       if (restoredPanorama && !layers.some(layer => layer.id === panoramaSettings.baseLayerId && layer.type === "raster")) throw new Error("The panorama base layer is missing");
       previous = Object.fromEntries(["panorama", "origin", "size", "bbox", "snapToGrid", "resizeTransformMode", "settings", "layers", "activeLayerId"].map(key => [key, this[key]]));
+      this._documentRevision = (this._documentRevision || 0) + 1;
       this.poseEditor?.release();
       this.panorama = restoredPanorama; this.origin = nextOrigin; this.size = nextSize; this.bbox = nextBbox;
       this.snapToGrid = state.snapToGrid === true;
@@ -8438,6 +8455,7 @@ class UniCanvasWidget {
       return true;
     } catch (err) {
       if (previous) Object.assign(this, previous);
+      if (!this._disposed && restoreRevision === this._stateRestoreRevision) this._stateRestoreFailed = true;
       this.updatePanoramaControls();
       this.setStatus(`Canvas restore failed: ${err.message || err}`, true);
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);

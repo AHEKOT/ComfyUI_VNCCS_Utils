@@ -347,8 +347,10 @@ export async function retargetMotion(viewer, motion, start, options = {}, onProg
     const frameCount = Math.max(0, Number(motion?.frame_count) || 0);
     const poses = [];
     let lastPose = start.pose;
+    const isCurrent = options.isCurrent || (() => true);
     try {
         for (let frame = 0; frame < frameCount; frame++) {
+            if (!isCurrent()) return [];
             const pose = retargetMotionFrame(viewer, motion, frame, start, options) || lastPose;
             poses.push(pose);
             lastPose = pose;
@@ -358,7 +360,7 @@ export async function retargetMotion(viewer, motion, start, options = {}, onProg
             }
         }
     } finally {
-        viewer.setPose(start.pose, true);
+        if (isCurrent()) viewer.setPose(start.pose, true);
     }
     onProgress?.(1);
     return poses;
@@ -1099,23 +1101,31 @@ export class TextToMotionPanel {
 
     async retarget() {
         if (!this.motion || !this.root) return;
+        const session = this.session;
+        const isCurrent = () => !!this.root && this.session === session;
         const busyBefore = this.busy;
         this.busy = true;
         this.updateButtons();
         this.setStatus("Applying the motion to the mannequin...", { progress: 97 });
         // Retargeting drives the mannequin frame by frame; none of that may become keyframes.
         const guard = this.animation && this.widget;
+        this._retargeting = true;
         if (guard) this.widget._applyingAnimationPose = true;
         try {
-            const options = { keepInPlace: this.settings.keepInPlace };
-            this.poses = await retargetMotion(this.viewer, this.motion, this.start, options, (fraction) => {
+            const options = { keepInPlace: this.settings.keepInPlace, isCurrent };
+            const poses = await retargetMotion(this.viewer, this.motion, this.start, options, (fraction) => {
+                if (!isCurrent()) return;
                 this.setStatus("Applying the motion to the mannequin...", { progress: 97 + 3 * fraction });
             });
+            if (isCurrent()) this.poses = poses;
         } finally {
-            if (guard) this.widget._applyingAnimationPose = false;
-            this.busy = busyBefore;
+            if (isCurrent()) {
+                this._retargeting = false;
+                if (guard) this.widget._applyingAnimationPose = false;
+                this.busy = busyBefore;
+            }
         }
-        if (!this.root) return;
+        if (!isCurrent()) return;
         const { scrub } = this.controls;
         scrub.max = String(Math.max(0, this.poses.length - 1));
         const frame = Math.min(this.frame, this.poses.length - 1);
@@ -1231,6 +1241,9 @@ export class TextToMotionPanel {
     }
 
     close() {
+        this.session += 1;
+        if (this._retargeting && this.animation && this.widget) this.widget._applyingAnimationPose = false;
+        this._retargeting = false;
         if (this.root) this.releaseModel();
         this.stopPlay();
         this.root?.remove();

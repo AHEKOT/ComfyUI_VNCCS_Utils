@@ -1,0 +1,160 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import vm from "node:vm";
+import test from "node:test";
+import { autoNameLayers } from "../web/unicanvas/naming.mjs";
+import { compositeBlendModeToPsd } from "../web/unicanvas/layer_tools.mjs";
+import { trimPanoramaHistory } from "../web/unicanvas/panorama.mjs";
+import { writePsd, readPsd } from "../web/vendor/ag-psd.bundle.mjs";
+
+const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
+const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
+const canvas = (width = 4096, height = 4096) => ({ width, height, getContext: () => ({ drawImage() {} }) });
+const context = { console, trimPanoramaHistory, compositeBlendModeToPsd, Blob,
+  isImageLayer: layer => layer.type !== "mask", document: { createElement: () => canvas(1, 1) } };
+const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
+const widget = props => Object.assign(Object.create(prototype), {
+  panorama: null, layers: [], origin: { x: 0, y: 0 }, settings: {}, setStatus() {},
+  cancelDeferredCanvasCommit() {}, syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {},
+  renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {},
+}, props);
+
+test("standalone saves large documents on the server and survives browser quota errors", async () => {
+  let raw = null, quota = false, saved = true;
+  const snapshots = [];
+  const ctx = { console, UNICANVAS_STANDALONE_STORAGE_KEY: "standalone", window: {
+    localStorage: { setItem(_key, value) { if (quota) throw Error("quota"); raw = value; }, getItem: () => raw },
+  } };
+  const persistence = vm.runInNewContext(modes.slice(modes.indexOf("function writeStandaloneState("), modes.indexOf("\nexport function teardownUniCanvasWidgetModes")).replace("export function", "function") +
+    modes.slice(modes.indexOf("function readStandalonePersistedStateValue()"), modes.indexOf("\nfunction createStandaloneWidget")) +
+    "\n({installStandalonePersistence, readStandalonePersistedStateValue, flushStandalonePersistence})", ctx);
+  const w = { getStateCacheId: () => "vnccs_unicanvas_standalone_tab",
+    uploadStatePayload: async state => { snapshots.push(state); return saved; },
+    writeLightStateToWidget() {}, scheduleStateUpload() { this.scheduled = true; }, flushStateUpload() { this.flushed = true; } };
+  persistence.installStandalonePersistence(w);
+  const huge = { layers: [{ dataURL: "x".repeat(1_600_000) }] };
+  assert.equal(await w.uploadStatePayload(huge), true);
+  assert.equal(snapshots[0], huge);
+  assert.ok(raw.length < 300, "browser state holds only a pointer");
+  assert.equal(JSON.parse(persistence.readStandalonePersistedStateValue()).storage, "server_cache");
+  quota = true;
+  assert.equal(await w.uploadStatePayload(huge), true);
+  assert.equal(await w.uploadStatePayload({ layers: [] }), true);
+  assert.equal(snapshots.length, 3, "quota failure never disables server saves");
+  saved = false;
+  const previous = raw;
+  assert.equal(await w.uploadStatePayload(huge), false);
+  assert.equal(raw, previous, "a failed upload never replaces the saved pointer");
+  w.writeLightStateToWidget();
+  assert.equal(w.scheduled, true);
+  persistence.flushStandalonePersistence(w);
+  assert.equal(w.flushed, true);
+  raw = JSON.stringify({ state: { version: 2, storage: "local", layers: [{ dataURL: "old pixels" }] } });
+  assert.equal(JSON.parse(persistence.readStandalonePersistedStateValue()).layers[0].dataURL, "old pixels");
+});
+
+test("flat Undo and Redo upload their restored pixels", () => {
+  const layer = { id: "A", canvas: canvas() };
+  let saves = 0;
+  const w = widget({ layers: [layer], restoreLayerPixelSnapshot(_layer, state) { layer.pixels = state; }, scheduleFullSync() { saves++; } });
+  const entry = { kind: "layerPixels", layerId: "A", before: "before", after: "after" };
+  w.applyHistoryEntry(entry, "undo");
+  assert.equal(layer.pixels, "before");
+  w.applyHistoryEntry(entry, "redo");
+  assert.equal(layer.pixels, "after");
+  assert.equal(saves, 2);
+});
+
+test("flat history fits the same byte budget as panorama history", () => {
+  const entries = Array.from({ length: 20 }, () => ({ kind: "layerPixels", before: { canvas: canvas() }, after: { canvas: canvas() } }));
+  const w = widget({ undoStack: entries, redoStack: [] });
+  w.updateHistoryButtons();
+  assert.equal(w.undoStack.length, 3);
+});
+
+for (const panorama of [null, { settings: { width: 1, height: 1 }, commit() {} }]) {
+  test(`PSD export preserves opacity and blend modes (${panorama ? "panorama" : "flat"})`, async () => {
+    const layers = ["color-dodge", "color-burn", "hard-light", "soft-light", "multiply"].map(blendMode => ({
+      name: blendMode, type: "raster", visible: true, opacity: 0.5, blendMode, canvas: canvas(1, 1), panoramaCanvas: canvas(1, 1),
+    }));
+    let roundtrip;
+    const imageData = { width: 1, height: 1, data: new Uint8ClampedArray([255, 0, 0, 255]) };
+    const w = widget({ panorama, layers, getCanvasAlphaBounds: () => ({ x: 0, y: 0, width: 1, height: 1 }),
+      getLayersVisibleWorldRect: () => ({ x: 0, y: 0, width: 1, height: 1 }), configureImageContext: ctx => ctx,
+      downloadBlob() {}, loadAgPsd: async () => ({ writePsd(psd) {
+        const children = psd.children.map(({ canvas, ...layer }) => ({ ...layer, imageData }));
+        const result = writePsd({ ...psd, imageData, children });
+        roundtrip = readPsd(result, { skipLayerImageData: true, skipCompositeImageData: true, skipThumbnail: true });
+        return result;
+      } }) });
+    await w.exportPSD();
+    assert.equal(roundtrip.children.length, layers.length);
+    for (const layer of roundtrip.children) {
+      assert.ok(Math.abs(layer.opacity - 0.5) < 0.005);
+      assert.equal(layer.blendMode, layer.name.replace(/-/g, " "));
+    }
+  });
+}
+
+test("New canvas invalidates a generation already loading its output image", async () => {
+  let finishImage;
+  const staged = [];
+  const w = widget({ confirmInWidget: async () => true, stagingItems: [], undoStack: [], redoStack: [],
+    loadImage: () => new Promise(done => { finishImage = done; }), resultImageURL: image => image,
+    addStagingItem: item => staged.push(item), addLayer() {}, updateHistoryButtons() {}, syncToNode() {}, clearSamPrompt() {}, setTool() {}, updatePanoramaControls() {} });
+  const pending = w._stageGeneratedImages({ images: ["old"] }, null, "txt2img", {
+    requestPanorama: null, requestDocumentRevision: 0, bbox: {}, inferenceSize: {}, outputSize: {},
+  });
+  const newDocument = vm.runInNewContext(modes.slice(modes.indexOf("export async function newUniCanvasDocument"), modes.indexOf("\nfunction installUniCanvasOutputActions")).replace("export ", "") + "\nnewUniCanvasDocument");
+  await newDocument(w);
+  finishImage({});
+  await pending;
+  assert.equal(staged.length, 0);
+});
+
+for (const edit of ["paint", "rename", "delete", "dispose", "unchanged"]) {
+  test(`layer naming handles ${edit} while inference runs`, async () => {
+    const originalFetch = globalThis.fetch;
+    let resolve;
+    globalThis.fetch = () => new Promise(done => { resolve = done; });
+    try {
+      const layer = { id: "A", name: "Layer", type: "raster", canvas: canvas(8, 8) };
+      const w = widget({ layers: [layer], getLayerAlphaBounds: () => ({}), cloneCanvasCrop: () => ({ toDataURL: () => "pixels" }) });
+      const pending = autoNameLayers(w, [layer]);
+      if (edit === "paint") w.invalidateLayerRenderCaches(layer);
+      if (edit === "rename") layer.name = "My name";
+      if (edit === "delete") w.layers = [];
+      if (edit === "dispose") w._disposed = true;
+      resolve({ ok: true, json: async () => ({ names: [{ id: "A", name: "Subject" }] }) });
+      await pending;
+      assert.equal(layer.name, edit === "unchanged" ? "Subject" : edit === "rename" ? "My name" : "Layer");
+      assert.equal(w._vnccsNameTokens.size, 0);
+    } finally { globalThis.fetch = originalFetch; }
+  });
+}
+
+test("staging masks count toward the retained history budget", () => {
+  const undo = Array.from({ length: 20 }, () => ({ stagingItems: [{
+    maskCanvas: canvas(), userMaskCanvas: canvas(), resultMaskCanvas: canvas(),
+  }] }));
+  trimPanoramaHistory(undo, []);
+  assert.equal(undo.length, 2);
+});
+
+test("prompt enhancement cannot rewrite the prompt of a replaced document", async () => {
+  const enhance = readFileSync(new URL("../web/unicanvas/prompt_enhance.mjs", import.meta.url), "utf8");
+  let finish, rewritten = false;
+  const ctx = { text: value => String(value).trim(), activeEnhanceEntry: () => ({}),
+    flowGradient() {}, canvasImage: () => null, systemFor: () => "system", enhanceModel: () => "model", flash() {},
+    setTextareaValue: () => { rewritten = true; }, fetch: () => new Promise(done => { finish = done; }) };
+  const run = vm.runInNewContext(enhance.slice(enhance.indexOf("async function runEnhance("), enhance.indexOf("\nfunction flash(")) + "\nrunEnhance", ctx);
+  const textarea = { value: "same prompt" };
+  const button = { dataset: { enhance: "positive" }, parentElement: { querySelector: () => textarea },
+    classList: { contains: () => false, add() {}, remove() {} }, setAttribute() {}, removeAttribute() {} };
+  const w = { _documentRevision: 0, makeSettingsPayload: () => ({}), setStatus() {} };
+  const pending = run(w, button);
+  w._documentRevision++;
+  finish({ ok: true, json: async () => ({ prompt: "old image enhancement" }) });
+  await pending;
+  assert.equal(rewritten, false);
+});

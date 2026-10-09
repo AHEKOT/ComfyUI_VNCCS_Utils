@@ -39,6 +39,7 @@ export async function autoNameLayers(uc, layers, { automatic = false } = {}) {
   }
   // The content can change while the model runs: an answer only applies to the pixels it saw.
   const tokens = new Map(items.map((item) => [item.id, (uc._vnccsNameTokens ||= new Map()).set(item.id, Symbol("name")).get(item.id)]));
+  const states = new Map(targets.map(layer => [layer.id, { pixels: uc.captureLayerEditState(layer), name: layer.name }]));
   const model = resolveAutoNameModel(uc.settings);
   const label = AUTO_NAME_MODELS.find(([key]) => key === model)[1].split(" (")[0];
   uc.setStatus(`[VNCCS UniCanvas] Naming layers with ${label} (first use downloads ${AUTO_NAME_DOWNLOAD[model]})...`);
@@ -50,10 +51,13 @@ export async function autoNameLayers(uc, layers, { automatic = false } = {}) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    if (uc._disposed) return;
     let renamed = 0;
     for (const entry of data.names || []) {
       const layer = uc.layers.find((item) => item.id === entry.id);
       if (!layer || !entry.name || uc._vnccsNameTokens.get(entry.id) !== tokens.get(entry.id)) continue;
+      const state = states.get(entry.id);
+      if (!uc.isLayerEditStateCurrent(state?.pixels, true) || layer.name !== state.name) continue;
       if (automatic && layer.nameSource === "user") continue;
       layer.name = entry.name;
       layer.nameSource = "auto";
@@ -63,7 +67,9 @@ export async function autoNameLayers(uc, layers, { automatic = false } = {}) {
     if (renamed) uc.syncLightStateToWidget?.();
     uc.setStatus(renamed ? `[VNCCS UniCanvas] Named ${renamed} layer${renamed === 1 ? "" : "s"}.` : "[VNCCS UniCanvas] Auto-name found no name.");
   } catch (err) {
-    uc.setStatus(`[VNCCS UniCanvas] Auto-name failed: ${err.message || err}`, true);
+    if (!uc._disposed) uc.setStatus(`[VNCCS UniCanvas] Auto-name failed: ${err.message || err}`, true);
+  } finally {
+    for (const [id, token] of tokens) if (uc._vnccsNameTokens.get(id) === token) uc._vnccsNameTokens.delete(id);
   }
 }
 

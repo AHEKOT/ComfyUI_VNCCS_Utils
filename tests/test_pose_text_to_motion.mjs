@@ -367,3 +367,29 @@ test("a motion replaces everything from the start frame and keeps the frames bef
     assert.deepEqual(state.tracks.head.keys.map((key) => key.frame), [0, 2, 6, 8, 10, 12, 14], "old keys from frame 6 on are gone");
     assert.deepEqual(state.tracks.head.keys.slice(0, 2).map((key) => key.frame), [0, 2], "earlier keys survive");
 });
+
+test("cancel during retargeting cannot overwrite later edits or a reopened panel", async () => {
+    const { w, viewer, document } = sceneWithRig();
+    const start = captureMotionStartPose(viewer);
+    const { motion } = fabricateMotion(viewer, start);
+    motion.frame_count = 36;
+    for (const [key, frames] of Object.entries(motion.joints)) {
+        motion.joints[key] = Array.from({ length: 36 }, (_, i) => frames[i % 2]);
+    }
+    w.isAnimationMode = () => true;
+    w.applyAnimationFrame = () => {};
+    const { fetchApi } = fakeApi([KIMODO], (_body, json) => json({ error: "unused" }, 500));
+    const panel = new TextToMotionPanel(w, { fetchApi, document });
+    panel.open(); await settle();
+    panel.motion = motion;
+    const pending = panel.retarget(); // Runs twelve frames, then yields.
+    panel.cancel();
+    rotateBone(viewer, "head", 1, 23);
+    const edited = JSON.stringify(viewer.getPose());
+    panel.open(); await pending;
+    assert.equal(JSON.stringify(viewer.getPose()), edited);
+    assert.equal(panel.poses.length, 0);
+    assert.equal(panel.busy, false);
+    assert.equal(w._applyingAnimationPose, false);
+    panel.cancel();
+});

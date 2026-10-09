@@ -120,6 +120,49 @@ class RuntimeCacheTests(unittest.TestCase):
         response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_upload"](Request()))
         self.assertEqual(response.status, 200)
 
+    def test_canvas_failed_disk_write_preserves_previous_memory_and_disk_state(self):
+        previous = {"state": {"layers": [{"dataURL": "old"}]}, "revision": 1}
+        self.cache["_vnccs_write_unicanvas_state_cache_file"]("same", previous)
+        self.cache["VNCCS_UNICANVAS_STATE_CACHE"]["same"] = previous
+        class Request:
+            headers = {"Content-Length": "100"}
+            async def json(self):
+                return {"state_id": "same", "revision": 2, "state": {"layers": [{"dataURL": "new"}]}}
+        with mock.patch.dict(self.cache, {"_vnccs_write_unicanvas_state_cache_file": mock.Mock(side_effect=OSError("disk full"))}):
+            response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_upload"](Request()))
+        self.assertEqual(response.status, 500)
+        self.assertEqual(self.cache["VNCCS_UNICANVAS_STATE_CACHE"]["same"], previous)
+        self.assertEqual(self.cache["_vnccs_read_unicanvas_state_cache_file"]("same"), previous)
+
+    def test_animation_failed_disk_write_preserves_previous_memory_and_disk_state(self):
+        previous = {"animation": {"tracks": {}}, "revision": 1}
+        self.cache["_vnccs_write_pose_animation_cache_file"]("same", previous)
+        self.cache["VNCCS_POSE_ANIMATION_CACHE"]["same"] = previous
+        class Request:
+            headers = {"Content-Length": "100"}
+            async def json(self):
+                return {"animation_id": "same", "revision": 2, "animation": {"tracks": {}}}
+        with mock.patch.dict(self.cache, {"_vnccs_write_pose_animation_cache_file": mock.Mock(side_effect=OSError("disk full"))}):
+            response = asyncio.run(self.cache["routes"]["/vnccs/pose_animation_upload"](Request()))
+        self.assertEqual(response.status, 500)
+        self.assertEqual(self.cache["VNCCS_POSE_ANIMATION_CACHE"]["same"], previous)
+        self.assertEqual(self.cache["_vnccs_read_pose_animation_cache_file"]("same"), previous)
+
+    def test_failed_atomic_cache_write_preserves_file_and_cleans_temporary_file(self):
+        for kind in ("pose_animation", "unicanvas_state"):
+            with self.subTest(kind=kind):
+                write = self.cache[f"_vnccs_write_{kind}_cache_file"]
+                path = Path(self.cache[f"_vnccs_{kind}_cache_path"]("saved"))
+                write("saved", {"value": "old"})
+                def fail_dump(_entry, handle, **_kwargs):
+                    handle.write("partial")
+                    raise OSError("disk full")
+                with mock.patch.object(self.cache["json"], "dump", side_effect=fail_dump):
+                    with self.assertRaisesRegex(OSError, "disk full"):
+                        write("saved", {"value": "new"})
+                self.assertEqual(json.loads(path.read_text()), {"value": "old"})
+                self.assertEqual(list(path.parent.iterdir()), [path])
+
     def test_build_info_keeps_extension_root_after_cache_extraction(self):
         self.assertEqual(Path(self.cache["_EXTENSION_ROOT"]), Path(__file__).resolve().parents[1])
         self.cache["_EXTENSION_ROOT"] = str(self.root)

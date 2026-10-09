@@ -596,10 +596,11 @@ Frontend/backend payload limits:
 
 | Payload | Limit |
 | --- | --- |
-| Pose capture cache image count | 16 images |
+| Pose capture cache image count | 600 images |
 | Pose capture cache total text size | 64 MiB |
 | Decoded captured image | 32 MiB per image |
 | Captured image pixels | 4096 x 4096 per image |
+| Captured sequence pixels | 64 Mi pixels in total; reduce resolution or frame count above this |
 | SAM3D upload image | 32 MiB |
 | SAM3D upload pixels | 4096 x 4096 |
 | Mesh overlay JSON body | 32 MiB |
@@ -619,6 +620,8 @@ Pose Library repository sync limits:
 ### The node output is stale
 
 - Pose Studio asks the frontend for a fresh sync before execution.
+- A failed live capture or SAM import stops execution instead of returning old frames. Scene readiness has a 120-second budget, with extra time for capture and upload.
+- Failed manager refreshes retain the last visible card, but execution waits for a successful refresh.
 - If the frontend tab was refreshed or the node was duplicated, click inside the node UI once and run again.
 - Save and reload older workflows after opening the node once.
 

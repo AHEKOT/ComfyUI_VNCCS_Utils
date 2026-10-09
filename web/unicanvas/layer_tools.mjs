@@ -115,6 +115,10 @@ function psdBlendModeToComposite(blendMode) {
   return PSD_BLEND_MODE_MAP[key] || "source-over";
 }
 
+export function compositeBlendModeToPsd(blendMode) {
+  return !blendMode || blendMode === "source-over" ? "normal" : blendMode.replace(/-/g, " ");
+}
+
 function psdEntryToCanvas(entry) {
   if (entry.canvas) return entry.canvas;
   const data = entry.imageData;

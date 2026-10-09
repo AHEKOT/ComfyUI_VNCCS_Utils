@@ -10,13 +10,13 @@ import {
     POSE_STUDIO_CAPTURE_FOV,
     PoseViewerCore,
     buildEquivalentPerspectiveProjectionFrame,
-} from "./pose_studio/core.js?v=20260910.1";
+} from "./pose_studio/core.js?v=20261009.audit";
 import {
     cameraPromptToSkydomeRotation,
 } from "./camera_control/utils.mjs";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
-import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs";
+import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs?v=20261009.audit";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
@@ -5804,7 +5804,8 @@ class PoseStudioWidget {
             this._animationCacheId = cacheBelongsToNode ? sourceCacheId : null;
             this._animationCacheRevision = Math.max(
                 0,
-                Math.floor(Number(reference.revision ?? payload.revision) || 0),
+                Math.floor(Number(reference.revision) || 0),
+                Math.floor(Number(payload.revision) || 0),
             );
             this._lastUploadedAnimationCacheId = cacheBelongsToNode ? sourceCacheId : null;
             this._lastUploadedAnimationCacheRevision = cacheBelongsToNode
@@ -7321,13 +7322,18 @@ class PoseStudioWidget {
         this.managerImageMetrics.delete(src);
     }
 
-    setPoseCapture(index, capture) {
+    setPoseCapture(index, capture, requireCapture = false) {
+        if (typeof capture !== "string" || !capture) {
+            if (requireCapture) throw new Error(`Pose capture failed for frame ${index + 1}.`);
+            return false;
+        }
         if (!this.poseCaptures) this.poseCaptures = [];
         const previousCapture = this.poseCaptures[index];
         if (previousCapture && previousCapture !== capture) {
             this.forgetPoseManagerImageMetrics(previousCapture);
         }
         this.poseCaptures[index] = capture;
+        return true;
     }
 
     layoutPoseManager() {
@@ -7477,6 +7483,7 @@ class PoseStudioWidget {
         // A new model/camera generation invalidates every previously rendered
         // card. Resuming in the middle mixes old and new AGE/head-size results.
         this._managerPreviewRefreshNextIndex = 0;
+        this._managerPreviewRefreshError = null;
         if (this._managerPreviewRefreshFrame) {
             cancelAnimationFrame(this._managerPreviewRefreshFrame);
         }
@@ -7493,6 +7500,10 @@ class PoseStudioWidget {
         if (!generation) return false;
         const deadline = Date.now() + timeoutMs;
         while (Date.now() < deadline) {
+            if (this._disposed) throw new Error("Pose Studio was disposed.");
+            if (this._managerPreviewRefreshError?.generation === generation) {
+                throw new Error(this._managerPreviewRefreshError.message);
+            }
             if ((this._managerPreviewRefreshCompletedGeneration || 0) >= generation) {
                 return true;
             }
@@ -7549,8 +7560,9 @@ class PoseStudioWidget {
         if (!this.lightingPrompts) this.lightingPrompts = [];
         this.ensurePosePrompts();
 
-        const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+        let captureBatchStarted = false;
         try {
+            captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
             const capturesPerFrame = 2;
             const startIndex = Math.max(0, Math.min(this._managerPreviewRefreshNextIndex || 0, this.poses.length));
             const endIndex = Math.min(this.poses.length, startIndex + capturesPerFrame);
@@ -7572,8 +7584,8 @@ class PoseStudioWidget {
                 const framing = this.computePoseManagerCaptureFraming(w, h, poseCamera);
                 // Do not replace a visible manager card with a neutral camera
                 // when fitting is temporarily unavailable. The last valid
-                // card (or its placeholder) remains authoritative for RUN.
-                if (!framing) continue;
+                // card stays visible, but RUN must wait for a fresh capture.
+                if (!framing) throw new Error(`Pose ${i + 1} framing is not ready.`);
                 const nextCapture = this.viewer.capture(
                     w,
                     h,
@@ -7584,7 +7596,7 @@ class PoseStudioWidget {
                     poseCamera.yaw_deg,
                     poseCamera.pitch_deg,
                 );
-                this.setPoseCapture(i, nextCapture);
+                this.setPoseCapture(i, nextCapture, true);
                 this.lightingPrompts[i] = this.generatePromptFromLights(
                     isOriginalLighting ? [] : this.lightParams,
                     this.getPosePrompt(i)
@@ -7592,24 +7604,32 @@ class PoseStudioWidget {
                 this.updatePoseManagerPreviewImage(i);
             }
             this._managerPreviewRefreshNextIndex = endIndex;
+        } catch (error) {
+            this._managerPreviewRefreshError = { generation, message: String(error?.message || error) };
+            this.showMessage?.(this._managerPreviewRefreshError.message, true);
         } finally {
-            this.viewer.setPose(originalPose, true);
-            this.updateCharacterScene({ poseIndex: this.activeTab });
-            this.viewer.updateLights(this.effectiveLights(originalLights));
-            // Per-card fitting temporarily moves the shared capture camera.
-            // Restore its neutral scene framing so opening Studio or applying a
-            // library pose cannot inherit the final manager card's offsets.
-            this.viewer.updateCaptureCamera?.(
-                w,
-                h,
-                1,
-                0,
-                0,
-                activeCamera.yaw_deg,
-                activeCamera.pitch_deg,
-            );
-            if (captureBatchStarted) this.viewer.endCaptureBatch?.();
+            try {
+                this.viewer.setPose(originalPose, true);
+                this.updateCharacterScene({ poseIndex: this.activeTab });
+                this.viewer.updateLights(this.effectiveLights(originalLights));
+                // Per-card fitting temporarily moves the shared capture camera.
+                // Restore its neutral scene framing so opening Studio or applying a
+                // library pose cannot inherit the final manager card's offsets.
+                this.viewer.updateCaptureCamera?.(
+                    w,
+                    h,
+                    1,
+                    0,
+                    0,
+                    activeCamera.yaw_deg,
+                    activeCamera.pitch_deg,
+                );
+            } finally {
+                if (captureBatchStarted || this.viewer._captureBatch) this.viewer.endCaptureBatch?.();
+            }
         }
+
+        if (this._managerPreviewRefreshError?.generation === generation) return;
 
         if (generation !== this._managerPreviewRefreshGeneration) return;
         if (this._managerPreviewRefreshNextIndex < this.poses.length) {
@@ -14971,6 +14991,12 @@ class PoseStudioWidget {
             ? 1
             : animationMode ? this.animationState.frameCount : this.poses.length;
 
+        if (fullCapture && captureExplicitlyRequested
+            && outputCount * (this.exportParams.view_width || 1024)
+                * (this.exportParams.view_height || 1024) > 64 * 1024 * 1024) {
+            throw new Error("Captured sequence is too large. Reduce resolution or frame count.");
+        }
+
         if (this.radarRedraw) this.radarRedraw();
 
         // Save current pose before syncing (only if we are NOT in a sub-sync loop)
@@ -15048,95 +15074,106 @@ class PoseStudioWidget {
                 : null;
             if (fullCapture) {
                 const originalTab = this.activeTab;
-                const captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+                const previousCaptures = this.poseCaptures.slice();
+                const previousPrompts = this.lightingPrompts.slice();
+                let captureBatchStarted = false;
 
                 try {
-                for (let i = 0; i < capturePoses.length; i++) {
-                    if (!animationMode && !isDebugExecution) {
-                        this.activeTab = i; // Switch tab for ordinary image-mode capture
-                    }
-
-                    if (isDebugExecution) {
-                        this.viewer.setPose(capturePoses[i], true);
-                        this.updateCharacterScene({ poseIndex: originalTab });
-                        const captureLights = debugLightingMode === "original"
-                            ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
-                            : debugLightingMode === "manual" ? userLights : debugLights;
-                        this.viewer.updateLights(captureLights);
-                        this.setPoseCapture(i, this.viewer.capture(
-                            w,
-                            h,
-                            currentCaptureCamera.zoom,
-                            bg,
-                            currentCaptureCamera.offset_x,
-                            currentCaptureCamera.offset_y,
-                            currentCaptureCamera.yaw_deg,
-                            currentCaptureCamera.pitch_deg,
-                        ));
-                        this.lightingPrompts[i] = this.generatePromptFromLights(
-                            isOriginalLighting ? [] : captureLights,
-                            debugPrompt,
-                        );
-                    } else {
-                        // Normal mode
-                        this._applyingAnimationPose = animationMode;
-                        this.viewer.setPose(capturePoses[i], true);
-                        this._applyingAnimationPose = false;
-                        this.updateCharacterScene(animationMode
-                            ? { frame: i }
-                            : { poseIndex: i });
-                        const poseCamera = resolveCaptureCameraParams(
-                            capturePoses[i]?.cameraParams,
-                            currentCaptureCamera,
-                            animationMode,
-                        );
-                        // Lighting Toggle
-                        if (isOriginalLighting) {
-                            this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
-                        } else {
-                            this.viewer.updateLights(this.effectiveLights());
+                    captureBatchStarted = this.viewer.beginCaptureBatch?.(w, h) === true;
+                    for (let i = 0; i < capturePoses.length; i++) {
+                        if (!animationMode && !isDebugExecution) {
+                            this.activeTab = i; // Switch tab for ordinary image-mode capture
                         }
 
-                        this.setPoseCapture(i, this.viewer.capture(
-                            w,
-                            h,
-                            currentCaptureCamera.zoom,
-                            bg,
-                            currentCaptureCamera.offset_x,
-                            currentCaptureCamera.offset_y,
-                            poseCamera.yaw_deg,
-                            poseCamera.pitch_deg,
-                        ));
-                        const framePrompt = animationMode
-                            ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
-                            : this.getPosePrompt(i);
-                        this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
+                        if (isDebugExecution) {
+                            this.viewer.setPose(capturePoses[i], true);
+                            this.updateCharacterScene({ poseIndex: originalTab });
+                            const captureLights = debugLightingMode === "original"
+                                ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                                : debugLightingMode === "manual" ? userLights : debugLights;
+                            this.viewer.updateLights(captureLights);
+                            this.setPoseCapture(i, this.viewer.capture(
+                                w,
+                                h,
+                                currentCaptureCamera.zoom,
+                                bg,
+                                currentCaptureCamera.offset_x,
+                                currentCaptureCamera.offset_y,
+                                currentCaptureCamera.yaw_deg,
+                                currentCaptureCamera.pitch_deg,
+                            ), true);
+                            this.lightingPrompts[i] = this.generatePromptFromLights(
+                                isOriginalLighting ? [] : captureLights,
+                                debugPrompt,
+                            );
+                        } else {
+                            // Normal mode
+                            this._applyingAnimationPose = animationMode;
+                            this.viewer.setPose(capturePoses[i], true);
+                            this._applyingAnimationPose = false;
+                            this.updateCharacterScene(animationMode
+                                ? { frame: i }
+                                : { poseIndex: i });
+                            const poseCamera = resolveCaptureCameraParams(
+                                capturePoses[i]?.cameraParams,
+                                currentCaptureCamera,
+                                animationMode,
+                            );
+                            // Lighting Toggle
+                            if (isOriginalLighting) {
+                                this.viewer.updateLights([{ type: 'ambient', color: '#ffffff', intensity: 1.0 }]);
+                            } else {
+                                this.viewer.updateLights(this.effectiveLights());
+                            }
+
+                            this.setPoseCapture(i, this.viewer.capture(
+                                w,
+                                h,
+                                currentCaptureCamera.zoom,
+                                bg,
+                                currentCaptureCamera.offset_x,
+                                currentCaptureCamera.offset_y,
+                                poseCamera.yaw_deg,
+                                poseCamera.pitch_deg,
+                            ), true);
+                            const framePrompt = animationMode
+                                ? String(this.animationState.basePose?.prompt ?? this.getPosePrompt(this.activeTab))
+                                : this.getPosePrompt(i);
+                            this.lightingPrompts[i] = this.generatePromptFromLights(isOriginalLighting ? [] : this.lightParams, framePrompt);
+                        }
                     }
-                }
-
-                // Restore original state and UI
-                this.viewer.updateLights(
-                    isOriginalLighting
-                        ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
-                        : userLights,
-                );
-                this.activeTab = originalTab;
-                if (animationMode) {
-                    this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
-                } else {
-                    this.viewer.setPose(this.poses[this.activeTab], true);
-                    this.restoreActivePoseCameraParams({ updateViewer: false });
-                    this.updateCharacterScene({ poseIndex: this.activeTab });
-                    this.refreshTabActiveState({ scroll: false });
-                    this.updateRotationSliders();
-                }
-
-                // Restore Camera Visualization
-                const yaw = this.exportParams.cam_yaw_deg || 0;
-                const pitch = this.exportParams.cam_pitch_deg || 0;
-                this.viewer.updateCaptureCamera(w, h, 1, 0, 0, yaw, pitch);
+                } catch (error) {
+                    this.poseCaptures = previousCaptures;
+                    this.lightingPrompts = previousPrompts;
+                    throw error;
                 } finally {
-                    if (captureBatchStarted) this.viewer.endCaptureBatch?.();
+                    this._applyingAnimationPose = false;
+                    this.activeTab = originalTab;
+                    try {
+                        // Restore original state and UI
+                        this.viewer.updateLights(
+                            isOriginalLighting
+                                ? [{ type: "ambient", color: "#ffffff", intensity: 1.0 }]
+                                : userLights,
+                        );
+                        this.activeTab = originalTab;
+                        if (animationMode) {
+                            this.applyAnimationFrame(this.animationState.currentFrame, { transient: true });
+                        } else {
+                            this.viewer.setPose(this.poses[this.activeTab], true);
+                            this.restoreActivePoseCameraParams({ updateViewer: false });
+                            this.updateCharacterScene({ poseIndex: this.activeTab });
+                            this.refreshTabActiveState({ scroll: false });
+                            this.updateRotationSliders();
+                        }
+
+                        // Restore Camera Visualization
+                        const yaw = this.exportParams.cam_yaw_deg || 0;
+                        const pitch = this.exportParams.cam_pitch_deg || 0;
+                        this.viewer.updateCaptureCamera(w, h, 1, 0, 0, yaw, pitch);
+                    } finally {
+                        if (captureBatchStarted || this.viewer._captureBatch) this.viewer.endCaptureBatch?.();
+                    }
                 }
 
             } else {
@@ -15887,11 +15924,10 @@ app.registerExtension({
                         executionCapture: true,
                     },
                 });
-                await uploadPoseStudioSync(node, nodeId, syncToken);
+                const response = await uploadPoseStudioSync(node, nodeId, syncToken);
+                await requirePoseStudioSyncResponse(response);
             } catch (e) {
-                if (applyMode === "manager_proportions") {
-                    await reportPoseStudioSyncFailure(nodeId, syncToken, e);
-                }
+                await reportPoseStudioSyncFailure(nodeId, syncToken, e);
                 console.error("[VNCCS] SAM3D pose_image apply error:", e);
             }
         });

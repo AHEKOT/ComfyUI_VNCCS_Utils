@@ -1,3 +1,4 @@
+import { compositeBlendModeToPsd } from "../web/unicanvas/layer_tools.mjs";
 import { isImageLayer, serializePose, poseGenerationLayer, mergePoseCache } from "../web/unicanvas/pose_state.mjs";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -67,7 +68,7 @@ class Element {
 }
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const context = {
-  isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
+  compositeBlendModeToPsd, isImageLayer, serializePose, poseGenerationLayer, mergePoseCache,
   normalizePanorama, isPanoramaCandidate, PanoramaDocument, trimPanoramaHistory, normalizeTransformMode, snapAxisAngles, DEFAULT_PANORAMA_CAMERA,
   document: { createElement: () => new Element() },
   window: { setTimeout: () => 0 }, clearTimeout, URLSearchParams,

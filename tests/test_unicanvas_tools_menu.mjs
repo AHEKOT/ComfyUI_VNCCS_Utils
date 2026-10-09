@@ -33,7 +33,7 @@ const MENU_GROUPS = [
 
 test("widget source installs both tool packs", () => {
   assert.match(widgetSource, /import \{ installUniCanvasInputTools \} from "\.\/unicanvas\/input_tools\.mjs(\?v=\d+)?";/);
-  assert.match(widgetSource, /import \{ installUniCanvasLayerTools \} from "\.\/unicanvas\/layer_tools\.mjs(\?v=\d+)?";/);
+  assert.match(widgetSource, /import \{ installUniCanvasLayerTools(?:, compositeBlendModeToPsd)? \} from "\.\/unicanvas\/layer_tools\.mjs(\?v=\d+)?";/);
   assert.match(widgetSource, /installUniCanvasInputTools\(this\);/);
   assert.match(widgetSource, /installUniCanvasLayerTools\(this\);/);
 });

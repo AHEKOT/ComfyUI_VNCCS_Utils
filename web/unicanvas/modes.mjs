@@ -767,7 +767,20 @@ export async function newUniCanvasDocument(widget) {
     "Are you sure?\nConfirmation will delete <b>all layers</b> in canvas.",
     "Confirm"
   );
-  if (!confirmed) return;
+  if (!confirmed || widget._disposed) return;
+  widget._stateRestoreFailed = false;
+  widget._isRestoring = false;
+  widget._documentRevision = (widget._documentRevision || 0) + 1;
+  widget._stateLoadRevision = (widget._stateLoadRevision || 0) + 1;
+  widget._stateRestoreRevision = (widget._stateRestoreRevision || 0) + 1;
+  widget._importRevision = (widget._importRevision || 0) + 1;
+  widget.cancelDeferredCanvasCommit?.();
+  widget.poseEditor?.release();
+  widget.panorama?.dispose();
+  widget.panorama = null;
+  widget.clearSamPrompt?.();
+  widget.setTool?.("move", true);
+  widget.updatePanoramaControls?.();
   // Clear every layer and image, then create one fresh base layer for new work.
   widget.stagingItems = [];
   widget.activeStagingIndex = -1;
@@ -819,73 +832,44 @@ export function installUniCanvasWidgetModes(widget) {
 }
 
 // ---------------------------------------------------------------------------
-// Standalone sidebar mode: "Unicanvas" tab, chrome hiding, local persistence
+// Standalone sidebar mode: "Unicanvas" tab, chrome hiding, durable persistence
 // ---------------------------------------------------------------------------
 
-function writeStandaloneState(widget, state) {
-  // Mirrors saveLocalStateBackup's degradation: persistence stops (after one
-  // informative message) once localStorage cannot hold the document.
-  if (widget.localStateBackupDisabled) return;
+function writeStandaloneState(widget) {
+  // Pixels live in the durable server cache; the browser stores only its pointer.
   try {
-    state.storage = "local";
-    const payload = JSON.stringify({ saved_at: Date.now(), state });
-    // Kept well under the ~5 MB origin quota: ComfyUI's own workflow drafts share it, and a
-    // near-full quota makes every draft save fail ("Failed to save workflow draft").
-    if (payload.length > 1_500_000) {
-      widget.localStateBackupDisabled = true;
-      if (!widget.localStateBackupWarned) {
-        widget.localStateBackupWarned = true;
-        console.info("[VNCCS UniCanvas] Local backup skipped: state is too large for browser localStorage; work will not survive a reload.");
-      }
-      return;
-    }
-    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, payload);
+    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, JSON.stringify({
+      saved_at: Date.now(), state: { version: 2, storage: "server_cache", state_id: widget.getStateCacheId(), layers: [] },
+    }));
   } catch (err) {
-    widget.localStateBackupDisabled = true;
-    if (!widget.localStateBackupWarned) {
-      widget.localStateBackupWarned = true;
-      console.info("[VNCCS UniCanvas] Local backup disabled: browser localStorage quota is not enough; work will not survive a reload.");
-    }
+    // The fixed standalone cache ID also restores when browser storage is unavailable.
+    console.info("[VNCCS UniCanvas] Browser storage unavailable; standalone server cache remains active.");
   }
 }
 
-const standalonePersistState = new WeakMap();
+const standalonePersistState = new WeakSet();
 
 function installStandalonePersistence(widget) {
-  // Standalone mode has no workflow widget and no server state cache: the
-  // localStorage key "vnccs-unicanvas-standalone" holds the document instead.
-  const entry = { timer: null };
-  standalonePersistState.set(widget, entry);
-  const schedulePersist = () => {
-    if (entry.timer !== null) window.clearTimeout(entry.timer);
-    entry.timer = window.setTimeout(() => {
-      entry.timer = null;
-      writeStandaloneState(widget, widget.buildSerializedState(true));
-    }, 300);
-  };
-  widget.getStateBackupKey = () => UNICANVAS_STANDALONE_STORAGE_KEY;
-  widget.uploadStatePayload = async (state) => {
-    writeStandaloneState(widget, state);
+  standalonePersistState.add(widget);
+  const uploadStatePayload = widget.uploadStatePayload;
+  widget.saveLocalStateBackup = () => {};
+  widget.uploadStatePayload = async (state, keepalive = false) => {
+    const saved = await uploadStatePayload.call(widget, state, keepalive);
+    if (saved) writeStandaloneState(widget);
+    return saved;
   };
   const originalWriteLightStateToWidget = widget.writeLightStateToWidget;
   widget.writeLightStateToWidget = (...args) => {
     const result = originalWriteLightStateToWidget.call(widget, ...args);
-    schedulePersist();
+    widget.scheduleStateUpload();
     return result;
   };
 }
 
 export function flushStandalonePersistence(widget) {
-  const entry = widget ? standalonePersistState.get(widget) : null;
-  if (!entry) return;
-  if (entry.timer !== null) {
-    window.clearTimeout(entry.timer);
-    entry.timer = null;
-  }
-  // Write even for a disposed widget: the localStorage write is safe after
-  // disposal and preserves the last pending document (symmetry with the
-  // dispose()-time flushStateUpload path).
-  writeStandaloneState(widget, widget.buildSerializedState(true));
+  if (!widget || !standalonePersistState.has(widget)) return;
+  standalonePersistState.delete(widget);
+  void widget.flushStateUpload(true);
 }
 
 export function teardownUniCanvasWidgetModes(widget) {
@@ -901,19 +885,18 @@ export function teardownUniCanvasWidgetModes(widget) {
 }
 
 function readStandalonePersistedStateValue() {
+  const pointer = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_tab", layers: [] };
   try {
     const raw = window.localStorage?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    const state = parsed && typeof parsed === "object" ? parsed.state : null;
-    if (!state || typeof state !== "object" || !Array.isArray(state.layers)) return "";
-    // The widget's own restore pipeline reads this hidden state widget; the
-    // storage marker keeps it from reaching for the node-mode server cache.
-    state.storage = "local";
-    return JSON.stringify(state);
+    const state = raw ? JSON.parse(raw)?.state : null;
+    if (state && typeof state === "object" && Array.isArray(state.layers)) {
+      // Keep old local-only pixels until their first successful server upload.
+      return JSON.stringify({ ...state, state_id: pointer.state_id });
+    }
   } catch (err) {
-    console.warn("[VNCCS UniCanvas] Standalone state restore failed", err);
-    return "";
+    console.warn("[VNCCS UniCanvas] Standalone browser state restore failed", err);
   }
+  return JSON.stringify(pointer);
 }
 
 function createStandaloneWidget(UniCanvasWidgetClass) {
@@ -921,6 +904,7 @@ function createStandaloneWidget(UniCanvasWidgetClass) {
   // (hidden unicanvas_state widget) and carries a size hint.
   const stubNode = {
     id: undefined,
+    unicanvasStandalone: true,
     inputs: [],
     size: [1280, 860],
     widgets: [{ name: "unicanvas_state", value: readStandalonePersistedStateValue() }],
