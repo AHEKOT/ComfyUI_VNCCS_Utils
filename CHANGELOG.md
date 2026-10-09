@@ -1,8 +1,44 @@
 # Version 0.6.10
-## Pose Studio
+## UniCanvas, Pose Studio, and 3D Factory Reliability
 
-* **Separate motion release**: Text-to-motion inference, model setup, API routes, the dedicated panel, and Motion buttons have been removed from VNCCS Utils for a separate release.
-* Existing animation timelines, FBX animation import, and SAM3 Body pose import remain available.
+### UniCanvas
+
+* **Standalone workspace**: The standalone tab follows ComfyUI's theme, keeps native menus and panels accessible, and adjusts sidebar and toolbar sizes to the available space. Entering or leaving pose editing preserves the workspace layout.
+* **Model dependency setup**: Presets and Custom mode check for missing encoders, VAEs, ControlNets, and required LoRAs. A setup dialog lets you download selected missing files with live byte progress; installed files are reused and repeated requests do not queue duplicate downloads.
+* **Reference controls**: Standalone editing can include or exclude canvas layers as the first reference image. Uploaded references retain their numbered slots, including gaps, and reference labels follow the selected model.
+* **Qwen Edit 2.1 pose editing**: Added Pose Studio editing support with the dedicated pose LoRA. Decoded alpha is preserved without a transparency switch, forced transparency instructions, or automatic flattening onto white.
+* **Inference scale**: Standalone controls show megapixels and update the expected generation size while dragging or typing.
+* **Safer document restoration**: Large standalone documents use the durable server cache. Browser storage limits no longer stop saves, and failed restoration cannot overwrite an existing document with an empty canvas. Workflow layer metadata takes precedence over cached metadata; caches supply the matching pixels.
+* **Current pixels in saved workflows and outputs**: Saved workflow snapshots no longer change when a later editing session autosaves. Undo/Redo persists restored pixels, duplicated nodes retain their own canvas data, and queueing waits for the latest state and flattened output uploads. ComfyUI invalidates cached node outputs when stored pixels change.
+* **Stale results cannot replace edits**: Late generation, layer naming, prompt enhancement, background removal, and color-match results are rejected after the target document or layer changes. Color-match cancellation preserves unrelated edits.
+* **Live controls and bounded history**: Layer and color-match controls preview continuously and record one undo step per completed gesture. Flat documents use the same history memory budget as panoramas, including retained staging masks.
+* **PSD compatibility**: Export preserves fractional opacity and supported blend modes. Import respects hidden parent groups and reports unsupported group appearance.
+* **Stop affects the requested draw**: Stopping a queued draw cancels it before inference; stopping one canvas does not interrupt another canvas's active draw. Result polling ends after cancellation, and failed Stop requests remain retryable.
+* **Model memory and inference errors**: SAM and layer-naming helpers offload cached weights after use, including on failure. Sampling and tiled VAE errors propagate instead of silently retrying through a different path. LoRAs with the same filename in different folders remain distinct.
+
+### Pose Studio
+
+* **Saved animations remain stable**: Editing an animation creates a new cache snapshot instead of changing the clip referenced by an older saved workflow. Animation tracks live in the user directory, survive temporary-folder cleanup, and migrate from legacy cache files when read.
+* **Live timeline settings**: FPS and duration previews update during input. FPS changes preserve the gesture's original keys across all characters, and Undo/Redo restores the complete scene timing in one step.
+* **Reliable execution captures**: Failed SAM analysis, failed live synchronization, incomplete frame batches, and failed Pose Manager preview refreshes stop execution with an error instead of returning older images. Restoring a newer cache revision no longer prevents subsequent edits from uploading.
+* **Capture cleanup and limits**: Failed captures restore the active pose, lighting, helpers, and renderer state. Captured sequences enforce a 64 Mi-pixel aggregate limit and report when resolution or frame count must be reduced.
+* **Import and character switching**: FBX/video imports replace deferred animation references, SAM animation execution uploads fresh frames, and late SAM import or overlay responses cannot change another selected character. Replaced character rigs release their skeleton resources.
+* **Separate pose and animation assets**: Library items use typed storage, so a pose and animation can share a name and category. Legacy files remain readable and migrate when saved; ambiguous untyped lookups return an error.
+* **Safer library saves and synchronization**: Failed writes, invalid repository manifests, and failed downloads retain existing assets and previews. Concurrent saves cannot overwrite a same-name item. Editing a downloaded item saves a local copy while retaining its source identity.
+* **Library responsiveness and cleanup**: Browsing loads metadata first and fetches the selected item's pose on demand. Older selection responses are ignored, Apply cleans up the dialog, and library cards support keyboard selection.
+
+### 3D Factory
+
+* **Matching Gaussian exports**: Exported Gaussian positions use the same XYZ rotation order as the viewport and covariance calculation. Older derived PLY exports are invalidated and rebuilt.
+* **Safe reference replacement**: New reference images and previews are committed before old files are removed. A failed preview or scene save preserves the previous reference.
+* **Scene ownership and saves**: Objects explicitly assigned to the scene root remain there after reload, even when buildings exist. Save preparation failures no longer leave the save queue stuck.
+
+### Compatibility and Maintenance
+
+* **Removed legacy nodes**: `VNCCS_ModelManager`, `VNCCS_ModelSelector`, and `VNCCS_QWEN_Detailer` are no longer shipped. Bundled Pose Studio workflows use standard ComfyUI loaders; older workflows using the removed nodes need replacements. BBox Extractor remains available as an independent node.
+* **Removed Qwen-Image-Edit 2511 support in UniCanvas**: Its model family, presets, and prompt-enhancement templates were removed. Use Qwen Edit 2.1 for the current Qwen editing workflow.
+* **Feature-owned modules**: Backend services and frontend helpers now live under their owning feature directories. The retained editors keep their HTTP routes, node identifiers, workflow formats, and library locations. Restart ComfyUI and hard-reload the browser after updating.
+* **Regression coverage**: Expanded tests for document restoration, cancellation, model dependencies, library transactions, animation snapshots, capture failures, Gaussian exports, API contracts, and standalone layout.
 
 # Version 0.6.9
 ## Registry Compliance Fix
@@ -36,7 +72,7 @@
 
 ### UniCanvas Models
 
-* **Qwen-Image-2.1 (QI2.1)**: New preset with a 6-step Turbo LoRA (turn it off for the full-quality profile). Decoded alpha is always preserved, with no transparency switch or automatic transparency instructions. The separate 2K aspect preset was removed - use Inference scale for the size.
+* **Qwen-Image-2.1 (QI2.1)**: New preset with a 6-step Turbo LoRA (turn it off for the full-quality profile). Output is transparent by default; a single **Transparent output** switch under Steps turns it off. The separate 2K aspect preset was removed - use Inference scale for the size.
 * **MiniMax H3**: New still-image preset with a 3-step Turbo LoRA.
 * **Krea2 presets**: Clearer names and descriptions.
 * Removed the Spectrum acceleration option.
