@@ -18,3 +18,5 @@ einops
 roma
 tqdm
 color-matcher
+pydantic
+comfy-kitchen

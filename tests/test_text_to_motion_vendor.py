@@ -1,7 +1,7 @@
-"""Vendored ARDY / Kimodo support: config loading without Hydra, downloads, encoder pieces.
+"""Vendored ARDY support: config loading without Hydra, downloads, encoder pieces.
 
 The pure-Python parts run everywhere; building vendored classes needs torch and the
-packages ComfyUI ships (einops, scipy, transformers, ...) and is skipped without them.
+packages ComfyUI ships (einops, transformers, ...) and is skipped without them.
 """
 
 import importlib.util
@@ -15,7 +15,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "vnccs_t2m_vendor_test"
-FOLDER = ROOT / "api" / "text_to_motion"
+FOLDER = ROOT / "nodes" / "posestudio" / "ttm"
 
 
 def _load(name):
@@ -45,7 +45,6 @@ def _has(*modules):
 
 
 CONFIG = _load("config_loader")
-HUB = _load("hub")
 
 
 class ConfigResolveTests(unittest.TestCase):
@@ -118,107 +117,24 @@ class InstantiateTests(unittest.TestCase):
         self.assertEqual(CONFIG.instantiate({"x": [1, {"y": 2}]}, self.registry), {"x": [1, {"y": 2}]})
 
     def test_targets_outside_the_vendored_code_are_refused(self):
-        for target in ("os.system", "builtins.eval", "subprocess.Popen", "ardy.model.parts.missing", "kimodo.model.Part", "Part"):
+        for target in ("os.system", "builtins.eval", "subprocess.Popen", "ardy.model.parts.missing", "other.model.Part", "Part"):
             with self.assertRaises(CONFIG.ConfigError, msg=target):
                 CONFIG.instantiate({"_target_": target}, self.registry)
 
 
-class HubTests(unittest.TestCase):
-    def install_hub(self, files, fail=None):
-        calls = []
-
-        class Api:
-            def __init__(self, token=None):
-                calls.append(("token", token))
-
-            def list_repo_files(self, repo_id, revision="main"):
-                return list(files)
-
-        def download(repo_id, filename, revision, local_dir, token):
-            calls.append(("download", filename, token, revision))
-            if fail and filename == fail:
-                raise RuntimeError("401 gated")
-            path = Path(local_dir) / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(revision)
-            return str(path)
-
-        hub = types.ModuleType("huggingface_hub")
-        hub.HfApi, hub.hf_hub_download = Api, download
-        patcher = mock.patch.dict(sys.modules, {"huggingface_hub": hub})
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        return calls
-
-    def test_downloads_listed_files_without_credentials(self):
-        calls = self.install_hub(["config.yaml", "README.md", "weights/a.safetensors", "tokenizer.json"])
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "repo"
-            downloaded = HUB.ensure_repo("nvidia/X", target, include=("config.yaml", "weights/*"))
-            self.assertTrue((downloaded / "weights" / "a.safetensors").is_file())
-            self.assertFalse((downloaded / "tokenizer.json").exists())
-            self.assertTrue((downloaded / ".complete").is_file())
-            self.assertIn(("token", False), calls)
-            self.assertTrue(all(call[2] is False for call in calls if call[0] == "download"))
-            count = len(calls)
-            HUB.ensure_repo("nvidia/X", target)  # complete: nothing is fetched again
-            self.assertEqual(len(calls), count)
-
-    def test_new_revision_cannot_reuse_previous_weights_or_completion_marker(self):
-        calls = self.install_hub(["weights.safetensors"])
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "repo"
-            first = HUB.ensure_repo("nvidia/X", target, revision="revision-A")
-            second = HUB.ensure_repo("nvidia/X", target, revision="revision-B")
-            self.assertNotEqual(first, second)
-            self.assertEqual((first / "weights.safetensors").read_text(), "revision-A")
-            self.assertEqual((second / "weights.safetensors").read_text(), "revision-B")
-            self.assertEqual([call[3] for call in calls if call[0] == "download"], ["revision-A", "revision-B"])
-            HUB.ensure_repo("nvidia/X", target, revision="revision-B")
-            self.assertEqual(sum(call[0] == "download" for call in calls), 2)
-
-    def test_manual_marker_applies_only_to_its_revision_folder(self):
-        self.install_hub(["weights.safetensors"])
-        with tempfile.TemporaryDirectory() as folder:
-            target = Path(folder) / "repo"
-            downloaded = HUB.ensure_repo("nvidia/X", target, revision="revision-A")
-            # Empty markers remain supported for files placed by the user.
-            (downloaded / ".complete").write_text("")
-            with mock.patch.dict(sys.modules, {"huggingface_hub": None}):
-                self.assertEqual(HUB.ensure_repo("nvidia/X", target, revision="revision-A"), downloaded)
-                with self.assertRaises(HUB.DownloadError):
-                    HUB.ensure_repo("nvidia/X", target, revision="revision-B")
-
-    def test_gated_repos_explain_the_manual_route(self):
-        self.install_hub(["model.safetensors"], fail="model.safetensors")
-        with tempfile.TemporaryDirectory() as folder:
-            with self.assertRaises(HUB.DownloadError) as caught:
-                HUB.ensure_repo("meta/Gated", Path(folder) / "g")
-            self.assertIn(".complete", str(caught.exception))
-
-    def test_unsafe_names_are_refused(self):
-        self.install_hub(["../escape.txt"])
-        with tempfile.TemporaryDirectory() as folder, self.assertRaises(HUB.DownloadError):
-            HUB.ensure_repo("x/y", Path(folder) / "r")
 
 
-@unittest.skipUnless(_has("torch", "einops", "scipy", "transformers", "safetensors", "pydantic"), "needs ComfyUI's packages")
+@unittest.skipUnless(_has("torch", "einops", "transformers", "safetensors", "pydantic"), "needs ComfyUI's packages")
 class VendoredModelTests(unittest.TestCase):
     def test_skeletons_build_from_config_with_bundled_assets(self):
         loaders = _load("loaders")
         loaders._import_family("ardy")
-        loaders._import_family("kimodo")
         ardy = CONFIG.instantiate({"_target_": "ardy.skeleton.CoreSkeleton27"},
                                   CONFIG.TargetRegistry(f"{PACKAGE}.vendor", ("ardy",)))
         self.assertEqual(len(ardy.bone_order_names), 27)
         self.assertEqual(tuple(ardy.neutral_joints.shape), (27, 3))
-        soma = CONFIG.instantiate({"_target_": "kimodo.skeleton.SOMASkeleton30"},
-                                  CONFIG.TargetRegistry(f"{PACKAGE}.vendor", ("kimodo",)))
-        self.assertEqual(len(soma.bone_order_names), 30)
-
-    def test_text_encoder_is_bidirectional_and_merges_lora(self):
+    def test_text_encoder_is_bidirectional(self):
         import torch
-        from safetensors.torch import save_file
         from transformers import LlamaConfig, LlamaModel
 
         enc = _load("llm2vec_encoder")
@@ -234,15 +150,123 @@ class VendoredModelTests(unittest.TestCase):
         second = model(input_ids=ids, attention_mask=mask).last_hidden_state[0, 0]
         self.assertFalse(torch.allclose(first, second), "the first token must see later tokens")
 
+
+
+def _save_encoder_fixture(state, path):
+    """Write a tiny native INT4 fixture for loader regression tests."""
+    from comfy_kitchen.tensor import TensorCoreConvRotW4A4Layout as Layout
+    from safetensors.torch import save_file
+
+    tensors, mapping = {}, {}
+    for name, value in state.items():
+        if value.ndim == 2 and name.endswith("weight") and value.shape[1] % 64 == 0:
+            data, params = Layout.quantize(value.float(), convrot_groupsize=64, stochastic_rounding=0)
+            tensors[name] = data
+            tensors[name + "_scale"] = params.scale
+            mapping[name] = {"shape": list(value.shape), "group_size": 64,
+                             "dtype": str(value.dtype).removeprefix("torch.")}
+        else:
+            tensors[name] = value
+    save_file(tensors, str(path), metadata={"format": _load("convrot").FORMAT,
+                                           "quantization_map": json.dumps(mapping)})
+
+
+@unittest.skipUnless(_has("torch", "safetensors", "comfy_kitchen"), "ConvRot tensor dependencies unavailable")
+class ConvRotTests(unittest.TestCase):
+
+    @unittest.skipUnless(_has("transformers"), "transformers unavailable")
+    def test_compact_llama_materializes_rotary_buffers_and_runs(self):
+        import torch
+        from transformers import LlamaConfig, LlamaModel
+
+        convrot = _load("convrot")
+        config = LlamaConfig(hidden_size=64, intermediate_size=128, num_hidden_layers=1,
+                             num_attention_heads=4, num_key_value_heads=2, vocab_size=128)
+        original = LlamaModel(config).to(dtype=torch.bfloat16)
         with tempfile.TemporaryDirectory() as folder:
-            folder = Path(folder)
-            (folder / "adapter_config.json").write_text(json.dumps({"r": 4, "lora_alpha": 8}))
-            a, b = torch.randn(4, 32), torch.randn(64, 4)
-            prefix = "base_model.model.model.layers.0.mlp.up_proj"
-            save_file({f"{prefix}.lora_A.weight": a, f"{prefix}.lora_B.weight": b}, str(folder / "adapter_model.safetensors"))
-            before = model.layers[0].mlp.up_proj.weight.clone()
-            enc.merge_lora(model, folder)
-            self.assertTrue(torch.allclose(model.layers[0].mlp.up_proj.weight, before + b @ a * 2, atol=1e-5))
+            config.save_pretrained(folder)
+            _save_encoder_fixture(original.state_dict(), Path(folder) / "model.safetensors")
+            with mock.patch("transformers.AutoTokenizer.from_pretrained", return_value=mock.Mock(eos_token="eos")):
+                encoder = _load("llm2vec_encoder").LLM2VecEncoder(folder, llm_dim=64, device="cpu")
+            encoder.model.to("cpu")
+            self.assertTrue(all(buffer.device.type == "cpu" for buffer in encoder.model.buffers()))
+            with torch.no_grad():
+                hidden = encoder.model(input_ids=torch.tensor([[3, 7, 3]])).last_hidden_state
+            self.assertEqual(tuple(hidden.shape), (1, 3, 64))
+            self.assertTrue(torch.isfinite(hidden).all())
+
+    def test_packed_checkpoint_restores_linear_and_requested_embedding_rows(self):
+        import torch
+        from comfy_kitchen.tensor import TensorCoreConvRotW4A4Layout as Layout
+
+        convrot = _load("convrot")
+        torch.manual_seed(9)
+        weight = torch.randn(16, 64)
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "model.safetensors"
+            _save_encoder_fixture({"weight": weight, "bias": torch.zeros(16)}, path)
+            state = convrot.load_state(path)
+        self.assertEqual(state["weight"]._qdata.numel(), weight.numel() // 2)
+        model = torch.nn.Linear(64, 16)
+        convrot.assign_state(model, state)
+        model.to("cpu")
+        x = torch.randn(2, 64)
+        self.assertTrue(torch.isfinite(model(x)).all())
+        self.assertEqual(tuple(model(x).shape), (2, 16))
+        decoded = Layout.dequantize(model.weight._qdata, model.weight._params)
+        self.assertLess(float((decoded - weight).square().mean()), .06)
+
+        holder = torch.nn.Module()
+        holder.embed_tokens = torch.nn.Embedding(16, 64)
+        convrot.compact_embedding(holder)
+        convrot.assign_state(holder, {"embed_tokens.weight": state["weight"]})
+        ids = torch.tensor([[3, 7, 3]])
+        torch.testing.assert_close(holder.embed_tokens(ids), decoded[ids])
+        holder.to(dtype=torch.bfloat16)
+        self.assertEqual(holder.embed_tokens.weight._qdata.dtype, torch.int8)
+        self.assertTrue(torch.isfinite(holder.embed_tokens(ids)).all())
+
+
+    def test_plain_checkpoint_is_not_quantized_implicitly(self):
+        import torch
+        from safetensors.torch import save_file
+
+        convrot = _load("convrot")
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "model.safetensors"
+            original = {"weight": torch.randn(4, 8)}
+            save_file(original, str(path))
+            restored = convrot.load_state(path)
+        torch.testing.assert_close(restored["weight"], original["weight"])
+        self.assertIsInstance(restored["weight"], torch.Tensor)
+
+class BF16MotionTests(unittest.TestCase):
+    def test_bf16_motion_overrides_both_checkpoint_paths_without_download(self):
+        loaders = _load("loaders")
+        config = {"denoiser": {"ckpt_path": "old-denoiser"}, "autoencoder": {"ckpt_path": "old-decoder"}}
+        built = mock.Mock()
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "config.yaml").write_text("{}")
+            with mock.patch.object(loaders, "_import_family"), mock.patch.object(loaders.config_loader, "load_yaml", return_value=config), \
+                 mock.patch.object(loaders.config_loader, "instantiate", return_value=built) as instantiate:
+                loaders.motion_model("ardy", "nvidia/ARDY", root, "cuda", "encoder", compact_dir=root, motion_precision="bf16")
+            resolved = instantiate.call_args.args[0]
+            self.assertEqual(resolved["denoiser"]["ckpt_path"], str(root / "motion.bf16.safetensors"))
+            self.assertEqual(resolved["autoencoder"]["ckpt_path"], str(root / "motion.bf16.safetensors"))
+            self.assertEqual(built.text_encoder, "encoder")
+
+    @unittest.skipUnless(_has("torch"), "needs torch")
+    def test_bf16_assignment_keeps_checkpoint_dtype_and_values(self):
+        import torch
+
+        convrot = _load("convrot")
+        layer = torch.nn.Linear(4, 3)
+        state = {"weight": torch.arange(12, dtype=torch.bfloat16).reshape(3, 4), "bias": torch.zeros(3, dtype=torch.bfloat16)}
+        convrot.assign_state(layer, state)
+        self.assertEqual(layer.weight.dtype, torch.bfloat16)
+        self.assertEqual(layer.bias.dtype, torch.bfloat16)
+        torch.testing.assert_close(layer.weight, state["weight"], rtol=0, atol=0)
 
 
 if __name__ == "__main__":

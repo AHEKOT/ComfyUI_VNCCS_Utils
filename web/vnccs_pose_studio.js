@@ -16,7 +16,7 @@ import {
 } from "./camera_control/utils.mjs";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
-import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs?v=20261009.audit";
+import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs?v=20261009.current-pose";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
@@ -9267,7 +9267,16 @@ class PoseStudioWidget {
     openTextToMotionPanel({ poseOnly = false } = {}) {
         if (this.textToMotionPanel?.isOpen()) return;
         if (!poseOnly && !this.isAnimationMode()) {
+            const pose = this.viewer?.getPose();
             this.setEditorMode("animation");
+            // Entering Animation mode applies its timeline; motion must capture the visible pose instead.
+            this._applyingAnimationPose = true;
+            try {
+                this.viewer?.setPose(pose, true);
+                this.updateRotationSliders();
+            } finally {
+                this._applyingAnimationPose = false;
+            }
             this.showMessage?.("Switched to Animation mode: the generated motion becomes the animation.");
         }
         if (!this.textToMotionPanel) {

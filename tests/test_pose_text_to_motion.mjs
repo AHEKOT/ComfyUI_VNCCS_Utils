@@ -26,9 +26,9 @@ const MOTION_FROM_BONES = {
     RightUpLeg: "thigh_r", RightLeg: "calf_r", RightFoot: "foot_r", RightToeBase: "ball_r",
 };
 
-const KIMODO = {
-    id: "kimodo-soma-rp-v1.1",
-    name: "Kimodo SOMA RP v1.1",
+const STEPPED_MODEL = {
+    id: "test-motion-steps",
+    name: "Test motion",
     available: true,
     capabilities: {
         start_pose_constraint: true,
@@ -111,9 +111,49 @@ function fabricateMotion(viewer, start, { lift = 0 } = {}) {
 
 const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
+test("full skeleton projection preserves the start rig and projects torso, shoulders and head", () => {
+    const { viewer } = sceneWithRig();
+    rotateBone(viewer, "spine_02", 0, 18);
+    rotateBone(viewer, "neck_01", 1, 22);
+    rotateBone(viewer, "clavicle_l", 2, 12);
+    const pose = viewer.getPose();
+    pose.modelRotation = [0, 35, 0];
+    viewer.setPose(pose, true);
+    const start = captureMotionStartPose(viewer);
+    const reference = Object.fromEntries(Object.values(MOTION_FROM_BONES).map((name) =>
+        [name, viewer._getBoneWorldQuaternionForImport(name)]));
+    const offsets = Object.fromEntries(Object.entries(viewer.bones).map(([name, bone]) => [name, bone.position.clone()]));
+    const joints0 = captureMotionFrame(viewer);
+    rotateBone(viewer, "spine_03", 0, 14);
+    rotateBone(viewer, "clavicle_l", 2, 17);
+    rotateBone(viewer, "head", 1, 27);
+    rotateBone(viewer, "upperarm_l", 2, 40);
+    const expected = viewer.getPose();
+    const rotations = Object.fromEntries(Object.entries(reference).map(([name, quaternion]) =>
+        [name, [quaternion.toArray(), viewer._getBoneWorldQuaternionForImport(name).toArray()]]));
+    const joints = Object.fromEntries(Object.entries(joints0).map(([name, point]) =>
+        [name, [point, point.map((value, axis) => value + (axis === 0 ? 2 : axis === 1 ? 1 : 0))]]));
+    const motion = { frame_count: 2, fps: 20, joints, rotations };
+    retargetMotionFrame(viewer, motion, 0, start);
+    for (const [name, quaternion] of Object.entries(reference)) {
+        assert.ok(viewer._getBoneWorldQuaternionForImport(name).angleTo(quaternion) < 1e-6, `${name} frame zero`);
+        assert.ok(distance(bonePoint(viewer, name), start.keypoints[name]) < 1e-6, `${name} frame zero position`);
+    }
+    const result = retargetMotionFrame(viewer, motion, 1, start, { keepInPlace: false });
+    for (const name of ["spine_03", "clavicle_l", "head", "upperarm_l"]) {
+        for (let axis = 0; axis < 3; axis++) assert.ok(Math.abs(result.bones[name][axis] - expected.bones[name][axis]) < 1e-5, `${name} projected rotation`);
+    }
+    for (const [name, offset] of Object.entries(offsets)) {
+        if (name !== "pelvis") assert.ok(viewer.bones[name].position.distanceTo(offset) < 1e-8, `${name} local offset`);
+    }
+    assert.ok(distance(bonePoint(viewer, "pelvis"), start.keypoints.pelvis.map((value, axis) => value + (axis === 0 ? 2 : axis === 1 ? 1 : 0))) < 1e-6);
+    retargetMotionFrame(viewer, motion, 1, start, { keepInPlace: true });
+    assert.ok(distance(bonePoint(viewer, "pelvis"), start.keypoints.pelvis.map((value, axis) => value + (axis === 1 ? 1 : 0))) < 1e-6);
+});
+
 test("model limits, clamping and requests follow the selected model", () => {
-    assert.deepEqual(motionModelLimits(KIMODO).steps, { min: 10, max: 200, default: 100 });
-    assert.equal(motionModelLimits(KIMODO).guidance, null);
+    assert.deepEqual(motionModelLimits(STEPPED_MODEL).steps, { min: 10, max: 200, default: 100 });
+    assert.equal(motionModelLimits(STEPPED_MODEL).guidance, null);
     assert.equal(motionModelLimits(ARDY).startPoseConstraint, true);
 
     const clean = clampMotionSettings({ prompt: "  walk   forward ", duration: 99, steps: 1, guidance: 50, seed: "12" }, ARDY);
@@ -125,17 +165,17 @@ test("model limits, clamping and requests follow the selected model", () => {
     assert.equal(clampMotionSettings({ seed: "12", randomSeed: true }, ARDY).seed, null);
 
     const start = { keypoints: { pelvis: [0, 1, 0] }, restKeypoints: {}, headAxes: null };
-    const kimodo = buildMotionRequest({ prompt: "jump", steps: 40, guidance: 3 }, start, "t1", KIMODO);
-    assert.equal(kimodo.model, KIMODO.id);
-    assert.equal(kimodo.steps, 40);
-    assert.equal("guidance" in kimodo, false);
+    const stepped = buildMotionRequest({ prompt: "jump", steps: 40, guidance: 3 }, start, "t1", STEPPED_MODEL);
+    assert.equal(stepped.model, STEPPED_MODEL.id);
+    assert.equal(stepped.steps, 40);
+    assert.equal("guidance" in stepped, false);
     const ardy = buildMotionRequest({ prompt: "jump", guidance: 3 }, start, "t2", ARDY);
     assert.equal(ardy.guidance, 3);
     assert.equal("steps" in ardy, false);
 });
 
 test("license warning names the excluded territories", () => {
-    assert.equal(motionLicenseWarning(KIMODO), "");
+    assert.equal(motionLicenseWarning(STEPPED_MODEL), "");
     const warning = motionLicenseWarning(RESTRICTED);
     assert.match(warning, /does not apply in the European Union, United Kingdom and South Korea/);
     assert.match(warning, /Restricted motion model/);
@@ -238,7 +278,7 @@ test("panel lists models, warns about license territories, generates and applies
     const start = captureMotionStartPose(viewer);
     const { motion } = fabricateMotion(viewer, start);
     let requestBody = null;
-    const { fetchApi } = fakeApi([KIMODO, { ...RESTRICTED, available: true }], (body, json) => {
+    const { fetchApi } = fakeApi([STEPPED_MODEL, { ...RESTRICTED, available: true }], (body, json) => {
         requestBody = body;
         return json({ status: "success", motion: { ...motion, seed: 99, model: body.model } });
     });
@@ -249,7 +289,7 @@ test("panel lists models, warns about license territories, generates and applies
     await settle();
     const { modelSelect, license, guidanceLabel } = panel.controls;
     assert.equal(modelSelect.children.length, 2);
-    assert.equal(panel.settings.model, KIMODO.id);
+    assert.equal(panel.settings.model, STEPPED_MODEL.id);
     assert.equal(license.children.length, 0);
     assert.equal(guidanceLabel.style.display, "none");
 
@@ -306,7 +346,7 @@ test("in animation mode OK replaces the animation from the frame the panel opene
     const { w, viewer, document } = sceneWithRig();
     const start = captureMotionStartPose(viewer);
     const { motion } = fabricateMotion(viewer, start);
-    const { fetchApi } = fakeApi([KIMODO], (body, json) => json({ status: "success", motion: { ...motion, seed: 7, model: body.model } }));
+    const { fetchApi } = fakeApi([STEPPED_MODEL], (body, json) => json({ status: "success", motion: { ...motion, seed: 7, model: body.model } }));
     const guards = [];
     const state = createDefaultAnimationState({ bones: {} }, { frameCount: 10, duration: 10 / 12, fps: 12 });
     state.currentFrame = 4;
@@ -350,7 +390,7 @@ test("cancel in animation mode leaves the animation untouched", async () => {
     w.isAnimationMode = () => true;
     const applied = [];
     w.applyAnimationFrame = (frame) => applied.push(frame);
-    const { fetchApi } = fakeApi([KIMODO], (_body, json) => json({ error: "unused" }, 500));
+    const { fetchApi } = fakeApi([STEPPED_MODEL], (_body, json) => json({ error: "unused" }, 500));
     const panel = new TextToMotionPanel(w, { fetchApi, document });
     panel.open();
     await settle();
@@ -385,7 +425,7 @@ test("cancel during retargeting cannot overwrite later edits or a reopened panel
     }
     w.isAnimationMode = () => true;
     w.applyAnimationFrame = () => {};
-    const { fetchApi } = fakeApi([KIMODO], (_body, json) => json({ error: "unused" }, 500));
+    const { fetchApi } = fakeApi([STEPPED_MODEL], (_body, json) => json({ error: "unused" }, 500));
     const panel = new TextToMotionPanel(w, { fetchApi, document });
     panel.open(); await settle();
     panel.motion = motion;
@@ -399,4 +439,56 @@ test("cancel during retargeting cannot overwrite later edits or a reopened panel
     assert.equal(panel.busy, false);
     assert.equal(w._applyingAnimationPose, false);
     panel.cancel();
+});
+
+test("opening motion from pose mode preserves the visible pose over an existing default animation", async () => {
+    const { w, viewer, document } = sceneWithRig();
+    w.interfaceMode = "studio";
+    w.exportParams.editor_mode = "image";
+    w.animationState = createDefaultAnimationState({ bones: {} }, { frameCount: 10, duration: 1, fps: 10 });
+    w._animationInitialized = true;
+    w.getActiveCharacter().animationState = w.animationState;
+    w.applyEditorMode = () => {};
+    rotateBone(viewer, "upperarm_r", 2, -40);
+    rotateBone(viewer, "neck_01", 1, 25);
+    const before = viewer.getPose();
+    const { fetchApi } = fakeApi([STEPPED_MODEL], (_body, json) => json({ error: "unused" }, 500));
+    const panel = new TextToMotionPanel(w, { fetchApi, document });
+    w.textToMotionPanel = panel;
+    w.openTextToMotionPanel();
+    await settle();
+    assert.deepEqual(panel.start.pose.bones, before.bones);
+    assert.deepEqual(viewer.getPose().bones, before.bones);
+    panel.cancel();
+    assert.deepEqual(viewer.getPose().bones, before.bones, "Cancel must restore the visible opening pose after applying the old timeline frame");
+});
+
+test("generate and regenerate use the visible pose at the click while Cancel keeps the opening pose", async () => {
+    const { w, viewer, document } = sceneWithRig();
+    rotateBone(viewer, "spine_02", 0, 15);
+    const opening = viewer.getPose();
+    const requests = [];
+    const { fetchApi } = fakeApi([STEPPED_MODEL], (body, json) => {
+        requests.push(body);
+        const start = captureMotionStartPose(viewer);
+        const { motion } = fabricateMotion(viewer, start);
+        return json({ status: "success", motion });
+    });
+    const panel = new TextToMotionPanel(w, { fetchApi, document });
+    panel.open({ poseOnly: true });
+    await settle();
+    panel.settings.prompt = "wave";
+    rotateBone(viewer, "upperarm_r", 2, -40);
+    const generation = captureMotionStartPose(viewer);
+    await panel.generate();
+    assert.deepEqual(requests[0].keypoints, generation.keypoints);
+    assert.deepEqual(panel.poses[0].bones, generation.pose.bones);
+    panel.showFrame(1);
+    const regeneration = captureMotionStartPose(viewer);
+    await panel.generate();
+    assert.deepEqual(requests[1].keypoints, regeneration.keypoints);
+    assert.deepEqual(panel.poses[0].bones, regeneration.pose.bones);
+    assert.equal(panel.frame, 0);
+    panel.cancel();
+    assert.deepEqual(viewer.getPose().bones, opening.bones);
 });

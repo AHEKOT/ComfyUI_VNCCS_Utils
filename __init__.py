@@ -193,10 +193,10 @@ _vnccs_register_sam3d_pose_import()
 def _vnccs_register_text_to_motion():
     try:
         from server import PromptServer
-        from .api.text_to_motion.service import register_routes
+        from .nodes.posestudio.ttm.service import register_routes
     except Exception:
         return
-    # Motion models (ARDY, Kimodo) are optional and imported lazily on the first generation.
+    # Motion model (ARDY) are optional and imported lazily on the first generation.
     register_routes(PromptServer.instance.routes)
 
 _vnccs_register_text_to_motion()

@@ -1,5 +1,5 @@
 """Pose Studio text-to-motion backend: model registry, pose conversion, request
-validation and the ARDY and Kimodo runners.
+validation and the ARDY runner.
 
 Runs without torch or model packages; they are replaced by small stubs where needed.
 """
@@ -8,10 +8,12 @@ import asyncio
 import threading
 import time
 import contextlib
+import dataclasses
 import importlib.util
 import json
 import math
 import sys
+import struct
 import tempfile
 import types
 import unittest
@@ -26,13 +28,13 @@ PACKAGE = "vnccs_text_to_motion_test_api"
 
 
 def _load_package():
-    folder = ROOT / "api" / "text_to_motion"
+    folder = ROOT / "nodes" / "posestudio" / "ttm"
     package = types.ModuleType(PACKAGE)
     package.__path__ = [str(folder)]
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "worker_protocol", "worker_runtime"):
+    for name in ("transform", "soma", "base", "manager_policy", "registry", "service", "ardy_backend", "worker_protocol", "worker_runtime"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -47,11 +49,20 @@ SOMA = _MODULES["soma"]
 BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
-KIMODO_BACKEND = _MODULES["kimodo_backend"]
 ARDY = _MODULES["ardy_backend"]
 PROTOCOL = _MODULES["worker_protocol"]
 RUNTIME = _MODULES["worker_runtime"]
 MANAGER_POLICY = _MODULES["manager_policy"]
+
+
+def compact_fixture():
+    spec = REGISTRY.load_specs()["ardy-core-rp-20fps-h40"]
+    header = json.dumps({"weight": {"dtype": "BF16", "shape": [1], "data_offsets": [0, 2]}}).encode()
+    header += b" " * (-len(header) % 8)
+    tensor = struct.pack("<Q", len(header)) + header + b"\x00\x00"
+    payloads = {name: tensor if name.endswith(".safetensors") else b"downloaded" for name in spec.weights[0].files}
+    source = dataclasses.replace(spec.weights[0], file_sizes={name: len(data) for name, data in payloads.items()})
+    return dataclasses.replace(spec, weights=(source,)), payloads
 
 # Kimodo SOMA 77-joint skeleton (name, parent, rest position in meters), copied from
 # kimodo/assets/skeletons/somaskel77 of https://github.com/nv-tlabs/kimodo (Apache-2.0).
@@ -223,7 +234,7 @@ class SomaPoseConversionTests(unittest.TestCase):
             np.testing.assert_allclose(rotation @ rotation.T, np.eye(3), atol=1e-9)
             self.assertAlmostEqual(float(np.linalg.det(rotation)), 1.0, places=9)
 
-    def test_start_pose_is_canonical_for_kimodo(self):
+    def test_start_pose_is_canonical_for_ardy_solver(self):
         keypoints, _, _, _ = world_keypoints(heading_degrees=-135.0)
         positions, _, _ = SOMA.solve_start_pose(skeleton(), keypoints)
         hips = [SOMA_NAMES.index("RightLeg"), SOMA_NAMES.index("LeftLeg")]
@@ -282,7 +293,7 @@ class SomaPoseConversionTests(unittest.TestCase):
         np.testing.assert_allclose(motion["joints"]["Hips"][0], keypoints["pelvis"], atol=1e-5)
         np.testing.assert_allclose(motion["joints"]["LeftHand"][0], keypoints["hand_l"], atol=1e-5)
         self.assertAlmostEqual(aligned.scale, transform.scale, places=6)
-        # Half a meter forward in Kimodo space is 0.85 scene units along the mannequin's facing.
+        # Half a meter forward in canonical space is 0.85 scene units along the mannequin's facing.
         step = np.asarray(motion["joints"]["Hips"][1]) - np.asarray(motion["joints"]["Hips"][0])
         np.testing.assert_allclose(step, TRANSFORM.yaw_matrix(aligned.heading) @ [0.0, 0.0, 0.85], atol=1e-5)
         head = motion["rotations"]["head"][0]
@@ -320,10 +331,21 @@ class SourceMotionTests(unittest.TestCase):
 
 
 class ModelRegistryTests(unittest.TestCase):
+    def setUp(self):
+        if BASE.module_missing("safetensors"):
+            safetensors = types.ModuleType("safetensors")
+            safetensors.SafetensorError = type("SafetensorError", (Exception,), {})
+            handle = mock.MagicMock()
+            handle.__enter__.return_value.keys.return_value = ["weight"]
+            safetensors.safe_open = mock.Mock(return_value=handle)
+            patcher = mock.patch.dict(sys.modules, {"safetensors": safetensors})
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_bundled_model_files_load(self):
         specs = REGISTRY.load_specs()
-        self.assertEqual(list(specs), ["ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1"])
-        self.assertEqual(set(REGISTRY.BACKENDS), {"ardy", "kimodo"})
+        self.assertEqual(list(specs), ["ardy-core-rp-20fps-h40"])
+        self.assertEqual(set(REGISTRY.BACKENDS), {"ardy"})
         for spec in specs.values():
             self.assertIn(spec.backend, REGISTRY.BACKENDS)
             self.assertTrue(spec.code.get("url", "").startswith("https://"))
@@ -336,8 +358,163 @@ class ModelRegistryTests(unittest.TestCase):
             json.dumps(public)
             self.assertTrue(0 < public["capabilities"]["duration"]["max"] <= 10.0)
 
+    def test_default_ardy_requires_compact_files(self):
+        specs = REGISTRY.load_specs()
+        self.assertEqual(next(iter(specs)), "ardy-core-rp-20fps-h40")
+        spec = specs["ardy-core-rp-20fps-h40"]
+        self.assertEqual(set(spec.weights[0].file_sizes), set(spec.weights[0].files))
+        self.assertEqual(spec.weights[0].file_sizes["motion.bf16.safetensors"], 382564544)
+        self.assertEqual(spec.weights[0].file_sizes["text_encoder/model.safetensors"], 3758959600)
+        self.assertIn("BF16 motion weights", spec.requirements["notes"])
+        self.assertEqual(spec.options["motion_precision"], "bf16")
+        self.assertGreater(spec.requirements["vram_gib"], 0)
+        self.assertGreater(spec.requirements["ram_gib"], 0)
+        self.assertEqual(SERVICE.resolve_model_id("ardy-core-rp-20fps-h40-convrot-int4"), spec.id)
+        spec, payloads = compact_fixture()
+        with tempfile.TemporaryDirectory() as folder:
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+            self.assertFalse(backend.check_part("compact"))
+            root = Path(folder) / spec.options["compact_dir"]
+            root.mkdir(parents=True)
+            files = ("config.yaml", "motion.bf16.safetensors", "text_encoder/config.json",
+                     "text_encoder/model.safetensors", "text_encoder/tokenizer.json",
+                     "stats/motion/mean.npy", "stats/motion/std.npy", "stats/pre_quantization/mean.npy",
+                     "stats/pre_quantization/std.npy", "stats/post_quantization/mean.npy", "stats/post_quantization/std.npy")
+            for name in files:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payloads[name])
+            self.assertTrue(backend.check_part("compact"), "runtime files do not require conversion artifacts")
+            motion_path = root / "motion.bf16.safetensors"
+            for damaged in (b"", b"x", payloads["motion.bf16.safetensors"][:-1]):
+                motion_path.write_bytes(damaged)
+                self.assertFalse(backend.check_part("compact"), "empty and truncated weights must not be ready")
+            (root / "motion.bf16.safetensors").unlink()
+            (root / "motion.safetensors").touch()
+            self.assertFalse(backend.check_part("compact"), "ordinary motion weights cannot replace BF16")
+
+    def test_ardy_inference_uses_only_the_comfy_compact_path(self):
+        spec = REGISTRY.load_specs()["ardy-core-rp-20fps-h40"]
+        self.assertEqual(spec.options["compact_dir"], "ARDY-Core-RP-20FPS-Horizon40-int4")
+        self.assertNotIn("project_compact_dir", spec.options)
+        self.assertEqual(spec.setup[0]["kind"], "download")
+        with tempfile.TemporaryDirectory() as folder:
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+            vendor = types.ModuleType(f"{PACKAGE}.vendor")
+            vendor.loaders = types.SimpleNamespace(text_encoder=mock.Mock(return_value="encoder"),
+                                                 motion_model=mock.Mock(return_value="model"))
+            with mock.patch.dict(sys.modules, {f"{PACKAGE}.vendor": vendor}):
+                self.assertEqual(backend.load_vendored("ardy", lambda *args: None, "cuda"), "model")
+            expected = Path(folder) / "ARDY-Core-RP-20FPS-Horizon40-int4"
+            for loader in (vendor.loaders.text_encoder, vendor.loaders.motion_model):
+                self.assertEqual(loader.call_args.kwargs["compact_dir"], expected)
+            self.assertEqual(vendor.loaders.motion_model.call_args.kwargs["motion_precision"], "bf16")
+            self.assertNotIn("motion_precision", vendor.loaders.text_encoder.call_args.kwargs)
+            original_config = json.loads((REGISTRY.MODELS_CONFIG_DIR / f"{spec.id}.json").read_text())
+            original_config["options"].pop("compact_dir")
+            original = BASE.MotionModelSpec.from_dict(original_config)
+            with self.assertRaisesRegex(BASE.BackendUnavailable, "requires the compact"):
+                ARDY.ArdyBackend(original, Path(folder)).check_available()
+
+    def test_ardy_downloads_the_pinned_bundle_and_retries_missing_files(self):
+        spec, payloads = compact_fixture()
+        self.assertEqual(len(spec.weights), 1)
+        source = spec.weights[0]
+        self.assertEqual(source.repo_id, "MIUProject/ARDY-Core-RP-20FPS-Horizon40-int4")
+        self.assertEqual(source.revision, "68dffcc920b468027c0a9a64036a0cc457c7d4b8")
+        self.assertEqual(source.local_dir, spec.options["compact_dir"])
+        self.assertEqual(len(source.files), 24)
+        self.assertTrue(source.managed)
+        calls = []
+        interrupted = [False]
+
+        def download(**kwargs):
+            calls.append(kwargs)
+            if kwargs["filename"] == "motion.bf16.safetensors" and not interrupted[0]:
+                interrupted[0] = True
+                raise RuntimeError("connection interrupted")
+            path = Path(kwargs["local_dir"]) / kwargs["filename"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(payloads[kwargs["filename"]])
+
+        hub = types.ModuleType("huggingface_hub")
+        hub.hf_hub_download = download
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(sys.modules, {"huggingface_hub": hub}):
+            root = Path(folder)
+            backend = ARDY.ArdyBackend(spec, root)
+            self.assertFalse(backend.setup_status()[0]["done"])
+            with self.assertRaisesRegex(RuntimeError, "connection interrupted"):
+                backend.run_download(spec.setup[0], lambda *_: None)
+            self.assertFalse(backend.setup_status()[0]["done"])
+            completed = {name for name in source.files if (root / source.local_dir / name).is_file()}
+            calls.clear()
+            with mock.patch.object(SERVICE, "specs", return_value={spec.id: spec}), \
+                 mock.patch.object(REGISTRY, "default_models_dir", return_value=root), \
+                 mock.patch.object(SERVICE, "unload_model") as unload:
+                SERVICE.run_setup_download(spec, "compact", "ardy-download")
+            unload.assert_called_once()
+            self.assertEqual({call["filename"] for call in calls}, set(source.files) - completed)
+            self.assertTrue(backend.setup_status()[0]["done"])
+            self.assertTrue(all(call["repo_id"] == source.repo_id and call["revision"] == source.revision
+                                and call["token"] is False and call["local_dir"] == str(root / source.local_dir)
+                                for call in calls))
+            calls.clear()
+            backend.run_download(spec.setup[0], lambda *_: None)
+            self.assertEqual(calls, [], "the existing bundle must not be downloaded again")
+            for damaged in (b"", b"x", payloads["motion.bf16.safetensors"][:-1]):
+                (root / source.local_dir / "motion.bf16.safetensors").write_bytes(damaged)
+                self.assertFalse(backend.setup_status()[0]["done"])
+                backend.run_download(spec.setup[0], lambda *_: None)
+                self.assertEqual([call["filename"] for call in calls], ["motion.bf16.safetensors"])
+                self.assertTrue(calls[0]["force_download"], "invalid files must bypass the HF local cache")
+                self.assertTrue(backend.setup_status()[0]["done"])
+                calls.clear()
+
+    def test_downloaded_wrong_size_is_not_reported_as_ready(self):
+        spec, _ = compact_fixture()
+        with tempfile.TemporaryDirectory() as folder:
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+
+            def broken_download(source, name, target, optional, **kwargs):
+                path = target / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"x")
+                return True
+
+            with mock.patch.object(backend, "_download_file", side_effect=broken_download):
+                with self.assertRaisesRegex(BASE.BackendUnavailable, "incomplete or invalid"):
+                    backend.run_download(spec.setup[0], lambda *_: None)
+            self.assertFalse(backend.setup_status()[0]["done"])
+
+    def test_invalid_safetensors_header_is_not_ready_even_at_the_expected_size(self):
+        spec, payloads = compact_fixture()
+        safetensors = types.ModuleType("safetensors")
+        safetensors.SafetensorError = type("SafetensorError", (Exception,), {})
+        safetensors.safe_open = mock.Mock(side_effect=safetensors.SafetensorError("invalid header"))
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(sys.modules, {"safetensors": safetensors}):
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+            target = backend.weights_dir(spec.weights[0])
+            target.mkdir(parents=True)
+            path = target / "motion.bf16.safetensors"
+            path.write_bytes(b"x" * len(payloads[path.name]))
+            self.assertFalse(backend.weight_file_ready(spec.weights[0], path.name, target))
+            safetensors.safe_open.assert_called_once_with(str(path), framework="np")
+
+    def test_missing_header_validator_cannot_mark_the_bundle_ready(self):
+        spec, payloads = compact_fixture()
+        with tempfile.TemporaryDirectory() as folder, mock.patch.dict(sys.modules, {"safetensors": None}):
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+            target = backend.weights_dir(spec.weights[0])
+            for name, content in payloads.items():
+                path = target / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            self.assertFalse(backend.setup_status()[0]["done"])
+            with self.assertRaisesRegex(BASE.BackendUnavailable, "required to validate"):
+                backend.run_download(spec.setup[0], lambda *_: None)
+
     def test_broken_or_unsafe_files_are_skipped(self):
-        good = json.loads((REGISTRY.MODELS_CONFIG_DIR / "kimodo-soma-rp-v1.1.json").read_text(encoding="utf-8"))
+        good = json.loads((REGISTRY.MODELS_CONFIG_DIR / "ardy-core-rp-20fps-h40.json").read_text(encoding="utf-8"))
         with tempfile.TemporaryDirectory() as folder:
             folder = Path(folder)
             (folder / "a.json").write_text(json.dumps(good), encoding="utf-8")
@@ -348,15 +525,15 @@ class ModelRegistryTests(unittest.TestCase):
             (folder / "e.json").write_text(json.dumps(good), encoding="utf-8")
             with mock.patch("builtins.print"):
                 specs = REGISTRY.load_specs(folder)
-        self.assertEqual(list(specs), ["kimodo-soma-rp-v1.1"])
+        self.assertEqual(list(specs), ["ardy-core-rp-20fps-h40"])
 
     def test_spec_validation(self):
         for data, message in (
-            ({"id": "Bad Id", "backend": "kimodo"}, "invalid model id"),
+            ({"id": "Bad Id", "backend": "ardy"}, "invalid model id"),
             ({"id": "x", "backend": ""}, "backend"),
-            ({"id": "x", "backend": "kimodo", "weights": [{"repo_id": "no-slash"}]}, "repo id"),
-            ({"id": "x", "backend": "kimodo", "capabilities": {"steps": {"min": 5, "max": 4, "default": 9}}}, "default"),
-            ({"id": "x", "backend": "kimodo", "license": {"restricted_territories": "EU"}}, "territories"),
+            ({"id": "x", "backend": "ardy", "weights": [{"repo_id": "no-slash"}]}, "repo id"),
+            ({"id": "x", "backend": "ardy", "capabilities": {"steps": {"min": 5, "max": 4, "default": 9}}}, "default"),
+            ({"id": "x", "backend": "ardy", "license": {"restricted_territories": "EU"}}, "territories"),
         ):
             with self.assertRaisesRegex(ValueError, message):
                 BASE.MotionModelSpec.from_dict(data)
@@ -364,7 +541,7 @@ class ModelRegistryTests(unittest.TestCase):
 
 class SetupStepTests(unittest.TestCase):
     def spec(self, setup, **extra):
-        return BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "setup": setup, **extra})
+        return BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "ardy", "setup": setup, **extra})
 
     def test_bundled_models_have_a_guide_and_setup(self):
         for spec in REGISTRY.load_specs().values():
@@ -376,8 +553,8 @@ class SetupStepTests(unittest.TestCase):
             self.assertTrue(all(step["kind"] in BASE.SETUP_KINDS for step in spec.setup), spec.id)
 
     def test_pip_steps_need_safe_packages_and_modules(self):
-        spec = self.spec([{"id": "pkgs", "kind": "pip", "packages": ["einops>=0.7", "git+https://github.com/nv-tlabs/kimodo"], "modules": ["einops"]}])
-        self.assertEqual(spec.setup[0]["packages"][1], "git+https://github.com/nv-tlabs/kimodo")
+        spec = self.spec([{"id": "pkgs", "kind": "pip", "packages": ["einops>=0.7", "git+https://github.com/example/motion-model"], "modules": ["einops"]}])
+        self.assertEqual(spec.setup[0]["packages"][1], "git+https://github.com/example/motion-model")
         for bad in (["einops; rm -rf /"], ["--index-url=https://evil.invalid"], ["git+https://evil.invalid/x/y"], [], "einops"):
             with self.assertRaises(ValueError, msg=bad):
                 self.spec([{"id": "pkgs", "kind": "pip", "packages": bad, "modules": ["einops"]}])
@@ -395,23 +572,23 @@ class SetupStepTests(unittest.TestCase):
     def test_setup_status_checks_modules_and_backend_parts(self):
         spec = self.spec([{"id": "code", "kind": "manual", "check": "code"}])
         with tempfile.TemporaryDirectory() as folder:
-            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
+            backend = ARDY.ArdyBackend(spec, Path(folder))
             marker = Path(folder) / "ready"
             with mock.patch.object(backend, "check_part", side_effect=lambda name: marker.is_file()):
                 self.assertFalse(backend.setup_status()[0]["done"])
                 marker.write_text("ready")
                 self.assertTrue(backend.setup_status()[0]["done"])
-        pip = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "setup": [
+        pip = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "ardy", "setup": [
             {"id": "pkgs", "kind": "pip", "packages": ["tyro"], "modules": ["tyro"]}]})
         with mock.patch.object(BASE, "module_missing", side_effect=lambda name: name == "tyro"):
-            self.assertFalse(KIMODO_BACKEND.KimodoBackend(pip, Path(".")).setup_status()[0]["done"])
+            self.assertFalse(ARDY.ArdyBackend(pip, Path(".")).setup_status()[0]["done"])
 
     def test_managed_weights_step_reports_downloaded_files(self):
-        spec = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "weights": [
+        spec = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "ardy", "weights": [
             {"repo_id": "org/repo", "local_dir": "demo", "files": ["config.json"],
              "index_file": "model.safetensors.index.json"}]})
         with tempfile.TemporaryDirectory() as folder:
-            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
+            backend = ARDY.ArdyBackend(spec, Path(folder))
             self.assertFalse(backend.check_part("weights"))
             for source in spec.weights:
                 for name in list(source.files) + ([source.index_file] if source.index_file else []):
@@ -426,8 +603,8 @@ class SetupStepTests(unittest.TestCase):
     def test_list_models_includes_setup_status(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
             models = {model["id"]: model for model in SERVICE.list_models()}
-        self.assertIn("setup", models["kimodo-soma-rp-v1.1"])
-        self.assertTrue(all("done" in step for step in models["kimodo-soma-rp-v1.1"]["setup"]))
+        self.assertIn("setup", models["ardy-core-rp-20fps-h40"])
+        self.assertTrue(all("done" in step for step in models["ardy-core-rp-20fps-h40"]["setup"]))
 
 
 class SetupRouteGuardTests(unittest.TestCase):
@@ -440,8 +617,16 @@ class SetupRouteGuardTests(unittest.TestCase):
         self.assertFalse(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Sec-Fetch-Site": "cross-site"})))
         self.assertFalse(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Host": "localhost:8188", "Origin": "https://evil.invalid"})))
 
+    def test_runtime_routes_exclude_removed_benchmark_endpoint(self):
+        routes = mock.Mock()
+        SERVICE.register_routes(routes)
+        registered = [call.args[0] for call in routes.post.call_args_list]
+        self.assertNotIn(f"{SERVICE.ROUTE_PREFIX}/benchmark", registered)
+        self.assertIn(f"{SERVICE.ROUTE_PREFIX}/generate", registered)
+        self.assertIn(f"{SERVICE.ROUTE_PREFIX}/setup/download", registered)
+
     def test_only_listed_download_steps_run(self):
-        spec = REGISTRY.load_specs()["kimodo-soma-rp-v1.1"]
+        spec = REGISTRY.load_specs()["ardy-core-rp-20fps-h40"]
         with self.assertRaises(ValueError):
             SERVICE.run_setup_download(spec, "code", "t1")
         with self.assertRaises(ValueError):
@@ -493,7 +678,7 @@ class CharacterCountTests(unittest.TestCase):
 
     def test_invalid_max_characters_is_rejected(self):
         with self.assertRaisesRegex(ValueError, "max_characters"):
-            BASE.MotionModelSpec.from_dict({"id": "x", "backend": "kimodo", "capabilities": {"max_characters": 0}})
+            BASE.MotionModelSpec.from_dict({"id": "x", "backend": "ardy", "capabilities": {"max_characters": 0}})
 
 
 class RequestTests(unittest.TestCase):
@@ -518,14 +703,14 @@ class RequestTests(unittest.TestCase):
 
     def test_valid_request_is_clamped_to_the_model(self):
         spec, request, task_id = SERVICE.parse_generation_request(
-            self.payload(model="kimodo-soma-rp-v1.1", duration=99, seed=7, steps=3, task_id="a b/c"),
+            self.payload(model="ardy-core-rp-20fps-h40", duration=99, seed=7, guidance=999, task_id="a b/c"),
         )
-        self.assertEqual(spec.id, "kimodo-soma-rp-v1.1")
+        self.assertEqual(spec.id, "ardy-core-rp-20fps-h40")
         self.assertEqual(request.prompt, "a person jumps")
-        self.assertEqual(request.duration, 10.0)
+        self.assertEqual(request.duration, spec.capabilities["duration"]["max"])
         self.assertEqual(request.seed, 7)
-        self.assertEqual(request.steps, 10)
-        self.assertIsNone(request.guidance)
+        self.assertIsNone(request.steps)
+        self.assertEqual(request.guidance, spec.capabilities["guidance"]["max"])
         self.assertEqual(task_id, "abc")
 
         spec, request, _ = SERVICE.parse_generation_request(self.payload(model="ardy-core-rp-20fps-h40", guidance=50))
@@ -559,21 +744,6 @@ class FakeSkeleton:
         self.device = "cpu"
 
 
-class FakeModel:
-    fps = 30.0
-
-    def __init__(self):
-        self.skeleton = FakeSkeleton()
-        self.calls = []
-
-    def __call__(self, prompt, num_frames, **kwargs):
-        self.calls.append((prompt, num_frames, kwargs))
-        for _ in kwargs["progress_bar"](range(3)):
-            pass
-        start = kwargs["constraint_lst"][0].positions[0] if kwargs["constraint_lst"] else posed_soma({})[0]
-        frames = np.stack([start + [0.0, 0.0, 0.01 * frame] for frame in range(num_frames)])
-        rotations = np.tile(np.eye(3), (num_frames, len(SOMA_NAMES), 1, 1))
-        return {"posed_joints": frames, "global_rot_mats": rotations}
 
 
 class FakeConstraint:
@@ -595,8 +765,6 @@ def _stub_torch():
     return torch
 
 
-def _stub_kimodo():
-    return types.SimpleNamespace(FullBodyConstraintSet=FakeConstraint, seed_everything=lambda seed: None)
 
 
 class RunnerTestCase(unittest.TestCase):
@@ -630,6 +798,13 @@ class RunnerTestCase(unittest.TestCase):
     def vendored(self, backend_module, backend_class, model, namespace):
         """Replace the vendored model code: load_vendored returns ``model``, _vendor ``namespace``."""
         self.install({"torch": _stub_torch()})
+        if backend_module is ARDY:
+            layout = types.ModuleType("comfy_kitchen.tensor")
+            layout.TensorCoreConvRotW4A4Layout = object
+            self.install({"comfy_kitchen.tensor": layout})
+            patcher = mock.patch.object(backend_class, "check_part", return_value=True)
+            patcher.start()
+            self.addCleanup(patcher.stop)
         for patcher in (
             mock.patch.object(backend_module, "_vendor", lambda: namespace),
             mock.patch.object(BASE.MotionBackend, "load_vendored", lambda self, family, report, device: model),
@@ -644,48 +819,21 @@ class RunnerTestCase(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
 
-class KimodoRunnerTests(RunnerTestCase):
-    def test_generation_constrains_frame_zero_and_returns_pose_studio_motion(self):
-        model = FakeModel()
-        self.vendored(KIMODO_BACKEND, KIMODO_BACKEND.KimodoBackend, model, _stub_kimodo())
-        spec, request, task_id = self.request(model="kimodo-soma-rp-v1.1", duration=2, seed=11, task_id="job1")
-
-        motion = SERVICE.generate_motion(spec, request, task_id)
-
-        prompt, num_frames, kwargs = model.calls[0]
-        self.assertEqual((prompt, num_frames), ("a person jumps", 60))
-        self.assertEqual(kwargs["num_denoising_steps"], 100)
-        self.assertEqual(len(kwargs["constraint_lst"]), 1)
-        self.assertEqual(kwargs["constraint_lst"][0].positions.shape, (1, 77, 3))
-        self.assertEqual(motion["frame_count"], 60)
-        self.assertEqual(motion["fps"], 30.0)
-        self.assertEqual(motion["seed"], 11)
-        self.assertEqual(motion["model"], "kimodo-soma-rp-v1.1")
-        self.assertTrue(motion["start_pose_constraint"])
-        np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
-        self.assertEqual(len(motion["rotations"]["hand_l"]), 60)
-        self.assertEqual(SERVICE.get_task("job1")["progress"], 97)
-
-        spec, request, _ = self.request(model="kimodo-soma-rp-v1.1", use_start_pose=False)
-        motion = SERVICE.generate_motion(spec, request)
-        self.assertEqual(model.calls[1][2]["constraint_lst"], [])
-        self.assertFalse(motion["start_pose_constraint"])
-        np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
-        self.assertTrue(SERVICE.unload_model())
+class ArdyAvailabilityTests(RunnerTestCase):
 
     def test_vendored_models_need_no_extra_packages(self):
-        # Every module the vendored ARDY / Kimodo code imports ships with ComfyUI.
-        self.assertEqual(set(KIMODO_BACKEND.VENDORED_REQUIRES),
-                         {"torch", "transformers", "safetensors", "einops", "scipy", "yaml", "pydantic", "huggingface_hub"})
-        for model_id in ("kimodo-soma-rp-v1.1", "ardy-core-rp-20fps-h40"):
+        # Every module the vendored ARDY code imports ships with ComfyUI.
+        self.assertEqual(set(ARDY.VENDORED_REQUIRES),
+                         {"torch", "transformers", "safetensors", "einops", "yaml", "pydantic", "huggingface_hub", "numpy", "tqdm"})
+        for model_id in ("ardy-core-rp-20fps-h40",):
             spec = REGISTRY.load_specs()[model_id]
-            self.assertEqual([step["kind"] for step in spec.setup], ["auto"], model_id)
-            self.assertTrue(spec.options["repo_id"].startswith("nvidia/"))
+            self.assertEqual([step["kind"] for step in spec.setup], ["download"] if spec.backend == "ardy" else ["auto"], model_id)
+            self.assertEqual(spec.options["repo_id"], "MIUProject/ARDY-Core-RP-20FPS-Horizon40-int4")
             self.assertEqual(set(spec.options["text_encoder"]), {"base", "mntp", "supervised"})
 
     def test_missing_dependency_reports_it(self):
         self.missing_transformers()
-        spec, request, _ = self.request(model="kimodo-soma-rp-v1.1")
+        spec, request, _ = self.request(model="ardy-core-rp-20fps-h40")
         with self.assertRaises(BASE.BackendUnavailable) as caught:
             SERVICE.generate_motion(spec, request)
         self.assertIn("transformers", str(caught.exception))
@@ -693,8 +841,8 @@ class KimodoRunnerTests(RunnerTestCase):
     def test_models_route_lists_availability(self):
         self.missing_transformers()
         models = {model["id"]: model for model in SERVICE.list_models()}
-        self.assertFalse(models["kimodo-soma-rp-v1.1"]["available"])
-        self.assertIn("built into VNCCS Utils", models["kimodo-soma-rp-v1.1"]["install_hint"])
+        self.assertFalse(models["ardy-core-rp-20fps-h40"]["available"])
+        self.assertIn("models/text_to_motion/", models["ardy-core-rp-20fps-h40"]["install_hint"])
         self.assertFalse(models["ardy-core-rp-20fps-h40"]["available"])
 
     def test_generate_route_reports_a_missing_model_as_503(self):
@@ -716,7 +864,7 @@ class KimodoRunnerTests(RunnerTestCase):
         response = asyncio.run(SERVICE.handle_generate(Request()))
         self.assertEqual(response.status, 503)
         self.assertTrue(response.data["model_missing"])
-        self.assertIn("built into VNCCS Utils", response.data["install_hint"])
+        self.assertIn("models/text_to_motion/ARDY-Core-RP-20FPS-Horizon40-int4/", response.data["install_hint"])
         self.assertEqual(SERVICE.get_task("job2")["status"], "error")
 
 
@@ -832,10 +980,49 @@ class ArdyTests(RunnerTestCase):
         self.assertTrue(motion["start_pose_constraint"])
         np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-5)
         self.assertIn("LeftHand", motion["joints"])
+        self.assertEqual(set(motion["rotations"]), set(ARDY.MOTION_ROTATIONS))
 
         spec, request, _ = self.request(use_start_pose=False)
         SERVICE.generate_motion(spec, request)
         self.assertIsNone(model.calls[1][2]["observed_motion"])
+
+    def test_bf16_generation_uses_autocast_but_decodes_in_float32(self):
+        events = []
+        active = [False]
+
+        class Motion(dict):
+            def float(self):
+                events.append(("float", active[0]))
+                return self
+
+        class Model(FakeArdyModel):
+            def parameters(self):
+                return iter([types.SimpleNamespace(device="cuda:0")])
+
+            def __call__(self, texts, frames, **kwargs):
+                events.append(("generate", active[0]))
+                return Motion(super().__call__(texts, frames, **kwargs))
+
+        @contextlib.contextmanager
+        def autocast(device, dtype):
+            self.assertEqual((device, dtype), ("cuda", "bfloat16"))
+            active[0] = True
+            try:
+                yield
+            finally:
+                active[0] = False
+
+        model = Model()
+        self.vendored(ARDY, ARDY.ArdyBackend, model, _stub_ardy())
+        torch = sys.modules["torch"]
+        torch.bfloat16 = "bfloat16"
+        torch.autocast = autocast
+        spec, request, _ = self.request(use_start_pose=False)
+        backend = ARDY.ArdyBackend(spec, Path("unused"))
+        backend.model = model
+        backend.joint_names = list(CORE_NAMES)
+        backend.generate(request, lambda *args: None)
+        self.assertEqual(events, [("generate", True), ("float", False)])
 
     def test_core_motion_rejects_other_skeletons(self):
         with self.assertRaises(ValueError):
@@ -870,6 +1057,43 @@ class FakeWorkerBackend:
 
 
 class IsolatedWorkerTests(RunnerTestCase):
+    def test_idle_worker_advertises_weights_downloaded_after_startup(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            installed = root / "weights.ready"
+            checks = []
+            clock = [0.0]
+
+            class DownloadableBackend(FakeWorkerBackend):
+                def check_available(self):
+                    checks.append(clock[0])
+                    if not installed.is_file():
+                        raise BASE.BackendUnavailable("compact files missing")
+
+            with mock.patch.object(RUNTIME.time, "monotonic", side_effect=lambda: clock[0]):
+                worker = RUNTIME.MotionWorker(root, "download", make_backend=lambda spec: DownloadableBackend(spec, root))
+                worker.probe()
+                worker.heartbeat()
+                model_id = "ardy-core-rp-20fps-h40"
+                self.assertIsNone(PROTOCOL.worker_for(root, model_id))
+                self.assertIn(model_id, worker.unavailable)
+
+                installed.touch()
+                clock[0] = RUNTIME.HEARTBEAT_SECONDS / 2
+                worker.step()
+                self.assertEqual(checks, [0.0], "queue polling must not repeat availability checks")
+                self.assertIsNone(PROTOCOL.worker_for(root, model_id))
+
+                clock[0] = RUNTIME.HEARTBEAT_SECONDS
+                worker.step()
+                self.assertIsNotNone(PROTOCOL.worker_for(root, model_id))
+                self.assertEqual(worker.unavailable, {})
+                self.assertIsNone(worker.loaded, "checking availability must not load the model")
+
+                clock[0] += RUNTIME.HEARTBEAT_SECONDS
+                worker.step()
+                self.assertEqual(checks, [0.0, RUNTIME.HEARTBEAT_SECONDS])
+
     def test_queue_scan_skips_withdrawn_files(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
@@ -914,7 +1138,7 @@ class IsolatedWorkerTests(RunnerTestCase):
 
             with mock.patch.object(PROTOCOL, "time", types.SimpleNamespace(time=lambda: clock[0], sleep=time.sleep)):
                 with self.assertRaisesRegex(PROTOCOL.WorkerError, "did not answer in time"):
-                    PROTOCOL.run_job(root, "test", "kimodo-soma-rp-v1.1", request, lambda *a: None,
+                    PROTOCOL.run_job(root, "test", "ardy-core-rp-20fps-h40", request, lambda *a: None,
                                      timeout=1, sleep=wait_for_claim)
             self.assertEqual(list((root / "jobs").rglob("*.json")), [])
             release.set()
@@ -928,16 +1152,16 @@ class IsolatedWorkerTests(RunnerTestCase):
 
     def start_worker(self, root, **kwargs):
         specs = REGISTRY.load_specs()
-        unavailable = json.loads((REGISTRY.MODELS_CONFIG_DIR / "kimodo-soma-rp-v1.1.json").read_text())
+        unavailable = json.loads((REGISTRY.MODELS_CONFIG_DIR / "ardy-core-rp-20fps-h40.json").read_text())
         unavailable["setup"] = [{"id": "worker", "kind": "manual", "check": "worker", "label": "Worker"}]
-        specs["kimodo-soma-rp-v1.1"] = BASE.MotionModelSpec.from_dict(unavailable)
+        specs["ardy-core-rp-20fps-h40"] = BASE.MotionModelSpec.from_dict(unavailable)
         specs["unavailable-motion"] = BASE.MotionModelSpec.from_dict({**unavailable, "id": "unavailable-motion"})
-        worker = RUNTIME.MotionWorker(root, "test", ["kimodo-soma-rp-v1.1", "unavailable-motion"], specs=specs,
+        worker = RUNTIME.MotionWorker(root, "test", ["ardy-core-rp-20fps-h40", "unavailable-motion"], specs=specs,
                                       make_backend=lambda spec: FakeWorkerBackend(spec, root), **kwargs)
         thread = threading.Thread(target=worker.run, kwargs={"poll": 0.01}, daemon=True)
         thread.start()
         for _ in range(200):
-            if PROTOCOL.worker_for(root, "kimodo-soma-rp-v1.1"):
+            if PROTOCOL.worker_for(root, "ardy-core-rp-20fps-h40"):
                 break
             time.sleep(0.01)
         self.addCleanup(lambda: (worker.stop(), thread.join(5)))
@@ -970,9 +1194,9 @@ class IsolatedWorkerTests(RunnerTestCase):
             worker = self.start_worker(root)
             with mock.patch.object(SERVICE, "specs", return_value=worker.specs):
                 models = {m["id"]: m for m in SERVICE.list_models()}
-            self.assertTrue(models["kimodo-soma-rp-v1.1"]["available"])
-            self.assertEqual(models["kimodo-soma-rp-v1.1"]["runner"], "worker")
-            worker_step = next(s for s in models["kimodo-soma-rp-v1.1"]["setup"] if s["id"] == "worker")
+            self.assertTrue(models["ardy-core-rp-20fps-h40"]["available"])
+            self.assertEqual(models["ardy-core-rp-20fps-h40"]["runner"], "worker")
+            worker_step = next(s for s in models["ardy-core-rp-20fps-h40"]["setup"] if s["id"] == "worker")
             self.assertTrue(worker_step["done"])
             # The worker runs but cannot serve this model: the card says why.
             unavailable = models["unavailable-motion"]
@@ -982,7 +1206,7 @@ class IsolatedWorkerTests(RunnerTestCase):
             lock = SERVICE._model_operation_lock()
             self.assertTrue(lock.acquire(blocking=False))  # ComfyUI-side work holds the lock...
             try:
-                spec, request, task_id = self.request(model="kimodo-soma-rp-v1.1", duration=1, task_id="w1")
+                spec, request, task_id = self.request(model="ardy-core-rp-20fps-h40", duration=1, task_id="w1")
                 motion = SERVICE.generate_motion(spec, request, task_id)  # ...and the worker job still runs
             finally:
                 lock.release()
@@ -1005,26 +1229,16 @@ class IsolatedWorkerTests(RunnerTestCase):
     def test_idle_worker_frees_its_model(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            worker = RUNTIME.MotionWorker(root, "idle", ["kimodo-soma-rp-v1.1"], idle_unload=0.01,
+            worker = RUNTIME.MotionWorker(root, "idle", ["ardy-core-rp-20fps-h40"], idle_unload=0.01,
                                           make_backend=lambda spec: FakeWorkerBackend(spec, root))
             worker.probe()
-            worker._backend(worker.ready["kimodo-soma-rp-v1.1"], lambda *a: None)
+            worker._backend(worker.ready["ardy-core-rp-20fps-h40"], lambda *a: None)
             self.assertIsNotNone(worker.loaded)
             worker.last_job = time.time() - 1
             worker.step()
             self.assertIsNone(worker.loaded)
 
 
-class BuiltInTextEncoderTests(unittest.TestCase):
-    def test_nvidia_models_download_the_text_encoder_without_gated_repositories(self):
-        for model_id in ("ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1"):
-            spec = REGISTRY.load_specs()[model_id]
-            sources = spec.options["text_encoder"]
-            self.assertEqual(set(sources), {"base", "mntp", "supervised"})
-            self.assertEqual(sources["base"]["repo_id"], "NousResearch/Meta-Llama-3-8B-Instruct")
-            self.assertTrue(all(len(source["revision"]) == 40 for source in sources.values()))
-            self.assertFalse(any(source.gated for source in spec.weights))
-            self.assertFalse(any(source.managed for source in spec.weights), "the vendored loader downloads them")
 
 
 class WeightDownloadTests(RunnerTestCase):
@@ -1047,12 +1261,12 @@ class WeightDownloadTests(RunnerTestCase):
         hub = types.ModuleType("huggingface_hub")
         hub.hf_hub_download = fake_download
         self.install({"huggingface_hub": hub})
-        spec = BASE.MotionModelSpec.from_dict({"id": "x", "backend": "kimodo", "weights": [
+        spec = BASE.MotionModelSpec.from_dict({"id": "x", "backend": "ardy", "weights": [
             {"role": "text_encoder_llm", "repo_id": "org/repo", "local_dir": "enc",
              "files": ["config.json"], "optional_files": ["preprocessor_config.json"],
              "index_file": "model.safetensors.index.json"}]})
         with tempfile.TemporaryDirectory() as folder:
-            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
+            backend = ARDY.ArdyBackend(spec, Path(folder))
             roles = backend.ensure_weights(lambda *_: None)
             names = sorted(call["filename"] for call in calls)
             self.assertEqual(roles, {"text_encoder_llm": Path(folder) / "enc"})
@@ -1066,6 +1280,13 @@ class WeightDownloadTests(RunnerTestCase):
     def test_managed_weights_must_list_their_files(self):
         with self.assertRaisesRegex(ValueError, "list the files"):
             BASE.WeightSource.from_dict({"role": "model", "repo_id": "org/repo", "local_dir": "m"})
+
+    def test_file_sizes_only_accept_positive_sizes_for_listed_files(self):
+        source = {"repo_id": "org/repo", "files": ["model.safetensors"]}
+        for sizes in (None, [], {"model.safetensors": 0}, {"model.safetensors": -1},
+                      {"model.safetensors": True}, {"model.safetensors": "10"}, {"other": 10}):
+            with self.assertRaisesRegex(ValueError, "file_sizes"):
+                BASE.WeightSource.from_dict({**source, "file_sizes": sizes})
 
 
 class SafePathTests(unittest.TestCase):

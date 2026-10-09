@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vnccs-ttm"
+version = "0.1.0"
+description = "Standalone ARDY BF16 motion inference with a ConvRot INT4 text encoder"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+readme = "README.md"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools]
+package-dir = {ttm = "."}
+packages = ["ttm", "ttm.vendor", "ttm.vendor.ardy", "ttm.vendor.ardy.model", "ttm.vendor.ardy.model.autoencoder", "ttm.vendor.ardy.motion_rep", "ttm.vendor.ardy.motion_rep.reps", "ttm.vendor.ardy.skeleton"]
+
+[tool.setuptools.package-data]
+ttm = ["config/motion_models/*.json", "vendor/*.md", "vendor/LICENSE-*", "vendor/ardy/assets/skeletons/cskel27/*", "README.md", "requirements.txt", "LICENSE"]

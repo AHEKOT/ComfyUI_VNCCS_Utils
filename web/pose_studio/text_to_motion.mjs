@@ -1,7 +1,7 @@
-// Pose Studio text-to-motion (ARDY, Kimodo, and any model in config/motion_models).
+// Pose Studio text-to-motion (ARDY and any model in nodes/posestudio/ttm/config/motion_models).
 //
 // The panel sends the mannequin's current pose and a prompt to the backend
-// (api/text_to_motion), which generates a motion with the selected model.
+// (nodes/posestudio/ttm), which generates a motion with the selected model.
 // Every generated frame is retargeted onto the mannequin once, so scrubbing the
 // timeline only swaps precomputed poses. In Pose Studio the clip becomes the
 // animation (OK replaces it from the current frame on); in a pose-only host such as
@@ -60,11 +60,24 @@ export const MOTION_LANDMARK_BONES = Object.freeze([
 // Bones that follow the motion's world rotation as a delta from frame 0.
 export const MOTION_ROTATION_BONES = Object.freeze(["head", "hand_l", "hand_r", "foot_l", "foot_r"]);
 
+// The mapped parent absorbs ARDY's extra spine segment; target bind offsets stay intact.
+const MOTION_PROJECTION_PARENTS = {
+    pelvis: null, spine_01: "pelvis", spine_02: "spine_01", spine_03: "spine_02",
+    neck_01: "spine_03", head: "neck_01",
+    ...Object.fromEntries(["l", "r"].flatMap((side) => [
+        [`clavicle_${side}`, "spine_03"], [`upperarm_${side}`, `clavicle_${side}`],
+        [`lowerarm_${side}`, `upperarm_${side}`], [`hand_${side}`, `lowerarm_${side}`],
+        [`thigh_${side}`, "pelvis"], [`calf_${side}`, `thigh_${side}`],
+        [`foot_${side}`, `calf_${side}`], [`ball_${side}`, `foot_${side}`],
+    ])),
+};
+const MOTION_PROJECTION_ORDER = Object.keys(MOTION_PROJECTION_PARENTS);
+
 const toArray = (vector) => [vector.x, vector.y, vector.z];
 
 /**
- * Snapshot of the pose the panel was opened with. Every generation starts
- * from it, and Cancel restores it.
+ * Capture the visible pose without changing it or its undo history.
+ * The panel keeps its opening capture separately for Cancel.
  */
 export function captureMotionStartPose(viewer) {
     if (!viewer?.THREE || !viewer.bones) throw new Error("Pose viewer is not ready.");
@@ -297,13 +310,41 @@ export function buildMotionWorldKeypoints(THREE, motion, frame, start, { keepInP
 
 /**
  * Pose the mannequin like motion frame ``frame`` and return ``viewer.getPose()``.
- * Landmarks go through the viewer's world-keypoint import; head, hands and feet
- * turn by the motion's world rotation change since frame 0.
+ * Full skeleton rotations use the shared Mixamo projection relative to frame 0.
+ * Older clips with endpoint rotations retain the world-keypoint import.
  */
 export function retargetMotionFrame(viewer, motion, frame, start, { keepInPlace = true } = {}) {
     const THREE = viewer.THREE;
     viewer.setPose(start.pose, true);
     viewer.skinnedMesh?.updateMatrixWorld?.(true);
+    if (frame === 0) return viewer.getPose();
+
+    if (motion.rotations?.pelvis && motion.rotations?.spine_03) {
+        const current = {}, reference = {};
+        for (const name of MOTION_PROJECTION_ORDER) {
+            const first = motionQuaternion(THREE, motion, name, 0);
+            const now = motionQuaternion(THREE, motion, name, frame);
+            if (first && now) { reference[name] = first; current[name] = now; }
+        }
+        const pelvis = viewer.bones.pelvis;
+        const parentWorld = pelvis.parent?.getWorldQuaternion(new THREE.Quaternion());
+        if (!viewer.applyWorldRotationImport(current, MOTION_PROJECTION_PARENTS, MOTION_PROJECTION_ORDER,
+            { sourceRestWorldRotations: reference })) return null;
+        // The shared projection works in world space; account for the mannequin's scene parent.
+        if (parentWorld) pelvis.quaternion.premultiply(parentWorld.invert()).normalize();
+        const firstRoot = motionPoint(motion, "Hips", 0);
+        const root = motionPoint(motion, "Hips", frame);
+        if (firstRoot && root && start.keypoints?.pelvis) {
+            const delta = new THREE.Vector3(...root).sub(new THREE.Vector3(...firstRoot));
+            if (keepInPlace) { delta.x = 0; delta.z = 0; }
+            const world = new THREE.Vector3(...start.keypoints.pelvis).add(delta);
+            pelvis.position.copy(pelvis.parent ? pelvis.parent.worldToLocal(world) : world);
+        }
+        viewer.skinnedMesh?.updateMatrixWorld?.(true);
+        viewer.skeleton?.update?.();
+        viewer.updateIKEffectorPositions?.();
+        return viewer.getPose();
+    }
 
     // Every model is applied as its change since frame 0 on top of the start pose:
     // frame 0 is always the pose being edited, and joints a model does not have keep it.
@@ -534,6 +575,7 @@ export class TextToMotionPanel {
         this.root = null;
         this.start = null;
         this.motion = null;
+        this.motionStart = null;
         this.poses = [];
         this.frame = 0;
         this.busy = false;
@@ -581,7 +623,7 @@ export class TextToMotionPanel {
         this.viewer.requestRender?.();
     }
 
-    /** Models from config/motion_models, fetched once per page. */
+    /** Models from nodes/posestudio/ttm/config/motion_models, fetched once per page. */
     loadModels() {
         if (!this.modelsPromise) {
             this.modelsPromise = (async () => {
@@ -604,10 +646,10 @@ export class TextToMotionPanel {
     }
 
     /** Fetch the model list again (after installing something). */
-    async reloadModels() {
+    async reloadModels(isCurrent = () => !!this.root) {
         this.modelsPromise = null;
         await this.loadModels();
-        if (this.root) this.applyModel();
+        if (isCurrent()) this.applyModel();
     }
 
     isOpen() {
@@ -635,6 +677,7 @@ export class TextToMotionPanel {
         }
         this.session += 1;
         this.motion = null;
+        this.motionStart = null;
         this.poses = [];
         this.frame = 0;
         this.build();
@@ -947,14 +990,18 @@ export class TextToMotionPanel {
 
     async runDownload(step, button) {
         if (this.setup.busy || !this.model) return;
+        const session = this.session;
+        const modelId = this.model.id;
+        const isCurrent = () => this.root && this.session === session && this.model?.id === modelId;
         this.setup.busy = true;
         if (button) { button.disabled = true; button.textContent = "Downloading..."; }
         const taskId = newTaskId();
         const poll = setInterval(async () => {
+            if (!isCurrent()) { clearInterval(poll); return; }
             try {
                 const response = await this.fetchApi(`${MOTION_API}/status/${encodeURIComponent(taskId)}`);
                 const status = response.ok ? await response.json() : null;
-                if (status?.status === "running") this.setStatus(status.message || "Downloading...", { progress: status.progress });
+                if (isCurrent() && status?.status === "running") this.setStatus(status.message || "Downloading...", { progress: status.progress });
             } catch (_error) {
                 // Best-effort progress; the POST result below decides.
             }
@@ -963,19 +1010,20 @@ export class TextToMotionPanel {
             const response = await this.fetchApi(`${MOTION_SETUP_API}/download`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json", "X-VNCCS-CSRF": "1" },
-                body: JSON.stringify({ model: this.model.id, step: step.id, task_id: taskId }),
+                body: JSON.stringify({ model: modelId, step: step.id, task_id: taskId }),
             });
             const result = await response.json().catch(() => ({}));
             if (!response.ok) throw new Error(result?.error || `HTTP ${response.status}`);
+            if (!isCurrent()) return;
             this.setStatus("Download finished.", { progress: 100 });
             this.setup.message = "";
-            await this.reloadModels();
+            await this.reloadModels(isCurrent);
         } catch (error) {
-            this.setSetupMessage(`Download failed: ${error?.message || error}`, true);
+            if (isCurrent()) this.setSetupMessage(`Download failed: ${error?.message || error}`, true);
         } finally {
             clearInterval(poll);
             this.setup.busy = false;
-            this.renderCard();
+            if (isCurrent()) this.renderCard();
         }
     }
 
@@ -1044,15 +1092,20 @@ export class TextToMotionPanel {
         const isCurrent = () => this.root && this.session === session;
         const taskId = newTaskId();
         const model = this.model;
-        if (!model || model.available === false) return;
-        const request = buildMotionRequest(this.settings, this.start, taskId, model);
-        if (!request.prompt) return;
+        if (!model || model.available === false || !clampMotionSettings(this.settings, model).prompt) return;
 
         this.stopPlay();
+        let start = this.start;
+        if (this.animation) this.widget._applyingAnimationPose = true;
+        try {
+            if (this.settings.useStartPose !== false) start = captureMotionStartPose(this.viewer);
+        } finally {
+            if (this.animation) this.widget._applyingAnimationPose = false;
+        }
+        const request = buildMotionRequest(this.settings, start, taskId, model);
         this.busy = true;
         this.updateButtons();
-        // Regeneration always starts from the pose the panel was opened with.
-        this.setViewerPose(this.start.pose);
+        this.setViewerPose(start.pose);
         this.setStatus(`Sending the pose to ${model.name}...`, { progress: 1 });
 
         const poll = setInterval(async () => {
@@ -1083,6 +1136,8 @@ export class TextToMotionPanel {
             if (!isCurrent()) return;
 
             this.motion = result.motion;
+            this.motionStart = start;
+            this.frame = 0;
             if (this.settings.randomSeed) {
                 this.controls.seed.value = String(this.motion.seed);
                 this.settings.seed = String(this.motion.seed);
@@ -1113,7 +1168,7 @@ export class TextToMotionPanel {
         if (guard) this.widget._applyingAnimationPose = true;
         try {
             const options = { keepInPlace: this.settings.keepInPlace, isCurrent };
-            const poses = await retargetMotion(this.viewer, this.motion, this.start, options, (fraction) => {
+            const poses = await retargetMotion(this.viewer, this.motion, this.motionStart || this.start, options, (fraction) => {
                 if (!isCurrent()) return;
                 this.setStatus("Applying the motion to the mannequin...", { progress: 97 + 3 * fraction });
             });
@@ -1225,12 +1280,13 @@ export class TextToMotionPanel {
 
     cancel() {
         // A running request keeps going on the server; its result is ignored once closed.
-        if (this.start && this.viewer) this.setViewerPose(this.start.pose);
+        const pose = this.start?.pose;
         const startFrame = this.startFrame;
         const animation = this.animation;
         this.close();
         // The animation itself was never touched; show the frame the panel was opened on again.
         if (animation) this.widget.applyAnimationFrame?.(startFrame, { transient: true });
+        if (pose && this.viewer) this.setViewerPose(pose);
     }
 
     /** Closing the panel frees the motion model and its text encoder (RAM and VRAM). */
@@ -1251,6 +1307,7 @@ export class TextToMotionPanel {
         this.controls = null;
         this.start = null;
         this.motion = null;
+        this.motionStart = null;
         this.poses = [];
         this.busy = false;
     }

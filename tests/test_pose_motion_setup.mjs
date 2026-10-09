@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import {
@@ -18,14 +19,14 @@ import { MOTION_API, TextToMotionPanel } from "../web/pose_studio/text_to_motion
 const document = { createElement: (tag) => new Element(tag) };
 
 const READY = {
-    id: "kimodo",
-    name: "Kimodo",
+    id: "ready-motion",
+    name: "Ready motion",
     available: true,
     capabilities: { start_pose_constraint: true, duration: { min: 1, max: 10, default: 4 }, steps: { min: 10, max: 200, default: 100 } },
     requirements: { vram_gb: 17 },
     guide: { summary: "Recommended.", best_for: "Continuing your pose", download_gb: 17 },
     license: { restricted_territories: [] },
-    setup: [{ id: "package", kind: "pip", label: "Kimodo", packages: ["git+https://github.com/nv-tlabs/kimodo"], modules: ["kimodo"], done: true }],
+    setup: [{ id: "package", kind: "pip", label: "Ready motion", packages: ["git+https://github.com/example/motion-model"], modules: ["ready_motion"], done: true }],
 };
 const NEEDS_SETUP = {
     id: "demo-motion",
@@ -63,7 +64,7 @@ test("readiness counts checked steps and pending pip installs", () => {
         { ready: false, done: 1, total: 4, pendingPip: ["packages", "extra"] },
     );
     assert.equal(modelReadiness(READY).ready, true);
-    assert.equal(modelOptionLabel(READY), "Kimodo · ready");
+    assert.equal(modelOptionLabel(READY), "Ready motion · ready");
     assert.equal(modelOptionLabel(NEEDS_SETUP), "Demo motion · needs setup");
 });
 
@@ -192,7 +193,7 @@ test("the panel starts on a ready model and shows a card for the selected one", 
     await settle();
     await settle();
     assert.equal(panel.settings.model, READY.id, "a ready model is preferred over the default that needs setup");
-    assert.deepEqual(panel.controls.modelSelect.children.map((o) => o.textContent), ["Demo motion · needs setup", "Kimodo · ready"]);
+    assert.deepEqual(panel.controls.modelSelect.children.map((o) => o.textContent), ["Demo motion · needs setup", "Ready motion · ready"]);
     assert.ok(texts(panel.controls.card).includes("Ready"));
 
     panel.controls.modelSelect.value = NEEDS_SETUP.id;
@@ -240,4 +241,75 @@ test("pose-only hosts keep the single-frame flow with a clear button", async () 
     assert.equal(panel.animation, true);
     assert.equal(panel.controls.ok.textContent, "Use as animation");
     panel.close();
+});
+
+test("download progress and completion cannot overwrite another model or a reopened panel", async (t) => {
+    const polls = [];
+    t.mock.method(globalThis, "setInterval", (callback) => { polls.push(callback); return polls.length; });
+    t.mock.method(globalThis, "clearInterval", () => {});
+    for (const reopen of [false, true]) {
+        for (const status of [200, 500]) {
+            const { w, document: doc } = sceneWithRig();
+            let finishDownload, finishProgress;
+            const { fetchApi, calls } = panelApi([NEEDS_SETUP, READY], {
+                [`${MOTION_SETUP_API}/download`]: () => new Promise((resolve) => { finishDownload = resolve; }),
+            });
+            const panel = new TextToMotionPanel(w, {
+                document: doc,
+                fetchApi: (route, options) => route.startsWith(`${MOTION_API}/status/`)
+                    ? new Promise((resolve) => { finishProgress = resolve; }) : fetchApi(route, options),
+            });
+            panel.open({ poseOnly: true }); await settle();
+            panel.settings.model = NEEDS_SETUP.id; panel.applyModel();
+            const pending = panel.runDownload(NEEDS_SETUP.setup[3]);
+            const progress = polls.at(-1)();
+            if (reopen) { panel.cancel(); panel.open({ poseOnly: true }); await settle(); }
+            panel.settings.model = READY.id; panel.applyModel();
+            panel.setStatus("Generating Ready motion...", { progress: 25 });
+            panel.setSetupMessage("Current session");
+            const modelReads = calls.filter((call) => call.route === `${MOTION_API}/models`).length;
+            finishProgress(response(200, { status: "running", message: "Old download", progress: 90 }));
+            await progress;
+            finishDownload(response(status, { error: "Old failure" })); await pending;
+            assert.equal(panel.controls.status.textContent, "Generating Ready motion...");
+            assert.equal(panel.controls.progressFill.style.width, "25%");
+            assert.equal(panel.setup.message, "Current session");
+            assert.equal(calls.filter((call) => call.route === `${MOTION_API}/models`).length, modelReads);
+            assert.equal(panel.setup.busy, false);
+            panel.cancel();
+        }
+    }
+});
+
+test("a current download refreshes readiness and retains the selected model", async () => {
+    const { w, document: doc } = sceneWithRig();
+    const { fetchApi, calls } = panelApi([NEEDS_SETUP, READY], {
+        [`${MOTION_SETUP_API}/download`]: () => response(200),
+    });
+    const panel = new TextToMotionPanel(w, { fetchApi, document: doc });
+    panel.open({ poseOnly: true }); await settle();
+    panel.settings.model = NEEDS_SETUP.id; panel.applyModel();
+    await panel.runDownload(NEEDS_SETUP.setup[3]);
+    assert.equal(panel.controls.status.textContent, "Download finished.");
+    assert.equal(panel.settings.model, NEEDS_SETUP.id);
+    assert.equal(panel.setup.busy, false);
+    assert.equal(calls.filter((call) => call.route === `${MOTION_API}/models`).length, 2);
+    panel.cancel();
+});
+
+test("compact model facts report measured VRAM and process RAM in GiB", () => {
+    assert.deepEqual(modelFacts({ capabilities: {}, requirements: { vram_gib: 3.87, ram_gib: 6.57 } }),
+        ["Applied on top of your pose", "3.87 GiB peak VRAM", "6.57 GiB peak RAM"]);
+});
+
+test("ARDY offers the published compact bundle through the Download action", () => {
+    const spec = JSON.parse(readFileSync(new URL("../nodes/posestudio/ttm/config/motion_models/ardy-core-rp-20fps-h40.json", import.meta.url), "utf8"));
+    const model = { ...spec, available: false, setup: spec.setup.map((step) => ({ ...step, done: false })) };
+    const calls = [];
+    const card = renderModelCard(document, model, { download: (step) => calls.push(step.id), recheck: () => {} });
+    const download = byText(card, "Download");
+    assert.ok(download);
+    download.dispatchEvent({ type: "click" });
+    assert.deepEqual(calls, ["compact"]);
+    assert.ok(findAll(card, (node) => node.tagName === "A").some((node) => node.href === "https://huggingface.co/MIUProject/ARDY-Core-RP-20FPS-Horizon40-int4"));
 });

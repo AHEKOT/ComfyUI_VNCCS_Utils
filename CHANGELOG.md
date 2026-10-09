@@ -3,16 +3,16 @@
 
 ### Pose Studio
 
-* **Text to Motion**: The new **🏃 Motion** button in the action bar generates a motion from a text prompt with NVIDIA ARDY or Kimodo. Pick a model, write a prompt, set the length, steps and seed, and press Generate. The result is retargeted onto the mannequin once, so scrubbing and playing the preview stay live.
+* **Text to Motion**: The new **🏃 Motion** button in the action bar generates a motion from a text prompt with NVIDIA ARDY. Pick a model, write a prompt, set the length, steps and seed, and press Generate. The result is retargeted onto the mannequin once, so scrubbing and playing the preview stay live.
 * **Animation mode**: Stand on a timeline frame and press Motion: the pose at that frame is the start pose. **OK** deletes everything from that frame on and writes the generated clip there (one undo step); frames before it stay untouched. **Cancel** keeps the previous animation exactly as it was.
-* **Single poses**: Outside Animation mode, scrub to a frame and press OK to use it as the pose. Regenerating always starts again from the pose the panel was opened with, and Cancel or Esc restores it.
-* **Start pose and joints**: ARDY and Kimodo can start exactly from your pose. Joints a model does not produce (fingers, extra spine joints) keep the start pose. **Keep in place** drops horizontal root travel.
+* **Single poses**: Outside Animation mode, scrub to a frame and press OK to use it as the pose. Regenerating starts from the visible pose when the button is pressed, and Cancel or Esc restores it.
+* **Start pose and joints**: ARDY can start exactly from your pose. Joints a model does not produce (fingers, extra spine joints) keep the start pose. **Keep in place** drops horizontal root travel.
 * **License warning**: A model whose license excludes some territories shows a warning naming them.
-* **ARDY and Kimodo built in**: Both NVIDIA models now run inside ComfyUI like UniCanvas Draw: their inference code is part of VNCCS Utils (adapted to the packages ComfyUI already has), so there is nothing to install and no extra process. The first generation downloads the checkpoint and the Llama 3 based text encoder into `models/text_to_motion`. The text encoder stays in system RAM and visits the GPU only while the prompt is read, and closing the Motion panel frees everything.
-* **ARDY (new default)**: NVIDIA ARDY, the real-time autoregressive successor to Kimodo, is the first model in the list and the default once installed. Like Kimodo it starts exactly from your pose (a frame-0 keyframe on its Core skeleton).
-* **Model cards and setup**: The model list marks each model *ready* or *needs setup*. A card under it says what the model is good at (start pose, maximum length, VRAM, download size) and lists its setup steps: **Install** for Python packages through ComfyUI-Manager followed by **Restart ComfyUI**, **Copy** and a link for manual steps such as code checkouts, and **Download** for explicit download steps. ARDY and Kimodo fetch their model and text encoder weights automatically on first generation. When Manager refuses an install, the card names the exact `config.ini` change (Pose Studio never edits it) and the manual pip command.
+* **ARDY built in**: ARDY runs inside ComfyUI like UniCanvas Draw: its inference code is part of VNCCS Utils (adapted to the packages ComfyUI already has), so there is nothing to install and no extra process. The model card downloads the BF16 motion and ConvRot INT4 encoder bundle into `models/text_to_motion`. The text encoder stays in system RAM and visits the GPU only while the prompt is read, and closing the Motion panel frees everything.
+* **ARDY (new default)**: NVIDIA ARDY, the real-time autoregressive model, is the first model in the list and the default once installed. It starts exactly from your pose (a frame-0 keyframe on its Core skeleton).
+* **Model cards and setup**: The model list marks each model *ready* or *needs setup*. A card under it says what the model is good at (start pose, maximum length, VRAM, download size) and lists its setup steps: **Install** for Python packages through ComfyUI-Manager followed by **Restart ComfyUI**, **Copy** and a link for manual steps such as code checkouts, and **Download** for explicit download steps. ARDY offers its BF16 motion and INT4 encoder bundle through the model card Download action. When Manager refuses an install, the card names the exact `config.ini` change (Pose Studio never edits it) and the manual pip command.
 * **Motion makes animations**: In Pose Studio the **Motion** button switches to Animation mode when needed and the clip goes on the timeline with **Use as animation**. UniCanvas' pose editor keeps the single-pose flow with a **Use this frame** button. "Start from current pose" only appears for models that support it.
-* **One character at a time**: ARDY and Kimodo generate a single character. In a scene with several characters the motion goes to the selected character and the panel says so.
+* **One character at a time**: ARDY generates a single character. In a scene with several characters the motion goes to the selected character and the panel says so.
 
 ### UniCanvas
 
@@ -20,8 +20,8 @@
 
 ### Under the Hood
 
-* Every motion model is one JSON file in `config/motion_models/` (download source, files, capabilities, license and territories) behind a shared `MotionBackend` interface, so more models can be added without touching Pose Studio. See `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
-* Model files are downloaded lazily, one file at a time, from public Hugging Face repositories without a token. The ARDY / Kimodo text encoder (Llama 3 8B with LLM2Vec adapters) comes from public copies of the original weights and is stored in `models/text_to_motion/text_encoders`: no Hugging Face account is needed.
+* Every motion model is one JSON file in `nodes/posestudio/ttm/config/motion_models/` (download source, files, capabilities, license and territories) behind a shared `MotionBackend` interface, so more models can be added without touching Pose Studio. See `docs/VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md`.
+* Model files are downloaded lazily, one file at a time, from public Hugging Face repositories without a token. The ARDY BF16 motion and ConvRot INT4 text encoder bundle comes from the pinned public `MIUProject/ARDY-Core-RP-20FPS-Horizon40-int4` repository and is stored in `models/text_to_motion/ARDY-Core-RP-20FPS-Horizon40-int4`: no Hugging Face account is needed.
 * New routes under `/vnccs/pose_studio/motion/`: `models`, `generate`, `status/{id}` and `unload`.
 
 # Version 0.6.9

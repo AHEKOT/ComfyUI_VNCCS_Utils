@@ -24,6 +24,8 @@ dependencies = [
     "einops",
     "roma",
     "tqdm",
+    "pydantic",
+    "comfy-kitchen",
 ]
 
 classifiers = [

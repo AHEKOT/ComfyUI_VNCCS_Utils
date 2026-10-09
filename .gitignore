@@ -230,3 +230,6 @@ tests/e2e/evidence/
 /docs/UNICANVAS_REMOVE_BG_KEEP.md
 
 PoseLibrary
+# Compact weights are supplied on disk for separate model publication.
+/ARDY-Core-RP-20FPS-Horizon40-int4/motion.bf16.safetensors
+/ARDY-Core-RP-20FPS-Horizon40-int4/text_encoder/model.safetensors

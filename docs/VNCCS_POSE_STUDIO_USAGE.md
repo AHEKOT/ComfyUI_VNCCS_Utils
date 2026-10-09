@@ -102,7 +102,7 @@ workflow.
 
 ## Text to Motion
 
-**🏃 Motion** opens a panel where you describe a motion with NVIDIA ARDY or Kimodo.
+**🏃 Motion** opens a panel where you describe a motion with NVIDIA ARDY.
 In Pose Studio, it switches to Animation mode and **Use as animation** puts the generated clip
 on the timeline. In UniCanvas' pose editor, scrub the clip and press **Use this frame** to keep
 one frame as the pose. Regenerating always starts from the pose you opened the panel with.

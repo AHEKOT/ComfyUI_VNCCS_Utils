@@ -3,16 +3,15 @@
 Describe a motion in words and a motion model turns it into an animation on the Pose Studio
 timeline (in UniCanvas' pose editor: a pose picked from the clip). Supported models:
 
-| Model | Starts from your pose | VRAM (approx.) | License |
+| Model | Starts from your pose | Memory | License |
 | --- | --- | --- | --- |
-| [NVIDIA ARDY](https://research.nvidia.com/labs/sil/projects/ardy/) Core RP 20FPS (default) | Yes (frame-0 keyframe) | Built in. Small motion model; the 8B text encoder waits in RAM (~16 GB) and uses the GPU only while reading the prompt | NVIDIA Open Model License (weights), Apache 2.0 (code) |
-| [NVIDIA Kimodo](https://research.nvidia.com/labs/sil/projects/kimodo/) SOMA RP v1.1 | Yes (frame-0 keyframe) | Built in, same text encoder as ARDY | NVIDIA Open Model License (weights), Apache 2.0 (code) |
+| ARDY Core RP, BF16 motion / INT4 encoder (default) | Yes (frame-0 keyframe) | 4.18 GiB VRAM, 32.46 GiB whole-process RAM measured (includes other resident components) | NVIDIA Open Model License, Meta Llama 3 Community License, MIT adapters |
 
-**ARDY and Kimodo are built in.** Their inference code is part of VNCCS Utils
-(`api/text_to_motion/vendor/`) and runs in ComfyUI's own Python like UniCanvas Draw: nothing to
-install, no extra process. The first generation downloads the checkpoint and the text encoder
-into `models/text_to_motion`. The text encoder (Llama 3 8B) waits in system RAM and is moved to
-the GPU only while your prompt is read; closing the Motion panel frees the model and the encoder.
+**ARDY is built in.** Its standalone inference package is in
+[`nodes/posestudio/ttm`](../nodes/posestudio/ttm/README.md), including configuration,
+skeleton assets, licenses and dependencies. It runs in ComfyUI's own Python and requires
+the prepared BF16 motion / INT4 encoder bundle. The encoder waits in RAM between prompts;
+closing the Motion panel frees the model and encoder.
 
 Model code and weights are optional. Pose Studio works without them. The model list marks each
 model **ready** or **needs setup**, and the card under it says what the model is good at (start
@@ -41,12 +40,12 @@ before it stay untouched (one undo step). **Cancel** keeps the previous animatio
 was. Clips are keyed at the animation's frame rate, sparsely for long clips, with linear
 interpolation in between; edit them on the timeline and export as usual.
 
-**Several characters.** The motion goes to the selected character. ARDY and Kimodo are
-single-person models: they cannot generate interactions between characters (a handshake, a hug),
+**Several characters.** The motion goes to the selected character. ARDY is a
+single-person model: it cannot generate interactions between characters (a handshake, a hug),
 and the panel says so when the scene has more than one character. A model that can declares
 `capabilities.max_characters` above 1 in its JSON (default 1; the service rejects requests for
 more characters than that). No backend implements that yet; see `MotionBackend` in
-`api/text_to_motion/base.py`.
+`nodes/posestudio/ttm/base.py`.
 UniCanvas' pose editor has the same **Motion** button and panel, because it embeds Pose Studio.
 It edits a single pose, so there the panel keeps that pose mode: drag the slider to the frame you
 like and press **Use this frame**.
@@ -64,14 +63,15 @@ like and press **Use this frame**.
 5. **Use as animation** writes the clip to the timeline (one undo step); in UniCanvas, **Use this
    frame** applies the selected frame as the pose. **Cancel** or **Esc** restores what you
    started from.
-6. To try again, change the prompt or seed and press **Regenerate**. Every generation starts
-   from the pose the panel was opened with.
+6. To try again, change the prompt or seed and press **Regenerate**. With **Start from current
+   pose** enabled, generation starts from the visible pose at the moment you press the button,
+   including a selected preview frame. **Cancel** restores the pose the panel was opened with.
 
 Options:
 
-- **Start from current pose** (ARDY and Kimodo): the first frame is
+- **Start from current pose** (ARDY): the first frame is
   constrained to your pose. Other models cannot do that, so Pose Studio applies the motion's
-  movement since its first frame on top of your pose. Unchecked, ARDY or Kimodo generates freely and its
+  movement since its first frame on top of your pose. Unchecked, ARDY generates freely and its
   movement is applied on top of your pose too.
 - **Keep in place**: drops horizontal root travel so the character stays where it stands
   (vertical motion such as a jump or a crouch is kept).
@@ -79,120 +79,49 @@ Options:
 Joints a model does not produce (fingers, extra spine joints, toes on some skeletons) keep your
 start pose; head, hands and feet follow the model's rotation change when it provides one.
 
-## ARDY (default) and Kimodo
+## ARDY (default)
 
-[ARDY](https://github.com/nv-tlabs/ardy) is NVIDIA's autoregressive successor to
-[Kimodo](https://github.com/nv-tlabs/kimodo), built for real-time generation, so it is the
-default. Both start exactly from your pose (a frame-0 keyframe). ARDY's Core skeleton (27 joints,
-20 FPS) uses Mixamo-style names; Kimodo uses the SOMA skeleton with fingers (30 FPS). Joints a
-model lacks keep your start pose.
+[ARDY](https://github.com/nv-tlabs/ardy) generates autoregressive motion on a Core skeleton
+with 27 joints at 20 FPS. It can constrain frame zero to the current pose. Joints the
+model does not produce retain the target pose. The upstream foot-skate post-processing
+requires a C++ extension and is not included.
 
-Nothing has to be installed. On the first generation Pose Studio downloads, file by file with
-`token=False` (no Hugging Face login):
+## ARDY with a ConvRot INT4 text encoder
 
-- the checkpoint, `nvidia/ARDY-Core-RP-20FPS-Horizon40` or `nvidia/Kimodo-SOMA-RP-v1.1`, into
-  `models/text_to_motion/checkpoints/`;
-- the shared LLM2Vec text encoder into `models/text_to_motion/text_encoders/`: Meta Llama 3 8B
-  Instruct from the ungated mirror `NousResearch/Meta-Llama-3-8B-Instruct` plus the
-  `McGill-NLP/LLM2Vec-Meta-Llama-3-8B-Instruct-mntp` and `-mntp-supervised` adapters (~17 GB).
+ARDY now uses BF16 motion weights and CUDA BF16 neural computation by default. Only its LLM2Vec text encoder is
+quantized to ConvRot W4A4 INT4. Both LLM2Vec adapters are merged in their original
+order; the encoder shards are consolidated into `text_encoder/model.safetensors`.
+The ARDY denoiser and motion tokenizer use `motion.bf16.safetensors`. All 428 original
+FP32 checkpoint tensors are rounded to BF16 and assigned without expanding their
+parameter dtype. `options.motion_precision = "bf16"` selects this file for both
+components. Neural computation uses CUDA BF16 autocast; the unchanged INT4 encoder
+disables caller autocast, and sampling state, statistics and skeleton reconstruction
+retain FP32. Original FP32 files are not used by the selected runtime configuration.
+Compilation is disabled; the encoder is offloaded to RAM between prompts.
 
-If a download is refused (for example a repository became gated), download that repository
-yourself into the folder the error names and put an empty file called `.complete` next to it.
-Each repository revision has its own `revisions/<identity>` folder. Changing a revision
-downloads that revision separately; files and markers from older folders are not reused.
-The upstream foot-skate post-processing is a C++ extension and is not included.
+The stable model ID is `ardy-core-rp-20fps-h40`. All runtime files are loaded exclusively
+from `ComfyUI/models/text_to_motion/ARDY-Core-RP-20FPS-Horizon40-int4/`. The project
+publication copy is not a runtime source. The model card's **Download** button installs
+`MIUProject/ARDY-Core-RP-20FPS-Horizon40-int4` at revision
+`68dffcc920b468027c0a9a64036a0cc457c7d4b8` into that same directory. The explicit
+24-file manifest includes motion, encoder, tokenizer, statistics and licenses.
+Downloads use `token=False`; existing files are reused only after checking pinned
+sizes and safetensors headers. Interrupted downloads can be retried. No upstream FP32 motion, original encoder or adapters are fetched.
+Generation requires the downloaded runtime files; it does not perform conversion.
 
-## Adding another model
+The Python module does not include weight files. Its local model specification and
+24-file pinned manifest travel with the package. See the standalone README for installation
+and direct inference outside ComfyUI. Conversion scripts and temporary validation reports
+are not part of the runtime.
 
-Every model is one JSON file in `config/motion_models/`. A new checkpoint of a supported family
-needs only a new file; a new family also needs a backend class.
+Recorded on RTX 5070 Ti: 1.929 s warm generation for a two-second walking clip;
+4.18 GiB allocated VRAM, 4.31 GiB reserved VRAM, 31.12 GiB process RAM during generation
+and 32.46 GiB across loading/generation. The trial includes encoder execution/transfers.
+Whole-process RAM includes other resident ComfyUI components. These are single-prompt
+measurements, not model-only memory requirements or universal speed guarantees.
 
-```jsonc
-{
-  "id": "kimodo-soma-rp-v1.1",          // lowercase, unique
-  "name": "Kimodo SOMA RP v1.1",        // shown in the model picker
-  "order": 10,                           // picker order
-  "backend": "kimodo",                   // key in api/text_to_motion/registry.py BACKENDS
-  "description": "...",
-  "homepage": "https://...",
-  "code": { "url": "https://github.com/...", "install": "shown when the model is missing" },
-  "weights": [
-    {
-      "role": "model",                   // backend-specific: model, text_encoder_llm, ...
-      "source": "huggingface",
-      "repo_id": "org/repo",
-      "revision": "main",
-      "files": ["subfolder/config.yml"],  // exact files, fetched with hf_hub_download(token=False)
-      "optional_files": [],              // skipped when the repository lacks them
-      "index_file": "",                  // safetensors index: every shard it lists is fetched too
-      "local_dir": "folder under models/text_to_motion",
-      "managed": true,                   // false: the model's own code downloads it (no files needed)
-      "gated": false
-    }
-  ],
-  "options": {},                         // backend-specific settings
-  "capabilities": {
-    "start_pose_constraint": true,       // the model can start from a given pose
-    "max_characters": 1,                 // >1 only for models that generate interactions
-    "duration": { "min": 1, "max": 10, "default": 4 },
-    "steps": { "min": 10, "max": 200, "default": 100 },       // omit if not adjustable
-    "guidance": { "min": 1, "max": 10, "default": 5 }         // omit if not adjustable
-  },
-  "requirements": { "vram_gb": 17, "notes": "shown under the picker" },
-  "license": {
-    "name": "...", "url": "https://...", "commercial_use": true,
-    "restricted_territories": ["..."],   // non-empty -> warning in the panel
-    "territory_notice": "exact license wording",
-    "notice": "attribution notice required by the license"
-  },
-  "guide": {                             // the card that helps users pick a model
-    "summary": "one or two sentences: what it is, its main strength or limit",
-    "best_for": "kinds of motion it suits",
-    "setup_effort": "how hard the setup is",
-    "download_gb": 17
-  },
-  "setup": [                             // shown with a status mark until the model is ready
-    // pip: Install button via ComfyUI-Manager; done when every module imports
-    { "id": "package", "kind": "pip", "label": "...", "packages": ["einops>=0.7"], "modules": ["einops"] },
-    // manual: explanation, optional command (Copy button) and https link; "check" asks the backend
-    { "id": "code", "kind": "manual", "check": "code", "label": "...", "command": "git clone ...", "link": "https://..." },
-    // download: Download button, runs backend.run_download(step); auto: happens on first generation
-    { "id": "weights", "kind": "auto", "check": "weights", "label": "..." }
-  ]
-}
-```
-
-`pip` packages must be plain requirement names (optionally pinned) or `git+https://github.com/...`
-URLs. There is no `git` kind: install code checkouts as `manual` steps (see above).
-
-A new family implements `MotionBackend` (`api/text_to_motion/base.py`):
-
-- `requires`: Python modules it needs; `check_available()` turns missing ones into an install hint.
-- `load(report)`: load the model (use `ensure_weights(report)` for managed downloads).
-- `generate(request, report)`: return a `SourceMotion` (`api/text_to_motion/transform.py`):
-  world joint positions `[T, J, 3]` (y up, meters), optional world rotations `[T, J, 3, 3]`,
-  and maps from Pose Studio's motion joints (`MOTION_JOINT_KEYS`) and rotation bones
-  (`MOTION_ROTATION_BONES`) to the model's joint names. Leave out joints the skeleton lacks.
-  `soma.py` provides the Kimodo skeleton description.
-- `unload()`: free the model.
-- `check_part(name)`: answer the `check` names your setup steps use (`True`/`False`), and
-  `run_download(step, report)` for a `download` step.
-
-Then add the loader to `BACKENDS` in `registry.py`. The service places the motion on the
-mannequin (heading, leg-length scale, pelvis anchor) and the browser retargets it, so nothing
-else changes.
-
-## HTTP API
-
-| Route | Purpose |
-| --- | --- |
-| (files) `models/text_to_motion/workers/`, `jobs/` | Isolated worker heartbeats and jobs, see `api/text_to_motion/worker_protocol.py` |
-| `GET /vnccs/pose_studio/motion/models` | Models with capabilities, license, availability install hint, guide and setup step status |
-| `GET /vnccs/pose_studio/motion/setup/policy` | ComfyUI-Manager's install policy (read-only: config path, `allow_pip_install`, listener) |
-| `POST /vnccs/pose_studio/motion/setup/download` | Run a model's `download` setup step (same-origin requests with `X-VNCCS-CSRF: 1`) |
-| `POST /vnccs/pose_studio/motion/generate` | `{model, prompt, duration, steps, guidance, seed, use_start_pose, keypoints, rest_keypoints, head_axes, task_id}` → `{motion}` |
-| `GET /vnccs/pose_studio/motion/status/{task_id}` | Progress of a running generation |
-| `POST /vnccs/pose_studio/motion/unload` | Free the loaded model |
-
-One model is loaded at a time; switching models unloads the previous one. Generation shares
-UniCanvas' model lock and unloads ComfyUI's models first to make room.
+The shared Mixamo skeleton projection preserves the target rig's local bone offsets;
+only the pelvis receives root translation. ARDY exports 22 mapped world rotations,
+including shoulders, neck and head. Source spine segments are projected onto the target
+spine hierarchy. Different character proportions can still change hand and foot contacts.
+The upstream foot-skate post-processing is not included.

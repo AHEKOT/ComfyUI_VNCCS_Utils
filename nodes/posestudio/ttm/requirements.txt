@@ -1,0 +1,11 @@
+numpy
+torch
+transformers
+safetensors
+einops
+PyYAML
+pydantic
+huggingface_hub
+tqdm
+comfy-kitchen
+aiohttp

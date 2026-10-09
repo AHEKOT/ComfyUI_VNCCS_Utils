@@ -37,7 +37,11 @@ export function modelFacts(model) {
     const maxSeconds = Number(caps.duration?.max);
     if (maxSeconds > 0) facts.push(`Up to ${Number(maxSeconds.toFixed(1))} s`);
     const vram = Number(model.requirements?.vram_gb);
-    if (vram > 0) facts.push(`~${vram} GB VRAM`);
+    const measuredVram = Number(model.requirements?.vram_gib);
+    const measuredRam = Number(model.requirements?.ram_gib);
+    if (measuredVram > 0) facts.push(`${measuredVram} GiB peak VRAM`);
+    else if (vram > 0) facts.push(`~${vram} GB VRAM`);
+    if (measuredRam > 0) facts.push(`${measuredRam} GiB peak RAM`);
     const download = Number(model.guide?.download_gb);
     if (download > 0) facts.push(`~${download} GB download`);
     return facts;
