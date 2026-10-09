@@ -196,7 +196,7 @@ def _vnccs_register_text_to_motion():
         from .api.text_to_motion.service import register_routes
     except Exception:
         return
-    # Motion models (Kimodo, HY-Motion, ...) are optional and imported lazily on the first generation.
+    # Motion models (ARDY, Kimodo) are optional and imported lazily on the first generation.
     register_routes(PromptServer.instance.routes)
 
 _vnccs_register_text_to_motion()

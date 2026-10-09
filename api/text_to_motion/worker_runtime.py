@@ -1,6 +1,6 @@
 """The isolated motion worker: runs motion backends outside ComfyUI's Python.
 
-Started by ``motion_worker/worker.py`` inside its own venv or Docker container (see
+Started by ``motion_worker/worker.py`` inside a separately configured Python environment (see
 ``worker_protocol`` for the job files). It advertises the models whose backends are
 usable in its environment, runs one job at a time, keeps one model loaded and frees
 it after a while without jobs so the GPU is shared fairly with ComfyUI.

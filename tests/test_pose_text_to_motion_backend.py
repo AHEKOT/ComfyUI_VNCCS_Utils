@@ -1,7 +1,7 @@
 """Pose Studio text-to-motion backend: model registry, pose conversion, request
-validation and the Kimodo / HY-Motion runners.
+validation and the ARDY and Kimodo runners.
 
-Runs without torch, Kimodo or HY-Motion; they are replaced by small stubs where needed.
+Runs without torch or model packages; they are replaced by small stubs where needed.
 """
 
 import asyncio
@@ -32,7 +32,7 @@ def _load_package():
     sys.modules[PACKAGE] = package
     modules = {}
     # Dependencies first, so each module's relative imports find their siblings.
-    for name in ("transform", "soma", "smplh", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "hymotion_backend", "unimate_backend", "worker_protocol", "worker_runtime"):
+    for name in ("transform", "soma", "base", "manager_policy", "registry", "service", "kimodo_backend", "ardy_backend", "worker_protocol", "worker_runtime"):
         spec = importlib.util.spec_from_file_location(f"{PACKAGE}.{name}", folder / f"{name}.py")
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
@@ -44,16 +44,13 @@ def _load_package():
 _MODULES = _load_package()
 TRANSFORM = _MODULES["transform"]
 SOMA = _MODULES["soma"]
-SMPLH = _MODULES["smplh"]
 BASE = _MODULES["base"]
 REGISTRY = _MODULES["registry"]
 SERVICE = _MODULES["service"]
-HYMOTION = _MODULES["hymotion_backend"]
 KIMODO_BACKEND = _MODULES["kimodo_backend"]
 ARDY = _MODULES["ardy_backend"]
 PROTOCOL = _MODULES["worker_protocol"]
 RUNTIME = _MODULES["worker_runtime"]
-UNIMATE = _MODULES["unimate_backend"]
 MANAGER_POLICY = _MODULES["manager_policy"]
 
 # Kimodo SOMA 77-joint skeleton (name, parent, rest position in meters), copied from
@@ -303,129 +300,30 @@ class SomaPoseConversionTests(unittest.TestCase):
             np.testing.assert_allclose(quaternion, expected, atol=1e-9)
 
 
-
-def smplh_rest():
-    """A simple SMPL-H-like T-pose in meters (y up, facing +Z, left on +X)."""
-    body = {
-        "Pelvis": (0, 0.95, 0), "L_Hip": (0.09, 0.87, 0), "R_Hip": (-0.09, 0.87, 0),
-        "Spine1": (0, 1.05, 0), "L_Knee": (0.1, 0.5, 0), "R_Knee": (-0.1, 0.5, 0),
-        "Spine2": (0, 1.18, 0), "L_Ankle": (0.1, 0.08, 0), "R_Ankle": (-0.1, 0.08, 0),
-        "Spine3": (0, 1.24, 0), "L_Foot": (0.1, 0.02, 0.12), "R_Foot": (-0.1, 0.02, 0.12),
-        "Neck": (0, 1.45, 0), "L_Collar": (0.07, 1.38, 0), "R_Collar": (-0.07, 1.38, 0),
-        "Head": (0, 1.55, 0.02), "L_Shoulder": (0.18, 1.4, 0), "R_Shoulder": (-0.18, 1.4, 0),
-        "L_Elbow": (0.45, 1.4, 0), "R_Elbow": (-0.45, 1.4, 0), "L_Wrist": (0.7, 1.4, 0), "R_Wrist": (-0.7, 1.4, 0),
-    }
-    positions = np.zeros((len(SMPLH.JOINT_NAMES), 3))
-    for index, name in enumerate(SMPLH.JOINT_NAMES):
-        if name in body:
-            positions[index] = body[name]
-        else:
-            wrist = positions[SMPLH.JOINT_NAMES.index(f"{name[0]}_Wrist")]
-            positions[index] = wrist + [0.05 if name[0] == "L" else -0.05, 0, 0]
-    return positions
-
-
-class SmplhMotionTests(unittest.TestCase):
-    def test_skeleton_tables_are_consistent(self):
-        self.assertEqual(len(SMPLH.JOINT_NAMES), 52)
-        self.assertEqual(len(SMPLH.PARENTS), 52)
-        self.assertTrue(all(parent < index for index, parent in enumerate(SMPLH.PARENTS)))
-        self.assertEqual(SMPLH.JOINT_NAMES[SMPLH.PARENTS[SMPLH.JOINT_NAMES.index("L_Index2")]], "L_Index1")
-        self.assertEqual(set(SMPLH.MOTION_JOINTS), set(TRANSFORM.MOTION_JOINT_KEYS))
-        self.assertTrue(set(SMPLH.MOTION_JOINTS.values()) <= set(SMPLH.JOINT_NAMES))
-
-    def test_hymotion_output_lands_on_the_mannequin(self):
+class SourceMotionTests(unittest.TestCase):
+    def test_positions_without_rotations_align_to_the_start_pose(self):
         keypoints, _, _, _ = world_keypoints(heading_degrees=90.0)
-        rest = smplh_rest()
-        turned = rest.copy()
-        turned[SMPLH.JOINT_NAMES.index("L_Elbow")] = [0.18, 1.13, 0]
-        local = np.tile(np.eye(3), (2, 52, 1, 1))
-        local[1, SMPLH.JOINT_NAMES.index("Head")] = axis_angle([1, 0, 0], 20)
-        source = SMPLH.smplh_motion(np.stack([rest, turned])[None], local[None], fps=30)
-
+        source = SOMA.soma_motion(skeleton(), np.stack([SOMA_REST, SOMA_REST]), None, fps=30)
         motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, keypoints))
         np.testing.assert_allclose(motion["joints"]["Hips"][0], keypoints["pelvis"], atol=1e-6)
-        right, left = np.asarray(motion["joints"]["RightUpLeg"][0]), np.asarray(motion["joints"]["LeftUpLeg"][0])
-        self.assertAlmostEqual(
-            TRANSFORM.heading_angle(right, left),
-            TRANSFORM.heading_angle(keypoints["thigh_r"], keypoints["thigh_l"]),
-            places=4,
-        )
-        # The head turn arrives as a world rotation change between the two frames.
-        first, second = (np.asarray(q) for q in motion["rotations"]["head"])
-        self.assertAlmostEqual(abs(float(np.dot(first, second))), math.cos(math.radians(10)), places=5)
-
-    def test_body_only_output_is_accepted(self):
-        rest = smplh_rest()[:22]
-        source = SMPLH.smplh_motion(rest[None], np.tile(np.eye(3), (1, 22, 1, 1)), joint_names=SMPLH.BODY_JOINTS)
-        self.assertEqual(source.rotations.shape, (1, 22, 3, 3))
-        keypoints, _, _, _ = world_keypoints()
-        motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, keypoints))
         self.assertIn("LeftHand", motion["joints"])
+        self.assertEqual(motion["rotations"], {})
 
     def test_joints_a_model_lacks_are_left_out(self):
         keypoints, _, _, _ = world_keypoints()
-        source = SMPLH.smplh_motion(smplh_rest()[None])
+        source = SOMA.soma_motion(skeleton(), SOMA_REST[None], None, fps=30)
         source.joint_map = {key: value for key, value in source.joint_map.items() if "Toe" not in key}
         motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, keypoints))
         self.assertNotIn("LeftToeBase", motion["joints"])
         self.assertIn("LeftFoot", motion["joints"])
         self.assertEqual(motion["rotations"], {})
 
-    def test_unimate_mixamo_output_lands_on_the_mannequin(self):
-        keypoints, _, _, _ = world_keypoints(heading_degrees=90.0)
-        rest = smplh_rest()[:22]
-        # SMPL body joints renamed to their Mixamo counterparts, as UniMate's Mixamo features name them.
-        to_mixamo = {smpl: key for key, smpl in SMPLH.MOTION_JOINTS.items()}
-        names = [f"mixamorig:{to_mixamo.get(name, name)}" for name in SMPLH.BODY_JOINTS]
-        source = UNIMATE.unimate_motion(np.stack([rest, rest]), names, fps=30)
-        self.assertEqual(source.root, "Hips")
-        self.assertEqual(source.hips, ("RightUpLeg", "LeftUpLeg"))
-        motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, keypoints))
-        np.testing.assert_allclose(motion["joints"]["Hips"][0], keypoints["pelvis"], atol=1e-6)
-        self.assertIn("LeftHand", motion["joints"])
-        self.assertEqual(motion["rotations"], {})
-
-    def test_unimate_rejects_non_humanoid_skeletons(self):
-        with self.assertRaises(ValueError):
-            UNIMATE.unimate_motion(np.zeros((2, 3, 3)), ["Root", "Tail1", "Tail2"])
-
-    def test_unimate_joint_names_are_cleaned(self):
-        self.assertEqual(UNIMATE.clean_joint_name("mixamorig:LeftArm"), "LeftArm")
-        self.assertEqual(UNIMATE.clean_joint_name("mixamorig1_LeftArm"), "LeftArm")
-        self.assertEqual(UNIMATE.clean_joint_name("Armature|Hips"), "Hips")
-
-    def test_unimate_needs_its_code_checkpoint_and_features(self):
-        spec = REGISTRY.load_specs()["unimate-preview"]
-        with tempfile.TemporaryDirectory() as folder:
-            backend = UNIMATE.UniMateBackend(spec, Path(folder))
-            backend.requires = ()
-            with self.assertRaises(BASE.BackendUnavailable):
-                backend.check_available()
-            (backend.code_dir() / "unimate" / "inference").mkdir(parents=True)
-            (backend.code_dir() / "unimate" / "inference" / "sample.py").write_text("")
-            (backend.checkpoint_dir() / "checkpoints").mkdir(parents=True)
-            (backend.checkpoint_dir() / "config.json").write_text("{}")
-            for step in (100, 2500, 900):
-                (backend.checkpoint_dir() / "checkpoints" / f"checkpoint_step_{step}.pt").write_text("x")
-            self.assertEqual(UNIMATE.latest_checkpoint(backend.checkpoint_dir()).name, "checkpoint_step_2500.pt")
-            with self.assertRaises(BASE.BackendUnavailable):
-                backend.check_available()
-            (backend.features_dir() / "mixamo").mkdir(parents=True)
-            (backend.features_dir() / "mixamo" / "cond.npy").write_bytes(b"x")
-            backend.check_available()
-
-    def test_global_rotations_compose_parents_first(self):
-        local = np.stack([axis_angle([0, 1, 0], 30), axis_angle([1, 0, 0], 40), axis_angle([0, 0, 1], 50)])[None]
-        world = TRANSFORM.global_rotations_from_local(local, [-1, 0, 1])
-        np.testing.assert_allclose(world[0, 2], local[0, 0] @ local[0, 1] @ local[0, 2], atol=1e-12)
-
 
 class ModelRegistryTests(unittest.TestCase):
     def test_bundled_model_files_load(self):
         specs = REGISTRY.load_specs()
-        self.assertEqual(list(specs)[:4], ["ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1", "hy-motion-1.0-lite", "hy-motion-1.0"])
-        self.assertEqual(specs["unimate-preview"].backend, "unimate")
+        self.assertEqual(list(specs), ["ardy-core-rp-20fps-h40", "kimodo-soma-rp-v1.1"])
+        self.assertEqual(set(REGISTRY.BACKENDS), {"ardy", "kimodo"})
         for spec in specs.values():
             self.assertIn(spec.backend, REGISTRY.BACKENDS)
             self.assertTrue(spec.code.get("url", "").startswith("https://"))
@@ -437,17 +335,6 @@ class ModelRegistryTests(unittest.TestCase):
             public = spec.public()
             json.dumps(public)
             self.assertTrue(0 < public["capabilities"]["duration"]["max"] <= 10.0)
-
-    def test_hymotion_license_names_the_excluded_territories(self):
-        for model_id in ("hy-motion-1.0-lite", "hy-motion-1.0"):
-            license_info = REGISTRY.load_specs()[model_id].public()["license"]
-            self.assertEqual(license_info["restricted_territories"], ["European Union", "United Kingdom", "South Korea"])
-            self.assertIn(
-                "THIS LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA",
-                license_info["territory_notice"],
-            )
-            self.assertIn("Tencent HY-MOTION 1.0 is licensed under", license_info["notice"])
-        self.assertEqual(REGISTRY.load_specs()["kimodo-soma-rp-v1.1"].license["restricted_territories"], [])
 
     def test_broken_or_unsafe_files_are_skipped(self):
         good = json.loads((REGISTRY.MODELS_CONFIG_DIR / "kimodo-soma-rp-v1.1.json").read_text(encoding="utf-8"))
@@ -506,25 +393,25 @@ class SetupStepTests(unittest.TestCase):
             self.spec([{"id": "a", "kind": "manual", "link": "http://example.invalid"}])
 
     def test_setup_status_checks_modules_and_backend_parts(self):
-        spec = REGISTRY.load_specs()["unimate-preview"]
+        spec = self.spec([{"id": "code", "kind": "manual", "check": "code"}])
         with tempfile.TemporaryDirectory() as folder:
-            backend = UNIMATE.UniMateBackend(spec, Path(folder))
-            status = {step["id"]: step["done"] for step in backend.setup_status()}
-            self.assertEqual(status["code"], False)
-            self.assertEqual(status["checkpoint"], False)
-            self.assertEqual(status["features"], False)
-            (backend.features_dir() / "mixamo").mkdir(parents=True)
-            (backend.features_dir() / "mixamo" / "cond.npy").write_bytes(b"x")
-            self.assertTrue({step["id"]: step["done"] for step in backend.setup_status()}["features"])
+            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
+            marker = Path(folder) / "ready"
+            with mock.patch.object(backend, "check_part", side_effect=lambda name: marker.is_file()):
+                self.assertFalse(backend.setup_status()[0]["done"])
+                marker.write_text("ready")
+                self.assertTrue(backend.setup_status()[0]["done"])
         pip = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "setup": [
             {"id": "pkgs", "kind": "pip", "packages": ["tyro"], "modules": ["tyro"]}]})
         with mock.patch.object(BASE, "module_missing", side_effect=lambda name: name == "tyro"):
             self.assertFalse(KIMODO_BACKEND.KimodoBackend(pip, Path(".")).setup_status()[0]["done"])
 
-    def test_hymotion_weights_step_reports_downloaded_files(self):
-        spec = REGISTRY.load_specs()["hy-motion-1.0-lite"]
+    def test_managed_weights_step_reports_downloaded_files(self):
+        spec = BASE.MotionModelSpec.from_dict({"id": "demo", "backend": "kimodo", "weights": [
+            {"repo_id": "org/repo", "local_dir": "demo", "files": ["config.json"],
+             "index_file": "model.safetensors.index.json"}]})
         with tempfile.TemporaryDirectory() as folder:
-            backend = HYMOTION.HYMotionBackend(spec, Path(folder))
+            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
             self.assertFalse(backend.check_part("weights"))
             for source in spec.weights:
                 for name in list(source.files) + ([source.index_file] if source.index_file else []):
@@ -535,23 +422,12 @@ class SetupStepTests(unittest.TestCase):
                     (backend.weights_dir(source) / "shard-1.safetensors").write_text("x")
             self.assertTrue(backend.check_part("weights"))
 
-    def test_unimate_checkpoint_pick_takes_the_newest_step(self):
-        names = [
-            "README.md", "a/config.json", "a/dataset_stats.npy",
-            "a/checkpoints/checkpoint_step_900.pt", "a/checkpoints/checkpoint_step_12000.pt",
-            "b/config.json", "b/checkpoints/checkpoint_step_5.pt",
-        ]
-        picked = UNIMATE.pick_checkpoint_files(names)
-        self.assertEqual(picked, {"prefix": "a/", "files": ["a/config.json", "a/dataset_stats.npy", "a/checkpoints/checkpoint_step_12000.pt"]})
-        self.assertEqual(UNIMATE.pick_checkpoint_files(names, "b")["files"], ["b/config.json", "b/checkpoints/checkpoint_step_5.pt"])
-        with self.assertRaises(ValueError):
-            UNIMATE.pick_checkpoint_files(["README.md"])
 
     def test_list_models_includes_setup_status(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
             models = {model["id"]: model for model in SERVICE.list_models()}
-        self.assertIn("setup", models["unimate-preview"])
-        self.assertTrue(all("done" in step for step in models["unimate-preview"]["setup"]))
+        self.assertIn("setup", models["kimodo-soma-rp-v1.1"])
+        self.assertTrue(all("done" in step for step in models["kimodo-soma-rp-v1.1"]["setup"]))
 
 
 class SetupRouteGuardTests(unittest.TestCase):
@@ -565,7 +441,7 @@ class SetupRouteGuardTests(unittest.TestCase):
         self.assertFalse(SERVICE._same_origin_request(self.request(**{"X-VNCCS-CSRF": "1", "Host": "localhost:8188", "Origin": "https://evil.invalid"})))
 
     def test_only_listed_download_steps_run(self):
-        spec = REGISTRY.load_specs()["unimate-preview"]
+        spec = REGISTRY.load_specs()["kimodo-soma-rp-v1.1"]
         with self.assertRaises(ValueError):
             SERVICE.run_setup_download(spec, "code", "t1")
         with self.assertRaises(ValueError):
@@ -652,10 +528,10 @@ class RequestTests(unittest.TestCase):
         self.assertIsNone(request.guidance)
         self.assertEqual(task_id, "abc")
 
-        spec, request, _ = SERVICE.parse_generation_request(self.payload(model="hy-motion-1.0-lite", guidance=50))
-        self.assertEqual(spec.backend, "hymotion")
-        self.assertEqual(request.guidance, 10.0)
-        self.assertEqual(request.steps, 50)
+        spec, request, _ = SERVICE.parse_generation_request(self.payload(model="ardy-core-rp-20fps-h40", guidance=50))
+        self.assertEqual(spec.backend, "ardy")
+        self.assertEqual(request.guidance, 5.0)
+        self.assertIsNone(request.steps)
 
     def test_missing_or_negative_seed_is_randomized(self):
         for seed in (None, "", -1, "abc"):
@@ -819,8 +695,7 @@ class KimodoRunnerTests(RunnerTestCase):
         models = {model["id"]: model for model in SERVICE.list_models()}
         self.assertFalse(models["kimodo-soma-rp-v1.1"]["available"])
         self.assertIn("built into VNCCS Utils", models["kimodo-soma-rp-v1.1"]["install_hint"])
-        self.assertFalse(models["hy-motion-1.0-lite"]["available"])
-        self.assertEqual(len(models["hy-motion-1.0"]["license"]["restricted_territories"]), 3)
+        self.assertFalse(models["ardy-core-rp-20fps-h40"]["available"])
 
     def test_generate_route_reports_a_missing_model_as_503(self):
         self.missing_transformers()
@@ -968,7 +843,7 @@ class ArdyTests(RunnerTestCase):
 
 
 class FakeWorkerBackend:
-    """Stands in for a model inside the isolated worker: returns the SMPL-H rest pose moving forward."""
+    """Stands in for a model inside the isolated worker: returns a SOMA rest pose moving forward."""
 
     loads = 0
 
@@ -976,8 +851,8 @@ class FakeWorkerBackend:
         self.spec = spec
 
     def check_available(self):
-        if self.spec.id == "hy-motion-1.0":
-            raise BASE.BackendUnavailable("torch is missing in this environment", "install.sh hymotion")
+        if self.spec.id == "unavailable-motion":
+            raise BASE.BackendUnavailable("torch is missing in this environment", "Install worker dependencies")
 
     def load(self, report):
         FakeWorkerBackend.loads += 1
@@ -985,9 +860,10 @@ class FakeWorkerBackend:
 
     def generate(self, request, report):
         report("Generating motion: step 1/1", 50)
-        rest = smplh_rest()
         frames = int(round(request.duration * 30))
-        return SMPLH.smplh_motion(np.stack([rest + [0, 0, 0.01 * i] for i in range(frames)]), fps=30)
+        positions = np.stack([SOMA_REST + [0, 0, 0.01 * i] for i in range(frames)])
+        rotations = np.tile(np.eye(3), (frames, len(SOMA_NAMES), 1, 1))
+        return SOMA.soma_motion(skeleton(), positions, rotations, fps=30)
 
     def unload(self):
         pass
@@ -1038,7 +914,7 @@ class IsolatedWorkerTests(RunnerTestCase):
 
             with mock.patch.object(PROTOCOL, "time", types.SimpleNamespace(time=lambda: clock[0], sleep=time.sleep)):
                 with self.assertRaisesRegex(PROTOCOL.WorkerError, "did not answer in time"):
-                    PROTOCOL.run_job(root, "test", "unimate-preview", request, lambda *a: None,
+                    PROTOCOL.run_job(root, "test", "kimodo-soma-rp-v1.1", request, lambda *a: None,
                                      timeout=1, sleep=wait_for_claim)
             self.assertEqual(list((root / "jobs").rglob("*.json")), [])
             release.set()
@@ -1052,12 +928,16 @@ class IsolatedWorkerTests(RunnerTestCase):
 
     def start_worker(self, root, **kwargs):
         specs = REGISTRY.load_specs()
-        worker = RUNTIME.MotionWorker(root, "test", ["unimate-preview", "hy-motion-1.0"], specs=specs,
+        unavailable = json.loads((REGISTRY.MODELS_CONFIG_DIR / "kimodo-soma-rp-v1.1.json").read_text())
+        unavailable["setup"] = [{"id": "worker", "kind": "manual", "check": "worker", "label": "Worker"}]
+        specs["kimodo-soma-rp-v1.1"] = BASE.MotionModelSpec.from_dict(unavailable)
+        specs["unavailable-motion"] = BASE.MotionModelSpec.from_dict({**unavailable, "id": "unavailable-motion"})
+        worker = RUNTIME.MotionWorker(root, "test", ["kimodo-soma-rp-v1.1", "unavailable-motion"], specs=specs,
                                       make_backend=lambda spec: FakeWorkerBackend(spec, root), **kwargs)
         thread = threading.Thread(target=worker.run, kwargs={"poll": 0.01}, daemon=True)
         thread.start()
         for _ in range(200):
-            if PROTOCOL.worker_for(root, "unimate-preview"):
+            if PROTOCOL.worker_for(root, "kimodo-soma-rp-v1.1"):
                 break
             time.sleep(0.01)
         self.addCleanup(lambda: (worker.stop(), thread.join(5)))
@@ -1068,7 +948,7 @@ class IsolatedWorkerTests(RunnerTestCase):
         back = PROTOCOL.request_from_dict(json.loads(json.dumps(PROTOCOL.request_to_dict(request))))
         self.assertEqual((back.prompt, back.duration, back.seed), (request.prompt, request.duration, request.seed))
         np.testing.assert_allclose(back.keypoints["pelvis"], request.keypoints["pelvis"])
-        motion = SMPLH.smplh_motion(smplh_rest()[None], np.tile(np.eye(3), (1, 52, 1, 1)), fps=30)
+        motion = SOMA.soma_motion(skeleton(), SOMA_REST[None], np.tile(np.eye(3), (1, len(SOMA_NAMES), 1, 1)), fps=30)
         again = PROTOCOL.motion_from_dict(json.loads(json.dumps(PROTOCOL.motion_to_dict(motion))))
         np.testing.assert_allclose(again.positions, motion.positions, atol=1e-6)
         self.assertEqual(again.joint_map, motion.joint_map)
@@ -1087,21 +967,22 @@ class IsolatedWorkerTests(RunnerTestCase):
     def test_comfyui_generates_through_the_worker_without_its_model_lock(self):
         with tempfile.TemporaryDirectory() as folder, mock.patch.object(REGISTRY, "default_models_dir", return_value=Path(folder)):
             root = Path(folder)
-            self.start_worker(root)
-            models = {m["id"]: m for m in SERVICE.list_models()}
-            self.assertTrue(models["unimate-preview"]["available"])
-            self.assertEqual(models["unimate-preview"]["runner"], "worker")
-            worker_step = next(s for s in models["unimate-preview"]["setup"] if s["id"] == "worker")
+            worker = self.start_worker(root)
+            with mock.patch.object(SERVICE, "specs", return_value=worker.specs):
+                models = {m["id"]: m for m in SERVICE.list_models()}
+            self.assertTrue(models["kimodo-soma-rp-v1.1"]["available"])
+            self.assertEqual(models["kimodo-soma-rp-v1.1"]["runner"], "worker")
+            worker_step = next(s for s in models["kimodo-soma-rp-v1.1"]["setup"] if s["id"] == "worker")
             self.assertTrue(worker_step["done"])
             # The worker runs but cannot serve this model: the card says why.
-            hy = models["hy-motion-1.0"]
-            self.assertFalse(hy["available"])
-            self.assertIn("torch is missing", next(s for s in hy["setup"] if s["id"] == "worker")["detail"])
+            unavailable = models["unavailable-motion"]
+            self.assertFalse(unavailable["available"])
+            self.assertIn("torch is missing", next(s for s in unavailable["setup"] if s["id"] == "worker")["detail"])
 
             lock = SERVICE._model_operation_lock()
             self.assertTrue(lock.acquire(blocking=False))  # ComfyUI-side work holds the lock...
             try:
-                spec, request, task_id = self.request(model="unimate-preview", duration=1, task_id="w1")
+                spec, request, task_id = self.request(model="kimodo-soma-rp-v1.1", duration=1, task_id="w1")
                 motion = SERVICE.generate_motion(spec, request, task_id)  # ...and the worker job still runs
             finally:
                 lock.release()
@@ -1124,100 +1005,14 @@ class IsolatedWorkerTests(RunnerTestCase):
     def test_idle_worker_frees_its_model(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
-            worker = RUNTIME.MotionWorker(root, "idle", ["unimate-preview"], idle_unload=0.01,
+            worker = RUNTIME.MotionWorker(root, "idle", ["kimodo-soma-rp-v1.1"], idle_unload=0.01,
                                           make_backend=lambda spec: FakeWorkerBackend(spec, root))
             worker.probe()
-            worker._backend(worker.ready["unimate-preview"], lambda *a: None)
+            worker._backend(worker.ready["kimodo-soma-rp-v1.1"], lambda *a: None)
             self.assertIsNotNone(worker.loaded)
             worker.last_job = time.time() - 1
             worker.step()
             self.assertIsNone(worker.loaded)
-
-
-class FakeTransformer:
-    def __init__(self):
-        self.hooks = []
-
-    def register_forward_hook(self, hook):
-        self.hooks.append(hook)
-        return types.SimpleNamespace(remove=lambda: self.hooks.remove(hook))
-
-
-class FakeHYPipeline:
-    output_mesh_fps = 30
-
-    def __init__(self):
-        self.motion_transformer = FakeTransformer()
-        self._infer_noise_scheduler_cfg = {"validation_steps": 50}
-        self.body_model = types.SimpleNamespace(parents=np.array(SMPLH.PARENTS), joint_names=list(SMPLH.JOINT_NAMES))
-        self.calls = []
-
-    def generate(self, text, seeds, duration, cfg_scale=None):
-        self.calls.append((text, seeds, duration, cfg_scale))
-        for _ in range(self._infer_noise_scheduler_cfg["validation_steps"]):
-            for hook in list(self.motion_transformer.hooks):
-                hook(None, None, None)
-        frames = int(round(duration * self.output_mesh_fps))
-        rest = smplh_rest()
-        keypoints = np.stack([rest + [0.0, 0.0, 0.01 * frame] for frame in range(frames)])[None]
-        rot6d = np.tile(np.array([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]), (1, frames, 52, 1))
-        return {"keypoints3d": keypoints, "rot6d": rot6d}
-
-
-class HYMotionRunnerTests(RunnerTestCase):
-    def backend(self, models_dir=ROOT / "tests" / "no-such-models-dir"):
-        spec = REGISTRY.load_specs()["hy-motion-1.0-lite"]
-        return HYMOTION.HYMotionBackend(spec, Path(models_dir))
-
-    def test_generation_is_text_only_and_mapped_from_smplh(self):
-        geometry = types.ModuleType("hymotion.utils.geometry")
-        geometry.rot6d_to_rotation_matrix = lambda rot6d: np.tile(np.eye(3), (np.asarray(rot6d).shape[0], 1, 1))
-        self.install({"torch": _stub_torch(), "hymotion.utils.geometry": geometry})
-        backend = self.backend()
-        backend.pipeline = FakeHYPipeline()
-        spec, request, _ = self.request(model="hy-motion-1.0-lite", duration=2, seed=5, steps=20, guidance=4)
-        reports = []
-
-        source = backend.generate(request, lambda message, progress: reports.append(progress))
-
-        self.assertEqual(backend.pipeline.calls, [("a person jumps", [5], 2.0, 4.0)])
-        self.assertEqual(backend.pipeline._infer_noise_scheduler_cfg["validation_steps"], 20)
-        self.assertEqual(backend.pipeline.motion_transformer.hooks, [])
-        self.assertAlmostEqual(max(reports), 95.0)
-        self.assertEqual(source.positions.shape, (60, 52, 3))
-        self.assertEqual(source.rotations.shape, (60, 52, 3, 3))
-        motion = TRANSFORM.motion_to_pose_studio(source, TRANSFORM.align_to_start_pose(source, request.keypoints))
-        np.testing.assert_allclose(motion["joints"]["Hips"][0], request.keypoints["pelvis"], atol=1e-6)
-
-    def test_missing_checkout_and_lfs_pointers_are_reported(self):
-        with tempfile.TemporaryDirectory() as folder:
-            self.install({"torch": _stub_torch(), "transformers": types.ModuleType("transformers"),
-                          "yaml": types.ModuleType("yaml"), "torchdiffeq": types.ModuleType("torchdiffeq")})
-            backend = self.backend(folder)
-            with self.assertRaisesRegex(BASE.BackendUnavailable, "code was not found"):
-                backend.check_available()
-            self.assertEqual(backend.code_dir(), Path(folder) / "code" / "HY-Motion-1.0")
-            code = backend.code_dir() / "hymotion" / "pipeline"
-            code.mkdir(parents=True)
-            (code / "motion_diffusion.py").write_text("", encoding="utf-8")
-            assets = backend.body_model_dir()
-            assets.mkdir(parents=True)
-            (assets / "kintree.bin").write_bytes(b"version https://git-lfs.github.com/spec/v1\n")
-            with self.assertRaisesRegex(BASE.BackendUnavailable, "git-lfs") as caught:
-                backend.check_available()
-            self.assertIn("git lfs", caught.exception.hint)
-            (assets / "kintree.bin").write_bytes(np.array(SMPLH.PARENTS, dtype=np.int32).tobytes())
-            backend.check_available()
-
-    def test_relative_config_paths_resolve_against_the_checkout(self):
-        with tempfile.TemporaryDirectory() as folder:
-            (Path(folder) / "stats").mkdir()
-            args = {"mean_std_dir": "stats", "other": "not-a-path", "nested": {"dir": "stats"}, "n": 3}
-            resolved = HYMOTION.HYMotionBackend._absolute_paths(args, Path(folder))
-        self.assertEqual(resolved["mean_std_dir"], str(Path(folder) / "stats"))
-        self.assertEqual(resolved["nested"]["dir"], str(Path(folder) / "stats"))
-        self.assertEqual(resolved["other"], "not-a-path")
-        self.assertEqual(resolved["n"], 3)
 
 
 class BuiltInTextEncoderTests(unittest.TestCase):
@@ -1252,12 +1047,12 @@ class WeightDownloadTests(RunnerTestCase):
         hub = types.ModuleType("huggingface_hub")
         hub.hf_hub_download = fake_download
         self.install({"huggingface_hub": hub})
-        spec = BASE.MotionModelSpec.from_dict({"id": "x", "backend": "hymotion", "weights": [
+        spec = BASE.MotionModelSpec.from_dict({"id": "x", "backend": "kimodo", "weights": [
             {"role": "text_encoder_llm", "repo_id": "org/repo", "local_dir": "enc",
              "files": ["config.json"], "optional_files": ["preprocessor_config.json"],
              "index_file": "model.safetensors.index.json"}]})
         with tempfile.TemporaryDirectory() as folder:
-            backend = HYMOTION.HYMotionBackend(spec, Path(folder))
+            backend = KIMODO_BACKEND.KimodoBackend(spec, Path(folder))
             roles = backend.ensure_weights(lambda *_: None)
             names = sorted(call["filename"] for call in calls)
             self.assertEqual(roles, {"text_encoder_llm": Path(folder) / "enc"})
@@ -1275,7 +1070,7 @@ class WeightDownloadTests(RunnerTestCase):
 
 class SafePathTests(unittest.TestCase):
     def test_paths_stay_inside_the_models_folder(self):
-        self.assertEqual(BASE.safe_relative_path("code/HY-Motion-1.0/", "x"), "code/HY-Motion-1.0")
+        self.assertEqual(BASE.safe_relative_path("code/motion-model/", "x"), "code/motion-model")
         for bad in ("../x", "/abs", "a/../../b", "", "a b", "C:\\x"):
             with self.assertRaises(ValueError, msg=bad):
                 BASE.safe_relative_path(bad, "x")

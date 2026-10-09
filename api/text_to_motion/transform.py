@@ -272,12 +272,3 @@ def motion_to_pose_studio(motion: SourceMotion, transform: FrameTransform) -> di
         "joints": joints,
         "rotations": quaternions,
     }
-
-
-def global_rotations_from_local(local_rotations, parents) -> np.ndarray:
-    """[T, J, 3, 3] local rotations + parent indices -> world rotations (parents first)."""
-    local = np.asarray(local_rotations, dtype=np.float64)
-    world = np.empty_like(local)
-    for joint, parent in enumerate(parents):
-        world[:, joint] = local[:, joint] if parent < 0 else world[:, parent] @ local[:, joint]
-    return world

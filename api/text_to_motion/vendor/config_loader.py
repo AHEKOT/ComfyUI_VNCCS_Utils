@@ -46,8 +46,20 @@ def _lookup(root: dict, dotted: str):
     return node
 
 
+def _reference(root: dict, ref: str):
+    if ref.startswith("oc.select:") and "," not in ref:
+        # shortcut: only oc.select:key is supported; extend if released configs use defaults.
+        try:
+            return _lookup(root, ref[len("oc.select:"):])
+        except ConfigError:
+            return None
+    if ":" in ref:
+        raise ConfigError(f"config resolver ${{{ref}}} is not supported")
+    return _lookup(root, ref)
+
+
 def resolve(cfg, root: dict | None = None, depth: int = 0):
-    """Replace ``${a.b}`` references with the referenced values (recursively)."""
+    """Resolve ``${a.b}`` and checkpoint-style ``${oc.select:a.b}`` references recursively."""
     root = cfg if root is None else root
     if depth > _MAX_DEPTH:
         raise ConfigError("config references are nested too deeply or circular")
@@ -56,14 +68,10 @@ def resolve(cfg, root: dict | None = None, depth: int = 0):
     if isinstance(cfg, list):
         return [resolve(value, root, depth + 1) for value in cfg]
     if isinstance(cfg, str) and "${" in cfg:
-        refs = _REF_RE.findall(cfg)
-        for ref in refs:
-            if ":" in ref:
-                raise ConfigError(f"config resolver ${{{ref}}} is not supported")
         whole = _REF_RE.fullmatch(cfg)
         if whole:
-            return resolve(_lookup(root, whole.group(1)), root, depth + 1)
-        return _REF_RE.sub(lambda m: str(resolve(_lookup(root, m.group(1)), root, depth + 1)), cfg)
+            return resolve(_reference(root, whole.group(1)), root, depth + 1)
+        return _REF_RE.sub(lambda m: str(resolve(_reference(root, m.group(1)), root, depth + 1)), cfg)
     return cfg
 
 

@@ -102,11 +102,11 @@ workflow.
 
 ## Text to Motion
 
-In pose edit mode, **🏃 Motion** opens a panel where you describe a motion (NVIDIA Kimodo or
-Tencent HY-Motion 1.0), scrub the generated clip on a timeline and press **OK** to keep one
-frame as the pose. Regenerating always starts from the pose you opened the panel with. The
-HY-Motion license does not apply in the European Union, United Kingdom and South Korea; the
-panel warns when you select it. Installation, VRAM and licenses:
+**🏃 Motion** opens a panel where you describe a motion with NVIDIA ARDY or Kimodo.
+In Pose Studio, it switches to Animation mode and **Use as animation** puts the generated clip
+on the timeline. In UniCanvas' pose editor, scrub the clip and press **Use this frame** to keep
+one frame as the pose. Regenerating always starts from the pose you opened the panel with.
+Installation, VRAM and licenses:
 [VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md](VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md).
 
 ## Quick Start

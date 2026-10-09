@@ -28,8 +28,8 @@ const READY = {
     setup: [{ id: "package", kind: "pip", label: "Kimodo", packages: ["git+https://github.com/nv-tlabs/kimodo"], modules: ["kimodo"], done: true }],
 };
 const NEEDS_SETUP = {
-    id: "unimate",
-    name: "UniMate",
+    id: "demo-motion",
+    name: "Demo motion",
     available: false,
     capabilities: { start_pose_constraint: false, duration: { min: 0.5, max: 2, default: 2 }, guidance: { min: 1, max: 10, default: 2.5 } },
     requirements: { vram_gb: 6 },
@@ -38,7 +38,7 @@ const NEEDS_SETUP = {
     setup: [
         { id: "packages", kind: "pip", label: "Python packages", packages: ["einops", "tyro"], modules: ["einops", "tyro"], done: false },
         { id: "extra", kind: "pip", label: "More packages", packages: ["loguru"], modules: ["loguru"], done: false },
-        { id: "code", kind: "manual", check: "code", label: "Code", command: "git clone https://github.com/Friedrich-M/UniMate x", link: "https://github.com/Friedrich-M/UniMate", done: false },
+        { id: "code", kind: "manual", check: "code", label: "Code", command: "git clone https://github.com/example/motion-model x", link: "https://github.com/example/motion-model", done: false },
         { id: "checkpoint", kind: "download", check: "checkpoint", label: "Checkpoint", done: true },
         { id: "notes", kind: "auto", label: "Weights", done: null },
     ],
@@ -64,7 +64,7 @@ test("readiness counts checked steps and pending pip installs", () => {
     );
     assert.equal(modelReadiness(READY).ready, true);
     assert.equal(modelOptionLabel(READY), "Kimodo · ready");
-    assert.equal(modelOptionLabel(NEEDS_SETUP), "UniMate · needs setup");
+    assert.equal(modelOptionLabel(NEEDS_SETUP), "Demo motion · needs setup");
 });
 
 test("facts tell models apart", () => {
@@ -95,7 +95,7 @@ test("a model that needs setup lists steps with the matching actions", () => {
     // A finished step has no actions; the pip step offers Install, the manual one Copy and Open.
     assert.deepEqual(buttons(steps[0]).map((b) => b.textContent), ["Install"]);
     assert.deepEqual(buttons(steps[2]).map((b) => b.textContent), ["Copy"]);
-    assert.equal(findAll(steps[2], (n) => n.tagName === "A")[0].href, "https://github.com/Friedrich-M/UniMate");
+    assert.equal(findAll(steps[2], (n) => n.tagName === "A")[0].href, "https://github.com/example/motion-model");
     assert.equal(buttons(steps[3]).length, 0);
 
     buttons(steps[0])[0].click();
@@ -104,7 +104,7 @@ test("a model that needs setup lists steps with the matching actions", () => {
     byText(card, "Restart ComfyUI").click();
     byText(card, "Check again").click();
     assert.deepEqual(calls.map((call) => call[0]), ["installPip", "copy", "installAll", "restart", "recheck"]);
-    assert.equal(calls[1][1], "git clone https://github.com/Friedrich-M/UniMate x");
+    assert.equal(calls[1][1], "git clone https://github.com/example/motion-model x");
     assert.deepEqual(calls[2][1].map((s) => s.id), ["packages", "extra"]);
 });
 
@@ -192,7 +192,7 @@ test("the panel starts on a ready model and shows a card for the selected one", 
     await settle();
     await settle();
     assert.equal(panel.settings.model, READY.id, "a ready model is preferred over the default that needs setup");
-    assert.deepEqual(panel.controls.modelSelect.children.map((o) => o.textContent), ["UniMate · needs setup", "Kimodo · ready"]);
+    assert.deepEqual(panel.controls.modelSelect.children.map((o) => o.textContent), ["Demo motion · needs setup", "Kimodo · ready"]);
     assert.ok(texts(panel.controls.card).includes("Ready"));
 
     panel.controls.modelSelect.value = NEEDS_SETUP.id;

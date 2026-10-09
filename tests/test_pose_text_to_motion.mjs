@@ -39,25 +39,32 @@ const KIMODO = {
     license: { name: "NVIDIA Open Model License", url: "https://example.invalid/nvidia", restricted_territories: [] },
     requirements: { vram_gb: 17, notes: "Set TEXT_ENCODER_DEVICE=cpu to save VRAM." },
 };
-const HY = {
-    id: "hy-motion-1.0-lite",
-    name: "HY-Motion 1.0 Lite",
+const ARDY = {
+    id: "ardy-core-rp-20fps-h40",
+    name: "ARDY Core RP 20FPS",
     available: false,
-    unavailable_reason: "The HY-Motion 1.0 Lite code was not found.",
-    install_hint: "git clone https://github.com/Tencent-Hunyuan/HY-Motion-1.0",
+    unavailable_reason: "The ARDY checkpoint was not found.",
+    install_hint: "Check the ARDY dependencies.",
     capabilities: {
-        start_pose_constraint: false,
+        start_pose_constraint: true,
         duration: { min: 1, max: 10, default: 4 },
-        steps: { min: 10, max: 100, default: 50 },
-        guidance: { min: 1, max: 10, default: 5 },
+        steps: null,
+        guidance: { min: 1, max: 5, default: 2 },
     },
+    license: { name: "NVIDIA Open Model License", url: "https://example.invalid/ardy", restricted_territories: [] },
+    requirements: { vram_gb: 16 },
+};
+// A synthetic model keeps territory-warning coverage independent of the bundled models.
+const RESTRICTED = {
+    ...ARDY,
+    id: "restricted-motion",
+    name: "Restricted motion model",
     license: {
-        name: "Tencent HY-Motion 1.0 Community License Agreement",
-        url: "https://example.invalid/hy-license",
+        name: "Restricted test license",
+        url: "https://example.invalid/restricted-license",
         restricted_territories: ["European Union", "United Kingdom", "South Korea"],
-        territory_notice: "THIS LICENSE AGREEMENT DOES NOT APPLY IN THE EUROPEAN UNION, UNITED KINGDOM AND SOUTH KOREA",
+        territory_notice: "This test license excludes the listed territories.",
     },
-    requirements: { vram_gb: 24 },
 };
 
 function sceneWithRig() {
@@ -107,31 +114,31 @@ const distance = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 test("model limits, clamping and requests follow the selected model", () => {
     assert.deepEqual(motionModelLimits(KIMODO).steps, { min: 10, max: 200, default: 100 });
     assert.equal(motionModelLimits(KIMODO).guidance, null);
-    assert.equal(motionModelLimits(HY).startPoseConstraint, false);
+    assert.equal(motionModelLimits(ARDY).startPoseConstraint, true);
 
-    const clean = clampMotionSettings({ prompt: "  walk   forward ", duration: 99, steps: 1, guidance: 50, seed: "12" }, HY);
+    const clean = clampMotionSettings({ prompt: "  walk   forward ", duration: 99, steps: 1, guidance: 50, seed: "12" }, ARDY);
     assert.equal(clean.prompt, "walk forward");
     assert.equal(clean.duration, 10);
-    assert.equal(clean.steps, 10);
-    assert.equal(clean.guidance, 10);
+    assert.equal(clean.steps, null);
+    assert.equal(clean.guidance, 5);
     assert.equal(clean.seed, 12);
-    assert.equal(clampMotionSettings({ seed: "12", randomSeed: true }, HY).seed, null);
+    assert.equal(clampMotionSettings({ seed: "12", randomSeed: true }, ARDY).seed, null);
 
     const start = { keypoints: { pelvis: [0, 1, 0] }, restKeypoints: {}, headAxes: null };
     const kimodo = buildMotionRequest({ prompt: "jump", steps: 40, guidance: 3 }, start, "t1", KIMODO);
     assert.equal(kimodo.model, KIMODO.id);
     assert.equal(kimodo.steps, 40);
     assert.equal("guidance" in kimodo, false);
-    const hy = buildMotionRequest({ prompt: "jump", guidance: 3 }, start, "t2", HY);
-    assert.equal(hy.guidance, 3);
-    assert.equal(hy.steps, 50);
+    const ardy = buildMotionRequest({ prompt: "jump", guidance: 3 }, start, "t2", ARDY);
+    assert.equal(ardy.guidance, 3);
+    assert.equal("steps" in ardy, false);
 });
 
 test("license warning names the excluded territories", () => {
     assert.equal(motionLicenseWarning(KIMODO), "");
-    const warning = motionLicenseWarning(HY);
+    const warning = motionLicenseWarning(RESTRICTED);
     assert.match(warning, /does not apply in the European Union, United Kingdom and South Korea/);
-    assert.match(warning, /HY-Motion 1\.0 Lite/);
+    assert.match(warning, /Restricted motion model/);
 });
 
 test("start pose capture keeps the pose and history", () => {
@@ -231,7 +238,7 @@ test("panel lists models, warns about license territories, generates and applies
     const start = captureMotionStartPose(viewer);
     const { motion } = fabricateMotion(viewer, start);
     let requestBody = null;
-    const { fetchApi } = fakeApi([KIMODO, { ...HY, available: true }], (body, json) => {
+    const { fetchApi } = fakeApi([KIMODO, { ...RESTRICTED, available: true }], (body, json) => {
         requestBody = body;
         return json({ status: "success", motion: { ...motion, seed: 99, model: body.model } });
     });
@@ -246,19 +253,19 @@ test("panel lists models, warns about license territories, generates and applies
     assert.equal(license.children.length, 0);
     assert.equal(guidanceLabel.style.display, "none");
 
-    modelSelect.value = HY.id;
+    modelSelect.value = RESTRICTED.id;
     modelSelect.emit("change");
     assert.match(license.children[0].textContent, /European Union, United Kingdom and South Korea/);
-    assert.equal(license.children[1].href, HY.license.url);
+    assert.equal(license.children[1].href, RESTRICTED.license.url);
     assert.equal(guidanceLabel.style.display, "");
-    assert.equal(panel.controls.steps.value, "50", "steps reset to the new model's default");
+    assert.equal(panel.controls.stepsLabel.style.display, "none", "models without steps hide that setting");
 
     panel.settings.prompt = "wave with the left hand";
     panel.updateButtons();
     assert.equal(panel.controls.generate.disabled, false);
     await panel.generate();
-    assert.equal(requestBody.model, HY.id);
-    assert.equal(requestBody.guidance, 5);
+    assert.equal(requestBody.model, RESTRICTED.id);
+    assert.equal(requestBody.guidance, 2);
     assert.equal(panel.poses.length, 2);
     assert.equal(panel.settings.seed, "99");
 
@@ -273,7 +280,7 @@ test("panel lists models, warns about license territories, generates and applies
 
 test("panel blocks generation for a model that is not installed", async () => {
     const { w, viewer, document } = sceneWithRig();
-    const { fetchApi, calls } = fakeApi([HY], (_body, json) => json({ error: "should not run" }, 500));
+    const { fetchApi, calls } = fakeApi([ARDY], (_body, json) => json({ error: "should not run" }, 500));
     const panel = new TextToMotionPanel(w, { fetchApi, document });
     const before = JSON.stringify(viewer.getPose());
     panel.open();

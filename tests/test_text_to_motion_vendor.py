@@ -57,6 +57,22 @@ class ConfigResolveTests(unittest.TestCase):
         self.assertEqual(out["same"], 3)  # a whole-string reference keeps the value's type
         self.assertEqual(out["list"], [3, "x3"])
 
+    def test_checkpoint_select_references_are_resolved(self):
+        cfg = {"checkpoint_dir": "/m/ardy", "steps": [10],
+               "autoencoder": {"ckpt_path": "${oc.select:checkpoint_dir}/tokenizer.safetensors"},
+               "denoiser": {"ckpt_path": "${oc.select:checkpoint_dir}/denoiser.safetensors",
+                            "stats_path": "${oc.select:checkpoint_dir}/stats/motion/"},
+               "same": "${oc.select:steps.0}", "alias": "${oc.select:same}",
+               "absent": "${oc.select:missing.key}"}
+        out = CONFIG.resolve(cfg)
+        self.assertEqual(out["autoencoder"]["ckpt_path"], "/m/ardy/tokenizer.safetensors")
+        self.assertEqual(out["denoiser"]["ckpt_path"], "/m/ardy/denoiser.safetensors")
+        self.assertEqual(out["denoiser"]["stats_path"], "/m/ardy/stats/motion/")
+        self.assertEqual(out["same"], 10)
+        self.assertEqual(out["alias"], 10)
+        self.assertIsNone(out["absent"])
+        self.assertEqual(cfg["same"], "${oc.select:steps.0}")
+
     def test_bad_references_are_refused(self):
         with self.assertRaises(CONFIG.ConfigError):
             CONFIG.resolve({"a": "${missing.key}"})
@@ -64,6 +80,12 @@ class ConfigResolveTests(unittest.TestCase):
             CONFIG.resolve({"a": "${oc.env:HOME}"})
         with self.assertRaises(CONFIG.ConfigError):
             CONFIG.resolve({"a": "${b}", "b": "${a}"})
+        with self.assertRaises(CONFIG.ConfigError):
+            CONFIG.resolve({"a": "${oc.select:a}"})
+        with self.assertRaises(CONFIG.ConfigError):
+            CONFIG.resolve({"a": "${oc.select:missing,fallback}"})
+        with self.assertRaises(CONFIG.ConfigError):
+            CONFIG.resolve({"a": "${oc.select:b}", "b": "${oc.env:HOME}"})
 
 
 class InstantiateTests(unittest.TestCase):
