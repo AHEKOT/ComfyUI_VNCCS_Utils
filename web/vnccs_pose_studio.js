@@ -3226,11 +3226,131 @@ const STYLES = `
     background: var(--ps-accent-subtle);
 }
 
-/* Keep Pose Library controls readable without enlarging them with the workspace. */
+.vnccs-pose-studio .vnccs-ps-library-modal {
+    container: pose-library / inline-size;
+    --vnccs-ps-library-header-scale: calc(var(--vnccs-ps-library-ui-scale) * 0.62);
+}
+
 .vnccs-pose-studio .vnccs-ps-library-modal-header,
 .vnccs-pose-studio .vnccs-ps-library-toolbar,
 .vnccs-pose-studio .vnccs-ps-library-categories {
-    --vnccs-ps-library-ui-scale: 0.62;
+    --vnccs-ps-library-ui-scale: var(--vnccs-ps-library-header-scale);
+    flex-shrink: 0;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-title {
+    font-size: max(14px, calc(32px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn,
+.vnccs-pose-studio .vnccs-ps-library-search {
+    font-size: max(12px, calc(20px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn,
+.vnccs-pose-studio .vnccs-ps-modal-close {
+    min-height: 32px;
+    min-width: 32px;
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal-header .vnccs-ps-btn-icon {
+    font-size: max(16px, calc(28px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-modal .vnccs-ps-modal-close {
+    font-size: max(24px, calc(44px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-search,
+.vnccs-pose-studio .vnccs-ps-library-menu-btn {
+    box-sizing: border-box;
+    height: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-menu-btn {
+    flex-shrink: 0;
+    width: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(18px, calc(32px * var(--vnccs-ps-library-ui-scale)));
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+.vnccs-pose-studio .vnccs-ps-library-size-control {
+    width: max(220px, calc(380px * var(--vnccs-ps-library-ui-scale)));
+    flex-basis: max(220px, calc(380px * var(--vnccs-ps-library-ui-scale)));
+    height: max(32px, calc(76px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(11px, calc(20px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-size-control input {
+    min-width: 0;
+    min-height: 24px;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-category-chip {
+    flex-shrink: 0;
+    height: max(28px, calc(60px * var(--vnccs-ps-library-ui-scale)));
+    font-size: max(11px, calc(22px * var(--vnccs-ps-library-ui-scale)));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings {
+    --vnccs-ps-library-ui-scale: 1;
+    zoom: max(0.55, var(--vnccs-ps-library-header-scale));
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-head,
+.vnccs-pose-studio .vnccs-ps-library-repo-actions {
+    flex-wrap: wrap;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-head > div {
+    flex: 1 1 360px;
+    min-width: 0;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings-back {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.vnccs-pose-studio .vnccs-ps-library-settings .vnccs-ps-input,
+.vnccs-pose-studio .vnccs-ps-library-settings .vnccs-ps-btn {
+    box-sizing: border-box;
+    min-height: 60px;
+    white-space: nowrap;
+    transition: color var(--ps-transition), border-color var(--ps-transition);
+}
+
+@container pose-library (max-width: 600px) {
+    .vnccs-pose-studio .vnccs-ps-library-modal-header {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-header-actions {
+        grid-column: 1 / -1;
+        grid-row: 2;
+    }
+    .vnccs-pose-studio .vnccs-ps-modal-close {
+        grid-column: 2;
+        grid-row: 1;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-toolbar {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-search {
+        grid-column: 1 / -1;
+        min-width: 0;
+        width: 100%;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-size-control {
+        width: auto;
+        min-width: 0;
+    }
+    .vnccs-pose-studio .vnccs-ps-library-repo-card,
+    .vnccs-pose-studio .vnccs-ps-library-repo-add {
+        grid-template-columns: minmax(0, 1fr);
+    }
 }
 
 .vnccs-ps-library-workspace {
@@ -11464,8 +11584,11 @@ class PoseStudioWidget {
     updateLibraryLayoutScale() {
         if (this.libraryModal) {
             const modalWidth = this.libraryModal.clientWidth || this.libraryModal.getBoundingClientRect().width || 1600;
+            const modalHeight = this.libraryModal.clientHeight || this.libraryModal.getBoundingClientRect().height || 1000;
             const scale = Math.max(0.5, Math.min(1.4, modalWidth / 1600));
             this.libraryModal.style.setProperty("--vnccs-ps-library-ui-scale", scale.toFixed(3));
+            const headerScale = Math.max(0.5, Math.min(1.4, modalWidth / 1600, modalHeight / 1000)) * 0.62;
+            this.libraryModal.style.setProperty("--vnccs-ps-library-header-scale", headerScale.toFixed(3));
         }
         this.updateLibraryInspectorScale();
     }

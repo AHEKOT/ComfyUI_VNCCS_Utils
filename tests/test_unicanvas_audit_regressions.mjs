@@ -159,7 +159,7 @@ test("New canvas invalidates a generation already loading its output image", asy
   const staged = [];
   const w = widget({ confirmInWidget: async () => true, stagingItems: [], undoStack: [], redoStack: [],
     loadImage: () => new Promise(done => { finishImage = done; }), resultImageURL: image => image,
-    addStagingItem: item => staged.push(item), addLayer() {}, updateHistoryButtons() {}, syncToNode() {}, clearSamPrompt() {}, setTool() {}, updatePanoramaControls() {} });
+    addStagingItem: item => staged.push(item), clearStateCache: async () => {}, addLayer() {}, updateHistoryButtons() {}, syncToNode() {}, clearSamPrompt() {}, setTool() {}, updatePanoramaControls() {} });
   const pending = w._stageGeneratedImages({ images: ["old"] }, null, "txt2img", {
     requestPanorama: null, requestDocumentRevision: 0, bbox: {}, inferenceSize: {}, outputSize: {},
   });

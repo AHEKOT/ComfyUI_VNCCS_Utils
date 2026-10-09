@@ -1,7 +1,5 @@
 # ComfyUI VNCCS Utils
 
-> **Current release: `0.6.10`**
-
 A collection of utility nodes from the [VNCCS](https://github.com/AHEKOT/ComfyUI_VNCCS) project for everyday ComfyUI workflows, including **VNCCS 3D Factory**, **VNCCS UniCanvas**, **VNCCS Pose Studio**, and supporting generation utilities.
 
 <table>

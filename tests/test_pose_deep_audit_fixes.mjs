@@ -96,6 +96,63 @@ function libraryScene() {
     return scene;
 }
 
+test("Pose Library header scales with both node dimensions without resizing the thumbnails", () => {
+    const { w } = createScene();
+    const properties = new Map();
+    let inspectorUpdates = 0;
+    w.libraryModal = {
+        clientWidth: 1600, clientHeight: 1000,
+        style: { setProperty: (key, value) => properties.set(key, value) },
+        getBoundingClientRect: () => { throw new Error("Graph zoom must not determine the layout scale"); },
+    };
+    w.libraryThumbSize = 320;
+    w.updateLibraryInspectorScale = () => { inspectorUpdates++; };
+    for (const [width, height, expected] of [
+        [800, 500, 0.310], [1600, 1000, 0.620], [3200, 2000, 0.868],
+        [2400, 500, 0.310], [800, 1500, 0.310], [400, 300, 0.310],
+    ]) {
+        Object.assign(w.libraryModal, { clientWidth: width, clientHeight: height });
+        w.updateLibraryLayoutScale();
+        assert.equal(Number(properties.get("--vnccs-ps-library-header-scale")), expected, `${width} x ${height}`);
+        assert.equal(w.libraryThumbSize, 320);
+    }
+    assert.equal(inspectorUpdates, 6);
+    const rules = source.slice(source.indexOf("container: pose-library / inline-size"), source.indexOf(".vnccs-ps-library-workspace {"));
+    assert.match(rules, /--vnccs-ps-library-ui-scale:\s*var\(--vnccs-ps-library-header-scale\)/);
+    assert.doesNotMatch(rules, /--vnccs-ps-library-ui-scale:\s*0\.62/);
+    assert.match(rules, /@container pose-library \(max-width: 600px\)/);
+    const settingsRule = rules.match(/\.vnccs-pose-studio \.vnccs-ps-library-settings\s*\{([^}]*)\}/)?.[1] || "";
+    assert.match(settingsRule, /zoom:\s*max\(0\.55, var\(--vnccs-ps-library-header-scale\)\)/);
+    assert.match(settingsRule, /--vnccs-ps-library-ui-scale:\s*1;/, "settings buttons are not scaled twice");
+});
+
+test("Pose Library resize feedback uses the newest dimensions on the next animation frame", () => {
+    const { w, context, frames } = createScene();
+    frames.clear();
+    const properties = new Map();
+    let onResize;
+    context.ResizeObserver = class {
+        constructor(callback) { onResize = callback; }
+        observe() {}
+    };
+    w.libraryModal = {
+        clientWidth: 1600, clientHeight: 1000,
+        style: { setProperty: (key, value) => properties.set(key, value) },
+    };
+    w.libraryWorkspace = {};
+    w.updateLibraryInspectorScale = noop;
+    w.startLibraryResizeObserver();
+    onResize();
+    Object.assign(w.libraryModal, { clientWidth: 800, clientHeight: 500 });
+    onResize();
+    assert.equal(frames.size, 1, "multiple resize events share one frame");
+    const callback = frames.values().next().value;
+    frames.clear();
+    callback();
+    assert.equal(Number(properties.get("--vnccs-ps-library-header-scale")), 0.310);
+    assert.equal(w._libraryResizeFrame, null);
+});
+
 test("editing a downloaded item saves a local copy while retaining its source identity", async () => {
     const { w } = libraryScene();
     w.showLibraryModal();

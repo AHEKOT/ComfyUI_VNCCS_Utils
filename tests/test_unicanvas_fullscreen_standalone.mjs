@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import vm from "node:vm";
 
 // All regexes avoid literal line breaks so the suite stays CRLF-tolerant on
 // Windows checkouts (see tests/test_unicanvas_frontend.mjs for the contrast).
@@ -152,8 +153,8 @@ test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
 test("New canvas lives in the top bar, asks Are you sure? and clears layers and images", () => {
     const newDocument = region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions");
     assert.ok(newDocument.includes('"New canvas"'), 'the confirm modal must be titled "New canvas"');
-    assert.ok(newDocument.includes('"Are you sure?\\nConfirmation will delete <b>all layers</b> in canvas."'),
-        'the copy must warn that the confirmation deletes all layers');
+    assert.ok(newDocument.includes('"Are you sure?\\nConfirmation will delete <b>all layers</b> and the stored images for this canvas."'),
+        'the copy must warn that the confirmation deletes layers and stored images');
     assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
     assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
     assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
@@ -169,6 +170,71 @@ test("New canvas lives in the top bar, asks Are you sure? and clears layers and 
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
     assert.ok(widgetSource.includes(".vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }"),
         "the top bar CSS must center the New canvas button between the clusters");
+});
+
+test("New canvas waits for cache deletion and preserves layers on cancellation or failure", async () => {
+    const newDocument = vm.runInNewContext(region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions")
+        .replace("export ", "") + "\nnewUniCanvasDocument");
+    let complete;
+    const events = [];
+    const originalLayers = [{ id: "old" }];
+    const widget = {
+        confirmInWidget: async () => true, layers: originalLayers,
+        clearStateCache() {
+            assert.equal(this._isRestoring, true, "autosaves are suspended during deletion");
+            events.push("delete");
+            return new Promise(resolve => { complete = resolve; });
+        },
+        addLayer() { events.push("new layer"); }, renderLayerList() {}, requestRender() {},
+        syncToNode() { events.push("save empty"); }, setStatus(message, error) { this.error = error && message; },
+    };
+    const pending = newDocument(widget);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(widget.layers, originalLayers);
+    complete();
+    await pending;
+    assert.deepEqual(events, ["delete", "new layer", "save empty"]);
+    assert.equal(widget.layers.length, 0);
+    assert.equal(widget._isRestoring, false);
+    widget.layers = originalLayers;
+    widget.clearStateCache = async () => { throw new Error("disk error"); };
+    await newDocument(widget);
+    assert.equal(widget.layers, originalLayers);
+    assert.match(widget.error, /disk error/);
+    assert.equal(widget._isRestoring, false);
+    widget.confirmInWidget = async () => false;
+    widget.clearStateCache = () => assert.fail("Cancel must not delete any cache");
+    await newDocument(widget);
+    assert.equal(widget.layers, originalLayers);
+});
+
+test("cache deletion waits for queued uploads and resets upload deduplication", async () => {
+    const prototype = vm.runInNewContext(widgetSource.slice(widgetSource.indexOf("class UniCanvasWidget {"), widgetSource.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", {
+        clearTimeout() {}, Date,
+        window: { localStorage: { removeItem(key) { removed.push(key); } } },
+        fetch: async (_url, request) => {
+            payload = JSON.parse(request.body);
+            assert.equal(uploadFinished, true);
+            return { ok: true };
+        },
+    });
+    let finishUpload, payload, uploadFinished = false;
+    const removed = [];
+    const widget = Object.assign(Object.create(prototype), {
+        stateCacheId: "current", stateUploadRevision: Date.now() + 100, outputUploadRevision: Date.now() + 200,
+        lastUploadedStateJSON: "old", lastUploadedOutputJSON: "old output",
+        stateUploadPromise: new Promise(resolve => { finishUpload = () => { uploadFinished = true; resolve(); }; }),
+        node: { id: 1 },
+    });
+    const pending = widget.clearStateCache();
+    assert.equal(payload, undefined);
+    finishUpload();
+    await pending;
+    assert.equal(payload.state_id, "current");
+    assert.ok(payload.revision > Date.now());
+    assert.equal(widget.lastUploadedStateJSON, null);
+    assert.equal(widget.lastUploadedOutputJSON, null);
+    assert.equal(removed.length, 2);
 });
 
 test("confirmInWidget renders the message as pre-line HTML copy", () => {

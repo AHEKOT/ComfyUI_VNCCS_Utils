@@ -71,6 +71,57 @@ class RuntimeCacheTests(unittest.TestCase):
         self.cache = load_runtime_caches(self.root)
         self.assertEqual(self.cache["vnccs_get_pose_animation_cache"]("old"), entry)
 
+    def test_canvas_delete_removes_current_output_legacy_and_blocks_late_uploads(self):
+        write = self.cache["_vnccs_write_unicanvas_state_cache_file"]
+        directory = Path(self.cache["_UNICANVAS_STATE_CACHE_DIR"])
+        legacy = Path(self.cache["_UNICANVAS_LEGACY_STATE_CACHE_DIR"])
+        legacy.mkdir(parents=True)
+        for state_id in ("current", "current_out", "saved_workflow"):
+            entry = {"state": {"layers": [{"dataURL": "pixels"}]}, "revision": 7}
+            write(state_id, entry)
+            self.cache["VNCCS_UNICANVAS_STATE_CACHE"][state_id] = entry
+            (legacy / f"{state_id}.json").write_text(json.dumps(entry))
+
+        class Request:
+            headers = {"Content-Length": "100"}
+            async def json(self):
+                return {"state_id": "current", "revision": 9}
+
+        delete = self.cache["routes"]["/vnccs/unicanvas_state_delete"]
+        self.assertEqual(asyncio.run(delete(Request())).status, 200)
+        self.assertEqual([path.name for path in legacy.iterdir()], ["saved_workflow.json"])
+        self.assertEqual(json.loads((directory / "saved_workflow.json").read_text())["state"]["layers"], [{"dataURL": "pixels"}])
+        self.cache["VNCCS_UNICANVAS_STATE_CACHE"].clear()
+        for state_id in ("current", "current_out"):
+            class LateUpload(Request):
+                async def json(self):
+                    return {"state_id": state_id, "revision": 8, "state": {"layers": [{"dataURL": "old pixels"}]}}
+            upload = self.cache["routes"]["/vnccs/unicanvas_state_upload"]
+            self.assertEqual(asyncio.run(upload(LateUpload())).data["status"], "stale_ignored")
+            path = directory / f"{state_id}.json"
+            self.assertLess(path.stat().st_size, 100, "only the empty revision marker remains")
+            self.assertEqual(json.loads(path.read_text())["state"]["layers"], [])
+        self.assertEqual(asyncio.run(delete(Request())).status, 200, "already deleted files are harmless")
+
+    def test_canvas_delete_rejects_invalid_request_and_reports_disk_failure(self):
+        delete = self.cache["routes"]["/vnccs/unicanvas_state_delete"]
+        class Request:
+            headers = {"Content-Length": "100"}
+            payload = {}
+            async def json(self):
+                return self.payload
+        request = Request()
+        for payload in ({}, {"state_id": []}, {"state_id": "current", "revision": True},
+                        {"state_id": "current", "revision": -1}):
+            request.payload = payload
+            self.assertEqual(asyncio.run(delete(request)).status, 400)
+        request.headers = {"Content-Length": "1025"}
+        self.assertEqual(asyncio.run(delete(request)).status, 413)
+        request.headers = {"Content-Length": "100"}
+        request.payload = {"state_id": "current", "revision": 1}
+        with mock.patch.object(self.cache["canvas_service"].os, "remove", side_effect=PermissionError("denied")):
+            self.assertEqual(asyncio.run(delete(request)).status, 500)
+
     def test_legacy_canvas_read_migrates_before_temp_cleanup(self):
         legacy = Path(self.cache["_UNICANVAS_LEGACY_STATE_CACHE_DIR"])
         legacy.mkdir(parents=True, exist_ok=True)

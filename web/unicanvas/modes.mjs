@@ -764,17 +764,28 @@ export async function saveUniCanvasOutput(widget, layerId = null) {
 export async function newUniCanvasDocument(widget) {
   const confirmed = await widget.confirmInWidget(
     "New canvas",
-    "Are you sure?\nConfirmation will delete <b>all layers</b> in canvas.",
+    "Are you sure?\nConfirmation will delete <b>all layers</b> and the stored images for this canvas.",
     "Confirm"
   );
-  if (!confirmed || widget._disposed) return;
+  if (!confirmed || widget._disposed || widget._clearingStateCache) return;
+  widget._clearingStateCache = true;
+  widget._isRestoring = true;
+  widget.cancelDeferredCanvasCommit?.();
+  try {
+    await widget.clearStateCache();
+  } catch (error) {
+    widget.setStatus(`New canvas failed: ${error.message || error}`, true);
+    return;
+  } finally {
+    widget._clearingStateCache = false;
+    widget._isRestoring = false;
+  }
+  if (widget._disposed) return;
   widget._stateRestoreFailed = false;
-  widget._isRestoring = false;
   widget._documentRevision = (widget._documentRevision || 0) + 1;
   widget._stateLoadRevision = (widget._stateLoadRevision || 0) + 1;
   widget._stateRestoreRevision = (widget._stateRestoreRevision || 0) + 1;
   widget._importRevision = (widget._importRevision || 0) + 1;
-  widget.cancelDeferredCanvasCommit?.();
   widget.poseEditor?.release();
   widget.panorama?.dispose();
   widget.panorama = null;

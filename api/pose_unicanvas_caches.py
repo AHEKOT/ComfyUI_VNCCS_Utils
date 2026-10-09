@@ -168,6 +168,23 @@ def _vnccs_register_unicanvas_state_cache():
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    @PromptServer.instance.routes.post("/vnccs/unicanvas_state_delete")
+    async def vnccs_unicanvas_state_delete(request):
+        try:
+            if not _vnccs_content_length_ok(request, 1024):
+                return web.json_response({"error": "cache deletion payload is too large"}, status=413)
+            data = await request.json()
+            if not isinstance(data, dict) or not isinstance(data.get("state_id"), str) or not data["state_id"]:
+                return web.json_response({"error": "missing state_id"}, status=400)
+            revision = data.get("revision")
+            if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+                return web.json_response({"error": "revision must be a non-negative integer"}, status=400)
+            state_id = _vnccs_safe_id(data["state_id"], "unicanvas")
+            canvas_cache._vnccs_delete_unicanvas_state_cache(state_id, revision)
+            return web.json_response({"status": "ok", "state_id": state_id})
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=500)
+
     @PromptServer.instance.routes.get("/vnccs/unicanvas/build_info")
     async def vnccs_unicanvas_build_info(request):
         return web.json_response(build_info._vnccs_unicanvas_build_info())
