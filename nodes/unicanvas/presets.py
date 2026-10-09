@@ -116,11 +116,14 @@ def _unicanvas_find_installed_asset(local_path: str) -> tuple[str, str]:
     except ImportError:
         return target, relative_name
     for key in categories:
-        for name in (relative_name, relative_name.rsplit("/", 1)[-1],
-                     _resolve_model_filename(folder_paths, key, relative_name)):
-            found = _get_full_path_agnostic(folder_paths, key, name, require_exists=True)
-            if found and os.path.isfile(found):
-                return found, name
+        found = _get_full_path_agnostic(folder_paths, key, relative_name, require_exists=True)
+        if found and os.path.isfile(found):
+            return found, relative_name
+    name = _resolve_model_filename(folder_paths, categories, relative_name, allow_subfolder_fallback=True)
+    for key in categories:
+        found = _get_full_path_agnostic(folder_paths, key, name, require_exists=True)
+        if found and os.path.isfile(found):
+            return found, name
     return target, relative_name
 
 
@@ -220,8 +223,17 @@ def _get_unicanvas_dependencies(generation_mode: str, preset_id: str = "", clip_
         for role, category, name in (("clip", "text_encoders", clip_name), ("vae", "vae", vae_name)):
             if name:
                 name = _validate_model_name(name)
-                path, _ = _unicanvas_find_installed_asset(f"models/{category}/{name}")
-                if os.path.isfile(path):
+                import folder_paths
+
+                categories = _PRESET_FOLDER_ALIASES.get(category, (category,))
+                resolved = _resolve_model_filename(folder_paths, categories, name)
+                path = _unicanvas_resolve_local_model_path(f"models/{category}/{name}")
+                for key in categories:
+                    found = _get_full_path_agnostic(folder_paths, key, resolved, require_exists=True)
+                    if found:
+                        path = found
+                        break
+                if path and os.path.isfile(path):
                     custom_installed.add(role)
     assets = {}
     for preset in candidates:

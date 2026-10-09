@@ -93,12 +93,14 @@ test("restoring a cleared document cannot resurrect deleted backup layers", asyn
 test("disposing during restoration never uploads a blank replacement over the source cache", () => {
     const w = widget(base);
     let uploads = 0;
-    Object.assign(w, { _isRestoring: true, flushStateUpload() { uploads++; }, closeEditReferenceImages() {}, stopDrawProgressPolling() {} });
+    let closed = false;
+    Object.assign(w, { _isRestoring: true, flushStateUpload() { uploads++; }, closeColorMatchPreview(commit) { closed = commit; }, closeEditReferenceImages() {}, stopDrawProgressPolling() {} });
     context.teardownUniCanvasWidgetModes = () => {};
     context.window = { clearTimeout() {} };
     w.dispose();
     assert.equal(uploads, 0);
     assert.equal(w._disposed, true);
+    assert.equal(closed, true);
 });
 
 test("the constructor's stale restore cannot unlock a newer configure restore", async () => {
@@ -145,6 +147,65 @@ test("pose assets restore even when the pose layer has no cached raster pixels",
     const restored = widget(live).mergeCachedState(live, stored);
     assert.deepEqual(plain(restored.layers[0].pose), { studio: { angle: 9, background_url: "background" } });
     assert.equal(restored.layers[0].dataURL, undefined);
+});
+
+test("partial server cache borrows only missing pixels from the local backup", async () => {
+    const saved = { ...base, layers: [{ id: "A", cached: true }, { id: "B", cached: true, opacity: .3 }] };
+    cache({ ...base, layers: [{ id: "A", dataURL: "new-server-A" }] });
+    const w = widget(saved);
+    w.loadLocalStateBackup = () => ({ ...base, layers: [{ id: "A", dataURL: "old-A" }, { id: "B", dataURL: "backup-B" }] });
+    await w._loadFromNode();
+    assert.equal(w.restored.layers[0].dataURL, "new-server-A");
+    assert.equal(w.restored.layers[1].dataURL, "backup-B");
+    assert.equal(w.restored.layers[1].opacity, .3);
+});
+
+test("unrecoverable partial caches block restore and subsequent saving", async () => {
+    for (const missing of [{ id: "B", cached: true }, { id: "B", dataURL: "preview", hiresRect: { x: 1 } }]) {
+        const saved = { ...base, layers: [{ id: "A", dataURL: "A" }, missing] };
+        cache(saved);
+        const w = widget(saved);
+        w.layers = [{ id: "existing" }];
+        let backups = 0;
+        w.saveLocalStateBackup = () => backups++;
+        await w._loadFromNode();
+        assert.equal(w._stateRestoreFailed, true);
+        assert.equal(w.restored, undefined);
+        assert.equal(await w.flushStateUpload(), false);
+        assert.equal(backups, 0);
+        assert.equal(w.layers[0].id, "existing");
+    }
+});
+
+test("direct partial-state restore also protects existing pixels and backup", async () => {
+    const saved = { ...base, layers: [{ id: "A", dataURL: "A" }, { id: "B", cached: true }] };
+    const w = widget(saved);
+    delete w.applySerializedState;
+    w.layers = [{ id: "existing" }];
+    w.updatePanoramaControls = () => {};
+    w.saveLocalStateBackup = () => assert.fail("incomplete state must not overwrite the backup");
+    await w.applySerializedState(saved);
+    assert.equal(w._stateRestoreFailed, true);
+    assert.equal(w.layers[0].id, "existing");
+});
+
+test("hires-only and explicitly cleared layers do not require missing raster pixels", () => {
+    const w = widget(base);
+    assert.equal(w.stateHasMissingLayerPixels({ layers: [
+        { cached: true, hiresRect: { x: 1 }, hiresDataURL: "hires" },
+        { cached: false }, { type: "pose", cached: false, pose: {} },
+    ] }), false);
+    assert.equal(w.stateHasMissingLayerPixels({ layers: [{ crop: { x: 1 }, dataURL: null }] }), true);
+    assert.equal(w.stateHasMissingLayerPixels({ layers: [{ cached: true, hiresDataURL: "unusable without rect" }] }), true);
+});
+
+test("a full empty-layer snapshot resolves the provisional cached flag from light sync", async () => {
+    const saved = { ...base, layers: [{ id: "empty", crop: null, cached: true }] };
+    cache({ ...base, layers: [{ id: "empty", crop: null, dataURL: null, hiresRect: null }] });
+    const w = widget(saved);
+    await w._loadFromNode();
+    assert.equal(w.restored.layers[0].cached, false);
+    assert.equal(w._stateRestoreFailed, false);
 });
 
 test("standalone pointer restores the full server document, including panorama and settings", async () => {

@@ -30,6 +30,18 @@ def test_defaults_follow_h3_recipe():
     assert module.defaults["frame_count"] == 5
 
 
+@pytest.mark.parametrize("negative", ["", "blurry"])
+def test_draw_prompt_encoding_keeps_positive_for_h3_sampler(negative):
+    from types import SimpleNamespace
+
+    module = MiniMaxH3UniCanvasModule()
+    ctx = SimpleNamespace(clip="CLIP", settings={}, request=SimpleNamespace(positive_text="a fox", negative_text=negative))
+    positive, negative_conditioning = module.encode_draw_prompts(ctx)
+    assert ctx.settings["_h3_prompt"] == "a fox"
+    assert ctx.settings["_h3_clip"] == "CLIP"
+    assert positive is negative_conditioning
+
+
 def test_external_loader_passthrough():
     loader = _get_unicanvas_model_loader("external")
     external = {"model": "M", "clip": "C", "vae": "V"}
@@ -437,6 +449,7 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
         "inference_size": {"width": 1280, "height": 960},
         "output_size": {"width": 640, "height": 480},
         "pose_edit": {"image1": "data:image/png;base64,AAAA", "image2": "data:image/png;base64,BBBB"},
+        "positive": "Use the edited pose and lighting from image 2",
         # Not composition keys: the node state owns the draw id and the generation settings,
         # so these must not cross the bridge from queued_draw.
         "debug_id": "frontend-debug-id",
@@ -467,6 +480,8 @@ def test_export_state_forwards_queued_draw_composition_keys(monkeypatch):
     assert "settings" not in captured
     assert captured["debug_id"] == "draw-queued"
     assert captured["gen_settings"]["generation_mode"] == "minimax_h3"
+    assert captured["gen_settings"]["positive"] == queued_draw["positive"]
+    assert "positive" not in state["settings"], "the prompt override is one-shot"
     assert captured["external"]["model"] == "M"
     assert captured["return_tensor"] is True
     assert image.shape == (1, 8, 8, 3)

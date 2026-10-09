@@ -271,6 +271,8 @@ def _ensure_anima_lllite_model(lllite_name: str, draw_id: str = "unknown") -> st
     found = _get_full_path_agnostic(folder_paths, "controlnet", installed, require_exists=True)
     if found:
         return found
+    if "/" in requested:
+        raise ValueError(f"Anima LLLite model not found: {requested}")
     found = _get_full_path_agnostic(folder_paths, "controlnet", basename, require_exists=True)
     if found:
         return found

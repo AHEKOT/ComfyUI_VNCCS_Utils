@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import torch
-from PIL import Image
+from PIL import Image, ImageChops
 
 from .constants import _MAX_PIXELS
 from .crop_stitch import CROP_SETTING, crop_image, plan_crop, stitch_image, stitch_mask
@@ -494,8 +494,17 @@ class ImageDrawPipeline:
             "performance": ctx.settings.get("_performance", ""),
         }
         if request.payload.get("return_tensor"):
+            tensor_images = ctx.result_images
+            if saved_mask is not None:
+                source = ctx.full_source_rgba if ctx.crop_plan is not None else ctx.source_rgba
+                source = source.convert("RGBA").resize(ctx.output_size, Image.Resampling.LANCZOS)
+                tensor_images = []
+                for image in ctx.result_images:
+                    patch = image.convert("RGBA")
+                    patch.putalpha(ImageChops.multiply(patch.getchannel("A"), mask_to_save.convert("L")))
+                    tensor_images.append(Image.alpha_composite(source, patch))
             result["tensor"] = torch.cat([
                 (_pil_rgba_to_image_tensor(image) if image.mode == "RGBA" else _pil_to_image_tensor(image))
-                for image in ctx.result_images
+                for image in tensor_images
             ])
         return result

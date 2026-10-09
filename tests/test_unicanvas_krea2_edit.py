@@ -205,7 +205,10 @@ class EditContractTests(unittest.TestCase):
                 return __file__ if name.replace("/", "\\") == r"krea\krea2_identity_edit_v1_2.safetensors" else None
 
         with patch.dict(sys.modules, {"folder_paths": _FolderPaths()}):
-            self.assertEqual(loras._get_lora_full_path("Krea2/krea2_identity_edit_v1_2.safetensors"), __file__)
+            name, _ = MODULE.lora_requirements[0].resolve({})
+            self.assertEqual(loras._get_lora_full_path(name), __file__)
+            with self.assertRaisesRegex(ValueError, "LoRA not found"):
+                loras._get_lora_full_path("custom/krea2_identity_edit_v1_2.safetensors")
 
     def test_empty_latent_uses_sd3_channels_and_batch_contract(self):
         expected = {"samples": object()}

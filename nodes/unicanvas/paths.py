@@ -95,30 +95,39 @@ def _get_full_path_agnostic(folder_paths: Any, category: str, name: str, require
     return None if require_exists else first_match
 
 
-def _resolve_model_filename(folder_paths: Any, categories: str | tuple[str, ...], name: Any) -> str:
+def _resolve_model_filename(folder_paths: Any, categories: str | tuple[str, ...], name: Any, *, allow_subfolder_fallback: bool = False) -> str:
     """The installed file ``name`` refers to, as ComfyUI lists it (subfolder included).
 
     Family defaults and presets name files without a subfolder ("qwen_image_vae.safetensors")
     while users keep them in one ("qwen/qwen_image_vae.safetensors"). An exact entry wins;
-    otherwise the first listed entry with the same file name (case-insensitive). Unknown names come back unchanged so the loader reports them.
+    otherwise a unique basename match is allowed for bare names or known presets.
+    Explicit subfolder paths stay exact. Unknown names reach the loader unchanged.
     """
     raw = _validate_model_name(name)
     if not raw:
         return raw
-    wanted = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    normalized = raw.replace("\\", "/")
+    wanted = normalized.rsplit("/", 1)[-1].lower()
+    installed = []
     for category in (categories,) if isinstance(categories, str) else categories:
         try:
             listed = list(folder_paths.get_filename_list(category) or [])
         except Exception:
             listed = []
-        if raw in listed:
-            return raw
+        installed.extend((category, str(entry)) for entry in listed)
         for entry in listed:
-            if str(entry).replace("\\", "/").rsplit("/", 1)[-1].lower() == wanted:
+            if str(entry).replace("\\", "/") == normalized:
                 return str(entry)
-        # MiniMax's full-precision video VAE can replace the preset's quantized VAE.
-        if category == "vae" and wanted == "minimax_h3_video_vae_int8_convrot.safetensors":
-            for entry in listed:
-                if str(entry).replace("\\", "/").rsplit("/", 1)[-1].lower() == "minimax_h3_video_vae_fp16.safetensors":
-                    return str(entry)
+    if "/" in normalized and not allow_subfolder_fallback:
+        return raw
+    matches = list(dict.fromkeys(entry for _, entry in installed
+                                if entry.replace("\\", "/").rsplit("/", 1)[-1].lower() == wanted))
+    # MiniMax's full-precision video VAE can replace the preset's quantized VAE.
+    if not matches and wanted == "minimax_h3_video_vae_int8_convrot.safetensors":
+        matches = list(dict.fromkeys(entry for category, entry in installed if category == "vae"
+                                    and entry.replace("\\", "/").rsplit("/", 1)[-1].lower() == "minimax_h3_video_vae_fp16.safetensors"))
+    if len(matches) > 1:
+        raise ValueError(f"Ambiguous model filename '{raw}'; select its subfolder path")
+    if matches:
+        return matches[0]
     return raw

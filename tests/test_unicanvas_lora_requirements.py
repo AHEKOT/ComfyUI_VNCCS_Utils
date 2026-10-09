@@ -242,4 +242,8 @@ def test_lora_identity_resolves_installed_files_and_default_aliases(tmp_path, mo
                         if (tmp_path / name).is_file() else None)
     monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: ["portraits/adapter.safetensors", "styles/adapter.safetensors"])
     assert not loras._lora_name_in("styles/adapter.safetensors", ["portraits/adapter.safetensors"])
+    assert not loras._lora_name_in("adapter.safetensors", ["portraits/adapter.safetensors"])
+    with pytest.raises(ValueError, match="Ambiguous"):
+        loras._get_lora_full_path("adapter.safetensors")
+    monkeypatch.setattr(folder_paths, "get_filename_list", lambda kind: ["portraits/adapter.safetensors"])
     assert loras._lora_name_in("adapter.safetensors", ["portraits/adapter.safetensors"])

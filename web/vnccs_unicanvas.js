@@ -2,21 +2,21 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791500040145";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791500040145";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791519629487";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791519629487";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791500040145";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791500040145";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791500040145";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791500040145";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791500040145";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791500040145";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791500040145";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791500040145";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791500040145";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791500040145";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791500040145";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791519629487";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791519629487";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791519629487";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791519629487";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791519629487";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791519629487";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791519629487";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791519629487";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791519629487";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791519629487";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791519629487";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -48,11 +48,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791500040145";
+} from "./unicanvas/transform.mjs?v=1791519629487";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791500040145";
+} from "./unicanvas/presets.mjs?v=1791519629487";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -60,10 +60,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791500040145";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791500040145";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791500040145";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791500040145";
+} from "./unicanvas/modes.mjs?v=1791519629487";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791519629487";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791519629487";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791519629487";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -76,7 +76,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791500040145";
+const VNCCS_UNICANVAS_VERSION = "1791519629487";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -126,8 +126,8 @@ const VNCCS_UNICANVAS_VERSION = "1791500040145";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791500040145";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791500040145";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791519629487";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791519629487";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -7493,6 +7493,7 @@ class UniCanvasWidget {
       mode,
       image: poseRequest ? undefined : imageCanvas.toDataURL("image/png"),
       pose_edit: poseRequest?.pose_edit,
+      positive: poseRequest?.positive,
       mask: poseRequest ? undefined : maskCanvas.toDataURL("image/png"),
       source_empty: mode === "txt2img",
       bbox,
@@ -8003,6 +8004,12 @@ class UniCanvasWidget {
     return Array.isArray(state?.layers) && state.layers.some((layer) => Boolean(layer?.dataURL || layer?.hiresDataURL));
   }
 
+  stateHasMissingLayerPixels(state) {
+    return state.layers.some(layer => (layer.cached !== false && (layer.cached === true || layer.crop)
+      && !layer.dataURL && !(layer.hiresRect && layer.hiresDataURL))
+      || (layer.hiresRect && !layer.hiresDataURL));
+  }
+
   // localStorage (~5 MB per origin) is shared with ComfyUI's own workflow drafts: a multi-MB
   // canvas backup there makes every draft save fail ("Failed to save workflow draft"). The server
   // state cache is the real persistence, so the local backup stays small and only the newest
@@ -8274,7 +8281,11 @@ class UniCanvasWidget {
       layers: state.layers.map(layer => {
         const pixels = layer.cached === false ? null : cachedById.get(layer.id);
         const hiresRect = layer.hiresRect === undefined ? pixels?.hiresRect : layer.hiresRect;
+        // Light sync can mark a new empty layer cached before its first full snapshot.
+        const emptyCachedLayer = layer.cached === true && layer.crop === null && pixels?.crop === null
+          && pixels.cached !== true && !pixels.dataURL && !pixels.hiresRect;
         return { ...layer,
+          ...(emptyCachedLayer ? { cached: false } : {}),
           dataURL: layer.dataURL || pixels?.dataURL,
           crop: layer.dataURL ? layer.crop : layer.crop || pixels?.crop,
           hiresRect,
@@ -8322,10 +8333,10 @@ class UniCanvasWidget {
           this.setStatus("State cache missing; trying local backup", true);
         }
       }
-      if (!this.stateHasLayerPixels(state)) {
+      if (!this.stateHasLayerPixels(state) || this.stateHasMissingLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         if (backup) {
-          state = this.mergeCachedState(workflowState, backup);
+          state = this.mergeCachedState(state, backup);
           this.setStatus(cacheRestoreFailed ? "Restored canvas from local backup" : "Restored canvas backup");
         } else if (cacheRestoreFailed) {
           this.setStatus("State cache missing and no local image backup found", true);
@@ -8336,6 +8347,12 @@ class UniCanvasWidget {
           }
           return;
         }
+      }
+      if (this.stateHasMissingLayerPixels(state)) {
+        this._stateRestoreFailed = true;
+        this.setStatus("Canvas restore failed: some saved layer pixels are missing. Reload to recover them, or start a new canvas before saving.", true);
+        if (workflowSettings) this.applySerializedSettings(workflowSettings);
+        return;
       }
       if (this._disposed || loadRevision !== this._stateLoadRevision) return;
       const forkCache = sharedCache || (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state));
@@ -8370,19 +8387,20 @@ class UniCanvasWidget {
     const restoreRevision = this._stateRestoreRevision = (this._stateRestoreRevision || 0) + 1;
     let restoredPanorama = null, previous = null;
     try {
-      if (!this.stateHasLayerPixels(state)) {
+      if (!this.stateHasLayerPixels(state) || this.stateHasMissingLayerPixels(state)) {
         const backup = this.loadLocalStateBackup();
         const merged = backup ? this.mergeCachedState(state, backup) : null;
         if (merged && this.stateHasLayerPixels(merged)) {
           state = merged;
           this.setStatus("Recovered canvas images from local backup");
-        } else if (state.layers.some(layer => layer.cached !== false) && this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
+        } else if (!this.stateHasMissingLayerPixels(state) && state.layers.some(layer => layer.cached !== false) && this.layers.some((layer) => this.getLayerAlphaBounds(layer))) {
           this.setStatus("Skipped metadata-only canvas restore to protect existing images", true);
           // The existing pixels are protected, but the saved model/generation settings still apply.
           if (state.settings) this.applySerializedSettings(state.settings);
           return;
         }
       }
+      if (this.stateHasMissingLayerPixels(state)) throw new Error("Some saved layer pixels are missing");
       const panoramaSettings = normalizePanorama(state.panorama);
       restoredPanorama = panoramaSettings ? new PanoramaDocument(this, panoramaSettings) : null;
       const nextOrigin = panoramaSettings ? { x: 0, y: 0 } : (state.origin || this.origin);
@@ -8917,6 +8935,7 @@ class UniCanvasWidget {
     this.poseEditor?.dispose();
     if (this._disposed) return;
     try {
+      this.closeColorMatchPreview?.(true);
       if (!this._isRestoring) void this.flushStateUpload(true);
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Final state flush failed during disposal", err);

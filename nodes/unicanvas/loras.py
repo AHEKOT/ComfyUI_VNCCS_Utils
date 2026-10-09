@@ -60,8 +60,6 @@ def _get_lora_full_path(lora_name: str) -> str:
 
     path = _get_full_path_agnostic(folder_paths, "loras", lora_name, require_exists=True)
     if not path:
-        # Defaults and presets name a subfolder ("Krea2/x.safetensors") the user may not use
-        # ("krea\x.safetensors"): fall back to the installed file with the same name.
         resolved = _resolve_model_filename(folder_paths, "loras", lora_name)
         if resolved != lora_name:
             path = _get_full_path_agnostic(folder_paths, "loras", resolved, require_exists=True)
@@ -160,6 +158,10 @@ class LoraRequirement:
             return None
         if self.resolver is not None and (self.resolve_match is None or _lora_name_matches(name, self.resolve_match)):
             name = self.resolver()
+        elif name == self.default_name and "/" in name.replace("\\", "/"):
+            import folder_paths
+
+            name = _resolve_model_filename(folder_paths, "loras", name, allow_subfolder_fallback=True)
         return name, strength
 
     def describe(self) -> dict[str, Any]:

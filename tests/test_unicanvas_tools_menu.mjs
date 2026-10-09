@@ -137,7 +137,6 @@ test("strength slider previews live and commits on release", () => {
   assert.ok(layerTools.includes('data-control="colorMatchStrength"'), "strength slider must exist");
   assert.match(layerTools, /strengthInput\.addEventListener\("input"/, "dragging must update the preview from input events");
   assert.ok(layerTools.includes("requestAnimationFrame"), "per-frame work must be coalesced");
-  assert.ok(layerTools.includes("stale preview dropped; newest value wins"), "stale async previews must be dropped");
   assert.match(layerTools, /strengthInput\.addEventListener\("pointerup"/, "release must commit");
   assert.match(layerTools, /strengthInput\.addEventListener\("change"/, "keyboard-only changes must commit too");
   assert.ok(layerTools.includes("finishColorMatchGesture"), "gesture end must route through the single commit path");

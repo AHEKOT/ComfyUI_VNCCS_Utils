@@ -105,6 +105,10 @@ class MiniMaxH3UniCanvasModule(UniCanvasModelModule):
     def validate_conditioning(self, positive, negative, gen_settings):
         return None
 
+    def encode_draw_prompts(self, ctx):
+        positive = self.encode_prompt(ctx.clip, ctx.request.positive_text, ctx.settings)
+        return positive, positive  # H3's BasicGuider has no negative conditioning.
+
     def create_empty_latent(self, width: int, height: int, gen_settings, draw_id: str = "unknown"):
         return {"samples": torch.zeros(1, 16, 8, 8)}
 

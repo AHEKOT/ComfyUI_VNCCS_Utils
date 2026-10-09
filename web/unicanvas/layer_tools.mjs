@@ -133,12 +133,16 @@ function psdEntryToCanvas(entry) {
   return canvas;
 }
 
-function collectPsdRasterLayers(entries, imported, skipped) {
+function collectPsdRasterLayers(entries, imported, skipped, hidden = false) {
   for (const entry of entries || []) {
     if (!entry || typeof entry !== "object") continue;
     if (Array.isArray(entry.children)) {
-      // Groups are structural: keep walking into them for their raster children.
-      collectPsdRasterLayers(entry.children, imported, skipped);
+      if (entry.clipped || entry.adjustment || Object.keys(entry.effects || {}).length
+          || normalizePsdOpacity(entry.opacity ?? 1) !== 1
+          || (entry.blendMode && entry.blendMode !== "pass through")) {
+        skipped.push({ reason: "unsupported group appearance", name: entry.name || "Unnamed" });
+      }
+      collectPsdRasterLayers(entry.children, imported, skipped, hidden || Boolean(entry.hidden));
       continue;
     }
     const name = entry.name || "Unnamed";
@@ -158,7 +162,7 @@ function collectPsdRasterLayers(entries, imported, skipped) {
       skipped.push({ reason: PSD_SKIP_REASONS.noRaster, name });
       continue;
     }
-    imported.push(entry);
+    imported.push(hidden ? { ...entry, hidden: true } : entry);
   }
 }
 
@@ -189,11 +193,16 @@ function createPsdLayer(uc, entry) {
 
 async function importPSDFile(uc, file) {
   if (!file) return;
+  const revision = uc._importRevision = (uc._importRevision || 0) + 1;
+  const documentRevision = uc._documentRevision;
+  const current = () => !uc._disposed && revision === uc._importRevision && documentRevision === uc._documentRevision;
   try {
     uc.setStatus("[VNCCS UniCanvas] Reading PSD...");
     const { readPsd } = await uc.loadAgPsd();
+    if (!current()) return;
     if (typeof readPsd !== "function") throw new Error("ag-psd readPsd is not available");
     const buffer = await file.arrayBuffer();
+    if (!current()) return;
     const psd = readPsd(new Uint8Array(buffer), { useImageData: true });
     const imported = [];
     const skipped = [];
@@ -207,6 +216,7 @@ async function importPSDFile(uc, file) {
     uc.scheduleFullSync();
     uc.setStatus(formatPsdImportReport(imported.length, skipped));
   } catch (err) {
+    if (!current()) return;
     uc.setStatus(`[VNCCS UniCanvas] PSD import failed: ${err.message || err}`, true);
   }
 }
@@ -432,9 +442,16 @@ export function placeInHost(host, element, clientX, clientY) {
 }
 
 // Layer pixels = the original crop with the matched result laid over it at strength/10.
+function colorMatchIsCurrent(uc, preview) {
+  if (preview.closed) return false;
+  if (uc.isLayerEditStateCurrent(preview.editState)) return true;
+  closeColorMatchPreview(uc, false);
+  return false;
+}
+
 function composeColorMatch(uc, preview) {
   const matched = preview.matched.get(preview.method);
-  if (!matched || preview.closed) return;
+  if (!matched || !colorMatchIsCurrent(uc, preview)) return;
   const { layer, crop } = preview;
   uc.materializeRasterLayerForEditing(layer);
   const ctx = uc.configureImageContext(layer.canvas.getContext("2d"));
@@ -446,11 +463,13 @@ function composeColorMatch(uc, preview) {
   ctx.drawImage(matched, crop.x, crop.y, crop.width, crop.height);
   ctx.restore();
   uc.markLayerPixelsChanged(layer, crop, false);
+  preview.editState = uc.captureLayerEditState(layer);
   uc.refreshLayerRow(layer.id);
   uc.requestRender();
 }
 
 function scheduleColorMatchPreview(uc, preview) {
+  if (!colorMatchIsCurrent(uc, preview)) return;
   if (!preview.gestureBefore) preview.gestureBefore = uc.createLayerPixelSnapshot(preview.layer);
   if (preview.rafId) return;
   // Coalesce per-frame work; the newest slider value always wins.
@@ -461,7 +480,7 @@ function scheduleColorMatchPreview(uc, preview) {
 }
 
 function commitColorMatchPreview(uc, preview) {
-  if (!preview.gestureBefore) return;
+  if (!colorMatchIsCurrent(uc, preview) || !preview.gestureBefore) return;
   if (preview.rafId) {
     cancelAnimationFrame(preview.rafId);
     preview.rafId = 0;
@@ -489,19 +508,21 @@ function finishColorMatchGesture(uc, preview) {
 }
 
 async function loadColorMatchMethod(uc, preview, method) {
+  if (!colorMatchIsCurrent(uc, preview)) return;
   preview.method = method;
+  preview.seq += 1;
   if (preview.matched.has(method)) {
+    preview.loading = false;
     scheduleColorMatchPreview(uc, preview);
     finishColorMatchGesture(uc, preview);
     return;
   }
-  preview.seq += 1;
   const seq = preview.seq;
   preview.loading = true;
   preview.setNote("Computing the match…");
   try {
     const resultImage = await uc.loadImage(await requestColorMatch(preview.targetBase, preview.referenceBase, method));
-    if (preview.closed || seq !== preview.seq) return; // stale preview dropped; newest value wins
+    if (seq !== preview.seq || !colorMatchIsCurrent(uc, preview)) return;
     preview.matched.set(method, resultImage);
     preview.loading = false;
     preview.setNote("");
@@ -511,7 +532,7 @@ async function loadColorMatchMethod(uc, preview, method) {
       commitColorMatchPreview(uc, preview);
     }
   } catch (err) {
-    if (preview.closed || seq !== preview.seq) return;
+    if (seq !== preview.seq || !colorMatchIsCurrent(uc, preview)) return;
     preview.loading = false;
     preview.setNote(`Failed: ${err.message || err}`, true);
     uc.setStatus(`[VNCCS UniCanvas] Color match failed: ${err.message || err}`, true);
@@ -522,11 +543,12 @@ function closeColorMatchPreview(uc, commit) {
   const preview = uc._vnccsColorMatch;
   if (!preview) return;
   uc._vnccsColorMatch = null;
-  if (commit) commitColorMatchPreview(uc, preview);
+  const current = !preview.closed && uc.isLayerEditStateCurrent(preview.editState);
+  if (commit && current) commitColorMatchPreview(uc, preview);
   preview.closed = true;
   preview.seq += 1; // drop any in-flight result
   if (preview.rafId) cancelAnimationFrame(preview.rafId);
-  if (!commit) {
+  if (!commit && current) {
     // Cancel: back to the pixels from before the popover opened (undoable when a step was recorded).
     const current = uc.createLayerPixelSnapshot(preview.layer);
     uc.restoreLayerPixelSnapshot(preview.layer, preview.openedBefore);
@@ -537,7 +559,7 @@ function closeColorMatchPreview(uc, commit) {
     uc.requestRender();
     uc.syncLightStateToWidget();
     uc.scheduleFullSync();
-  } else {
+  } else if (commit && current) {
     uc.setStatus("[VNCCS UniCanvas] Color match applied.");
   }
   preview.element?.remove();
@@ -554,6 +576,7 @@ function escapeText(value) {
 
 function openColorMatchPopover(uc, layer, point = null) {
   closeColorMatchPreview(uc, true);
+  if (!uc.isLayerEditStateCurrent(uc.captureLayerEditState(layer))) return;
   const crop = uc.getLayerAlphaBounds(layer);
   if (!crop) {
     uc.setStatus("[VNCCS UniCanvas] Color match to below: layer is empty.", true);
@@ -614,6 +637,7 @@ function openColorMatchPopover(uc, layer, point = null) {
     commits: 0,
     gestureBefore: null,
     openedBefore: uc.createLayerPixelSnapshot(layer),
+    editState: uc.captureLayerEditState(layer),
     setNote(text, isError = false) {
       note.textContent = text;
       note.style.color = isError ? "#ff8a8a" : "";
@@ -722,6 +746,7 @@ function runLayerMenuAction(uc, layer, item, point = null) {
 export function installUniCanvasLayerTools(uc) {
   if (!uc || uc._vnccsLayerToolsInstalled) return uc;
   uc._vnccsLayerToolsInstalled = true;
+  uc.closeColorMatchPreview = (commit) => closeColorMatchPreview(uc, commit);
 
   // The PSD row (group label + Export + Import + hidden file input) is built by
   // the widget's _buildDOM footer; this installer only wires the import parse

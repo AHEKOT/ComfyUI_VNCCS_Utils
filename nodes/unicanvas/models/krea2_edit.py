@@ -20,7 +20,7 @@ KREA2_EDIT_DEFAULTS = {
     "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
     "vae_name": "qwen_image_vae.safetensors",
     "clip_type": "krea2",
-    # Found by file name in any loras subfolder (krea\, krea2\, Krea2/...): loras._get_lora_full_path.
+    # The family's default LoRA resolves by filename; custom subfolder paths stay exact.
     "krea2_edit_lora_name": "Krea2/krea2_identity_edit_v1_2.safetensors",
     "krea2_likeness": 4.0,
     "sampler_name": "euler",

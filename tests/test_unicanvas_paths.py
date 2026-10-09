@@ -49,3 +49,25 @@ def test_minimax_vae_alternative_is_scoped_to_vae_and_known_filename():
     assert PATHS._resolve_model_filename(folders, "vae", "another_vae.safetensors") == "another_vae.safetensors"
     folders.get_filename_list = lambda _category: ["unrelated.safetensors"]
     assert PATHS._resolve_model_filename(folders, "vae", int8) == int8
+
+
+def test_explicit_subfolder_never_substitutes_another_model():
+    folders = SimpleNamespace(get_filename_list=lambda category: ["new/model.safetensors"])
+    for name in ["old/model.safetensors", r"old\model.safetensors"]:
+        assert PATHS._resolve_model_filename(folders, "vae", name) == name
+    assert PATHS._resolve_model_filename(folders, "vae", "model.safetensors") == "new/model.safetensors"
+    assert PATHS._resolve_model_filename(folders, "vae", "preset/model.safetensors", allow_subfolder_fallback=True) == "new/model.safetensors"
+
+
+def test_exact_path_in_later_category_wins_before_basename_fallback():
+    folders = SimpleNamespace(get_filename_list=lambda category: ["other/model.safetensors"] if category == "unet" else ["model.safetensors"])
+    assert PATHS._resolve_model_filename(folders, ("unet", "diffusion_models"), "model.safetensors") == "model.safetensors"
+    folders.get_filename_list = lambda category: [r"folder\model.safetensors"]
+    assert PATHS._resolve_model_filename(folders, "vae", "folder/model.safetensors") == r"folder\model.safetensors"
+
+
+def test_ambiguous_basename_requires_a_subfolder():
+    folders = SimpleNamespace(get_filename_list=lambda category: ["a/model.safetensors", "b/model.safetensors"])
+    with pytest.raises(ValueError, match="Ambiguous"):
+        PATHS._resolve_model_filename(folders, "vae", "model.safetensors")
+    assert PATHS._resolve_model_filename(folders, "vae", "b/model.safetensors") == "b/model.safetensors"

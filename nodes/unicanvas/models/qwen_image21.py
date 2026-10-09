@@ -119,7 +119,7 @@ def _resolve_hf_lora(repo_id: str, revision: str, filename: str, lora_name: str,
     import folder_paths
 
     def installed_name() -> str | None:
-        name = _resolve_model_filename(folder_paths, "loras", lora_name)
+        name = _resolve_model_filename(folder_paths, "loras", lora_name, allow_subfolder_fallback=True)
         path = _get_full_path_agnostic(folder_paths, "loras", name)
         return name if path and os.path.exists(path) else None
 

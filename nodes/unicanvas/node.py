@@ -84,6 +84,8 @@ class VNCCS_UniCanvas:
             # queued_draw as soon as a queued draw settles, so the node renders the canvas state
             # rather than failing the whole prompt.
             return (_render_unicanvas_state_to_image_tensor(unicanvas_state),)
+        if queued_draw.get("pose_edit") and isinstance(queued_draw.get("positive"), str):
+            settings = {**settings, "positive": queued_draw["positive"]}
         payload = {
             "state": state,
             "gen_settings": settings,

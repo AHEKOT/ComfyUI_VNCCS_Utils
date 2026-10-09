@@ -53,6 +53,21 @@ def test_custom_uses_installed_manually_selected_encoder_and_vae(tmp_path):
         presets._get_unicanvas_dependencies("qwen_image21", clip_name="../alternative.safetensors")
 
 
+def test_custom_missing_subfolder_does_not_accept_another_encoder_or_vae(tmp_path):
+    folders = sys.modules["folder_paths"]
+    for category in ("text_encoders", "vae"):
+        target = tmp_path / category / "other" / "alternative.safetensors"
+        target.parent.mkdir(parents=True)
+        target.write_bytes(b"installed")
+    folders.get_folder_paths = lambda key: [str(tmp_path / key)]
+    folders.get_filename_list = lambda key: ["other/alternative.safetensors"]
+    catalog = presets._get_unicanvas_dependencies(
+        "qwen_image21", clip_name="missing/alternative.safetensors", vae_name="missing/alternative.safetensors")
+    assert len(catalog["assets"]) == 5
+    assert any(asset["required"] and asset["role"] == "clip" for asset in catalog["assets"])
+    assert any(asset["required"] and asset["role"] == "vae" for asset in catalog["assets"])
+
+
 @pytest.mark.parametrize("family,category,filename", [
     ("anima", "controlnet", UC.models.anima.ANIMA_LLLITE_INPAINT_FILENAME),
     ("z_image", "model_patches", UC.models.z_image.Z_IMAGE_FUN_CONTROLNET_FILENAME),
@@ -78,6 +93,9 @@ def test_popup_and_runtime_reuse_the_same_installed_controlnet(family, category,
         assert UC.models.anima._ensure_anima_lllite_model(filename) == str(target)
     else:
         assert UC.models.z_image._ensure_z_image_fun_controlnet_model(filename) == f"custom/{filename}"
+    ensure = UC.models.anima._ensure_anima_lllite_model if family == "anima" else UC.models.z_image._ensure_z_image_fun_controlnet_model
+    with pytest.raises(ValueError, match="not found"):
+        ensure(f"missing/{filename}")
 
 
 def test_custom_krea_dependencies_are_deduplicated_across_raw_and_turbo():

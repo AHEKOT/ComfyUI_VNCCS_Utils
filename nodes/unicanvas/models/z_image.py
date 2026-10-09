@@ -406,6 +406,8 @@ def _ensure_z_image_fun_controlnet_model(patch_name: str, draw_id: str = "unknow
     found = _get_full_path_agnostic(folder_paths, "model_patches", installed, require_exists=True)
     if found:
         return installed
+    if "/" in requested:
+        raise ValueError(f"Z-image Fun ControlNet model not found: {requested}")
     found = _get_full_path_agnostic(folder_paths, "model_patches", basename, require_exists=True)
     if found:
         return basename

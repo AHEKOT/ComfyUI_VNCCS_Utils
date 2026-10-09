@@ -54,18 +54,18 @@ class ChunkedVAE:
         return getattr(self._vae, name)
 
     def decode(self, samples, *args, **kwargs):
-        try:
-            return self._vae.decode_tiled(samples)
-        except Exception as exc:  # a VAE without a tiled path still decodes in one go
-            logging.warning("[VNCCS UniCanvas] Chunked VAE decode unavailable (%s); decoding in one piece.", exc)
-            return self._vae.decode(samples, *args, **kwargs)
+        tiled = getattr(self._vae, "decode_tiled", None)
+        if callable(tiled):
+            return tiled(samples)
+        logging.warning("[VNCCS UniCanvas] Chunked VAE decode unavailable; decoding in one piece.")
+        return self._vae.decode(samples, *args, **kwargs)
 
     def encode(self, pixels, *args, **kwargs):
-        try:
-            return self._vae.encode_tiled(pixels)
-        except Exception as exc:
-            logging.warning("[VNCCS UniCanvas] Chunked VAE encode unavailable (%s); encoding in one piece.", exc)
-            return self._vae.encode(pixels, *args, **kwargs)
+        tiled = getattr(self._vae, "encode_tiled", None)
+        if callable(tiled):
+            return tiled(pixels)
+        logging.warning("[VNCCS UniCanvas] Chunked VAE encode unavailable; encoding in one piece.")
+        return self._vae.encode(pixels, *args, **kwargs)
 
 
 def apply_vae_chunking(vae: Any, settings: dict[str, Any] | None) -> Any:
