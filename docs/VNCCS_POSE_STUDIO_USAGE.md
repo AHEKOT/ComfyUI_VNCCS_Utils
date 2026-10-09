@@ -100,15 +100,6 @@ clips may use exact browser captures; longer clips are evaluated from the sparse
 animation data by the backend rather than being embedded as base64 images in the
 workflow.
 
-## Text to Motion
-
-**🏃 Motion** opens a panel where you describe a motion with NVIDIA ARDY.
-In Pose Studio, it switches to Animation mode and **Use as animation** puts the generated clip
-on the timeline. In UniCanvas' pose editor, scrub the clip and press **Use this frame** to keep
-one frame as the pose. Regenerating always starts from the pose you opened the panel with.
-Installation, VRAM and licenses:
-[VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md](VNCCS_POSE_STUDIO_TEXT_TO_MOTION.md).
-
 ## Quick Start
 
 1. Add `VNCCS Pose Studio`.

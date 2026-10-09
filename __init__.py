@@ -187,18 +187,6 @@ def _vnccs_register_sam3d_pose_import():
 
 _vnccs_register_sam3d_pose_import()
 
-# === Pose Studio text-to-motion API ===
-def _vnccs_register_text_to_motion():
-    try:
-        from server import PromptServer
-        from .nodes.posestudio.ttm.service import register_routes
-    except Exception:
-        return
-    # Motion model (ARDY) are optional and imported lazily on the first generation.
-    register_routes(PromptServer.instance.routes)
-
-_vnccs_register_text_to_motion()
-
 # === VNCCS 3D Factory API ===
 def _vnccs_register_3d_factory():
     try:

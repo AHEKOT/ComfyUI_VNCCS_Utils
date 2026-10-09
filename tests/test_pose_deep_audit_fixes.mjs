@@ -5,7 +5,6 @@ import vm from "node:vm";
 import { createScene, Element } from "./helpers/pose_studio_scene.mjs";
 import { createDefaultAnimationState, setTrackKeyframeFromEuler } from "../web/pose_studio/animation.mjs";
 import { createPoseStudioCharacter } from "../web/pose_studio/characters.mjs";
-import { TextToMotionPanel } from "../web/pose_studio/text_to_motion.mjs";
 
 const source = await fs.readFile(new URL("../web/vnccs_pose_studio.js", import.meta.url), "utf8");
 const core = await fs.readFile(new URL("../web/pose_studio/core.js", import.meta.url), "utf8");
@@ -69,30 +68,6 @@ test("Undo and redo restore every character after a lossy shared FPS change", as
     assert.deepEqual(w.characters.map(character => w.animationSnapshot(character.animationState)), before);
     w.redoAnimation();
     assert.deepEqual(w.characters.map(character => w.animationSnapshot(character.animationState)), after);
-});
-
-test("switching characters closes the motion session before capturing the previous rig", async () => {
-    const { w } = animationScene();
-    const panel = w.textToMotionPanel = new TextToMotionPanel(w, {
-        fetchApi: async () => ({ ok: true, json: async () => ({ models: [] }) }),
-    });
-    panel.build = () => { panel.root = { remove: noop }; };
-    panel.applyModel = noop;
-    panel.open();
-    const session = panel.session;
-    panel.poses = [{ bones: { head: [55, 0, 0] } }, { bones: { head: [75, 0, 0] } }];
-    panel.motion = { fps: 12 };
-    const capture = w.captureActiveCharacterRuntime;
-    w.captureActiveCharacterRuntime = function (options) {
-        assert.equal(panel.isOpen(), false);
-        return capture.call(this, options);
-    };
-    await w.selectCharacter("character-2");
-    assert.equal(panel.isOpen(), false);
-    assert.ok(panel.session > session, "in-flight results lose their session");
-    const before = w.animationSnapshot();
-    panel.acceptAnimation();
-    assert.equal(w.animationSnapshot(), before);
 });
 
 function libraryScene() {

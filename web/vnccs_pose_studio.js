@@ -16,7 +16,6 @@ import {
 } from "./camera_control/utils.mjs";
 import { HAND_PRESETS } from "./pose_studio/hand_presets.js";
 import { importMixamoFBXAnimation } from "./pose_studio/imports/mixamo.js";
-import { TextToMotionPanel } from "./pose_studio/text_to_motion.mjs?v=20261009.current-pose";
 import { detectAndParseJSON, convertOpenPoseToPose, roundTripTest } from "./pose_studio/imports/openpose.js";
 import { installCustomSelects } from "./shared/custom_select.mjs";
 import {
@@ -4303,8 +4302,6 @@ class PoseStudioWidget {
         this._animationCacheUploadTimer = null;
         this._activeVideoImportClose?.();
         this._closeLibraryModal?.();
-        // The text-to-motion panel polls the backend and owns a playback loop.
-        this.textToMotionPanel?.cancel?.();
         void this.flushAnimationCacheUpload?.();
         this.animationTimeline?.destroy?.();
         this._customSelectController?.disconnect();
@@ -5201,19 +5198,12 @@ class PoseStudioWidget {
         pasteBtn.innerHTML = '<span class="vnccs-ps-btn-icon">📋</span> Paste';
         pasteBtn.addEventListener("click", () => this.pastePose());
 
-        const motionBtn = document.createElement("button");
-        motionBtn.className = "vnccs-ps-btn";
-        motionBtn.innerHTML = '<span class="vnccs-ps-btn-icon">🏃</span> Motion';
-        motionBtn.title = "Text to Motion: describe a movement and get an animation (switches to Animation mode)";
-        motionBtn.addEventListener("click", () => this.openTextToMotionPanel());
-
         actions.appendChild(undoBtn);
         actions.appendChild(redoBtn);
         actions.appendChild(resetBtn);
         actions.appendChild(snapBtn);
         actions.appendChild(copyBtn);
         actions.appendChild(pasteBtn);
-        actions.appendChild(motionBtn);
 
         // Footer
         const footer = document.createElement("div");
@@ -6610,7 +6600,6 @@ class PoseStudioWidget {
         const target = this.characters.find(character => character.id === id);
         const previous = this.getActiveCharacter();
         if (!target || !previous || target.id === previous.id || this._switchingCharacter) return false;
-        if (this.textToMotionPanel?.isOpen()) this.textToMotionPanel.cancel();
         this._finishPoseGesture?.();
         this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         const token = ++this._characterSwitchToken;
@@ -9267,42 +9256,8 @@ class PoseStudioWidget {
         this.hideHandControlPopover();
     }
 
-    /**
-     * A generated motion is an animation: outside Animation mode the button switches to it first.
-     * `poseOnly` hosts (the UniCanvas pose editor) keep their single pose and use one frame instead.
-     */
-    openTextToMotionPanel({ poseOnly = false } = {}) {
-        if (this.textToMotionPanel?.isOpen()) return;
-        if (!poseOnly && !this.isAnimationMode()) {
-            const pose = this.viewer?.getPose();
-            this.setEditorMode("animation");
-            // Entering Animation mode applies its timeline; motion must capture the visible pose instead.
-            this._applyingAnimationPose = true;
-            try {
-                this.viewer?.setPose(pose, true);
-                this.updateRotationSliders();
-            } finally {
-                this._applyingAnimationPose = false;
-            }
-            this.showMessage?.("Switched to Animation mode: the generated motion becomes the animation.");
-        }
-        if (!this.textToMotionPanel) {
-            this.textToMotionPanel = new TextToMotionPanel(this, {
-                fetchApi: (route, options) => api.fetchApi(route, options),
-            });
-        }
-        try {
-            this.textToMotionPanel.open({ poseOnly });
-        } catch (error) {
-            console.error("[VNCCS] Failed to open the text-to-motion panel:", error);
-            this.showMessage(`Failed to open Text to Motion: ${error?.message || error}`, true);
-        }
-    }
-
     switchTab(index) {
         if (index === this.activeTab) return;
-        // The motion preview belongs to the pose it was opened on.
-        if (this.textToMotionPanel?.isOpen()) this.textToMotionPanel.cancel();
         this._finishPoseGesture?.();
         this.clearPoseHistory();
 
