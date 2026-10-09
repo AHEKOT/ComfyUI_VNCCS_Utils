@@ -3227,6 +3227,13 @@ const STYLES = `
     background: var(--ps-accent-subtle);
 }
 
+/* Keep Pose Library controls readable without enlarging them with the workspace. */
+.vnccs-pose-studio .vnccs-ps-library-modal-header,
+.vnccs-pose-studio .vnccs-ps-library-toolbar,
+.vnccs-pose-studio .vnccs-ps-library-categories {
+    --vnccs-ps-library-ui-scale: 0.62;
+}
+
 .vnccs-ps-library-workspace {
     --vnccs-ps-library-inspector-base-width: 510px;
     --vnccs-ps-library-inspector-scale: 1;
@@ -4888,7 +4895,7 @@ class PoseStudioWidget {
         leftPanel.appendChild(proportionsSection.el);
 
         // --- GENDER SETTINGS SECTION ---
-        const genderSection = this.createSection("Gender Settings", true);
+        const genderSection = this.createSection("Gender Settings", false);
         this.genderFields = {};
 
         const femaleSliders = [
@@ -5031,7 +5038,7 @@ class PoseStudioWidget {
         this.hideSectionInUniCanvas(camAngleSection);
 
         // --- EXPORT SETTINGS SECTION ---
-        const exportSection = this.createSection("Export Settings", true);
+        const exportSection = this.createSection("Export Settings", false);
 
         const modeField = document.createElement("div");
         modeField.className = "vnccs-ps-field";

@@ -57,6 +57,10 @@ def compact_fixture():
     header += b" " * (-len(header) % 8)
     tensor = struct.pack("<Q", len(header)) + header + b"\x00\x00"
     payloads = {name: tensor if name.endswith(".safetensors") else b"downloaded" for name in spec.weights[0].files}
+    payloads["config.yaml"] = b"autoencoder:\n  ckpt_path: motion.bf16.safetensors\ndenoiser:\n  ckpt_path: motion.bf16.safetensors\n"
+    for name in payloads:
+        if name.endswith(".json"):
+            payloads[name] = b'{"fixture": true}\n'
     source = dataclasses.replace(spec.weights[0], file_sizes={name: len(data) for name, data in payloads.items()})
     return dataclasses.replace(spec, weights=(source,)), payloads
 
@@ -465,6 +469,42 @@ class ModelRegistryTests(unittest.TestCase):
                 self.assertTrue(calls[0]["force_download"], "invalid files must bypass the HF local cache")
                 self.assertTrue(backend.setup_status()[0]["done"])
                 calls.clear()
+
+    def test_local_text_configs_are_reused_despite_line_endings_and_checkpoint_paths(self):
+        spec, payloads = compact_fixture()
+        with tempfile.TemporaryDirectory() as folder:
+            backend = ARDY.ArdyBackend(spec, Path(folder))
+            target = backend.weights_dir(spec.weights[0])
+            for name, content in payloads.items():
+                path = target / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(content)
+            for newline in (b"\n", b"\r\n"):
+                with self.subTest(newline=newline):
+                    (target / "config.yaml").write_bytes(
+                        payloads["config.yaml"].replace(b"motion.bf16.safetensors", b"motion.safetensors")
+                        .replace(b"\n", newline)
+                    )
+                    (target / "text_encoder/config.json").write_bytes(b'{\n  "fixture": true\n}\n'.replace(b"\n", newline))
+                    self.assertTrue(backend.setup_status()[0]["done"])
+                    with mock.patch.object(backend, "_download_file") as download:
+                        backend.run_download(spec.setup[0], lambda *_: None)
+                    download.assert_not_called()
+
+            for name, invalid in (("config.yaml", b""), ("config.yaml", b"fixture: ["),
+                                  ("config.yaml", b"downloaded"), ("config.yaml", b"{}"),
+                                  ("config.yaml", b"fixture: true\n" + b" " * (64 * 1024)),
+                                  ("text_encoder/config.json", b""), ("text_encoder/config.json", b'{"fixture":'),
+                                  ("text_encoder/config.json", b"[]"), ("text_encoder/config.json", b"\xff")):
+                with self.subTest(name=name, invalid=invalid):
+                    path = target / name
+                    original = path.read_bytes()
+                    path.write_bytes(invalid)
+                    self.assertFalse(backend.setup_status()[0]["done"])
+                    path.write_bytes(original)
+
+            (target / "stats/motion/mean.npy").write_bytes(payloads["stats/motion/mean.npy"][:-1])
+            self.assertFalse(backend.setup_status()[0]["done"], "binary statistics still require exact sizes")
 
     def test_downloaded_wrong_size_is_not_reported_as_ready(self):
         spec, _ = compact_fixture()

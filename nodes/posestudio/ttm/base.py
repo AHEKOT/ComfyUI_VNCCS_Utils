@@ -406,14 +406,28 @@ class MotionBackend(ABC):
 
     @staticmethod
     def weight_file_ready(source: WeightSource, name: str, target: Path) -> bool:
-        """Check pinned sizes and safetensors headers without loading tensor data."""
+        """Validate text configs structurally; check binary sizes and safetensors headers."""
         path = target / name
         try:
             if not path.is_file():
                 return False
             size = path.stat().st_size
             expected = source.file_sizes.get(name)
-            if size == 0 or (expected is not None and size != expected):
+            if size == 0:
+                return False
+            if expected is not None and path.suffix in (".yaml", ".yml", ".json"):
+                import yaml
+
+                # Text configs may use CRLF or local checkpoint paths without being damaged.
+                if size > max(expected * 2, 64 * 1024):
+                    return False
+                try:
+                    text = path.read_text(encoding="utf-8-sig")
+                    data = json.loads(text) if path.suffix == ".json" else yaml.safe_load(text)
+                    return isinstance(data, dict) and bool(data)
+                except (ValueError, UnicodeError, yaml.YAMLError):
+                    return False
+            if expected is not None and size != expected:
                 return False
             if expected is not None and path.suffix == ".safetensors":
                 try:
