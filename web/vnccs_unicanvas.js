@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791668230986";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791668230986";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791668982934";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791668982934";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791668230986";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791668230986";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791668230986";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791668230986";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791668230986";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791668230986";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791668230986";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791668230986";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791668230986";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791668230986";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791668230986";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791668230986";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791668982934";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791668982934";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791668982934";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791668982934";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791668982934";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791668982934";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791668982934";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791668982934";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791668982934";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791668982934";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791668982934";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791668982934";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791668230986";
+} from "./unicanvas/transform.mjs?v=1791668982934";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791668230986";
+} from "./unicanvas/presets.mjs?v=1791668982934";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791668230986";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791668230986";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791668230986";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791668230986";
+} from "./unicanvas/modes.mjs?v=1791668982934";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791668982934";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791668982934";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791668982934";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +77,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791668230986";
+const VNCCS_UNICANVAS_VERSION = "1791668982934";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791668230986";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791668230986";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791668230986";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791668982934";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791668982934";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -3846,6 +3846,7 @@ class UniCanvasWidget {
   }
 
   onPointerDown(e) {
+    if (this.isPointerDown) return;
     const navigation = e.button === 1 || (e.button === 0 && (this.tool === "pan" || (this.tool === "move" && e.altKey)));
     if (this._isRestoring || this._disposed || this._canvasOperation || (this.editingBlocked && !navigation)) return;
     if (this.panorama && !this.editingBlocked) {
@@ -3855,7 +3856,7 @@ class UniCanvasWidget {
         if (!this.panorama.beginCamera()) return;
         e.preventDefault(); e.stopPropagation(); this.canvas.setPointerCapture?.(e.pointerId);
         this.isPointerDown = true; this.pointerMode = "panorama";
-        this.dragStart = { screen: this.canvasPointFromEvent(e), camera: { ...this.panorama.settings } };
+        this.dragStart = { pointerId: e.pointerId, screen: this.canvasPointFromEvent(e), camera: { ...this.panorama.settings } };
         this.lastPoint = this.worldFromEvent(e);
         return;
       }
@@ -3877,7 +3878,7 @@ class UniCanvasWidget {
     this.hoverPoint = point;
     this.clearToolPreviewOverlay();
     this.lastPoint = point;
-    this.dragStart = { point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
+    this.dragStart = { pointerId: e.pointerId, point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
     this.pointerMode = navigation ? "pan" : this.tool;
     if (e.button === 1 && (e.ctrlKey || e.metaKey)) {
       this.pointerMode = "zoom-drag";
@@ -3968,6 +3969,7 @@ class UniCanvasWidget {
   }
 
   onPointerMove(e) {
+    if (this.isPointerDown && e.pointerId !== this.dragStart?.pointerId) return;
     if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (this.panorama && this.isPointerDown && this.pointerMode === "panorama") {
       e.preventDefault(); e.stopPropagation();
@@ -4024,7 +4026,7 @@ class UniCanvasWidget {
 
   onPointerUp(e) {
     if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
-    if (!this.isPointerDown) return;
+    if (!this.isPointerDown || (e && e.pointerId !== this.dragStart?.pointerId)) return;
     if (this.panorama && this.pointerMode === "panorama") {
       e?.preventDefault?.(); e?.stopPropagation?.();
       this.isPointerDown = false; this.pointerMode = null; this.lastPoint = null; this.dragStart = null;
@@ -5156,6 +5158,9 @@ class UniCanvasWidget {
     if (this.canSnapMovedLayer(layer, crop)) {
       ({ dx, dy } = this.snapMovedLayerDelta(dx, dy, crop, sourceOrigin));
     }
+    // Layer pixels and hi-res world rectangles both render at integer placement.
+    dx = Math.round(dx);
+    dy = Math.round(dy);
     start.previewDx = dx;
     start.previewDy = dy;
   }
@@ -5355,8 +5360,6 @@ class UniCanvasWidget {
       if (Math.abs(this.intendedScale - this.activeSnapPoint) > threshold) {
         this.activeSnapPoint = null;
         this.applyStageScale(this.intendedScale, center);
-      } else {
-        this.intendedScale = this.activeSnapPoint;
       }
       return;
     }
@@ -5531,7 +5534,7 @@ class UniCanvasWidget {
       }
       if (layer.type === "mask") {
         if (transformDraft) {
-          ctx.globalAlpha = 1;
+          ctx.globalAlpha = layer.opacity;
           this.drawMaskTransformDraft(ctx, transformDraft);
         } else {
           this.drawMaskLayer(ctx, layer);
@@ -5677,7 +5680,7 @@ class UniCanvasWidget {
 
   drawRasterLayerVisible(ctx, layer) {
     if (layer.hiresCanvas && layer.hiresRect) {
-      const visible = this.visibleWorldRect();
+      const visible = this._visibleWorldRectForRender || this.visibleWorldRect();
       this.drawRasterLayerToWorldRect(ctx, layer, visible, visible, false, this.shouldUseLayerLod(layer));
       return;
     }

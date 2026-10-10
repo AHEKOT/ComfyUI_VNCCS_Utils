@@ -9,20 +9,26 @@ const prototype = vm.runInNewContext(widgetSource.slice(widgetSource.indexOf("cl
 
 function tools(context = {}) {
     return vm.runInNewContext(source.replace(/^import .*;$/gm, "").replace(/^export \{.*\};$/gm, "").replace(/^export /gm, "")
-        + "\nrequestColorMatch = matchRequest; ({collectPsdRasterLayers, importPSDFile, buildColorMatchReference, loadColorMatchMethod, scheduleColorMatchPreview, commitColorMatchPreview, closeColorMatchPreview});",
+        + "\nrequestColorMatch = matchRequest; ({collectPsdRasterLayers, importPSDFile, buildColorMatchReference, openColorMatchPopover, loadColorMatchMethod, scheduleColorMatchPreview, commitColorMatchPreview, closeColorMatchPreview});",
     { clamp: (n, min, max) => Math.max(min, Math.min(max, n)), matchRequest: async () => "match", ...context });
 }
 
-function previewHarness() {
+function previewHarness(context = {}) {
     const frames = new Map();
     let nextFrame = 0;
     let finish;
+    let fail;
     const api = tools({
-        matchRequest: () => new Promise(resolve => { finish = resolve; }),
+        matchRequest: () => new Promise((resolve, reject) => { finish = resolve; fail = reject; }),
         requestAnimationFrame: callback => { frames.set(++nextFrame, callback); return nextFrame; },
         cancelAnimationFrame: id => frames.delete(id),
+        ...context,
     });
-    const ctx = { save() {}, restore() {}, clearRect() {}, drawImage(image) { layer.pixels = image; } };
+    const blends = [];
+    const ctx = { save() {}, restore() {}, clearRect() {}, drawImage(image) {
+        layer.pixels = image;
+        if (image !== "original") blends.push({ image, alpha: this.globalAlpha });
+    } };
     const layer = { id: "A", canvas: { width: 10, height: 10, getContext: () => ctx }, _pixelRevision: 0, pixels: "original" };
     const uc = Object.assign(Object.create(prototype), {
         origin: { x: 0, y: 0 }, layers: [layer], histories: [],
@@ -37,10 +43,11 @@ function previewHarness() {
     const preview = uc._vnccsColorMatch = {
         layer, crop: { x: 0, y: 0, width: 10, height: 10 }, targetBase: "original", referenceBase: "reference",
         matched: new Map(), method: "local_lab", strength: 10, seq: 0, commits: 0, rafId: 0,
+        strengthInput: { disabled: false },
         setNote() {}, openedBefore: uc.createLayerPixelSnapshot(layer), editState: uc.captureLayerEditState(layer),
         element: { remove() { preview.removed = true; } },
     };
-    return { api, uc, layer, preview, finish: image => finish(image), frame() {
+    return { api, uc, layer, preview, blends, finish: image => finish(image), fail: error => fail(error), frame() {
         const callbacks = [...frames.values()]; frames.clear(); callbacks.forEach(callback => callback());
     } };
 }
@@ -110,7 +117,69 @@ test("returning to a cached color method invalidates an older request", async ()
     await pending;
     assert.equal(h.layer.pixels, "cached match");
     assert.equal(h.preview.loading, false);
+    assert.equal(h.preview.strengthInput.disabled, false, "cached methods immediately restore continuous control");
     assert.equal(h.uc.histories.length, 1);
+});
+
+test("Color Match only enables Strength when the selected method can preview every input", async () => {
+    const controls = new Map();
+    const control = selector => {
+        if (!controls.has(selector)) controls.set(selector, { style: {}, disabled: false, listeners: {},
+            addEventListener(type, handler) { this.listeners[type] = handler; },
+            emit(type) { if (!this.disabled) this.listeners[type]?.(); },
+        });
+        return controls.get(selector);
+    };
+    const element = { style: {}, querySelector: control, remove() {} };
+    const h = previewHarness({
+        document: { createElement: tag => tag === "div" ? element : { getContext: () => ({ save() {}, restore() {} }) } },
+        installCustomSelects() {},
+    });
+    h.uc._vnccsColorMatch = null;
+    h.layer.type = "raster";
+    h.uc.layers.push({ id: "below", type: "raster", visible: true });
+    Object.assign(h.uc, { container: { appendChild() {} }, getLayerAlphaBounds: () => h.preview.crop,
+        cloneCanvasCrop: () => "original", drawRasterLayerToWorldRect() {} });
+    h.api.openColorMatchPopover(h.uc, h.layer);
+    const preview = h.uc._vnccsColorMatch;
+    const strength = control('[data-control="colorMatchStrength"]');
+    const method = control('[data-control="colorMatchMethod"]');
+    assert.equal(strength.disabled, true, "the initial server calculation cannot expose an inert slider");
+    strength.value = "3"; strength.emit("input"); h.frame();
+    assert.equal(preview.strength, 10);
+    assert.equal(h.blends.length, 0);
+    h.finish("first match");
+    await new Promise(resolve => setImmediate(resolve));
+    h.frame();
+    assert.equal(strength.disabled, false);
+    const historyBefore = h.uc.histories.length;
+    strength.emit("pointerdown");
+    for (const value of [8, 6, 3]) {
+        strength.value = String(value); strength.emit("input"); h.frame();
+        assert.equal(h.blends.at(-1).alpha, value / 10, "held input blends the newest strength each frame");
+        assert.equal(h.uc.histories.length, historyBefore);
+    }
+    strength.emit("pointerup"); strength.emit("change");
+    assert.equal(h.uc.histories.length, historyBefore + 1, "one completed gesture creates one undo command");
+    method.value = "reinhard_lab_gpu"; method.emit("change");
+    assert.equal(strength.disabled, true);
+    const lastValid = h.layer.pixels;
+    strength.value = "1"; strength.emit("input"); h.frame();
+    assert.equal(h.layer.pixels, lastValid, "the last valid frame stays visible during method preparation");
+    assert.equal(preview.strength, 3);
+    method.value = "local_lab"; method.emit("change");
+    assert.equal(strength.disabled, false, "switching back to a cached method never waits for the pending one");
+    h.finish("stale match");
+    await new Promise(resolve => setImmediate(resolve)); h.frame();
+    assert.equal(h.layer.pixels, "first match");
+    assert.equal(strength.disabled, false);
+    method.value = "reinhard_lab_gpu"; method.emit("change");
+    h.fail(Error("calculation failed"));
+    await new Promise(resolve => setImmediate(resolve)); h.frame();
+    assert.equal(strength.disabled, true, "a failed method must not re-enable an inert slider");
+    assert.equal(h.layer.pixels, "first match");
+    method.value = "local_lab"; method.emit("change");
+    assert.equal(strength.disabled, false, "a ready method remains available after a failure");
 });
 
 test("PSD children inherit hidden ancestors and unsupported group appearance is reported", () => {

@@ -514,8 +514,10 @@ async function loadColorMatchMethod(uc, preview, method) {
   if (!colorMatchIsCurrent(uc, preview)) return;
   preview.method = method;
   preview.seq += 1;
+  preview.strengthInput.disabled = !preview.matched.has(method);
   if (preview.matched.has(method)) {
     preview.loading = false;
+    preview.setNote("");
     scheduleColorMatchPreview(uc, preview);
     finishColorMatchGesture(uc, preview);
     return;
@@ -528,6 +530,7 @@ async function loadColorMatchMethod(uc, preview, method) {
     if (seq !== preview.seq || !colorMatchIsCurrent(uc, preview)) return;
     preview.matched.set(method, resultImage);
     preview.loading = false;
+    preview.strengthInput.disabled = false;
     preview.setNote("");
     scheduleColorMatchPreview(uc, preview);
     if (preview.commitRequested || !preview.dragging) {
@@ -599,7 +602,7 @@ function openColorMatchPopover(uc, layer, point = null) {
     .join("");
   element.innerHTML = `
     <div style="font-weight:600;">Color match to below – ${escapeText(layer.name || "layer")}</div>
-    <div style="opacity:.75; line-height:1.35;">Recolors this layer to fit the layers under it. The canvas updates right away – just drag the Strength slider. Apply keeps the result, Cancel restores the layer.</div>
+    <div style="opacity:.75; line-height:1.35;">Recolors this layer to fit the layers under it. Once the method is ready, drag Strength to update the canvas immediately. Apply keeps the result, Cancel restores the layer.</div>
     <label style="display:grid; gap:4px;">Method
       <select class="vnccs-uc-select" data-control="colorMatchMethod">${methodOptions}</select>
     </label>
@@ -622,8 +625,10 @@ function openColorMatchPopover(uc, layer, point = null) {
   }
 
   const note = element.querySelector("[data-color-match-note]");
+  const strengthInput = element.querySelector('[data-control="colorMatchStrength"]');
   const preview = {
     element,
+    strengthInput,
     layer,
     crop,
     targetBase,
@@ -649,7 +654,6 @@ function openColorMatchPopover(uc, layer, point = null) {
   uc._vnccsColorMatch = preview;
 
   const methodSelect = element.querySelector('[data-control="colorMatchMethod"]');
-  const strengthInput = element.querySelector('[data-control="colorMatchStrength"]');
   const readout = element.querySelector("[data-color-match-readout]");
   methodSelect.value = preview.method;
 
