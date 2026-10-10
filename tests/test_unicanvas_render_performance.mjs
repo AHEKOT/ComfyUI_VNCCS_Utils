@@ -41,6 +41,7 @@ const context = {
   getComputedStyle: (canvas) => canvas.theme,
   STAGE_SCALE_FACTOR: 0.999, STAGE_MIN_SCALE: 0.1, STAGE_MAX_SCALE: 20, STAGE_SNAP_POINTS: [], STAGE_SNAP_TOLERANCE: 0.02,
   STAGING_ICONS: { show: "<svg>show</svg>", hide: "<svg>hide</svg>" },
+  MASK_OVERLAY_COLOR: "rgba(255,0,0,0.5)",
   serializePose: () => null,
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
@@ -228,6 +229,66 @@ test("middle-button pan and zoom update the view without saving document pixels 
   w.onPointerUp();
   assert.equal(saves, 1, "document changes still persist");
 });
+
+for (const type of ["mask", "raster"]) for (const startsOutside of [false, true]) {
+  test(`${type} movement renders each held frame${startsOutside ? " when entering the viewport" : ""} and commits once without a jump`, () => {
+    const frames = [], draws = [], history = [], stack = [];
+    let tx = 0, ty = 0, pixelWrites = 0;
+    context.window.requestAnimationFrame = callback => frames.push(callback);
+    const ctx = {
+      setTransform() { tx = 0; ty = 0; }, clearRect() { draws.length = 0; },
+      save() { stack.push([tx, ty]); }, restore() { [tx, ty] = stack.pop(); },
+      translate(x, y) { tx += x; ty += y; }, scale() {},
+      drawImage(image, sx, sy, sw, sh, x, y, width, height) {
+        draws.push({ x: tx + x, y: ty + y, width, height });
+      },
+    };
+    const bounds = { x: 20, y: 30, width: 20, height: 20 };
+    const layer = { id: "moving", type, visible: true, opacity: 1,
+      canvas: new AlphaCanvas(200, 200), _boundsCache: { ...bounds } };
+    layer.canvas.getContext = () => ({ clearRect() {}, drawImage() { pixelWrites++; } });
+    const tintCtx = { clearRect() {}, drawImage() {}, fillRect() {} };
+    const tint = { width: 20, height: 20, getContext: () => tintCtx };
+    const w = widget({ layers: [layer], activeLayerId: layer.id, tool: "move",
+      origin: { x: -10, y: -5 }, view: { x: 0, y: 0, scale: 1 },
+      bbox: { width: 100, height: 100 }, canvas: { width: 200, height: 100, getContext: () => ctx }, hud: {},
+      visibleWorldRect: () => ({ x: startsOutside ? 80 : 0, y: 0, width: 200, height: 100 }),
+      isPointerDown: true, pointerMode: "layer-move", lastPoint: { x: 0, y: 0 }, lassoPoints: [],
+      dragStart: { point: { x: 0, y: 0 }, layerId: layer.id, layerBefore: { crop: { ...bounds } },
+        layerBounds: bounds, layerCanvas: new AlphaCanvas(20, 20), layerOrigin: { x: -10, y: -5 } },
+      canvasPointFromEvent: e => ({ x: e.clientX, y: e.clientY }),
+      configureImageContext: value => value, ensureWorldBounds: () => true,
+      hasOpenStagingPanel: () => false, getMaskTintScratch: () => tint,
+      getInferenceSize: () => ({ width: 100, height: 100 }),
+      createLayerPixelSnapshot: value => ({ crop: { ...value._boundsCache } }),
+      pushHistoryEntry: entry => history.push(entry),
+    });
+    for (const name of ["drawBackground", "drawStagingOverlay", "drawShapeDraft", "drawLassoDraft",
+      "drawResizeOverlay", "drawBbox", "updateInferenceSizeLabels", "updateZoomResetButton", "updateStagingControls",
+      "updateTransformControls", "updateSamControls", "updateToolPreviewOverlay", "updateContextCursor",
+      "refreshLayerRow", "syncLightStateToWidget", "scheduleFullSync"]) w[name] = () => {};
+    const frame = () => { assert.equal(frames.length, 1); frames.shift()(); };
+    const move = (x, y) => w.onPointerMove({ clientX: x, clientY: y, pointerId: 1,
+      preventDefault() {}, stopPropagation() {} });
+    w.render();
+    assert.equal(draws.length, startsOutside ? 0 : 1);
+    for (const [dx, dy] of [[80, 25], [95, 40]]) {
+      move(dx - 1, dy - 1); move(dx, dy); frame();
+      assert.deepEqual(draws, [{ x: 10 + dx, y: 25 + dy, width: 20, height: 20 }],
+        "the newest held position must reach the rendered mask or image");
+      assert.deepEqual(layer._boundsCache, bounds, "preview preserves authored pixels");
+      assert.equal(pixelWrites, 0); assert.equal(history.length, 0);
+      assert.equal(w._visibleWorldRectForRender, null, "preview clipping must not leak to other layers");
+    }
+    const held = { ...draws[0] };
+    w.onPointerUp(); frame();
+    assert.deepEqual(draws, [held], "release must keep the last preview position");
+    assert.equal(pixelWrites, 1); assert.equal(history.length, 1);
+    assert.equal(history[0].kind, "layerPixels");
+    assert.deepEqual(plain(history[0].after.crop), { x: 115, y: 70, width: 20, height: 20 });
+    assert.equal(w.pointerMode, null);
+  });
+}
 
 test("resize ignores unchanged backing sizes and coalesces actual size changes", () => {
   let renders = 0, frames = 0;

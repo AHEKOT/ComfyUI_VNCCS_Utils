@@ -8,6 +8,11 @@ UniCanvas, and future interactive nodes.
 Every interactive control must show its effect continuously while the user interacts with it;
 the user must never have to release the mouse, pointer, pen, or key before seeing the result.
 
+Freezing during movement and jumping to the final position on release are strictly
+forbidden for anything the user moves: masks, layers, objects, joints, cameras,
+viewports, handles, panels, and timeline controls. The shared design contract for
+every existing and future widget is [Widget interaction design](docs/WIDGET_DESIGN.md).
+
 - Sliders, numeric scrubbing, color, angle and camera controls, gizmos, drag pads and
   timelines update visible state from `input`, `pointermove` or an equivalent continuous event.
 - `change`, `pointerup`, drag-end, and blur may commit undo history, persistence,

@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791666354171";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791666354171";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791668230986";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791668230986";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791666354171";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791666354171";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791666354171";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791666354171";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791666354171";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791666354171";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791666354171";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791666354171";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791666354171";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791666354171";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791666354171";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791666354171";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791668230986";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791668230986";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791668230986";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791668230986";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791668230986";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791668230986";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791668230986";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791668230986";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791668230986";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791668230986";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791668230986";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791668230986";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791666354171";
+} from "./unicanvas/transform.mjs?v=1791668230986";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791666354171";
+} from "./unicanvas/presets.mjs?v=1791668230986";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791666354171";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791666354171";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791666354171";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791666354171";
+} from "./unicanvas/modes.mjs?v=1791668230986";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791668230986";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791668230986";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791668230986";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +77,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791666354171";
+const VNCCS_UNICANVAS_VERSION = "1791668230986";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791666354171";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791666354171";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791666354171";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791668230986";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791668230986";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -5518,8 +5518,18 @@ class UniCanvasWidget {
       if (this.poseEditor?.hidesLayerPixels(layer)) continue;
       if (hideMaskOverlays && layer.type === "mask") continue;
       ctx.save();
+      const transformDraft = this.getLayerTransformDraft(layer);
+      const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
+      const visibleWorldRect = this._visibleWorldRectForRender;
+      if (movePreview) {
+        ctx.translate(movePreview.dx, movePreview.dy);
+        this._visibleWorldRectForRender = {
+          ...visibleWorldRect,
+          x: visibleWorldRect.x - movePreview.dx,
+          y: visibleWorldRect.y - movePreview.dy,
+        };
+      }
       if (layer.type === "mask") {
-        const transformDraft = this.getLayerTransformDraft(layer);
         if (transformDraft) {
           ctx.globalAlpha = 1;
           this.drawMaskTransformDraft(ctx, transformDraft);
@@ -5529,21 +5539,10 @@ class UniCanvasWidget {
       } else {
         ctx.globalAlpha = layer.opacity;
         ctx.globalCompositeOperation = layer.blendMode || "source-over";
-        const transformDraft = this.getLayerTransformDraft(layer);
-        const movePreview = transformDraft ? null : this.getLayerMovePreview(layer);
-        const visibleWorldRect = this._visibleWorldRectForRender;
-        if (movePreview) {
-          ctx.translate(movePreview.dx, movePreview.dy);
-          this._visibleWorldRectForRender = {
-            ...visibleWorldRect,
-            x: visibleWorldRect.x - movePreview.dx,
-            y: visibleWorldRect.y - movePreview.dy,
-          };
-        }
         if (transformDraft) this.drawTransformDraft(ctx, transformDraft);
         else this.drawRasterLayerVisible(ctx, layer);
-        if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       }
+      if (movePreview) this._visibleWorldRectForRender = visibleWorldRect;
       ctx.restore();
     }
     this._visibleWorldRectForRender = null;
