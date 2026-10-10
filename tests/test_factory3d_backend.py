@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import io
 import json
 import sys
@@ -201,6 +202,42 @@ class FactoryBackendTests(unittest.TestCase):
         self.assertEqual(self.factory.load_scene(scene["scene_id"])["name"], "Renamed")
         unchanged = self.factory.update_scene(scene["scene_id"], {"name": "Renamed", "objects": []})
         self.assertEqual(unchanged["revision"], 0)
+
+    def test_scene_migration_cannot_overwrite_a_concurrent_edit(self):
+        scene = self.factory.create_scene("Original")
+        path = self.factory.resolve_scene_dir(scene["scene_id"]) / "scene.json"
+        path.write_text(json.dumps({**scene, "schema_version": 10}))
+        entered, release, edit_started, edit_done = (threading.Event() for _ in range(4))
+        write = self.factory._atomic_json
+
+        def pause_migration(target, value):
+            if value["name"] == "Original" and not entered.is_set():
+                entered.set()
+                if not release.wait(5):
+                    raise RuntimeError("test migration timed out")
+            write(target, value)
+
+        def edit():
+            edit_started.set()
+            try:
+                return self.factory.update_scene(scene["scene_id"], {"name": "New edit", "edit_revision": 0})
+            finally:
+                edit_done.set()
+
+        with mock.patch.object(self.factory, "_atomic_json", side_effect=pause_migration), ThreadPoolExecutor(2) as pool:
+            reader = pool.submit(self.factory.load_scene, scene["scene_id"])
+            try:
+                self.assertTrue(entered.wait(5))
+                writer = pool.submit(edit)
+                self.assertTrue(edit_started.wait(5))
+                self.assertFalse(edit_done.wait(.1))
+            finally:
+                release.set()
+            reader.result(timeout=5)
+            updated = writer.result(timeout=5)
+        restored = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(restored["name"], "New edit")
+        self.assertEqual(restored["edit_revision"], updated["edit_revision"])
 
     def test_stale_editor_cannot_overwrite_a_newer_scene(self):
         scene = self.factory.create_scene("Concurrent editors")
@@ -1633,6 +1670,51 @@ class FactoryBackendTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(FileNotFoundError, "stale"):
             self.factory._scene_preview_file(changed)
+
+    def test_parallel_capture_cleanup_preserves_the_latest_committed_files(self):
+        scene = self.factory.create_scene("Parallel captures")
+        captures = self.factory.resolve_scene_dir(scene["scene_id"]) / "preview" / "captures"
+        stream = io.BytesIO()
+        Image.new("RGB", (scene["render"]["width"], scene["render"]["height"])).save(stream, "PNG")
+        cleanup_entered, release, second_started, second_done = (threading.Event() for _ in range(4))
+        first_thread = []
+        original_iterdir = Path.iterdir
+
+        def iterdir(path):
+            if path == captures and threading.get_ident() == first_thread[0]:
+                cleanup_entered.set()
+                if not release.wait(5):
+                    raise TimeoutError("capture cleanup was not released")
+            return original_iterdir(path)
+
+        def save(token, first=False):
+            if first:
+                first_thread.append(threading.get_ident())
+            else:
+                second_started.set()
+            result = self.factory.store_scene_capture_set(
+                scene["scene_id"], stream.getvalue(), {}, [],
+                scene["revision"], scene["render_revision"], token,
+            )
+            if not first:
+                second_done.set()
+            return result
+
+        with mock.patch.object(Path, "iterdir", iterdir), ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(save, "a" * 32, True)
+            try:
+                self.assertTrue(cleanup_entered.wait(5))
+                second = pool.submit(save, "b" * 32)
+                self.assertTrue(second_started.wait(5))
+                self.assertFalse(second_done.wait(0.2), "a new capture cannot commit during old cleanup")
+            finally:
+                release.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        saved = self.factory.load_scene(scene["scene_id"])
+        self.assertEqual(saved["capture_set"]["capture_token"], "b" * 32)
+        self.assertTrue(all(path.is_file() for path in self.factory._scene_capture_files(saved)))
+        self.assertFalse((captures / ("a" * 32)).exists())
 
     def test_execution_capture_set_is_atomic_ordered_and_scene_export_sized(self):
         scene = self.factory.create_scene("Camera captures")

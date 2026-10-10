@@ -848,13 +848,15 @@ export function installUniCanvasWidgetModes(widget) {
 
 function writeStandaloneState(widget) {
   // Pixels live in the durable server cache; the browser stores only its pointer.
-  try {
-    window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, JSON.stringify({
-      saved_at: Date.now(), state: { version: 2, storage: "server_cache", state_id: widget.getStateCacheId(), layers: [] },
-    }));
-  } catch (err) {
-    // The fixed standalone cache ID also restores when browser storage is unavailable.
-    console.info("[VNCCS UniCanvas] Browser storage unavailable; standalone server cache remains active.");
+  const pointer = JSON.stringify({
+    saved_at: Date.now(), state: { version: 2, storage: "server_cache", state_id: widget.getStateCacheId(), layers: [] },
+  });
+  for (const storage of ["sessionStorage", "localStorage"]) {
+    try {
+      window[storage]?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY, pointer);
+    } catch (err) {
+      console.info("[VNCCS UniCanvas] Browser storage unavailable; standalone server cache remains active.");
+    }
   }
 }
 
@@ -897,15 +899,17 @@ export function teardownUniCanvasWidgetModes(widget) {
 
 function readStandalonePersistedStateValue() {
   const pointer = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_tab", layers: [] };
-  try {
-    const raw = window.localStorage?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY);
-    const state = raw ? JSON.parse(raw)?.state : null;
-    if (state && typeof state === "object" && Array.isArray(state.layers)) {
-      // Keep old local-only pixels until their first successful server upload.
-      return JSON.stringify({ ...state, state_id: pointer.state_id });
+  for (const storage of ["sessionStorage", "localStorage"]) {
+    try {
+      const raw = window[storage]?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY);
+      const state = raw ? JSON.parse(raw)?.state : null;
+      if (state && typeof state === "object" && Array.isArray(state.layers)) {
+        // Keep old local-only pixels until their first successful server upload.
+        return JSON.stringify({ ...state, state_id: typeof state.state_id === "string" && state.state_id.startsWith("vnccs_unicanvas_standalone_") ? state.state_id : pointer.state_id });
+      }
+    } catch (err) {
+      console.warn("[VNCCS UniCanvas] Standalone browser state restore failed", err);
     }
-  } catch (err) {
-    console.warn("[VNCCS UniCanvas] Standalone browser state restore failed", err);
   }
   return JSON.stringify(pointer);
 }

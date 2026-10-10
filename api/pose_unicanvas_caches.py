@@ -143,15 +143,26 @@ def _vnccs_register_unicanvas_state_cache():
                 return web.json_response({"error": str(exc)}, status=413)
 
             revision = data.get("revision")
+            previous = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
+            if previous is None:
+                previous = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
+            previous_revision = previous.get("revision", -1) if isinstance(previous, dict) else -1
+            if "base_revision" in data or (state_id.startswith("vnccs_unicanvas_standalone_") and not state_id.endswith("_out")):
+                base_revision = data.get("base_revision")
+                if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < -1:
+                    return web.json_response({"error": "base_revision must be an integer at least -1"}, status=400)
+                if isinstance(revision, bool) or not isinstance(revision, int) or revision <= base_revision:
+                    return web.json_response({"error": "revision must be greater than base_revision"}, status=400)
+                # A retry after a lost acknowledgement may already be committed.
+                if base_revision != previous_revision and not (revision == previous_revision and previous.get("state") == state):
+                    return web.json_response({"error": "Canvas changed in another tab"}, status=409)
             if revision is not None:
                 if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
                     return web.json_response({"error": "revision must be a non-negative integer"}, status=400)
-                previous = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
-                if previous is None:
-                    previous = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
-                previous_revision = previous.get("revision", -1) if isinstance(previous, dict) else -1
                 if previous_revision > revision:
                     return web.json_response({"status": "stale_ignored", "state_id": state_id})
+            elif previous_revision >= 0:
+                return web.json_response({"status": "stale_ignored", "state_id": state_id})
 
             entry = {"state": state}
             if revision is not None:
@@ -180,7 +191,18 @@ def _vnccs_register_unicanvas_state_cache():
             if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
                 return web.json_response({"error": "revision must be a non-negative integer"}, status=400)
             state_id = _vnccs_safe_id(data["state_id"], "unicanvas")
-            canvas_cache._vnccs_delete_unicanvas_state_cache(state_id, revision)
+            if "base_revision" in data or state_id.startswith("vnccs_unicanvas_standalone_"):
+                base_revision = data.get("base_revision")
+                if isinstance(base_revision, bool) or not isinstance(base_revision, int) or base_revision < -1:
+                    return web.json_response({"error": "base_revision must be an integer at least -1"}, status=400)
+                previous = canvas_cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
+                if previous is None:
+                    previous = canvas_cache._vnccs_read_unicanvas_state_cache_file(state_id)
+                previous_revision = previous.get("revision", -1) if isinstance(previous, dict) else -1
+                if base_revision != previous_revision:
+                    return web.json_response({"error": "Canvas changed in another tab; reload before clearing it"}, status=409)
+            if not canvas_cache._vnccs_delete_unicanvas_state_cache(state_id, revision):
+                return web.json_response({"status": "stale_ignored", "state_id": state_id})
             return web.json_response({"status": "ok", "state_id": state_id})
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=500)

@@ -144,10 +144,37 @@ test("standalone sidebar tab is a ComfyUI setting, on by default", () => {
 test("standalone state persists to the vnccs-unicanvas-standalone key", () => {
     assert.ok(modesSource.includes('const UNICANVAS_STANDALONE_STORAGE_KEY = "vnccs-unicanvas-standalone";'),
         "localStorage key must be exactly vnccs-unicanvas-standalone");
-    assert.ok(modesSource.includes("window.localStorage?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
+    assert.ok(modesSource.includes("window[storage]?.setItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
         "state must be written to that localStorage key");
-    assert.ok(modesSource.includes("window.localStorage?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
+    assert.ok(modesSource.includes("window[storage]?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY"),
         "state must be restored from that localStorage key");
+});
+
+test("standalone reload follows a saved conflict draft instead of the shared cache", () => {
+    const read = vm.runInNewContext(region(modesSource, "function readStandalonePersistedStateValue", "function createStandaloneWidget") + "\nreadStandalonePersistedStateValue", {
+        UNICANVAS_STANDALONE_STORAGE_KEY: "vnccs-unicanvas-standalone", console,
+        window: { localStorage: { getItem: () => JSON.stringify({ state: {
+            version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_draft", layers: [],
+        } }) } },
+    });
+    assert.equal(JSON.parse(read()).state_id, "vnccs_unicanvas_standalone_draft");
+});
+
+test("another tab saving cannot redirect a conflict draft when its tab reloads", () => {
+    const shared = new Map(), session = new Map();
+    const storage = values => ({ getItem: key => values.get(key), setItem: (key, value) => values.set(key, value) });
+    const environment = { console, UNICANVAS_STANDALONE_STORAGE_KEY: "vnccs-unicanvas-standalone",
+        window: { localStorage: storage(shared), sessionStorage: storage(session) } };
+    const methods = vm.runInNewContext(region(modesSource, "function writeStandaloneState", "const standalonePersistState")
+        + region(modesSource, "function readStandalonePersistedStateValue", "function createStandaloneWidget")
+        + "\n({ writeStandaloneState, readStandalonePersistedStateValue })", environment);
+    methods.writeStandaloneState({ getStateCacheId: () => "vnccs_unicanvas_standalone_draft" });
+    environment.window.sessionStorage = storage(new Map());
+    methods.writeStandaloneState({ getStateCacheId: () => "vnccs_unicanvas_standalone_tab" });
+    environment.window.sessionStorage = storage(session);
+    assert.equal(JSON.parse(methods.readStandalonePersistedStateValue()).state_id, "vnccs_unicanvas_standalone_draft");
+    environment.window.sessionStorage = storage(new Map());
+    assert.equal(JSON.parse(methods.readStandalonePersistedStateValue()).state_id, "vnccs_unicanvas_standalone_tab");
 });
 
 test("New canvas lives in the top bar, asks Are you sure? and clears layers and images", () => {

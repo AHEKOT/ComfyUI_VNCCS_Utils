@@ -40,7 +40,7 @@ def _lora_file_key(name: Any) -> str:
 
 
 def _active_lora_names(lora_stack: Any) -> list[str]:
-    """Names a LoRA stack actually applies (enabled, non-zero strength)."""
+    """Names a LoRA stack actually applies to either the model or CLIP."""
     names = []
     for item in lora_stack if isinstance(lora_stack, list) else []:
         if not isinstance(item, dict) or item.get("enabled") is False:
@@ -48,9 +48,11 @@ def _active_lora_names(lora_stack: Any) -> list[str]:
         name = str(item.get("name") or item.get("lora_name") or "")
         try:
             strength = float(item.get("strength", item.get("model_strength", 1.0)))
+            clip_strength = item.get("clip_strength")
+            effective_clip = strength if clip_strength is None else float(clip_strength)
         except (TypeError, ValueError):
             continue
-        if name and strength != 0:
+        if name and (strength != 0 or effective_clip != 0):
             names.append(name)
     return names
 
@@ -69,7 +71,8 @@ def _get_lora_full_path(lora_name: str) -> str:
 
 
 def _apply_lora_cached(model: Any, clip: Any, lora_name: str, strength: float, clip_strength: float | None = None):
-    if not lora_name or float(strength or 0) == 0:
+    effective_clip = strength if clip_strength is None else clip_strength
+    if not lora_name or (float(strength or 0) == 0 and float(effective_clip or 0) == 0):
         return model, clip
     import comfy.sd
     import comfy.utils
@@ -211,15 +214,17 @@ def _apply_lora_stack(model: Any, clip: Any, lora_stack: Any, skip_names: list[s
         return model, clip
     applied = list(skip_names)
     for item in lora_stack:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or item.get("enabled") is False:
             continue
         lora_name = str(item.get("name") or item.get("lora_name") or "")
         if _lora_name_in(lora_name, applied):
             continue
         strength = float(item.get("strength", item.get("model_strength", 1.0)))
-        if strength != 0:
-            applied.append(lora_name)
         clip_strength = item.get("clip_strength", None)
+        effective_clip = strength if clip_strength is None else float(clip_strength)
+        if strength == 0 and effective_clip == 0:
+            continue
+        applied.append(lora_name)
         model, clip = _apply_lora_cached(
             model,
             clip,

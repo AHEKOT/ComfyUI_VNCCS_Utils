@@ -125,6 +125,41 @@ class PoseLibraryProgressTests(unittest.TestCase):
             self.assertEqual(json.loads(path.read_text()), previous)
             self.assertEqual(list(Path(directory).glob("*.tmp.*")), [])
 
+    def test_corrupt_repository_settings_cannot_be_overwritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repositories.json"
+            with mock.patch.object(POSE_LIBRARY, "get_user_repositories_path", return_value=str(path)):
+                for raw in ('{"repositories":[', '[]', '{"repositories":[null]}'):
+                    with self.subTest(raw=raw):
+                        path.write_text(raw)
+                        with self.assertRaisesRegex(ValueError, "original file preserved"):
+                            POSE_LIBRARY.load_user_repositories()
+                        with self.assertRaisesRegex(ValueError, "original file preserved"):
+                            POSE_LIBRARY.save_user_repositories([{"repo_id": "artist/new"}])
+                        self.assertEqual(path.read_text(), raw)
+
+    def test_refresh_preserves_newer_user_choices_and_does_not_restore_removed_repositories(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repositories.json"
+            with mock.patch.object(POSE_LIBRARY, "get_user_repositories_path", return_value=str(path)):
+                POSE_LIBRARY.save_user_repositories([
+                    {"repo_id": POSE_LIBRARY.DEFAULT_REPO_ID, "enabled": False, "title": "Current title"},
+                    {"repo_id": "artist/custom", "enabled": False, "description": "Current description"},
+                ])
+                POSE_LIBRARY.persist_refreshed_repositories([
+                    {"repo_id": POSE_LIBRARY.DEFAULT_REPO_ID, "builtin": True, "enabled": True, "title": "Old title", "status": "ready"},
+                    {"repo_id": "artist/custom", "enabled": True, "description": "Old description", "asset_count": 2},
+                    {"repo_id": "artist/removed", "enabled": True, "status": "ready"},
+                ])
+                current = {repo["repo_id"]: repo for repo in POSE_LIBRARY.load_user_repositories()}
+                self.assertFalse(current[POSE_LIBRARY.DEFAULT_REPO_ID]["enabled"])
+                self.assertEqual(current[POSE_LIBRARY.DEFAULT_REPO_ID]["title"], "Current title")
+                self.assertEqual(current[POSE_LIBRARY.DEFAULT_REPO_ID]["status"], "ready")
+                self.assertFalse(current["artist/custom"]["enabled"])
+                self.assertEqual(current["artist/custom"]["description"], "Current description")
+                self.assertEqual(current["artist/custom"]["asset_count"], 2)
+                self.assertNotIn("artist/removed", current)
+
     def test_legacy_generic_titles_are_normalized_while_loading_repositories(self):
         with (
             mock.patch.object(POSE_LIBRARY, "load_default_repositories", return_value=[{

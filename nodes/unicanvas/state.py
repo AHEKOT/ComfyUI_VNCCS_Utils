@@ -37,6 +37,9 @@ def _merge_unicanvas_state_with_cache(state: dict[str, Any], cached: dict[str, A
                 layer["crop"] = live_layer.get("crop") or cached_layer.get("crop")
                 layer["hiresRect"] = live_layer.get("hiresRect", cached_layer.get("hiresRect"))
                 layer["hiresDataURL"] = live_layer.get("hiresDataURL") or (cached_layer.get("hiresDataURL") if layer["hiresRect"] else None)
+                if (live_layer.get("crop", False) is None and cached_layer.get("crop", False) is None
+                        and not cached_layer.get("cached") and not layer.get("dataURL") and not layer.get("hiresRect")):
+                    layer["cached"] = False
         else:
             layer = dict(live_layer)
         merged_layers.append(layer)
@@ -67,4 +70,11 @@ def _load_unicanvas_state(unicanvas_state: str) -> dict[str, Any]:
 
     if not isinstance(state.get("layers"), list):
         state["layers"] = []
+    if any(
+        (layer.get("cached") is not False and (layer.get("cached") or layer.get("crop"))
+         and not layer.get("dataURL") and not (layer.get("hiresRect") and layer.get("hiresDataURL")))
+        or (layer.get("hiresRect") and not layer.get("hiresDataURL"))
+        for layer in state["layers"] if isinstance(layer, dict)
+    ):
+        raise ValueError("UniCanvas saved layer pixels are missing; wait for state sync before queueing")
     return state

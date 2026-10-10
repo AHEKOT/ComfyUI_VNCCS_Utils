@@ -2,14 +2,16 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
 import test from "node:test";
-import { mergePoseCache } from "../web/unicanvas/pose_state.mjs";
+import { mergePoseCache, serializePose } from "../web/unicanvas/pose_state.mjs";
 import { normalizePanorama } from "../web/unicanvas/panorama.mjs";
 import { normalizeTransformMode } from "../web/unicanvas/transform.mjs";
 import { disposeModelDependencies } from "../web/unicanvas/model_dependencies.mjs";
 
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 let nextId = 0;
-const context = { mergePoseCache, normalizePanorama, normalizeTransformMode, disposeModelDependencies, uid: () => `copy${++nextId}`, console, clearTimeout };
+const context = { mergePoseCache, serializePose, widgetSettings: value => value,
+    app: { graph: { setDirtyCanvas() {} } }, normalizePanorama, normalizeTransformMode,
+    disposeModelDependencies, uid: () => `copy${++nextId}`, console, clearTimeout };
 context.buildUniCanvasBboxCompositeCanvas = widget => ({ width: 1, height: 1, toDataURL: () => widget.pixels });
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const plain = value => JSON.parse(JSON.stringify(value));
@@ -17,7 +19,7 @@ const base = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_1
 function widget(state, id = 1) {
     const w = Object.assign(Object.create(prototype), {
         node: { id, widgets: [{ name: "unicanvas_state", value: JSON.stringify(state) }] },
-        stateCacheId: state.state_id, setStatus() {}, loadLocalStateBackup: () => null,
+        stateCacheId: state.state_id, setStatus() {}, scheduleStateUpload() {}, loadLocalStateBackup: () => null,
         async applySerializedState(value) { this.restored = plain(value); return true; },
         async uploadStatePayload(value) { this.uploaded = plain(value); return true; },
     });
@@ -218,6 +220,7 @@ test("standalone pointer restores the full server document, including panorama a
     w.standalone = true;
     await w._loadFromNode();
     assert.deepEqual(w.restored, saved);
+    assert.equal(w.stateCacheRevision, 12);
 });
 
 test("failed restore cannot overwrite saved pixels with the initial blank document on disposal", async () => {
@@ -252,12 +255,207 @@ function writableWidget(pixels = "red") {
             return { ...base, state_id: this.getStateCacheId(), output_id: this.getOutputCacheId(),
                 bbox: this.bbox, settings: this.settings, layers: [{ id: "image", dataURL: this.pixels }] };
         },
-        syncToNode() {
-            this.node.widgets[0].value = JSON.stringify({ ...this.buildSerializedState(), layers: [{ id: "image", cached: true }] });
-        },
+        scheduleStateUpload() {},
     });
     return w;
 }
+
+function backupStorage() {
+    const values = new Map();
+    context.LOCAL_STATE_BACKUP_MAX_CHARS = 10000;
+    context.window = { localStorage: {
+        get length() { return values.size; }, key: index => [...values.keys()][index],
+        getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, value),
+        removeItem: key => values.delete(key),
+    } };
+    return values;
+}
+
+test("failed uploads preserve every canvas draft, including legacy backups", async () => {
+    const values = backupStorage();
+    const legacy = "vnccs_unicanvas_backup_legacy";
+    values.set(legacy, JSON.stringify({ state: { layers: [{ dataURL: "legacy" }] } }));
+    context.fetch = async () => { throw new Error("offline"); };
+    const a = writableWidget("A"), b = writableWidget("B");
+    b.stateCacheId = "canvas_B";
+    delete a.saveLocalStateBackup;
+    delete b.saveLocalStateBackup;
+    assert.equal(await a.flushStateUpload(), false);
+    assert.equal(await b.flushStateUpload(), false);
+    assert.equal(JSON.parse(values.get(a.getStateBackupKey())).state.layers[0].dataURL, "A");
+    assert.equal(JSON.parse(values.get(b.getStateBackupKey())).state.layers[0].dataURL, "B");
+    assert.ok(values.has(legacy));
+});
+
+test("only acknowledged backups are pruned; oversize and quota failures retain drafts", async () => {
+    const values = backupStorage();
+    const a = writableWidget("A"), b = writableWidget("B");
+    b.stateCacheId = "canvas_B";
+    delete a.saveLocalStateBackup;
+    delete b.saveLocalStateBackup;
+    context.fetch = async () => ({ ok: true, json: async () => ({ status: "ok" }) });
+    await a.flushStateUpload();
+    assert.equal(JSON.parse(values.get(a.getStateBackupKey())).confirmed, true);
+    b.saveLocalStateBackup(b.buildSerializedState());
+    assert.equal(values.has(a.getStateBackupKey()), false);
+    const draft = values.get(b.getStateBackupKey());
+    context.LOCAL_STATE_BACKUP_MAX_CHARS = 1;
+    b.saveLocalStateBackup(b.buildSerializedState());
+    assert.equal(values.get(b.getStateBackupKey()), draft);
+    b.localStateBackupDisabled = false;
+    context.LOCAL_STATE_BACKUP_MAX_CHARS = 10000;
+    context.window.localStorage.setItem = () => { throw new Error("quota"); };
+    b.saveLocalStateBackup({ ...b.buildSerializedState(), bbox: { x: 99 } });
+    assert.equal(values.get(b.getStateBackupKey()), draft);
+});
+
+test("an old upload acknowledgement cannot confirm a newer local draft", async () => {
+    const values = backupStorage();
+    const w = writableWidget("A");
+    delete w.saveLocalStateBackup;
+    let finish;
+    context.fetch = async () => new Promise(resolve => { finish = resolve; });
+    const pending = w.flushStateUpload();
+    await Promise.resolve();
+    w.pixels = "B";
+    w.saveLocalStateBackup(w.buildSerializedState());
+    finish({ ok: true, json: async () => ({ status: "ok" }) });
+    await pending;
+    const backup = JSON.parse(values.get(w.getStateBackupKey()));
+    assert.equal(backup.state.layers[0].dataURL, "B");
+    assert.equal(backup.confirmed, false);
+});
+
+test("two standalone tabs keep both edits by saving a conflicting tab as a durable draft", async () => {
+    const id = "vnccs_unicanvas_standalone_tab";
+    const stored = new Map([[id, { revision: 12, state: { ...base, state_id: id, layers: [] } }]]);
+    context.fetch = async (_url, request) => {
+        const entry = JSON.parse(request.body), previous = stored.get(entry.state_id);
+        if (entry.base_revision !== (previous?.revision ?? -1)) {
+            return { ok: false, status: 409, json: async () => ({ error: "Canvas changed in another tab" }) };
+        }
+        stored.set(entry.state_id, entry);
+        return { ok: true, json: async () => ({ status: "ok" }) };
+    };
+    const a = writableWidget("A"), b = writableWidget("B");
+    for (const w of [a, b]) Object.assign(w, { standalone: true, stateCacheId: id, stateCacheRevision: 12 });
+    assert.equal(await a.flushStateUpload(), true);
+    assert.equal(await b.flushStateUpload(), true);
+    assert.equal(stored.get(id).state.layers[0].dataURL, "A");
+    assert.notEqual(b.getStateCacheId(), id);
+    assert.equal(stored.get(b.getStateCacheId()).state.layers[0].dataURL, "B");
+    b.pixels = "B2";
+    assert.equal(await b.flushStateUpload(), true);
+    assert.equal(stored.get(b.getStateCacheId()).state.layers[0].dataURL, "B2");
+    assert.equal(stored.get(id).state.layers[0].dataURL, "A");
+});
+
+test("queued standalone saves use each acknowledgement, including the closing save", async () => {
+    const w = writableWidget("A");
+    Object.assign(w, { standalone: true, stateCacheId: "vnccs_unicanvas_standalone_tab", stateCacheRevision: 12 });
+    const sent = [];
+    let finish;
+    context.fetch = async (_url, request) => {
+        sent.push(JSON.parse(request.body));
+        if (sent.length === 1) await new Promise(resolve => { finish = resolve; });
+        return { ok: true, json: async () => ({ status: "ok" }) };
+    };
+    const first = w.flushStateUpload();
+    await Promise.resolve();
+    w.pixels = "B";
+    const closing = w.flushStateUpload(true);
+    assert.equal(sent.length, 1);
+    finish();
+    assert.deepEqual(await Promise.all([first, closing]), [true, true]);
+    assert.equal(sent[0].base_revision, 12);
+    assert.equal(sent[1].base_revision, sent[0].revision);
+    assert.equal(sent[1].state.layers[0].dataURL, "B");
+});
+
+test("a conflict draft acknowledgement cannot replace a reconfigured standalone document", async () => {
+    const w = writableWidget("A");
+    Object.assign(w, { standalone: true, stateCacheId: "vnccs_unicanvas_standalone_tab", stateCacheRevision: 12 });
+    let finish, sent = 0;
+    context.fetch = async () => {
+        if (++sent === 1) return { ok: false, status: 409 };
+        return new Promise(resolve => { finish = resolve; });
+    };
+    const pending = w.flushStateUpload();
+    while (!finish) await Promise.resolve();
+    w._stateLoadRevision = 1;
+    w.stateCacheId = "vnccs_unicanvas_standalone_replacement";
+    const replacement = JSON.stringify({ ...base, state_id: w.stateCacheId });
+    w.node.widgets[0].value = replacement;
+    finish({ ok: true, json: async () => ({ status: "ok" }) });
+    assert.equal(await pending, true);
+    assert.equal(w.node.widgets[0].value, replacement);
+});
+
+test("failed frozen uploads retain the confirmed workflow and retry the same draft ID", async () => {
+    context.fetch = async () => ({ ok: true });
+    const w = writableWidget();
+    await w.snapshotForWorkflow();
+    const confirmed = w.node.widgets[0].value;
+    w.pixels = "blue";
+    w.bbox = { x: 42 };
+    w.syncToNode();
+    assert.notEqual(w.node.widgets[0].value, confirmed, "live metadata changed before the cache was forked");
+    context.fetch = async () => ({ ok: false, status: 500, json: async () => ({ error: "disk full" }) });
+    assert.equal(await w.snapshotForWorkflow(), false);
+    const draftId = w.stateCacheId;
+    assert.notEqual(draftId, JSON.parse(confirmed).state_id);
+    w.syncToNode();
+    w.writeLightStateToWidget();
+    assert.equal(w.node.widgets[0].value, confirmed);
+    context.fetch = async () => ({ ok: true });
+    assert.equal(await w.snapshotForWorkflow(), true);
+    assert.equal(w.stateCacheId, draftId);
+    assert.equal(JSON.parse(w.node.widgets[0].value).state_id, draftId);
+    assert.equal(JSON.parse(w.node.widgets[0].value).layers[0].dataURL, null);
+});
+
+test("invalid JSON and unsupported schemas preserve original workflow bytes and block saving", async () => {
+    for (const raw of ['{"version":2,"layers":[', JSON.stringify({ version: 99, layers: [{ id: "authored" }] })]) {
+        const w = writableWidget();
+        w.node.widgets[0].value = raw;
+        await w._loadFromNode();
+        assert.equal(w._stateRestoreFailed, true);
+        w.syncToNode();
+        w.writeLightStateToWidget();
+        assert.equal(await w.snapshotForWorkflow(), false);
+        assert.equal(w.node.widgets[0].value, raw);
+    }
+});
+
+test("a pending upload cannot publish into a reconfigured widget", async () => {
+    const w = writableWidget();
+    context.fetch = async () => ({ ok: true });
+    await w.snapshotForWorkflow();
+    w.pixels = "blue";
+    let finish;
+    context.fetch = async () => new Promise(resolve => { finish = resolve; });
+    const pending = w.flushStateUpload();
+    await Promise.resolve();
+    w._stateLoadRevision = (w._stateLoadRevision || 0) + 1;
+    const replacement = JSON.stringify({ ...base, state_id: "another-workflow", layers: [] });
+    w.node.widgets[0].value = replacement;
+    finish({ ok: true });
+    assert.equal(await pending, true);
+    assert.equal(w.node.widgets[0].value, replacement);
+});
+
+test("stale server acknowledgements cannot publish a pending cache or clear a newer canvas", async () => {
+    const w = writableWidget();
+    context.fetch = async () => ({ ok: true });
+    await w.snapshotForWorkflow();
+    const confirmed = w.node.widgets[0].value;
+    w.pixels = "blue";
+    context.fetch = async () => ({ ok: true, json: async () => ({ status: "stale_ignored" }) });
+    assert.equal(await w.flushStateUpload(), false);
+    assert.equal(w.node.widgets[0].value, confirmed);
+    await assert.rejects(w.clearStateCache(), /newer canvas/);
+    assert.equal(w.node.widgets[0].value, confirmed);
+});
 
 test("saved workflows keep their pixels after later autosaves and reopening in another tab", async () => {
     const stored = new Map();
@@ -308,8 +506,9 @@ test("queued uploads capture the cache ID and geometry before later edits fork i
     w.pixels = "blue";
     w.bbox.x = 42;
     const second = w.snapshotForWorkflow();
-    const secondId = JSON.parse(w.node.widgets[0].value).state_id;
+    const secondId = w.stateCacheId;
     assert.notEqual(firstId, secondId);
+    assert.equal(JSON.parse(w.node.widgets[0].value).state_id, firstId, "pending copies keep the confirmed workflow pointer");
     await Promise.resolve();
     finish();
     await Promise.all([first, second]);
@@ -319,7 +518,7 @@ test("queued uploads capture the cache ID and geometry before later edits fork i
         [[`${firstId}_out`, "red"], [`${secondId}_out`, "blue"]]);
 });
 
-test("the serialize hook writes the fresh snapshot into the saved workflow and preserves the previous callback", async () => {
+test("the serialize hook keeps a confirmed snapshot until acknowledgement and preserves the previous callback", async () => {
     const w = writableWidget();
     context.fetch = async () => ({ ok: true });
     await w.snapshotForWorkflow();
@@ -329,7 +528,7 @@ test("the serialize hook writes the fresh snapshot into the saved workflow and p
     const nodeType = { prototype: { onSerialize(output) {
         previousCalled = true;
         assert.equal(this, w.node);
-        assert.notEqual(JSON.parse(output.widgets_values[0]).state_id, JSON.parse(stale).state_id);
+        assert.equal(output.widgets_values[0], stale);
     } } };
     const start = source.indexOf("    const onSerialize = nodeType.prototype.onSerialize;");
     const end = source.indexOf("    const onRemoved =", start);
@@ -338,8 +537,27 @@ test("the serialize hook writes the fresh snapshot into the saved workflow and p
     nodeType.prototype.onSerialize.call(w.node, output);
     assert.equal(previousCalled, true);
     assert.equal(output.widgets_values[1], "unrelated");
-    assert.equal(JSON.parse(output.widgets_values[0]).layers[0].dataURL, undefined, "saved workflow stays compact");
+    assert.equal(JSON.parse(output.widgets_values[0]).layers[0].dataURL, null, "saved workflow stays compact");
     await w.stateUploadPromise;
+    assert.notEqual(JSON.parse(w.node.widgets[0].value).state_id, JSON.parse(stale).state_id);
+    assert.equal(JSON.parse(w.node.widgets[0].value).layers[0].dataURL, null);
+});
+
+test("a stale output acknowledgement stops queueing and never suppresses a retry", async () => {
+    const w = writableWidget();
+    let uploads = 0;
+    context.fetch = async () => { uploads++; return { ok: true, json: async () => ({ status: "stale_ignored" }) }; };
+    const statuses = [];
+    Object.assign(w, { setStatus: message => statuses.push(message), flushStateUpload: async () => true,
+                      syncToNode() {}, layers: [] });
+    await assert.rejects(w.preparePanoramaForQueue(), /output could not be sent/);
+    assert.equal(w.lastUploadedOutputJSON, undefined);
+    assert.equal(w.outputUploadsPending, 0);
+    assert.match(statuses.at(-1), /newer canvas/);
+    context.fetch = async () => { uploads++; return { ok: true, json: async () => ({ status: "ok" }) }; };
+    assert.equal(await w.uploadOutputSnapshot(), true);
+    assert.equal(uploads, 2);
+    assert.ok(w.lastUploadedOutputJSON);
 });
 
 test("unchanged bbox output is deduplicated only after pending writes have settled", async () => {

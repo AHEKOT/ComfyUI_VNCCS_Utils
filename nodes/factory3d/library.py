@@ -41,6 +41,8 @@ MAX_EXTRACTED_BYTES = 16 * 1024 * 1024 * 1024
 _SAFE_PART = re.compile(r"[^A-Za-z0-9._ -]+")
 
 _REPOSITORY_SYNC_LOCK = threading.Lock()
+_BACKGROUND_REFRESH_LOCK = threading.Lock()
+_BACKGROUND_REFRESH_STATE = {"running": False, "task_id": "", "last_started": 0}
 
 
 def _root() -> Path:
@@ -407,8 +409,8 @@ def _migrate_package_to_ply_only(
     source = paths["package"]
     temporary = source.with_name(f".{source.name}.{secrets.token_hex(6)}.tmp")
     try:
-        with zipfile.ZipFile(source, "r", allowZip64=True) as archive:
-            manifest = json.loads(archive.read("manifest.json"))
+        archive, manifest = _read_package(paths)
+        with archive:
             changed = _strip_manifest_splats(manifest)
             members = archive.infolist()
             changed = changed or any(
@@ -594,10 +596,18 @@ def update_asset(asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         moving = paths["meta"] != target_paths["meta"]
         if moving and target_paths["meta"].exists():
             raise ValueError("asset already exists in the target category")
+        preview = target_paths["preview"]
+        temporary = preview.with_name(f".{preview.name}.{secrets.token_hex(6)}.tmp")
+        backup = preview.with_name(f".{preview.name}.{secrets.token_hex(6)}.tmp")
+        preview_installed = False
         try:
             preview_value = payload.get("preview")
             if preview_value:
-                target_paths["preview"].write_bytes(_decode_preview(preview_value))
+                temporary.write_bytes(_decode_preview(preview_value))
+                if not moving and preview.is_file():
+                    shutil.copyfile(preview, backup)
+                os.replace(temporary, preview)
+                preview_installed = True
             elif paths["preview"].is_file() and paths["preview"] != target_paths["preview"]:
                 target_paths["preview"].parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(paths["preview"], target_paths["preview"])
@@ -624,7 +634,18 @@ def update_asset(asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             if moving:
                 for kind in ("package", "preview"):
                     target_paths[kind].unlink(missing_ok=True)
+            elif preview_installed:
+                if backup.is_file():
+                    recovery = backup
+                    backup = None  # Keep the recovery file if rollback also fails.
+                    os.replace(recovery, preview)
+                else:
+                    preview.unlink(missing_ok=True)
             raise
+        finally:
+            temporary.unlink(missing_ok=True)
+            if backup is not None:
+                backup.unlink(missing_ok=True)
         if paths["meta"] != target_paths["meta"]:
             paths["meta"].unlink(missing_ok=True)
             paths["package"].unlink(missing_ok=True)
@@ -642,24 +663,30 @@ def _safe_member(member: zipfile.ZipInfo) -> PurePosixPath:
 
 def _read_package(paths: dict[str, Path]) -> tuple[zipfile.ZipFile, dict[str, Any]]:
     archive = zipfile.ZipFile(paths["package"], "r", allowZip64=True)
-    members = archive.infolist()
-    if len(members) > MAX_PACKAGE_FILES:
-        archive.close()
-        raise ValueError("library package contains too many files")
-    if sum(item.file_size for item in members) > MAX_EXTRACTED_BYTES:
-        archive.close()
-        raise ValueError("library package is too large")
-    for member in members:
-        _safe_member(member)
     try:
-        manifest = json.loads(archive.read("manifest.json"))
+        members = archive.infolist()
+        if len(members) > MAX_PACKAGE_FILES:
+            raise ValueError("library package contains too many files")
+        if sum(item.file_size for item in members) > MAX_EXTRACTED_BYTES:
+            raise ValueError("library package is too large")
+        for member in members:
+            _safe_member(member)
+        try:
+            member = archive.getinfo("manifest.json")
+        except KeyError as exc:
+            raise ValueError("library package manifest is invalid") from exc
+        if member.file_size > factory.MAX_SCENE_JSON_BYTES:
+            raise ValueError("library package manifest is too large")
+        try:
+            manifest = json.loads(archive.read(member))
+        except Exception as exc:
+            raise ValueError("library package manifest is invalid") from exc
+        if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
+            raise ValueError("unsupported library package")
+        return archive, manifest
     except Exception:
         archive.close()
-        raise ValueError("library package manifest is invalid")
-    if not isinstance(manifest, dict) or manifest.get("schema") != SCHEMA:
-        archive.close()
-        raise ValueError("unsupported library package")
-    return archive, manifest
+        raise
 
 
 def _install_object(
@@ -1042,20 +1069,20 @@ def load_asset(
                 for item in scene["objects"]:
                     if item.get("level_id") not in valid_level_ids:
                         item["level_id"] = default_level_id
-                    if item.get("building_id") not in valid_building_ids:
+                    if item.get("building_id") != "" and item.get("building_id") not in valid_building_ids:
                         item["building_id"] = default_building_id
                 for camera in scene["cameras"]:
                     if camera.get("level_id") not in valid_level_ids:
                         camera["level_id"] = default_level_id
-                    if camera.get("building_id") not in valid_building_ids:
+                    if camera.get("building_id") != "" and camera.get("building_id") not in valid_building_ids:
                         camera["building_id"] = default_building_id
                 for light in scene["lighting"].get("lights", []):
                     if light.get("level_id") not in valid_level_ids:
                         light["level_id"] = default_level_id
-                    if light.get("building_id") not in valid_building_ids:
+                    if light.get("building_id") != "" and light.get("building_id") not in valid_building_ids:
                         light["building_id"] = default_building_id
                 for track in scene.get("camera_tracks", []):
-                    if track.get("building_id") not in valid_building_ids:
+                    if track.get("building_id") != "" and track.get("building_id") not in valid_building_ids:
                         track["building_id"] = default_building_id
                 stored_skydome = stored_scene.get("skydome")
                 if isinstance(stored_skydome, dict):
@@ -1107,15 +1134,15 @@ def _repository_config_path() -> Path:
 
 def _user_repositories() -> list[dict[str, Any]]:
     path = _repository_config_path()
-    if not path.is_file():
-        return []
     try:
         loaded = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(loaded, list):
-            return [item for item in loaded if isinstance(item, dict)]
-    except Exception:
-        pass
-    return []
+        if not isinstance(loaded, list) or any(not isinstance(item, dict) for item in loaded):
+            raise ValueError("repository settings must be a list of objects")
+        return loaded
+    except FileNotFoundError:
+        return []
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read 3D repository settings; original file preserved: {exc}") from exc
 
 
 def _repositories() -> list[dict[str, Any]]:
@@ -1151,7 +1178,15 @@ def _repositories() -> list[dict[str, Any]]:
 
 
 def _save_user_repositories(values: list[dict[str, Any]]) -> None:
+    _user_repositories()  # Never replace settings that could not be read.
     _atomic_json(_repository_config_path(), values)
+
+
+def _validate_repository_directory(repo_id: str) -> None:
+    directory = _repo_dir(repo_id).casefold()
+    for other in [LOCAL_REPOSITORY, *(item["repo_id"] for item in _repositories())]:
+        if other != repo_id and _repo_dir(other).casefold() == directory:
+            raise ValueError(f"Repository directory collision: {repo_id} and {other}")
 
 
 def _sync_repository(
@@ -1164,6 +1199,7 @@ def _sync_repository(
         repository_progress_start(task_id, f"Reading {repo_id} manifest…")
     try:
         with _REPOSITORY_SYNC_LOCK:
+            _validate_repository_directory(repo_id)
             from huggingface_hub import hf_hub_download
 
             manifest_path = Path(
@@ -1212,45 +1248,66 @@ def _sync_repository(
                     "meta": raw.get("meta_path"),
                     "preview": raw.get("preview_path"),
                 }
-                for kind, remote_path in mapping.items():
-                    if not remote_path:
+                stage = paths["meta"].parent / f".sync-{secrets.token_hex(6)}"
+                stage.mkdir()
+                preserve_stage = False
+                try:
+                    replacements = {}
+                    for kind, remote_path in mapping.items():
+                        if not remote_path:
+                            completed += 1
+                            continue
+                        repository_progress_update(
+                            task_id, message=f"Downloading {raw.get('name') or asset_id}",
+                            current_file=str(remote_path), progress=completed / total * 100,
+                        )
+                        cached = Path(hf_hub_download(
+                            repo_id=repo_id, filename=str(remote_path), repo_type="model", token=False,
+                        ))
+                        if kind == "meta":
+                            record = json.loads(cached.read_text(encoding="utf-8"))
+                            if (not isinstance(record, dict) or record.get("schema") != SCHEMA
+                                or record.get("asset_id") != asset_id):
+                                raise ValueError("repository asset has invalid metadata")
+                            record.update(repository=repo_id, category=category)
+                            temporary = stage / paths[kind].name
+                            _atomic_json(temporary, record)
+                            cached = temporary
+                        checksum = _sha256(cached)
+                        if kind == "package" and raw.get("package_sha256") and checksum.lower() != raw["package_sha256"].lower():
+                            raise ValueError(f"SHA256 mismatch for {raw.get('name') or asset_id}")
+                        if not paths[kind].is_file() or _sha256(paths[kind]) != checksum:
+                            temporary = stage / paths[kind].name
+                            if cached != temporary:
+                                shutil.copy2(cached, temporary)
+                            replacements[kind] = temporary
+                        expected.add(paths[kind].resolve())
                         completed += 1
-                        continue
-                    repository_progress_update(
-                        task_id,
-                        message=f"Downloading {raw.get('name') or asset_id}",
-                        current_file=str(remote_path),
-                        progress=completed / total * 100,
-                    )
-                    cached = Path(
-                        hf_hub_download(
-                            repo_id=repo_id,
-                            filename=str(remote_path),
-                            repo_type="model",
-                            token=False,
-                        )
-                    )
-                    paths[kind].parent.mkdir(parents=True, exist_ok=True)
-                    temporary = paths[kind].with_suffix(paths[kind].suffix + ".tmp")
-                    shutil.copy2(cached, temporary)
-                    if (
-                        kind == "package"
-                        and raw.get("package_sha256")
-                        and _sha256(temporary).lower()
-                        != str(raw["package_sha256"]).lower()
-                    ):
-                        temporary.unlink(missing_ok=True)
-                        raise ValueError(
-                            f"SHA256 mismatch for {raw.get('name') or asset_id}"
-                        )
-                    os.replace(temporary, paths[kind])
-                    expected.add(paths[kind].resolve())
-                    completed += 1
-                if paths["meta"].is_file():
-                    record = json.loads(paths["meta"].read_text(encoding="utf-8"))
-                    record["repository"] = repo_id
-                    record["category"] = category
-                    _atomic_json(paths["meta"], record)
+                    # Stage every download before touching the installed asset; metadata commits last.
+                    installed = []
+                    try:
+                        for kind in ("package", "preview", "meta"):
+                            if kind not in replacements:
+                                continue
+                            backup = stage / f"{kind}.backup"
+                            if paths[kind].exists():
+                                os.replace(paths[kind], backup)
+                            installed.append((kind, backup))
+                            os.replace(replacements[kind], paths[kind])
+                    except Exception:
+                        try:
+                            for kind, backup in reversed(installed):
+                                if backup.exists():
+                                    os.replace(backup, paths[kind])
+                                else:
+                                    paths[kind].unlink(missing_ok=True)
+                        except Exception as exc:
+                            preserve_stage = True
+                            raise OSError(f"Asset rollback failed; recovery files preserved at {stage}: {exc}") from exc
+                        raise
+                finally:
+                    if not preserve_stage:
+                        shutil.rmtree(stage)
             for path in root.glob("*/*"):
                 if path.is_file() and path.name != MANIFEST_NAME and path.resolve() not in expected:
                     path.unlink(missing_ok=True)
@@ -1263,9 +1320,9 @@ def _sync_repository(
         raise
 
 
-def _sync_repositories(repo_ids: list[str], task_id: str) -> None:
-    repository_progress_start(task_id, "Synchronizing 3D model repositories…")
+def _sync_repositories(repo_ids: list[str], task_id: str, *, auto_refresh: bool = False) -> None:
     try:
+        repository_progress_start(task_id, "Synchronizing 3D model repositories…")
         for index, repo_id in enumerate(repo_ids):
             repository_progress_update(
                 task_id,
@@ -1279,3 +1336,7 @@ def _sync_repositories(repo_ids: list[str], task_id: str) -> None:
         )
     except Exception as exc:
         repository_progress_fail(task_id, exc)
+    finally:
+        if auto_refresh:
+            with _BACKGROUND_REFRESH_LOCK:
+                _BACKGROUND_REFRESH_STATE["running"] = False

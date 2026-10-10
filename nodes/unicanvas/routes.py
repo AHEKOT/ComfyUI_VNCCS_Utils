@@ -246,7 +246,10 @@ def register_unicanvas_routes() -> None:
 
     @PromptServer.instance.routes.get("/vnccs/unicanvas/model_memory")
     async def vnccs_unicanvas_model_memory_get(_request):
-        return web.json_response(await asyncio.to_thread(load_model_memory))
+        try:
+            return web.json_response(await asyncio.to_thread(load_model_memory))
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=500)
 
     @PromptServer.instance.routes.post("/vnccs/unicanvas/model_memory")
     async def vnccs_unicanvas_model_memory_set(request):

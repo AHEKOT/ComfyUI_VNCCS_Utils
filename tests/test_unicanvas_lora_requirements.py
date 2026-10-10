@@ -143,6 +143,33 @@ def test_families_without_own_loras_apply_only_the_stack(applied):
         assert applied == [("s.safetensors", 0.5, None)], mode
 
 
+def test_clip_only_loras_count_as_applied_and_are_not_duplicated(applied):
+    stack = [{"name": "clip-only", "strength": 0, "clip_strength": 1},
+             {"name": "clip-only", "strength": 1},
+             {"name": "disabled", "strength": 0, "clip_strength": 1, "enabled": False}]
+    assert loras._active_lora_names(stack) == ["clip-only", "clip-only"]
+    _apply_lora_stack("m", "c", stack)
+    assert applied == [("clip-only", 0, 1)]
+    applied.clear()
+    rule = LoraRequirement(name_setting="lora", default_name="clip-only")
+    _apply_lora_requirements("m", "c", (rule,), {"_external": {"lora_stack": stack[:1]}})
+    assert applied == []
+
+
+def test_cached_loader_passes_clip_only_strength_to_comfy(monkeypatch):
+    import comfy.sd
+    import comfy.utils
+    calls = []
+    monkeypatch.setattr(loras, "_get_lora_full_path", lambda name: "/loras/" + name)
+    monkeypatch.setattr(comfy.utils, "load_torch_file", lambda *_args, **_kwargs: "weights")
+    monkeypatch.setattr(comfy.sd, "load_lora_for_models", lambda *args: (calls.append(args) or (args[0], args[1])), raising=False)
+    assert loras._apply_lora_cached("m", "c", "clip-only", 0, 1) == ("m", "c")
+    assert calls == [("m", "c", "weights", 0, 1)]
+    calls.clear()
+    assert loras._apply_lora_cached("m", "c", "zero", 0) == ("m", "c")
+    assert calls == []
+
+
 def test_no_family_overrides_apply_loras():
     """LoRA behaviour is declared (lora_requirements), never re-implemented per family."""
     from nodes.unicanvas.models import UNICANVAS_MODEL_MODULES
@@ -180,7 +207,7 @@ def test_a_lora_is_never_applied_twice(applied, monkeypatch):
         {"name": "sub/style.safetensors", "strength": 0.9},
         {"name": "Turbo.safetensors", "strength": 1.0},
     ], ["viggle/turbo.safetensors"])
-    assert applied == [("style.safetensors", 0.0, None), ("style.safetensors", 0.6, None),
+    assert applied == [("style.safetensors", 0.6, None),
                        ("sub/style.safetensors", 0.9, None)]
 
 

@@ -13,6 +13,40 @@ from helpers.unicanvas_package import load_unicanvas_package
 
 
 class RuntimeCacheTests(unittest.TestCase):
+    def test_standalone_upload_checks_the_revision_read_by_each_tab(self):
+        upload = self.cache["routes"]["/vnccs/unicanvas_state_upload"]
+        state_id = "vnccs_unicanvas_standalone_tab"
+
+        def save(revision, base_revision, marker):
+            class Request:
+                headers = {"Content-Length": "1000"}
+                async def json(self):
+                    return {"state_id": state_id, "state": {"layers": [], "marker": marker},
+                            "revision": revision, "base_revision": base_revision}
+            return asyncio.run(upload(Request()))
+
+        self.assertEqual(save(10, -1, "original").status, 200)
+        self.assertEqual(save(20, 10, "first tab").status, 200)
+        self.assertEqual(save(20, 10, "first tab").status, 200, "lost acknowledgements can be retried")
+        self.cache["VNCCS_UNICANVAS_STATE_CACHE"].clear()
+        self.assertEqual(save(30, 10, "stale tab").status, 409)
+        self.assertEqual(save(30, True, "invalid").status, 400)
+        self.assertEqual(save(30, None, "old client").status, 400)
+        self.assertEqual(self.cache["_vnccs_read_unicanvas_state_cache_file"](state_id)["state"]["marker"], "first tab")
+        self.assertEqual(save(30, 20, "first tab again").status, 200)
+
+    def test_stale_standalone_tab_cannot_clear_another_tabs_edits(self):
+        state_id = "vnccs_unicanvas_standalone_tab"
+        entry = {"state": {"layers": [], "marker": "new edit"}, "revision": 20}
+        self.cache["_vnccs_write_unicanvas_state_cache_file"](state_id, entry)
+        class Request:
+            headers = {"Content-Length": "1000"}
+            async def json(self):
+                return {"state_id": state_id, "revision": 30, "base_revision": 10}
+        response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_delete"](Request()))
+        self.assertEqual(response.status, 409)
+        self.assertEqual(self.cache["_vnccs_read_unicanvas_state_cache_file"](state_id), entry)
+
     def test_canvas_node_reads_the_same_normalized_ids_as_upload_api(self):
         state_module = load_unicanvas_package("vnccs_cache_reader_test").state
         directory = self.cache["_UNICANVAS_STATE_CACHE_DIR"]
@@ -170,6 +204,33 @@ class RuntimeCacheTests(unittest.TestCase):
 
         response = asyncio.run(self.cache["routes"]["/vnccs/unicanvas_state_upload"](Request()))
         self.assertEqual(response.status, 200)
+
+    def test_stale_delete_and_legacy_upload_preserve_newer_disk_snapshots(self):
+        write = self.cache["_vnccs_write_unicanvas_state_cache_file"]
+        read = self.cache["_vnccs_read_unicanvas_state_cache_file"]
+        previous = {"state": {"layers": [{"dataURL": "new pixels"}]}, "revision": 200}
+        for state_id in ("same", "same_out"):
+            write(state_id, previous)
+        class Request:
+            headers = {"Content-Length": "100"}
+            payload = {"state_id": "same", "revision": 100}
+            async def json(self):
+                return self.payload
+        request = Request()
+        delete = self.cache["routes"]["/vnccs/unicanvas_state_delete"]
+        self.assertEqual(asyncio.run(delete(request)).data["status"], "stale_ignored")
+        self.assertEqual(read("same"), previous)
+        self.assertEqual(read("same_out"), previous)
+        request.payload = {"state_id": "same", "state": {"layers": []}}
+        upload = self.cache["routes"]["/vnccs/unicanvas_state_upload"]
+        self.assertEqual(asyncio.run(upload(request)).data["status"], "stale_ignored")
+        self.assertEqual(read("same"), previous)
+        # A newer output alone must prevent a partial deletion of the document.
+        write("same", {**previous, "revision": 50})
+        request.payload = {"state_id": "same", "revision": 100}
+        self.assertEqual(asyncio.run(delete(request)).data["status"], "stale_ignored")
+        self.assertEqual(read("same")["revision"], 50)
+        self.assertEqual(read("same_out"), previous)
 
     def test_canvas_failed_disk_write_preserves_previous_memory_and_disk_state(self):
         previous = {"state": {"layers": [{"dataURL": "old"}]}, "revision": 1}

@@ -4,6 +4,7 @@ import asyncio
 import secrets
 import shutil
 import threading
+import time
 from typing import Any
 from ..nodes.factory3d import library
 from ..nodes.shared.user_config import get_vnccs_user_config
@@ -39,15 +40,18 @@ def register_routes(routes: Any) -> None:
     from aiohttp import web
 
     async def list_items(_request: Any) -> web.Response:
-        return web.json_response(
-            {
-                "schema": library.SCHEMA,
-                "items": [
-                    library._public_record(item)
-                    for item in await asyncio.to_thread(library._read_records)
-                ],
-            }
-        )
+        try:
+            return web.json_response(
+                {
+                    "schema": library.SCHEMA,
+                    "items": [
+                        library._public_record(item)
+                        for item in await asyncio.to_thread(library._read_records)
+                    ],
+                }
+            )
+        except Exception as exc:
+            return _error(exc, status=500)
 
     async def save_item(request: Any) -> web.Response:
         try:
@@ -128,29 +132,32 @@ def register_routes(routes: Any) -> None:
             return _error(exc)
 
     async def list_repositories(_request: Any) -> web.Response:
-        config = get_vnccs_user_config()
-        records = await asyncio.to_thread(library._read_records)
-        repos = []
-        for item in library._repositories():
-            entry = dict(item)
-            entry["asset_count"] = sum(
-                record.get("repository") == item["repo_id"] for record in records
+        try:
+            config = get_vnccs_user_config()
+            records = await asyncio.to_thread(library._read_records)
+            repos = []
+            for item in library._repositories():
+                entry = dict(item)
+                entry["asset_count"] = sum(
+                    record.get("repository") == item["repo_id"] for record in records
+                )
+                repos.append(entry)
+            local_count = sum(record.get("repository") == library.LOCAL_REPOSITORY for record in records)
+            return web.json_response(
+                {
+                    "repositories": repos,
+                    "local": {
+                        "repo_id": library.LOCAL_REPOSITORY,
+                        "title": "Local 3D Model Library",
+                        "asset_count": local_count,
+                        "publishing_enabled": False,
+                        "publish_repo_id": config.get("factory3d_library_publish_repo_id", ""),
+                        "last_publish": config.get("factory3d_library_last_publish"),
+                    },
+                }
             )
-            repos.append(entry)
-        local_count = sum(record.get("repository") == library.LOCAL_REPOSITORY for record in records)
-        return web.json_response(
-            {
-                "repositories": repos,
-                "local": {
-                    "repo_id": library.LOCAL_REPOSITORY,
-                    "title": "Local 3D Model Library",
-                    "asset_count": local_count,
-                    "publishing_enabled": False,
-                    "publish_repo_id": config.get("factory3d_library_publish_repo_id", ""),
-                    "last_publish": config.get("factory3d_library_last_publish"),
-                },
-            }
-        )
+        except Exception as exc:
+            return _error(exc, status=500)
 
     async def add_repository(request: Any) -> web.Response:
         try:
@@ -158,6 +165,7 @@ def register_routes(routes: Any) -> None:
             repo_id = str(payload.get("repo_id") or "").strip()
             if repo_id.count("/") != 1 or " " in repo_id:
                 raise ValueError("repository must be owner/name")
+            library._validate_repository_directory(repo_id)
             users = [item for item in library._user_repositories() if item.get("repo_id") != repo_id]
             users.append(
                 {
@@ -204,6 +212,7 @@ def register_routes(routes: Any) -> None:
                 raise ValueError("A remote repository is required; the local library cannot be removed")
             if any(item["repo_id"] == repo_id and item.get("builtin") for item in library._repositories()):
                 raise ValueError("built-in repository cannot be removed")
+            library._validate_repository_directory(repo_id)
             users = [item for item in library._user_repositories() if item.get("repo_id") != repo_id]
             library._save_user_repositories(users)
             shutil.rmtree(library._root() / repository_dir, ignore_errors=True)
@@ -241,19 +250,31 @@ def register_routes(routes: Any) -> None:
         return web.json_response(get_repository_progress(request.match_info["task_id"]))
 
     async def auto_refresh_repositories(_request: Any) -> web.Response:
-        repo_ids = [
-            item["repo_id"] for item in library._repositories() if item.get("enabled", True)
-        ]
-        if not repo_ids:
-            return web.json_response({"success": True, "task_id": ""})
-        task_id = secrets.token_hex(12)
-
-        threading.Thread(
-            target=library._sync_repositories,
-            args=(repo_ids, task_id),
-            daemon=True,
-        ).start()
-        return web.json_response({"success": True, "task_id": task_id})
+        try:
+            repo_ids = [
+                item["repo_id"] for item in library._repositories() if item.get("enabled", True)
+            ]
+            if not repo_ids:
+                return web.json_response({"success": True, "task_id": ""})
+            with library._BACKGROUND_REFRESH_LOCK:
+                state = library._BACKGROUND_REFRESH_STATE
+                if state["running"]:
+                    return web.json_response({"success": True, "task_id": state["task_id"]})
+                if time.time() - state["last_started"] < 300:
+                    return web.json_response({"success": True, "task_id": ""})
+                task_id = secrets.token_hex(12)
+                state.update(running=True, task_id=task_id, last_started=time.time())
+                try:
+                    threading.Thread(
+                        target=library._sync_repositories,
+                        args=(repo_ids, task_id), kwargs={"auto_refresh": True}, daemon=True,
+                    ).start()
+                except Exception:
+                    state.update(running=False, last_started=0)
+                    raise
+            return web.json_response({"success": True, "task_id": task_id})
+        except Exception as exc:
+            return _error(exc)
 
     routes.get(f"{API_BASE}/items")(list_items)
     routes.post(f"{API_BASE}/items")(save_item)

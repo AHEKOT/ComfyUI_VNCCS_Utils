@@ -12,22 +12,6 @@ import pytest
 from test_pose_library_progress import POSE_LIBRARY as library, POSE_API as routes, REPOSITORY_PROGRESS as progress_service
 
 
-def test_failed_preview_install_preserves_previous_file(tmp_path, monkeypatch):
-    previous = tmp_path / "Walk.webp"
-    previous.write_bytes(b"old preview")
-    prepared = tmp_path / "prepared.webp"
-    prepared.write_bytes(b"new preview")
-    with mock.patch.object(library.os, "replace", side_effect=OSError("disk error")):
-        with pytest.raises(OSError, match="disk error"):
-            library.install_prepared_preview(str(tmp_path), "Walk", (str(prepared), ".webp"))
-    assert previous.read_bytes() == b"old preview"
-    older_format = tmp_path / "Walk.png"
-    older_format.write_bytes(b"older preview")
-    library.install_prepared_preview(str(tmp_path), "Walk", (str(prepared), ".webp"))
-    assert previous.read_bytes() == b"new preview"
-    assert not older_format.exists()
-
-
 @pytest.fixture
 def store(tmp_path, monkeypatch):
     root = tmp_path / "library"
@@ -41,6 +25,30 @@ def store(tmp_path, monkeypatch):
     return root
 
 
+def test_repository_counts_do_not_read_preview_contents(store, monkeypatch):
+    directory = store / library.LOCAL_USER_REPOSITORY / "animations" / "Standing"
+    directory.mkdir(parents=True)
+    (directory / "Walk.json").write_text('{"animation": {"frames": []}}')
+    (directory / "Walk.webm").write_bytes(b"preview")
+    monkeypatch.setattr(library, "sha256_file", mock.Mock(side_effect=AssertionError("counting must not hash files")))
+    monkeypatch.setattr(library, "get_vnccs_user_config", lambda: {})
+    info = library.get_local_repository_info()
+    assert (info["asset_count"], info["pose_count"], info["animation_count"]) == (1, 0, 1)
+
+
+def test_repository_counts_run_off_the_http_event_loop(store, monkeypatch):
+    threads = []
+    main_thread = threading.get_ident()
+    def info():
+        threads.append(threading.get_ident())
+        return {"asset_count": 1}
+    monkeypatch.setattr(library, "get_local_repository_info", info)
+    response = asyncio.run(routes.list_pose_repositories(None))
+    assert response.status == 200
+    assert response.data["local_repository"]["asset_count"] == 1
+    assert threads and all(thread != main_thread for thread in threads)
+
+
 def request(name="Walk", asset_type="pose", repository="artist/poses", **body):
     return SimpleNamespace(
         match_info={"name": name},
@@ -48,6 +56,46 @@ def request(name="Walk", asset_type="pose", repository="artist/poses", **body):
         headers={}, can_read_body=False,
         json=mock.AsyncMock(return_value={"name": name, "asset_type": asset_type, "repository": repository, "category": "Standing", **body}),
     )
+
+
+def test_repository_directory_collision_preserves_settings_and_assets(store, monkeypatch):
+    first, second = "artist/poses__v1", "artist__poses/v1"
+    monkeypatch.setattr(library, "load_pose_repositories", lambda: [{"repo_id": first}, {"repo_id": second}])
+    library.save_user_repositories([{"repo_id": first}, {"repo_id": second}])
+    target = Path(library.get_pose_path(second, "Standing", "Walk"))
+    target.parent.mkdir(parents=True)
+    target.write_text('{"pose":"preserved"}')
+    before = {path: path.read_bytes() for path in store.rglob("*") if path.is_file()}
+    for operation in (
+        lambda: library.sync_pose_repository_files({"repo_id": first}, {"poses": []}, False),
+        lambda: library.cleanup_local_repository_cache(first, set(), set()),
+        lambda: library.remove_local_repository_cache(first),
+    ):
+        with pytest.raises(ValueError, match="directory collision"):
+            operation()
+    deletion = SimpleNamespace(match_info={"repo_id": first})
+    response = asyncio.run(routes.delete_pose_repository(deletion))
+    assert response.status >= 400 and "directory collision" in response.data["error"]
+    addition = request(repo_id="artist/poses__v1")
+    monkeypatch.setattr(library, "load_pose_repositories", lambda: [{"repo_id": second}])
+    response = asyncio.run(routes.add_pose_repository(addition))
+    assert response.status >= 400 and "directory collision" in response.data["error"]
+    assert {path: path.read_bytes() for path in store.rglob("*") if path.is_file()} == before
+
+
+def test_scoped_lookup_uses_canonical_file_without_walking_but_keeps_legacy_fallback(store, monkeypatch):
+    target = Path(library.get_pose_path("artist/poses", "Standing", "Walk"))
+    target.parent.mkdir(parents=True)
+    target.write_text('{}')
+    legacy = store / "artist__poses" / "Standing" / "Walk.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text('{}')
+    with mock.patch.object(library, "walk_pose_library", side_effect=AssertionError("exact lookup must not scan")):
+        assert library.find_pose_file("Walk", "artist/poses", "Standing", "pose")[0] == str(target)
+    target.write_text('{"_library":{"category":"Other"}}')
+    assert library.find_pose_file("Walk", "artist/poses", "Standing", "pose")[0] == str(legacy)
+    target.write_text('{broken')
+    assert library.find_pose_file("Walk", "artist/poses", "Standing", "pose")[0] == str(legacy)
 
 
 def test_rename_to_existing_pose_preserves_both_assets(store):

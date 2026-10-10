@@ -47,16 +47,24 @@ def test_legacy_unversioned_file_is_migrated(prefs):
 
 def test_newer_schema_is_read_but_not_downgraded(prefs):
     prefs.parent.mkdir(parents=True)
-    prefs.write_text(json.dumps({"schema": 9, "entries": {"k": {"clip_name": "c"}}, "future": True}), encoding="utf-8")
+    raw = json.dumps({"schema": 9, "entries": {"k": {"clip_name": "c", "future_entry": True},
+                                             "future_only": {"unknown": [1, 2]}}, "future": True})
+    prefs.write_text(raw, encoding="utf-8")
     assert user_prefs.load_model_memory()["future"] is True
-    saved = user_prefs.remember_model_choice("k2", {"clip_name": "d"})
-    assert saved["schema"] == 9 and saved["future"] is True and set(saved["entries"]) == {"k", "k2"}
+    with pytest.raises(ValueError, match="newer version.*original file preserved"):
+        user_prefs.remember_model_choice("k2", {"clip_name": "d"})
+    assert prefs.read_text(encoding="utf-8") == raw
+    assert not prefs.with_suffix(".json.tmp").exists()
 
 
 def test_corrupt_file_and_bad_input(prefs):
     prefs.parent.mkdir(parents=True)
     prefs.write_text("{not json", encoding="utf-8")
-    assert user_prefs.load_model_memory()["entries"] == {}
+    with pytest.raises(ValueError, match="original file preserved"):
+        user_prefs.load_model_memory()
+    with pytest.raises(ValueError, match="original file preserved"):
+        user_prefs.remember_model_choice("valid", ENTRY)
+    assert prefs.read_text(encoding="utf-8") == "{not json"
     for key, entry in [("", ENTRY), ("k", {}), ("k", "x"), (None, ENTRY)]:
         with pytest.raises(ValueError):
             user_prefs.remember_model_choice(key, entry)

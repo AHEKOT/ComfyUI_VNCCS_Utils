@@ -782,17 +782,18 @@ def _migrate_scene_to_ply_only(path: Path, scene: dict[str, Any]) -> None:
 
 
 def load_scene(scene_id: str) -> dict[str, Any]:
-    path = _scene_path(scene_id)
-    if not path.is_file():
-        raise FileNotFoundError(f"Factory scene {_validate_id(scene_id, 'scene id')} was not found")
-    if path.stat().st_size > MAX_SCENE_JSON_BYTES:
-        raise ValueError("scene metadata is too large")
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict) or value.get("scene_id") != scene_id:
-        raise ValueError("scene metadata is invalid")
-    if int(value.get("schema_version", 0) or 0) > MAX_READABLE_SCHEMA_VERSION:
-        raise ValueError("This scene requires a newer 3D Factory version; the original scene was not changed")
-    _migrate_scene_to_ply_only(path, value)
+    with _STATE_LOCK:
+        path = _scene_path(scene_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"Factory scene {_validate_id(scene_id, 'scene id')} was not found")
+        if path.stat().st_size > MAX_SCENE_JSON_BYTES:
+            raise ValueError("scene metadata is too large")
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict) or value.get("scene_id") != scene_id:
+            raise ValueError("scene metadata is invalid")
+        if int(value.get("schema_version", 0) or 0) > MAX_READABLE_SCHEMA_VERSION:
+            raise ValueError("This scene requires a newer 3D Factory version; the original scene was not changed")
+        _migrate_scene_to_ply_only(path, value)
     if not isinstance(value.get("objects"), list):
         value["objects"] = []
     for item in value["objects"]:
@@ -2300,11 +2301,11 @@ def store_scene_capture_set(
             }
             _save_scene(scene, bump_revision=False)
 
-        for candidate in captures_root.iterdir():
-            if candidate == final_root or candidate.name.startswith("."):
-                continue
-            if candidate.is_dir():
-                shutil.rmtree(candidate, ignore_errors=True)
+            for candidate in captures_root.iterdir():
+                if candidate == final_root or candidate.name.startswith("."):
+                    continue
+                if candidate.is_dir():
+                    shutil.rmtree(candidate, ignore_errors=True)
         return scene
     except Exception:
         shutil.rmtree(temporary_root, ignore_errors=True)

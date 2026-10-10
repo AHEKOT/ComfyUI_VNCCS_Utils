@@ -31,6 +31,25 @@ def _data_url(image):
 
 
 class UniCanvasRenderTests(unittest.TestCase):
+    def test_incomplete_cache_cannot_render_a_successful_blank_canvas(self):
+        state = {"version": 2, "storage": "server_cache", "state_id": "partial",
+                 "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
+                 "layers": [{"id": "image", "type": "raster", "cached": True,
+                             "crop": {"x": 0, "y": 0, "width": 1, "height": 1}}]}
+        for cached in ({"layers": []}, {"layers": [{"id": "image"}]}):
+            with self.subTest(cached=cached), mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=cached):
+                with self.assertRaisesRegex(ValueError, "pixels are missing"):
+                    UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+
+    def test_confirmed_empty_cached_layer_still_renders_transparent(self):
+        state = {"storage": "server_cache", "state_id": "empty",
+                 "bbox": {"x": 0, "y": 0, "width": 1, "height": 1},
+                 "layers": [{"id": "image", "type": "raster", "cached": True, "crop": None}]}
+        cached = {"layers": [{"id": "image", "type": "raster", "crop": None, "dataURL": None}]}
+        with mock.patch.object(UNICANVAS.state, "_read_unicanvas_state_cache", return_value=cached):
+            result = UNICANVAS.render._render_unicanvas_state_to_rgba(json.dumps(state))
+        self.assertEqual(result.getpixel((0, 0)), (0, 0, 0, 0))
+
     def test_large_flat_layer_exports_its_small_bbox_without_decoding_the_whole_layer(self):
         pixels = _data_url(Image.new("RGBA", (6000, 4000), "red"))
         state = {"version": 2, "state_id": "large-layer", "output_id": "large-layer_out",

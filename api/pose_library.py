@@ -19,10 +19,13 @@ def expected_content_length(request, max_chars):
 
 
 async def list_pose_repositories(request):
-    return web.json_response({
-        "local_repository": library.get_local_repository_info(),
-        "repositories": library.load_pose_repositories(),
-    })
+    try:
+        return web.json_response({
+            "local_repository": await asyncio.to_thread(library.get_local_repository_info),
+            "repositories": library.load_pose_repositories(),
+        })
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 async def repository_progress_status(request):
@@ -40,23 +43,28 @@ async def add_pose_repository(request):
     task_id = str(data.get("task_id") or uuid.uuid4())
     if not repo_id:
         return web.json_response({"error": "Invalid Hugging Face repo id"}, status=400)
-    repos = library.load_pose_repositories()
-    if any(repo["repo_id"] == repo_id for repo in repos):
-        return web.json_response({"error": "Repository already exists"}, status=400)
-    user_repos = library.load_user_repositories()
-    new_repository = {
-        "repo_id": repo_id,
-        "title": data.get("title") or repo_id,
-        "description": data.get("description") or "",
-        "manifest_path": data.get("manifest_path") or "pose_library.json",
-        "enabled": True,
-        "builtin": False,
-        "asset_count": 0,
-        "pose_count": 0,
-        "animation_count": 0,
-    }
-    user_repos.append(new_repository)
-    library.save_user_repositories(user_repos)
+    try:
+        with library._REPOSITORY_SETTINGS_LOCK:
+            repos = library.load_pose_repositories()
+            if any(repo["repo_id"] == repo_id for repo in repos):
+                return web.json_response({"error": "Repository already exists"}, status=400)
+            library.validate_repository_directory(repo_id, repos)
+            user_repos = library.load_user_repositories()
+            new_repository = {
+                "repo_id": repo_id,
+                "title": data.get("title") or repo_id,
+                "description": data.get("description") or "",
+                "manifest_path": data.get("manifest_path") or "pose_library.json",
+                "enabled": True,
+                "builtin": False,
+                "asset_count": 0,
+                "pose_count": 0,
+                "animation_count": 0,
+            }
+            user_repos.append(new_repository)
+            library.save_user_repositories(user_repos)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
     # Add is a complete user action: registering a repository also downloads
     # its manifest, poses, and previews. The response is held until the cache is
@@ -87,27 +95,31 @@ async def toggle_pose_repository(request):
     task_id = str(data.get("task_id") or "")
     progress.repository_progress_start(task_id, f"{'Enabling' if enabled else 'Disabling'} {repo_id}...")
     progress.repository_progress_update(task_id, progress=20, message="Loading repository settings...")
-    default_repos = library.load_default_repositories()
-    user_repos = library.load_user_repositories()
-    if any(repo["repo_id"] == repo_id for repo in default_repos):
-        progress.repository_progress_update(task_id, progress=45, message="Updating default repository override...")
-        existing = next((repo for repo in user_repos if repo["repo_id"] == repo_id), None)
-        if existing is None:
-            base = next(repo for repo in default_repos if repo["repo_id"] == repo_id)
-            existing = {**base, "builtin": False}
-            user_repos.append(existing)
-        existing["enabled"] = enabled
-    else:
-        progress.repository_progress_update(task_id, progress=45, message="Updating user repository...")
-        for repo in user_repos:
-            if repo["repo_id"] == repo_id:
-                repo["enabled"] = enabled
-                break
-        else:
-            progress.repository_progress_fail(task_id, "Repository not found")
-            return web.json_response({"error": "Repository not found"}, status=404)
-    progress.repository_progress_update(task_id, progress=75, message="Saving repository settings...")
-    library.save_user_repositories(user_repos)
+    try:
+        with library._REPOSITORY_SETTINGS_LOCK:
+            default_repos = library.load_default_repositories()
+            user_repos = library.load_user_repositories()
+            if any(repo["repo_id"] == repo_id for repo in default_repos):
+                progress.repository_progress_update(task_id, progress=45, message="Updating default repository override...")
+                existing = next((repo for repo in user_repos if repo["repo_id"] == repo_id), None)
+                if existing is None:
+                    base = next(repo for repo in default_repos if repo["repo_id"] == repo_id)
+                    existing = {**base, "builtin": False}
+                    user_repos.append(existing)
+                existing["enabled"] = enabled
+            else:
+                progress.repository_progress_update(task_id, progress=45, message="Updating user repository...")
+                for repo in user_repos:
+                    if repo["repo_id"] == repo_id:
+                        repo["enabled"] = enabled
+                        break
+                else:
+                    progress.repository_progress_fail(task_id, "Repository not found")
+                    return web.json_response({"error": "Repository not found"}, status=404)
+            progress.repository_progress_update(task_id, progress=75, message="Saving repository settings...")
+            library.save_user_repositories(user_repos)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=500)
     progress.repository_progress_finish(task_id, f"{repo_id} {'enabled' if enabled else 'disabled'}.")
     return web.json_response({"success": True, "repositories": library.load_pose_repositories()})
 
@@ -118,9 +130,14 @@ async def delete_pose_repository(request):
         return web.json_response({"error": "Repository required"}, status=400)
     if any(repo["repo_id"] == repo_id for repo in library.load_default_repositories()):
         return web.json_response({"error": "Default repositories can be disabled, not deleted"}, status=400)
-    user_repos = [repo for repo in library.load_user_repositories() if repo["repo_id"] != repo_id]
-    removed_count = library.remove_local_repository_cache(repo_id)
-    library.save_user_repositories(user_repos)
+    try:
+        with library._REPOSITORY_SETTINGS_LOCK:
+            library.validate_repository_directory(repo_id)
+            user_repos = [repo for repo in library.load_user_repositories() if repo["repo_id"] != repo_id]
+            library.save_user_repositories(user_repos)
+            removed_count = library.remove_local_repository_cache(repo_id)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"error": str(exc)}, status=500)
     return web.json_response({"success": True, "repositories": library.load_pose_repositories(), "removed_count": removed_count})
 
 

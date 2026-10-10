@@ -1032,13 +1032,14 @@ class UniCanvasWidget {
     this._isRestoring = true;
     this.stateCacheId = this.readStateCacheIdFromWidget() || this.createStateCacheId();
     this.stateBackupKey = null;
-    // Free the shared localStorage from old multi-MB backups once the restore had its chance.
+    // Only server-confirmed backups may be retired to free browser storage.
     window.setTimeout(() => {
       if (this._disposed) return;
       const key = this.getStateBackupKey();
       if (!key.startsWith("vnccs_unicanvas_backup_")) return; // standalone keeps its document
       try {
-        if ((window.localStorage?.getItem(key)?.length || 0) > LOCAL_STATE_BACKUP_MAX_CHARS) window.localStorage.removeItem(key);
+        const raw = window.localStorage?.getItem(key);
+        if (raw?.length > LOCAL_STATE_BACKUP_MAX_CHARS && JSON.parse(raw)?.confirmed === true) window.localStorage.removeItem(key);
       } catch (_) {
         // Storage unavailable.
       }
@@ -7829,19 +7830,24 @@ class UniCanvasWidget {
     btn.setAttribute("aria-pressed", randomMode ? "true" : "false");
   }
 
-  syncToNode() {
+  syncToNode(snapshot = null) {
     if (this._disposed || this._isRestoring || this._stateRestoreFailed) return;
+    if (this._pendingStateCacheId && !snapshot) {
+      this.scheduleStateUpload();
+      return;
+    }
     clearTimeout(this.settingsSyncTimer);
     this.settingsSyncTimer = null;
     clearTimeout(this.fullSyncTimer);
     this.fullSyncTimer = null;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
-    const state = this.buildSerializedState(false);
+    const state = snapshot || this.buildSerializedState(false);
     const compactState = {
       ...state,
       settings: widgetSettings(state.settings),
-      layers: state.layers.map((layer) => ({ ...layer, cached: layer.crop !== null })),
+      layers: state.layers.map((layer) => ({ ...layer, dataURL: null, hiresDataURL: null,
+        pose: serializePose(layer.pose, false), cached: layer.crop !== null })),
     };
     widget.value = JSON.stringify(compactState);
     widget.callback?.(widget.value);
@@ -7853,7 +7859,7 @@ class UniCanvasWidget {
     if (this._disposed || this._isRestoring || this._stateRestoreFailed) return Promise.resolve(false);
     const pending = this.flushStateUpload();
     this.syncToNode();
-    const output = this.uploadOutputSnapshot();
+    const output = this.standalone ? pending.then(saved => saved && this.uploadOutputSnapshot()) : this.uploadOutputSnapshot();
     // A serialized workflow owns this snapshot; later edits must copy it before writing.
     if (!this.standalone) this._frozenStateJSON = this._capturedStateJSON;
     return Promise.all([pending, output]).then(([saved, exported]) => saved && exported);
@@ -7896,6 +7902,10 @@ class UniCanvasWidget {
 
   writeLightStateToWidget() {
     if (this._isRestoring || this._stateRestoreFailed) return;
+    if (this._pendingStateCacheId) {
+      this.scheduleStateUpload();
+      return;
+    }
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget) return;
     let state = null;
@@ -7996,7 +8006,7 @@ class UniCanvasWidget {
   }
 
   createStateCacheId() {
-    return `vnccs_unicanvas_${this.node?.id ?? "node"}_${uid()}`;
+    return `vnccs_unicanvas_${this.standalone ? "standalone" : this.node?.id ?? "node"}_${uid()}`;
   }
 
   isLegacyStateCacheId(id) {
@@ -8029,8 +8039,7 @@ class UniCanvasWidget {
 
   // localStorage (~5 MB per origin) is shared with ComfyUI's own workflow drafts: a multi-MB
   // canvas backup there makes every draft save fail ("Failed to save workflow draft"). The server
-  // state cache is the real persistence, so the local backup stays small and only the newest
-  // canvas keeps one.
+  // state cache is the real persistence; small unsaved drafts stay until acknowledged.
   pruneLocalStateBackups(keepKey = null) {
     try {
       const storage = window.localStorage;
@@ -8038,7 +8047,11 @@ class UniCanvasWidget {
       const stale = [];
       for (let index = 0; index < storage.length; index += 1) {
         const key = storage.key(index);
-        if (key && key.startsWith("vnccs_unicanvas_backup_") && key !== keepKey) stale.push(key);
+        if (key && key.startsWith("vnccs_unicanvas_backup_") && key !== keepKey) {
+          try {
+            if (JSON.parse(storage.getItem(key))?.confirmed === true) stale.push(key);
+          } catch (_) { /* Retain legacy or damaged recovery data. */ }
+        }
       }
       for (const key of stale) storage.removeItem(key);
     } catch (_) {
@@ -8049,10 +8062,9 @@ class UniCanvasWidget {
   saveLocalStateBackup(state) {
     if (this.localStateBackupDisabled || !this.stateHasLayerPixels(state)) return;
     try {
-      const payload = JSON.stringify({ saved_at: Date.now(), state });
-      this.pruneLocalStateBackups(this.getStateBackupKey());
+      const key = state.state_id ? `vnccs_unicanvas_backup_${state.state_id}` : this.getStateBackupKey();
+      const payload = JSON.stringify({ saved_at: Date.now(), state, confirmed: false });
       if (payload.length > LOCAL_STATE_BACKUP_MAX_CHARS) {
-        window.localStorage?.removeItem(this.getStateBackupKey());
         this.localStateBackupDisabled = true;
         if (!this.localStateBackupWarned) {
           this.localStateBackupWarned = true;
@@ -8060,7 +8072,9 @@ class UniCanvasWidget {
         }
         return;
       }
-      window.localStorage?.setItem(this.getStateBackupKey(), payload);
+      this.pruneLocalStateBackups(key);
+      window.localStorage?.setItem(key, payload);
+      return { key, payload };
     } catch (err) {
       this.localStateBackupDisabled = true;
       if (!this.localStateBackupWarned) {
@@ -8068,6 +8082,16 @@ class UniCanvasWidget {
         console.info("[VNCCS UniCanvas] Local backup disabled: browser localStorage quota is not enough; server cache remains active.");
       }
     }
+  }
+
+  confirmLocalStateBackup(backup) {
+    if (!backup) return;
+    try {
+      const storage = window.localStorage;
+      if (storage?.getItem(backup.key) !== backup.payload) return;
+      storage.setItem(backup.key, JSON.stringify({ ...JSON.parse(backup.payload), confirmed: true }));
+      this.pruneLocalStateBackups(backup.key);
+    } catch (_) { /* Retain the draft if browser storage is unavailable. */ }
   }
 
   loadLocalStateBackup() {
@@ -8117,28 +8141,54 @@ class UniCanvasWidget {
 
   async uploadStatePayload(state, keepalive = false) {
     let stateJSON = JSON.stringify(state);
-    if (!this.standalone && this._frozenStateJSON && stateJSON !== this._frozenStateJSON) {
+    if (!this.standalone && !this._pendingStateCacheId && this._frozenStateJSON && stateJSON !== this._frozenStateJSON) {
+      const confirmed = JSON.parse(this._frozenStateJSON);
       this.stateCacheId = this.createStateCacheId();
+      this._pendingStateCacheId = this.stateCacheId;
+      this.syncToNode(confirmed);
       this.stateBackupKey = null;
       this._frozenStateJSON = null;
       this.lastUploadedStateJSON = null;
       state = { ...state, state_id: this.stateCacheId, output_id: this.getOutputCacheId() };
       stateJSON = JSON.stringify(state);
-      const widget = this.node.widgets?.find(w => w.name === "unicanvas_state");
-      if (widget) {
-        const compact = JSON.parse(widget.value || "{}");
-        widget.value = JSON.stringify({ ...compact, state_id: state.state_id, output_id: state.output_id });
-      }
+      this.setStatus("Saving canvas snapshot; workflows keep the last saved canvas until the upload completes.");
     }
     this._capturedStateJSON = stateJSON;
     // Every snapshot follows the previous upload, including flat raster canvases.
     const revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
+    const loadRevision = this._stateLoadRevision;
     const deduplicate = !this.stateUploadsPending;
-    const run = () => this.performStateUpload(JSON.parse(stateJSON), keepalive, revision, deduplicate);
+    const run = async () => {
+      if (this.standalone && loadRevision !== this._stateLoadRevision) return false;
+      let captured = JSON.parse(stateJSON);
+      if (this.standalone) captured = { ...captured, state_id: this.getStateCacheId(), output_id: this.getOutputCacheId() };
+      let saved = await this.performStateUpload(captured, keepalive, revision, deduplicate);
+      if (this.standalone && this._stateUploadConflict === revision && loadRevision === this._stateLoadRevision) {
+        this._stateUploadConflict = null;
+        this.stateCacheId = this.createStateCacheId();
+        this.stateCacheRevision = -1;
+        this.stateBackupKey = null;
+        this.lastUploadedStateJSON = this.lastUploadedOutputJSON = null;
+        captured = { ...captured, state_id: this.stateCacheId, output_id: this.getOutputCacheId() };
+        this._capturedStateJSON = JSON.stringify(captured);
+        saved = await this.performStateUpload(captured, keepalive, revision, false);
+        if (saved && loadRevision === this._stateLoadRevision && !this._disposed && !this._isRestoring) {
+          this.syncToNode(captured);
+          this.setStatus("Another tab changed the canvas. Your edits were saved as a separate canvas draft.");
+        }
+      }
+      if (saved && this._pendingStateCacheId && this._pendingStateCacheId === captured.state_id && revision === this.stateUploadRevision
+          && loadRevision === this._stateLoadRevision && !this._disposed && !this._isRestoring) {
+        this._pendingStateCacheId = null;
+        this.syncToNode(captured);
+        this.setStatus("Canvas snapshot saved.");
+      }
+      return saved;
+    };
     this.stateUploadsPending = (this.stateUploadsPending || 0) + 1;
     try {
-      // A closing page cannot wait for an earlier fetch; revisions protect this final save.
-      if (keepalive) return await run();
+      // Standalone saves must use the preceding acknowledgement's base revision.
+      if (keepalive && !this.standalone) return await run();
       const pending = (this.stateUploadPromise || Promise.resolve()).then(run, run);
       this.stateUploadPromise = pending;
       return await pending;
@@ -8157,12 +8207,16 @@ class UniCanvasWidget {
     const res = await fetch("/vnccs/unicanvas_state_delete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ state_id: this.getStateCacheId(), revision }),
+      body: JSON.stringify({ state_id: this.getStateCacheId(), revision,
+        ...(this.standalone ? { base_revision: this.stateCacheRevision ?? -1 } : {}) }),
     });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+    if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas is already saved. Reload before clearing it.");
     this.stateUploadRevision = this.outputUploadRevision = revision;
+    if (this.standalone) this.stateCacheRevision = revision;
     this.lastUploadedStateJSON = this.lastUploadedOutputJSON = null;
     this._frozenStateJSON = this._capturedStateJSON = null;
+    this._pendingStateCacheId = null;
     try {
       window.localStorage?.removeItem(this.getStateBackupKey());
       window.localStorage?.removeItem(this.getLegacyStateBackupKey());
@@ -8209,6 +8263,7 @@ class UniCanvasWidget {
         body: JSON.stringify({ state_id: this.getOutputCacheId(), state, revision }),
       });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
+      if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas output is already saved. Reload before queueing.");
       if (revision === this.outputUploadRevision) this.lastUploadedOutputJSON = payload;
       return true;
     } catch (err) {
@@ -8223,9 +8278,10 @@ class UniCanvasWidget {
     const stateId = state.state_id || this.getStateCacheId();
     const payload = JSON.stringify({ state_id: stateId, state });
     if (deduplicate && payload === this.lastUploadedStateJSON) return true;
-    this.saveLocalStateBackup(state);
+    const backup = this.saveLocalStateBackup(state);
     if (revision === null) revision = this.stateUploadRevision = Math.max(Date.now(), (this.stateUploadRevision || 0) + 1);
-    const body = JSON.stringify({ state_id: stateId, state, revision });
+    const body = JSON.stringify({ state_id: stateId, state, revision,
+      ...(this.standalone ? { base_revision: this.stateCacheRevision ?? -1 } : {}) });
     try {
       const safeKeepalive = keepalive && body.length <= 60000;
       const res = await fetch("/vnccs/unicanvas_state_upload", {
@@ -8235,9 +8291,16 @@ class UniCanvasWidget {
         keepalive: safeKeepalive,
       });
       if (!res.ok) {
+        if (res.status === 409 && this.standalone) {
+          this._stateUploadConflict = revision;
+          return false;
+        }
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || `HTTP ${res.status}`);
       }
+      if ((await res.json?.())?.status === "stale_ignored") throw new Error("A newer canvas snapshot is already saved. Reload before saving.");
+      if (this.standalone && stateId === this.getStateCacheId()) this.stateCacheRevision = revision;
+      this.confirmLocalStateBackup(backup);
       if (revision === this.stateUploadRevision) this.lastUploadedStateJSON = payload;
       return true;
     } catch (err) {
@@ -8359,17 +8422,19 @@ class UniCanvasWidget {
 
   async _loadFromNode() {
     const loadRevision = this._stateLoadRevision = (this._stateLoadRevision || 0) + 1;
+    this._pendingStateCacheId = null;
     const widget = this.node.widgets?.find((w) => w.name === "unicanvas_state");
     if (!widget?.value || widget.value === "{}") return;
     try {
       let state = JSON.parse(widget.value);
-      if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) return;
+      if (![1, 2, 3].includes(state?.version) || !Array.isArray(state.layers)) throw new Error("Unsupported or invalid canvas state.");
       const workflowState = state;
       const workflowSettings = state.settings && typeof state.settings === "object" ? state.settings : null;
       // Workflow metadata wins; caches supply pixels only for the workflow's surviving layers.
       const sharedCache = state.state_id && this.node.graph?._nodes?.some(node =>
         node !== this.node && !node.uniCanvasWidget?._disposed && node.uniCanvasWidget?.stateCacheId === state.state_id);
       if (state.state_id) this.stateCacheId = state.state_id;
+      if (this.standalone) this.stateCacheRevision = -1;
       let cacheRestoreFailed = false;
       if (state.storage === "server_cache" && state.state_id) {
         try {
@@ -8382,6 +8447,7 @@ class UniCanvasWidget {
           const cached = await res.json();
           if (this._disposed || loadRevision !== this._stateLoadRevision) return;
           this.stateUploadRevision = Math.max(this.stateUploadRevision || 0, Number(cached?.revision) || 0);
+          if (this.standalone) this.stateCacheRevision = Number.isInteger(cached?.revision) ? cached.revision : -1;
           if ([1, 2, 3].includes(cached?.state?.version) && Array.isArray(cached.state.layers)) {
             if (!this.standalone && Boolean(state.panorama) !== Boolean(cached.state.panorama)) throw new Error("Cached document mode does not match the workflow");
             state = this.standalone ? cached.state : this.mergeCachedState(workflowState, cached.state);
@@ -8420,6 +8486,7 @@ class UniCanvasWidget {
       const forkCache = sharedCache || (this.isLegacyStateCacheId(this.stateCacheId) && this.stateHasLayerPixels(state));
       if (forkCache) {
         this.stateCacheId = this.createStateCacheId();
+        this._pendingStateCacheId = this.stateCacheId;
         this.stateBackupKey = null;
         state.state_id = this.stateCacheId;
       }
@@ -8427,7 +8494,8 @@ class UniCanvasWidget {
       if (restored) this._stateRestoreFailed = false;
       if (restored && forkCache && !this._disposed && loadRevision === this._stateLoadRevision) {
         // Copy pixels before changing the workflow reference, so an immediate save can reopen it.
-        if (await this.uploadStatePayload(state)) {
+        if (await this.uploadStatePayload(state) && !this._disposed && loadRevision === this._stateLoadRevision) {
+          this._pendingStateCacheId = null;
           const compact = { ...workflowState, state_id: this.stateCacheId };
           if (state.panorama && await this.uploadOutputSnapshot()) compact.output_id = this.getOutputCacheId();
           if (!this._disposed && loadRevision === this._stateLoadRevision) widget.value = JSON.stringify(compact);
@@ -8438,6 +8506,10 @@ class UniCanvasWidget {
       }
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Failed to restore state", err);
+      if (!this._disposed && loadRevision === this._stateLoadRevision) {
+        this._stateRestoreFailed = true;
+        this.setStatus("Canvas restore failed. Original workflow data preserved; reload or start a new canvas before saving.", true);
+      }
     }
   }
 

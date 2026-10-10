@@ -56,6 +56,7 @@ _BACKGROUND_REFRESH_STATE = {
 }
 
 _BACKGROUND_REFRESH_LOCK = threading.Lock()
+_REPOSITORY_SETTINGS_LOCK = threading.RLock()
 
 # Worker saves must keep the collision check and file commit in one transaction.
 _LIBRARY_SAVE_LOCK = threading.Lock()
@@ -157,14 +158,16 @@ def load_default_repositories():
 
 def load_user_repositories():
     path = get_user_repositories_path()
-    if not os.path.exists(path):
-        return []
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        repos = data.get("repositories") or []
-    except Exception:
+        repos = data.get("repositories", []) if isinstance(data, dict) else None
+        if not isinstance(repos, list) or any(not isinstance(repo, dict) for repo in repos):
+            raise ValueError("repository settings must contain a list of objects")
+    except FileNotFoundError:
         return []
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read pose repository settings; original file preserved: {exc}") from exc
     out = []
     for repo in repos:
         repo_id = normalize_repo_id(repo.get("repo_id"))
@@ -183,14 +186,16 @@ def load_user_repositories():
 
 
 def save_user_repositories(repositories):
-    path = get_user_repositories_path()
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    user_repos = [
-        {k: v for k, v in repo.items() if k != "builtin"}
-        for repo in repositories
-        if not repo.get("builtin")
-    ]
-    write_private_json(path, {"schema_version": 1, "repositories": user_repos})
+    with _REPOSITORY_SETTINGS_LOCK:
+        load_user_repositories()  # Never replace settings that could not be read.
+        path = get_user_repositories_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        user_repos = [
+            {k: v for k, v in repo.items() if k != "builtin"}
+            for repo in repositories
+            if not repo.get("builtin")
+        ]
+        write_private_json(path, {"schema_version": 1, "repositories": user_repos})
 
 
 def load_pose_repositories():
@@ -425,8 +430,6 @@ def collect_local_pose_files():
                 "preview_type": preview_type,
                 "hub_json_path": f"{asset_root}/{category_dir}/{safe_name}.json",
                 "hub_preview_path": f"{preview_root}/{category_dir}/{safe_name}{preview_ext}" if preview_path else "",
-                "json_sha256": sha256_file(path),
-                "preview_sha256": sha256_file(preview_path) if preview_path else "",
             })
     return sorted(poses, key=lambda item: (item["category"], item["name"]))
 
@@ -495,6 +498,7 @@ def normalize_local_path(path):
 
 
 def cleanup_local_repository_cache(repo_id, expected_json_paths, expected_preview_paths, task_id=None):
+    validate_repository_directory(repo_id)
     repo_root = os.path.join(get_library_path(), repository_to_dir(repo_id))
     if not os.path.exists(repo_root):
         return []
@@ -547,6 +551,7 @@ def cleanup_local_repository_cache(repo_id, expected_json_paths, expected_previe
 def remove_local_repository_cache(repo_id):
     if repo_id == LOCAL_USER_REPOSITORY:
         return 0
+    validate_repository_directory(repo_id)
     lib_root = os.path.abspath(get_library_path())
     repo_root = os.path.abspath(os.path.join(lib_root, repository_to_dir(repo_id)))
     if repo_root == lib_root or not repo_root.startswith(lib_root + os.sep):
@@ -563,6 +568,7 @@ def remove_local_repository_cache(repo_id):
 def sync_pose_repository_files(repo, manifest, token, task_id=None):
     """Validate the complete manifest before importing public Hugging Face assets."""
     repo_id = repo["repo_id"]
+    validate_repository_directory(repo_id)
     if not isinstance(manifest, dict) or not isinstance(manifest.get("poses"), list):
         raise ValueError("Repository manifest must contain a poses array")
     poses = manifest["poses"]
@@ -729,32 +735,21 @@ def publish_local_repository_to_hf(repo_id, token=None, create=False, private=Fa
 
 
 def persist_refreshed_repositories(refreshed):
-    user_repos = load_user_repositories()
-    by_id = {repo["repo_id"]: repo for repo in user_repos}
-    for repo in refreshed:
-        if repo.get("builtin"):
-            override = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
-            override.update({
-                key: repo.get(key)
-                for key in (
-                    "enabled",
-                    "asset_count",
-                    "pose_count",
-                    "animation_count",
-                    "last_checked",
-                    "last_error",
-                    "status",
-                    "sha",
-                    "updated_at",
-                    "downloaded_count",
-                    "skipped_count",
-                    "removed_count",
-                    "transport",
-                )
-            })
-        elif repo["repo_id"] in by_id:
-            by_id[repo["repo_id"]].update(repo)
-    save_user_repositories(list(by_id.values()))
+    with _REPOSITORY_SETTINGS_LOCK:
+        user_repos = load_user_repositories()
+        by_id = {repo["repo_id"]: repo for repo in user_repos}
+        for repo in refreshed:
+            if repo.get("builtin"):
+                current = by_id.setdefault(repo["repo_id"], {**repo, "builtin": False})
+            else:
+                current = by_id.get(repo["repo_id"])
+            if current is not None:
+                current.update({key: repo[key] for key in (
+                    "asset_count", "pose_count", "animation_count", "last_checked",
+                    "last_error", "status", "sha", "updated_at", "downloaded_count",
+                    "skipped_count", "removed_count", "transport",
+                ) if key in repo})
+        save_user_repositories(list(by_id.values()))
 
 
 def run_background_enabled_repository_refresh(task_id):
@@ -803,6 +798,14 @@ def repository_to_dir(repository):
     if repository == LOCAL_USER_REPOSITORY:
         return LOCAL_USER_REPOSITORY
     return sanitize_path_segment(repository.replace("/", "__"), LOCAL_USER_REPOSITORY)
+
+
+def validate_repository_directory(repo_id, repositories=None):
+    repositories = load_pose_repositories() if repositories is None else repositories
+    directory = repository_to_dir(repo_id).casefold()
+    for other in [LOCAL_USER_REPOSITORY, *(repo["repo_id"] for repo in repositories)]:
+        if other != repo_id and repository_to_dir(other).casefold() == directory:
+            raise ValueError(f"Repository directory collision: {repo_id} and {other}")
 
 
 def category_to_dir(category):
@@ -1085,17 +1088,6 @@ def prepare_preview_file(folder_path, preview_b64, asset_type=POSE_ASSET_TYPE):
     return prepare_image_preview_file(folder_path, raw)
 
 
-def install_prepared_preview(folder_path, name, prepared_preview):
-    if not prepared_preview:
-        return
-    tmp_path, ext = prepared_preview
-    target = os.path.join(folder_path, f"{name}{ext}")
-    os.replace(tmp_path, target)
-    for path, _ in preview_candidates(folder_path, name):
-        if path != target and os.path.exists(path):
-            os.remove(path)
-
-
 def normalize_request_repository(value):
     return str(value or LOCAL_USER_REPOSITORY).strip() or LOCAL_USER_REPOSITORY
 
@@ -1146,6 +1138,14 @@ def find_pose_file(name, repository=None, category=None, asset_type=None):
     if asset_type and asset_type not in {POSE_ASSET_TYPE, ANIMATION_ASSET_TYPE}:
         raise ValueError("Unknown library asset type")
     repo_map = repository_dir_map()
+    if repository and category and asset_type:
+        target = get_pose_path(repository, category, name, asset_type)
+        try:
+            found_repo, found_category, found_type = pose_file_location(target, read_pose_json(target), repo_map)
+            if (found_repo, found_category, found_type) == (repository, category, asset_type):
+                return target, found_repo, found_category
+        except Exception:
+            pass
     matches = []
     for root, _dirs, files in walk_pose_library(get_library_path()):
         if f"{name}.json" not in files:
