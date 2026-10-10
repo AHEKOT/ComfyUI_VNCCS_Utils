@@ -5,10 +5,12 @@ import vm from "node:vm";
 
 // An alpha-only canvas: getImageData returns the requested region and records every readback.
 class AlphaCanvas {
+  static encodes = 0;
   constructor(width, height) { this.width = width; this.height = height; this.alpha = new Uint8Array(width * height); this.reads = []; }
   paint(x, y, width, height, value = 255) {
     for (let row = y; row < y + height; row += 1) for (let col = x; col < x + width; col += 1) this.alpha[row * this.width + col] = value;
   }
+  toDataURL() { this.encodes = (this.encodes || 0) + 1; return `data:image/png;${this.width}x${this.height};${++AlphaCanvas.encodes}`; }
   getContext() {
     const canvas = this;
     return {
@@ -39,6 +41,7 @@ const context = {
   getComputedStyle: (canvas) => canvas.theme,
   STAGE_SCALE_FACTOR: 0.999, STAGE_MIN_SCALE: 0.1, STAGE_MAX_SCALE: 20, STAGE_SNAP_POINTS: [], STAGE_SNAP_TOLERANCE: 0.02,
   STAGING_ICONS: { show: "<svg>show</svg>", hide: "<svg>hide</svg>" },
+  serializePose: () => null,
 };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = (values = {}) => Object.assign(Object.create(prototype), {
@@ -195,4 +198,121 @@ test("per-render panel updates rebuild their HTML only when it changes", () => {
   assert.equal(label.htmlWrites, 1);
   sam.sam.points.push({ label: 0 }); sam.renderSamPanel();
   assert.equal(label.htmlWrites, 2);
+});
+
+test("middle-button pan and zoom update the view without saving document pixels on release", () => {
+  for (const zoom of [false, true]) {
+    let saves = 0, frames = 0;
+    const w = widget({ tool: "mask", bbox: {}, view: { x: 10, y: 20, scale: 1 }, canvas: {},
+      canvasPointFromEvent: e => ({ x: e.clientX, y: e.clientY }),
+      clearToolPreviewOverlay() {}, updateToolPreviewOverlay() {}, updateContextCursor() {},
+      syncSettingsToWidget: () => saves++, requestRender: () => frames++,
+      setStageScale(scale) { this.view.scale = scale; },
+    });
+    context.ZOOM_DRAG_PIXELS_PER_DOUBLING = 200;
+    const event = { button: 1, pointerId: 1, clientX: 50, clientY: 60, ctrlKey: zoom,
+      preventDefault() {}, stopPropagation() {} };
+    w.onPointerDown(event);
+    w.onPointerMove({ ...event, clientX: 80, clientY: 90 });
+    assert.ok(frames > 0, "the held gesture updates before pointerup");
+    if (zoom) assert.ok(w.view.scale < 1);
+    else assert.deepEqual(plain(w.view), { x: 40, y: 50, scale: 1 });
+    w.onPointerUp(event);
+    assert.equal(saves, 0, "navigation must not schedule an upload of every layer");
+  }
+  let saves = 0;
+  const w = widget({ isPointerDown: true, pointerMode: "bbox-move", dragStart: {},
+    requestRender() {}, updateContextCursor() {}, updateToolPreviewOverlay() {},
+    syncSettingsToWidget: () => saves++,
+  });
+  w.onPointerUp();
+  assert.equal(saves, 1, "document changes still persist");
+});
+
+test("resize ignores unchanged backing sizes and coalesces actual size changes", () => {
+  let renders = 0, frames = 0;
+  const canvas = () => ({ width: 100, height: 60, style: {} });
+  const w = widget({ canvas: canvas(), previewCanvas: canvas(), didInitialCenter: true,
+    updateMainUIScale() {}, getStageViewportSize: () => ({ width: 100, height: 60 }),
+    render: () => renders++, requestRender: () => frames++,
+  });
+  for (let i = 0; i < 10; i++) w.resize();
+  assert.equal(renders, 0);
+  assert.equal(frames, 0, "unrelated DOM mutations do not redraw the whole document");
+  w.getStageViewportSize = () => ({ width: 120, height: 80 });
+  w.resize();
+  assert.equal(frames, 1);
+  assert.equal(renders, 0, "resize must leave painting to the next animation frame");
+  assert.equal(w.previewCanvas.width, 120);
+  assert.equal(w.canvas.height, 80);
+  w.resize();
+  assert.equal(frames, 1);
+  w.didInitialCenter = false;
+  w.fitInitialView = () => { w.didInitialCenter = true; };
+  w.resize();
+  assert.equal(frames, 2, "initial centering still needs a frame");
+});
+
+test("unchanged pixels are encoded once while settings, metadata and snapshots stay current", () => {
+  const w = widget();
+  const layer = { id: "a", name: "A", canvas: new AlphaCanvas(20, 20), opacity: 1, visible: true };
+  layer.canvas.paint(2, 3, 8, 7);
+  const first = w.serializeLayer(layer, true);
+  const encodes = AlphaCanvas.encodes;
+  assert.ok(first.dataURL);
+  for (let i = 0; i < 5; i++) {
+    layer.name = `A ${i}`;
+    layer.visible = !layer.visible;
+    const next = w.serializeLayer(layer, true);
+    assert.equal(next.name, layer.name);
+    assert.equal(next.visible, layer.visible);
+    assert.equal(next.dataURL, first.dataURL);
+  }
+  assert.equal(AlphaCanvas.encodes, encodes, "metadata changes never re-encode layer pixels");
+  assert.equal(layer._serializedPixels.canvas.encodes, undefined, "the source canvas is never encoded directly");
+  const cache = layer._serializedPixels;
+  w.serializeLayer(layer, false);
+  assert.equal(layer._serializedPixels, cache);
+  w.markLayerPixelsChanged(layer, { x: 2, y: 3, width: 1, height: 1 });
+  const edited = w.serializeLayer(layer, true);
+  assert.notEqual(edited.dataURL, first.dataURL, "changed pixels are encoded again");
+  assert.notEqual(layer._serializedPixels, cache, "pixel edits discard the old PNG");
+  assert.equal(first.dataURL, cache.dataURL, "a previous snapshot remains immutable");
+  assert.ok(edited.dataURL);
+  const editedCache = layer._serializedPixels;
+  layer.canvas = new AlphaCanvas(30, 20);
+  layer.canvas.paint(2, 3, 8, 7);
+  w.serializeLayer(layer, true);
+  assert.notEqual(layer._serializedPixels, editedCache, "replacing the source never reuses stale pixels");
+});
+
+test("hires PNGs refresh only for pixel changes or replaced backing images", () => {
+  const w = widget();
+  const layer = { id: "hires", canvas: new AlphaCanvas(20, 20), _boundsCache: { x: 0, y: 0, width: 20, height: 20 },
+    hiresCanvas: new AlphaCanvas(80, 80), hiresRect: { x: 0, y: 0, width: 20, height: 20 } };
+  const first = w.serializeLayer(layer);
+  layer.hiresRect.x = 5;
+  const moved = w.serializeLayer(layer);
+  assert.equal(layer.hiresCanvas.encodes, 1);
+  assert.equal(moved.hiresDataURL, first.hiresDataURL);
+  assert.equal(moved.hiresRect.x, 5);
+  assert.equal(first.hiresRect.x, 0);
+  layer.hiresCanvas.width = 100;
+  w.serializeLayer(layer);
+  assert.equal(layer.hiresCanvas.encodes, 2, "resized backing invalidates its PNG");
+  w.invalidateLayerRenderCaches(layer);
+  w.serializeLayer(layer);
+  assert.equal(layer.hiresCanvas.encodes, 3);
+});
+
+test("unchanged sidebar selection does not force repeated standalone paints", () => {
+  const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
+  const setActive = modes.slice(modes.indexOf("  const setActive = (next) => {"), modes.indexOf("  const teardown = () => {", modes.indexOf("  const setActive = (next) => {")));
+  let paints = 0;
+  const select = vm.runInNewContext(`let active = false; ${setActive}; setActive`, { syncStandaloneChrome: () => paints++ });
+  select(true);
+  for (let i = 0; i < 10; i++) select(true);
+  assert.equal(paints, 1);
+  select(false);
+  assert.equal(paints, 2, "actual tab changes still update the chrome");
 });

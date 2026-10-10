@@ -32,8 +32,11 @@ This is intentional; do not flag it or propose a viewport preview in future audi
 - Unaccepted generation results (staging) are transient. Never serialize them into
   a canvas document, server state cache, workflow, or document catalog.
 - Generation is blocking from request preparation until completion or cancellation.
-  During generation, block all user changes, including settings, tools, viewport,
-  layers, pose edits, undo/redo, imports, and document create/open/rename/delete.
+  During generation, block document edits: layers, drawing, masks, transforms,
+  generation bbox, panorama camera, pose edits, undo/redo, imports, and document
+  create/open/rename/delete. Keep pan, zoom, Fit, scrolling, settings, generation
+  parameters, and other non-mutating UI available. Capture generation settings
+  before asynchronous preparation; later parameter edits apply to the next run.
   Progress reporting and the Stop command remain available. Late asynchronous
   editing callbacks must not mutate the document while generation is running.
 - Creating a canvas preserves the previous document. Each canvas has its own

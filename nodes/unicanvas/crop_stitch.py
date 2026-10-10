@@ -1,12 +1,9 @@
 """Inpaint crop-and-stitch (the ComfyUI-Inpaint-CropAndStitch idea, own implementation).
 
-An inpaint draw no longer regenerates the whole generation bbox and cuts the mask out of it:
-the area around the mask (plus context) is cropped, scaled up to the draw's working resolution,
-generated, scaled back and pasted into the mask only. The bbox gives the context budget; the
-model spends all of its pixels on the masked region, so a subject fills the mask at full detail.
-
-Pure PIL/numpy helpers; the draw pipeline calls them (setting ``inpaint_crop_to_mask``, on by
-default).
+Non-edit models can optionally crop the mask plus context, generate at the working
+resolution and paste the crop back. Pure PIL/numpy helpers, enabled by
+``inpaint_crop_to_mask`` (off by default). Edit models keep the full bbox so their
+working image and references share the same geometry.
 """
 
 from __future__ import annotations

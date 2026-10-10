@@ -14,6 +14,7 @@ const context = { console, clearTimeout, trimPanoramaHistory, compositeBlendMode
   isImageLayer: layer => layer.type !== "mask", document: { createElement: () => canvas(1, 1) } };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = props => Object.assign(Object.create(prototype), {
+  captureGenerationSettings: () => ({}),
   panorama: null, layers: [], origin: { x: 0, y: 0 }, settings: {}, setStatus() {},
   cancelDeferredCanvasCommit() {}, syncPoseToolToActiveLayer() {}, syncActiveLayerControls() {},
   renderLayerList() {}, requestRender() {}, syncLightStateToWidget() {},
@@ -63,6 +64,7 @@ for (const failed of [false, true]) {
     const w = Object.assign(Object.create(proto), { node: { graph: {} }, panorama: null,
       drawBtn: {}, _documentRevision: 0, settings: {}, _isConfigLinked: () => true,
       syncConfigFamily() {}, flushSettingsToWidget() {}, setStatus() {},
+      captureGenerationSettings: () => ({ settings: {}, loader: {}, config: { settings: {}, references: [] } }),
     });
     const first = w.draw();
     assert.equal(w.editingBlocked, true);

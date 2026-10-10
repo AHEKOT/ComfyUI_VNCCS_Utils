@@ -81,7 +81,7 @@ test("open widget modals keep their Enter/Escape keyboard contract in fullscreen
 test("Esc leaves the active tool before it leaves fullscreen", () => {
     const shortcuts = region(modesSource, "export function handleUniCanvasShortcut", "function installUniCanvasShortcuts");
     const toolExit = shortcuts.indexOf('key === "Escape" && widget.tool !== "move" && widget.tool !== "pan"');
-    const fullscreenExit = shortcuts.indexOf('key === "Escape" && widget._vnccsFullscreen');
+    const fullscreenExit = shortcuts.lastIndexOf('key === "Escape" && widget._vnccsFullscreen');
     const poseExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.tool === "pose"');
     const draftExit = shortcuts.indexOf('(key === "Escape" || key === "Enter") && widget.transformDraft');
     assert.ok(toolExit >= 0, "the tool-exit Esc branch must exist");

@@ -20,6 +20,7 @@ from .progress import _get_draw_progress, _set_draw_progress, consume_draw_cance
 from .locks import _COMFY_MODEL_OP_LOCK
 from .models.base import UniCanvasModelModule
 from .models.registry import UNICANVAS_MODEL_MODULES, _get_unicanvas_model_module
+from .prompt_enhance import _release_generation_state
 
 
 def _pose_edit_family_labels() -> list[str]:
@@ -83,5 +84,6 @@ def _run_unicanvas_draw(payload: dict[str, Any]) -> dict[str, Any]:
             request.module.validate_request(request)
             return _create_draw_pipeline(request).run()
         finally:
+            _release_generation_state()
             with _DRAW_OWNER_LOCK:
                 _ACTIVE_DRAW_ID = None

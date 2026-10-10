@@ -332,7 +332,7 @@ test("a queued save restores acknowledged pixels after an intermediate write", a
   } finally { context.fetch = previousFetch; }
 });
 
-test("generation blocks panorama rotation and zoom while preserving its request camera", async () => {
+test("generation blocks panorama rotation and preserves its request camera while viewport zoom remains available", async () => {
   let release;
   context.fetch = () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ images: [{ filename: "result.png" }] }) }); });
   const doc = { settings: settings({ yaw: 10, pitch: 20 }), commit() {}, endCamera() {}, flushCamera() {},
@@ -348,6 +348,8 @@ test("generation blocks panorama rotation and zoom while preserving its request 
     getRasterContentInBboxStats: () => ({ nonzeroAlphaPixels: 1024 * 1024 }),
     getMaskContentInBboxStats: () => ({ nonzeroAlphaPixels: 1 }),
     makeExportCanvas: () => ({ toDataURL: () => "request-view" }), makeSettingsPayload: () => ({}),
+    _isConfigLinked: () => false,
+    getModelBase: () => "sdxl",
     updateGenerationProgress() {}, startDrawProgressPolling() {}, stopDrawProgressPolling() {},
     imageResultToURL: () => "result", loadImage: async () => ({}), render() {},
   });
@@ -359,7 +361,7 @@ test("generation blocks panorama rotation and zoom while preserving its request 
   w.onPointerDown(event);
   w.onPointerMove({ ...event, clientX: 500, clientY: -250 });
   w.onPointerUp(event);
-  w.onWheel(event);
+  w.onWheel({ ...event, ctrlKey: true });
   assert.equal(doc.settings.yaw, 10);
   assert.equal(doc.settings.pitch, 20);
   assert.equal(w.view.scale, 1);

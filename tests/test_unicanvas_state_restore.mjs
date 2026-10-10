@@ -341,9 +341,11 @@ for (const standalone of [false, true]) {
         w.scheduleStateUpload();
         await tick();
         assert.equal(uploads.length, 1, "an unchanged explicit save is deduplicated");
+        assert.equal(pngEncodes(), 1, "deduplicated saves reuse the unchanged layer PNG");
         assert.equal(timers.size, 0, "deduplication must not restart the timer");
 
         w.pixels = "blue";
+        w.invalidateLayerRenderCaches(w.layers[0]);
         w.syncToNode();
         await tick();
         assert.equal(uploads.length, 2);
@@ -364,10 +366,12 @@ for (const standalone of [false, true]) {
             return response;
         };
         w.pixels = "blue";
+        w.invalidateLayerRenderCaches(w.layers[0]);
         w.syncToNode();
         const pending = tick();
         await new Promise(setImmediate);
         w.pixels = "green";
+        w.invalidateLayerRenderCaches(w.layers[0]);
         w.syncLightStateToWidget();
         w.scheduleFullSync();
         const lightTimer = w.settingsSyncTimer, fullTimer = w.fullSyncTimer;

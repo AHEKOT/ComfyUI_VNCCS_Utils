@@ -92,6 +92,7 @@ function selectionHarness() {
         "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList", "syncInteractionLock"]) host[name] = noop;
     host.toolNeedsCanvasRender = () => false;
     host.getModelBase = () => "flux_klein"; host.getInferenceSize = () => ({ width:512, height:512 });
+    host.captureGenerationSettings = () => ({ settings: {}, modelBase: host.getModelBase(), inferenceSize: host.getInferenceSize() });
     host.drawBtn = { disabled:false };
     host.createLayerPixelSnapshot = item => ({ id: item.id, pose: JSON.parse(JSON.stringify(item.pose || null)) });
     host.restoreLayerPixelSnapshot = (item, snapshot) => { item.pose = JSON.parse(JSON.stringify(snapshot.pose)); calls.push(["restore", item.id]); };
@@ -913,6 +914,10 @@ test("generation reuses the Pose Studio prompt and leaves a rotated panorama cam
     assert.equal(result.positive, "Draw character from image2\nKeep the pose from image1\nAdditional instruction");
     assert.deepEqual(Object.keys(result.pose_edit), ["image1", "image2"]);
     assert.deepEqual(rendered, ["pose"]);
+    const pending = editor.generation(layer, { width: 128, height: 128 }, "Captured instruction");
+    host.settings.positive = "Next-run instruction";
+    const captured = await pending;
+    assert.equal(captured.positive, "Draw character from image2\nKeep the pose from image1\nCaptured instruction");
 });
 
 test("switching between pose layers restores each sidebar tab and scroll position", () => {

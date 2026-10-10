@@ -2,22 +2,22 @@
  * VNCCS UniCanvas - in-node infinite canvas for SDXL img2img/inpaint.
  */
 
-import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791656997605";
-import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791656997605";
+import { UniCanvasPoseEditor } from "./unicanvas/pose.mjs?v=1791666354171";
+import { POSE_ICON, isImageLayer, serializePose, poseGenerationLayer, poseCharacterIssue, mergePoseCache } from "./unicanvas/pose_state.mjs?v=1791666354171";
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791656997605";
-import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791656997605";
-import { installCustomSelects } from "./shared/custom_select.mjs?v=1791656997605";
-import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791656997605";
-import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791656997605";
-import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791656997605";
-import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791656997605";
-import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791656997605";
-import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791656997605";
-import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791656997605";
-import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791656997605";
-import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791656997605";
+import { PanoramaOrbitControl, snapAxisAngles } from "./unicanvas/panorama_orbit.mjs?v=1791666354171";
+import { DEFAULT_PANORAMA_CAMERA, PANORAMA_MAX_VIEW, PanoramaDocument, normalizePanorama, isPanoramaCandidate, trimPanoramaHistory } from "./unicanvas/panorama.mjs?v=1791666354171";
+import { installCustomSelects } from "./shared/custom_select.mjs?v=1791666354171";
+import { installUniCanvasInputTools } from "./unicanvas/input_tools.mjs?v=1791666354171";
+import { canvasRequest, installCanvasDocuments } from "./unicanvas/documents.mjs?v=1791666354171";
+import { installUniCanvasLayerTools, compositeBlendModeToPsd } from "./unicanvas/layer_tools.mjs?v=1791666354171";
+import { MODEL_MEMORY_ASSET_FIELDS, sharedModelMemory } from "./unicanvas/model_memory.mjs?v=1791666354171";
+import { installInferenceScaleEdit, inferenceScaleMegapixels, inferenceScaleFromMegapixels, INFERENCE_SCALE_MP_MIN, INFERENCE_SCALE_MP_MAX, INFERENCE_SCALE_MP_STEP } from "./unicanvas/scale_edit.mjs?v=1791666354171";
+import { buildRemoveBgSettings } from "./unicanvas/remove_bg.mjs?v=1791666354171";
+import { AUTO_NAME_MODEL_SETTING, AUTO_NAME_MODELS, AUTO_NAME_SETTING, maybeAutoNameLayer, resolveAutoNameModel } from "./unicanvas/naming.mjs?v=1791666354171";
+import { pickRenderLodScale } from "./unicanvas/render_lod.mjs?v=1791666354171";
+import { loadConfigReferences, resolveConfigDrawSettings } from "./unicanvas/config_bridge.mjs?v=1791666354171";
 import {
   EMPTY_CROP,
   TRANSFORM_MODE_LABELS,
@@ -49,11 +49,11 @@ import {
   snapAngle,
   transformDraftBounds,
   translateQuad,
-} from "./unicanvas/transform.mjs?v=1791656997605";
+} from "./unicanvas/transform.mjs?v=1791666354171";
 import {
   forceUniCanvasPresetModelSettings,
   getUniCanvasPresetModelName,
-} from "./unicanvas/presets.mjs?v=1791656997605";
+} from "./unicanvas/presets.mjs?v=1791666354171";
 import {
   buildUniCanvasBboxCompositeCanvas,
   installUniCanvasWidgetModes,
@@ -61,10 +61,10 @@ import {
   syncUniCanvasStandaloneSidebarTab,
   teardownUniCanvasWidgetModes,
   UNICANVAS_STANDALONE_SETTING_ID,
-} from "./unicanvas/modes.mjs?v=1791656997605";
-import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791656997605";
-import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791656997605";
-import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791656997605";
+} from "./unicanvas/modes.mjs?v=1791666354171";
+import { UNICANVAS_QWEN21_MODULE } from "./unicanvas/qwen21.mjs?v=1791666354171";
+import { installUniCanvasHelpTooltips } from "./unicanvas/help.mjs?v=1791666354171";
+import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencies } from "./unicanvas/model_dependencies.mjs?v=1791666354171";
 
 // ---------------------------------------------------------------------------
 // Staleness gate: keep the tab's extension code in sync with the files on disk
@@ -77,7 +77,7 @@ import { MODEL_DEPENDENCIES_CSS, checkModelDependencies, disposeModelDependencie
 // This probe fetches the served entry with cache: "no-store", compares
 // versions, and reloads the page once when they differ (a sessionStorage guard
 // prevents reload loops; matching versions clear it again).
-const VNCCS_UNICANVAS_VERSION = "1791656997605";
+const VNCCS_UNICANVAS_VERSION = "1791666354171";
 (() => {
   if (typeof window === "undefined" || typeof sessionStorage === "undefined") return;
   const guardKey = "vnccs-unicanvas-version-reload";
@@ -127,8 +127,8 @@ const VNCCS_UNICANVAS_VERSION = "1791656997605";
     event.preventDefault();
   }, true);
 })();
-import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791656997605";
-import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791656997605";
+import { PROMPT_GUIDE_CSS, indexModelDescriptors, promptGuideText, referenceConventionHint, referenceSlotName, renderPromptGuide, resolvePromptGuide } from "./unicanvas/prompt_guide.mjs?v=1791666354171";
+import { PROMPT_ENHANCE_CSS, bindEnhanceSettingsReader, buildPromptEnhanceSettings, installPromptEnhance, promptEnhancePayload, promptEnhanceSettingDefs, stripEnhanceSettings, syncPromptEnhance } from "./unicanvas/prompt_enhance.mjs?v=1791666354171";
 
 const VNCCS_DONATE_BANNER_URL = new URL("./shared/assets/VNCCS_Donate_Button.png", import.meta.url).href;
 
@@ -149,8 +149,6 @@ const STYLES = `
   grid-template-rows:auto 34px minmax(0,1fr); background:var(--uc-bg); color:var(--uc-text);
   font:11px var(--uc-font); overflow:hidden; border-radius:12px; pointer-events:auto; position:relative; box-sizing:border-box;
 }
-.vnccs-uc-interaction-lock { position:absolute; inset:0; z-index:1200; display:flex; align-items:flex-start; justify-content:center; gap:12px; padding:24px; background:#0a0a0f33; cursor:wait; }
-.vnccs-uc-interaction-lock span { padding:10px 14px; border-radius:8px; color:#eee; background:#191720; }
 .vnccs-uc-stage-wrap { grid-column:2; grid-row:3; position:relative; min-width:0; min-height:0; overflow:hidden; border-radius:8px; }
 .vnccs-uc-stage { width:100%; height:100%; display:block; background:#07070c; cursor:crosshair; }
 .vnccs-uc-preview-stage { position:absolute; inset:0; width:100%; height:100%; display:block; pointer-events:none; z-index:4; }
@@ -256,7 +254,7 @@ const STYLES = `
 .vnccs-uc-tools svg { width:36px; height:36px; display:block; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 .vnccs-uc-tools svg .fill { fill:currentColor; stroke:none; }
 .vnccs-uc-btn:hover, .vnccs-uc-icon:hover { background:var(--uc-hover); border-color:rgba(255,255,255,.16); }
-.vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled { opacity:.38; cursor:not-allowed; }
+.vnccs-uc-btn:disabled, .vnccs-uc-icon:disabled, .vnccs-unicanvas :is(button, input, select, textarea)[inert] { opacity:.38; cursor:not-allowed; }
 .vnccs-uc-btn:disabled:hover, .vnccs-uc-icon:disabled:hover { background:var(--uc-surface); border-color:var(--uc-border); }
 .vnccs-uc-btn.primary { background:linear-gradient(135deg,var(--uc-accent),var(--uc-accent-2)); color:#120b13; font-weight:800; border:0; }
 .vnccs-uc-btn.primary:disabled,
@@ -891,8 +889,8 @@ function makeDefaultUniCanvasSettings() {
     // Performance (settings popover): ComfyUI EasyCache on, tiled VAE for low memory off.
     step_cache: true,
     vae_chunking: false,
-    // Inpaint generates only the area around the mask at full resolution (crop and stitch).
-    inpaint_crop_to_mask: true,
+    // Inpaint keeps the full bbox; non-edit models can opt into crop and stitch.
+    inpaint_crop_to_mask: false,
     auto_name_layers: false,
     remove_bg_edit_model: "qwen_image21",
     edit_reference_images: [],
@@ -1148,13 +1146,14 @@ class UniCanvasWidget {
     this.stagingCount.className = "vnccs-uc-staging-count";
     this.stagingNextBtn = this._button(STAGING_ICONS.next, "vnccs-uc-icon", () => this.selectRelativeStaging(1), "Next result");
     this.stagingToggleBtn = this._button(STAGING_ICONS.show, "vnccs-uc-icon", () => this.toggleStagingVisibility(), "Hide result preview");
+    this.stagingAcceptBtn = this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer");
     this.stagingControls.append(
       this._button(STAGING_ICONS.discard, "vnccs-uc-icon danger", () => this.discardStaging(), "Discard"),
       this.stagingPrevBtn,
       this.stagingCount,
       this.stagingNextBtn,
       this.stagingToggleBtn,
-      this._button(STAGING_ICONS.accept, "vnccs-uc-icon", () => this.acceptStaging(), "Accept as layer")
+      this.stagingAcceptBtn
     );
     this.stageWrap.appendChild(this.stagingControls);
     this.transformControls = document.createElement("div");
@@ -1679,40 +1678,51 @@ class UniCanvasWidget {
     return Boolean(this._generationPreparing || this._generationLocked || this.drawInProgress || this._canvasOperation);
   }
 
+  get generationEditSelector() {
+    return '.vnccs-uc-layers-section, [data-transform-action], [data-control^="transform-"], .vnccs-uc-pose-root, .vnccs-uc-panorama-controls, .vnccs-uc-sam-panel, .vnccs-uc-layer-menu, [data-tool="pose"], [data-enhance], [data-preset-download], [data-turbo-download]';
+  }
+
+  isInteractionBlocked(event) {
+    if (!this.editingBlocked) return false;
+    if (this._canvasOperation) return true;
+    if (this.stopBtn?.contains(event.target)) return false;
+    if (event.target === this.canvas) {
+      if (event.type === "pointerdown") return !(event.button === 1 || (event.button === 0 && (this.tool === "pan" || (this.tool === "move" && event.altKey))));
+      if (["pointermove", "pointerup"].includes(event.type)) return !["pan", "zoom-drag"].includes(this.pointerMode);
+      return !["wheel", "keydown"].includes(event.type);
+    }
+    const navigation = event.type === "wheel" || (event.type?.startsWith("pointer") && (event.button === 1 || event.buttons === 4));
+    if (navigation && !event.target?.closest?.('.vnccs-uc-pose-root, .vnccs-uc-panorama-controls')) return false;
+    return [this.drawBtn, this.undoBtn, this.redoBtn, this.transformControls, this.stagingAcceptBtn].some(control => control?.contains(event.target))
+      || Boolean(event.target?.closest?.(this.generationEditSelector));
+  }
+
   syncInteractionLock() {
     if (!this.container?.children) return;
     const locked = this.editingBlocked;
-    if (locked && !this._interactionOverlay) {
-      const overlay = document.createElement("div");
-      overlay.className = "vnccs-uc-interaction-lock";
-      overlay.setAttribute("role", "status");
-      const label = document.createElement("span");
-      const stop = this._button("Stop generation", "vnccs-uc-btn stop", () => void this.stopDraw());
-      overlay.append(label, stop);
-      this._interactionOverlay = overlay;
-      this._interactionPreviousFocus = document.activeElement;
-      this.container.append(overlay);
-    }
-    for (const child of this.container.children) {
-      if (child === this._interactionOverlay) continue;
-      if (locked && !this._lockedChildren?.has(child)) {
-        this._lockedChildren ||= new Map();
-        this._lockedChildren.set(child, child.inert);
-        child.inert = true;
-      }
-    }
     if (locked) {
-      this._interactionOverlay.firstChild.textContent = this._canvasOperation ? "Saving and opening canvas…" : "Generating… Editing is locked.";
-      this._interactionOverlay.lastChild.hidden = Boolean(this._canvasOperation);
-      if (!this._canvasOperation && !this._interactionOverlay.contains(document.activeElement)) this._interactionOverlay.lastChild.focus();
+      if (!this._lockedChildren?.size) this._interactionPreviousFocus = document.activeElement;
+      this._lockedChildren ||= new Map();
+      const children = this._canvasOperation ? [...this.container.children]
+        : [this.drawBtn, this.undoBtn, this.redoBtn, this.transformControls, this.stagingAcceptBtn, ...this.container.querySelectorAll(this.generationEditSelector)].filter(Boolean);
+      for (const child of children) {
+        if (!this._canvasOperation && !child.matches('button, input, select, textarea, canvas, .vnccs-uc-pose-root, .vnccs-uc-panorama-controls, .vnccs-uc-staging-popover, .vnccs-uc-sam-panel')) {
+          children.push(...child.querySelectorAll('button, input, select, textarea, canvas'));
+          continue;
+        }
+        if (!this._lockedChildren.has(child)) {
+          this._lockedChildren.set(child, child.inert);
+          child.inert = true;
+        }
+      }
     } else {
       for (const [child, inert] of this._lockedChildren || []) child.inert = inert;
       this._lockedChildren?.clear();
-      this._interactionOverlay?.remove();
-      this._interactionOverlay = null;
-      if (this._interactionPreviousFocus?.isConnected) this._interactionPreviousFocus.focus();
+      if (this._interactionPreviousFocus?.isConnected && this.stopBtn?.contains(document.activeElement)) this._interactionPreviousFocus.focus({ preventScroll: true });
       this._interactionPreviousFocus = null;
     }
+    this.showStopButton(locked && !this._canvasOperation);
+    if (locked && !this._canvasOperation && this.isInteractionBlocked({ target: document.activeElement })) this.stopBtn?.focus({ preventScroll: true });
   }
 
   createEmptyCanvasState() {
@@ -1962,6 +1972,7 @@ class UniCanvasWidget {
   invalidateLayerCaches(layer) {
     if (!layer) return;
     layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._boundsCache = undefined;
     layer._boundsHint = undefined;
@@ -1996,6 +2007,7 @@ class UniCanvasWidget {
   invalidateLayerRenderCaches(layer) {
     if (!layer) return;
     layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -2005,6 +2017,7 @@ class UniCanvasWidget {
   markLayerPixelsChanged(layer, bounds = null, expandOnly = false) {
     if (!layer) return;
     layer._pixelRevision = (layer._pixelRevision || 0) + 1;
+    layer._serializedPixels = null;
     if (this.panorama) layer._panoramaDirty = true;
     layer._thumbCache = undefined;
     layer._renderLodCache = null;
@@ -2072,10 +2085,11 @@ class UniCanvasWidget {
   }
 
   setTool(tool, force = false) {
+    if (!force && this.editingBlocked && (this._canvasOperation || tool === "pose")) return;
     if (this.tool === tool && !force) return;
     const previousTool = this.tool;
     if (previousTool === "pose" && tool !== "pose") {
-      this.poseEditor?.commit({ saveView: Boolean(this.standalone && this.poseEditSession) });
+      if (!this.editingBlocked) this.poseEditor?.commit({ saveView: Boolean(this.standalone && this.poseEditSession) });
       this.poseEditor?.setVisible(false);
       this.endPoseEditSession();
     }
@@ -2453,7 +2467,7 @@ class UniCanvasWidget {
     this._eventAbortController = new AbortController();
     const eventSignal = this._eventAbortController.signal;
     const blockEditing = event => {
-      if (!this.editingBlocked || this._interactionOverlay?.contains(event.target)) return;
+      if (!this.isInteractionBlocked(event)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
     };
@@ -3624,9 +3638,11 @@ class UniCanvasWidget {
     const dpr = window.devicePixelRatio || 1;
     const nextWidth = Math.max(1, Math.floor(size.width * dpr));
     const nextHeight = Math.max(1, Math.floor(size.height * dpr));
+    let changed = this.canvas.width !== nextWidth || this.canvas.height !== nextHeight;
     if (this.canvas.width !== nextWidth) this.canvas.width = nextWidth;
     if (this.canvas.height !== nextHeight) this.canvas.height = nextHeight;
     if (this.previewCanvas) {
+      changed ||= this.previewCanvas.width !== nextWidth || this.previewCanvas.height !== nextHeight;
       if (this.previewCanvas.width !== nextWidth) this.previewCanvas.width = nextWidth;
       if (this.previewCanvas.height !== nextHeight) this.previewCanvas.height = nextHeight;
       this.previewCanvas.style.width = "100%";
@@ -3636,8 +3652,9 @@ class UniCanvasWidget {
     this.canvas.style.height = "100%";
     if (!this.didInitialCenter && size.width > 0 && size.height > 0) {
       this.fitInitialView();
+      changed = true;
     }
-    this.render();
+    if (changed) this.requestRender();
   }
 
   requestRender() {
@@ -3829,8 +3846,9 @@ class UniCanvasWidget {
   }
 
   onPointerDown(e) {
-    if (this._isRestoring || this._disposed || this.editingBlocked) return;
-    if (this.panorama) {
+    const navigation = e.button === 1 || (e.button === 0 && (this.tool === "pan" || (this.tool === "move" && e.altKey)));
+    if (this._isRestoring || this._disposed || this._canvasOperation || (this.editingBlocked && !navigation)) return;
+    if (this.panorama && !this.editingBlocked) {
       if (this.panoramaOrbit?.gesture) this.panoramaOrbit.finish();
       this.panorama.flushCamera();
       if (e.button === 0 && this.tool === "panorama") {
@@ -3860,7 +3878,7 @@ class UniCanvasWidget {
     this.clearToolPreviewOverlay();
     this.lastPoint = point;
     this.dragStart = { point, screen, view: { ...this.view }, bbox: { ...this.bbox } };
-    this.pointerMode = e.button === 1 ? "pan" : this.tool;
+    this.pointerMode = navigation ? "pan" : this.tool;
     if (e.button === 1 && (e.ctrlKey || e.metaKey)) {
       this.pointerMode = "zoom-drag";
       this.zoomDragStart = {
@@ -3950,7 +3968,7 @@ class UniCanvasWidget {
   }
 
   onPointerMove(e) {
-    if (this.editingBlocked) return;
+    if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (this.panorama && this.isPointerDown && this.pointerMode === "panorama") {
       e.preventDefault(); e.stopPropagation();
       const point = this.canvasPointFromEvent(e), start = this.dragStart;
@@ -4005,7 +4023,7 @@ class UniCanvasWidget {
   }
 
   onPointerUp(e) {
-    if (this.editingBlocked) return;
+    if (this._canvasOperation || (this.editingBlocked && !["pan", "zoom-drag"].includes(this.pointerMode))) return;
     if (!this.isPointerDown) return;
     if (this.panorama && this.pointerMode === "panorama") {
       e?.preventDefault?.(); e?.stopPropagation?.();
@@ -4061,7 +4079,7 @@ class UniCanvasWidget {
       this.syncLightStateToWidget();
     } else if (["bbox-move", "bbox-resize"].includes(finishedMode)) {
       this.syncSettingsToWidget();
-    } else {
+    } else if (!["pan", "zoom-drag"].includes(finishedMode)) {
       this.syncSettingsToWidget();
     }
   }
@@ -5279,7 +5297,7 @@ class UniCanvasWidget {
   }
 
   onWheel(e) {
-    if (this.editingBlocked) { e.preventDefault(); return; }
+    if (this._canvasOperation) { e.preventDefault(); return; }
     e.preventDefault();
     e.stopPropagation();
     if (e.ctrlKey || e.metaKey) return;
@@ -7157,6 +7175,19 @@ class UniCanvasWidget {
     return out;
   }
 
+  captureGenerationSettings() {
+    if (this._isConfigLinked()) this.syncConfigFamily();
+    const { loader } = this.normalizeGenerationSettings();
+    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
+      this.settings.seed = this.generateRandomSeed();
+      this.syncPromptControls();
+    }
+    this.flushSettingsToWidget();
+    return { settings: this.makeSettingsPayload(), loader, modelBase: this.getModelBase(),
+      inferenceSize: this.getInferenceSize(),
+      config: this._isConfigLinked() ? resolveConfigDrawSettings(this.node?.graph || app.graph, this.node) : null };
+  }
+
   async draw() {
     if (this.editingBlocked || this._isRestoring || this._disposed) return;
     if (this.isPointerDown || this.transformDraft || this.poseEditor?.isGestureActive?.()) {
@@ -7177,12 +7208,13 @@ class UniCanvasWidget {
     this._generationPreparing = true;
     this.syncInteractionLock();
     try {
+      const request = this.captureGenerationSettings();
       await this.stateUploadPromise;
       await this._assetsReady;
       if (!this._disposed && !this._stopRequested) {
         this._generationLocked = true;
         this._generationPreparing = false;
-        await this.runGeneration();
+        await this.runGeneration(request);
       }
     } catch (error) {
       this.setStatus(`Generation failed: ${error.message || error}`, true);
@@ -7195,7 +7227,7 @@ class UniCanvasWidget {
     }
   }
 
-  async runGeneration() {
+  async runGeneration({ settings: requestSettings, loader, modelBase, inferenceSize, config } = this.captureGenerationSettings()) {
     if (this.drawInProgress) return;
     const requestDocumentRevision = this._documentRevision || 0;
     const poseLayer = poseGenerationLayer(this);
@@ -7211,11 +7243,11 @@ class UniCanvasWidget {
         this.setStatus(poseLayer.locked ? "Unlock the pose layer to choose a character image." : characterIssue, true);
         return;
       }
-      if (!["flux_klein", "qwen_image21"].includes(this.getModelBase())) {
+      if (!["flux_klein", "qwen_image21"].includes(modelBase)) {
         this.setStatus("Pose layers require Flux Klein or Qwen Edit 2.1. Select a compatible model or hide the pose layer.", true);
         return;
       }
-      const preparationKey = () => JSON.stringify([this.bbox, this.getInferenceSize(), this.getModelBase(),
+      const preparationKey = () => JSON.stringify([this.bbox,
         this.panorama && [this.panorama.settings.yaw, this.panorama.settings.pitch, this.panorama.settings.roll, this.panorama.settings.fov]]);
       const beforePreparation = preparationKey();
       const preparationDocument = this.panorama;
@@ -7223,7 +7255,7 @@ class UniCanvasWidget {
       this.drawBtn.disabled = true;
       try {
         this.poseEditor ||= new UniCanvasPoseEditor(this);
-        poseRequest = await this.poseEditor.generation(poseLayer, this.getInferenceSize());
+        poseRequest = await this.poseEditor.generation(poseLayer, inferenceSize, requestSettings.positive);
         if (this._disposed || preparationDocument !== this.panorama || requestDocumentRevision !== (this._documentRevision || 0) || preparationKey() !== beforePreparation) throw new Error("The canvas changed while preparing the pose. Generate again.");
       } catch (error) { this.setStatus(`Pose generation: ${error.message || error}`, true); return; }
       finally { this.drawInProgress = false; this.drawBtn.disabled = false; }
@@ -7231,16 +7263,14 @@ class UniCanvasWidget {
     this.panorama?.commit();
     const requestPanorama = this.panorama;
     const panoramaCamera = this.panorama ? { ...this.panorama.settings } : null;
-    this.flushSettingsToWidget();
     // A linked VNCSS Config whose models come from plain loader nodes runs inside UniCanvas with
     // the same files (no ComfyUI queue); anything else still queues the workflow.
     let configOverrides = null;
-    if (this._isConfigLinked()) {
-      const resolved = resolveConfigDrawSettings(this.node?.graph || app.graph, this.node);
+    if (config) {
+      const resolved = config;
       if (resolved.unsupported) {
         this.setStatus(`VNCSS Config: ${resolved.unsupported} - queueing the workflow for this draw.`);
       } else {
-        this.syncConfigFamily();
         this.drawInProgress = true;
         this.drawBtn.disabled = true;
         try {
@@ -7255,24 +7285,17 @@ class UniCanvasWidget {
       }
     }
     if (this._disposed || this._stopRequested || requestDocumentRevision !== (this._documentRevision || 0)) return;
-    const configLinked = this._isConfigLinked() && !configOverrides;
-    const { loader } = this.normalizeGenerationSettings();
+    const configLinked = Boolean(config && !configOverrides);
     // A linked config forwards the model/clip/vae tensors through the graph, so the node's own loader
     // asset rules do not apply to this draw and must not block it.
-    const validationError = configLinked ? null : loader.validate?.(this.settings);
+    const validationError = configLinked ? null : loader.validate?.(requestSettings);
     if (validationError) {
       this.setStatus(validationError, true);
       return;
     }
-    if ((this.settings.seed_mode || DEFAULT_SEED_MODE) === "randomize") {
-      this.settings.seed = this.generateRandomSeed();
-      this.syncPromptControls();
-      this.flushSettingsToWidget();
-    }
     this.drawInProgress = true;
     const debugId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const requestBbox = { ...this.bbox };
-    const inferenceSize = this.getInferenceSize();
     const outputSize = {
       width: Math.max(64, Math.round(requestBbox.width)),
       height: Math.max(64, Math.round(requestBbox.height)),
@@ -7282,7 +7305,7 @@ class UniCanvasWidget {
     const bboxPixels = Math.max(1, Math.round(this.bbox.width) * Math.round(this.bbox.height));
     const hasRaster = rasterStats.nonzeroAlphaPixels > 0;
     const rasterCoversBbox = rasterStats.nonzeroAlphaPixels >= bboxPixels;
-    if (!hasRaster && this.getModelBase() === "krea2_edit") {
+    if (!hasRaster && modelBase === "krea2_edit") {
       this.drawInProgress = false;
       this.setStatus("Krea2 Edit requires an image inside the bbox. Import an image and describe the edit.", true);
       return;
@@ -7294,31 +7317,33 @@ class UniCanvasWidget {
     });
     const userMaskCanvas = this.makeExportCanvas("mask", inferenceSize);
     const maskCanvas = mode === "outpaint" ? this.makeOutpaintMaskCanvas(userMaskCanvas, inferenceSize) : userMaskCanvas;
-    const batchSize = Math.max(1, Math.min(99, Math.round(Number(this.settings.batch_size) || 1)));
-    this.settings.batch_size = batchSize;
+    const batchSize = Math.max(1, Math.min(99, Math.round(Number(requestSettings.batch_size) || 1)));
+    requestSettings.batch_size = batchSize;
     this.setStatus(`Generating ${mode} ${inferenceSize.width}×${inferenceSize.height}${batchSize > 1 ? ` ×${batchSize}` : ""}...`);
-    this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(this.settings.steps) || 0 }, true);
-    const drawContext = { mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, requestDocumentRevision };
+    this.updateGenerationProgress({ progress: 0.01, message: "Starting generation", step: 0, steps: Number(requestSettings.steps) || 0 }, true);
+    const drawContext = { settings: requestSettings, mode, imageCanvas, maskCanvas, bbox: requestBbox, inferenceSize, outputSize, poseRequest, panoramaCamera, requestPanorama, requestDocumentRevision };
+    const drawId = configLinked ? `uc_${Date.now().toString(36)}` : debugId;
     if (configLinked) {
       // External model/clip/vae tensors only exist during graph execution, so the composition is
       // handed to the node as settings.queued_draw and the draw is queued as a normal prompt.
-      this.settings.draw_id = `uc_${Date.now().toString(36)}`;
+      requestSettings.draw_id = drawId;
+      this.settings.draw_id = drawId;
       // Held outside settings: the composition carries MBs of base64 images and must never reach
       // widget.value, which ComfyUI persists in the workflow draft (localStorage quota).
       // stateWidget.serializeValue adds it to the queued prompt only.
       this._queuedDraw = this._buildDrawPayload(drawContext);
+      this._queuedDrawSettings = requestSettings;
       // The widget value has to be current before queuePrompt serializes the graph, so the
       // debounced settings sync is flushed synchronously here.
       this.flushSettingsToWidget();
-      this.startDrawProgressPolling(this.settings.draw_id);
+      this.startDrawProgressPolling(drawId);
     } else {
       this.startDrawProgressPolling(debugId);
     }
     this.drawBtn.disabled = true;
-    if (this.batchInput) this.batchInput.disabled = true;
     this._stopRequested = false;
     this._drawViaQueue = configLinked;
-    this._drawDebugId = configLinked ? this.settings.draw_id : debugId;
+    this._drawDebugId = drawId;
     this._queuedDrawPromptId = null;
     this.showStopButton(true);
     let performance = "";
@@ -7334,7 +7359,7 @@ class UniCanvasWidget {
           if (this._stopRequested && promptId) {
             await fetch("/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ delete: [promptId] }) });
           }
-          result = await this._pollForResult(this.settings.draw_id, promptId);
+          result = await this._pollForResult(drawId, promptId);
         } finally {
           // The composition is one-shot: once the poll settles (success or failure) the payload must
           // stop travelling with the workflow, otherwise it would re-run the stale draw under the old
@@ -7356,7 +7381,7 @@ class UniCanvasWidget {
       }
       this.render();
       this.setStatus(`GENERATE complete (${this.stagingItems.length} staged)${performance ? ` - ${performance}` : ""}`);
-      this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(this.settings.steps) || 0, steps: Number(this.settings.steps) || 0 }, true);
+      this.updateGenerationProgress({ progress: 1, message: "Complete", step: Number(requestSettings.steps) || 0, steps: Number(requestSettings.steps) || 0 }, true);
     } catch (err) {
       if (err?.cancelled || this._stopRequested) {
         this.setStatus("Generation stopped - VRAM freed");
@@ -7371,7 +7396,6 @@ class UniCanvasWidget {
       this.stopDrawProgressPolling();
       this.drawInProgress = false;
       this.drawBtn.disabled = false;
-      if (this.batchInput) this.batchInput.disabled = false;
       window.setTimeout(() => {
         if (!this.drawInProgress) this.generationProgress?.classList.remove("visible");
       }, 1800);
@@ -7636,7 +7660,7 @@ class UniCanvasWidget {
 
   // The HTTP path consumes this payload as the POST body; the queued path stores it in
   // settings.queued_draw of the queued prompt (see serializeStateForPrompt), where the node forwards exactly the composition keys to _run_unicanvas_draw.
-  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null }) {
+  _buildDrawPayload({ includeDebugId = false, debugId = "", mode, imageCanvas, maskCanvas, bbox, inferenceSize, outputSize, poseRequest = null, configOverrides = null, settings = null }) {
     const payload = {
       mode,
       image: poseRequest ? undefined : imageCanvas.toDataURL("image/png"),
@@ -7651,7 +7675,7 @@ class UniCanvasWidget {
     if (includeDebugId) {
       payload.debug_id = debugId;
       // A pose edit writes its own prompt, so automatic enhance stays out of it.
-      payload.settings = { ...this.makeSettingsPayload(), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
+      payload.settings = { ...(settings || this.makeSettingsPayload()), ...(configOverrides || {}), ...(poseRequest ? { positive: poseRequest.positive, denoise: 1, prompt_enhance: undefined } : {}) };
     }
     return payload;
   }
@@ -7714,6 +7738,7 @@ class UniCanvasWidget {
   releaseQueuedDraw() {
     if (!this.settings) return;
     this._queuedDraw = null;
+    this._queuedDrawSettings = null;
     if (this.settings.queued_draw === undefined && !this.settings.draw_id) return;
     delete this.settings.queued_draw;
     this.settings.draw_id = "";
@@ -8014,11 +8039,11 @@ class UniCanvasWidget {
   // one-shot queued draw composition is merged in only while a draw is queued.
   // Reference images are kept out of the widget value, so the prompt gets them back here.
   serializeStateForPrompt(value) {
-    const refs = this.editReferenceImages();
+    const refs = this._queuedDrawSettings ? this._queuedDrawSettings.edit_reference_images || [] : this.editReferenceImages();
     if (!this._queuedDraw && !refs.length) return value;
     try {
       const state = JSON.parse(value);
-      state.settings = { ...(state.settings || {}) };
+      state.settings = { ...(this._queuedDrawSettings || state.settings || {}) };
       if (refs.length) state.settings.edit_reference_images = refs;
       if (this._queuedDraw) state.settings.queued_draw = this._queuedDraw;
       return JSON.stringify(state);
@@ -8516,12 +8541,24 @@ class UniCanvasWidget {
       hiresDataURL: null,
     };
     if (!crop || !includeData) return payload;
+    // Metadata-only saves reuse PNGs; encoding every unchanged layer stalls navigation.
+    const pixelKey = [layer._pixelRevision || 0, layer.canvas.width, layer.canvas.height,
+      crop.x, crop.y, crop.width, crop.height, Boolean(layer.hiresRect),
+      layer.hiresCanvas?.width || 0, layer.hiresCanvas?.height || 0].join(":");
+    const cached = layer._serializedPixels;
+    if (cached?.key === pixelKey && cached.canvas === layer.canvas && cached.hiresCanvas === layer.hiresCanvas) {
+      payload.dataURL = cached.dataURL;
+      payload.hiresDataURL = cached.hiresDataURL;
+      return payload;
+    }
     const out = document.createElement("canvas");
     out.width = crop.width;
     out.height = crop.height;
     this.configureImageContext(out.getContext("2d")).drawImage(layer.canvas, crop.x, crop.y, crop.width, crop.height, 0, 0, crop.width, crop.height);
     payload.dataURL = out.toDataURL("image/png");
     if (layer.hiresCanvas && layer.hiresRect) payload.hiresDataURL = layer.hiresCanvas.toDataURL("image/png");
+    layer._serializedPixels = { key: pixelKey, canvas: layer.canvas, hiresCanvas: layer.hiresCanvas,
+      dataURL: payload.dataURL, hiresDataURL: payload.hiresDataURL };
     return payload;
   }
 
@@ -9038,7 +9075,7 @@ class UniCanvasWidget {
       files.slice(0, Math.max(0, room)).forEach((file) => {
         const reader = new FileReader();
         reader.onload = () => {
-          if (this._disposed || this.editingBlocked || documentRevision !== this._documentRevision) return;
+          if (this._disposed || this._canvasOperation || documentRevision !== this._documentRevision) return;
           if (typeof reader.result !== "string") return;
           const next = this.editReferenceImages();
           if (next.length >= max) return;
@@ -9215,8 +9252,8 @@ class UniCanvasWidget {
     checkboxRow("VAE chunking (tiled encode/decode for low RAM/VRAM, slower)", Boolean(s.vae_chunking), (checked) => { s.vae_chunking = checked; commit(); });
 
     section("inpaint", "Inpaint");
-    checkboxRow("Crop and stitch: generate only around the mask, at full resolution", s.inpaint_crop_to_mask !== false, (checked) => { s.inpaint_crop_to_mask = checked; commit(); },
-      "Like ComfyUI-Inpaint-CropAndStitch: the mask plus some context is cropped, generated at the working resolution and pasted back into the mask only. Off: the whole bbox is generated and the mask cut out of it.");
+    checkboxRow("Crop and stitch (non-edit models only)", s.inpaint_crop_to_mask === true, (checked) => { s.inpaint_crop_to_mask = checked; commit(); },
+      "Generate around the mask with extra context, then paste the masked pixels back. Off: generate the whole bbox. Edit models always generate the whole bbox and apply only the mask.");
 
     // Diagnostics for bug reports and AI agents.
     section("debug", "Debug");

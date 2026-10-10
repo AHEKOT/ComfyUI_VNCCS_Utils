@@ -232,10 +232,12 @@ class ImageDrawPipeline:
         ctx.output_size = (output_width, output_height)
 
     def crop_to_mask(self) -> None:
-        """Inpaint: generate only the area around the mask (plus context) at full resolution."""
+        """Optional mask crop for non-edit models; edit references keep the full bbox geometry."""
         ctx, payload = self.ctx, self.request.payload
-        enabled = ctx.settings.get(CROP_SETTING, True)
-        if ctx.mode != "inpaint" or ctx.pose_images or enabled is False or str(enabled).lower() in {"false", "0", "off"}:
+        if ctx.mode != "inpaint" or ctx.pose_images or self.module.is_edit_model:
+            return
+        enabled = ctx.settings.get(CROP_SETTING, False)
+        if enabled is False or str(enabled).lower() in {"false", "0", "off"}:
             return
         mask = _decode_data_url(str(payload.get("mask") or ""), "RGBA")
         if mask.size != ctx.source.size:

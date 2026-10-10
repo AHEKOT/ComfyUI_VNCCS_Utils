@@ -6,6 +6,16 @@ import { runInNewContext } from "node:vm";
 
 const source = await readFile(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 
+test("inpaint defaults to the full bbox and crop settings describe the edit-model boundary", () => {
+    const defaults = source.slice(source.indexOf("function makeDefaultUniCanvasSettings() {"), source.indexOf("const MODEL_SELECTION_SETTINGS"));
+    const settings = runInNewContext(`${defaults}; makeDefaultUniCanvasSettings()`, {
+        UNICANVAS_MODEL_MODULES: { sdxl:{ defaults:{} }, anima:{ defaults:{} } }, DEFAULT_SEED_MODE:"randomize",
+    });
+    assert.equal(settings.inpaint_crop_to_mask, false);
+    assert.match(source, /checkboxRow\("Crop and stitch \(non-edit models only\)", s\.inpaint_crop_to_mask === true/);
+    assert.ok(source.includes("Edit models always generate the whole bbox and apply only the mask."));
+});
+
 test("scheduler survives pending assets and repairs blank or unavailable restored selections", () => {
     class Select {
         dataset = { setting:"scheduler" };
@@ -241,7 +251,10 @@ test("a linked VNCSS Config hides model, family, turbo and LoRA controls and dri
     const family = source.slice(source.indexOf("  syncConfigFamily() {"), source.indexOf("  syncConfigOverride() {"));
     assert.ok(family.includes("resolveConfigDrawSettings(") && family.includes("detectModuleForModelName("), "the family follows the config's model file");
     assert.ok(family.includes("forcedMode"), "a checkpoint config stays SDXL");
-    assert.match(source, /this\.syncConfigFamily\(\);\s*this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE re-detects the family and locks the button before loading references");
+    const capture = source.slice(source.indexOf("  captureGenerationSettings() {"), source.indexOf("  async draw() {"));
+    assert.match(capture, /this\.syncConfigFamily\(\)/, "GENERATE captures the config family before asynchronous preparation");
+    assert.match(source, /const request = this\.captureGenerationSettings\(\);\s*await this\.stateUploadPromise/, "the request settings are captured before awaiting saves");
+    assert.match(source, /this\.drawInProgress = true;\s*this\.drawBtn\.disabled = true;\s*try \{\s*const refs = await loadConfigReferences/, "GENERATE locks the button before loading references");
 });
 
 test("family detection reads the file name only, prefers the most specific pattern and keeps the loader", async () => {

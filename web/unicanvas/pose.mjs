@@ -920,7 +920,7 @@ export class UniCanvasPoseEditor {
         await this.studio.flushAnimationCacheUpload();
     }
 
-    async generation(layer, size) {
+    async generation(layer, size, prompt = this.host.settings.positive) {
         // A rotated spherical layer already contains the correctly warped pose.
         // Reopening its original camera here would change the generation view.
         const projected = !poseAtPanoramaCamera(layer, this.host.panorama);
@@ -944,7 +944,7 @@ export class UniCanvasPoseEditor {
         if (token !== this.token || !this.host.layers.includes(layer)) throw new Error("The pose layer changed. Generate again.");
         const index = state.activeTab || 0;
         const posePrompt = state.pose_prompts?.[index] ?? state.poses?.[index]?.prompt ?? params.user_prompt ?? "";
-        const userPrompt = [posePrompt, this.host.settings.positive].filter(Boolean).join("\n");
+        const userPrompt = [posePrompt, prompt].filter(Boolean).join("\n");
         const positive = PoseStudioWidget.prototype.generatePromptFromLights.call(
             { exportParams: params }, state.lights || [], userPrompt,
         );

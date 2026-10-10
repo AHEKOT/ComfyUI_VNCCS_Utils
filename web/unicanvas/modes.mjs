@@ -143,12 +143,32 @@ function consumeUniCanvasShortcut(event) {
 }
 
 export function handleUniCanvasShortcut(widget, event, options = null) {
-  if (widget?.editingBlocked) { consumeUniCanvasShortcut(event); return true; }
   if (!widget || !event || isUniCanvasTextTarget(event)) return false;
+  if (widget._canvasOperation) { consumeUniCanvasShortcut(event); return true; }
   // An open modal owns the keyboard: Enter activates its confirm button and
   // Escape closes the modal instead of leaving fullscreen or switching tools.
   if (isUniCanvasModalOpen(widget)) return false;
   const key = String(event.key || "");
+  if (widget.editingBlocked) {
+    if (!isUniCanvasCanvasFocused(widget, event) && !isUniCanvasHistoryCombo(event) && key !== "Escape") return false;
+    if (key === "Escape" && widget._vnccsFullscreen) {
+      consumeUniCanvasShortcut(event); exitUniCanvasFullscreen(widget); return true;
+    }
+    if (key === "Tab" && isUniCanvasCanvasFocused(widget, event)) {
+      consumeUniCanvasShortcut(event); toggleUniCanvasPanels(widget); return true;
+    }
+    if (key === " " && isUniCanvasCanvasFocused(widget, event)) {
+      consumeUniCanvasShortcut(event); widget.setTool("pan"); return true;
+    }
+    if (isUniCanvasCanvasFocused(widget, event) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const tool = key.length === 1 ? TOOL_SHORTCUTS[key.toLowerCase()] : null;
+      if (tool) { consumeUniCanvasShortcut(event); widget.setTool(tool); return true; }
+      if (key === "[" || key === "]") {
+        consumeUniCanvasShortcut(event); setUniCanvasBrushSize(widget, widget.brushSize + (key === "[" ? -BRUSH_SIZE_STEP : BRUSH_SIZE_STEP)); return true;
+      }
+    }
+    consumeUniCanvasShortcut(event); return true;
+  }
   // Pose editing owns Enter/Esc first: both save the pose and leave the editor (a Pose
   // Studio dialog keeps them). A second Esc then leaves fullscreen.
   if ((key === "Escape" || key === "Enter") && widget.tool === "pose" && widget.poseEditSession
@@ -330,15 +350,29 @@ function uniCanvasOwnsFullKeyboard(widget) {
     || (Boolean(widget.standalone) && document.body.classList.contains(UNICANVAS_STANDALONE_BODY_CLASS));
 }
 
+function uniCanvasGenerationControlOwnsKey(widget, event) {
+  return widget.editingBlocked && !widget._canvasOperation && !widget.stopBtn?.contains(event.target) && !widget.isInteractionBlocked?.(event)
+    && (isUniCanvasTextTarget(event) || (!isUniCanvasCanvasFocused(widget, event) && !isUniCanvasHistoryCombo(event) && event.key !== "Escape"));
+}
+
 function handleUniCanvasHistoryKeyDown(event) {
   // Belt and braces: the tracker gate must exist before its rAF callback runs.
   installUniCanvasChangeTrackerGate();
   const widget = uniCanvasHistoryOwner(event);
   if (!widget || widget._disposed) return;
+  if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
   if (widget.editingBlocked) {
-    if (widget._interactionOverlay?.contains(event.target) && ["Enter", " "].includes(event.key)) void widget.stopDraw?.();
-    if (event.key !== "Tab") event.preventDefault();
-    event.stopImmediatePropagation(); return;
+    if (widget._canvasOperation || widget.isInteractionBlocked?.(event)) {
+      if (event.key !== "Tab") event.preventDefault();
+      event.stopImmediatePropagation(); return;
+    }
+    if (widget.stopBtn?.contains(event.target) && ["Enter", " "].includes(event.key)) {
+      event.preventDefault(); event.stopImmediatePropagation(); void widget.stopDraw?.(); return;
+    }
+    if (isUniCanvasTextTarget(event)) {
+      event.stopImmediatePropagation(); return;
+    }
+    if (!isUniCanvasCanvasFocused(widget, event) && !isUniCanvasHistoryCombo(event) && event.key !== "Escape") return;
   }
   uniCanvasHistoryLastClaimAt = Date.now();
   const fullKeyboard = uniCanvasOwnsFullKeyboard(widget);
@@ -375,6 +409,7 @@ function handleUniCanvasHistoryKeyDown(event) {
 function handleUniCanvasHistoryKeyUp(event) {
   const widget = uniCanvasHistoryOwner(event);
   if (!widget) return;
+  if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
   if (isUniCanvasTextTarget(event)) return;
   if (!uniCanvasOwnsFullKeyboard(widget) && !isUniCanvasHistoryCombo(event)) return;
   event.stopImmediatePropagation();
@@ -383,6 +418,7 @@ function handleUniCanvasHistoryKeyUp(event) {
 function handleUniCanvasHistoryKeyPress(event) {
   const widget = uniCanvasHistoryOwner(event);
   if (!widget) return;
+  if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
   if (isUniCanvasTextTarget(event)) return;
   if (!uniCanvasOwnsFullKeyboard(widget)) return;
   event.stopImmediatePropagation();
@@ -542,6 +578,7 @@ export function enterUniCanvasFullscreen(widget) {
   const onKeyDown = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
     handleUniCanvasShortcut(widget, event);
     event.stopImmediatePropagation();
     event.preventDefault();
@@ -549,12 +586,14 @@ export function enterUniCanvasFullscreen(widget) {
   const onKeyUp = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   };
   const onKeyPress = (event) => {
     if (isUniCanvasTextTarget(event)) return;
     if (modalOwnsKey(event)) return;
+    if (uniCanvasGenerationControlOwnsKey(widget, event)) return;
     event.stopImmediatePropagation();
     event.preventDefault();
   };
@@ -1086,10 +1125,7 @@ export function registerUniCanvasStandaloneSidebarTab(UniCanvasWidgetClass) {
   };
 
   const setActive = (next) => {
-    if (active === next) {
-      syncStandaloneChrome();
-      return;
-    }
+    if (active === next) return;
     active = next;
     syncStandaloneChrome();
   };
