@@ -101,6 +101,25 @@ test("Stop during request preparation cancels the draw without launching generat
   assert.equal(w.editingBlocked, false);
 });
 
+for (const pendingImage of ["result", "mask"]) {
+  test(`Stop during ${pendingImage} decoding cancels staging instead of publishing late results`, async () => {
+    const image = deferred();
+    let staged = 0, masks = 0;
+    const { w } = widget({ _documentRevision: 4,
+      resultImageURL: value => value, loadImage: () => image.promise,
+      addStagingItem: () => { staged++; },
+      makeAlphaMaskCanvasFromImage: () => { masks++; return {}; },
+    });
+    const pending = w._stageGeneratedImages({ images: ["result"], ...(pendingImage === "mask" ? { mask: "mask" } : {}) },
+      null, "inpaint", { requestPanorama: null, requestDocumentRevision: 4, bbox: {}, inferenceSize: {}, outputSize: {} });
+    w._stopRequested = true;
+    image.resolve({});
+    await assert.rejects(pending, error => error.cancelled === true);
+    assert.equal(staged, 0);
+    assert.equal(masks, 0, "cancelled decoding does not allocate a result mask");
+  });
+}
+
 for (const phase of ["save", "assets", "generation"]) {
   test(`a ${phase} failure reports the error and restores editing`, async () => {
     const failure = deferred();

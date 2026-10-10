@@ -273,6 +273,40 @@ class UniCanvasDocumentTests(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             self.documents.register_document("missing")
 
+    def test_document_ids_cannot_alias_another_cache_or_its_output(self):
+        first = self.document("valid")
+        self.save("valid_out")
+        self.save("a" * 125)
+        self.save("a" * 128)
+        before = {path: path.read_bytes() for path in Path(self.cache._UNICANVAS_STATE_CACHE_DIR).glob("*.json")}
+        for state_id in ("_valid", "valid_", "__valid__", "valid_out", "a" * 125, "a" * 128):
+            with self.subTest(state_id=state_id), self.assertRaises(ValueError):
+                self.documents.register_document(state_id)
+        self.assertEqual(self.documents.list_documents()["documents"][0]["canvas_id"], first["canvas_id"])
+        for path, original in before.items():
+            self.assertEqual(path.read_bytes(), original, "invalid identities leave every snapshot byte intact")
+
+    def test_legacy_alias_manifest_remains_readable_and_protects_its_physical_cache(self):
+        first = self.document("valid")
+        path = Path(self.documents._path(first["canvas_id"]))
+        manifest = json.loads(path.read_text())
+        manifest.update(state_id="_valid", state_ids=["_valid"])
+        path.write_text(json.dumps(manifest))
+        original = self.path("valid").read_bytes()
+        legacy = self.documents.get_document(first["canvas_id"])
+        self.assertEqual(legacy["state_id"], "_valid")
+        self.assertEqual(legacy["cache_bytes"], len(original))
+        self.assertEqual(len(self.documents.list_documents()["documents"]), 1)
+        state = self.save("replacement")
+        self.assertEqual(self.upload({"state_id": "valid", "state": state, "revision": 2}).status, 409)
+        output = {"state_id": "valid_out", "state": state, "revision": 2}
+        self.assertEqual(self.upload(output).status, 200)
+        self.assertEqual(self.upload({**output, "revision": 3, "state": {**state, "layers": []}}).status, 409)
+        self.assertEqual(self.path("valid").read_bytes(), original)
+        self.documents.note_state_saved(first["canvas_id"], "replacement", state, "_valid")
+        self.assertEqual(self.documents.get_document(first["canvas_id"])["state_id"], "replacement")
+        self.assertEqual(self.path("valid").read_bytes(), original, "moving away from an old alias retains workflow pixels")
+
     def test_http_catalog_round_trip_and_conflict_statuses(self):
         self.save("first")
         created = self.call("POST", payload={"state_id": "first", "name": "A"})

@@ -385,6 +385,7 @@ export class UniCanvasPoseEditor {
         const file = document.createElement("input"); file.type = "file"; file.accept = "image/*"; file.hidden = true;
         const upload = this.host._button("Upload image", "vnccs-uc-btn", () => file.click());
         const clear = this.host._button("Clear", "vnccs-uc-btn", () => {
+            this.characterRequestRevision = (this.characterRequestRevision || 0) + 1;
             this.host.recordHistoryBefore(); this.layer.pose.character = null;
             this.refreshCharacterMenu(); this.host.syncToNode();
         });
@@ -396,6 +397,7 @@ export class UniCanvasPoseEditor {
                 await this.pickVnccsCharacter(select.value.slice(6));
                 return;
             }
+            this.characterRequestRevision = (this.characterRequestRevision || 0) + 1;
             this.host.recordHistoryBefore();
             this.layer.pose.character = select.value ? { source: "layer", layerId: select.value } : null;
             this.setCharacterOpen(false);
@@ -405,11 +407,16 @@ export class UniCanvasPoseEditor {
             const chosen = file.files?.[0]; file.value = "";
             if (!chosen) return;
             const token = this.token, layer = this.layer;
+            const revision = this.characterRequestRevision = (this.characterRequestRevision || 0) + 1;
+            const documentRevision = this.host._documentRevision;
+            const current = () => !this.host._disposed && !this.host.editingBlocked && token === this.token
+                && revision === this.characterRequestRevision && documentRevision === this.host._documentRevision
+                && this.host.layers.includes(layer);
             try {
                 const url = URL.createObjectURL(chosen);
                 let loaded;
                 try { loaded = await this.host.loadImage(url); } finally { URL.revokeObjectURL(url); }
-                if (this.host.editingBlocked || token !== this.token || !this.host.layers.includes(layer)) return;
+                if (!current()) return;
                 const scale = Math.min(1, 2048 / Math.max(loaded.width, loaded.height));
                 const surface = this.host._createCanvas(Math.max(1, Math.round(loaded.width * scale)), Math.max(1, Math.round(loaded.height * scale)));
                 surface.getContext("2d").drawImage(loaded, 0, 0, surface.width, surface.height);
@@ -418,7 +425,7 @@ export class UniCanvasPoseEditor {
                 this.characterMenuKey = null;
                 this.setCharacterOpen(false);
                 this.refreshCharacterMenu(); this.host.syncToNode();
-            } catch (error) { this.host.setStatus(`Character image: ${error.message || error}`, true); }
+            } catch (error) { if (current()) this.host.setStatus(`Character image: ${error.message || error}`, true); }
         });
         menu.append(header, row, issue, actions, file);
         this.characterMenu = menu; this.characterClear = clear; this.characterIssue = issue;
@@ -443,6 +450,11 @@ export class UniCanvasPoseEditor {
 
     async pickVnccsCharacter(name) {
         const token = this.token, layer = this.layer;
+        const revision = this.characterRequestRevision = (this.characterRequestRevision || 0) + 1;
+        const documentRevision = this.host._documentRevision;
+        const current = () => !this.host._disposed && !this.host.editingBlocked && token === this.token
+            && revision === this.characterRequestRevision && documentRevision === this.host._documentRevision
+            && this.host.layers.includes(layer);
         try {
             const query = `character=${encodeURIComponent(name)}`;
             let res = await fetch(`/vnccs/get_cached_preview?${query}`);
@@ -454,13 +466,14 @@ export class UniCanvasPoseEditor {
                 reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error);
                 reader.readAsDataURL(blob);
             });
-            if (this.host.editingBlocked || token !== this.token || !this.host.layers.includes(layer)) return;
+            if (!current()) return;
             this.host.recordHistoryBefore();
             layer.pose.character = { source: "upload", name, vnccsCharacter: name, dataURL };
             this.characterMenuKey = null;
             this.setCharacterOpen(false);
             this.refreshCharacterMenu(); this.host.syncToNode();
         } catch (error) {
+            if (!current()) return;
             this.host.setStatus(`Character reference: ${error.message || error}`, true);
             this.characterMenuKey = null;
             this.refreshCharacterMenu();

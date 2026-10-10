@@ -46,6 +46,10 @@ POSE_STUDIO = _load_pose_studio_module()
 
 
 class PoseOutputLimitTests(unittest.TestCase):
+    def test_workflow_json_is_not_rewritten_as_dynamic_prompt_text(self):
+        settings = POSE_STUDIO.VNCCS_PoseStudio.INPUT_TYPES()["required"]["pose_data"][1]
+        self.assertIs(settings["dynamicPrompts"], False)
+
     def test_capture_sequence_has_a_total_pixel_budget_and_cannot_drop_frames(self):
         encoded = io.BytesIO()
         Image.new("RGB", (2, 2)).save(encoded, format="PNG")

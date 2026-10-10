@@ -5530,13 +5530,14 @@ class PoseStudioWidget {
         if (!this.container) return;
         const animation = this.isAnimationMode();
         const imageBatch = this.exportParams.animation_image_batch === true;
+        const canPersist = !this._poseDataRestoreError && !this._poseDataRestorePending && !this.node?._vnccsPoseAwaitingRestore;
         const imageBatchWidget = this.getNodeWidget("animation_image_batch");
-        if (imageBatchWidget && imageBatchWidget.value !== imageBatch) {
+        if (canPersist && imageBatchWidget && imageBatchWidget.value !== imageBatch) {
             imageBatchWidget.value = imageBatch;
             imageBatchWidget.callback?.(imageBatch);
         }
         const poseWidget = this.getNodeWidget("pose_data");
-        if (poseWidget) {
+        if (canPersist && poseWidget) {
             try {
                 const poseData = JSON.parse(poseWidget.value || "{}");
                 const savedExport = poseData.export && typeof poseData.export === "object"
@@ -6803,7 +6804,15 @@ class PoseStudioWidget {
     }
 
     hydrateCharacterSceneModels({ showOverlay = true, recenterViewport = true } = {}) {
-        if (this._sceneModelHydrationPromise) return this._sceneModelHydrationPromise;
+        const restoreToken = this._poseDataRestoreToken;
+        if (this._sceneModelHydrationPromise) {
+            if (this._sceneModelHydrationToken === restoreToken) return this._sceneModelHydrationPromise;
+            return this._sceneModelHydrationPromise.catch(() => false).then(() => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
+                return this.hydrateCharacterSceneModels({ showOverlay, recenterViewport });
+            });
+        }
+        this._sceneModelHydrationToken = restoreToken;
         const preferredActiveId = this.activeCharacterId;
         const run = async () => {
             const previousSuspendCharacterSync = this._suspendCharacterSync;
@@ -6813,19 +6822,25 @@ class PoseStudioWidget {
             if (showOverlay && this.loadingOverlay) this.loadingOverlay.style.display = "flex";
             try {
                 if (this._viewerInitPromise) await this._viewerInitPromise;
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 this.viewer?.clearPassiveCharacters?.();
                 this.viewer?.resetSceneCameraTarget?.();
                 await this.loadModel(false, false, { updateScene: false });
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 await this.viewer?.waitForCaptureReady?.();
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 for (const character of [...this.characters]) {
                     if (character.id === preferredActiveId) continue;
                     await this.selectCharacter(character.id, { sync: false, rebuildScene: false });
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 if (this.activeCharacterId !== preferredActiveId) {
                     await this.selectCharacter(preferredActiveId, { sync: false, rebuildScene: false });
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 if (this._animationCacheRestorePending && this._animationCacheRestorePromise) {
                     await this._animationCacheRestorePromise;
+                    if (this._disposed || restoreToken !== this._poseDataRestoreToken) return false;
                 }
                 this.updateCharacterScene();
                 if (recenterViewport) this.applyCameraToViewer(true);
@@ -8185,6 +8200,7 @@ class PoseStudioWidget {
                 if (isCamParam && this.viewer) {
                     this.applyCameraToViewer(true);
                 }
+                this.syncToNode(false, { skipCapture: true });
             } else {
                 if (key === 'head_size') {
                     if (this.viewer) this.viewer.updateHeadScale(val);
@@ -9558,6 +9574,7 @@ class PoseStudioWidget {
     }
 
     resetCurrentPose() {
+        this._poseDataRestoreError = null;
         this._finishPoseGesture?.();
         this._libraryLoadToken = (this._libraryLoadToken || 0) + 1;
         this.pendingAgeCameraFit = false;
@@ -11361,9 +11378,12 @@ class PoseStudioWidget {
                     this.loadPoseSetAsset(data);
                 } else if (data.type === "single_pose" || data.bones) {
                     // Import Single to current tab
+                    this._poseDataRestoreError = null;
                     if (!this.isAnimationMode()) this.viewer?.recordState?.();
                     this.clearSAMCameraMode();
                     const poseData = JSON.parse(JSON.stringify(data));
+                    this.setPosePrompt(this.activeTab, poseData.prompt ?? "");
+                    this.syncPromptFieldToActiveTab();
                     const savedCamera = poseData.cameraParams;
                     this.stripSceneCameraFromPose(poseData);
                     if (savedCamera && typeof savedCamera === "object") {
@@ -11620,7 +11640,7 @@ class PoseStudioWidget {
     }
 
     async autoRefreshEnabledPoseRepositories() {
-        if (this._autoRepoRefreshStarted) return;
+        if (this._disposed || this._autoRepoRefreshStarted) return;
         this._autoRepoRefreshStarted = true;
         try {
             const res = await fetch('/vnccs/pose_library/repositories/auto_refresh', {
@@ -11629,6 +11649,7 @@ class PoseStudioWidget {
                 body: JSON.stringify({ reason: 'pose_studio_initial_load', force: true }),
             });
             const data = await res.json().catch(() => ({}));
+            if (this._disposed) return;
             const taskId = data.task_id;
             if (!taskId || (!data.started && !data.running)) return;
 
@@ -13119,6 +13140,7 @@ class PoseStudioWidget {
         if (!Array.isArray(sourcePoses) || !sourcePoses.length) {
             throw new Error("Pose set does not contain poses.");
         }
+        this._poseDataRestoreError = null;
 
         this.setEditorMode("image", { sync: false });
         this.clearSAMCameraMode();
@@ -13161,6 +13183,7 @@ class PoseStudioWidget {
         if (!source || typeof source !== "object") {
             throw new Error("Library animation is missing its timeline data.");
         }
+        this._poseDataRestoreError = null;
 
         this.animationTimeline?.stopPlayback?.();
         this.clearSAMCameraMode();
@@ -14620,10 +14643,11 @@ class PoseStudioWidget {
             if (changedKey === "age") {
                 this.pendingAgeCameraFit = true;
             }
-            if (!options.liveOnly) this.syncToNode(false, { skipCapture: true });
+            this.syncToNode(false, { skipCapture: true });
             return;
         }
 
+        this.syncToNode(false, { skipCapture: true });
         this.queueFullMeshUpdate(changedKey);
     }
 
@@ -15121,6 +15145,10 @@ class PoseStudioWidget {
     }
 
     syncToNode(fullCapture = false, options = {}) {
+        if (this._poseDataRestoreError || this._poseDataRestorePending || this.node?._vnccsPoseAwaitingRestore) {
+            if (options.executionCapture) throw new Error(this._poseDataRestoreError || "Pose Studio is still restoring the workflow.");
+            return;
+        }
         if (this._isSyncing || this._animationCacheRestorePending) return;
         this._isSyncing = true;
         try {
@@ -15500,16 +15528,16 @@ class PoseStudioWidget {
                 widget.value = nextWidgetValue;
 
                 // Force ComfyUI to recognize the state change so it saves to the workflow
-                if (widget.callback) {
+                if (options.notify !== false && widget.callback) {
                     widget.callback(widget.value);
                 }
-                if (app.graph && app.graph.setDirtyCanvas) {
+                if (options.notify !== false && app.graph && app.graph.setDirtyCanvas) {
                     app.graph.setDirtyCanvas(true, true);
                 }
             }
         }
 
-        this.host?.onStateChange?.(data);
+        if (options.notify !== false) this.host?.onStateChange?.(data);
         if (this.interfaceMode === "manager") this.renderPoseManager();
         else if (this.interfaceMode === "managerDetail") this.renderPoseManagerDetailStrip();
         } finally {
@@ -15518,17 +15546,40 @@ class PoseStudioWidget {
     }
 
     loadFromNode() {
+        const restoreToken = this._poseDataRestoreToken = (this._poseDataRestoreToken || 0) + 1;
+        this.node._vnccsPoseAwaitingRestore = false;
         this.clearPoseHistory();
         this._referenceReadToken = (this._referenceReadToken || 0) + 1;
         this.clearSAMCameraMode();
         // Load from pose_data widget
         const widget = this.getNodeWidget("pose_data");
         if (!widget || !widget.value) {
+            this._poseDataRestoreError = null;
+            this._poseDataRestorePending = false;
+            if (this.container) this.container.inert = false;
             return;
         }
 
         try {
             const data = JSON.parse(widget.value);
+            if (!data || typeof data !== "object" || Array.isArray(data)) {
+                throw new Error("pose_data must be an object");
+            }
+            if (data.schema_version !== undefined && ![1, 2, 3].includes(data.schema_version)) {
+                throw new Error("Unsupported Pose Studio schema version");
+            }
+            for (const key of ["mesh", "export", "animation", "timeline"]) {
+                if (data[key] != null && (typeof data[key] !== "object" || Array.isArray(data[key]))) {
+                    throw new Error(`pose_data.${key} must be an object`);
+                }
+            }
+            for (const key of ["poses", "image_poses", "characters", "pose_prompts", "lights"]) {
+                if (data[key] != null && !Array.isArray(data[key])) {
+                    throw new Error(`pose_data.${key} must be an array`);
+                }
+            }
+            this._poseDataRestorePending = true;
+            if (this.container) this.container.inert = true;
             const knownRootKeys = new Set([
                 "schema_version", "mesh", "export", "poses", "image_poses", "animation",
                 "lights", "activeTab", "capture_id", "lighting_prompts", "background_url",
@@ -15798,12 +15849,25 @@ class PoseStudioWidget {
                 this.viewer.setSkinMode(this.exportParams.skin_type);
             }
 
-            void this.hydrateCharacterSceneModels().catch(error => {
+            void this.hydrateCharacterSceneModels().then(() => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
+                this._poseDataRestorePending = false;
+                if (this.container) this.container.inert = false;
+            }).catch(error => {
+                if (this._disposed || restoreToken !== this._poseDataRestoreToken) return;
+                this._poseDataRestorePending = false;
+                if (this.container) this.container.inert = false;
+                this._poseDataRestoreError = `Pose Studio restoration failed; original state preserved: ${error?.message || error}`;
                 console.error("Failed to restore Pose Studio character scene:", error);
-                this.showMessage?.(`Failed to restore character scene: ${error?.message || error}`, true);
+                this.showMessage?.(this._poseDataRestoreError, true);
             });
+            this._poseDataRestoreError = null;
 
         } catch (e) {
+            this._poseDataRestorePending = false;
+            if (this.container) this.container.inert = false;
+            this._poseDataRestoreError = `Pose Studio restoration failed; original state preserved. Import a valid pose or reset the pose to continue: ${e?.message || e}`;
+            this.showMessage?.(this._poseDataRestoreError, true);
             console.error("Failed to parse pose_data:", e);
         }
     }
@@ -16240,6 +16304,9 @@ app.registerExtension({
         const hideInternalWidget = (node, name) => {
             const widget = node?.widgets?.find(candidate => candidate.name === name);
             if (!widget) return;
+            if (name === "pose_data") {
+                widget.options = { ...widget.options, dynamicPrompts: false };
+            }
             widget.type = "hidden";
             widget.computeSize = () => [0, -4];
             widget.hidden = true;
@@ -16265,6 +16332,7 @@ app.registerExtension({
         const onCreated = nodeType.prototype.onNodeCreated;
         nodeType.prototype.onNodeCreated = function () {
             if (onCreated) onCreated.apply(this, arguments);
+            this._vnccsPoseAwaitingRestore = true;
 
             // pose_data is internal state, never user-facing UI. Hide it before
             // constructing the DOM widget so a later initialization exception
@@ -16279,6 +16347,7 @@ app.registerExtension({
                 setAnimationOutputMode(this, animation, imageBatch)
             );
             this.studioWidget = new PoseStudioWidget(this);
+            this.studioWidget.container.inert = true;
             this._vnccsEnsurePoseImageInput = () => ensurePoseImageInput(this);
             this._vnccsSetCameraPromptInputDisabled = (disabled) => setCameraPromptInputDisabled(this, disabled);
             this._vnccsEnsurePoseImageInput();
@@ -16337,13 +16406,13 @@ app.registerExtension({
 
             if (this.studioWidget) {
                 syncStudioDOMWidgetWidth(this);
+                clearTimeout(this._vnccsPoseInitTimer);
                 clearTimeout(this._vnccsPoseConfigureTimer);
+                this.studioWidget.loadFromNode();
+                this._vnccsEnsurePoseImageInput?.();
+                window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
                 this._vnccsPoseConfigureTimer = setTimeout(() => {
                     syncStudioDOMWidgetWidth(this);
-                    this.studioWidget.loadFromNode();
-                    this._vnccsEnsurePoseImageInput?.();
-                    window.__vnccsPoseStudioCharacterCreatorSync?.registerStudio(this.studioWidget);
-                    this.studioWidget.loadModel();
                     this.studioWidget.refreshLibrary(false); // Pre-load library meta only
                     this.studioWidget.autoRefreshEnabledPoseRepositories();
                     this.onResize(this.size); // Force correct aspect ratio on config
@@ -16357,6 +16426,23 @@ app.registerExtension({
             if (onExecutionStart) onExecutionStart.apply(this, arguments);
 
             // Removed redundant syncToNode(true) to avoid race conditions with vnccs_req_pose_sync
+        };
+
+        const onSerialize = nodeType.prototype.onSerialize;
+        nodeType.prototype.onSerialize = function (workflow) {
+            const result = onSerialize?.apply(this, arguments);
+            const poseWidget = this.widgets?.find(widget => widget.name === "pose_data");
+            if (poseWidget && this.studioWidget) {
+                const previous = poseWidget.value;
+                this.studioWidget.syncToNode(false, {
+                    skipCapture: true, skipCaptureUpload: true,
+                    skipAnimationHistory: true, notify: false,
+                });
+                if (Array.isArray(workflow?.widgets_values)) {
+                    workflow.widgets_values = workflow.widgets_values.map(value => value === previous ? poseWidget.value : value);
+                }
+            }
+            return result;
         };
 
         const onRemoved = nodeType.prototype.onRemoved;

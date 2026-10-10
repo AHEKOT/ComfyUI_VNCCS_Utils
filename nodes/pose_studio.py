@@ -248,7 +248,7 @@ class VNCCS_PoseStudio:
         return {
             "required": {
                 # ALL settings come from widget via pose_data
-                "pose_data": ("STRING", {"multiline": True, "default": "{}"}),
+                "pose_data": ("STRING", {"multiline": True, "default": "{}", "dynamicPrompts": False}),
             },
             "optional": {
                 "pose_image": ("IMAGE",),

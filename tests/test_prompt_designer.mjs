@@ -128,6 +128,63 @@ test("block preview scheduling cancels old work and disposal prevents late updat
     assert.equal(widget.blockStatus.textContent, "3 variants");
 });
 
+test("a stalled preview times out, keeps the last frame and releases the latest edit for a new preview", async t => {
+    installDom(t);
+    t.mock.method(PromptDesignerWidget.prototype, "loadFromNode", function () { this.state = defaultState(); });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let frame;
+    const originalFrame = globalThis.requestAnimationFrame;
+    globalThis.requestAnimationFrame = callback => { frame = callback; return 1; };
+    t.after(() => { if (originalFrame) globalThis.requestAnimationFrame = originalFrame; else delete globalThis.requestAnimationFrame; });
+    const widget = new PromptDesignerWidget(node(), {});
+    t.after(() => { widget.request?.abort(); widget.events.abort(); });
+    widget.showResolvedPrompts(["last valid frame"]);
+    let requests = 0;
+    widget.api.fetchApi = (_, options) => {
+        if (++requests > 1) return Promise.resolve({ ok: true, json: async () => ({ prompt: "latest edit" }) });
+        return new Promise((resolve, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }));
+    };
+    const pending = widget.preview();
+    widget.state.parts = [{ text: "latest edit" }]; widget.schedulePreview();
+    assert.equal(widget.output.textContent, "last valid frame");
+    t.mock.timers.tick(10_000);
+    await pending;
+    assert.equal(widget.previewBusy, false);
+    assert.equal(typeof frame, "function");
+    frame();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(requests, 2);
+    assert.equal(widget.output.textContent, "latest edit");
+    assert.equal(widget.copy.disabled, false);
+});
+
+test("prompt and block preview timeouts show a useful error and keep authored text and the last valid output", async t => {
+    installDom(t);
+    t.mock.method(PromptDesignerWidget.prototype, "loadFromNode", function () { this.state = defaultState(); });
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const widget = new PromptDesignerWidget(node(), {});
+    t.after(() => widget.events.abort());
+    widget.showResolvedPrompts(["last valid output"]);
+    widget.state.activeTab = "artists"; widget.renderBlockVariants();
+    const rows = widget.variants.children, saved = JSON.stringify(widget.state);
+    widget.api.fetchApi = (_, options) => new Promise((resolve, reject) => {
+        options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    });
+    const preview = widget.preview();
+    t.mock.timers.tick(10_000); await preview;
+    assert.equal(widget.previewBusy, false);
+    assert.equal(widget.status.textContent, "Preview timed out. Try editing again.");
+    assert.equal(widget.status.hidden, false);
+    widget.variants.setAttribute("aria-busy", "true");
+    const block = widget.previewBlock();
+    t.mock.timers.tick(10_000); await block;
+    assert.equal(widget.blockStatus.textContent, "Block preview timed out. Try editing again.");
+    assert.equal(widget.variants.attributes["aria-busy"], "false");
+    assert.deepEqual(widget.variants.children, rows);
+    assert.equal(widget.output.textContent, "last valid output");
+    assert.equal(JSON.stringify(widget.state), saved);
+});
+
 test("API export and workflow serialization keep the seed; only queue preparation randomizes it", () => {
     const widget = Object.create(PromptDesignerWidget.prototype);
     widget.state = defaultState();

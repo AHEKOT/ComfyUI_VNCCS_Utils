@@ -81,6 +81,25 @@ test("paste in the Prompt Designer rename dialog cannot duplicate a canvas node"
     assert.equal(widget.libraryActions.popup, null);
 });
 
+test("undo in searches and a new category name stays native and cannot change authored prompt history", t => {
+    const { widget } = setup(t);
+    widget.state.parts = [{ text: "latest authored prompt" }]; widget.commit();
+    const saved = widget.node.widgets[0].value;
+    const undo = t.mock.method(widget, "moveHistory", () => {});
+    for (const target of [widget.search, widget.blockSearch, widget.categoryName]) {
+        for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { ctrlKey: true, shiftKey: true }]) {
+            const event = bubble(target, "keydown", { key: "z", ...modifiers });
+            assert.equal(Boolean(event.defaultPrevented), false);
+            assert.equal(event.stopped, true, "the graph must not receive native text undo");
+        }
+    }
+    assert.equal(undo.mock.callCount(), 0);
+    assert.equal(widget.node.widgets[0].value, saved);
+    const event = bubble(widget.editor, "keydown", { key: "z", ctrlKey: true });
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(undo.mock.callCount(), 1, "authored prompt inputs keep their shared history");
+});
+
 test("the first Enter after paste adds one visible trailing line without saving the caret placeholder", t => {
     const { widget } = setup(t);
     const clipboardData = transfer(); clipboardData.setData("text/plain", "pasted text");

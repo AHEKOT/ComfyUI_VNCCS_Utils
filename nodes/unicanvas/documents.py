@@ -26,6 +26,14 @@ def _validate_id(value, pattern, field):
     return value
 
 
+def _validate_snapshot_id(value):
+    _validate_id(value, _STATE_ID, "state_id")
+    if (cache._vnccs_safe_id(value, "unicanvas") != value or value.endswith("_out")
+            or cache._vnccs_safe_id(f"{value}_out", "unicanvas") != f"{value}_out"):
+        raise ValueError("invalid state_id: canvas and output cache identities must remain distinct")
+    return value
+
+
 def _name(value):
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > 160:
         raise ValueError("name must contain 1 to 160 characters")
@@ -166,7 +174,7 @@ def _public(value, *, include_cache_size=True):
         directories = set((cache._UNICANVAS_STATE_CACHE_DIR, cache._UNICANVAS_LEGACY_STATE_CACHE_DIR))
         for state_id in _owned_state_ids(value):
             for directory in directories:
-                for cache_id in (state_id, f"{state_id}_out"):
+                for cache_id in {cache._vnccs_safe_id(state_id, "unicanvas"), cache._vnccs_safe_id(f"{state_id}_out", "unicanvas")}:
                     path = os.path.join(directory, f"{cache_id}.json")
                     try:
                         info = os.stat(path, follow_symlinks=False)
@@ -210,7 +218,7 @@ def _summary(state):
 
 
 def _cached_summary(state_id):
-    _validate_id(state_id, _STATE_ID, "state_id")
+    _validate_snapshot_id(state_id)
     entry = cache.VNCCS_UNICANVAS_STATE_CACHE.get(state_id)
     if entry is None:
         path = cache._unicanvas_state_cache_path(state_id)
@@ -228,13 +236,13 @@ def _cached_summary(state_id):
 
 
 def validate_document_state(state_id, state):
-    _validate_id(state_id, _STATE_ID, "state_id")
+    _validate_snapshot_id(state_id)
     return _summary(state)
 
 
 def _ensure_available(state_id, canvas_id=None):
     for value in _manifests():
-        if state_id in _owned_state_ids(value) and value["canvas_id"] != canvas_id:
+        if state_id in {cache._vnccs_safe_id(item, "unicanvas") for item in _owned_state_ids(value)} and value["canvas_id"] != canvas_id:
             raise CanvasConflict("Canvas state already belongs to another or deleted document")
 
 
@@ -248,7 +256,7 @@ def validate_output_state(state_id, state, previous):
         return
     with LOCK:
         for value in _manifests():
-            if state_id[:-4] in _owned_state_ids(value):
+            if state_id[:-4] in {cache._vnccs_safe_id(item, "unicanvas") for item in _owned_state_ids(value)}:
                 if value["deleted"] or (isinstance(previous, dict) and previous.get("state") != state):
                     raise CanvasConflict("Saved canvas outputs are immutable; save changes in a new state_id")
 
@@ -274,11 +282,11 @@ def get_document(canvas_id):
 
 def register_document(state_id, name=None):
     with LOCK:
-        _validate_id(state_id, _STATE_ID, "state_id")
+        _validate_snapshot_id(state_id)
         if name is not None:
             name = _name(name)
         for value in _manifests():
-            if state_id in _owned_state_ids(value):
+            if state_id in {cache._vnccs_safe_id(item, "unicanvas") for item in _owned_state_ids(value)}:
                 if value["deleted"] or value["state_id"] != state_id:
                     raise CanvasConflict("Canvas snapshot is retired or deleted; create a new canvas state")
                 return _public(value)
@@ -297,7 +305,7 @@ def validate_state_owner(canvas_id, expected_state_id, state_id=None):
         if value["deleted"] or value["state_id"] != expected_state_id:
             raise CanvasConflict("Canvas changed or was deleted; reload before saving")
         if state_id is not None:
-            _validate_id(state_id, _STATE_ID, "state_id")
+            _validate_snapshot_id(state_id)
             _ensure_available(state_id, canvas_id)
         return _public(value, include_cache_size=False)
 
@@ -311,7 +319,7 @@ def update_document(canvas_id, *, name=None, state_id=None, expected_state_id=No
         if name is not None:
             value["name"] = _name(name)
         if state_id is not None:
-            _validate_id(state_id, _STATE_ID, "state_id")
+            _validate_snapshot_id(state_id)
             _ensure_available(state_id, canvas_id)
             _remember_state_id(value, state_id)
             value.update(state_id=state_id, **_cached_summary(state_id))
@@ -323,7 +331,7 @@ def update_document(canvas_id, *, name=None, state_id=None, expected_state_id=No
 def note_state_saved(canvas_id, state_id, state, expected_state_id):
     with LOCK:
         validate_state_owner(canvas_id, expected_state_id)
-        _validate_id(state_id, _STATE_ID, "state_id")
+        _validate_snapshot_id(state_id)
         _ensure_available(state_id, canvas_id)
         value = _manifest(canvas_id)
         _remember_state_id(value, state_id)

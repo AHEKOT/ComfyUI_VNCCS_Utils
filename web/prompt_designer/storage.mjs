@@ -17,7 +17,7 @@ export class DocumentStorage {
         node.properties ??= {};
         const metadata = node.properties.promptDesigner;
         this.id = /^[a-f0-9]{32}$/.test(metadata?.id) ? metadata.id : promptId();
-        this.revision = Number.isSafeInteger(metadata?.revision) ? metadata.revision : 0;
+        this.revision = Number.isSafeInteger(metadata?.revision) && metadata.revision >= 0 ? metadata.revision : 0;
         // Fork a cloned node so its edits cannot replace the source document.
         if (node.graph?._nodes?.some(other => other !== node && other.properties?.promptDesigner?.id === this.id)) {
             this.id = promptId();
@@ -36,7 +36,9 @@ export class DocumentStorage {
                 this.corruptDraft = value;
                 draft = JSON.parse(value);
                 normalizeState(JSON.parse(draft.state));
-                if (!Number.isSafeInteger(draft.revision)) throw new Error("Invalid draft revision.");
+                if (!Number.isSafeInteger(draft.revision) || draft.revision < 0 || typeof draft.dirty !== "boolean") {
+                    throw new Error("Invalid browser draft metadata.");
+                }
                 if (!draft.dirty && (metadata?.dirty || draft.revision < this.revision)) draft = undefined;
                 this.corruptDraft = null;
             }

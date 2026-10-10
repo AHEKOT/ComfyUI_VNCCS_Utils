@@ -385,6 +385,7 @@ export class PromptDesignerWidget {
         this.on(this.after, "change", () => { this.state.afterGenerate = this.after.value; this.persist(); });
         this.on(this.container, "keydown", event => {
             event.stopPropagation();
+            if ([this.search, this.blockSearch, this.categoryName].includes(event.target)) return;
             if (event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey
                 && !event.isComposing && this.editor.contains(event.target) && !this.conditionSuggestion.hidden) {
                 event.preventDefault();
@@ -2142,11 +2143,12 @@ export class PromptDesignerWidget {
         const block = this.activeBlock();
         if (!block || this.disposed) return;
         const revision = this.blockRevision;
-        this.blockRequest = new AbortController();
+        const request = this.blockRequest = new AbortController();
+        const timeout = setTimeout(() => request.abort(new DOMException("Block preview timed out. Try editing again.", "TimeoutError")), 10_000);
         try {
             const response = await this.api.fetchApi(`/vnccs/prompt_designer/preview?block_id=${encodeURIComponent(block.id)}`, {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(this.state), signal: this.blockRequest.signal,
+                body: JSON.stringify(this.state), signal: request.signal,
             });
             const result = await readPromptResponse(response);
             if (this.disposed || revision !== this.blockRevision) return;
@@ -2159,6 +2161,7 @@ export class PromptDesignerWidget {
                 this.blockStatus.classList.add("error");
             }
         } finally {
+            clearTimeout(timeout);
             if (!this.disposed && revision === this.blockRevision) this.variants.setAttribute("aria-busy", "false");
         }
     }
@@ -2431,11 +2434,12 @@ export class PromptDesignerWidget {
     async preview() {
         const revision = this.revision;
         this.previewBusy = true;
-        this.request = new AbortController();
+        const request = this.request = new AbortController();
+        const timeout = setTimeout(() => request.abort(new DOMException("Preview timed out. Try editing again.", "TimeoutError")), 10_000);
         try {
             const response = await this.api.fetchApi("/vnccs/prompt_designer/preview", {
                 method: "POST", headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(this.state), signal: this.request.signal,
+                body: JSON.stringify(this.state), signal: request.signal,
             });
             const result = await readPromptResponse(response);
             if (this.disposed || revision !== this.revision) return;
@@ -2447,6 +2451,7 @@ export class PromptDesignerWidget {
         } catch (error) {
             if (!this.disposed && revision === this.revision && error.name !== "AbortError") this.setStatus(error.message, true);
         } finally {
+            clearTimeout(timeout);
             this.previewBusy = false;
             if (!this.disposed && revision !== this.revision) this.schedulePreview();
         }

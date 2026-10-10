@@ -58,6 +58,24 @@ test("disposal aborts a pending check and closes the dialog", async context => {
   assert.match(source, /this\._disposed = true;\s*disposeModelDependencies\(this\)/);
 });
 
+for (const change of ["generation", "document"]) {
+  test(`a dependency response cannot open a dialog after ${change} starts`, async context => {
+    const originalFetch = globalThis.fetch;
+    context.after(() => { globalThis.fetch = originalFetch; });
+    let release;
+    globalThis.fetch = () => new Promise(resolve => { release = resolve; });
+    const errors = [];
+    const host = { _documentRevision: 1, getModelBase: () => "qwen_image21", setStatus: message => errors.push(message) };
+    const pending = checkModelDependencies(host);
+    if (change === "generation") host.editingBlocked = true;
+    else host._documentRevision++;
+    release({ ok: true, json: async () => ({ assets: [{ installed: false }] }) });
+    await pending;
+    assert.deepEqual(errors, [], "a stale response must neither open UI nor replace the current status");
+    assert.equal(host._dependencyDialog, undefined);
+  });
+}
+
 test("a new download cannot be stopped by an older status response", async () => {
   const methods = source.slice(source.indexOf("  startPresetDownloadPolling() {"), source.indexOf("  // A linked VNCSS Config overrides"));
   let release, refreshes = 0;

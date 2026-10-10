@@ -348,6 +348,64 @@ test("the character reference section previews layer references and clears them"
     assert.equal(editor.characterClear.disabled, true);
 });
 
+function deferredCharacterSelection() {
+    const h = harness();
+    const requests = [];
+    h.context.fetch = url => new Promise(resolve => requests.push({ url, resolve }));
+    h.context.FileReader = class {
+        readAsDataURL(blob) { this.result = `data:${blob.name}`; this.onload(); }
+    };
+    h.host._vnccsCharacterList = [];
+    h.editor.layer = h.layer;
+    h.editor.buildCharacterMenu();
+    return { ...h, requests, complete(index, name) {
+        requests[index].resolve({ ok: true, blob: async () => ({ name }) });
+    } };
+}
+
+test("the latest character selection wins when earlier previews arrive later", async () => {
+    const { editor, layer, requests, complete } = deferredCharacterSelection();
+    const first = editor.pickVnccsCharacter("First");
+    const second = editor.pickVnccsCharacter("Second");
+    assert.equal(requests.length, 2);
+    complete(1, "Second"); await second;
+    complete(0, "First"); await first;
+    assert.equal(layer.pose.character.name, "Second");
+    assert.equal(layer.pose.character.dataURL, "data:Second");
+});
+
+for (const change of ["clear", "generation", "locked", "dispose"]) {
+    test(`a pending character preview cannot overwrite ${change}`, async () => {
+        const { editor, host, layer, complete } = deferredCharacterSelection();
+        const pending = editor.pickVnccsCharacter("First");
+        if (change === "clear") editor.characterClear.fire("click");
+        if (change === "generation") host._documentRevision = (host._documentRevision || 0) + 1;
+        if (change === "locked") host.editingBlocked = true;
+        if (change === "dispose") host._disposed = true;
+        complete(0, "First"); await pending;
+        assert.equal(layer.pose.character, null);
+    });
+}
+
+for (const change of ["newer upload", "clear"]) {
+    test(`a pending uploaded character cannot overwrite ${change}`, async () => {
+        const { editor, host, layer, context } = deferredCharacterSelection();
+        context.URL = { createObjectURL: file => file.name, revokeObjectURL() {} };
+        const decodes = [];
+        host.loadImage = () => new Promise(resolve => decodes.push(resolve));
+        const file = editor.characterMenu.children.find(child => child.tagName === "INPUT");
+        file.files = [{ name: "First.png" }];
+        const first = file.events.change[0]();
+        if (change === "newer upload") {
+            file.files = [{ name: "Second.png" }];
+            const second = file.events.change[0]();
+            decodes[1]({ width: 8, height: 8 }); await second;
+        } else editor.characterClear.fire("click");
+        decodes[0]({ width: 8, height: 8 }); await first;
+        assert.equal(layer.pose.character?.name || null, change === "clear" ? null : "Second.png");
+    });
+}
+
 test("image2 contains only lower visible image layers plus the selected character exactly once", async () => {
     const { host, layer } = harness();
     const img = (id, visible = true, type = "raster") => ({ id, visible, type, opacity: 1 });

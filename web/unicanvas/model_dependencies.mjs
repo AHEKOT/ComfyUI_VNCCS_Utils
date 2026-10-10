@@ -158,9 +158,12 @@ export function openModelDependencies(widget, catalog, selection) {
 export async function checkModelDependencies(widget, preset = null) {
   widget._dependencyCheckAbort?.abort();
   widget._dependencyDialog?.close();
-  if (widget._disposed || widget._isConfigLinked?.()) return;
+  if (widget._disposed || widget.editingBlocked || widget._isConfigLinked?.()) return;
   const abort = new AbortController();
   widget._dependencyCheckAbort = abort;
+  const documentRevision = widget._documentRevision;
+  const current = () => !widget._disposed && !widget.editingBlocked && !abort.signal.aborted
+    && documentRevision === widget._documentRevision;
   const selection = { generation_mode:widget.getModelBase(), preset_id:preset?.id || "" };
   if (!preset) {
     for (const key of ["clip_name", "vae_name"]) {
@@ -170,11 +173,11 @@ export async function checkModelDependencies(widget, preset = null) {
   try {
     const response = await fetch(`/vnccs/unicanvas/dependencies?${new URLSearchParams(selection)}`, { signal:abort.signal });
     const catalog = await response.json();
-    if (widget._disposed || abort.signal.aborted) return;
+    if (!current()) return;
     if (!response.ok) throw new Error(catalog.error || "Dependency check failed");
     if (catalog.assets?.some(asset => !asset.installed)) openModelDependencies(widget, catalog, selection);
   } catch (err) {
-    if (!abort.signal.aborted && !widget._disposed) widget.setStatus(`Dependency check failed: ${err.message || err}`, true);
+    if (current()) widget.setStatus(`Dependency check failed: ${err.message || err}`, true);
   }
 }
 

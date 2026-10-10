@@ -106,6 +106,36 @@ test("disposing during restoration never uploads a blank replacement over the so
     assert.equal(closed, true);
 });
 
+test("an older image restore cannot unlock saving after a newer workflow fails to load", async () => {
+    const saved = { ...base, layers: [{ id: "older", type: "raster", dataURL: "older-pixels" }] };
+    cache(saved);
+    const w = widget(saved);
+    delete w.applySerializedState;
+    const originalLayers = [{ id: "current" }];
+    let finishImage;
+    Object.assign(w, {
+        layers: originalLayers, origin: { x: 0, y: 0 }, size: { width: 1, height: 1 }, settings: {},
+        _createCanvas: () => ({ getContext: () => ({ drawImage() {} }) }),
+        configureImageContext: value => value,
+        loadImage: () => new Promise(resolve => { finishImage = resolve; }),
+    });
+    for (const method of ["sanitizeMaskLayer", "applySeedModeDefault", "normalizeLayerOrder", "saveLocalStateBackup",
+        "syncPromptControls", "updateSnapButton", "updatePanoramaControls", "renderLayerList"]) w[method] = () => {};
+    const older = w._loadFromNode();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(typeof finishImage, "function", "the previous workflow is still decoding its pixels");
+    const damagedWorkflow = "{newer damaged workflow";
+    w.node.widgets[0].value = damagedWorkflow;
+    await w._loadFromNode();
+    assert.equal(w._stateRestoreFailed, true);
+    finishImage({ width: 1, height: 1 });
+    await older;
+    assert.equal(w._stateRestoreFailed, true, "a stale success must never clear the latest failure");
+    assert.equal(w.layers, originalLayers, "the stale image must not replace the active canvas");
+    w.syncToNode();
+    assert.equal(w.node.widgets[0].value, damagedWorkflow, "the failed workflow remains recoverable byte for byte");
+});
+
 test("the constructor's stale restore cannot unlock a newer configure restore", async () => {
     const start = source.indexOf("    const initialRestore = this._loadFromNode();");
     const end = source.indexOf("    this._assetsReady = this._loadAssets();", start);

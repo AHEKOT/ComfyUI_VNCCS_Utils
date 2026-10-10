@@ -149,6 +149,27 @@ test("disk state recovers across browsers; invalid browser data is archived befo
     assert.ok([...local.values].some(([key, value]) => key.includes(":corrupt:") && value === "bad recovery JSON"));
 });
 
+test("damaged browser draft metadata cannot block newer disk recovery or poison autosave revisions", async t => {
+    const changed = editedState();
+    for (const metadata of [{ revision: -1, dirty: true }, { revision: 1, dirty: "false" }]) {
+        const local = memory(), statuses = [];
+        const damaged = JSON.stringify({ state: JSON.stringify(defaultState()), ...metadata });
+        local.setItem(key, damaged);
+        const store = new DocumentStorage(documentNode(defaultState()), {
+            fetchApi: async (_, options) => options?.method === "PUT" ? reply({ revision: 3 }) : reply({ revision: 2, state: changed }),
+        }, message => statuses.push(message), local);
+        t.after(() => { store.disposed = true; clearTimeout(store.timer); });
+        assert.deepEqual(await store.restore("{}"), changed);
+        assert.equal(store.revision, 2);
+        assert.match(statuses[0], /Browser recovery could not be read.*Recovery data was retained/);
+        assert.equal(local.getItem(key), damaged);
+        store.write(JSON.stringify(changed));
+        assert.ok([...local.values].some(([key, value]) => key.includes(":corrupt:") && value === damaged));
+        await store.flush();
+        assert.equal(store.pending, null);
+    }
+});
+
 test("failed restoration never fabricates or persists defaults over saved data", async () => {
     const local = memory();
     const node = documentNode(defaultState());
