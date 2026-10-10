@@ -18,3 +18,4 @@ einops
 roma
 tqdm
 color-matcher
+dynamicprompts>=0.31,<1

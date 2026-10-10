@@ -24,6 +24,7 @@ dependencies = [
     "einops",
     "roma",
     "tqdm",
+    "dynamicprompts>=0.31,<1",
 ]
 
 classifiers = [
@@ -50,5 +51,6 @@ NodeIds = [
     "VNCCS_PoseStudio",
     "VNCCS_UniCanvas",
     "VNCCS_3DFactory",
-    "VNCCS_Config"
+    "VNCCS_Config",
+    "VNCCS_PromptDesigner"
 ]

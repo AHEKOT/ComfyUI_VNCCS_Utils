@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "blocks": [
+    {
+      "id": "bundled-colors",
+      "name": "Colors",
+      "text": "{~red|green|blue|yellow|orange|purple|pink|black|white|gray|brown|beige|ivory|cream|silver|gold|navy blue|sky blue|light blue|royal blue|cobalt blue|turquoise|teal|cyan|aqua|mint green|emerald green|forest green|olive green|lime green|sage green|sea green|lavender|lilac|violet|plum|mauve|magenta|fuchsia|hot pink|rose pink|blush pink|salmon pink|coral|peach|apricot|amber|mustard yellow|lemon yellow|pale yellow|crimson|scarlet|burgundy|maroon|ruby red|wine red|rust|terracotta|copper|bronze|chocolate brown|chestnut brown|tan|khaki|taupe|sand|charcoal gray|slate gray|ash gray|pearl white|off-white|jet black}",
+      "color": "#91c8a6",
+      "category": "Colors"
+    }
+  ]
+}

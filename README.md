@@ -106,39 +106,14 @@ assets through the bundled SparkJS viewport.
 *   **Performance and diagnostics**: enable step caching for longer runs, use VAE chunking on lower-memory systems, and inspect request sizes and timings with debug mode.
 *   **PSD import/export**: *Import PSD* loads raster layers (name, visibility, opacity, blend mode, stacking order); anything UniCanvas cannot represent is skipped and reported. *Export Layers as PSD* writes the layer stack as a PSD file.
 
-### VNCSS Config
 
-`VNCSS Config` lets an existing ComfyUI model setup drive UniCanvas. Connect the node's `config` output to the `config` input of `VNCCS UniCanvas`.
 
-While it is linked, the config supplies the model, LoRA, and reference-image values; UniCanvas disables its duplicate controls while keeping **Mode** and the sampling settings editable. Unlinking restores the embedded controls unchanged.
 
-The config panel provides an ordered LoRA stack and an **Edit model** switch for reference-conditioned workflows, including MiniMax H3 region editing. Both settings are saved with the workflow.
-
-### Fullscreen mode
-
-The **Fullscreen** button at the top-right of the stage opens a distraction-free workspace with isolated keyboard input (text fields keep working), a **✕** exit button, and an optional "true fullscreen" toggle. The UniCanvas shortcuts work whenever the canvas has focus, in fullscreen or embedded mode:
-
-| Shortcut | Action |
-|---|---|
-| `B` / `V` / `E` / `M` / `L` / `S` | Brush / Move / Eraser / Mask brush / Lasso / Rectangle tools |
-| `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
-| `[` / `]` | Shrink / grow the brush size |
-| `Tab` | Toggle panel visibility |
-| `Esc` | Exit fullscreen |
 
 ### Standalone Unicanvas mode
 
 The **Unicanvas** sidebar tab runs UniCanvas as a standalone image app — no node, no workflow. Entering it hides the ComfyUI chrome; leaving it restores everything. The engine picker offers the built-in presets plus custom models from disk; output actions replace the node's `image` socket (**Save to output** writes the flattened composite into ComfyUI's `output/` directory, **New** clears the canvas after confirmation). Work persists to `localStorage`, so it survives a page reload. Enable the tab with the `VNCCS.UniCanvas.StandaloneSidebar` ComfyUI setting.
 
-### Qwen-Image-2.1
-
-UniCanvas generates with **Qwen-Image-2.1** through the `QwenImage21` family tab:
-
-*   **Native 2K workflow**: built-in aspect presets and all standard draw modes are available for text-to-image, image-to-image, inpaint, and outpaint.
-*   **Transparent output by default**: generated layers keep real alpha; the **`opaque output`** switch is available when transparency is not wanted.
-*   **Reference editing**: with `VNCSS Config` and the `Edit model` switch, reference images are addressed predictably from the prompt and combined with the working area.
-*   **Viggle turbo**: an optional six-step mode for faster generation.
-*   **Edit-model background removal**: use the same family as a subject extractor and apply the result directly to the active layer.
 
 ## VNCCS Pose Studio
 

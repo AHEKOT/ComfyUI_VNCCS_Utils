@@ -3,6 +3,7 @@ from .nodes.vnccs_bbox_extractor import VNCCS_BBox_Extractor
 from .nodes.pose_studio import VNCCS_PoseStudio
 from .nodes.unicanvas import VNCCS_UniCanvas, register_unicanvas_routes
 from .nodes.vncss_config import VNCCS_Config
+from .nodes.prompt_designer import VNCCS_PromptDesigner
 from .nodes.factory3d import VNCCS_3DFactory
 from .nodes.factory3d.render import VNCCS_FactoryRender, VNCCS_FactoryMask
 
@@ -13,6 +14,7 @@ NODE_CLASS_MAPPINGS = {
     "VNCCS_PoseStudio": VNCCS_PoseStudio,
     "VNCCS_UniCanvas": VNCCS_UniCanvas,
     "VNCCS_Config": VNCCS_Config,
+    "VNCCS_PromptDesigner": VNCCS_PromptDesigner,
     "VNCCS_3DFactory": VNCCS_3DFactory,
     "VNCCS_FactoryRender": VNCCS_FactoryRender,
     "VNCCS_FactoryMask": VNCCS_FactoryMask,
@@ -25,6 +27,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "VNCCS_PoseStudio": "VNCCS Pose Studio",
     "VNCCS_UniCanvas": "VNCCS UniCanvas",
     "VNCCS_Config": "VNCSS Config",
+    "VNCCS_PromptDesigner": "VNCCS Prompt Designer",
     "VNCCS_3DFactory": "VNCCS 3D Factory",
     "VNCCS_FactoryRender": "VNCCS Factory Render",
     "VNCCS_FactoryMask": "VNCCS Factory Mask",
@@ -67,6 +70,18 @@ def _vnccs_register_pose_sync():
         print(f"[VNCCS] Failed to register Pose Sync API: {e}")
 
 _vnccs_register_pose_sync()
+
+def _vnccs_register_prompt_designer():
+    try:
+        from server import PromptServer
+        from .api.prompt_designer_preview import register_routes
+        from .api.prompt_designer_library import register_routes as register_library_routes
+        register_routes(PromptServer.instance.app)
+        register_library_routes(PromptServer.instance.app)
+    except Exception as exc:
+        print(f"[VNCCS] Failed to register Prompt Designer API: {exc}")
+
+_vnccs_register_prompt_designer()
 
 # === Pose Studio Capture Cache ===
 
