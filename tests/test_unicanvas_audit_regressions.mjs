@@ -10,7 +10,7 @@ import { writePsd, readPsd } from "../web/vendor/ag-psd.bundle.mjs";
 const source = readFileSync(new URL("../web/vnccs_unicanvas.js", import.meta.url), "utf8");
 const modes = readFileSync(new URL("../web/unicanvas/modes.mjs", import.meta.url), "utf8");
 const canvas = (width = 4096, height = 4096) => ({ width, height, getContext: () => ({ drawImage() {} }) });
-const context = { console, trimPanoramaHistory, compositeBlendModeToPsd, Blob,
+const context = { console, clearTimeout, trimPanoramaHistory, compositeBlendModeToPsd, Blob,
   isImageLayer: layer => layer.type !== "mask", document: { createElement: () => canvas(1, 1) } };
 const prototype = vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"), source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", context);
 const widget = props => Object.assign(Object.create(prototype), {
@@ -55,7 +55,7 @@ test("layer controls update live and record one undo snapshot per gesture", () =
 for (const failed of [false, true]) {
   test(`config reference preparation blocks repeat GENERATE and unlocks (${failed ? "failed" : "loaded"})`, async () => {
     let finish, calls = 0;
-    const ctx = { poseGenerationLayer: () => null,
+    const ctx = { clearTimeout, poseGenerationLayer: () => null,
       resolveConfigDrawSettings: () => ({ settings: {}, references: [] }),
       loadConfigReferences: () => { calls++; return new Promise((resolve, reject) => { finish = () => failed ? reject(Error("read failed")) : resolve([]); }); },
     };
@@ -65,12 +65,16 @@ for (const failed of [false, true]) {
       syncConfigFamily() {}, flushSettingsToWidget() {}, setStatus() {},
     });
     const first = w.draw();
+    assert.equal(w.editingBlocked, true);
+    await w.draw();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(w.drawInProgress, true);
     assert.equal(w.drawBtn.disabled, true);
     await w.draw();
     assert.equal(calls, 1);
     w._documentRevision++;
     finish(); await first;
+    assert.equal(w.editingBlocked, false);
     assert.equal(w.drawInProgress, false);
     assert.equal(w.drawBtn.disabled, false);
   });
@@ -154,20 +158,32 @@ for (const panorama of [null, { settings: { width: 1, height: 1 }, commit() {} }
   });
 }
 
-test("New canvas invalidates a generation already loading its output image", async () => {
+test("New canvas waits for generation output staging and preserves its completed result", async () => {
   let finishImage;
-  const staged = [];
-  const w = widget({ confirmInWidget: async () => true, stagingItems: [], undoStack: [], redoStack: [],
+  const staged = []; let switches = 0;
+  const w = widget({ stagingItems: [], _documentRevision: 0,
     loadImage: () => new Promise(done => { finishImage = done; }), resultImageURL: image => image,
-    addStagingItem: item => staged.push(item), clearStateCache: async () => {}, addLayer() {}, updateHistoryButtons() {}, syncToNode() {}, clearSamPrompt() {}, setTool() {}, updatePanoramaControls() {} });
-  const pending = w._stageGeneratedImages({ images: ["old"] }, null, "txt2img", {
-    requestPanorama: null, requestDocumentRevision: 0, bbox: {}, inferenceSize: {}, outputSize: {},
+    addStagingItem: item => staged.push(item),
+    createCanvasDocument: async () => { switches++; w._documentRevision++; return true; },
+    runGeneration: () => w._stageGeneratedImages({ images: ["result"] }, null, "txt2img", {
+      requestPanorama: null, requestDocumentRevision: w._documentRevision, bbox: {}, inferenceSize: {}, outputSize: {},
+    }),
   });
+  const pending = w.draw();
+  await new Promise(resolve => setImmediate(resolve));
   const newDocument = vm.runInNewContext(modes.slice(modes.indexOf("export async function newUniCanvasDocument"), modes.indexOf("\nfunction installUniCanvasOutputActions")).replace("export ", "") + "\nnewUniCanvasDocument");
-  await newDocument(w);
+  const generationRevision = w._documentRevision;
+  assert.equal(await newDocument(w), false);
+  assert.equal(switches, 0);
+  assert.equal(w._documentRevision, generationRevision);
+  assert.equal(staged.length, 0);
   finishImage({});
   await pending;
-  assert.equal(staged.length, 0);
+  assert.equal(staged.length, 1);
+  assert.equal(staged[0].url, "result");
+  assert.equal(await newDocument(w), true);
+  assert.equal(switches, 1);
+  assert.equal(w._documentRevision, generationRevision + 1);
 });
 
 for (const edit of ["paint", "rename", "delete", "dispose", "unchanged"]) {

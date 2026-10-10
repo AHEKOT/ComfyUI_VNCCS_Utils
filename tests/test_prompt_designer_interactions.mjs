@@ -22,11 +22,106 @@ function transfer() {
     return { get types() { return [...values.keys()]; }, setData(key, value) { values.set(key, value); }, getData(key) { return values.get(key) ?? ""; } };
 }
 function emit(target, type, event = {}) { target.listeners.get(type)?.(event); return event; }
+function bubble(target, type, event = {}) {
+    event.target = target;
+    const path = [];
+    for (let current = target; current; current = current.parentNode) path.push(current);
+    for (const current of path) {
+        emit(current, type, event);
+        if (event.stopped) break;
+    }
+    return event;
+}
 function insertIf(widget) {
     const chip = widget.conditionChip({ blockId: "", operator: "", value: "", then: { text: "" }, else: { text: "" } });
     widget.editor.replaceChildren(chip); widget.savePromptEditor(widget.editor);
     return chip;
 }
+
+test("paste stays inside Prompt Designer while plain text and native fields remain editable", t => {
+    const { widget } = setup(t);
+    document.append(document.body); document.body.append(widget.container);
+    const graphPaste = t.mock.fn(), graphKey = t.mock.fn();
+    document.addEventListener("paste", graphPaste); document.addEventListener("keydown", graphKey);
+    const clipboardData = transfer(); clipboardData.setData("text/plain", "pasted <b>text</b>\nsecond line");
+    widget.editor.replaceChildren(); widget.savePromptEditor(widget.editor);
+    const pasted = bubble(widget.editor, "paste", { clipboardData });
+    assert.equal(pasted.defaultPrevented, true);
+    assert.equal(widget.editor.textContent, clipboardData.getData("text/plain"));
+    assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, [{ text: clipboardData.getData("text/plain") }]);
+    assert.equal(graphPaste.mock.callCount(), 0, "the graph must not paste its previously copied node");
+
+    for (const target of [widget.editor, widget.search, widget.blockName, widget.blockRaw, widget.conditionValue]) {
+        for (const modifiers of [{ ctrlKey: true }, { metaKey: true }, { ctrlKey: true, shiftKey: true }]) {
+            const key = bubble(target, "keydown", { key: "v", ...modifiers });
+            assert.equal(Boolean(key.defaultPrevented), false, "the browser must still emit the text paste");
+        }
+        if (target !== widget.editor) assert.equal(Boolean(bubble(target, "paste", { clipboardData }).defaultPrevented), false);
+    }
+    widget.openBlock("hair"); widget.renderBlockVariants();
+    clipboardData.setData("text/plain", "{~pasted|variants}");
+    bubble(widget.variants.querySelector(".vnccs-pd-variant-text"), "paste", { clipboardData });
+    assert.equal(widget.activeBlock().text, "{~pasted|variants}");
+    assert.equal(graphPaste.mock.callCount(), 0); assert.equal(graphKey.mock.callCount(), 0);
+    bubble(document.body, "paste", { clipboardData }); bubble(document.body, "keydown", { key: "v", ctrlKey: true });
+    assert.equal(graphPaste.mock.callCount(), 1, "canvas paste remains available outside the widget");
+    assert.equal(graphKey.mock.callCount(), 1);
+});
+
+test("paste in the Prompt Designer rename dialog cannot duplicate a canvas node", t => {
+    const { widget } = setup(t);
+    document.append(document.body);
+    const graphPaste = t.mock.fn(); document.addEventListener("paste", graphPaste);
+    widget.libraryActions.dialog({ title: "Rename block", message: "Choose a name.", value: "Hair", action() {} });
+    const input = widget.libraryActions.popup.element.querySelector("input");
+    const pasted = bubble(input, "paste", { clipboardData: transfer() });
+    assert.equal(Boolean(pasted.defaultPrevented), false, "native input paste must remain available");
+    assert.equal(graphPaste.mock.callCount(), 0);
+    widget.events.abort();
+    assert.equal(widget.libraryActions.popup, null);
+});
+
+test("the first Enter after paste adds one visible trailing line without saving the caret placeholder", t => {
+    const { widget } = setup(t);
+    const clipboardData = transfer(); clipboardData.setData("text/plain", "pasted text");
+    widget.editor.replaceChildren(); widget.savePromptEditor(widget.editor);
+    emit(widget.editor, "paste", { clipboardData });
+    for (const inputType of ["insertParagraph", "insertLineBreak"]) {
+        const event = emit(widget.editor, "beforeinput", { inputType });
+        assert.equal(event.defaultPrevented, true);
+        assert.equal(widget.editor.lastChild.tagName, "BR", "the final empty line needs a rendered caret anchor");
+        assert.equal(widget.editor.lastChild.dataset.pdCaretEnd, "true");
+        const count = inputType === "insertParagraph" ? 1 : 2;
+        assert.deepEqual(readEditor(widget.editor), [{ text: "pasted text" + "\n".repeat(count) }]);
+        assert.deepEqual(JSON.parse(widget.node.widgets[0].value).parts, readEditor(widget.editor));
+    }
+    widget.render();
+    assert.equal(widget.editor.lastChild.dataset.pdCaretEnd, "true", "restored trailing lines also remain visible");
+    const next = text("next line"); widget.editor.append(next); emit(widget.editor, "input");
+    assert.equal(widget.editor.children.some(child => child.dataset.pdCaretEnd), false);
+    assert.deepEqual(readEditor(widget.editor), [{ text: "pasted text\n\nnext line" }]);
+});
+
+test("variant Enter keeps its trailing line visible and persists exactly one newline", t => {
+    const { widget, selection } = setup(t);
+    widget.openBlock("hair"); widget.saveBlockSource("{~one|two}"); widget.renderBlockVariants();
+    const editor = widget.variants.querySelector(".vnccs-pd-variant-text");
+    t.mock.method(editor, "dispatchEvent", event => { emit(editor, event.type); return true; });
+    const range = document.createRange(); range.selectNodeContents(editor); range.collapse(false); selection.addRange(range);
+    emit(editor, "beforeinput", { inputType: "insertParagraph" });
+    assert.equal(editor.lastChild.tagName, "BR");
+    assert.equal(editor.lastChild.dataset.pdCaretEnd, "true");
+    assert.equal(widget.activeBlock().text, "{~one\n|two}");
+    assert.deepEqual(readEditor(editor), [{ text: "one\n" }]);
+});
+
+test("compact inline condition outputs retain their single-row layout and exact text", t => {
+    const { widget } = setup(t);
+    const chip = widget.conditionChip({ blockId: "hair", operator: "equals", value: "hair", then: { text: "output\n" } });
+    const output = chip.conditionControls.output;
+    assert.equal(output.children.some(child => child.dataset.pdCaretEnd), false);
+    assert.deepEqual(readEditor(output), [{ text: "output\n" }]);
+});
 
 test("restored empty prompts stay empty and new cards contain no placeholder values", t => {
     const empty = normalizeState({ version: 1, blocks: [], parts: [] });

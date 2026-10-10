@@ -177,62 +177,36 @@ test("another tab saving cannot redirect a conflict draft when its tab reloads",
     assert.equal(JSON.parse(methods.readStandalonePersistedStateValue()).state_id, "vnccs_unicanvas_standalone_tab");
 });
 
-test("New canvas lives in the top bar, asks Are you sure? and clears layers and images", () => {
+test("New canvas lives in the top bar and delegates to durable document creation", () => {
     const newDocument = region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions");
-    assert.ok(newDocument.includes('"New canvas"'), 'the confirm modal must be titled "New canvas"');
-    assert.ok(newDocument.includes('"Are you sure?\\nConfirmation will delete <b>all layers</b> and the stored images for this canvas."'),
-        'the copy must warn that the confirmation deletes layers and stored images');
-    assert.ok(newDocument.includes("confirmInWidget("), "the confirmation must use the widget modal");
-    assert.ok(newDocument.includes("widget.stagingItems = []"), "staged images must be cleared");
-    assert.ok(newDocument.includes("widget.layers = []"), "layers must be cleared");
-    assert.ok(newDocument.includes('widget.addLayer("raster", "Base Layer", false)'), "a fresh base layer must be created");
+    assert.ok(newDocument.includes("widget.createCanvasDocument()"));
+    assert.ok(!newDocument.includes("clearStateCache"));
     const outputActions = region(modesSource, "function installUniCanvasOutputActions", "export function installUniCanvasWidgetModes");
-    assert.ok(outputActions.includes('widget._button(\n    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"')
-        || outputActions.includes('"New canvas", "vnccs-uc-btn vnccs-uc-new-canvas"'),
-        "New canvas must be a top-bar widget button with the centering class");
-    assert.ok(outputActions.includes("widget.settingsBar?.appendChild(newCanvasButton)"),
-        "New canvas must be appended to the top toolbar, not the left column");
+    assert.ok(!outputActions.includes("vnccs-uc-new-canvas"), "mode installation must not duplicate the document toolbar's New icon");
     assert.ok(!modesSource.includes("vnccs-uc2-output-actions"), "the old New row above GENERATE must be gone");
     assert.ok(!modesSource.includes("_vnccsOutputActions"), "no dead output-actions handle may remain");
     assert.ok(modesSource.includes('widget._button("Save to output", "vnccs-uc-btn"'), "Save to output must be a widget button");
-    assert.ok(widgetSource.includes(".vnccs-uc-bottom .vnccs-uc-new-canvas { position:absolute; left:50%; transform:translateX(-50%); }"),
-        "the top bar CSS must center the New canvas button between the clusters");
+    assert.match(widgetSource, /\.vnccs-uc-bottom \.vnccs-uc-canvas-actions \{ position:absolute; left:50%; transform:translateX\(-50%\);/,
+        "the manager must be centered between the toolbar clusters");
+    assert.match(widgetSource, /\.vnccs-uc-bottom \.vnccs-uc-new-canvas \{ position:absolute; left:calc\(100% \+ 6px\); \}/,
+        "the New icon must sit immediately to the right of the manager");
 });
 
-test("New canvas waits for cache deletion and preserves layers on cancellation or failure", async () => {
+test("New canvas delegates once and cannot run while generation blocks editing", async () => {
     const newDocument = vm.runInNewContext(region(modesSource, "export async function newUniCanvasDocument", "function installUniCanvasOutputActions")
         .replace("export ", "") + "\nnewUniCanvasDocument");
-    let complete;
-    const events = [];
+    let creates = 0;
     const originalLayers = [{ id: "old" }];
-    const widget = {
-        confirmInWidget: async () => true, layers: originalLayers,
-        clearStateCache() {
-            assert.equal(this._isRestoring, true, "autosaves are suspended during deletion");
-            events.push("delete");
-            return new Promise(resolve => { complete = resolve; });
-        },
-        addLayer() { events.push("new layer"); }, renderLayerList() {}, requestRender() {},
-        syncToNode() { events.push("save empty"); }, setStatus(message, error) { this.error = error && message; },
-    };
-    const pending = newDocument(widget);
-    await new Promise(resolve => setImmediate(resolve));
+    const widget = { layers: originalLayers, createCanvasDocument: async () => { creates++; return true; } };
+    assert.equal(await newDocument(widget), true);
+    assert.equal(creates, 1);
     assert.equal(widget.layers, originalLayers);
-    complete();
-    await pending;
-    assert.deepEqual(events, ["delete", "new layer", "save empty"]);
-    assert.equal(widget.layers.length, 0);
-    assert.equal(widget._isRestoring, false);
-    widget.layers = originalLayers;
-    widget.clearStateCache = async () => { throw new Error("disk error"); };
-    await newDocument(widget);
-    assert.equal(widget.layers, originalLayers);
-    assert.match(widget.error, /disk error/);
-    assert.equal(widget._isRestoring, false);
-    widget.confirmInWidget = async () => false;
-    widget.clearStateCache = () => assert.fail("Cancel must not delete any cache");
-    await newDocument(widget);
-    assert.equal(widget.layers, originalLayers);
+    widget.editingBlocked = true;
+    assert.equal(await newDocument(widget), false);
+    widget.editingBlocked = false;
+    widget._disposed = true;
+    assert.equal(await newDocument(widget), false);
+    assert.equal(creates, 1);
 });
 
 test("cache deletion waits for queued uploads and resets upload deduplication", async () => {

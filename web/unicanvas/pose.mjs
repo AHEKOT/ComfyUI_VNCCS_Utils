@@ -111,6 +111,7 @@ export class UniCanvasPoseEditor {
         this.studio = new PoseStudioWidget(node, {
             embedded: true,
             onStateChange: data => {
+                if (this.host.editingBlocked) return;
                 if (this.token !== token || !this.host.layers.includes(layer)) return;
                 if (this.initialized) this.applyDimensions(data.export);
                 const meshKey = JSON.stringify(data?.characters?.map?.(item => item?.mesh) ?? data?.mesh ?? null);
@@ -127,6 +128,7 @@ export class UniCanvasPoseEditor {
                 this.scheduleCommit();
             },
             onViewportRender: () => {
+                if (this.host.editingBlocked) return;
                 if (this.token !== token || !this.initialized || this.capturing || !this.visible) return;
                 this.syncSessionViewOffset();
                 this.syncGizmoSize();
@@ -407,7 +409,7 @@ export class UniCanvasPoseEditor {
                 const url = URL.createObjectURL(chosen);
                 let loaded;
                 try { loaded = await this.host.loadImage(url); } finally { URL.revokeObjectURL(url); }
-                if (token !== this.token || !this.host.layers.includes(layer)) return;
+                if (this.host.editingBlocked || token !== this.token || !this.host.layers.includes(layer)) return;
                 const scale = Math.min(1, 2048 / Math.max(loaded.width, loaded.height));
                 const surface = this.host._createCanvas(Math.max(1, Math.round(loaded.width * scale)), Math.max(1, Math.round(loaded.height * scale)));
                 surface.getContext("2d").drawImage(loaded, 0, 0, surface.width, surface.height);
@@ -452,7 +454,7 @@ export class UniCanvasPoseEditor {
                 reader.onload = () => resolve(reader.result); reader.onerror = () => reject(reader.error);
                 reader.readAsDataURL(blob);
             });
-            if (token !== this.token || !this.host.layers.includes(layer)) return;
+            if (this.host.editingBlocked || token !== this.token || !this.host.layers.includes(layer)) return;
             this.host.recordHistoryBefore();
             layer.pose.character = { source: "upload", name, vnccsCharacter: name, dataURL };
             this.characterMenuKey = null;
@@ -873,7 +875,7 @@ export class UniCanvasPoseEditor {
         const token = this.token;
         this.commitTimer = setTimeout(() => {
             this.commitTimer = null;
-            if (token !== this.token || !this.studio) return;
+            if (this.host.editingBlocked || token !== this.token || !this.studio) return;
             this.commit();
         }, 250);
     }

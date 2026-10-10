@@ -31,6 +31,35 @@ async function savedOnDisk(page) {
     await expect.poll(() => page.evaluate(() => window.__promptDesignerTestNode.properties.promptDesigner.dirty)).toBe(false);
 }
 
+test("the first Enter after typing or paste shows the new caret line and saves one newline", async ({ page }) => {
+    const root = await openDesigner(page);
+    const editor = root.getByRole("textbox", { name: "Main prompt editor", exact: true });
+    const lastLine = () => editor.evaluate(editor => {
+        const range = document.createRange(); range.selectNodeContents(editor);
+        return [...range.getClientRects()].at(-1).top - editor.getBoundingClientRect().top;
+    });
+    const savedText = () => page.evaluate(() => JSON.parse(window.__promptDesignerTestNode.widgets.find(w => w.name === "node_state").value)
+        .parts.map(part => part.text ?? "").join(""));
+    for (const source of ["typed", "pasted"]) {
+        await editor.fill(source === "typed" ? "first line" : "");
+        if (source === "pasted") await editor.evaluate(editor => {
+            const clipboardData = new DataTransfer(); clipboardData.setData("text/plain", "first line");
+            editor.dispatchEvent(new ClipboardEvent("paste", { bubbles: true, cancelable: true, clipboardData }));
+        });
+        const firstLine = await lastLine();
+        await page.keyboard.press("Enter");
+        expect(await lastLine()).toBeGreaterThan(firstLine + 20);
+        expect(await savedText()).toBe("first line\n");
+        await page.keyboard.press("Shift+Enter");
+        expect(await lastLine()).toBeGreaterThan(firstLine + 40);
+        expect(await savedText()).toBe("first line\n\n");
+        await page.keyboard.type("next");
+        expect(await savedText()).toBe("first line\n\nnext");
+        await page.keyboard.press("Backspace");
+        expect(await savedText()).toBe("first line\n\nnex");
+    }
+});
+
 test("Prompt Designer saves input, inserts linked blocks and restores workflow state", async ({ page }) => {
     const root = await openDesigner(page);
     await expect(root.getByRole("button", { name: "Save", exact: true })).toHaveCount(0);

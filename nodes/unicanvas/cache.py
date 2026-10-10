@@ -20,6 +20,8 @@ def _vnccs_validate_unicanvas_state_payload(data):
     state = data.get("state")
     if not isinstance(state, dict):
         raise ValueError("state must be an object")
+    if any(key in state for key in ("staging", "stagingItems", "staging_items", "activeStagingIndex")):
+        raise ValueError("Unaccepted generation results cannot be saved in a canvas document")
     layers = state.get("layers", [])
     if not isinstance(layers, list):
         raise ValueError("state.layers must be a list")

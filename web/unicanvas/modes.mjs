@@ -143,6 +143,7 @@ function consumeUniCanvasShortcut(event) {
 }
 
 export function handleUniCanvasShortcut(widget, event, options = null) {
+  if (widget?.editingBlocked) { consumeUniCanvasShortcut(event); return true; }
   if (!widget || !event || isUniCanvasTextTarget(event)) return false;
   // An open modal owns the keyboard: Enter activates its confirm button and
   // Escape closes the modal instead of leaving fullscreen or switching tools.
@@ -306,6 +307,9 @@ function uniCanvasHistoryOwner(event) {
     return null; // Native menus, dialogs and the console keep their keyboard.
   }
   for (const widget of uniCanvasModeWidgets) {
+    if (widget.editingBlocked && widget.container?.contains(event.target)) return widget;
+  }
+  for (const widget of uniCanvasModeWidgets) {
     if (widget._vnccsFullscreen) return widget;
   }
   for (const widget of uniCanvasModeWidgets) {
@@ -331,6 +335,11 @@ function handleUniCanvasHistoryKeyDown(event) {
   installUniCanvasChangeTrackerGate();
   const widget = uniCanvasHistoryOwner(event);
   if (!widget || widget._disposed) return;
+  if (widget.editingBlocked) {
+    if (widget._interactionOverlay?.contains(event.target) && ["Enter", " "].includes(event.key)) void widget.stopDraw?.();
+    if (event.key !== "Tab") event.preventDefault();
+    event.stopImmediatePropagation(); return;
+  }
   uniCanvasHistoryLastClaimAt = Date.now();
   const fullKeyboard = uniCanvasOwnsFullKeyboard(widget);
   // Node mode only claims Ctrl+Z / Ctrl+Y; fullscreen/standalone claim everything.
@@ -762,63 +771,14 @@ export async function saveUniCanvasOutput(widget, layerId = null) {
 }
 
 export async function newUniCanvasDocument(widget) {
-  const confirmed = await widget.confirmInWidget(
-    "New canvas",
-    "Are you sure?\nConfirmation will delete <b>all layers</b> and the stored images for this canvas.",
-    "Confirm"
-  );
-  if (!confirmed || widget._disposed || widget._clearingStateCache) return;
-  widget._clearingStateCache = true;
-  widget._isRestoring = true;
-  widget.cancelDeferredCanvasCommit?.();
-  try {
-    await widget.clearStateCache();
-  } catch (error) {
-    widget.setStatus(`New canvas failed: ${error.message || error}`, true);
-    return;
-  } finally {
-    widget._clearingStateCache = false;
-    widget._isRestoring = false;
-  }
-  if (widget._disposed) return;
-  widget._stateRestoreFailed = false;
-  widget._documentRevision = (widget._documentRevision || 0) + 1;
-  widget._stateLoadRevision = (widget._stateLoadRevision || 0) + 1;
-  widget._stateRestoreRevision = (widget._stateRestoreRevision || 0) + 1;
-  widget._importRevision = (widget._importRevision || 0) + 1;
-  widget.poseEditor?.release();
-  widget.panorama?.dispose();
-  widget.panorama = null;
-  widget.clearSamPrompt?.();
-  widget.setTool?.("move", true);
-  widget.updatePanoramaControls?.();
-  // Clear every layer and image, then create one fresh base layer for new work.
-  widget.stagingItems = [];
-  widget.activeStagingIndex = -1;
-  widget.layers = [];
-  widget.activeLayerId = null;
-  widget.undoStack = [];
-  widget.redoStack = [];
-  widget.addLayer("raster", "Base Layer", false);
-  widget.updateHistoryButtons?.();
-  widget.renderLayerList();
-  widget.syncActiveLayerControls?.();
-  widget.requestRender();
-  widget.syncToNode?.();
-  widget.setStatus("[VNCCS UniCanvas] Started a new canvas.");
+  if (widget.editingBlocked || widget._disposed) return false;
+  return widget.createCanvasDocument();
 }
 
 function installUniCanvasOutputActions(widget) {
   // Only the standalone tab needs these: on a node the composite already goes to the
   // node's image output, so Save to output would just duplicate it.
   if (!widget.standalone) return;
-  // New canvas sits centered in the top toolbar (between the undo/redo/Fit cluster and
-  // the grid/gear/exit cluster) instead of a row above GENERATE; the CSS centers it
-  // absolutely so the two clusters keep their layout.
-  const newCanvasButton = widget._button(
-    "New canvas", "vnccs-uc-btn vnccs-uc-new-canvas", () => void newUniCanvasDocument(widget), "New canvas"
-  );
-  widget.settingsBar?.appendChild(newCanvasButton);
   const saveRow = document.createElement("div");
   saveRow.className = "vnccs-uc2-save-actions";
   saveRow.append(widget._button("Save to output", "vnccs-uc-btn", () => void saveUniCanvasOutput(widget), "Download the flattened generation box as a PNG file"));
@@ -849,7 +809,8 @@ export function installUniCanvasWidgetModes(widget) {
 function writeStandaloneState(widget) {
   // Pixels live in the durable server cache; the browser stores only its pointer.
   const pointer = JSON.stringify({
-    saved_at: Date.now(), state: { version: 2, storage: "server_cache", state_id: widget.getStateCacheId(), layers: [] },
+    saved_at: Date.now(), state: { version: 2, storage: "server_cache", state_id: widget.getStateCacheId(),
+      ...(widget.canvasId ? { canvas_id: widget.canvasId } : {}), layers: [] },
   });
   for (const storage of ["sessionStorage", "localStorage"]) {
     try {
@@ -863,6 +824,7 @@ function writeStandaloneState(widget) {
 const standalonePersistState = new WeakSet();
 
 function installStandalonePersistence(widget) {
+  widget.persistCanvasPointer = () => writeStandaloneState(widget);
   standalonePersistState.add(widget);
   const uploadStatePayload = widget.uploadStatePayload;
   widget.saveLocalStateBackup = () => {};
@@ -898,14 +860,14 @@ export function teardownUniCanvasWidgetModes(widget) {
 }
 
 function readStandalonePersistedStateValue() {
-  const pointer = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_tab", layers: [] };
+  const pointer = { version: 2, storage: "server_cache", state_id: "vnccs_unicanvas_standalone_tab", layers: [], server_selection: true };
   for (const storage of ["sessionStorage", "localStorage"]) {
     try {
       const raw = window[storage]?.getItem(UNICANVAS_STANDALONE_STORAGE_KEY);
       const state = raw ? JSON.parse(raw)?.state : null;
       if (state && typeof state === "object" && Array.isArray(state.layers)) {
         // Keep old local-only pixels until their first successful server upload.
-        return JSON.stringify({ ...state, state_id: typeof state.state_id === "string" && state.state_id.startsWith("vnccs_unicanvas_standalone_") ? state.state_id : pointer.state_id });
+        return JSON.stringify({ ...state, state_id: typeof state.state_id === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(state.state_id) ? state.state_id : pointer.state_id });
       }
     } catch (err) {
       console.warn("[VNCCS UniCanvas] Standalone browser state restore failed", err);

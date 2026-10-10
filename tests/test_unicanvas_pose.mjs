@@ -89,7 +89,7 @@ function selectionHarness() {
     host.layers.push(raster);
     host.container.querySelectorAll = () => [];
     for (const name of ["syncCursorStyle", "renderToolSettings", "renderSamPanel", "updateSamControls", "updateHud", "updateContextCursor",
-        "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList"]) host[name] = noop;
+        "updateToolPreviewOverlay", "updateLayerListActiveState", "syncActiveLayerControls", "renderLayerList", "syncInteractionLock"]) host[name] = noop;
     host.toolNeedsCanvasRender = () => false;
     host.getModelBase = () => "flux_klein"; host.getInferenceSize = () => ({ width:512, height:512 });
     host.drawBtn = { disabled:false };

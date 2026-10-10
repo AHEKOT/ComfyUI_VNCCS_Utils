@@ -141,6 +141,35 @@ def test_multiline_block_keeps_selected_option_line_breaks():
     assert resolve_prompt(state("wear: {~\n coat\n| shirt\n}"))["prompt"] in {"wear: coat\n", "wear: shirt\n"}
 
 
+@pytest.mark.parametrize("padding", ["\n", "\r\n", " \t\n\n"])
+@pytest.mark.parametrize("mode", [None, "random", "cycle"])
+def test_choice_block_ignores_whitespace_outside_its_braces(padding, mode):
+    source = "{~medium breasts|flat chest|gigantic breasts}"
+    block = {"id": "a", "name": "Size", "text": source}
+    if mode:
+        block["mode"] = mode
+    parts = [{"text": "first\n"}, {"blockId": "a"}, {"text": "\n@next"}]
+    expected = resolve_prompt(state(blocks=[block], parts=parts))
+    variants = preview_block(state(blocks=[block]), "a")
+    block["text"] = padding + source + padding
+    raw = state(blocks=[block], parts=parts)
+    result = resolve_prompt(raw)
+    assert result["prompt"] == expected["prompt"]
+    assert "\n\n" not in result["prompt"]
+    assert preview_block(raw, "a") == variants
+    assert VNCCS_PromptDesigner().execute(raw)["result"][0] == expected["prompt"]
+    assert result["template"] == "first\n" + block["text"] + "\n@next", "authored source remains intact"
+
+
+def test_choice_block_keeps_inner_line_breaks_and_main_prompt_blank_lines():
+    block = {"id": "a", "name": "Card", "text": "\n{1::first\nsecond\n|0::other}\n\n"}
+    parts = [{"text": "before\n\n"}, {"blockId": "a"}, {"text": "\n\nafter\n"}]
+    raw = state(blocks=[block], parts=parts)
+    assert resolve_prompt(raw)["prompt"] == "before\n\nfirst\nsecond\n\n\nafter\n"
+    assert preview_block(raw, "a")["variants"] == ["first\nsecond\n"]
+    assert resolve_prompt(state("\n{1::first|0::second}\n\n"))["prompt"] == "\nfirst\n\n"
+
+
 def test_inspector_mode_overrides_parsed_choices_without_rewriting_source():
     block = {"id": "a", "name": "Card", "text": "{~{~red|blue}|green}", "mode": "cycle", "color": "#e88fab"}
     parts = [{"blockId": "a"}]

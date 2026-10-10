@@ -108,7 +108,7 @@ test("disposing during restoration never uploads a blank replacement over the so
 
 test("the constructor's stale restore cannot unlock a newer configure restore", async () => {
     const start = source.indexOf("    const initialRestore = this._loadFromNode();");
-    const end = source.indexOf("    this._loadAssets();", start);
+    const end = source.indexOf("    this._assetsReady = this._loadAssets();", start);
     assert.ok(start >= 0 && end > start);
     const methods = vm.runInNewContext(`({ start() { ${source.slice(start, end)} return initialRestore; } })`);
     let finish;
@@ -258,6 +258,99 @@ function writableWidget(pixels = "red") {
         scheduleStateUpload() {},
     });
     return w;
+}
+
+function autosavingWidget(standalone) {
+    const timers = new Map(), uploads = [];
+    let timerId = 0, pngEncodes = 0;
+    const w = writableWidget();
+    const runtime = { ...context, STATE_UPLOAD_DEBOUNCE_MS: 1200,
+        clearTimeout: id => timers.delete(id),
+        window: { setTimeout(callback, delay) { timers.set(++timerId, { callback, delay }); return timerId; } },
+        document: { createElement: () => ({ getContext: () => ({ drawImage() {} }),
+            toDataURL() { pngEncodes++; return w.pixels; } }) },
+        fetch: async (_url, request) => { uploads.push(JSON.parse(request.body)); return { ok: true }; },
+    };
+    Object.setPrototypeOf(w, vm.runInNewContext(source.slice(source.indexOf("class UniCanvasWidget {"),
+        source.indexOf("\napp.registerExtension(")) + "\nUniCanvasWidget.prototype", runtime));
+    delete w.buildSerializedState;
+    delete w.scheduleStateUpload;
+    Object.assign(w, { standalone, canvasId: "a".repeat(32), _canvasPublishedStateId: base.state_id,
+        origin: { x: 0, y: 0 }, size: { width: 1024, height: 1024 },
+        bbox: { x: 0, y: 0, width: 1024, height: 1024 },
+        layers: [{ id: "image", type: "raster", visible: true, locked: false, opacity: 1,
+            canvas: {}, _boundsCache: { x: 0, y: 0, width: 1024, height: 1024 } }],
+        configureImageContext: value => value, normalizeLoraStack() {},
+    });
+    return { w, runtime, timers, uploads, pngEncodes: () => pngEncodes,
+        async tick() {
+            const next = [...timers].sort((a, b) => a[1].delay - b[1].delay)[0];
+            if (!next) return false;
+            timers.delete(next[0]);
+            next[1].callback();
+            await new Promise(setImmediate);
+            await w.stateUploadPromise;
+            return true;
+        },
+    };
+}
+
+for (const standalone of [false, true]) {
+    test(`managed ${standalone ? "standalone" : "node"} autosaves stop after acknowledgements and deduplicated saves`, async () => {
+        const { w, timers, uploads, tick, pngEncodes } = autosavingWidget(standalone);
+        w.syncToNode();
+        assert.equal(timers.size, 1, "an edit still schedules its save");
+        await tick();
+        assert.equal(uploads.length, 1);
+        assert.equal(pngEncodes(), 1);
+        assert.equal(w.pendingStateUpload, null);
+        assert.equal(timers.size, 0, "an acknowledgement must not schedule another save");
+        assert.equal(await tick(), false, "an idle canvas does not serialize again");
+        assert.equal(pngEncodes(), 1);
+
+        w.scheduleStateUpload();
+        await tick();
+        assert.equal(uploads.length, 1, "an unchanged explicit save is deduplicated");
+        assert.equal(timers.size, 0, "deduplication must not restart the timer");
+
+        w.pixels = "blue";
+        w.syncToNode();
+        await tick();
+        assert.equal(uploads.length, 2);
+        assert.notEqual(uploads[1].state_id, uploads[0].state_id);
+        assert.equal(uploads[1].state.layers[0].dataURL, "blue");
+        assert.equal(JSON.parse(w.node.widgets[0].value).state_id, uploads[1].state_id);
+        assert.equal(timers.size, 0, "publishing a changed snapshot must also stop");
+    });
+
+    test(`managed ${standalone ? "standalone" : "node"} acknowledgements retain timers for edits made during an upload`, async () => {
+        const { w, runtime, timers, uploads, tick } = autosavingWidget(standalone);
+        await w.flushStateUpload();
+        let finish;
+        const fetch = runtime.fetch;
+        runtime.fetch = async (...args) => {
+            const response = await fetch(...args);
+            if (uploads.length === 2) await new Promise(resolve => { finish = resolve; });
+            return response;
+        };
+        w.pixels = "blue";
+        w.syncToNode();
+        const pending = tick();
+        await new Promise(setImmediate);
+        w.pixels = "green";
+        w.syncLightStateToWidget();
+        w.scheduleFullSync();
+        const lightTimer = w.settingsSyncTimer, fullTimer = w.fullSyncTimer;
+        finish();
+        await pending;
+        assert.equal(timers.has(lightTimer), true, "the old acknowledgement cannot cancel a newer light sync");
+        assert.equal(timers.has(fullTimer), true, "the old acknowledgement cannot cancel a newer full sync");
+        for (let i = 0; i < 5 && timers.size; i++) await tick();
+        assert.equal(uploads.length, 3);
+        assert.equal(uploads[2].state.layers[0].dataURL, "green");
+        assert.equal(JSON.parse(w.node.widgets[0].value).state_id, uploads[2].state_id);
+        assert.equal(timers.size, 0);
+    });
 }
 
 function backupStorage() {
@@ -413,6 +506,49 @@ test("failed frozen uploads retain the confirmed workflow and retry the same dra
     assert.equal(JSON.parse(w.node.widgets[0].value).state_id, draftId);
     assert.equal(JSON.parse(w.node.widgets[0].value).layers[0].dataURL, null);
 });
+
+for (const standalone of [false, true]) {
+    for (const firstSaved of [false, true]) {
+        test(`managed ${standalone ? "standalone" : "node"} workflows retain only acknowledged snapshots when queued saves fail (${firstSaved ? "first saved" : "both failed"})`, async () => {
+            const w = writableWidget();
+            Object.assign(w, { standalone, canvasId: "a".repeat(32), _canvasPublishedStateId: base.state_id });
+            const build = w.buildSerializedState;
+            w.buildSerializedState = () => ({ ...build.call(w), canvas_id: w.canvasId });
+            context.fetch = async () => ({ ok: true });
+            await w.snapshotForWorkflow();
+            const confirmedId = JSON.parse(w.node.widgets[0].value).state_id;
+            const sent = [];
+            let finish;
+            context.fetch = async (_url, request) => {
+                const payload = JSON.parse(request.body);
+                if (payload.state_id.endsWith("_out")) return { ok: true };
+                sent.push(payload);
+                if (sent.length === 1) await new Promise(resolve => { finish = resolve; });
+                return sent.length === 1 && firstSaved ? { ok: true }
+                    : { ok: false, status: 500, json: async () => ({ error: "disk full" }) };
+            };
+            w.pixels = "blue";
+            const first = w.flushStateUpload();
+            await new Promise(setImmediate);
+            w.pixels = "green";
+            const second = w.snapshotForWorkflow();
+            const pendingId = w.stateCacheId;
+            const pointerWhilePending = JSON.parse(w.node.widgets[0].value).state_id;
+            finish();
+            assert.deepEqual(await Promise.all([first, second]), [firstSaved, false]);
+            assert.equal(pointerWhilePending, confirmedId, "capturing another draft cannot publish the pending first draft");
+            const acknowledgedId = firstSaved ? sent[0].state_id : confirmedId;
+            assert.equal(JSON.parse(w.node.widgets[0].value).state_id, acknowledgedId);
+            assert.equal(JSON.parse(w._frozenStateJSON).state_id, acknowledgedId);
+            assert.notEqual(pendingId, acknowledgedId);
+            context.fetch = async () => ({ ok: true });
+            assert.equal(await w.snapshotForWorkflow(), true);
+            assert.equal(w.stateCacheId, pendingId, "retry the latest captured draft without allocating another snapshot");
+            assert.equal(JSON.parse(w.node.widgets[0].value).state_id, pendingId);
+            assert.equal(JSON.parse(w._frozenStateJSON).layers[0].dataURL, "green");
+        });
+    }
+}
 
 test("invalid JSON and unsupported schemas preserve original workflow bytes and block saving", async () => {
     for (const raw of ['{"version":2,"layers":[', JSON.stringify({ version: 99, layers: [{ id: "authored" }] })]) {

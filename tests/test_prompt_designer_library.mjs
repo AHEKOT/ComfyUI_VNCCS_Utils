@@ -59,6 +59,95 @@ function setup(t) {
     return { widget, records };
 }
 
+test("saving a draft never grants overwrite permission or changes a saved card while typing", async t => {
+    const { widget, records } = setup(t);
+    widget.editPromptDetails(); widget.promptName.value = "Protected original";
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    const original = widget.activePrompt().details.id, saved = structuredClone(records.get(original));
+    assert.equal(widget.activePrompt().templateId, undefined);
+    assert.equal(widget.promptSave.textContent, "Save Prompt Template");
+    widget.setLibraryView("prompts"); await widget.loadSavedPrompts();
+    widget.state.parts = [{ text: "a different composition" }]; widget.render(); widget.commit();
+    widget.promptName.value = "New composition"; widget.promptColor.value = "#eeaa77";
+    widget.savePromptDetails();
+    const row = widget.list.children.find(row => row.dataset.promptId === original);
+    assert.equal(row.querySelector(".vnccs-pd-block-name").textContent, "Protected original");
+    assert.equal(row.classList.contains("active"), false);
+    widget.renderLibrary();
+    assert.equal(widget.list.children.find(row => row.dataset.promptId === original)
+        .querySelector(".vnccs-pd-block-name").textContent, "Protected original");
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.notEqual(widget.activePrompt().details.id, original);
+    assert.deepEqual(records.get(original), saved);
+    assert.equal(records.size, 2);
+    assert.equal(records.get(widget.activePrompt().details.id).state.savedPrompt.name, "New composition");
+});
+
+test("only explicitly opened template tabs can update their original, including after restoration", async t => {
+    const { widget, records } = setup(t);
+    const entry = template(records, "a".repeat(32), "Original");
+    await widget.openSavedPrompt(entry);
+    assert.equal(widget.activePrompt().templateId, entry.id);
+    assert.equal(widget.promptSave.textContent, "Save Changes");
+    assert.equal(normalizeState(JSON.parse(widget.node.widgets[0].value)).promptTabs
+        .find(tab => tab.id === widget.state.activePrompt).templateId, entry.id);
+    widget.state = normalizeState(JSON.parse(widget.node.widgets[0].value)); widget.restorePromptDetails(); widget.render();
+    widget.state.parts = [{ text: "intentional edit" }]; widget.commit();
+    widget.promptName.value = "Renamed original"; widget.savePromptDetails();
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.size, 1); assert.equal(records.get(entry.id).revision, 2);
+    assert.deepEqual(records.get(entry.id).state.parts, [{ text: "intentional edit" }]);
+    assert.equal(widget.activePrompt().templateId, entry.id);
+    assert.equal(await widget.saveLibraryPrompt(true), true);
+    const copy = widget.activePrompt().details.id, savedCopy = structuredClone(records.get(copy));
+    assert.equal(widget.activePrompt().templateId, undefined);
+    widget.promptName.value = "Another snapshot";
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.size, 3); assert.deepEqual(records.get(copy), savedCopy);
+    const invalid = structuredClone(widget.state);
+    invalid.promptTabs.find(tab => tab.id === invalid.activePrompt).templateId = entry.id;
+    assert.throws(() => normalizeState(invalid), /Invalid opened prompt template/);
+});
+
+test("legacy saved IDs and close-and-save cannot turn an unrelated draft into template editing", async t => {
+    const { widget, records } = setup(t), originalTab = widget.state.activePrompt;
+    const entry = template(records, "a".repeat(32), "Protected"), saved = structuredClone(records.get(entry.id));
+    widget.activePrompt().details = { ...entry, category: "", color: "#44bb99" };
+    widget.restorePromptDetails(); widget.commit();
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.deepEqual(records.get(entry.id), saved);
+    await widget.openSavedPrompt(entry);
+    assert.notEqual(widget.state.activePrompt, originalTab, "opening reads the template into its own tab");
+    assert.deepEqual(widget.state.parts, saved.state.parts);
+    widget.switchPrompt(originalTab);
+    widget.state.parts = [{ text: "keep this new composition" }]; widget.commit();
+    widget.closePrompt(originalTab);
+    const dialog = widget.libraryActions.popup.element;
+    dialog.querySelector("input").value = "Save on close";
+    dialog.querySelector("form").listeners.get("submit")(); await new Promise(setImmediate);
+    assert.deepEqual(records.get(entry.id), saved);
+    assert.ok([...records.values()].some(record => record.state.savedPrompt?.name === "Save on close"
+        && record.state.parts[0].text === "keep this new composition"));
+});
+
+test("failed template updates retain the confirmed card, original disk data and editing target", async t => {
+    const { widget, records } = setup(t);
+    const entry = template(records, "a".repeat(32), "Protected"), saved = structuredClone(records.get(entry.id));
+    await widget.openSavedPrompt(entry); widget.setLibraryView("prompts"); await widget.loadSavedPrompts();
+    widget.promptName.value = "Edited name"; widget.savePromptDetails();
+    const fetch = widget.api.fetchApi;
+    widget.api.fetchApi = (url, options) => options?.method === "PUT"
+        ? Response.json({ error: "disk full" }, { status: 500 }) : fetch(url, options);
+    assert.equal(await widget.saveLibraryPrompt(), false);
+    assert.deepEqual(records.get(entry.id), saved);
+    assert.equal(widget.activePrompt().templateId, entry.id);
+    assert.equal(widget.list.children[0].querySelector(".vnccs-pd-block-name").textContent, "Protected");
+    assert.equal(widget.promptName.value, "Edited name");
+    widget.api.fetchApi = fetch;
+    assert.equal(await widget.saveLibraryPrompt(), true);
+    assert.equal(records.get(entry.id).state.savedPrompt.name, "Edited name");
+});
+
 test("same-content cards keep separate categories and colors through filtering, import and deletion", t => {
     const { widget } = setup(t);
     const cards = [
@@ -178,9 +267,11 @@ test("library tabs save, list and reopen complete prompts with independent color
     widget.promptName.value = "Renamed scene"; widget.promptColor.value = "#eeaa77";
     const row = widget.list.children[0];
     widget.promptColor.dispatchEvent({ type: "input" });
-    assert.equal(widget.list.children[0], row, "continuous color input keeps the same visible card");
-    assert.equal(row.style["--pd-chip-color"], "#eeaa77");
-    assert.equal(row.querySelector(".vnccs-pd-block-name").textContent, "Renamed scene");
+    assert.equal(widget.list.children[0], row, "editing metadata keeps the confirmed library card intact");
+    assert.equal(row.style["--pd-chip-color"], "#44bb99");
+    assert.equal(row.querySelector(".vnccs-pd-block-name").textContent, "Quiet scene");
+    assert.equal(widget.activePrompt().details.color, "#eeaa77", "the edited tab updates immediately");
+    assert.equal(widget.activePrompt().details.name, "Renamed scene");
     assert.equal(records.get(id).state.savedPrompt.color, "#44bb99", "metadata is committed to disk only on save");
     await widget.saveLibraryPrompt();
     assert.equal(records.size, 1); assert.equal(records.get(id).revision, 2);

@@ -10,6 +10,12 @@ def load_runtime_caches(root):
         def get(self, path):
             return self.post(path)
 
+        def patch(self, path):
+            return self.post(path)
+
+        def delete(self, path):
+            return self.post(path)
+
         def post(self, path):
             def register(function):
                 routes[path] = function
@@ -32,5 +38,7 @@ def load_runtime_caches(root):
         api._vnccs_register_capture_cache()
         api._vnccs_register_pose_animation_cache()
         api._vnccs_register_unicanvas_state_cache()
+        documents_adapter = load("api.unicanvas_documents")
     return {**vars(pose), **vars(canvas), **vars(build), **vars(api),
-            "routes": routes, "pose_service": pose, "canvas_service": canvas, "build_service": build}
+            "routes": routes, "pose_service": pose, "canvas_service": canvas, "build_service": build,
+            "documents_adapter": documents_adapter}

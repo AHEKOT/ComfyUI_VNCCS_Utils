@@ -23,7 +23,7 @@ export class LibraryActions {
         const events = new AbortController();
         this.popup = { element, focus, events };
         document.body.append(element);
-        for (const type of ["pointerdown", "click", "keydown", "wheel"]) {
+        for (const type of ["pointerdown", "click", "keydown", "paste", "wheel"]) {
             element.addEventListener(type, event => event.stopPropagation(), { signal: events.signal });
         }
         return (target, type, listener, capture = false) => target.addEventListener(type, listener, { signal: events.signal, capture });

@@ -402,6 +402,7 @@ export class PromptDesignerWidget {
                 event.preventDefault(); this.openBlock(event.target.dataset.blockId);
             }
         });
+        this.on(this.container, "paste", event => event.stopPropagation());
         this.on(this.container, "pointerdown", event => { if (event.button !== 1) event.stopPropagation(); });
         this.on(this.container, "wheel", event => event.stopPropagation(), { passive: true });
         if (globalThis.window?.addEventListener) this.on(window, "beforeunload", event => {
@@ -449,6 +450,7 @@ export class PromptDesignerWidget {
     }
 
     savePromptEditor(editor) {
+        this.syncEditorLineEnd(editor);
         if (editor === this.editor) {
             if (this.editingCondition && !editor.contains(this.editingCondition)) this.closeCondition(false);
             if (this.editingMultiPrompt && !editor.contains(this.editingMultiPrompt)) this.closeMultiPrompt(false);
@@ -512,6 +514,8 @@ export class PromptDesignerWidget {
     }
 
     installPromptInteractions(editor) {
+        this.syncEditorLineEnd(editor);
+        this.on(editor, "input", () => this.syncEditorLineEnd(editor));
         const cardAt = target => {
             const card = (target.nodeType === 1 ? target : target.parentElement)?.closest(CARD_SELECTOR);
             return card && editor.contains(card) ? card : null;
@@ -779,7 +783,8 @@ export class PromptDesignerWidget {
         this.promptName.value = details.name ?? "";
         this.refreshPromptCategories(); this.promptCategory.value = details.category ?? "";
         this.promptColor.value = details.color ?? "#b8a9e8";
-        this.promptSaveCopy.hidden = !details.id; this.promptDelete.hidden = !(details.revision > 0);
+        this.promptSave.textContent = this.activePrompt()?.templateId ? "Save Changes" : "Save Prompt Template";
+        this.promptSaveCopy.hidden = !this.activePrompt()?.templateId; this.promptDelete.hidden = !(details.revision > 0);
     }
 
     switchPrompt(id) {
@@ -850,24 +855,19 @@ export class PromptDesignerWidget {
         this.promptName.value = details.name ?? "";
         this.refreshPromptCategories(); this.promptCategory.value = details.category ?? this.libraryCategory;
         this.promptColor.value = details.color ?? "#b8a9e8";
-        this.promptSaveCopy.hidden = !this.editingSavedPrompt;
+        this.promptSave.textContent = this.activePrompt()?.templateId ? "Save Changes" : "Save Prompt Template";
+        this.promptSaveCopy.hidden = !this.activePrompt()?.templateId;
         this.promptDelete.hidden = !(this.editingSavedPrompt?.revision > 0);
         this.showInspector(this.promptPanel, "prompt-details", "Inspector · Prompt");
         this.promptName.focus({ preventScroll: true });
     }
 
     savePromptDetails() {
+        this.ensurePromptTabs();
         this.node.properties ??= {};
-        const details = this.node.properties.promptDesignerPromptDetails = { ...(this.editingSavedPrompt ?? {}),
+        const details = this.node.properties.promptDesignerPromptDetails = { ...this.activePrompt().details,
             name: this.promptName.value, category: this.promptCategory.value, color: this.promptColor.value };
-        this.ensurePromptTabs(); this.activePrompt().details = { ...details };
-        const row = details.id && [...this.list.children].find(item => item.dataset.promptId === details.id);
-        if (row) {
-            row.querySelector(".vnccs-pd-block-name").textContent = details.name || "Untitled prompt";
-            row.style.setProperty("--pd-chip-color", details.color);
-            row.hidden = !details.name.toLowerCase().includes(this.search.value.toLowerCase())
-                || (!!this.libraryCategory && details.category !== this.libraryCategory);
-        }
+        this.activePrompt().details = { ...details };
         this.renderTabs(); this.commit("prompt-details");
     }
 
@@ -898,12 +898,14 @@ export class PromptDesignerWidget {
         let snapshot;
         try { snapshot = promptSnapshot(this.promptTabState(tab)); }
         catch (error) { this.setStatus(error.message, true); return false; }
-        const entry = { id: !asNew && tab.details.id ? tab.details.id : promptId(),
-            revision: !asNew && tab.details.id ? tab.details.revision : 0,
+        const templateId = !asNew && tab.templateId === tab.details.id ? tab.templateId : null;
+        const entry = { id: templateId || promptId(),
+            revision: templateId ? tab.details.revision : 0,
             name, category: metadata.category ?? "", color: metadata.color ?? "#b8a9e8" };
         const category = this.categoryDefinitions().find(item => item.name === entry.category);
         if (category) snapshot.categories = [...snapshot.categories.filter(item => item.name !== category.name), category];
         const state = { ...snapshot, savedPrompt: { name: entry.name, category: entry.category, color: entry.color } };
+        if (!templateId) delete tab.templateId;
         tab.details = { ...entry };
         if (tab.id === this.state.activePrompt) this.restorePromptDetails();
         this.persist();
@@ -975,8 +977,9 @@ export class PromptDesignerWidget {
             for (const tab of this.state.promptTabs ?? []) {
                 if (tab.details.id !== entry.id) continue;
                 if (deleting) {
-                    delete tab.details.id; delete tab.details.revision; tab.dirty = true; this.promptBaselines.delete(tab.id);
+                    delete tab.templateId; delete tab.details.id; delete tab.details.revision; tab.dirty = true; this.promptBaselines.delete(tab.id);
                 } else {
+                    if (tab.templateId !== entry.id) continue;
                     tab.details.name = name; tab.details.revision = revision;
                     const baseline = this.promptBaselines.get(tab.id);
                     if (baseline) {
@@ -1000,7 +1003,7 @@ export class PromptDesignerWidget {
     async openSavedPrompt(entry) {
         const request = this.savedPromptLoadRevision = (this.savedPromptLoadRevision ?? 0) + 1;
         this.ensurePromptTabs();
-        const existing = this.state.promptTabs.find(tab => tab.details.id === entry.id);
+        const existing = this.state.promptTabs.find(tab => tab.templateId === entry.id);
         if (existing) { this.switchPrompt(existing.id); this.editPromptDetails(); return; }
         const value = this.persisted;
         try {
@@ -1013,7 +1016,7 @@ export class PromptDesignerWidget {
             const next = openPromptState(this.state, result.state);
             const details = { ...result.state.savedPrompt };
             details.category = next.categories.find(category => category.name.toLowerCase() === details.category.toLowerCase())?.name ?? details.category;
-            const tab = { id: promptId(), parts: next.parts, seed: next.seed, afterGenerate: next.afterGenerate,
+            const tab = { id: promptId(), templateId: entry.id, parts: next.parts, seed: next.seed, afterGenerate: next.afterGenerate,
                 cycleIndex: next.cycleIndex, details: { id: entry.id, revision: result.revision, ...details }, dirty: false };
             // Keep the currently edited prompt intact while importing the template's blocks.
             this.state = normalizeState({ ...this.state, blocks: next.blocks, categories: next.categories,
@@ -1197,6 +1200,7 @@ export class PromptDesignerWidget {
         this.editor.replaceChildren(...this.state.parts.map(part => "text" in part
             ? document.createTextNode(part.text) : part.condition ? this.conditionChip(part.condition)
                 : part.multiPrompt ? this.multiPromptChip(part.multiPrompt) : this.chip(part.blockId)));
+        this.syncEditorLineEnd(this.editor);
         this.editor.scrollTop = scrollTop;
         this.caret = null;
         this.seed.value = this.state.seed;
@@ -1419,6 +1423,7 @@ export class PromptDesignerWidget {
             const parts = mergeText(branch.parts ?? [branch]);
             if (JSON.stringify(readEditor(editor)) !== JSON.stringify(parts)) {
                 editor.replaceChildren(...parts.map(part => "text" in part ? document.createTextNode(part.text) : this.chip(part.blockId)));
+                this.syncEditorLineEnd(editor);
                 editor.savedCaret = null;
             }
         }
@@ -1461,6 +1466,7 @@ export class PromptDesignerWidget {
             this.syncConditionClauses(this.conditionExtraRows, clauses);
             for (const [editor, inlineEditor] of [[this.conditionOutput, output], [this.conditionElseOutput, elseOutput]]) {
                 editor.replaceChildren(...readEditor(inlineEditor).map(part => "text" in part ? document.createTextNode(part.text) : this.chip(part.blockId)));
+                this.syncEditorLineEnd(editor);
                 editor.savedCaret = null;
             }
         }
@@ -1578,6 +1584,7 @@ export class PromptDesignerWidget {
         for (const [editor, branch] of [[this.conditionOutput, condition.then], [this.conditionElseOutput, condition.else ?? { text: "" }]]) {
             editor.replaceChildren(...(branch.parts ?? [branch]).map(part => "text" in part
                 ? document.createTextNode(part.text) : this.chip(part.blockId)));
+            this.syncEditorLineEnd(editor);
             editor.savedCaret = null;
         }
         this.conditionPanel.hidden = false;
@@ -1789,15 +1796,13 @@ export class PromptDesignerWidget {
         const top = savedScroll?.top ?? this.list.scrollTop;
         this.list.replaceChildren();
         if (this.libraryView === "prompts") {
-            for (const saved of this.savedPrompts ?? []) {
-                const details = this.node.properties?.promptDesignerPromptDetails;
-                const prompt = saved.id === details?.id ? { ...saved, ...details } : saved;
+            for (const prompt of this.savedPrompts ?? []) {
                 const row = this.button("", () => this.openSavedPrompt(prompt)); row.className = "vnccs-pd-block";
                 row.dataset.promptId = prompt.id;
                 this.installLibraryMenu(row, "prompt", prompt);
                 const category = definitions.find(item => item.name.toLowerCase() === prompt.category?.toLowerCase());
                 row.style.setProperty("--pd-chip-color", prompt.color ?? category?.color ?? "#b8a9e8");
-                row.classList.toggle("active", this.editingSavedPrompt?.id === prompt.id);
+                row.classList.toggle("active", this.activePrompt()?.templateId === prompt.id);
                 const copy = element("div", "vnccs-pd-block-copy");
                 copy.append(element("div", "vnccs-pd-block-name", prompt.name), element("span", "vnccs-pd-excerpt", prompt.text));
                 row.append(copy);
@@ -2050,8 +2055,10 @@ export class PromptDesignerWidget {
                 }
                 content.append(document.createTextNode(text.slice(offset)));
             }
+            this.syncEditorLineEnd(content);
             row.append(number, content);
             this.on(content, "input", event => {
+                this.syncEditorLineEnd(content);
                 const active = this.activeBlock();
                 if (active?.id !== block.id || !this.variants.contains(row)) return;
                 const value = readEditor(content).map(part => part.text ?? "").join("");
@@ -2246,6 +2253,16 @@ export class PromptDesignerWidget {
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
+    }
+
+    syncEditorLineEnd(editor) {
+        for (const child of [...editor.children]) if (child.dataset.pdCaretEnd) child.remove();
+        if (editor.classList.contains("vnccs-pd-condition-output")) return;
+        // Trailing text newlines need a final BR to display the empty caret line.
+        if (readEditor(editor).at(-1)?.text?.endsWith("\n")) {
+            const end = element("br"); end.dataset.pdCaretEnd = "true";
+            editor.append(end);
+        }
     }
 
     rangeAt(x, y, editor = this.editor) {

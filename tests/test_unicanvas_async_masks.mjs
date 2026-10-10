@@ -26,7 +26,8 @@ function harness() {
   const history = [];
   let snapshots = 0;
   const uc = Object.assign(Object.create(prototype), {
-    panorama: null, layers: [a, b], activeLayerId: "A", origin: { x: 0, y: 0 }, settings: {},
+    panorama: null, layers: [{ id: "mask", type: "mask", canvas: { ...canvas(), pixels: "" } }, a, b],
+    activeLayerId: "A", origin: { x: 0, y: 0 }, settings: {},
     sam: { points: [{ x: 2, y: 2, label: 1 }], model: "sam2_large" },
     getLayerAlphaBounds: () => rect, expandCanvasCrop: () => rect,
     cloneCanvasCrop: () => ({ toDataURL: () => "source" }),

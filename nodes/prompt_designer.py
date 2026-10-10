@@ -40,6 +40,8 @@ def prompt_template(node_state):
                         or type(details.get("revision")) is not int or not 0 <= details["revision"] <= 2**53 - 1))
                     or ("revision" in details and "id" not in details)):
                 raise ValueError("Invalid prompt template details.")
+            if "templateId" in tab and (tab["templateId"] != details.get("id") or not details.get("revision", 0) > 0):
+                raise ValueError("Invalid opened prompt template.")
             prompt_ids.add(tab["id"])
             # Inactive tabs are drafts; validate their content without executing an unfinished seed.
             prompt_template(json.dumps({"version": 1, "categories": state.get("categories", []), "blocks": state.get("blocks", []),
@@ -220,6 +222,17 @@ def bounded_sampling_context(seed=0, method=None):
                           wildcard_manager=WildcardManager(), rand=Random(seed))
 
 
+def block_command(command):
+    from dynamicprompts.commands import LiteralCommand, SequenceCommand, VariantCommand
+    if isinstance(command, SequenceCommand):
+        tokens = [token for token in command.tokens
+                  if not (isinstance(token, LiteralCommand) and not token.literal.strip())]
+        # Whitespace surrounding a choice block is source formatting, not prompt text.
+        if len(tokens) == 1 and isinstance(tokens[0], VariantCommand):
+            return tokens[0]
+    return command
+
+
 def resolve_prompt(node_state):
     template, seed = prompt_template(node_state)
     state = json.loads(node_state)
@@ -278,7 +291,7 @@ def resolve_prompt(node_state):
                 mode = modes.get(block_id)
                 method = None if mode is None else SamplingMethod.CYCLICAL if mode == "cycle" else SamplingMethod.RANDOM
                 offset = occurrences.get(block_id, 0)
-                values[key] = sample(library[block_id], method, offset)
+                values[key] = sample(block_command(parse(library[block_id])), method, offset)
                 occurrences[block_id] = offset + 1
             for index in range(count) if output is None else [output]:
                 selected[index][block_id] = values[key]
@@ -448,7 +461,7 @@ def preview_block(node_state, block_id):
     variants = []
     length = 0
     try:
-        command = enumerate_choices(parse(block["text"]))
+        command = enumerate_choices(block_command(parse(block["text"])))
         # shortcut: Immediate variables preview their first choice; expand assignment contexts if exhaustive variable previews are needed.
         context = bounded_sampling_context(method=SamplingMethod.COMBINATORIAL)
         # Bound both row count and total preview text; do not enumerate a whole Cartesian product.

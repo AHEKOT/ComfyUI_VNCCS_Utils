@@ -162,11 +162,15 @@ export function normalizeState(raw = {}) {
                 || (details.id !== undefined && (typeof details.id !== "string" || !/^[\da-f]{32}$/.test(details.id)
                     || !Number.isSafeInteger(details.revision) || details.revision < 0))
                 || (details.revision !== undefined && details.id === undefined)) throw new Error("Invalid prompt tab or template details.");
+            if (tab.templateId !== undefined && (tab.templateId !== details.id || !(details.revision > 0))) {
+                throw new Error("Invalid opened prompt template.");
+            }
             promptIds.add(tab.id);
             const draft = normalizeState({ version: 1, categories, blocks, parts: tab.parts, seed: tab.seed,
                 afterGenerate: tab.afterGenerate, cycleIndex: tab.cycleIndex });
             return { id: tab.id, parts: draft.parts, seed: draft.seed, afterGenerate: draft.afterGenerate,
-                ...(draft.cycleIndex === undefined ? {} : { cycleIndex: draft.cycleIndex }), details: { ...details }, dirty: tab.dirty };
+                ...(draft.cycleIndex === undefined ? {} : { cycleIndex: draft.cycleIndex }),
+                ...(tab.templateId === undefined ? {} : { templateId: tab.templateId }), details: { ...details }, dirty: tab.dirty };
         });
         if (!promptIds.has(raw.activePrompt)) throw new Error("The active prompt tab is missing.");
         state.activePrompt = raw.activePrompt;
@@ -245,6 +249,7 @@ export function readEditor(root) {
     const visit = node => {
         if (node.nodeType === 3) { parts.push({ text: node.textContent }); return; }
         if (node.nodeType !== 1) return;
+        if (node.dataset?.pdCaretEnd) return;
         if (node.dataset?.blockId) { parts.push({ blockId: node.dataset.blockId }); return; }
         if (node.dataset?.condition) { parts.push({ condition: JSON.parse(node.dataset.condition) }); return; }
         if (node.dataset?.multiPrompt) { parts.push({ multiPrompt: JSON.parse(node.dataset.multiPrompt) }); return; }

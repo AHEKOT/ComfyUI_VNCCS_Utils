@@ -196,7 +196,7 @@ async function importPSDFile(uc, file) {
   if (!file) return;
   const revision = uc._importRevision = (uc._importRevision || 0) + 1;
   const documentRevision = uc._documentRevision;
-  const current = () => !uc._disposed && revision === uc._importRevision && documentRevision === uc._documentRevision;
+  const current = () => !uc._disposed && !uc.editingBlocked && revision === uc._importRevision && documentRevision === uc._documentRevision;
   try {
     uc.setStatus("[VNCCS UniCanvas] Reading PSD...");
     const { readPsd } = await uc.loadAgPsd();
@@ -445,6 +445,7 @@ export function placeInHost(host, element, clientX, clientY) {
 
 // Layer pixels = the original crop with the matched result laid over it at strength/10.
 function colorMatchIsCurrent(uc, preview) {
+  if (uc.editingBlocked) return false;
   if (preview.closed) return false;
   if (uc.isLayerEditStateCurrent(preview.editState)) return true;
   closeColorMatchPreview(uc, false);

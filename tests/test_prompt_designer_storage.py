@@ -70,6 +70,19 @@ def test_prompt_tabs_preserve_inactive_drafts_conditions_and_template_details_on
         assert storage.load_document("a" * 32)["state"] == state
 
 
+def test_opened_template_identity_survives_storage_and_rejects_mismatched_or_unacknowledged_targets(storage):
+    state = document("opened draft")
+    tab = {"id": "b" * 32, "parts": state["parts"], "seed": "0", "afterGenerate": "fixed", "dirty": True,
+           "templateId": "c" * 32, "details": {"id": "c" * 32, "revision": 1, "name": "Opened template"}}
+    state.update(promptTabs=[tab], activePrompt=tab["id"])
+    storage.save_document("a" * 32, state, 0)
+    assert storage.load_document("a" * 32)["state"] == state
+    for invalid in ({**tab, "templateId": "d" * 32}, {**tab, "details": {**tab["details"], "revision": 0}}):
+        with pytest.raises(ValueError, match="opened prompt template"):
+            storage.save_document("a" * 32, {**state, "promptTabs": [invalid]}, 1)
+        assert storage.load_document("a" * 32)["state"] == state
+
+
 def test_named_prompts_are_independent_json_snapshots_with_metadata_search_and_backup_recovery(storage):
     identifier, workspace = "a" * 32, "b" * 32
     state = document()
